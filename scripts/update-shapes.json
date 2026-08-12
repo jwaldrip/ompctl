@@ -1,0 +1,685 @@
+{
+  "counts": {
+    "available_commands_update": 1,
+    "session_info_update": 2,
+    "tool_call": 4,
+    "tool_call_update": 6,
+    "plan": 2,
+    "agent_message_chunk": 7,
+    "usage_update": 1
+  },
+  "samples": {
+    "available_commands_update": {
+      "sessionUpdate": "available_commands_update",
+      "availableCommands": [
+        {
+          "name": "help",
+          "description": "Show the available commands"
+        },
+        {
+          "name": "model",
+          "description": "Choose the model for this session",
+          "input": {
+            "hint": "<model-id>"
+          }
+        },
+        {
+          "name": "resume",
+          "description": "Resume an earlier session",
+          "input": {
+            "hint": "<session-id>"
+          }
+        }
+      ]
+    },
+    "session_info_update": {
+      "sessionUpdate": "session_info_update",
+      "updatedAt": "2026-08-11T19:16:26.275Z"
+    },
+    "tool_call": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "toolu_01V6ifa6i1Tx9GkPUeXwVNKN",
+      "title": "Planning three-step task",
+      "kind": "think",
+      "status": "pending",
+      "rawInput": {
+        "op": "init",
+        "list": [
+          {
+            "phase": "Execute",
+            "items": [
+              "Read notes.md",
+              "Run echo hello-from-ompd",
+              "Summarize file contents"
+            ]
+          }
+        ]
+      }
+    },
+    "tool_call_update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "toolu_01V6ifa6i1Tx9GkPUeXwVNKN",
+      "status": "completed",
+      "rawOutput": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Remaining items (3):\n  - Read notes.md [in_progress] (Execute)\n  - Run echo hello-from-ompd [pending] (Execute)\n  - Summarize file contents [pending] (Execute)\nOverall: 0/3 done, 3 open.\nActive phase 1/1 \"Execute\" (0/3).\n  Execute:\n    - [ ] Read notes.md (in progress)\n    - [ ] Run echo hello-from-ompd\n    - [ ] Summarize file contents"
+          }
+        ],
+        "details": {
+          "op": "init",
+          "phases": [
+            {
+              "name": "Execute",
+              "tasks": [
+                {
+                  "content": "Read notes.md",
+                  "status": "in_progress"
+                },
+                {
+                  "content": "Run echo hello-from-ompd",
+                  "status": "pending"
+                },
+                {
+                  "content": "Summarize file contents",
+                  "status": "pending"
+                }
+              ]
+            }
+          ],
+          "storage": "session"
+        }
+      },
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "Remaining items (3):\n  - Read notes.md [in_progress] (Execute)\n  - Run echo hello-from-ompd [pending] (Execute)\n  - Summarize file contents [pending] (Execute)\nOverall: 0/3 done, 3 open.\nActive phase 1/1 \"Execute\" (0/3).\n  Execute:\n    - [ ] Read notes.md (in progress)\n    - [ ] Run echo hello-from-ompd\n    - [ ] Summarize file contents"
+          }
+        }
+      ]
+    },
+    "plan": {
+      "sessionUpdate": "plan",
+      "entries": [
+        {
+          "content": "Read notes.md",
+          "priority": "medium",
+          "status": "in_progress"
+        },
+        {
+          "content": "Run echo hello-from-ompd",
+          "priority": "medium",
+          "status": "pending"
+        },
+        {
+          "content": "Summarize file contents",
+          "priority": "medium",
+          "status": "pending"
+        }
+      ]
+    },
+    "agent_message_chunk": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`"
+      },
+      "messageId": "39095297-6440-40a5-aed5-0f00213373bb"
+    },
+    "usage_update": {
+      "sessionUpdate": "usage_update",
+      "size": 1000000,
+      "used": 68406,
+      "cost": {
+        "amount": 1.4408195,
+        "currency": "USD"
+      }
+    }
+  },
+  "stream": [
+    {
+      "at": 1056,
+      "kind": "available_commands_update",
+      "update": {
+        "sessionUpdate": "available_commands_update",
+        "availableCommands": [
+          {
+            "name": "help",
+            "description": "Show the available commands"
+          },
+          {
+            "name": "model",
+            "description": "Choose the model for this session",
+            "input": {
+              "hint": "<model-id>"
+            }
+          },
+          {
+            "name": "resume",
+            "description": "Resume an earlier session",
+            "input": {
+              "hint": "<session-id>"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": 1056,
+      "kind": "session_info_update",
+      "update": {
+        "sessionUpdate": "session_info_update",
+        "updatedAt": "2026-08-11T19:16:26.275Z"
+      }
+    },
+    {
+      "at": 7884,
+      "kind": "tool_call",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "toolu_01V6ifa6i1Tx9GkPUeXwVNKN",
+        "title": "Planning three-step task",
+        "kind": "think",
+        "status": "pending",
+        "rawInput": {
+          "op": "init",
+          "list": [
+            {
+              "phase": "Execute",
+              "items": [
+                "Read notes.md",
+                "Run echo hello-from-ompd",
+                "Summarize file contents"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "at": 7885,
+      "kind": "tool_call_update",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "toolu_01V6ifa6i1Tx9GkPUeXwVNKN",
+        "status": "completed",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Remaining items (3):\n  - Read notes.md [in_progress] (Execute)\n  - Run echo hello-from-ompd [pending] (Execute)\n  - Summarize file contents [pending] (Execute)\nOverall: 0/3 done, 3 open.\nActive phase 1/1 \"Execute\" (0/3).\n  Execute:\n    - [ ] Read notes.md (in progress)\n    - [ ] Run echo hello-from-ompd\n    - [ ] Summarize file contents"
+            }
+          ],
+          "details": {
+            "op": "init",
+            "phases": [
+              {
+                "name": "Execute",
+                "tasks": [
+                  {
+                    "content": "Read notes.md",
+                    "status": "in_progress"
+                  },
+                  {
+                    "content": "Run echo hello-from-ompd",
+                    "status": "pending"
+                  },
+                  {
+                    "content": "Summarize file contents",
+                    "status": "pending"
+                  }
+                ]
+              }
+            ],
+            "storage": "session"
+          }
+        },
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "Remaining items (3):\n  - Read notes.md [in_progress] (Execute)\n  - Run echo hello-from-ompd [pending] (Execute)\n  - Summarize file contents [pending] (Execute)\nOverall: 0/3 done, 3 open.\nActive phase 1/1 \"Execute\" (0/3).\n  Execute:\n    - [ ] Read notes.md (in progress)\n    - [ ] Run echo hello-from-ompd\n    - [ ] Summarize file contents"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": 7891,
+      "kind": "plan",
+      "update": {
+        "sessionUpdate": "plan",
+        "entries": [
+          {
+            "content": "Read notes.md",
+            "priority": "medium",
+            "status": "in_progress"
+          },
+          {
+            "content": "Run echo hello-from-ompd",
+            "priority": "medium",
+            "status": "pending"
+          },
+          {
+            "content": "Summarize file contents",
+            "priority": "medium",
+            "status": "pending"
+          }
+        ]
+      }
+    },
+    {
+      "at": 7891,
+      "kind": "tool_call",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "toolu_01D7rm9jM6Gm929D8XCiNjno",
+        "title": "Reading notes file",
+        "kind": "read",
+        "status": "pending",
+        "rawInput": {
+          "path": "notes.md"
+        },
+        "locations": [
+          {
+            "path": "/var/folders/4b/mrk4zd652wgd_j7w91byk8xh0000gn/T/ompd-capture-mBPo5S/notes.md"
+          }
+        ]
+      }
+    },
+    {
+      "at": 7892,
+      "kind": "tool_call",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "toolu_01SLGKmCqYDN8HKxTA1ib7Hi",
+        "title": "$ echo hello-from-ompd",
+        "kind": "execute",
+        "status": "pending",
+        "rawInput": {
+          "command": "echo hello-from-ompd"
+        },
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "$ echo hello-from-ompd"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": 7904,
+      "kind": "tool_call_update",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "toolu_01D7rm9jM6Gm929D8XCiNjno",
+        "status": "completed",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "text",
+              "text": "[notes.md#0A0F]\n1:# Notes\n2:\n3:alpha\n4:bravo\n5:charlie\n6:"
+            }
+          ],
+          "details": {
+            "totalLines": 6,
+            "displayContent": {
+              "text": "# Notes\n\nalpha\nbravo\ncharlie\n",
+              "startLine": 1,
+              "lineNumbers": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6
+              ]
+            },
+            "fileSize": 29,
+            "meta": {
+              "source": {
+                "type": "path",
+                "value": "/var/folders/4b/mrk4zd652wgd_j7w91byk8xh0000gn/T/ompd-capture-mBPo5S/notes.md"
+              }
+            }
+          }
+        },
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "[notes.md#0A0F]\n1:# Notes\n2:\n3:alpha\n4:bravo\n5:charlie\n6:"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": 7954,
+      "kind": "tool_call_update",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "toolu_01SLGKmCqYDN8HKxTA1ib7Hi",
+        "status": "in_progress",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "text",
+              "text": "hello-from-ompd\n"
+            }
+          ],
+          "details": {}
+        },
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "$ echo hello-from-ompd"
+            }
+          },
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "hello-from-ompd\n"
+            }
+          },
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "hello-from-ompd"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": 7955,
+      "kind": "tool_call_update",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "toolu_01SLGKmCqYDN8HKxTA1ib7Hi",
+        "status": "in_progress",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "text",
+              "text": "hello-from-ompd\n\n\nWall time: 0.05 seconds"
+            }
+          ],
+          "details": {}
+        },
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "$ echo hello-from-ompd"
+            }
+          },
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "hello-from-ompd\n\n\nWall time: 0.05 seconds"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": 7955,
+      "kind": "tool_call_update",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "toolu_01SLGKmCqYDN8HKxTA1ib7Hi",
+        "status": "completed",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "text",
+              "text": "hello-from-ompd\n\n\nWall time: 0.05 seconds"
+            }
+          ],
+          "details": {
+            "timeoutSeconds": 300,
+            "wallTimeMs": 54.085417000000234
+          }
+        },
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "$ echo hello-from-ompd"
+            }
+          },
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "hello-from-ompd\n\n\nWall time: 0.05 seconds"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": 21438,
+      "kind": "tool_call",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "toolu_01Mc6Pw6qCy9xLqqfMhc5QAZ",
+        "title": "Closing completed phase",
+        "kind": "think",
+        "status": "pending",
+        "rawInput": {
+          "op": "done",
+          "phase": "Execute"
+        }
+      }
+    },
+    {
+      "at": 21439,
+      "kind": "tool_call_update",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "toolu_01Mc6Pw6qCy9xLqqfMhc5QAZ",
+        "status": "completed",
+        "rawOutput": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Remaining items: none.\nOverall: 3/3 done, 0 open.\nActive phase 1/1 \"Execute\" (3/3).\n  Execute:\n    - [X] Read notes.md\n    - [X] Run echo hello-from-ompd\n    - [X] Summarize file contents"
+            }
+          ],
+          "details": {
+            "op": "done",
+            "phases": [
+              {
+                "name": "Execute",
+                "tasks": [
+                  {
+                    "content": "Read notes.md",
+                    "status": "completed"
+                  },
+                  {
+                    "content": "Run echo hello-from-ompd",
+                    "status": "completed"
+                  },
+                  {
+                    "content": "Summarize file contents",
+                    "status": "completed"
+                  }
+                ]
+              }
+            ],
+            "storage": "session",
+            "completedTasks": [
+              {
+                "phase": "Execute",
+                "content": "Read notes.md"
+              },
+              {
+                "phase": "Execute",
+                "content": "Run echo hello-from-ompd"
+              },
+              {
+                "phase": "Execute",
+                "content": "Summarize file contents"
+              }
+            ]
+          }
+        },
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "Remaining items: none.\nOverall: 3/3 done, 0 open.\nActive phase 1/1 \"Execute\" (3/3).\n  Execute:\n    - [X] Read notes.md\n    - [X] Run echo hello-from-ompd\n    - [X] Summarize file contents"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": 21439,
+      "kind": "plan",
+      "update": {
+        "sessionUpdate": "plan",
+        "entries": [
+          {
+            "content": "Read notes.md",
+            "priority": "medium",
+            "status": "completed"
+          },
+          {
+            "content": "Run echo hello-from-ompd",
+            "priority": "medium",
+            "status": "completed"
+          },
+          {
+            "content": "Summarize file contents",
+            "priority": "medium",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "at": 25375,
+      "kind": "agent_message_chunk",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "`"
+        },
+        "messageId": "39095297-6440-40a5-aed5-0f00213373bb"
+      }
+    },
+    {
+      "at": 25379,
+      "kind": "agent_message_chunk",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "not"
+        },
+        "messageId": "39095297-6440-40a5-aed5-0f00213373bb"
+      }
+    },
+    {
+      "at": 26153,
+      "kind": "agent_message_chunk",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "es.md` contained a `# Notes` heading followed by three list-less lines: `alpha`, `bravo`, `charlie`.\n\nThe bash command printed `hello-from-ompd`"
+        },
+        "messageId": "39095297-6440-40a5-aed5-0f00213373bb"
+      }
+    },
+    {
+      "at": 26194,
+      "kind": "agent_message_chunk",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "."
+        },
+        "messageId": "39095297-6440-40a5-aed5-0f00213373bb"
+      }
+    },
+    {
+      "at": 34212,
+      "kind": "agent_message_chunk",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "`"
+        },
+        "messageId": "03c26227-21e9-41c4-86ba-25d57382fb7c"
+      }
+    },
+    {
+      "at": 34304,
+      "kind": "agent_message_chunk",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "notes.md` cont"
+        },
+        "messageId": "03c26227-21e9-41c4-86ba-25d57382fb7c"
+      }
+    },
+    {
+      "at": 34618,
+      "kind": "agent_message_chunk",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "ained a `# Notes` heading followed by three lines: `alpha`, `bravo`, `charlie`."
+        },
+        "messageId": "03c26227-21e9-41c4-86ba-25d57382fb7c"
+      }
+    },
+    {
+      "at": 38803,
+      "kind": "usage_update",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "size": 1000000,
+        "used": 68406,
+        "cost": {
+          "amount": 1.4408195,
+          "currency": "USD"
+        }
+      }
+    },
+    {
+      "at": 38803,
+      "kind": "session_info_update",
+      "update": {
+        "sessionUpdate": "session_info_update",
+        "updatedAt": "2026-08-11T19:17:04.500Z"
+      }
+    }
+  ]
+}
