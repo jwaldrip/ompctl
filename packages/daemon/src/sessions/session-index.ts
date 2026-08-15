@@ -108,12 +108,36 @@ export class SessionIndex {
       }
     }
 
+    // A bare `omp` TUI run by an omp build that predates presence carrying
+    // `sessionId` leaves its client record without one. Infer its session
+    // from the one unclaimed file in its project directory written since it
+    // registered; two or more candidates leave every one of them `dormant`
+    // rather than guess between them.
+    const inferredClientByFileId = new Map<string, (typeof liveClients)[number]>();
+    const clientsWithoutSessionId = liveClients.filter(client => !client.sessionId);
+    if (clientsWithoutSessionId.length > 0) {
+      for (const client of clientsWithoutSessionId) {
+        const candidates = files.filter(file => {
+          if (liveAgentBySessionId.has(file.id)) return false;
+          if (liveClientBySessionId.has(file.id)) return false;
+          const decoded = this.#decodeCwd(file.flattenedDir);
+          if (decoded.status !== "ok" || decoded.cwd !== client.projectDir) return false;
+          return file.mtimeMs >= client.registeredAtMs;
+        });
+        if (candidates.length === 1) {
+          const only = candidates[0];
+          if (only) inferredClientByFileId.set(only.id, client);
+        }
+      }
+    }
+
     const summaries: SessionSummary[] = [];
     for (const file of files) {
       const decoded = this.#decodeCwd(file.flattenedDir);
       const isArchived = archived.has(file.id);
       const agentId = liveAgentBySessionId.get(file.id);
       const liveClient = liveClientBySessionId.get(file.id);
+      const inferredClient = inferredClientByFileId.get(file.id);
 
       let status: SessionLiveStatus;
       let pid: number | undefined;
@@ -129,6 +153,11 @@ export class SessionIndex {
       } else if (liveClient) {
         status = "live-tui";
         pid = liveClient.pid;
+      } else if (inferredClient) {
+        // No explicit sessionId, but exactly one unclaimed file in this
+        // client's project directory was written since it registered.
+        status = "live-tui";
+        pid = inferredClient.pid;
       } else {
         status = "dormant";
       }

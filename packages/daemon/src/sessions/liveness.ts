@@ -13,7 +13,7 @@
  * drifting out of sync.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getDaemonRuntimeDir } from "@oh-my-pi/pi-utils";
 
@@ -24,6 +24,8 @@ export interface ClientPresenceRecord {
   /** The session this client currently holds, when it has one open. */
   sessionId?: string;
   title?: string;
+  /** When this client registered, i.e. the presence file's own mtime: it is written once at process start and never rewritten. */
+  registeredAtMs: number;
 }
 
 /** Where every project's client presence directory lives, i.e. `~/.omp/run/daemons`. */
@@ -79,14 +81,17 @@ export function listLiveClientPresences(root: string = runDaemonsRoot()): Client
     }
 
     for (const fileName of fileNames) {
+      const presencePath = join(clientsDir, fileName);
       let record: ClientPresenceRecord;
+      let registeredAtMs: number;
       try {
-        record = JSON.parse(readFileSync(join(clientsDir, fileName), "utf8"));
+        record = JSON.parse(readFileSync(presencePath, "utf8"));
+        registeredAtMs = statSync(presencePath).mtimeMs;
       } catch {
         continue;
       }
       if (typeof record.pid !== "number" || !isPidAlive(record.pid)) continue;
-      out.push(record);
+      out.push({ ...record, registeredAtMs });
     }
   }
   return out;
