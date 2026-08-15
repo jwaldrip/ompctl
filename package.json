@@ -19,6 +19,7 @@
     "build:cli": "bun build --compile --outfile dist/ompd packages/cli/src/main.ts",
     "gen:web-assets": "bun scripts/gen-web-assets.ts",
     "check": "bun run check:tools && bun run check:types",
+    "check:evolution": "bun run scripts/check-evolution-lifecycle.ts",
     "check:tools": "biome check . --no-errors-on-unmatched",
     "check:types": "bun run --workspaces --if-present check",
     "test": "bun run --workspaces --if-present test && bun test packages/acp packages/cli packages/core packages/daemon packages/hub packages/tunnel scripts"
