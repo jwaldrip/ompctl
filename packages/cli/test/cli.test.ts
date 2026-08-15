@@ -1388,7 +1388,10 @@ describe("self-install", () => {
   function compiler(version = "0.1.0"): (command: string[]) => ExecResult | undefined {
     return command => {
       if (command[1] === "build") {
-        writeFileSync(String(command[4]), `binary bytes ${BINARY_MARKER} more bytes\n`);
+        const outfileIndex = command.indexOf("--outfile");
+        const staging = command[outfileIndex + 1];
+        if (staging === undefined) throw new Error("build command had no --outfile argument");
+        writeFileSync(staging, `binary bytes ${BINARY_MARKER} more bytes\n`);
         return { code: 0, stdout: "", stderr: "" };
       }
       if (command[1] === "--version") return { code: 0, stdout: `${version}\n`, stderr: "" };

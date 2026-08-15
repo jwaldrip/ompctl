@@ -107,7 +107,23 @@ async function build(ctx: CliContext, staging: string): Promise<string[] | null>
   // `process.execPath` is bun here, which is the compiler. Using it rather
   // than the string "bun" means self-install works when bun is not on PATH,
   // which is the same class of problem this command exists to fix.
-  const result = await ctx.exec([process.execPath, "build", "--compile", "--outfile", staging, sourceEntry()]);
+  // `--external`: `omp-legacy-pi-modules` is a virtual module that only
+  // exists inside omp's own compiled-binary build pipeline
+  // (legacy-pi-compat.ts's IS_COMPILED_BINARY-gated dynamic import). ompd's
+  // own commands never reach omp's plugin/legacy-module loader, so the
+  // import is dead code for this binary; unresolved rather than external, it
+  // fails the whole build instead. Kept in sync with root package.json's
+  // build:cli script.
+  const result = await ctx.exec([
+    process.execPath,
+    "build",
+    "--compile",
+    "--external",
+    "omp-legacy-pi-modules",
+    "--outfile",
+    staging,
+    sourceEntry(),
+  ]);
   if (result.code === 0 && existsSync(staging)) return null;
 
   return [
