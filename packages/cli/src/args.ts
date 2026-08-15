@@ -54,6 +54,7 @@ export type Command =
     }
   | { kind: "stop-agent"; agentId: string }
   | { kind: "prompt"; agentId: string; text: string }
+  | { kind: "tui"; host?: string; port?: number; token?: string }
   | { kind: "routines" }
   | { kind: "run"; routineId: string }
   | { kind: "webhook-secret"; routineId: string }
@@ -106,6 +107,8 @@ agents
                           create an agent; --mounts only with --container
   stop-agent <id>         stop an agent
   prompt <id> <text>      send a prompt and wait for the turn to settle
+  tui [--host H] [--port N] [--token T]
+                          attach to a running ompd and view its live agents
 
 routines
   routines                list routines
@@ -378,6 +381,20 @@ export function parseCommand(argv: string[]): Command {
       const text = rest.slice(1).join(" ");
       if (text.length === 0) throw new UsageError("prompt needs text to send");
       return { kind: "prompt", agentId, text };
+    }
+
+    case "tui": {
+      rejectExtra(rest, 0, "tui");
+      const port = numberFlag(flags, "port");
+      if (port !== undefined && (port < 0 || port > 65_535)) {
+        throw new UsageError(`--port must be between 0 and 65535, got ${port}`);
+      }
+      return {
+        kind: "tui",
+        host: stringFlag(flags, "host"),
+        port,
+        token: stringFlag(flags, "token"),
+      };
     }
 
     case "routines": {

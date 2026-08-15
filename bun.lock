@@ -59,6 +59,8 @@
         "ompd": "./src/main.ts",
       },
       "dependencies": {
+        "@oh-my-pi/pi-coding-agent": "catalog:",
+        "@oh-my-pi/pi-tui": "catalog:",
         "@ompd/core": "workspace:*",
         "@ompd/daemon": "workspace:*",
         "qrcode": "1.5.4",

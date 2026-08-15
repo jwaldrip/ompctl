@@ -31,6 +31,7 @@ import { routinesCommand, runCommand, webhookSecretCommand } from "./commands/ro
 import { selfInstallCommand } from "./commands/self-install.ts";
 import { installCommand, uninstallCommand } from "./commands/service.ts";
 import { syncConfigCommand } from "./commands/sync.ts";
+import { tuiCommand } from "./commands/tui.ts";
 
 export async function run(argv: string[], ctx: CliContext = defaultContext()): Promise<number> {
   try {
@@ -84,6 +85,8 @@ export async function run(argv: string[], ctx: CliContext = defaultContext()): P
         return await stopAgentCommand(ctx, command);
       case "prompt":
         return await promptCommand(ctx, command);
+      case "tui":
+        return await tuiCommand(ctx, command);
       case "routines":
         return await routinesCommand(ctx);
       case "run":
