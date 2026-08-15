@@ -134,9 +134,17 @@ describe("WebView MCP server: the tool-call boundary", () => {
   test("mcpServerDescriptor produces the http-type entry session/new.mcpServers expects", () => {
     const { server, agentId } = harness({ kind: "ack", url: "x", title: "x" });
     const descriptor = mcpServerDescriptor(server, agentId);
-    expect(descriptor.type).toBe("http");
     expect(descriptor.name).toBe("ompd-webview");
+    // Narrowed on `type`, not cast: the http variant is the only one that
+    // carries `url`/`headers`, and this is what proves the descriptor is
+    // actually shaped as that variant rather than merely claiming to be.
+    if (descriptor.type !== "http") throw new Error(`expected type "http", got ${String(descriptor.type)}`);
     expect(typeof descriptor.url).toBe("string");
-    expect(descriptor.url as string).toContain(`/mcp/${agentId}/`);
+    expect(descriptor.url).toContain(`/mcp/${agentId}/`);
+    // Required by McpServer's http variant; omitting it crashed omp's own
+    // ACP session/new handler at runtime (undefined.headers), with no
+    // typecheck to catch it while this function returned a loose
+    // Record<string, unknown>.
+    expect(descriptor.headers).toEqual([]);
   });
 });

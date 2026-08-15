@@ -19,6 +19,7 @@
  * / `tools/call` need for a single agent driving one WebView.
  */
 
+import type { McpServer } from "@oh-my-pi/pi-utils/acp";
 import type { AgentId, WebViewAction } from "@ompd/core";
 import type { WebViewBridge } from "./bridge.ts";
 
@@ -200,11 +201,17 @@ export function startWebViewMcpServer(bridge: WebViewBridge): WebViewMcpServer {
 }
 
 /** The `session/new.mcpServers` entry ACP's `McpServer` (http variant) expects. */
-export function mcpServerDescriptor(server: WebViewMcpServer, agentId: AgentId): Record<string, unknown> {
+export function mcpServerDescriptor(server: WebViewMcpServer, agentId: AgentId): McpServer {
   return {
     name: "ompd-webview",
     type: "http",
     url: server.urlFor(agentId),
+    // The per-agent token already lives in the URL path (urlFor embeds it),
+    // so no auth header is needed -- but the field itself is required by
+    // McpServer's http variant, and omitting it crashed omp's own ACP
+    // session/new handler at runtime with no typecheck to catch it (this
+    // function used to return the untyped `Record<string, unknown>`).
+    headers: [],
     // The bridge owns the target-aware approval after it has parsed and
     // validated the action. OMP's generic MCP wrapper cannot see that target.
     _meta: { "omp.toolApproval": "allow" },
