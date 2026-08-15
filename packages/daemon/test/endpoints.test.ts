@@ -9,12 +9,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DefaultPolicy, SCOPE_PROMPT, SCOPE_READ, Store, type EndpointOffer } from "@ompd/core";
-import { HostRegistry } from "../src/hosts.ts";
-import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
-import { Supervisor } from "../src/supervisor.ts";
-import { reachableEndpoints, type NetworkAddress } from "../src/endpoints.ts";
+import { DefaultPolicy, type EndpointOffer, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
 import { Ompd } from "../src/daemon.ts";
+import { type NetworkAddress, reachableEndpoints } from "../src/endpoints.ts";
+import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
+import { HostRegistry } from "../src/hosts.ts";
+import { Supervisor } from "../src/supervisor.ts";
 import { createFakeHost } from "./fake-host.ts";
 
 const TWO_INTERFACES: NetworkAddress[] = [
@@ -30,7 +30,7 @@ function isDirect(offer: EndpointOffer): offer is EndpointOffer & { endpoint: { 
 }
 
 function directUrls(offers: EndpointOffer[]): string[] {
-  return offers.filter(isDirect).map((o) => o.endpoint.url);
+  return offers.filter(isDirect).map(o => o.endpoint.url);
 }
 
 describe("reachableEndpoints", () => {
@@ -49,7 +49,7 @@ describe("reachableEndpoints", () => {
     // the way out: which config key changes the bind.
     expect(offers[0]?.note.toLowerCase()).toContain("loopback");
     expect(offers[0]?.note).toContain("host");
-    expect(offers.some((o) => o.reach === "same-network")).toBe(false);
+    expect(offers.some(o => o.reach === "same-network")).toBe(false);
   });
 
   test("an explicit ::1 bind offers a bracketed IPv6 loopback URL and still no same-network endpoint", () => {
@@ -65,7 +65,7 @@ describe("reachableEndpoints", () => {
     // actually accepted a connection on; the IPv4 loopback used everywhere
     // else would not reach a daemon bound this way.
     expect(offers[0]?.endpoint).toEqual({ transport: "direct", url: "ws://[::1]:7777/v1/socket" });
-    expect(offers.some((o) => o.reach === "same-network")).toBe(false);
+    expect(offers.some(o => o.reach === "same-network")).toBe(false);
   });
 
   test("0.0.0.0 bind with two off-machine interfaces offers loopback plus each non-internal IPv4 address", () => {
@@ -83,19 +83,19 @@ describe("reachableEndpoints", () => {
       "ws://192.168.1.9:7777/v1/socket",
     ]);
 
-    const loopback = offers.find((o) => o.reach === "same-machine");
+    const loopback = offers.find(o => o.reach === "same-machine");
     expect(loopback?.note.toLowerCase()).toContain("loopback");
 
-    const sameNetwork = offers.filter((o) => o.reach === "same-network");
+    const sameNetwork = offers.filter(o => o.reach === "same-network");
     expect(sameNetwork).toHaveLength(2);
     for (const offer of sameNetwork) expect(offer.endpoint.transport).toBe("direct");
 
     // Internal addresses (the loopback interface itself, however it is
     // spelled) and every IPv6 address are excluded from the same-network set.
-    expect(urls.some((u) => u.includes("::1"))).toBe(false);
-    expect(urls.some((u) => u.includes("fe80"))).toBe(false);
+    expect(urls.some(u => u.includes("::1"))).toBe(false);
+    expect(urls.some(u => u.includes("fe80"))).toBe(false);
 
-    expect(offers.some((o) => o.reach === "anywhere")).toBe(false);
+    expect(offers.some(o => o.reach === "anywhere")).toBe(false);
   });
 
   test("hub configured with an identity offers an anywhere endpoint", () => {
@@ -107,7 +107,7 @@ describe("reachableEndpoints", () => {
       interfaces: () => TWO_INTERFACES,
     });
 
-    const hub = offers.find((o) => o.reach === "anywhere");
+    const hub = offers.find(o => o.reach === "anywhere");
     expect(hub?.endpoint).toEqual({
       transport: "hub",
       hubUrl: "wss://hub.example.com",
@@ -123,7 +123,7 @@ describe("reachableEndpoints", () => {
       interfaces: () => TWO_INTERFACES,
     });
 
-    expect(offers.some((o) => o.reach === "anywhere")).toBe(false);
+    expect(offers.some(o => o.reach === "anywhere")).toBe(false);
   });
 
   test("no hub configured offers no hub endpoint even with an identity", () => {
@@ -135,7 +135,7 @@ describe("reachableEndpoints", () => {
       interfaces: () => TWO_INTERFACES,
     });
 
-    expect(offers.some((o) => o.reach === "anywhere")).toBe(false);
+    expect(offers.some(o => o.reach === "anywhere")).toBe(false);
   });
 
   test("a :: wildcard bind offers IPv6 loopback and refuses to claim any IPv4 address", () => {
@@ -150,11 +150,11 @@ describe("reachableEndpoints", () => {
       interfaces: () => TWO_INTERFACES,
     });
 
-    const loopback = offers.find((o) => o.reach === "same-machine");
+    const loopback = offers.find(o => o.reach === "same-machine");
     expect(loopback?.endpoint).toEqual({ transport: "direct", url: "ws://[::1]:7777/v1/socket" });
     expect(loopback?.note).toContain("0.0.0.0");
 
-    expect(offers.filter((o) => o.reach === "same-network")).toHaveLength(0);
+    expect(offers.filter(o => o.reach === "same-network")).toHaveLength(0);
   });
 
   test("a bind to one specific address offers that address and nothing else", () => {
@@ -171,7 +171,7 @@ describe("reachableEndpoints", () => {
     });
 
     expect(directUrls(offers)).toEqual(["ws://192.168.1.9:7777/v1/socket"]);
-    expect(offers.some((o) => o.reach === "same-machine")).toBe(false);
+    expect(offers.some(o => o.reach === "same-machine")).toBe(false);
   });
 
   test("a self-assigned address is never offered, because it reaches nothing", () => {
@@ -188,10 +188,7 @@ describe("reachableEndpoints", () => {
       ],
     });
 
-    expect(directUrls(offers)).toEqual([
-      "ws://127.0.0.1:7777/v1/socket",
-      "ws://10.4.1.221:7777/v1/socket",
-    ]);
+    expect(directUrls(offers)).toEqual(["ws://127.0.0.1:7777/v1/socket", "ws://10.4.1.221:7777/v1/socket"]);
   });
 });
 
@@ -235,7 +232,7 @@ async function harness(offers: EndpointOffer[]): Promise<Harness> {
 
   return {
     base,
-    pair: async (scopes) => {
+    pair: async scopes => {
       const res = await fetch(`${base}/v1/pair`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -275,7 +272,7 @@ describe("GET /v1/endpoints", () => {
     const body = (await res.json()) as { offers: EndpointOffer[] };
     expect(body.offers).toHaveLength(1);
     expect(body.offers[0]?.reach).toBe("same-network");
-    expect(body.offers.some((o) => o.reach === "same-network")).toBe(true);
+    expect(body.offers.some(o => o.reach === "same-network")).toBe(true);
   });
 
   test("reports an empty offer list, not an error, when no endpoints seam is wired in", async () => {
@@ -337,7 +334,7 @@ describe("GET /v1/endpoints against a real Ompd", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { offers: EndpointOffer[] };
 
-    const loopback = body.offers.find((o) => o.reach === "same-machine");
+    const loopback = body.offers.find(o => o.reach === "same-machine");
     expect(loopback?.endpoint).toEqual({ transport: "direct", url: `ws://127.0.0.1:${info.port}/v1/socket` });
     for (const offer of body.offers.filter(isDirect)) expect(offer.endpoint.url).not.toContain(":0/");
   });

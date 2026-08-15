@@ -1,18 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import {
+  type Agent,
+  type AgentId,
   DefaultPolicy,
+  type QueuedIntent,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   Store,
-  type Agent,
-  type AgentId,
-  type QueuedIntent,
 } from "@ompd/core";
-import { Gateway } from "../src/gateway/gateway.ts";
 import { HttpIntentPeer, QueuedIntentDrainer } from "../src/federation/queued-intents.ts";
-import { Supervisor, createAgentId } from "../src/supervisor.ts";
+import { Gateway } from "../src/gateway/gateway.ts";
+import { createAgentId, Supervisor } from "../src/supervisor.ts";
 import { createFakeHost, type FakeHostController } from "./fake-host.ts";
 
 const paths: string[] = [];
@@ -61,9 +61,7 @@ async function makeGateway(opts: { replica?: boolean; syncToken?: string } = {})
     store,
     port: 0,
     federation:
-      opts.syncToken === undefined
-        ? undefined
-        : { replica: opts.replica ?? false, syncToken: opts.syncToken },
+      opts.syncToken === undefined ? undefined : { replica: opts.replica ?? false, syncToken: opts.syncToken },
   });
   gateways.push(gateway);
   const port = await gateway.listen();
@@ -75,7 +73,7 @@ async function makeGateway(opts: { replica?: boolean; syncToken?: string } = {})
     supervisor,
     fake,
     baseUrl,
-    pair: async (scopes) => {
+    pair: async scopes => {
       const paired = await fetch(`${baseUrl}/v1/pair`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -94,8 +92,8 @@ async function makeGateway(opts: { replica?: boolean; syncToken?: string } = {})
 }
 
 afterEach(async () => {
-  await Promise.all(gateways.map((gateway) => gateway.close()));
-  await Promise.all(supervisors.map((supervisor) => supervisor.shutdown()));
+  await Promise.all(gateways.map(gateway => gateway.close()));
+  await Promise.all(supervisors.map(supervisor => supervisor.shutdown()));
   for (const store of stores) store.close();
   for (const path of paths) rmSync(path, { force: true });
   gateways.length = 0;
@@ -123,9 +121,7 @@ describe("Federation queued intents", () => {
     expect(tunnel.ok).toBeTrue();
     if (!tunnel.ok) throw new Error("paired operator should open the tunnel session");
     tunnel.deliver(JSON.stringify({ t: "cancel", agentId }));
-    tunnel.deliver(
-      JSON.stringify({ t: "decide", agentId, requestId: "apr_remote", choice: "allow", scope: "once" }),
-    );
+    tunnel.deliver(JSON.stringify({ t: "decide", agentId, requestId: "apr_remote", choice: "allow", scope: "once" }));
 
     const created = await cloud.request(
       "/v1/agents",
@@ -136,16 +132,11 @@ describe("Federation queued intents", () => {
     expect(cloud.fake.sessions).toEqual([]);
 
     const pending = cloud.store.listPendingQueuedIntents();
-    expect(pending.map((intent) => intent.action).toSorted()).toEqual([
-      "cancel",
-      "decide",
-      "new-agent",
-      "prompt",
-    ]);
+    expect(pending.map(intent => intent.action).toSorted()).toEqual(["cancel", "decide", "new-agent", "prompt"]);
     expect(
-      pending.filter((intent) => intent.action !== "new-agent").every((intent) => intent.agentId === agentId),
+      pending.filter(intent => intent.action !== "new-agent").every(intent => intent.agentId === agentId),
     ).toBeTrue();
-    expect(pending.every((intent) => intent.actorDeviceId !== "daemon")).toBeTrue();
+    expect(pending.every(intent => intent.actorDeviceId !== "daemon")).toBeTrue();
   });
 
   test("the owning delegate claims, executes with real actor, and acknowledges", async () => {
@@ -156,7 +147,7 @@ describe("Federation queued intents", () => {
     cloud.store.upsertAgent(replicaAgent(agentId));
 
     // The originating device must exist on the local delegate for authorization.
-    const operatorDevice = cloud.store.listDevices().find((device) => !device.revokedAt);
+    const operatorDevice = cloud.store.listDevices().find(device => !device.revokedAt);
     expect(operatorDevice).toBeDefined();
     local.store.addDevice({
       id: operatorDevice!.id,
@@ -217,7 +208,7 @@ describe("Federation queued intents", () => {
     );
     expect(ackPending.status).toBe(200);
     expect(((await ackPending.json()) as { delivered: number }).delivered).toBe(0);
-    expect(cloud.store.listPendingQueuedIntents().map((intent) => intent.id)).toEqual([body.intent.id]);
+    expect(cloud.store.listPendingQueuedIntents().map(intent => intent.id)).toEqual([body.intent.id]);
 
     const claimed = await cloud.request(
       "/v1/sync/intents/claim",
@@ -254,7 +245,7 @@ describe("Federation queued intents", () => {
     const errors: Error[] = [];
     const drainer = new QueuedIntentDrainer({
       supervisor: local.supervisor,
-      onError: (error) => errors.push(error),
+      onError: error => errors.push(error),
       peer: {
         pullPendingIntents: async () => [
           {
@@ -276,7 +267,7 @@ describe("Federation queued intents", () => {
 
     expect(await drainer.drain()).toBe(0);
     expect(local.fake.prompts).toEqual([]);
-    expect(errors.some((error) => /unknown device|unauthorized/i.test(error.message))).toBeTrue();
+    expect(errors.some(error => /unknown device|unauthorized/i.test(error.message))).toBeTrue();
   });
 
   test("new-agent short-circuit still authorizes the originating actor", async () => {
@@ -308,7 +299,7 @@ describe("Federation queued intents", () => {
     let acknowledged = false;
     const drainer = new QueuedIntentDrainer({
       supervisor: local.supervisor,
-      onError: (error) => errors.push(error),
+      onError: error => errors.push(error),
       peer: {
         pullPendingIntents: async () => [
           {
@@ -330,7 +321,7 @@ describe("Federation queued intents", () => {
 
     expect(await drainer.drain()).toBe(0);
     expect(acknowledged).toBeFalse();
-    expect(errors.some((error) => /revoked|unauthorized/i.test(error.message))).toBeTrue();
+    expect(errors.some(error => /revoked|unauthorized/i.test(error.message))).toBeTrue();
   });
 
   test("stop awaits an in-flight drain before returning", async () => {
@@ -421,17 +412,17 @@ describe("Federation queued intents", () => {
       supervisor: local.supervisor,
       peer: {
         pullPendingIntents: async () => [intent],
-        claimIntent: async (id) => {
+        claimIntent: async id => {
           claimed.push(id);
           return true;
         },
-        acknowledgeDelivered: async (ids) => void acknowledged.push([...ids]),
+        acknowledgeDelivered: async ids => void acknowledged.push([...ids]),
       },
     });
 
     expect(await drainer.drain()).toBe(1);
     expect(claimed).toEqual([intent.id]);
-    expect(local.supervisor.listAgents().map((agent) => agent.id)).toContain(agentId);
+    expect(local.supervisor.listAgents().map(agent => agent.id)).toContain(agentId);
     expect(acknowledged).toEqual([[intent.id]]);
   });
 });

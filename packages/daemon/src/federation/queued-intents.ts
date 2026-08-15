@@ -1,13 +1,5 @@
-import {
-  SCOPE_APPROVE,
-  SCOPE_MANAGE,
-  SCOPE_PROMPT,
-  type Actor,
-  type HostMount,
-  type HostSpec,
-  type QueuedIntent,
-} from "@ompd/core";
-import { Supervisor } from "../supervisor.ts";
+import { type Actor, type HostMount, type HostSpec, type QueuedIntent, SCOPE_MANAGE } from "@ompd/core";
+import type { Supervisor } from "../supervisor.ts";
 
 /** The narrow remote surface a local delegate needs to drain a replica queue. */
 export interface IntentPeer {

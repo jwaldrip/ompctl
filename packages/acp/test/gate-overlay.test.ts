@@ -25,25 +25,24 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GATE_CONFIG_YAML, spawnLocalHost, type SpawnLocalHostOptions } from "../src/index.ts";
+import { GATE_CONFIG_YAML, type SpawnLocalHostOptions, spawnLocalHost } from "../src/index.ts";
 
 /** Overlay directories present in the temp dir at this instant. */
 const gateDirs = (): string[] =>
   readdirSync(tmpdir())
-    .filter((name) => name.startsWith("ompd-gate-"))
+    .filter(name => name.startsWith("ompd-gate-"))
     .toSorted();
 
 /** Overlays that appeared between two snapshots, so only ours can be blamed. */
-const appeared = (before: string[], after: string[]): string[] =>
-  after.filter((dir) => !before.includes(dir));
+const appeared = (before: string[], after: string[]): string[] => after.filter(dir => !before.includes(dir));
 
 /**
  * The two callbacks `AcpClientOptions` requires. Never invoked here: a child
@@ -72,9 +71,7 @@ describe("spawnLocalHost overlay lifetime", () => {
   test("a missing binary leaves no overlay behind", () => {
     const before = gateDirs();
 
-    expect(() =>
-      spawnLocalHost({ ...callbacks, ompPath: join(scratchDir(), "not-a-binary") }),
-    ).toThrow(/ENOENT/);
+    expect(() => spawnLocalHost({ ...callbacks, ompPath: join(scratchDir(), "not-a-binary") })).toThrow(/ENOENT/);
 
     expect(appeared(before, gateDirs())).toEqual([]);
   });
@@ -100,9 +97,7 @@ describe("spawnLocalHost overlay lifetime", () => {
 
     const before = gateDirs();
 
-    expect(() => spawnLocalHost({ ...callbacks, ompPath: "/bin/echo", cwd: missingCwd })).toThrow(
-      /ENOENT/,
-    );
+    expect(() => spawnLocalHost({ ...callbacks, ompPath: "/bin/echo", cwd: missingCwd })).toThrow(/ENOENT/);
 
     expect(appeared(before, gateDirs())).toEqual([]);
   });
@@ -127,7 +122,7 @@ describe("spawnLocalHost overlay lifetime", () => {
     const host = spawnLocalHost({
       ...callbacks,
       ompPath: bin,
-      onLog: (line) => {
+      onLog: line => {
         if (line.includes("host-ready")) ready.resolve();
       },
     });

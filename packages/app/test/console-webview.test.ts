@@ -20,7 +20,7 @@ function replies(): { seen: WebViewActionResult[]; reply: (result: WebViewAction
   const seen: WebViewActionResult[] = [];
   return {
     seen,
-    reply: (result) => {
+    reply: result => {
       seen.push(result);
     },
   };
@@ -54,7 +54,7 @@ describe("routing a dispatched action", () => {
     const { reply } = replies();
     await routeWebViewAction(
       {
-        act: (action) => {
+        act: action => {
           performed.push(action);
           return Promise.resolve<WebViewActionResult>({
             kind: "ack",

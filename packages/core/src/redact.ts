@@ -43,9 +43,7 @@ export function redactString(input: string): string {
     // them across calls would advance lastIndex and skip matches.
     const scoped = new RegExp(re.source, re.flags);
     out = out.replace(scoped, (_match, name?: string) =>
-      label === "named-secret" && typeof name === "string"
-        ? `${name}=${REDACTED}`
-        : `${REDACTED}:${label}`,
+      label === "named-secret" && typeof name === "string" ? `${name}=${REDACTED}` : `${REDACTED}:${label}`,
     );
   }
   return out;
@@ -82,7 +80,7 @@ export function redact(value: unknown, opts: RedactOptions = {}): unknown {
     if (v === null || typeof v !== "object") return v;
     if (seen.has(v)) return "[circular]";
     seen.add(v);
-    if (Array.isArray(v)) return v.map((item) => walk(item, depth + 1));
+    if (Array.isArray(v)) return v.map(item => walk(item, depth + 1));
     const out: Record<string, unknown> = {};
     for (const [k, item] of Object.entries(v as Record<string, unknown>)) {
       // Redact by key name too: a value that does not look like a secret is

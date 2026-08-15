@@ -1,0 +1,22 @@
+telemetry = false
+
+[install]
+linker = "hoisted"
+exact = true
+saveTextLockfile = true
+
+[loader]
+".md" = "text"
+
+[test]
+pathIgnorePatterns = [
+  "**/node_modules/**",
+  "**/.git/**",
+  "**/dist/**",
+  "docs/**",
+  ".wt/**",
+  ".worktrees/**",
+]
+
+[run]
+bun = true

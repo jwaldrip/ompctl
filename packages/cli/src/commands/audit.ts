@@ -14,10 +14,7 @@ interface AuditResponse {
   entries?: AuditEntry[];
 }
 
-export async function auditCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "audit" }>,
-): Promise<number> {
+export async function auditCommand(ctx: CliContext, cmd: Extract<Command, { kind: "audit" }>): Promise<number> {
   const response = await api<AuditResponse>(ctx, `/v1/audit?limit=${cmd.limit}`);
   const entries = response.entries ?? [];
   if (entries.length === 0) {
@@ -25,7 +22,7 @@ export async function auditCommand(
     return 0;
   }
 
-  const rows = entries.map((entry) => [
+  const rows = entries.map(entry => [
     age(entry.ts),
     entry.action,
     entry.outcome,

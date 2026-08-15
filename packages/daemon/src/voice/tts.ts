@@ -19,18 +19,10 @@
 // Only the segmenter and the model registry are imported eagerly: both are pure
 // TypeScript. Everything that reaches the native speech runtime goes through
 // `loadSpeechRuntime`, which explains why.
-import {
-  DEFAULT_TTS_LOCAL_MODEL_KEY,
-  type TtsLocalModelKey,
-} from "@oh-my-pi/pi-coding-agent/tts/models";
+import { DEFAULT_TTS_LOCAL_MODEL_KEY, type TtsLocalModelKey } from "@oh-my-pi/pi-coding-agent/tts/models";
 import { SpeakableStream } from "@oh-my-pi/pi-coding-agent/tts/speakable";
+import { BunCommandRunner, type CommandRunner, type EngineAvailability, withScratchDir } from "./exec.ts";
 import { loadSpeechRuntime, type TtsSynthesizer } from "./speech-runtime.ts";
-import {
-  BunCommandRunner,
-  withScratchDir,
-  type CommandRunner,
-  type EngineAvailability,
-} from "./exec.ts";
 import { decodeWav, float32ToPcm, type PcmAudio } from "./wav.ts";
 
 /**
@@ -271,7 +263,7 @@ export class SayTtsEngine implements TtsEngine {
   }
 
   async #render(text: string): Promise<PcmAudio> {
-    return withScratchDir("ompd-say-", async (dir) => {
+    return withScratchDir("ompd-say-", async dir => {
       const source = `${dir}/say.txt`;
       const out = `${dir}/say.wav`;
       await Bun.write(source, text);
@@ -280,9 +272,7 @@ export class SayTtsEngine implements TtsEngine {
       if (this.#voice) args.push("-v", this.#voice);
       const result = await this.#runner.run(this.#binary, args, { timeoutMs: this.#timeoutMs });
       if (result.code !== 0) {
-        throw new Error(
-          `${this.#binary} exited ${result.code}: ${result.stderr.trim() || "no stderr"}`,
-        );
+        throw new Error(`${this.#binary} exited ${result.code}: ${result.stderr.trim() || "no stderr"}`);
       }
 
       const wav = Bun.file(out);
@@ -320,6 +310,7 @@ export class NullTtsEngine implements TtsEngine {
   }
 
   /** Fails on the first pull rather than yielding silence that looks like success. */
+  // biome-ignore lint/correctness/useYield: must stay an async generator to satisfy TtsEngine.stream's AsyncIterable<PcmAudio> signature; it always throws before a first yield by design.
   async *stream(_segments: Iterable<string>): AsyncIterable<PcmAudio> {
     throw new TtsUnavailableError(this.#describe());
   }

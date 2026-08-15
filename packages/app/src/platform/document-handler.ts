@@ -9,7 +9,7 @@
  */
 
 import type { AgentId, SessionSummary } from "@ompd/core/contracts";
-import { OmpSessionFormatError, parseOmpSession, type OmpSessionContainer } from "@ompd/core/handoff-container";
+import { type OmpSessionContainer, OmpSessionFormatError, parseOmpSession } from "@ompd/core/handoff-container";
 import type { Connection } from "./connection.ts";
 
 export interface OpenedDocument {
@@ -76,7 +76,7 @@ export async function bootOpenedOmpSession(deps: OmpSessionBootDependencies): Pr
     return { status: "daemon-mismatch", daemonHint: handoff.daemonHint };
   }
 
-  const session = (await deps.listSessions(connection)).find((candidate) => candidate.id === handoff.sessionId);
+  const session = (await deps.listSessions(connection)).find(candidate => candidate.id === handoff.sessionId);
   if (session?.status !== "live-ompd" || session.agentId === undefined) {
     return { status: "session-unavailable", sessionId: handoff.sessionId };
   }
@@ -91,7 +91,6 @@ export function isOmpSessionDocument(name: string): boolean {
   const path = pathFromDocumentName(name);
   return path.toLocaleLowerCase().endsWith(".ompsession");
 }
-
 
 function pathFromDocumentName(name: string): string {
   try {

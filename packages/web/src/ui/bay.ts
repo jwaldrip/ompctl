@@ -150,7 +150,7 @@ export function createBay(options: BayOptions): BayView {
       return Date.parse(right.lastActiveAt) - Date.parse(left.lastActiveAt);
     });
 
-    order = ordered.map((agent) => agent.id);
+    order = ordered.map(agent => agent.id);
     const live = new Set<AgentId>(order);
     const rows: HTMLElement[] = [];
     for (const agent of ordered) {

@@ -18,7 +18,7 @@ export interface AgentHubView {
  * a live worker from the operator's view.
  */
 export function agentHubTree(agents: readonly Agent[]): AgentHubNode[] {
-  const byId = new Map(agents.map((agent) => [agent.id, { agent, children: [] as AgentHubNode[] }]));
+  const byId = new Map(agents.map(agent => [agent.id, { agent, children: [] as AgentHubNode[] }]));
   const roots: AgentHubNode[] = [];
   const attached = new Set<string>();
 
@@ -42,18 +42,13 @@ export function agentHubTree(agents: readonly Agent[]): AgentHubNode[] {
   return roots;
 }
 
-function createsCycle(
-  node: AgentHubNode,
-  parent: AgentHubNode,
-  byId: ReadonlyMap<string, AgentHubNode>,
-): boolean {
+function createsCycle(node: AgentHubNode, parent: AgentHubNode, byId: ReadonlyMap<string, AgentHubNode>): boolean {
   const lineage = new Set([node.agent.id]);
   let ancestor: AgentHubNode | undefined = parent;
   while (ancestor !== undefined) {
     if (lineage.has(ancestor.agent.id)) return true;
     lineage.add(ancestor.agent.id);
-    ancestor =
-      ancestor.agent.parentAgentId === undefined ? undefined : byId.get(ancestor.agent.parentAgentId);
+    ancestor = ancestor.agent.parentAgentId === undefined ? undefined : byId.get(ancestor.agent.parentAgentId);
   }
   return false;
 }
@@ -86,7 +81,7 @@ export function createAgentHub(): AgentHubView {
     setText(count, String(latest.length));
     empty.hidden = tree.length > 0;
     list.hidden = tree.length === 0;
-    list.replaceChildren(...tree.map((node) => branch(node, 1)));
+    list.replaceChildren(...tree.map(node => branch(node, 1)));
   }
 
   return {
@@ -123,7 +118,7 @@ function branch(node: AgentHubNode, level: number): HTMLLIElement {
       : [
           el("ol", {
             class: "agent-hub-children",
-            children: node.children.map((child) => branch(child, level + 1)),
+            children: node.children.map(child => branch(child, level + 1)),
           }),
         ];
   const item = el("li", {
@@ -148,4 +143,3 @@ function formatRuntime(durationMs: number): string {
   if (minutes > 0) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
   return `${seconds}s`;
 }
-

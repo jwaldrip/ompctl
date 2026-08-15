@@ -34,7 +34,7 @@
  * refusing to decode does not.
  */
 
-import { existsSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
+import { type Dirent, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 

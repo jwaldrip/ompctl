@@ -9,12 +9,12 @@
 
 import type { JSX } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import type { SessionGroup } from "../session/browser.ts";
-import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 import { shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { Data, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import type { SessionGroup } from "../session/browser.ts";
+import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 
 export interface GroupHeaderProps {
   group: SessionGroup;

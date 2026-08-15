@@ -63,8 +63,11 @@ export class CollabVoiceQueue {
     if (this.#playing) return;
     this.#playing = true;
     try {
-      let frame: CollabVoiceNoteFrame | undefined;
-      while ((frame = this.#pending.shift()) !== undefined) await this.#player.play(frame);
+      let frame = this.#pending.shift();
+      while (frame !== undefined) {
+        await this.#player.play(frame);
+        frame = this.#pending.shift();
+      }
     } finally {
       this.#playing = false;
       if (this.#pending.length > 0) {

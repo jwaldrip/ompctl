@@ -20,8 +20,6 @@
 import type { JSX } from "react";
 import { useMemo } from "react";
 import { FlatList, Pressable, SectionList, StyleSheet, View } from "react-native";
-import type { BrowserSession, BrowserState, SortField } from "../session/browser.ts";
-import { browserView } from "../session/browser.ts";
 import { GroupHeader } from "../components/GroupHeader.tsx";
 import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
@@ -29,6 +27,8 @@ import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import type { BrowserSession, BrowserState, SortField } from "../session/browser.ts";
+import { browserView } from "../session/browser.ts";
 
 export interface FleetScreenProps {
   browser: BrowserState;
@@ -113,7 +113,7 @@ export function FleetScreen({
       {browser.grouped ? (
         <SectionList
           testID="fleet-list"
-          sections={view.groups.map((group) => ({
+          sections={view.groups.map(group => ({
             cwd: group.cwd,
             group,
             data: browser.collapsedGroups.has(group.cwd) ? [] : group.sessions,
@@ -144,7 +144,7 @@ export function FleetScreen({
         <FlatList
           testID="fleet-list"
           data={view.flatSessions as BrowserSession[]}
-          keyExtractor={(session) => session.id}
+          keyExtractor={session => session.id}
           renderItem={({ item }) => (
             <SessionRow
               session={item}

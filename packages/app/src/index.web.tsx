@@ -8,8 +8,8 @@
  */
 
 import { AppRegistry } from "react-native";
-import { App } from "./App.tsx";
 import { name } from "../app.json";
+import { App } from "./App.tsx";
 
 const root = document.getElementById("root");
 if (root === null) throw new Error("missing #root");

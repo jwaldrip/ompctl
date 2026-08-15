@@ -18,18 +18,18 @@
  */
 
 import { createHash, timingSafeEqual } from "node:crypto";
+import { joinAssistantText, type PromptResult } from "@ompd/acp";
 import {
-  SCOPE_MANAGE,
-  SCOPE_PROMPT,
-  TERMINAL_AGENT_STATES,
   type Actor,
   type AgentId,
   type Routine,
   type Run,
+  SCOPE_MANAGE,
+  SCOPE_PROMPT,
   type Store,
+  TERMINAL_AGENT_STATES,
 } from "@ompd/core";
-import { joinAssistantText, type PromptResult } from "@ompd/acp";
-import { UnauthorizedError, type Supervisor } from "../supervisor.ts";
+import { type Supervisor, UnauthorizedError } from "../supervisor.ts";
 import { nextFireTime } from "./cron.ts";
 
 const DEFAULT_TICK_MS = 15_000;
@@ -107,9 +107,7 @@ interface Inflight {
  * so a bearer of an unrelated secret cannot use this endpoint as a routine
  * catalogue. The comparison still happens in all cases below.
  */
-export type WebhookFireResult =
-  | { accepted: true; run: Run }
-  | { accepted: false; reason: "not_found" | "forbidden" };
+export type WebhookFireResult = { accepted: true; run: Run } | { accepted: false; reason: "not_found" | "forbidden" };
 
 const WEBHOOK_DUMMY_HASH = createHash("sha256").update("ompd webhook dummy").digest("hex");
 
@@ -202,7 +200,7 @@ export class Scheduler {
     // notification, so this waits only on the writes, and one host refusing its
     // write must not delay the next run's cancellation.
     await Promise.allSettled(
-      [...this.#inflight.values()].map((entry) => {
+      [...this.#inflight.values()].map(entry => {
         entry.interrupted = true;
         if (entry.run.agentId === undefined) return Promise.resolve();
         return this.#supervisor.cancel(entry.run.agentId, this.#actor);
@@ -213,9 +211,7 @@ export class Scheduler {
       const expiry = Promise.withResolvers<void>();
       const timer = setTimeout(() => expiry.resolve(), timeoutMs);
       try {
-        const settling = Promise.allSettled(
-          [...this.#inflight.values()].map((entry) => entry.finished),
-        );
+        const settling = Promise.allSettled([...this.#inflight.values()].map(entry => entry.finished));
         await Promise.race([settling, expiry.promise]);
       } finally {
         clearTimeout(timer);
@@ -300,7 +296,7 @@ export class Scheduler {
     // Each run is isolated: one throwing must not cancel its siblings, which
     // `Promise.all` would do on the first rejection.
     await Promise.all(
-      due.map(async (routine) => {
+      due.map(async routine => {
         try {
           await this.#execute(routine, this.#actor);
         } catch (err) {
@@ -326,21 +322,19 @@ export class Scheduler {
       }
     }
 
-    const routine = this.#store.listRoutines().find((r) => r.id === routineId);
+    const routine = this.#store.listRoutines().find(r => r.id === routineId);
     if (!routine) throw new Error(`unknown routine ${routineId}`);
     if (!routine.enabled) throw new Error(`routine ${routineId} is disabled`);
     return await this.#execute(routine, actor);
   }
-
 
   /**
    * Fire one webhook routine without introducing a device identity for an
    * external service. The per-routine secret is its complete authority.
    */
   async fireWebhook(routineId: string, presentedSecret: string): Promise<WebhookFireResult> {
-    const routine = this.#store.listRoutines().find((candidate) => candidate.id === routineId);
-    const secretRef =
-      routine?.trigger.kind === "webhook" ? routine.trigger.secretRef : WEBHOOK_DUMMY_SECRET_REF;
+    const routine = this.#store.listRoutines().find(candidate => candidate.id === routineId);
+    const secretRef = routine?.trigger.kind === "webhook" ? routine.trigger.secretRef : WEBHOOK_DUMMY_SECRET_REF;
     const secret = this.#store.getWebhookSecret(secretRef);
     const matched = webhookSecretMatches(presentedSecret, secret?.secretHash ?? null);
 
@@ -364,7 +358,6 @@ export class Scheduler {
     }
     return { accepted: true, run: await this.#execute(routine, this.#actor) };
   }
-
 
   /** Epoch ms of the next fire, or null for triggers the clock does not drive. */
   #nextDue(routine: Routine, fromMs: number): number | null {
@@ -515,11 +508,7 @@ export class Scheduler {
     this.#store.upsertRun(run);
   }
 
-  async #promptWithDeadline(
-    agentId: AgentId,
-    routine: Routine,
-    actor: Actor,
-  ): Promise<TurnOutcome> {
+  async #promptWithDeadline(agentId: AgentId, routine: Routine, actor: Actor): Promise<TurnOutcome> {
     const turn = this.#supervisor.prompt(agentId, routine.prompt, actor);
     const seconds = routine.timeoutSeconds;
     if (seconds === undefined || !(seconds > 0)) return { result: await turn };
@@ -550,9 +539,7 @@ export class Scheduler {
 
   /** Final assistant text for the run listing, falling back to the stop reason. */
   #summarize(agentId: AgentId, stopReason: string): string {
-    const joined = joinAssistantText(
-      this.#store.updatesSince(agentId, 0).map((record) => record.payload),
-    );
+    const joined = joinAssistantText(this.#store.updatesSince(agentId, 0).map(record => record.payload));
     if (joined.length === 0) return stopReason;
     if (joined.length <= SUMMARY_MAX_CHARS) return joined;
     return `${joined.slice(0, SUMMARY_MAX_CHARS)}...`;

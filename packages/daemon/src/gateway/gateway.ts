@@ -19,12 +19,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { extname, join, resolve, sep } from "node:path";
-import type { Server, ServerWebSocket } from "bun";
 import {
-  SCOPE_APPROVE,
-  SCOPE_MANAGE,
-  SCOPE_PROMPT,
-  SCOPE_READ,
   type Actor,
   type Agent,
   type AgentId,
@@ -38,6 +33,10 @@ import {
   type QueuedIntent,
   type Routine,
   type Run,
+  SCOPE_APPROVE,
+  SCOPE_MANAGE,
+  SCOPE_PROMPT,
+  SCOPE_READ,
   type ServerFrame,
   type SessionLiveStatus,
   type SessionQuery,
@@ -49,21 +48,22 @@ import {
   type WebViewAction,
   type WebViewActionResult,
 } from "@ompd/core";
+import type { Server, ServerWebSocket } from "bun";
+import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
+import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
-import { WEB_ASSETS, WEB_ASSETS_BUILT } from "../web-assets.ts";
 import {
   createAgentId,
-  Supervisor,
-  UnauthorizedError,
   type PendingApproval,
   type PendingPlanReview,
+  type Supervisor,
+  UnauthorizedError,
 } from "../supervisor.ts";
+import { WEB_ASSETS, WEB_ASSETS_BUILT } from "../web-assets.ts";
+import type { CreateTaskInput } from "../workspace/tasks.ts";
 import { DeviceAuth, PairingBacklogError, PairingError } from "./auth.ts";
 import type { GatewayEvents } from "./events.ts";
-import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
-import type { CreateTaskInput } from "../workspace/tasks.ts";
 import { TokenBucket } from "./ratelimit.ts";
-import { CollabRoomError, CollabRooms, type CollabConnection } from "../collab/rooms.ts";
 
 /**
  * Content types for the console's asset kinds.
@@ -122,13 +122,7 @@ function isWebViewActionResult(value: unknown): value is WebViewActionResult {
 }
 
 const SESSION_STATUSES: readonly SessionLiveStatus[] = ["live-tui", "live-ompd", "dormant", "archived"];
-const SESSION_SORT_KEYS: readonly SessionSortKey[] = [
-  "status",
-  "age",
-  "lastActivity",
-  "messageCount",
-  "size",
-];
+const SESSION_SORT_KEYS: readonly SessionSortKey[] = ["status", "age", "lastActivity", "messageCount", "size"];
 const SESSION_SORT_DIRS: readonly SessionSortDir[] = ["asc", "desc"];
 
 /**
@@ -144,8 +138,8 @@ function parseSessionQuery(url: URL): { query: SessionQuery } | { error: string 
   if (statusParam) {
     const requested = statusParam
       .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
     for (const s of requested) {
       if (!SESSION_STATUSES.includes(s as SessionLiveStatus)) {
         return { error: `unknown status "${s}", expected one of ${SESSION_STATUSES.join(", ")}` };
@@ -220,10 +214,7 @@ export interface VoiceHandler {
  * should still be spoken to, and a desktop attached to the same agent is a
  * different device and should not be.
  */
-export type VoiceHandlerFactory = (
-  send: (frame: ServerFrame) => void,
-  actor: Actor,
-) => VoiceHandler;
+export type VoiceHandlerFactory = (send: (frame: ServerFrame) => void, actor: Actor) => VoiceHandler;
 
 /**
  * The slice of the scheduler the gateway needs, declared structurally for the
@@ -296,8 +287,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hasForbiddenSyncField(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(hasForbiddenSyncField);
   if (!isRecord(value)) return false;
-  return Object.entries(value).some(([key, child]) =>
-    (key !== "secretRef" && FORBIDDEN_SYNC_KEY.test(key)) || hasForbiddenSyncField(child),
+  return Object.entries(value).some(
+    ([key, child]) => (key !== "secretRef" && FORBIDDEN_SYNC_KEY.test(key)) || hasForbiddenSyncField(child),
   );
 }
 
@@ -308,15 +299,19 @@ function isTrigger(value: unknown): value is Routine["trigger"] {
     case "manual":
       return keys.length === 1;
     case "interval":
-      return keys.every((key) => key === "kind" || key === "seconds") &&
+      return (
+        keys.every(key => key === "kind" || key === "seconds") &&
         typeof value.seconds === "number" &&
-        Number.isFinite(value.seconds);
+        Number.isFinite(value.seconds)
+      );
     case "cron":
-      return keys.every((key) => key === "kind" || key === "expression" || key === "timezone") &&
+      return (
+        keys.every(key => key === "kind" || key === "expression" || key === "timezone") &&
         typeof value.expression === "string" &&
-        (value.timezone === undefined || typeof value.timezone === "string");
+        (value.timezone === undefined || typeof value.timezone === "string")
+      );
     case "webhook":
-      return keys.every((key) => key === "kind" || key === "secretRef") && typeof value.secretRef === "string";
+      return keys.every(key => key === "kind" || key === "secretRef") && typeof value.secretRef === "string";
     default:
       return false;
   }
@@ -326,7 +321,7 @@ function isSyncRoutine(value: unknown): value is SyncRoutine {
   if (
     !isRecord(value) ||
     hasForbiddenSyncField(value) ||
-    Object.keys(value).some((key) => SYNC_ROUTINE_KEYS[key] !== true)
+    Object.keys(value).some(key => SYNC_ROUTINE_KEYS[key] !== true)
   ) {
     return false;
   }
@@ -340,14 +335,14 @@ function isSyncRoutine(value: unknown): value is SyncRoutine {
     typeof value.singleton === "boolean" &&
     (value.timeoutSeconds === undefined || typeof value.timeoutSeconds === "number") &&
     isRecord(value.labels) &&
-    Object.values(value.labels).every((label) => typeof label === "string") &&
+    Object.values(value.labels).every(label => typeof label === "string") &&
     typeof value.createdAt === "string"
   );
 }
 
 function parseSyncDocument(value: unknown): SyncDocument | null {
   if (!isRecord(value) || hasForbiddenSyncField(value)) return null;
-  if (Object.keys(value).some((key) => SYNC_DOCUMENT_KEYS[key] !== true)) return null;
+  if (Object.keys(value).some(key => SYNC_DOCUMENT_KEYS[key] !== true)) return null;
   if (
     (value.policyMode !== "strict" && value.policyMode !== "standard" && value.policyMode !== "trusted") ||
     typeof value.keepAwake !== "boolean" ||
@@ -696,7 +691,7 @@ export class Gateway {
           if (ws.data.attached.has(agentId)) this.#deliverUpdate(ws, agentId, seq, update);
         }
       },
-      onAgentsChanged: (agents) => {
+      onAgentsChanged: agents => {
         // Attached sockets only, like the other two events. `hello` is what
         // does discovery; a socket watching no agent refreshes the list with
         // `GET /v1/agents` or by reconnecting, rather than being pushed to.
@@ -705,13 +700,13 @@ export class Gateway {
           if (ws.data.scopes.has(SCOPE_READ)) this.#send(ws, { t: "agents", agents });
         }
       },
-      onApprovalNeeded: (approval) => {
+      onApprovalNeeded: approval => {
         for (const ws of this.#sockets) {
           if (!ws.data.attached.has(approval.agentId)) continue;
           this.#deliverApproval(ws, approval);
         }
       },
-      onPlanReviewNeeded: (review) => {
+      onPlanReviewNeeded: review => {
         for (const ws of this.#sockets) {
           if (!ws.data.attached.has(review.agentId)) continue;
           this.#deliverPlanReview(ws, review);
@@ -719,7 +714,7 @@ export class Gateway {
       },
     });
 
-    this.#unsubscribeSay = this.#events?.addSayListener((event) => {
+    this.#unsubscribeSay = this.#events?.addSayListener(event => {
       for (const ws of this.#sockets) {
         // The same rule the other pushes follow: attached to that agent, and
         // holding read. Not a broadcast, and never to a socket that has not
@@ -740,7 +735,7 @@ export class Gateway {
     // supervisor call and so re-checks nothing. Dropping the connection closes
     // that gap, and it closes it for every transport at once rather than for
     // whichever one remembered to ask.
-    this.#unsubscribeRevoked = this.#auth.onRevoked((deviceId) => {
+    this.#unsubscribeRevoked = this.#auth.onRevoked(deviceId => {
       for (const ws of [...this.#sockets]) {
         if (ws.data.deviceId !== deviceId) continue;
         ws.data.revoked = true;
@@ -770,8 +765,7 @@ export class Gateway {
       },
       websocket: {
         open: (ws: ServerWebSocket<SocketState>) => this.#open(ws),
-        message: (ws: ServerWebSocket<SocketState>, message: string | Buffer) =>
-          this.#message(ws, message),
+        message: (ws: ServerWebSocket<SocketState>, message: string | Buffer) => this.#message(ws, message),
         close: (ws: ServerWebSocket<SocketState>) => this.#close(ws),
       },
     });
@@ -857,7 +851,7 @@ export class Gateway {
     return {
       ok: true,
       deviceId: verdict.actor.deviceId,
-      deliver: (raw) => {
+      deliver: raw => {
         this.#message(ws, raw);
       },
       close: () => {
@@ -926,7 +920,6 @@ export class Gateway {
     return this.#collab.publishAgentVoiceNote(roomId, agent, note);
   }
 
-
   /**
    * Dispatch an already policy-cleared action to the active WebView target.
    *
@@ -941,7 +934,6 @@ export class Gateway {
       ws.send(JSON.stringify({ t: "webview_action", agentId, requestId, action } satisfies ServerFrame));
       return true;
     } catch {
-
       this.#webviews.delete(agentId);
       return false;
     }
@@ -951,21 +943,13 @@ export class Gateway {
    * The webhook's secret is the only credential this path accepts. It is used
    * by both the loopback HTTP route and the outbound tunnel's local endpoint.
    */
-  async fireWebhook(
-    routineId: string,
-    secret: string,
-    _body?: Uint8Array,
-    _contentType?: string,
-  ): Promise<Response> {
+  async fireWebhook(routineId: string, secret: string, _body?: Uint8Array, _contentType?: string): Promise<Response> {
     const runner = this.#routines;
     if (!runner) return Response.json({ error: "routines_unavailable" }, { status: 503 });
 
     const result = await runner.fireWebhook(routineId, secret);
     if (!result.accepted) {
-      return Response.json(
-        { error: "webhook_refused" },
-        { status: result.reason === "forbidden" ? 403 : 404 },
-      );
+      return Response.json({ error: "webhook_refused" }, { status: result.reason === "forbidden" ? 403 : 404 });
     }
     return Response.json({ run: result.run }, { status: 202 });
   }
@@ -979,15 +963,12 @@ export class Gateway {
    * through this gateway but cannot execute until its owning delegate pulls it.
    */
   #queuesForDelegate(agentId: AgentId): boolean {
-    return this.#federation?.replica === true && this.#store.getAgent(agentId) !== null && !this.#sup.ownsAgent(agentId);
+    return (
+      this.#federation?.replica === true && this.#store.getAgent(agentId) !== null && !this.#sup.ownsAgent(agentId)
+    );
   }
 
-  #enqueueIntent(
-    agentId: AgentId,
-    actor: Actor,
-    action: QueuedIntent["action"],
-    payload: unknown,
-  ): QueuedIntent {
+  #enqueueIntent(agentId: AgentId, actor: Actor, action: QueuedIntent["action"], payload: unknown): QueuedIntent {
     return this.#store.enqueueQueuedIntent({
       id: `qi_${crypto.randomUUID().replace(/-/g, "")}`,
       agentId,
@@ -1032,7 +1013,7 @@ export class Gateway {
       } catch {
         return Response.json({ error: "bad_json" }, { status: 400 });
       }
-      if (!Array.isArray(body.ids) || !body.ids.every((id) => typeof id === "string" && id.length > 0)) {
+      if (!Array.isArray(body.ids) || !body.ids.every(id => typeof id === "string" && id.length > 0)) {
         return Response.json({ error: "ids must be a non-empty string array" }, { status: 400 });
       }
       return Response.json({ delivered: this.#store.markQueuedIntentsDelivered(body.ids) });
@@ -1125,11 +1106,7 @@ export class Gateway {
       return new Response("expected a websocket upgrade", { status: 426 });
     }
 
-    if (
-      path === "/v1/sync/intents" ||
-      path === "/v1/sync/intents/claim" ||
-      path === "/v1/sync/intents/ack"
-    ) {
+    if (path === "/v1/sync/intents" || path === "/v1/sync/intents/claim" || path === "/v1/sync/intents/ack") {
       return this.#syncIntents(req, path);
     }
 
@@ -1187,10 +1164,7 @@ export class Gateway {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
         }
-        return Response.json(
-          { error: err instanceof Error ? err.message : "agent creation failed" },
-          { status: 500 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "agent creation failed" }, { status: 500 });
       }
     }
 
@@ -1204,10 +1178,7 @@ export class Gateway {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
         }
-        return Response.json(
-          { error: err instanceof Error ? err.message : "stop failed" },
-          { status: 404 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "stop failed" }, { status: 404 });
       }
     }
 
@@ -1250,10 +1221,10 @@ export class Gateway {
       // Checked against what this session actually offers. Forwarding an
       // unknown mode would either be ignored or wedge the turn, and both look
       // like the daemon losing the request.
-      const known = sessions.configFor(sessionId)?.find((option) => option.id === MODE_OPTION_ID);
-      if (known && !known.options.some((choice) => choice.value === body.modeId)) {
+      const known = sessions.configFor(sessionId)?.find(option => option.id === MODE_OPTION_ID);
+      if (known && !known.options.some(choice => choice.value === body.modeId)) {
         return Response.json(
-          { error: "unknown_mode", known: known.options.map((choice) => choice.value) },
+          { error: "unknown_mode", known: known.options.map(choice => choice.value) },
           { status: 400 },
         );
       }
@@ -1265,10 +1236,7 @@ export class Gateway {
         const options = await sessions.setMode(sessionId, body.modeId);
         return Response.json({ agentId: agent.id, configOptions: options });
       } catch (err) {
-        return Response.json(
-          { error: err instanceof Error ? err.message : "set_mode failed" },
-          { status: 502 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "set_mode failed" }, { status: 502 });
       }
     }
 
@@ -1303,10 +1271,7 @@ export class Gateway {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
         }
-        return Response.json(
-          { error: err instanceof Error ? err.message : "prompt failed" },
-          { status: 404 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "prompt failed" }, { status: 404 });
       }
     }
 
@@ -1377,7 +1342,7 @@ export class Gateway {
       // than quietly clamped: an operator who asked for `manage` and got a
       // device without it would debug the wrong thing for a long time. The
       // code is not spent, so the right approver can still use it.
-      const missing = requested.filter((scope) => !scopes.has(scope));
+      const missing = requested.filter(scope => !scopes.has(scope));
       if (missing.length > 0) {
         return Response.json({ error: "scope_escalation", missing }, { status: 403 });
       }
@@ -1446,7 +1411,7 @@ export class Gateway {
         // hands the caller a working credential for the target, so without
         // this a device holding only `manage` could mint itself one holding
         // `approve` and answer its own tool approvals.
-        const missing = device.scopes.filter((scope) => !scopes.has(scope));
+        const missing = device.scopes.filter(scope => !scopes.has(scope));
         if (missing.length > 0) {
           return Response.json({ error: "scope_escalation", missing }, { status: 403 });
         }
@@ -1467,7 +1432,6 @@ export class Gateway {
         });
       } catch (err) {
         if (err instanceof PairingError) {
-
           return Response.json({ error: err.message }, { status: 404 });
         }
         throw err;
@@ -1477,7 +1441,7 @@ export class Gateway {
     const webhookSecret = /^\/v1\/routines\/([^/]+)\/webhook-secret$/.exec(path);
     if (webhookSecret && req.method === "POST") {
       if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
-      const routine = this.#store.listRoutines().find((candidate) => candidate.id === webhookSecret[1]);
+      const routine = this.#store.listRoutines().find(candidate => candidate.id === webhookSecret[1]);
       if (!routine) return Response.json({ error: "not_found" }, { status: 404 });
       if (routine.trigger.kind !== "webhook") {
         return Response.json({ error: "not_a_webhook_routine" }, { status: 400 });
@@ -1486,10 +1450,7 @@ export class Gateway {
       // Returned exactly once. The store receives only the digest, so neither
       // a restart nor another route can reveal this credential later.
       const secret = randomBytes(32).toString("base64url");
-      this.#store.upsertWebhookSecret(
-        routine.trigger.secretRef,
-        createHash("sha256").update(secret).digest("hex"),
-      );
+      this.#store.upsertWebhookSecret(routine.trigger.secretRef, createHash("sha256").update(secret).digest("hex"));
       return Response.json({ secret }, { status: 201 });
     }
 
@@ -1509,10 +1470,7 @@ export class Gateway {
           connectors: await connectors.list(),
         } satisfies SyncDocument);
       } catch (err) {
-        return Response.json(
-          { error: err instanceof Error ? err.message : "sync export failed" },
-          { status: 502 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "sync export failed" }, { status: 502 });
       }
     }
 
@@ -1537,10 +1495,7 @@ export class Gateway {
         }
         return Response.json({ ok: true, routines: document.routines.length });
       } catch (err) {
-        return Response.json(
-          { error: err instanceof Error ? err.message : "sync import failed" },
-          { status: 400 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "sync import failed" }, { status: 400 });
       }
     }
 
@@ -1565,10 +1520,7 @@ export class Gateway {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
         }
-        return Response.json(
-          { error: err instanceof Error ? err.message : "run failed" },
-          { status: 404 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "run failed" }, { status: 404 });
       }
     }
 
@@ -1581,10 +1533,7 @@ export class Gateway {
       try {
         return Response.json({ skills: await catalog.list(resolved.cwd) });
       } catch (err) {
-        return Response.json(
-          { error: err instanceof Error ? err.message : "skill discovery failed" },
-          { status: 502 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "skill discovery failed" }, { status: 502 });
       }
     }
 
@@ -1640,11 +1589,7 @@ export class Gateway {
       } catch {
         return Response.json({ error: "bad_json" }, { status: 400 });
       }
-      if (
-        typeof body.title !== "string" ||
-        typeof body.prompt !== "string" ||
-        typeof body.agentId !== "string"
-      ) {
+      if (typeof body.title !== "string" || typeof body.prompt !== "string" || typeof body.agentId !== "string") {
         return Response.json({ error: "title, prompt, and agentId are required" }, { status: 400 });
       }
       if (body.skillName !== undefined && typeof body.skillName !== "string") {
@@ -1666,10 +1611,7 @@ export class Gateway {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
         }
-        return Response.json(
-          { error: err instanceof Error ? err.message : "task creation failed" },
-          { status: 404 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "task creation failed" }, { status: 404 });
       }
     }
 
@@ -1688,10 +1630,7 @@ export class Gateway {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
         }
-        return Response.json(
-          { error: err instanceof Error ? err.message : "cancel failed" },
-          { status: 404 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "cancel failed" }, { status: 404 });
       }
     }
 
@@ -1728,10 +1667,7 @@ export class Gateway {
         const agent = await this.#takeOverLiveTui(sessionTakeoverRoute[1] ?? "", actor);
         return Response.json({ agent }, { status: 201 });
       } catch (err) {
-        return Response.json(
-          { error: err instanceof Error ? err.message : "TUI takeover failed" },
-          { status: 409 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "TUI takeover failed" }, { status: 409 });
       }
     }
 
@@ -1828,7 +1764,6 @@ export class Gateway {
     try {
       key = decodeURIComponent(pathname);
     } catch {
-
       // Malformed percent-encoding cannot name an embedded key.
       return null;
     }
@@ -1901,9 +1836,9 @@ export class Gateway {
     this.#sockets.add(ws);
     ws.data.collab = {
       actor: this.#actorOf(ws),
-      send: (frame) => this.#send(ws, frame),
+      send: frame => this.#send(ws, frame),
     };
-    if (this.#voice) ws.data.voice = this.#voice((frame) => this.#send(ws, frame), this.#actorOf(ws));
+    if (this.#voice) ws.data.voice = this.#voice(frame => this.#send(ws, frame), this.#actorOf(ws));
     this.#send(ws, {
       t: "hello",
       deviceId: ws.data.deviceId,
@@ -1946,7 +1881,6 @@ export class Gateway {
       if (target === ws) this.#unregisterWebView(agentId, ws);
     }
   }
-
 
   #message(ws: GatewaySocket, message: string | Buffer): void {
     if (ws.data.revoked) {
@@ -2005,7 +1939,12 @@ export class Gateway {
       // hostile or merely malformed frame must cost one error frame, no more.
       this.#send(ws, {
         t: "error",
-        code: err instanceof CollabRoomError ? err.code : err instanceof UnauthorizedError ? "unauthorized" : "frame_failed",
+        code:
+          err instanceof CollabRoomError
+            ? err.code
+            : err instanceof UnauthorizedError
+              ? "unauthorized"
+              : "frame_failed",
         message: err instanceof Error ? err.message : "frame handling failed",
       });
     }
@@ -2282,12 +2221,7 @@ export class Gateway {
         // client cannot name a device or a scope it does not hold. A false
         // return means unknown request or insufficient scope, and the pending
         // approval is left to policy and the timeout.
-        const accepted = this.#sup.decide(
-          frame.requestId,
-          frame.choice,
-          frame.scope ?? "once",
-          this.#actorOf(ws),
-        );
+        const accepted = this.#sup.decide(frame.requestId, frame.choice, frame.scope ?? "once", this.#actorOf(ws));
         if (!accepted) {
           this.#send(ws, {
             t: "error",
@@ -2397,12 +2331,7 @@ export class Gateway {
     return ws.data.collab;
   }
 
-  #deliverUpdate(
-    ws: GatewaySocket,
-    agentId: AgentId,
-    seq: number,
-    update: unknown,
-  ): void {
+  #deliverUpdate(ws: GatewaySocket, agentId: AgentId, seq: number, update: unknown): void {
     // The single choke point replay and live traffic share, so a frame the
     // socket already has can never be sent twice.
     const delivered = ws.data.delivered.get(agentId) ?? 0;
@@ -2420,10 +2349,7 @@ export class Gateway {
    * clears the agent's set, so a deliberate reattach can be shown the ask
    * again while a duplicate attach cannot.
    */
-  #deliverApproval(
-    ws: GatewaySocket,
-    approval: Omit<PendingApproval, "resolve">,
-  ): void {
+  #deliverApproval(ws: GatewaySocket, approval: Omit<PendingApproval, "resolve">): void {
     let sent = ws.data.approvals.get(approval.agentId);
     if (!sent) {
       sent = new Set<string>();

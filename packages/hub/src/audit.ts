@@ -52,12 +52,12 @@ export function consoleAudit(entry: HubAuditEntry): void {
 export class RecordingAudit {
   readonly entries: HubAuditEntry[] = [];
 
-  readonly record: HubAudit = (entry) => {
+  readonly record: HubAudit = entry => {
     this.entries.push(entry);
   };
 
   /** Entries matching an action, in order. */
   forAction(action: HubAuditAction): HubAuditEntry[] {
-    return this.entries.filter((entry) => entry.action === action);
+    return this.entries.filter(entry => entry.action === action);
   }
 }

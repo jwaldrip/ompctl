@@ -103,7 +103,7 @@ describe("InviteScreen: minting a second device's credential", () => {
     const approveCall = calls[1];
     expect(approveCall?.url).toBe("http://127.0.0.1:7777/v1/pairings/approve");
     expect(JSON.parse(String(approveCall?.init?.body))).toEqual({ code: "424242", scopes: ["read", "approve"] });
-    expect((approveCall?.init?.headers as Record<string, string>).Authorization).toBe("Bearer tok_owner");
+    expect((approveCall?.init?.headers as Record<string, string> | undefined)?.Authorization).toBe("Bearer tok_owner");
 
     expect(el(host, "invite-qr")).not.toBeNull();
     expect(el(host, "invite-error")).toBeNull();

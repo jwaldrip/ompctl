@@ -4,8 +4,9 @@
  * The supplied credential is used only for the target export. The local
  * import goes through `api`, which presents this daemon's own credential.
  */
-import { ApiError, api, type CliContext } from "../client.ts";
+
 import type { Command } from "../args.ts";
+import { ApiError, api, type CliContext } from "../client.ts";
 
 export async function syncConfigCommand(
   ctx: CliContext,

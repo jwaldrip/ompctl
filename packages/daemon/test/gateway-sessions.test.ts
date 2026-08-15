@@ -9,8 +9,8 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DefaultPolicy, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
-import { HostRegistry } from "../src/hosts.ts";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
+import { HostRegistry } from "../src/hosts.ts";
 import { SessionIndex } from "../src/sessions/index.ts";
 import { Supervisor } from "../src/supervisor.ts";
 import { createFakeHost } from "./fake-host.ts";
@@ -118,7 +118,7 @@ async function harness(opts: { withSessionIndex?: boolean } = {}): Promise<Harne
   return {
     base,
     gateway: gw,
-    pair: async (scopes) => {
+    pair: async scopes => {
       const res = await fetch(`${base}/v1/pair`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -152,7 +152,7 @@ describe("GET /v1/sessions", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { sessions: Array<{ id: string; flattenedDir: string }> };
     expect(body.sessions).toHaveLength(3);
-    expect(new Set(body.sessions.map((s) => s.flattenedDir))).toEqual(new Set(["-a", "-b"]));
+    expect(new Set(body.sessions.map(s => s.flattenedDir))).toEqual(new Set(["-a", "-b"]));
   });
 
   test("reports the feature off when no SessionIndex is wired in", async () => {
@@ -170,7 +170,7 @@ describe("GET /v1/sessions", () => {
     const body = (await res.json()) as { sessions: Array<{ id: string }> };
     // Newest-written (explicit mtime) first: default sort is lastActivity,
     // not createdAt, so this also proves the two are not conflated.
-    expect(body.sessions.map((s) => s.id)).toEqual([
+    expect(body.sessions.map(s => s.id)).toEqual([
       "cccccccc-0000-7000-0000-000000000003",
       "bbbbbbbb-0000-7000-0000-000000000002",
       "aaaaaaaa-0000-7000-0000-000000000001",
@@ -182,7 +182,7 @@ describe("GET /v1/sessions", () => {
     const token = await h.pair([SCOPE_READ]);
     const res = await h.http("/v1/sessions?sort=age&sortDir=asc", {}, token);
     const body = (await res.json()) as { sessions: Array<{ id: string }> };
-    expect(body.sessions.map((s) => s.id)).toEqual([
+    expect(body.sessions.map(s => s.id)).toEqual([
       "aaaaaaaa-0000-7000-0000-000000000001",
       "bbbbbbbb-0000-7000-0000-000000000002",
       "cccccccc-0000-7000-0000-000000000003",
@@ -202,7 +202,7 @@ describe("GET /v1/sessions", () => {
     const res = await h.http("/v1/sessions?cwd=-b", {}, token);
     const body = (await res.json()) as { sessions: Array<{ flattenedDir: string }> };
     expect(body.sessions).toHaveLength(2);
-    expect(body.sessions.every((s) => s.flattenedDir === "-b")).toBe(true);
+    expect(body.sessions.every(s => s.flattenedDir === "-b")).toBe(true);
   });
 });
 
@@ -221,7 +221,7 @@ describe("GET /v1/sessions/grouped", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { groups: Array<{ key: string; sessions: unknown[] }> };
     expect(body.groups).toHaveLength(2);
-    const byKey = new Map(body.groups.map((g) => [g.key, g.sessions.length]));
+    const byKey = new Map(body.groups.map(g => [g.key, g.sessions.length]));
     expect(byKey.get("-a")).toBe(1);
     expect(byKey.get("-b")).toBe(2);
   });
@@ -241,35 +241,27 @@ describe("POST /v1/sessions/:id/archive and /unarchive", () => {
     const h = await harness();
     const manageToken = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
 
-    const archiveRes = await h.http(
-      `/v1/sessions/${SESSION_ID}/archive`,
-      { method: "POST" },
-      manageToken,
-    );
+    const archiveRes = await h.http(`/v1/sessions/${SESSION_ID}/archive`, { method: "POST" }, manageToken);
     expect(archiveRes.status).toBe(200);
 
     const afterArchive = (await (await h.http("/v1/sessions", {}, manageToken)).json()) as {
       sessions: Array<{ id: string }>;
     };
-    expect(afterArchive.sessions.map((s) => s.id)).not.toContain(SESSION_ID);
+    expect(afterArchive.sessions.map(s => s.id)).not.toContain(SESSION_ID);
 
-    const withArchived = (await (
-      await h.http("/v1/sessions?includeArchived=true", {}, manageToken)
-    ).json()) as { sessions: Array<{ id: string; archived: boolean }> };
-    const row = withArchived.sessions.find((s) => s.id === SESSION_ID);
+    const withArchived = (await (await h.http("/v1/sessions?includeArchived=true", {}, manageToken)).json()) as {
+      sessions: Array<{ id: string; archived: boolean }>;
+    };
+    const row = withArchived.sessions.find(s => s.id === SESSION_ID);
     expect(row?.archived).toBe(true);
 
-    const unarchiveRes = await h.http(
-      `/v1/sessions/${SESSION_ID}/unarchive`,
-      { method: "POST" },
-      manageToken,
-    );
+    const unarchiveRes = await h.http(`/v1/sessions/${SESSION_ID}/unarchive`, { method: "POST" }, manageToken);
     expect(unarchiveRes.status).toBe(200);
 
     const afterUnarchive = (await (await h.http("/v1/sessions", {}, manageToken)).json()) as {
       sessions: Array<{ id: string }>;
     };
-    expect(afterUnarchive.sessions.map((s) => s.id)).toContain(SESSION_ID);
+    expect(afterUnarchive.sessions.map(s => s.id)).toContain(SESSION_ID);
   });
 });
 

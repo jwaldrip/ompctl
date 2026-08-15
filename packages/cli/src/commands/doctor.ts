@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { CONTAINER_RUNTIMES, loadConfig, OMPD_VERSION } from "@ompd/daemon";
-import { resolveBaseUrl, resolveToken, type CliContext } from "../client.ts";
+import { type CliContext, resolveBaseUrl, resolveToken } from "../client.ts";
 import { BINARY_NAME, findOnPath } from "../install.ts";
 import { PLIST_MARKER, plistPath, plistProgram } from "./service.ts";
 
@@ -60,17 +60,15 @@ export async function doctorCommand(ctx: CliContext): Promise<number> {
     for (const line of check.advice ?? []) ctx.out(`${" ".repeat(width + 7)}${line}`);
   }
 
-  const failed = checks.filter((check) => check.severity === "fail").length;
-  const warned = checks.filter((check) => check.severity === "warn").length;
+  const failed = checks.filter(check => check.severity === "fail").length;
+  const warned = checks.filter(check => check.severity === "warn").length;
 
   ctx.out("");
   if (failed === 0 && warned === 0) {
     ctx.out(`all ${checks.length} checks passed`);
     return 0;
   }
-  ctx.out(
-    `${checks.length - failed - warned} ok, ${warned} to look at, ${failed} broken`,
-  );
+  ctx.out(`${checks.length - failed - warned} ok, ${warned} to look at, ${failed} broken`);
   return failed === 0 ? 0 : 1;
 }
 
@@ -157,10 +155,7 @@ async function daemonCheck(ctx: CliContext): Promise<DaemonCheck> {
         label: "daemon",
         severity: "fail",
         detail: `nothing answered ${base}/v1/health`,
-        advice: [
-          "run: ompd start",
-          "already running elsewhere? point this shell at it with OMPD_URL",
-        ],
+        advice: ["run: ompd start", "already running elsewhere? point this shell at it with OMPD_URL"],
       },
     };
   }
@@ -303,10 +298,7 @@ function loginAgentCheck(ctx: CliContext): Check {
       label: "login agent",
       severity: "fail",
       detail: `installed, but it runs ${program}, which no longer exists`,
-      advice: [
-        "every login since that path went away has failed silently",
-        "run: ompd self-install && ompd install",
-      ],
+      advice: ["every login since that path went away has failed silently", "run: ompd self-install && ompd install"],
     };
   }
 
@@ -357,7 +349,7 @@ function stateCheck(ctx: CliContext): Check {
  */
 async function runtimeCheck(ctx: CliContext): Promise<Check> {
   const probes = await Promise.all(
-    CONTAINER_RUNTIMES.map(async (runtime) => {
+    CONTAINER_RUNTIMES.map(async runtime => {
       try {
         const result = await ctx.exec([runtime, "--version"]);
         return result.code === 0 ? runtime : null;

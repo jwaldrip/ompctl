@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Command } from "../args.ts";
 import type { CliContext } from "../client.ts";
-import { defaultPrefix, resolveProgram, type ProgramResolution } from "../install.ts";
+import { defaultPrefix, type ProgramResolution, resolveProgram } from "../install.ts";
 
 export const LAUNCHD_LABEL = "ai.ompctl";
 
@@ -52,11 +52,7 @@ export function plistPath(ctx: CliContext): string {
 }
 
 function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 /**
@@ -70,7 +66,7 @@ function escapeXml(value: string): string {
  */
 export function renderPlist(ctx: CliContext, program: ProgramResolution): string {
   const args = [...program.argv, "start", "--foreground"];
-  const argXml = args.map((arg) => `    <string>${escapeXml(arg)}</string>`).join("\n");
+  const argXml = args.map(arg => `    <string>${escapeXml(arg)}</string>`).join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -112,9 +108,7 @@ ${argXml}
 
 /** The program path a plist we wrote names, or null if it names none. */
 export function plistProgram(contents: string): string | null {
-  const match = new RegExp(
-    `<key>${PLIST_PROGRAM_KEY}</key>\\s*<string>([^<]*)</string>`,
-  ).exec(contents);
+  const match = new RegExp(`<key>${PLIST_PROGRAM_KEY}</key>\\s*<string>([^<]*)</string>`).exec(contents);
   return match?.[1] ?? null;
 }
 
@@ -148,10 +142,7 @@ function sourcePathMessage(program: ProgramResolution): string[] {
   ];
 }
 
-export async function installCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "install" }>,
-): Promise<number> {
+export async function installCommand(ctx: CliContext, cmd: Extract<Command, { kind: "install" }>): Promise<number> {
   const path = plistPath(ctx);
   const existing = inspectPlist(path);
 

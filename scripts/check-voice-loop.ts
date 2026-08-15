@@ -28,23 +28,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_STT_MODEL_KEY } from "@oh-my-pi/pi-coding-agent/stt/models";
 import { DEFAULT_TTS_LOCAL_MODEL_KEY } from "@oh-my-pi/pi-coding-agent/tts/models";
+import type { Actor, ServerFrame } from "@ompd/core";
 import { Ompd } from "../packages/daemon/src/daemon.ts";
 import {
   BunCommandRunner,
+  type EngineAvailability,
   encodeWav,
   OmpSttEngine,
   OmpTtsEngine,
+  type PcmAudio,
   pcmToBase64,
+  type SttEngine,
   selectSttEngine,
   selectTtsEngine,
   speakableSegments,
-  VoiceBridge,
-  type EngineAvailability,
-  type PcmAudio,
-  type SttEngine,
   type TtsEngine,
+  VoiceBridge,
 } from "../packages/daemon/src/voice/index.ts";
-import type { Actor, ServerFrame } from "@ompd/core";
 
 /**
  * Distinctive enough that a hallucinated transcript cannot accidentally match,
@@ -171,10 +171,7 @@ function withTrailingSilence(pcm: Int16Array, rate: number, ms: number): Int16Ar
  * it deliberately no longer has. Segment count is returned so stage 3 can
  * report that streaming actually happened.
  */
-async function renderUtterance(
-  engine: TtsEngine,
-  text: string,
-): Promise<PcmAudio & { segments: number }> {
+async function renderUtterance(engine: TtsEngine, text: string): Promise<PcmAudio & { segments: number }> {
   const chunks: PcmAudio[] = [];
   for await (const chunk of engine.stream(speakableSegments(text))) chunks.push(chunk);
   if (chunks.length === 0) throw new Error(`${engine.name} produced no audio for ${text}`);
@@ -205,7 +202,7 @@ function wordErrorRate(reference: string, hypothesis: string): number {
       .toLowerCase()
       .replace(/[^a-z0-9\s']/g, " ")
       .split(/\s+/)
-      .filter((word) => word.length > 0);
+      .filter(word => word.length > 0);
 
   const ref = normalise(reference);
   const hyp = normalise(hypothesis);
@@ -216,11 +213,7 @@ function wordErrorRate(reference: string, hypothesis: string): number {
     const current = [i, ...Array.from({ length: hyp.length }, () => 0)];
     for (let j = 1; j <= hyp.length; j += 1) {
       const cost = ref[i - 1] === hyp[j - 1] ? 0 : 1;
-      current[j] = Math.min(
-        (current[j - 1] ?? 0) + 1,
-        (previous[j] ?? 0) + 1,
-        (previous[j - 1] ?? 0) + cost,
-      );
+      current[j] = Math.min((current[j - 1] ?? 0) + 1, (previous[j] ?? 0) + 1, (previous[j - 1] ?? 0) + cost);
     }
     previous = current;
   }
@@ -249,10 +242,7 @@ interface MachineFacts {
  * is reported here as the reason, rather than crashing the diagnostic.
  */
 async function describeMachine(): Promise<MachineFacts> {
-  const [stt, tts] = await Promise.all([
-    new OmpSttEngine().probe(),
-    new OmpTtsEngine().probe(),
-  ]);
+  const [stt, tts] = await Promise.all([new OmpSttEngine().probe(), new OmpTtsEngine().probe()]);
 
   return {
     ompPresent: new BunCommandRunner().which("omp") !== null,
@@ -293,14 +283,14 @@ async function driveBridge(stt: SttEngine, tts: TtsEngine, pcm: Int16Array): Pro
   const logs: string[] = [];
   let handoff: Handoff | null = null;
   const bridge = new VoiceBridge({
-    send: (frame) => frames.push(frame),
+    send: frame => frames.push(frame),
     stt,
     tts,
     sampleRate: WIRE_RATE,
     onTranscript: (agentId, text, actor) => {
       handoff = { agentId, text, deviceId: actor.deviceId };
     },
-    onLog: (line) => logs.push(line),
+    onLog: line => logs.push(line),
   });
 
   const packet = (WIRE_RATE * PACKET_MS) / 1000;
@@ -310,10 +300,10 @@ async function driveBridge(stt: SttEngine, tts: TtsEngine, pcm: Int16Array): Pro
 
   // Only if the endpointer did not already fire. Reaching this means the VAD
   // failed to notice 1200ms of silence, which the stage reports as such.
-  const endedByVad = logs.some((line) => line.includes("endpointer"));
+  const endedByVad = logs.some(line => line.includes("endpointer"));
   if (!endedByVad) await bridge.endAudio(AGENT_ID, SPEAKER);
 
-  const transcript = frames.find((frame) => frame.t === "transcript");
+  const transcript = frames.find(frame => frame.t === "transcript");
   bridge.close();
 
   return {
@@ -361,7 +351,7 @@ async function driveSocket(home: string, spoken: string): Promise<SocketOutcome>
     home,
     overrides: { port: 0 },
     voice: true,
-    onLog: (line) => logs.push(line),
+    onLog: line => logs.push(line),
   });
 
   try {
@@ -425,7 +415,7 @@ async function driveSocket(home: string, spoken: string): Promise<SocketOutcome>
 
 const args = process.argv.slice(2);
 const flag = (name: string): string | null => {
-  const hit = args.find((arg) => arg.startsWith(`--${name}=`));
+  const hit = args.find(arg => arg.startsWith(`--${name}=`));
   return hit === undefined ? null : hit.slice(name.length + 3);
 };
 
@@ -448,14 +438,10 @@ try {
   // -- stage 2 --------------------------------------------------------------
   heading("stage 2: engine selection");
   const selectionLog: string[] = [];
-  const stt = await selectSttEngine({ onLog: (line) => selectionLog.push(line) });
-  const tts = await selectTtsEngine({ onLog: (line) => selectionLog.push(line) });
+  const stt = await selectSttEngine({ onLog: line => selectionLog.push(line) });
+  const tts = await selectTtsEngine({ onLog: line => selectionLog.push(line) });
   for (const line of selectionLog) console.log(line);
-  record(
-    "an stt engine other than null resolves",
-    stt.name !== "null",
-    `stt=${stt.name} tts=${tts.name}`,
-  );
+  record("an stt engine other than null resolves", stt.name !== "null", `stt=${stt.name} tts=${tts.name}`);
   if (stt.name === "null") {
     // Not a crash. A machine with nothing configured is a legitimate answer
     // this script is here to report, and a stack trace would make a known
@@ -475,7 +461,9 @@ try {
   console.log(`segments:    ${spoken.segments}`);
   console.log(`native rate: ${spoken.sampleRate}Hz, ${spoken.pcm.length} samples`);
   console.log(`wire rate:   ${WIRE_RATE}Hz, ${wire.length} samples`);
-  console.log(`utterance:   ${(utterance.length / WIRE_RATE).toFixed(2)}s including ${TRAILING_SILENCE_MS}ms of trailing silence`);
+  console.log(
+    `utterance:   ${(utterance.length / WIRE_RATE).toFixed(2)}s including ${TRAILING_SILENCE_MS}ms of trailing silence`,
+  );
   console.log(`wav:         ${wavPath}`);
   record(
     "tts produced real audio",
@@ -488,9 +476,13 @@ try {
   const bridge = await driveBridge(stt, tts, utterance);
   for (const line of bridge.logs) console.log(`log: ${line}`);
   for (const frame of bridge.frames) console.log(`frame: ${JSON.stringify(frame).slice(0, 300)}`);
-  record("vad ended the utterance", bridge.endedByVad, bridge.endedByVad
-    ? "the endpointer fired before audio_end was needed"
-    : "the endpointer never fired; audio_end had to force the flush");
+  record(
+    "vad ended the utterance",
+    bridge.endedByVad,
+    bridge.endedByVad
+      ? "the endpointer fired before audio_end was needed"
+      : "the endpointer never fired; audio_end had to force the flush",
+  );
 
   const bridgeWer = bridge.transcript === null ? 1 : wordErrorRate(sentence, bridge.transcript);
   console.log(`\nspoken:     ${JSON.stringify(sentence)}`);
@@ -561,7 +553,7 @@ heading("summary");
 for (const result of results) {
   console.log(`${result.status.padEnd(9)} ${result.name} -- ${result.detail}`);
 }
-const unprovenLegs = results.filter((result) => result.status === "UNPROVEN");
+const unprovenLegs = results.filter(result => result.status === "UNPROVEN");
 if (failed) {
   console.log("\nVOICE LOOP NOT PROVEN");
 } else if (unprovenLegs.length > 0) {

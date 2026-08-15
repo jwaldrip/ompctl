@@ -50,11 +50,7 @@ export class BunCommandRunner implements CommandRunner {
     return Bun.which(bin);
   }
 
-  async run(
-    bin: string,
-    args: readonly string[],
-    opts: { timeoutMs?: number } = {},
-  ): Promise<CommandResult> {
+  async run(bin: string, args: readonly string[], opts: { timeoutMs?: number } = {}): Promise<CommandResult> {
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const proc = Bun.spawn([bin, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
 
@@ -66,10 +62,7 @@ export class BunCommandRunner implements CommandRunner {
         proc.kill("SIGKILL");
         throw new CommandTimeoutError(bin, timeoutMs);
       }
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
+      const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
       return { code: outcome, stdout, stderr };
     } finally {
       clearTimeout(timer);

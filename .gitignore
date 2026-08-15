@@ -1,0 +1,37 @@
+# Dependencies
+node_modules
+.npm/
+
+# Build output
+dist/
+packages/*/dist/
+*.tsbuildinfo
+*.node
+
+# Environment
+.env
+
+# Editors
+.vscode/
+.zed/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+*.tmp
+*.bun-build
+.DS_Store
+
+# Logs
+*.log
+
+# Test & coverage
+coverage/
+.nyc_output/
+
+# Worktrees
+.worktrees/
+.worktree/
+.wt/

@@ -13,8 +13,8 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_READ, Store, type Device } from "@ompd/core";
-import { DeviceAuth, PairingError, hashToken } from "../src/gateway/auth.ts";
+import { type Device, SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_READ, Store } from "@ompd/core";
+import { DeviceAuth, hashToken, PairingError } from "../src/gateway/auth.ts";
 
 const paths: string[] = [];
 const stores: Store[] = [];

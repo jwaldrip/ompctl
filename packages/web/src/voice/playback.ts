@@ -151,7 +151,8 @@ export class SpeechPlayer {
   }
 
   async #render(samples: Float32Array): Promise<void> {
-    const sink = (this.#sink ??= this.#createSink());
+    this.#sink ??= this.#createSink();
+    const sink = this.#sink;
     // A context created before a user gesture starts suspended, and a
     // suspended context plays nothing while reporting no error at all.
     if (sink.state === "suspended") await sink.resume();

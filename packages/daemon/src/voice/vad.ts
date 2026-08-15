@@ -108,10 +108,7 @@ export function chunkFrames(pcm: Int16Array, sampleRate: number, frameMs = VAD_D
  * utterance that never began; without the second, a pause mid-sentence cuts
  * the speaker off.
  */
-export function detectUtteranceEndFromEnergies(
-  energies: readonly number[],
-  opts: VadOptions = {},
-): boolean {
+export function detectUtteranceEndFromEnergies(energies: readonly number[], opts: VadOptions = {}): boolean {
   const o = resolveVadOptions(opts);
   let inSpeech = false;
   let speechFrames = 0;

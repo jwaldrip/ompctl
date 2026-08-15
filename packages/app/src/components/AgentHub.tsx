@@ -1,6 +1,6 @@
+import type { Agent, AgentState } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { StyleSheet, View } from "react-native";
-import type { Agent, AgentState } from "@ompd/core/contracts";
 import { Body, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke } from "../design/tokens.ts";
 
@@ -15,13 +15,12 @@ export interface AgentHubNode {
  * sends the next coherent snapshot.
  */
 export function agentHubTree(agents: readonly Agent[]): AgentHubNode[] {
-  const byId = new Map(agents.map((agent) => [agent.id, { agent, children: [] as AgentHubNode[] }]));
+  const byId = new Map(agents.map(agent => [agent.id, { agent, children: [] as AgentHubNode[] }]));
   const roots: AgentHubNode[] = [];
   const attached = new Set<string>();
 
   for (const node of byId.values()) {
-    const parent =
-      node.agent.parentAgentId === undefined ? undefined : byId.get(node.agent.parentAgentId);
+    const parent = node.agent.parentAgentId === undefined ? undefined : byId.get(node.agent.parentAgentId);
     if (parent === undefined || parent === node || createsCycle(node, parent, byId)) continue;
     parent.children.push(node);
     attached.add(node.agent.id);
@@ -51,18 +50,13 @@ export interface AgentHubProps {
   testID?: string;
 }
 
-function createsCycle(
-  node: AgentHubNode,
-  parent: AgentHubNode,
-  byId: ReadonlyMap<string, AgentHubNode>,
-): boolean {
+function createsCycle(node: AgentHubNode, parent: AgentHubNode, byId: ReadonlyMap<string, AgentHubNode>): boolean {
   const lineage = new Set([node.agent.id]);
   let ancestor: AgentHubNode | undefined = parent;
   while (ancestor !== undefined) {
     if (lineage.has(ancestor.agent.id)) return true;
     lineage.add(ancestor.agent.id);
-    ancestor =
-      ancestor.agent.parentAgentId === undefined ? undefined : byId.get(ancestor.agent.parentAgentId);
+    ancestor = ancestor.agent.parentAgentId === undefined ? undefined : byId.get(ancestor.agent.parentAgentId);
   }
   return false;
 }
@@ -80,7 +74,7 @@ export function AgentHub({ agents, now = Date.now(), testID = "agent-hub" }: Age
           No subagents.
         </Body>
       ) : (
-        tree.map((node) => <AgentHubBranch key={node.agent.id} node={node} depth={0} now={now} />)
+        tree.map(node => <AgentHubBranch key={node.agent.id} node={node} depth={0} now={now} />)
       )}
     </View>
   );
@@ -91,7 +85,10 @@ function AgentHubBranch({ node, depth, now }: { node: AgentHubNode; depth: numbe
   const metrics = agent.metrics;
   const runtimeMs = metrics?.durationMs ?? Math.max(0, now - Date.parse(agent.createdAt));
   const status = statusSignal(agent.state);
-  const metricsLabel = metrics === undefined ? `runtime ${formatRuntime(runtimeMs)}` : `${metrics.usedTokens.toLocaleString()} tokens · ${formatRuntime(runtimeMs)}`;
+  const metricsLabel =
+    metrics === undefined
+      ? `runtime ${formatRuntime(runtimeMs)}`
+      : `${metrics.usedTokens.toLocaleString()} tokens · ${formatRuntime(runtimeMs)}`;
   const costLabel = metrics?.costAmount === undefined ? null : `cost ${metrics.costAmount.toFixed(4)}`;
 
   return (
@@ -110,7 +107,7 @@ function AgentHubBranch({ node, depth, now }: { node: AgentHubNode; depth: numbe
           </View>
         </View>
       </View>
-      {node.children.map((child) => (
+      {node.children.map(child => (
         <AgentHubBranch key={child.agent.id} node={child} depth={depth + 1} now={now} />
       ))}
     </View>
@@ -142,7 +139,12 @@ const styles = StyleSheet.create({
   },
   heading: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" },
   branch: { gap: space.tight },
-  nested: { marginLeft: space.wide, paddingLeft: space.snug, borderLeftWidth: stroke.hair, borderLeftColor: ground.edge },
+  nested: {
+    marginLeft: space.wide,
+    paddingLeft: space.snug,
+    borderLeftWidth: stroke.hair,
+    borderLeftColor: ground.edge,
+  },
   row: { flexDirection: "row", gap: space.snug, alignItems: "flex-start" },
   status: { minWidth: 64, paddingHorizontal: space.tight, paddingVertical: space.hair, alignItems: "center" },
   details: { flex: 1, gap: space.hair },

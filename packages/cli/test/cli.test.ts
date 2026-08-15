@@ -23,36 +23,22 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { parseCommand, USAGE, UsageError } from "../src/args.ts";
-import { resolveBaseUrl, TOKEN_GUIDANCE, type CliContext } from "../src/client.ts";
-import {
-  PLIST_MARKER,
-  PLIST_PROGRAM_KEY,
-  plistPath,
-  plistProgram,
-} from "../src/commands/service.ts";
-import { startupLines } from "../src/commands/daemon.ts";
-import { BINARY_MARKER, findCheckoutRoot } from "../src/install.ts";
 import { BUNDLE_PREFIX, parsePairingBundle } from "@ompd/core/pairing";
 import { homeIdFor, OMPD_VERSION, type Ompd } from "@ompd/daemon";
+import { parseCommand, USAGE, UsageError } from "../src/args.ts";
+import { type CliContext, resolveBaseUrl, TOKEN_GUIDANCE } from "../src/client.ts";
+import { startupLines } from "../src/commands/daemon.ts";
+import { PLIST_MARKER, PLIST_PROGRAM_KEY, plistPath, plistProgram } from "../src/commands/service.ts";
+import { BINARY_MARKER, findCheckoutRoot } from "../src/install.ts";
 import { run } from "../src/main.ts";
 
 /** `ProgramArguments`, as the strings launchd would exec. */
 function programArguments(plist: string): string[] {
   const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(plist);
-  return [...(array?.[1] ?? "").matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1] ?? "");
+  return [...(array?.[1] ?? "").matchAll(/<string>([^<]*)<\/string>/g)].map(m => m[1] ?? "");
 }
 
 const scratch: string[] = [];
@@ -74,12 +60,6 @@ interface Harness {
    * until after the harness exists.
    */
   setRoutes: (extra: Record<string, { status?: number; body: unknown }>) => void;
-}
-
-interface ExecResult {
-  code: number;
-  stdout: string;
-  stderr: string;
 }
 
 interface ExecResult {
@@ -114,8 +94,8 @@ function harness(opts: HarnessOptions = {}): Harness {
   const routes: Record<string, { status?: number; body: unknown }> = { ...opts.routes };
 
   const ctx: CliContext = {
-    out: (line) => out.push(line),
-    err: (line) => err.push(line),
+    out: line => out.push(line),
+    err: line => err.push(line),
     env: { OMPD_URL: "http://127.0.0.1:19999", HOME: home, ...opts.env },
     cwd: home,
     home,
@@ -139,7 +119,7 @@ function harness(opts: HarnessOptions = {}): Harness {
         headers: { "content-type": "application/json" },
       });
     },
-    exec: async (command) => {
+    exec: async command => {
       commands.push(command);
       return opts.onExec?.(command) ?? { code: opts.execCode ?? 0, stdout: "", stderr: "" };
     },
@@ -152,7 +132,7 @@ function harness(opts: HarnessOptions = {}): Harness {
     commands,
     stdout: () => out.join("\n"),
     stderr: () => err.join("\n"),
-    setRoutes: (extra) => Object.assign(routes, extra),
+    setRoutes: extra => Object.assign(routes, extra),
   };
 }
 
@@ -457,18 +437,12 @@ describe("argv parsing", () => {
 
   test("--image and --mounts require --container: naming a mount on a local agent is a usage error, not a silent no-op", () => {
     expect(() => parseCommand(["new", "/tmp/repo", "--image", "x"])).toThrow(/--image needs --container/);
-    expect(() => parseCommand(["new", "/tmp/repo", "--mounts", "/data"])).toThrow(
-      /--mounts needs --container/,
-    );
+    expect(() => parseCommand(["new", "/tmp/repo", "--mounts", "/data"])).toThrow(/--mounts needs --container/);
   });
 
   test("parseMounts rejects an unknown mode instead of guessing", () => {
-    expect(() => parseCommand(["new", "/tmp/repo", "--container", "--mounts", "/data:rx"])).toThrow(
-      /unknown mode/,
-    );
-    expect(() => parseCommand(["new", "/tmp/repo", "--container", "--mounts", ""])).toThrow(
-      /--mounts was empty/,
-    );
+    expect(() => parseCommand(["new", "/tmp/repo", "--container", "--mounts", "/data:rx"])).toThrow(/unknown mode/);
+    expect(() => parseCommand(["new", "/tmp/repo", "--container", "--mounts", ""])).toThrow(/--mounts was empty/);
   });
 
   test("rotate defaults to the caller's own credential", () => {
@@ -725,7 +699,7 @@ describe("approve", () => {
     const out = h.stdout();
     // Scannable ASCII art, not just the fallback text below it.
     expect(out).toContain("█");
-    const fallback = out.split("\n").find((line) => line.trim().startsWith(BUNDLE_PREFIX));
+    const fallback = out.split("\n").find(line => line.trim().startsWith(BUNDLE_PREFIX));
     expect(fallback).toBeDefined();
     expect(parsePairingBundle((fallback ?? "").trim())).toEqual({
       v: 1,
@@ -811,7 +785,7 @@ describe("invite", () => {
     expect(await run(["invite", "phone", "--scopes", "read,prompt"], h.ctx)).toBe(0);
     const out = h.stdout();
     expect(out).toContain("█");
-    const fallback = out.split("\n").find((line) => line.trim().startsWith(BUNDLE_PREFIX));
+    const fallback = out.split("\n").find(line => line.trim().startsWith(BUNDLE_PREFIX));
     expect(fallback).toBeDefined();
     expect(parsePairingBundle((fallback ?? "").trim())).toEqual({
       v: 1,
@@ -1240,7 +1214,10 @@ describe("reads and writes over the API", () => {
                   kind: "container",
                   image: "ghcr.io/example/omp:1",
                   // The daemon fills in the default mode before handing this back.
-                  mounts: [{ hostPath: "/data", mode: "ro" }, { hostPath: "/tools", mode: "rw" }],
+                  mounts: [
+                    { hostPath: "/data", mode: "ro" },
+                    { hostPath: "/tools", mode: "rw" },
+                  ],
                 },
               },
               labels: {},
@@ -1343,7 +1320,7 @@ describe("reads and writes over the API", () => {
 
     await run(["revoke", "dev/1"], h.ctx);
     await run(["stop-agent", "agt/1"], h.ctx);
-    expect(h.calls.map((call) => call.url)).toEqual(["/v1/devices/dev%2F1", "/v1/agents/agt%2F1"]);
+    expect(h.calls.map(call => call.url)).toEqual(["/v1/devices/dev%2F1", "/v1/agents/agt%2F1"]);
   });
 
   test("prompt posts the text and prints only the stop reason", async () => {
@@ -1409,7 +1386,7 @@ describe("self-install", () => {
    * installed.
    */
   function compiler(version = "0.1.0"): (command: string[]) => ExecResult | undefined {
-    return (command) => {
+    return command => {
       if (command[1] === "build") {
         writeFileSync(String(command[4]), `binary bytes ${BINARY_MARKER} more bytes\n`);
         return { code: 0, stdout: "", stderr: "" };
@@ -1455,8 +1432,7 @@ describe("self-install", () => {
 
   test("a compile that fails leaves nothing behind", async () => {
     const h = harness({
-      onExec: (command) =>
-        command[1] === "build" ? { code: 1, stdout: "", stderr: "error: boom" } : undefined,
+      onExec: command => (command[1] === "build" ? { code: 1, stdout: "", stderr: "error: boom" } : undefined),
     });
 
     expect(await run(["self-install"], h.ctx)).toBe(1);
@@ -1608,8 +1584,7 @@ describe("doctor", () => {
 
   /** The installed binary answering `--version`, as a real one would. */
   function reportsVersion(version = OMPD_VERSION): (command: string[]) => ExecResult | undefined {
-    return (command) =>
-      command[1] === "--version" ? { code: 0, stdout: `${version}\n`, stderr: "" } : undefined;
+    return command => (command[1] === "--version" ? { code: 0, stdout: `${version}\n`, stderr: "" } : undefined);
   }
 
   function healthy(): NonNullable<HarnessOptions["routes"]> {

@@ -119,10 +119,7 @@ describe("SafeScreen", () => {
     const back = host.querySelector('[data-testid="session-back"]') as HTMLElement | null;
     expect(back).not.toBeNull();
     // Assistive tech must hear the destination, not just "back".
-    const accessible =
-      back?.getAttribute("aria-label") ??
-      back?.getAttribute("accessibilityLabel") ??
-      "";
+    const accessible = back?.getAttribute("aria-label") ?? back?.getAttribute("accessibilityLabel") ?? "";
     expect(accessible.toLowerCase()).toContain("sessions");
     act(() => {
       back?.click();

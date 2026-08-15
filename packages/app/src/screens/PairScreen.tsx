@@ -12,16 +12,16 @@
  * than guessing at it.
  */
 
+import { parseEndpoint } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useState } from "react";
 import { Pressable, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
-import { parseEndpoint } from "@ompd/core/pairing";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
+import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
 import { ScanScreen } from "./ScanScreen.tsx";
-import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 
 export function PairScreen({
   notice,
@@ -46,7 +46,7 @@ export function PairScreen({
     return (
       <ScanScreen
         onCancel={() => setScanning(false)}
-        onScanned={(connection) => {
+        onScanned={connection => {
           setScanning(false);
           onPair(connection);
         }}
@@ -70,8 +70,8 @@ export function PairScreen({
         )}
 
         <Body color={ink.plain}>
-          On the machine running the daemon: ompd pair for a code, then ompd approve that code. It prints
-          a token and the endpoints this device can reach. Paste both here.
+          On the machine running the daemon: ompd pair for a code, then ompd approve that code. It prints a token and
+          the endpoints this device can reach. Paste both here.
         </Body>
 
         <Pressable
@@ -111,7 +111,13 @@ export function PairScreen({
             onPair(
               endpoint.transport === "direct"
                 ? { transport: "direct", url: endpoint.url, token: trimmedToken, scopes: [] }
-                : { transport: "hub", hubUrl: endpoint.hubUrl, daemonId: endpoint.daemonId, token: trimmedToken, scopes: [] },
+                : {
+                    transport: "hub",
+                    hubUrl: endpoint.hubUrl,
+                    daemonId: endpoint.daemonId,
+                    token: trimmedToken,
+                    scopes: [],
+                  },
             );
           }}
           style={({ pressed }) => [

@@ -12,15 +12,15 @@ import { describe, expect, test } from "bun:test";
 import {
   BUNDLE_PREFIX,
   describeEndpoint,
+  type Endpoint,
   encodeEndpoint,
   encodePairingBundle,
   isHubUrl,
   isSocketUrl,
   normalizeHubUrl,
+  type PairingBundle,
   parseEndpoint,
   parsePairingBundle,
-  type Endpoint,
-  type PairingBundle,
 } from "../src/index.ts";
 
 describe("parseEndpoint: what may become a connection", () => {
@@ -145,7 +145,12 @@ describe("parsePairingBundle: the door a scanned or pasted QR comes through", ()
   const bundle: PairingBundle = {
     v: 1,
     label: "Jason's iPad",
-    connection: { transport: "direct", url: "ws://10.4.1.221:7777/v1/socket", token: "secret-token", scopes: ["read", "prompt"] },
+    connection: {
+      transport: "direct",
+      url: "ws://10.4.1.221:7777/v1/socket",
+      token: "secret-token",
+      scopes: ["read", "prompt"],
+    },
   };
 
   test("a bundle round-trips through encode and parse", () => {
@@ -156,7 +161,13 @@ describe("parsePairingBundle: the door a scanned or pasted QR comes through", ()
     const hubBundle: PairingBundle = {
       v: 1,
       label: "laptop",
-      connection: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: "abc123", token: "t", scopes: ["read"] },
+      connection: {
+        transport: "hub",
+        hubUrl: "wss://hub.example.com",
+        daemonId: "abc123",
+        token: "t",
+        scopes: ["read"],
+      },
     };
     expect(parsePairingBundle(encodePairingBundle(hubBundle))).toEqual(hubBundle);
   });

@@ -43,7 +43,7 @@ const proc = Bun.spawn(["omp", ...args], {
 
 const enc = new TextEncoder();
 const send = (o: unknown): void => {
-  proc.stdin.write(enc.encode(JSON.stringify(o) + "\n"));
+  proc.stdin.write(enc.encode(`${JSON.stringify(o)}\n`));
   void proc.stdin.flush();
 };
 
@@ -54,7 +54,7 @@ const expect = (id: number | string, ms: number): Promise<Frame | null> => {
     waiters.delete(id);
     resolve(null);
   }, ms);
-  waiters.set(id, (f) => {
+  waiters.set(id, f => {
     clearTimeout(t);
     waiters.delete(id);
     resolve(f);
@@ -81,8 +81,9 @@ void (async () => {
     const { value, done } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
+    for (;;) {
+      const nl = buf.indexOf("\n");
+      if (nl < 0) break;
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
       if (!line) continue;

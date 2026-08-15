@@ -20,20 +20,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { AcpClient, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
-import { Store, type HostKind, type HostMount, type HostSpec } from "@ompd/core";
+import { type HostKind, type HostMount, type HostSpec, Store } from "@ompd/core";
 import {
   CloudBackend,
-  ContainerBackend,
-  detectContainerRuntime,
-  HostProvisioner,
-  LocalBackend,
-  ProvisionError,
-  renderGateWrapper,
   type CloudDriver,
   type CloudMachine,
   type CommandRunner,
+  ContainerBackend,
+  detectContainerRuntime,
   type HostHandle,
+  HostProvisioner,
+  LocalBackend,
+  ProvisionError,
   type ProvisionerBackend,
+  renderGateWrapper,
   type SpawnHost,
 } from "../src/provisioner/index.ts";
 
@@ -45,7 +45,11 @@ const cleanups: Array<() => void> = [];
 const closables: HostProvisioner[] = [];
 
 afterEach(async () => {
-  while (closables.length) await closables.pop()?.close().catch(() => undefined);
+  while (closables.length)
+    await closables
+      .pop()
+      ?.close()
+      .catch(() => undefined);
   while (cleanups.length) cleanups.pop()?.();
 });
 
@@ -96,7 +100,7 @@ function spawnRecorder(): SpawnRecorder {
   return {
     hosts,
     opts,
-    spawn: (o) => {
+    spawn: o => {
       opts.push(o);
       const host = new StubHost();
       hosts.push(host);
@@ -183,7 +187,7 @@ interface ContainerRunner {
 /** Stands in for a container runtime. Nothing is executed. */
 function containerRunner(containerId: string): ContainerRunner {
   const calls: string[][] = [];
-  const run: CommandRunner = async (argv) => {
+  const run: CommandRunner = async argv => {
     calls.push([...argv]);
     if (argv[1] === "run") return { code: 0, stdout: `${containerId}\n`, stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
@@ -234,11 +238,7 @@ describe("dispatch", () => {
     expect(local.provisioned).toHaveLength(1);
     expect(container.provisioned).toHaveLength(1);
 
-    expect((await prov.list()).map((h) => h.ref.kind).sort()).toEqual([
-      "cloud",
-      "container",
-      "local",
-    ]);
+    expect((await prov.list()).map(h => h.ref.kind).sort()).toEqual(["cloud", "container", "local"]);
   });
 
   test("an unknown kind fails and never falls back to local", async () => {
@@ -254,7 +254,7 @@ describe("dispatch", () => {
     expect(recorder.hosts).toHaveLength(0);
     expect(await prov.list()).toHaveLength(0);
 
-    const failures = store.listAudit().filter((e) => e.action === "host.provision");
+    const failures = store.listAudit().filter(e => e.action === "host.provision");
     expect(failures).toHaveLength(1);
     expect(failures[0]?.outcome).toBe("error");
     expect(failures[0]?.detail.kind).toBe("quantum");
@@ -267,9 +267,7 @@ describe("dispatch", () => {
     const prov = new HostProvisioner({ store, backends: { local } });
     closables.push(prov);
 
-    await expect(prov.provision({ kind: "cloud", ttlSeconds: 60 })).rejects.toThrow(
-      /no backend for host kind "cloud"/,
-    );
+    await expect(prov.provision({ kind: "cloud", ttlSeconds: 60 })).rejects.toThrow(/no backend for host kind "cloud"/);
     expect(local.provisioned).toHaveLength(0);
     expect(await prov.list()).toHaveLength(0);
   });
@@ -285,9 +283,9 @@ describe("dispatch", () => {
     await expect(prov.provision({ kind: "cloud" })).rejects.toThrow(/503/);
 
     expect(await prov.list()).toHaveLength(0);
-    const entries = store.listAudit().filter((e) => e.action === "host.provision");
+    const entries = store.listAudit().filter(e => e.action === "host.provision");
     expect(entries).toHaveLength(2);
-    expect(entries.every((e) => e.outcome === "error")).toBe(true);
+    expect(entries.every(e => e.outcome === "error")).toBe(true);
   });
 
   test("a machine that cannot be prepared is handed back, not leaked", async () => {
@@ -325,7 +323,7 @@ describe("lifetime", () => {
     expect(cloud.destroyed).toEqual([handle.ref.id]);
     expect(driver.destroyed).toEqual([handle.ref.id]);
     expect(await prov.list()).toHaveLength(0);
-    expect(store.listAudit().filter((e) => e.action === "host.destroy")).toHaveLength(1);
+    expect(store.listAudit().filter(e => e.action === "host.destroy")).toHaveLength(1);
   });
 
   test("destroy kills every connection it handed out", async () => {
@@ -344,7 +342,7 @@ describe("lifetime", () => {
     expect(recorder.hosts).toHaveLength(2);
 
     await prov.destroy(handle.ref.id);
-    expect(recorder.hosts.map((h) => h.killCount)).toEqual([1, 1]);
+    expect(recorder.hosts.map(h => h.killCount)).toEqual([1, 1]);
     expect(() => handle.spawn(SPAWN_OPTS)).toThrow(ProvisionError);
   });
 
@@ -386,28 +384,22 @@ describe("lifetime", () => {
     // A TTL measured from creation rather than last use would have taken the
     // jit host with it: it is 80s old and 40s idle.
     expect(driver.destroyed).toEqual([tripwire.ref.id]);
-    expect((await prov.list()).map((h) => h.ref.id).sort()).toEqual(
-      [permanent.ref.id, jit.ref.id].sort(),
-    );
+    expect((await prov.list()).map(h => h.ref.id).sort()).toEqual([permanent.ref.id, jit.ref.id].sort());
 
     clock += 60_001;
     await renewal.exited;
 
     expect(driver.destroyed).toEqual([tripwire.ref.id, jit.ref.id]);
-    expect((await prov.list()).map((h) => h.ref.id)).toEqual([permanent.ref.id]);
+    expect((await prov.list()).map(h => h.ref.id)).toEqual([permanent.ref.id]);
     expect(() => jit.spawn(SPAWN_OPTS)).toThrow(ProvisionError);
-    expect(recorder.hosts.every((h) => h.killCount === 1)).toBe(true);
+    expect(recorder.hosts.every(h => h.killCount === 1)).toBe(true);
 
     // A sweep's teardown finishes after the connection dies, so drain it
     // before reading the trail it writes. `close` is what waits on it.
     await prov.close();
-    const destroys = store
-      .listAudit()
-      .filter((e) => e.action === "host.destroy" && e.detail.reason === "ttl");
+    const destroys = store.listAudit().filter(e => e.action === "host.destroy" && e.detail.reason === "ttl");
     expect(destroys).toHaveLength(2);
-    expect(destroys.map((e) => e.detail.hostId).sort()).toEqual(
-      [jit.ref.id, tripwire.ref.id].sort(),
-    );
+    expect(destroys.map(e => e.detail.hostId).sort()).toEqual([jit.ref.id, tripwire.ref.id].sort());
   });
 });
 
@@ -418,7 +410,7 @@ describe("lifetime", () => {
 describe("detectContainerRuntime", () => {
   test("returns null when nothing is installed", async () => {
     const probed: string[] = [];
-    const run: CommandRunner = async (argv) => {
+    const run: CommandRunner = async argv => {
       probed.push(argv[0] ?? "");
       // A missing binary throws; an installed one that cannot answer exits non-zero.
       if (argv[0] === "podman") return { code: 127, stdout: "", stderr: "broken" };
@@ -430,7 +422,7 @@ describe("detectContainerRuntime", () => {
   });
 
   test("returns the first runtime that answers, in probe order", async () => {
-    const run: CommandRunner = async (argv) => {
+    const run: CommandRunner = async argv => {
       if (argv[0] === "docker") throw new ProvisionError("no docker here");
       return { code: 0, stdout: `${argv[0]} version 1.0\n`, stderr: "" };
     };
@@ -439,7 +431,7 @@ describe("detectContainerRuntime", () => {
 
   test("provisioning fails when no runtime is installed", async () => {
     const attempted: string[][] = [];
-    const run: CommandRunner = async (argv) => {
+    const run: CommandRunner = async argv => {
       attempted.push([...argv]);
       throw new ProvisionError("not installed");
     };
@@ -447,7 +439,7 @@ describe("detectContainerRuntime", () => {
 
     await expect(backend.provision({ kind: "container" })).rejects.toThrow(/no container runtime/);
     // Probes only. Nothing was created, so nothing needs reclaiming.
-    expect(attempted.every((argv) => argv[1] === "--version")).toBe(true);
+    expect(attempted.every(argv => argv[1] === "--version")).toBe(true);
   });
 });
 
@@ -509,9 +501,7 @@ describe("container hosts keep the approval gate", () => {
 
     // No --config reaching the far side means the host would inherit the
     // operator's global config, and a global `approvalMode: yolo` never asks.
-    expect(script).toContain(
-      `[ -n "$config" ] || fail 'refusing to start an ACP host with no --config overlay'`,
-    );
+    expect(script).toContain(`[ -n "$config" ] || fail 'refusing to start an ACP host with no --config overlay'`);
     expect(script).toContain("exit 78");
 
     await gate.backend.destroy(handle);
@@ -527,30 +517,14 @@ describe("container hosts keep the approval gate", () => {
     expect(script).toContain(`${exec} tee '${REMOTE_CONFIG}' < "$config" > /dev/null || fail`);
     expect(script).toContain(`${exec} chmod 600 '${REMOTE_CONFIG}' < /dev/null > /dev/null || fail`);
     // The verify step is what turns a partial or missing copy into a refusal.
-    expect(script).toContain(
-      `${exec} cat '${REMOTE_CONFIG}' < /dev/null | cmp -s - "$config" || fail`,
-    );
+    expect(script).toContain(`${exec} cat '${REMOTE_CONFIG}' < /dev/null | cmp -s - "$config" || fail`);
     // The rewritten flag, and only then the far-side omp.
     expect(script).toContain(`set -- "$@" --config '${REMOTE_CONFIG}'`);
     expect(script).toContain(`exec ${exec} /usr/local/bin/omp "$@"`);
 
     // The scratch directory is created and locked down before any of that.
-    expect(gate.calls).toContainEqual([
-      "docker",
-      "exec",
-      CONTAINER_ID,
-      "mkdir",
-      "-p",
-      `/far/ompd-${CONTAINER_ID}`,
-    ]);
-    expect(gate.calls).toContainEqual([
-      "docker",
-      "exec",
-      CONTAINER_ID,
-      "chmod",
-      "700",
-      `/far/ompd-${CONTAINER_ID}`,
-    ]);
+    expect(gate.calls).toContainEqual(["docker", "exec", CONTAINER_ID, "mkdir", "-p", `/far/ompd-${CONTAINER_ID}`]);
+    expect(gate.calls).toContainEqual(["docker", "exec", CONTAINER_ID, "chmod", "700", `/far/ompd-${CONTAINER_ID}`]);
 
     await gate.backend.destroy(handle);
   });
@@ -600,7 +574,7 @@ describe("the run command is shaped per runtime, not assumed docker", () => {
     const runner = containerRunner("cnt000000001");
     const backend = new ContainerBackend({ runtime, run: runner.run });
     return backend.provision({ kind: "container" }).then(() => {
-      const run = runner.calls.find((argv) => argv[1] === "run");
+      const run = runner.calls.find(argv => argv[1] === "run");
       if (run === undefined) throw new Error("no run call recorded");
       return run;
     });
@@ -675,7 +649,7 @@ describe("extra mounts", () => {
       kind: "container",
       mounts: [{ hostPath: "/data/shared" }, { hostPath: "/opt/tools", mode: "rw" }],
     });
-    const run = runner.calls.find((argv) => argv[1] === "run") ?? [];
+    const run = runner.calls.find(argv => argv[1] === "run") ?? [];
     expect(run).toContain("--volume");
     expect(run).toContain("/work/repo:/work/repo");
     expect(run).toContain("/data/shared:/data/shared:ro");
@@ -688,7 +662,7 @@ describe("extra mounts", () => {
       kind: "container",
       mounts: [{ hostPath: "/data/shared" }],
     });
-    const run = runner.calls.find((argv) => argv[1] === "run") ?? [];
+    const run = runner.calls.find(argv => argv[1] === "run") ?? [];
     expect(run).toContain("/data/shared:/data/shared:ro");
     expect(run).not.toContain("/data/shared:/data/shared:rw");
     // The effective set an operator reads back has the default filled in,
@@ -700,7 +674,7 @@ describe("extra mounts", () => {
   test("omitting mounts leaves the workspace volume exactly as it was", async () => {
     const { backend, runner } = harnessWithMounts();
     await backend.provision({ kind: "container" });
-    const run = runner.calls.find((argv) => argv[1] === "run") ?? [];
+    const run = runner.calls.find(argv => argv[1] === "run") ?? [];
     // Same two tokens, same lack of a mode suffix, as every caller that never
     // asked for an extra mount relied on before this feature existed.
     const volIndex = run.indexOf("--volume");
@@ -743,14 +717,12 @@ describe("extra mounts", () => {
       const prov = new HostProvisioner({ store, backends: { container: backend } });
       closables.push(prov);
 
-      await expect(
-        prov.provision({ kind: "container", mounts: [{ hostPath }] }),
-      ).rejects.toThrow(ProvisionError);
+      await expect(prov.provision({ kind: "container", mounts: [{ hostPath }] })).rejects.toThrow(ProvisionError);
 
       // Refused before anything was created: no network or run call at all.
       expect(runner.calls).toHaveLength(0);
 
-      const failures = store.listAudit().filter((e) => e.action === "host.provision");
+      const failures = store.listAudit().filter(e => e.action === "host.provision");
       expect(failures).toHaveLength(1);
       expect(failures[0]?.outcome).toBe("error");
       expect(String(failures[0]?.detail.reason)).toContain(hostPath);
@@ -759,9 +731,9 @@ describe("extra mounts", () => {
 
   test("a relative mount path is refused rather than guessed at", async () => {
     const { backend } = harnessWithMounts();
-    await expect(
-      backend.provision({ kind: "container", mounts: [{ hostPath: "relative/dir" }] }),
-    ).rejects.toThrow(/must be absolute/);
+    await expect(backend.provision({ kind: "container", mounts: [{ hostPath: "relative/dir" }] })).rejects.toThrow(
+      /must be absolute/,
+    );
   });
 
   test("a mount outside every protected root is accepted as written", async () => {

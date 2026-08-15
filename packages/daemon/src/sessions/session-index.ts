@@ -13,7 +13,6 @@
  */
 
 import type { Store } from "@ompd/core";
-import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import type {
   AgentId,
   SessionCwdScope,
@@ -24,14 +23,10 @@ import type {
   SessionSortKey,
   SessionSummary,
 } from "@ompd/core/contracts";
-import { decodeSessionDirName, type DecodedCwd } from "./cwd-codec.ts";
+import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
+import { type DecodedCwd, decodeSessionDirName } from "./cwd-codec.ts";
 import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
-import {
-  countMessages,
-  MESSAGE_COUNT_SIZE_CEILING_BYTES,
-  scanSessionFiles,
-  type RawSessionFile,
-} from "./scanner.ts";
+import { countMessages, MESSAGE_COUNT_SIZE_CEILING_BYTES, type RawSessionFile, scanSessionFiles } from "./scanner.ts";
 
 export interface SessionIndexOptions {
   store: Store;
@@ -162,14 +157,14 @@ export class SessionIndex {
   /** Query, filter, and sort the catalog. Archived sessions are excluded unless `includeArchived` is set. */
   query(q: SessionQuery = {}): SessionSummary[] {
     let rows = this.build();
-    if (!q.includeArchived) rows = rows.filter((r) => !r.archived);
+    if (!q.includeArchived) rows = rows.filter(r => !r.archived);
     if (q.status && q.status.length > 0) {
       const wanted = q.status;
-      rows = rows.filter((r) => wanted.includes(r.status));
+      rows = rows.filter(r => wanted.includes(r.status));
     }
     if (q.cwd !== undefined) {
       const wantedCwd = q.cwd;
-      rows = rows.filter((r) => r.cwd === wantedCwd || r.flattenedDir === wantedCwd);
+      rows = rows.filter(r => r.cwd === wantedCwd || r.flattenedDir === wantedCwd);
     }
     return sortSessions(rows, q.sort ?? "lastActivity", q.sortDir ?? "desc");
   }
@@ -218,11 +213,7 @@ function latestActivity(sessions: SessionSummary[]): string {
   return latest;
 }
 
-function sortSessions(
-  rows: SessionSummary[],
-  key: SessionSortKey,
-  dir: SessionSortDir,
-): SessionSummary[] {
+function sortSessions(rows: SessionSummary[], key: SessionSortKey, dir: SessionSortDir): SessionSummary[] {
   const sign = dir === "asc" ? 1 : -1;
   return [...rows].sort((a, b) => {
     switch (key) {

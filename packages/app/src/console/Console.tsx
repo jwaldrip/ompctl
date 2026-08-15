@@ -16,11 +16,11 @@ import { StyleSheet, View } from "react-native";
 import { AgentHub } from "../components/AgentHub.tsx";
 import { Toast } from "../components/Toast.tsx";
 import { useSplitLayout } from "../design/layout.ts";
-import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
 import { ground, stroke } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
 import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
+import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
 import { browserSessionsOf, fleetClearances, sessionFor } from "./state.ts";
 import { useConsole } from "./useConsole.ts";
 import { useHardwareBack } from "./useHardwareBack.ts";
@@ -45,7 +45,7 @@ export function Console({
   }, [state]);
 
   const clearances = useMemo(() => fleetClearances(state), [state]);
-  const agent = state.agents.find((candidate) => candidate.id === state.selected) ?? null;
+  const agent = state.agents.find(candidate => candidate.id === state.selected) ?? null;
 
   // Wide enough for both and nothing open is a hole rather than a choice, so
   // the top strip is taken once. Only once: an operator who backed out of a
@@ -54,7 +54,7 @@ export function Console({
   const didAutoSelect = useRef(false);
   useEffect(() => {
     if (!split || state.selected !== null || didAutoSelect.current) return;
-    const top = state.agents.find((candidate) => candidate.parentAgentId === undefined);
+    const top = state.agents.find(candidate => candidate.parentAgentId === undefined);
     if (top === undefined) return;
     didAutoSelect.current = true;
     actions.select(top.id);
@@ -67,14 +67,14 @@ export function Console({
 
   const bay = (
     <View style={split ? styles.splitBay : styles.bay}>
-      <AgentHub agents={state.agents.filter((candidate) => candidate.parentAgentId !== undefined)} />
+      <AgentHub agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)} />
       <View style={styles.fleet}>
         <FleetScreen
           browser={browser}
-          onSort={(field) => {
+          onSort={field => {
             dispatchBrowser({ t: "sort", field });
           }}
-          onToggleGroup={(cwd) => {
+          onToggleGroup={cwd => {
             dispatchBrowser({ t: "toggleGroup", cwd });
           }}
           onToggleGrouped={() => {
@@ -83,13 +83,13 @@ export function Console({
           onToggleArchived={() => {
             dispatchBrowser({ t: "toggleArchived" });
           }}
-          onTakeover={(session) => {
+          onTakeover={session => {
             actions.select(session.id);
           }}
-          onArchive={(session) => {
+          onArchive={session => {
             dispatchBrowser({ t: "archive", id: session.id });
           }}
-          onUnarchive={(session) => {
+          onUnarchive={session => {
             dispatchBrowser({ t: "unarchive", id: session.id });
           }}
         />
@@ -116,7 +116,7 @@ export function Console({
         spoken={state.spoken.get(agent.id)?.text ?? null}
         fleetClearances={clearances}
         onBack={actions.back}
-        onSubmit={(text) => {
+        onSubmit={text => {
           actions.prompt(agent.id, text);
         }}
         onCancel={() => {

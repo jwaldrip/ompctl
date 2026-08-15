@@ -10,23 +10,9 @@
 import { existsSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describeEndpoint, type EndpointOffer } from "@ompd/core/pairing";
-import {
-  endpointPath,
-  ensureHome,
-  homeIdFor,
-  loadConfig,
-  Ompd,
-  type OmpdOptions,
-} from "@ompd/daemon";
+import { endpointPath, ensureHome, homeIdFor, loadConfig, Ompd, type OmpdOptions } from "@ompd/daemon";
 import type { Command } from "../args.ts";
-import {
-  api,
-  readEndpoint,
-  resolveBaseUrl,
-  resolveToken,
-  TOKEN_GUIDANCE,
-  type CliContext,
-} from "../client.ts";
+import { api, type CliContext, readEndpoint, resolveBaseUrl, resolveToken, TOKEN_GUIDANCE } from "../client.ts";
 import { duration } from "../format.ts";
 import { selfExec } from "../install.ts";
 import { fetchEndpointOffers } from "./devices.ts";
@@ -83,9 +69,7 @@ async function probe(ctx: CliContext, base: string): Promise<Liveness> {
   } catch {
     return { kind: "none" };
   }
-  return body.homeId === homeIdFor(ctx.home)
-    ? { kind: "ours", health: body }
-    : { kind: "foreign", health: body };
+  return body.homeId === homeIdFor(ctx.home) ? { kind: "ours", health: body } : { kind: "foreign", health: body };
 }
 
 /** True once something answers `/v1/health` at `base`, whoever it belongs to. */
@@ -108,8 +92,8 @@ async function health(ctx: CliContext, base: string): Promise<HealthResponse | n
  * on the bind address, and the security sentence follows what that set says.
  */
 function pairingInstructions(url: string, tokenPath: string, offers: readonly EndpointOffer[]): string[] {
-  const sameNetwork = offers.filter((offer) => offer.reach === "same-network");
-  const anywhere = offers.filter((offer) => offer.reach === "anywhere");
+  const sameNetwork = offers.filter(offer => offer.reach === "same-network");
+  const anywhere = offers.filter(offer => offer.reach === "anywhere");
   const lines = [
     `  bound at     ${url} (the address it listens on, not necessarily one to open)`,
     `  token        ${tokenPath} (local operator, mode 0600)`,
@@ -135,7 +119,7 @@ function pairingInstructions(url: string, tokenPath: string, offers: readonly En
   if (sameNetwork.length > 0) {
     lines.push(
       "  Reachable from this network at:",
-      ...sameNetwork.map((offer) => `    ${describeEndpoint(offer.endpoint)}`),
+      ...sameNetwork.map(offer => `    ${describeEndpoint(offer.endpoint)}`),
       "  Anything that can reach those addresses can ask this daemon to run code as",
       "  you, and only a paired token stands in front of it.",
     );
@@ -143,7 +127,7 @@ function pairingInstructions(url: string, tokenPath: string, offers: readonly En
   if (anywhere.length > 0) {
     lines.push(
       "  Reachable from anywhere through:",
-      ...anywhere.map((offer) => `    ${describeEndpoint(offer.endpoint)}`),
+      ...anywhere.map(offer => `    ${describeEndpoint(offer.endpoint)}`),
     );
   }
   return lines;
@@ -160,7 +144,7 @@ export async function startCommand(ctx: CliContext, cmd: Extract<Command, { kind
     home: ctx.home,
     overrides,
     repoRoot: ctx.cwd,
-    onLog: (line) => ctx.out(line),
+    onLog: line => ctx.out(line),
   });
 
   // Armed before starting, not after. Startup probes speech engines, binds a

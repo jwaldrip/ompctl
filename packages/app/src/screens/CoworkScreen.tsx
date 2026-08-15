@@ -25,16 +25,16 @@
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import { taskListView } from "../cowork/tasks.ts";
-import type { TaskListState } from "../cowork/tasks.ts";
-import type { ConnectorSummary, SkillSummary, Task } from "../cowork/types.ts";
 import { ConnectorsView, PluginsView, SkillsView } from "../components/CoworkCatalogueViews.tsx";
-import type { NewTaskInput } from "../components/TaskSidebar.tsx";
 import { TaskDetail } from "../components/TaskDetail.tsx";
+import type { NewTaskInput } from "../components/TaskSidebar.tsx";
 import { TaskSidebar } from "../components/TaskSidebar.tsx";
-import { useSplitLayout } from "../design/layout.ts";
+import type { TaskListState } from "../cowork/tasks.ts";
+import { taskListView } from "../cowork/tasks.ts";
+import type { ConnectorSummary, SkillSummary, Task } from "../cowork/types.ts";
 import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
+import { useSplitLayout } from "../design/layout.ts";
 import { Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 
@@ -158,7 +158,7 @@ function Nav({
 }): JSX.Element {
   return (
     <View style={orientation === "side" ? styles.navSide : styles.navBottom} testID="cowork-nav">
-      {DESTINATIONS.map((destination) => {
+      {DESTINATIONS.map(destination => {
         const isActive = destination.id === active;
         return (
           <Pressable
@@ -202,7 +202,13 @@ const styles = StyleSheet.create({
     borderTopColor: ground.line,
     backgroundColor: ground.surface,
   },
-  navItemBottom: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.tight, minHeight: TOUCH_TARGET * 1.1 },
+  navItemBottom: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.tight,
+    minHeight: TOUCH_TARGET * 1.1,
+  },
   back: { flexDirection: "row", alignItems: "center", gap: space.tight, padding: space.step },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.step },
 });

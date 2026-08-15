@@ -6,25 +6,25 @@
  * last, because it is the only thing here a thumb reaches for.
  */
 
-import { useEffect, useRef, useState, type JSX } from "react";
+import type { Agent, ApprovalChoice, ApprovalScope, PlanReviewChoice, WebViewActionResult } from "@ompd/core/contracts";
+import type { ConnectionState } from "@ompd/core/ompd-client";
+import { type JSX, useEffect, useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { webViewCapability } from "../browser";
-import { routeWebViewAction } from "../console/webview.ts";
-import type { WebViewTarget } from "../console/webview.ts";
-import type { Agent, ApprovalChoice, ApprovalScope, PlanReviewChoice, WebViewActionResult } from "@ompd/core/contracts";
 import { Composer } from "../components/Composer.tsx";
 import { PlanCard } from "../components/PlanCard.tsx";
 import { StatusReadout } from "../components/StatusReadout.tsx";
 import { Transcript } from "../components/Transcript.tsx";
+import type { PendingWebViewAction } from "../console/state.ts";
+import type { WebViewTarget } from "../console/webview.ts";
+import { routeWebViewAction } from "../console/webview.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { agentSignal, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
-import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { SessionState } from "../session/model.ts";
-import type { PendingWebViewAction } from "../console/state.ts";
 
 export interface SessionScreenProps {
   agent: Agent;
@@ -91,7 +91,12 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
    * registered screen can receive an action while its sandbox pane is closed,
    * then open the pane and execute it. The web build has no embedded sandbox
    * and must never claim one.
+   *
+   * Keyed on `agent.id`, not referenced in the body: switching to another
+   * agent must unmount this registration and mount a fresh one, or the new
+   * agent silently inherits a target nobody offered it.
    */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: agent.id intentionally forces re-registration on agent switch; see comment above.
   useEffect(() => {
     if (webViewCapability === null) return;
     handlers.current.onMountWebView?.();
@@ -117,10 +122,10 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
     if (pending === undefined || !browserOpen || target === null) return;
     if (executedRequestId.current === pending.requestId) return;
     executedRequestId.current = pending.requestId;
-    void routeWebViewAction(target, pending.action, (result) => {
+    void routeWebViewAction(target, pending.action, result => {
       handlers.current.onWebViewResult?.(pending.requestId, result);
     });
-  }, [actionRequestId, browserOpen, props.pendingWebViewAction]);
+  }, [browserOpen, props.pendingWebViewAction]);
 
   return (
     <SafeScreen edges={{ top: true, bottom: false, left: true, right: true }} testID="session">
@@ -161,7 +166,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             accessibilityLabel={browserOpen ? "Close the agent's browser" : "Open the agent's browser"}
             accessibilityState={{ selected: browserOpen }}
             onPress={() => {
-              setBrowserOpen((open) => !open);
+              setBrowserOpen(open => !open);
             }}
             style={({ pressed }) => [styles.browserToggle, pressed && { backgroundColor: ground.active }]}
           >
@@ -201,10 +206,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         clearances={props.fleetClearances}
       />
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={0}
-      >
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
         {/*
           Home-indicator inset lives on a child, not on KeyboardAvoidingView.
           KAV's padding behavior owns paddingBottom for the keyboard; putting

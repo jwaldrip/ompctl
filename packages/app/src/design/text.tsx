@@ -12,8 +12,8 @@
  */
 
 import type { JSX, ReactNode } from "react";
-import { Text } from "react-native";
 import type { StyleProp, TextStyle } from "react-native";
+import { Text } from "react-native";
 import { ink, type } from "./tokens.ts";
 
 interface LineProps {
@@ -51,14 +51,7 @@ export function Body({ children, color = ink.bright, style, numberOfLines, testI
   );
 }
 
-export function Title({
-  children,
-  color = ink.bright,
-  style,
-  numberOfLines,
-  heading,
-  testID,
-}: LineProps): JSX.Element {
+export function Title({ children, color = ink.bright, style, numberOfLines, heading, testID }: LineProps): JSX.Element {
   return (
     <Text
       testID={testID}

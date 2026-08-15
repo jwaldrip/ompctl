@@ -5,17 +5,17 @@
  * supplies authority, and the daemon is the source of participant identity.
  */
 
+import type { CollabVoiceNoteFrame, CollabVoiceParticipant } from "@ompd/core/contracts";
+import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import type { CollabVoiceNoteFrame, CollabVoiceParticipant } from "@ompd/core/contracts";
-import type { ConnectionState } from "@ompd/core/ompd-client";
-import type { Connection } from "../platform/connection.ts";
-import { Body, Display, Kicker, Label } from "../design/text.tsx";
-import { SafeScreen } from "../design/SafeScreen.tsx";
-import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import { createOmpdClient } from "../console/useConsole.ts";
-import { CollabVoiceQueue, type CollabAudioPlayer } from "../voice/collab-voice.ts";
+import { SafeScreen } from "../design/SafeScreen.tsx";
+import { Body, Display, Kicker, Label } from "../design/text.tsx";
+import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+import type { Connection } from "../platform/connection.ts";
+import { type CollabAudioPlayer, CollabVoiceQueue } from "../voice/collab-voice.ts";
 
 const defaultAudioPlayer: CollabAudioPlayer = {
   play: async () => {},
@@ -39,23 +39,23 @@ export function CollabSessionScreen({
   const voiceQueue = useMemo(() => new CollabVoiceQueue(player ?? defaultAudioPlayer), [player]);
   useEffect(() => {
     const offStatus = client.on("status", ({ state }) => setConnectionState(state));
-    const offParticipants = client.on("room_participants", (event) => {
+    const offParticipants = client.on("room_participants", event => {
       if (event.roomId === roomId) setParticipants(event.participants);
     });
-    const offVoice = client.on("collab_voice", (event) => {
+    const offVoice = client.on("collab_voice", event => {
       const frame = event.frame;
       if (frame.roomId === roomId && frame.t === "collab_voice_note") {
         voiceQueue.enqueue(frame);
-        setVoiceNotes((prev) => (prev.some((n) => n.noteId === frame.noteId) ? prev : [...prev, frame]));
+        setVoiceNotes(prev => (prev.some(n => n.noteId === frame.noteId) ? prev : [...prev, frame]));
       }
     });
-    const offHistory = client.on("collab_voice_history", (event) => {
+    const offHistory = client.on("collab_voice_history", event => {
       if (event.roomId === roomId) {
         for (const note of event.notes) voiceQueue.enqueue(note);
         setVoiceNotes(event.notes);
       }
     });
-    const offError = client.on("error", (event) => setNotice(event.message));
+    const offError = client.on("error", event => setNotice(event.message));
 
     client.start();
     client.joinRoom(roomId);
@@ -68,7 +68,7 @@ export function CollabSessionScreen({
       offError();
       client.close();
     };
-  }, [client, roomId]);
+  }, [client, roomId, voiceQueue.enqueue]);
 
   return (
     <SafeScreen style={styles.screen} testID="collab-session">
@@ -108,7 +108,7 @@ export function CollabSessionScreen({
         {participants.length === 0 ? (
           <Body color={ink.muted}>Waiting for a participant.</Body>
         ) : (
-          participants.map((participant) => (
+          participants.map(participant => (
             <View key={participant.id} style={styles.row}>
               <Label color={ink.bright}>{participant.displayName}</Label>
               <Label color={ink.muted}>{participant.kind === "agent" ? "Agent" : "Human"}</Label>
@@ -122,7 +122,7 @@ export function CollabSessionScreen({
         {voiceNotes.length === 0 ? (
           <Body color={ink.muted}>No voice notes in this room yet.</Body>
         ) : (
-          voiceNotes.map((note) => (
+          voiceNotes.map(note => (
             <View key={note.noteId} style={styles.row}>
               <View style={styles.noteMeta}>
                 <Label color={note.participant.kind === "agent" ? signal.sage : ink.bright}>

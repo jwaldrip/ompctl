@@ -22,29 +22,29 @@ import type { SkillSummary, WorkspaceSourceLevel } from "@ompd/core";
  * project- or user-level skill file genuinely has no plugin.
  */
 function pluginNameFromPath(path: string | undefined): string | undefined {
-	if (path === undefined) return undefined;
-	const cacheMatch = /[/\\]plugins[/\\]cache[/\\][^/\\]+[/\\]([^/\\]+)[/\\]/.exec(path);
-	if (cacheMatch?.[1] !== undefined) return cacheMatch[1];
-	const pluginMatch = /[/\\]plugins[/\\]([^/\\]+)[/\\]/.exec(path);
-	return pluginMatch?.[1];
+  if (path === undefined) return undefined;
+  const cacheMatch = /[/\\]plugins[/\\]cache[/\\][^/\\]+[/\\]([^/\\]+)[/\\]/.exec(path);
+  if (cacheMatch?.[1] !== undefined) return cacheMatch[1];
+  const pluginMatch = /[/\\]plugins[/\\]([^/\\]+)[/\\]/.exec(path);
+  return pluginMatch?.[1];
 }
 
 function skillLevel(value: string | undefined): WorkspaceSourceLevel | undefined {
-	return value === "user" || value === "project" || value === "native" ? value : undefined;
+  return value === "user" || value === "project" || value === "native" ? value : undefined;
 }
 
 function summarizeSkill(skill: Skill): SkillSummary {
-	const source = skill._source;
-	const pluginName = pluginNameFromPath(source?.path);
-	return {
-		name: skill.name,
-		description: skill.description,
-		kind: "skill",
-		source: skill.source,
-		...(source?.providerName === undefined ? {} : { providerName: source.providerName }),
-		...(skillLevel(source?.level) === undefined ? {} : { level: skillLevel(source?.level) }),
-		...(pluginName === undefined ? {} : { pluginName }),
-	};
+  const source = skill._source;
+  const pluginName = pluginNameFromPath(source?.path);
+  return {
+    name: skill.name,
+    description: skill.description,
+    kind: "skill",
+    source: skill.source,
+    ...(source?.providerName === undefined ? {} : { providerName: source.providerName }),
+    ...(skillLevel(source?.level) === undefined ? {} : { level: skillLevel(source?.level) }),
+    ...(pluginName === undefined ? {} : { pluginName }),
+  };
 }
 
 /**
@@ -54,15 +54,15 @@ function summarizeSkill(skill: Skill): SkillSummary {
  * `providerName` does for a skill, and nothing here names a specific plugin.
  */
 function summarizeCommand(command: FileSlashCommand): SkillSummary {
-	const source = command._source;
-	return {
-		name: command.name,
-		description: command.description,
-		kind: "command",
-		source: command.source,
-		...(source?.providerName === undefined ? {} : { providerName: source.providerName }),
-		...(skillLevel(source?.level) === undefined ? {} : { level: skillLevel(source?.level) }),
-	};
+  const source = command._source;
+  return {
+    name: command.name,
+    description: command.description,
+    kind: "command",
+    source: command.source,
+    ...(source?.providerName === undefined ? {} : { providerName: source.providerName }),
+    ...(skillLevel(source?.level) === undefined ? {} : { level: skillLevel(source?.level) }),
+  };
 }
 
 /**
@@ -77,12 +77,12 @@ function summarizeCommand(command: FileSlashCommand): SkillSummary {
  * `Supervisor.spawnHost` use for the same reason.
  */
 export async function listSkillCatalog(
-	cwd?: string,
-	discoverSkillsFn: typeof discoverSkills = discoverSkills,
-	discoverCommandsFn: typeof discoverSlashCommands = discoverSlashCommands,
+  cwd?: string,
+  discoverSkillsFn: typeof discoverSkills = discoverSkills,
+  discoverCommandsFn: typeof discoverSlashCommands = discoverSlashCommands,
 ): Promise<SkillSummary[]> {
-	const [{ skills }, commands] = await Promise.all([discoverSkillsFn(cwd), discoverCommandsFn({ cwd })]);
-	const summaries = [...skills.map(summarizeSkill), ...commands.map(summarizeCommand)];
-	summaries.sort((a, b) => a.name.localeCompare(b.name));
-	return summaries;
+  const [{ skills }, commands] = await Promise.all([discoverSkillsFn(cwd), discoverCommandsFn({ cwd })]);
+  const summaries = [...skills.map(summarizeSkill), ...commands.map(summarizeCommand)];
+  summaries.sort((a, b) => a.name.localeCompare(b.name));
+  return summaries;
 }

@@ -8,8 +8,7 @@
  *
  * Output: scripts/update-shapes.json
  */
-import { writeFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnLocalHost } from "@ompd/acp";
@@ -22,7 +21,7 @@ const t0 = Date.now();
 
 const host = spawnLocalHost({
   cwd: workdir,
-  onPermission: async (req) => {
+  onPermission: async req => {
     console.log(`  [permission] ${req.toolCall.kind} :: ${req.toolCall.title.slice(0, 60)}`);
     return "allow_once";
   },
@@ -33,7 +32,7 @@ const host = spawnLocalHost({
         : "unknown";
     stream.push({ at: Date.now() - t0, kind, update });
   },
-  onLog: (l) => {
+  onLog: l => {
     if (l.trim()) console.log(`  [stderr] ${l.slice(0, 160)}`);
   },
 });

@@ -7,9 +7,9 @@
  * every unmatched kind quietly lands.
  */
 
-import { spawnLocalHost, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
+import { type LocalHost, type SpawnLocalHostOptions, spawnLocalHost } from "@ompd/acp";
 import type { HostKind, HostSpec } from "@ompd/core";
-import { ProvisionError, type HostHandle, type ProvisionerBackend, type SpawnHost } from "./types.ts";
+import { type HostHandle, ProvisionError, type ProvisionerBackend, type SpawnHost } from "./types.ts";
 
 export interface LocalBackendOptions {
   /** Path to the omp binary. Defaults to whatever `spawnLocalHost` resolves. */

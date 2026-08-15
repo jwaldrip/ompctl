@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type OmpSessionContainer,
   OmpSessionFormatError,
   parseOmpSession,
   serializeOmpSession,
-  type OmpSessionContainer,
 } from "../src/handoff-container.ts";
 
 const handoff: OmpSessionContainer = {
@@ -45,7 +45,7 @@ describe(".ompsession container", () => {
     '{"version":"1.0","sessionId":"ses_01H","handoffMarkdown":4,"activeModel":"model"}',
     '{"version":"1.0","sessionId":"ses_01H","handoffMarkdown":"# Handoff","activeModel":"","daemonHint":"wss://hub.example.test"}',
     '{"version":"1.0","sessionId":"ses_01H","handoffMarkdown":"# Handoff","activeModel":"model","daemonHint":""}',
-  ])("refuses malformed input: %s", (input) => {
+  ])("refuses malformed input: %s", input => {
     expect(() => parseOmpSession(input)).toThrow(OmpSessionFormatError);
   });
 });

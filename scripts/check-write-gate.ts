@@ -22,15 +22,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type Actor,
+  type ApprovalRecord,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   SCOPE_READ,
   Store,
-  type ApprovalRecord,
-  type Actor,
 } from "@ompd/core";
-import { Supervisor, type PendingApproval } from "../packages/daemon/src/supervisor.ts";
+import { type PendingApproval, Supervisor } from "../packages/daemon/src/supervisor.ts";
 import { createFakeHost } from "../packages/daemon/test/fake-host.ts";
 
 /** Drives phase 1. The live probes below use the real `omp acp`. */
@@ -67,7 +67,7 @@ const sup = new Supervisor({
   // an unanswered approval surfacing as a transport error.
   approvalTimeoutMs: 5_000,
   events: {
-    onApprovalNeeded: (p) => {
+    onApprovalNeeded: p => {
       asked.push(p);
       if (operator !== null) {
         // Answered on the next tick, the way a remote client would.
@@ -305,7 +305,7 @@ const summary: string[] = [];
     approvalTimeoutMs: 2_000,
     spawnHost: fake.factory,
     events: {
-      onApprovalNeeded: (p) => {
+      onApprovalNeeded: p => {
         detAsked.push(p);
         // An operator standing by to approve. A human tapping allow must not
         // be able to write a private key, so this is the harder version of
@@ -368,16 +368,17 @@ const summary: string[] = [];
     // elicitations answered back to back land in the same millisecond; the tie
     // broke the wrong way and this loop read the previous call's verdict as
     // this call's.
-    const before = new Set(detStore.listApprovals(agent.id).map((r) => r.requestId));
+    const before = new Set(detStore.listApprovals(agent.id).map(r => r.requestId));
     const askedBefore = detAsked.length;
     const chosen = await fake.elicit(session, c.message, ["Approve", "Deny"]);
-    const decisive = detStore.listApprovals(agent.id).find((r) => !before.has(r.requestId));
+    const decisive = detStore.listApprovals(agent.id).find(r => !before.has(r.requestId));
     const humans = detAsked.length - askedBefore;
 
     const problems: string[] = [];
     if (chosen !== c.expect.chosen) problems.push(`answered ${chosen}, expected ${c.expect.chosen}`);
     if (humans !== c.expect.humans) problems.push(`${humans} human prompt(s), expected ${c.expect.humans}`);
-    if (decisive?.tool !== c.expect.tool) problems.push(`row tool was ${decisive?.tool ?? "none"}, expected ${c.expect.tool}`);
+    if (decisive?.tool !== c.expect.tool)
+      problems.push(`row tool was ${decisive?.tool ?? "none"}, expected ${c.expect.tool}`);
     if (decisive?.decision !== c.expect.decision) {
       problems.push(`decision was ${decisive?.decision ?? "none"}, expected ${c.expect.decision}`);
     }
@@ -411,7 +412,7 @@ for (const probe of probes) {
   if (probe.seed !== undefined) writeFileSync(probe.marker, probe.seed);
 
   const agent = await sup.createAgent({ name: probe.label.slice(0, 20), cwd: workdir }, op);
-  await sup.prompt(agent.id, probe.prompt.replace("{MARKER}", probe.marker), op).catch((err) => {
+  await sup.prompt(agent.id, probe.prompt.replace("{MARKER}", probe.marker), op).catch(err => {
     console.log(`  (turn errored: ${String(err).slice(0, 120)})`);
   });
 
@@ -421,7 +422,7 @@ for (const probe of probes) {
   // For a seeded file the marker always exists; what matters is the mutation.
   const effected = probe.seed === undefined ? landed : changed;
   const humans = asked.length;
-  const seen = rows.map((r) => r.tool);
+  const seen = rows.map(r => r.tool);
   const problems: string[] = [];
 
   // The invariants that hold for every probe regardless of which tool the
@@ -431,8 +432,8 @@ for (const probe of probes) {
   // allow has to come from something that could actually have written it.
   // This is what makes a substituted tool safe to report rather than fail,
   // and it is the property the whole ticket is about.
-  const mutators = rows.filter((r) => MUTATING_TOOLS[r.tool] === true);
-  const ungated = effected && !mutators.some((r) => r.decision === "allow");
+  const mutators = rows.filter(r => MUTATING_TOOLS[r.tool] === true);
+  const ungated = effected && !mutators.some(r => r.decision === "allow");
   if (ungated) {
     problems.push(
       `the filesystem changed with no allow recorded by policy for a mutating tool` +
@@ -449,9 +450,9 @@ for (const probe of probes) {
   const gate = ungated ? "UNGATED" : rows.length > 0 ? "GATED" : "not attempted";
   // The other half of the reported defect: a turn that dies on a transport
   // deadline leaves an approval open with no decision ever written to it.
-  const undecided = rows.filter((r) => r.decidedAt === "");
+  const undecided = rows.filter(r => r.decidedAt === "");
   if (undecided.length > 0) {
-    problems.push(`${undecided.length} approval row(s) left pending: ${undecided.map((r) => r.tool).join(", ")}`);
+    problems.push(`${undecided.length} approval row(s) left pending: ${undecided.map(r => r.tool).join(", ")}`);
   }
 
   const [primary, ...alsoRequired] = probe.expect.tools;
@@ -459,9 +460,8 @@ for (const probe of probes) {
   // target count. A `write` somewhere harmless is not evidence about a write
   // to a private key.
   const forPrimary = rows.filter(
-    (r) =>
-      r.tool === primary &&
-      (probe.expect.attemptIsOptional !== true || JSON.stringify(r.input).includes(probe.marker)),
+    r =>
+      r.tool === primary && (probe.expect.attemptIsOptional !== true || JSON.stringify(r.input).includes(probe.marker)),
   );
 
   if (forPrimary.length === 0 && probe.toolIsAbsentFromThisBuild === true) {
@@ -474,7 +474,7 @@ for (const probe of probes) {
       `${substituteUngated ? "FAIL " : "SKIP "} ${probe.label}  gate=${substituteUngated ? "UNGATED" : "UNAVAILABLE"}`,
     );
     console.log(probe.label);
-    console.log(`  policy rows:   ${rows.map((r) => `${r.tool}=${r.decision}(${r.rule})`).join(", ") || "NONE"}`);
+    console.log(`  policy rows:   ${rows.map(r => `${r.tool}=${r.decision}(${r.rule})`).join(", ") || "NONE"}`);
     console.log(`  gate:          ${substituteUngated ? "UNGATED" : "UNAVAILABLE"}`);
     console.log(
       `  verdict:       ${substituteUngated ? "FAIL, the substitute ran ungated" : `SKIP, no ${primary} tool in omp 17.2.12; the substitute it used was gated`}\n`,
@@ -489,7 +489,7 @@ for (const probe of probes) {
   // exercised unless all of them appear. An ast_edit run where the outer
   // `write` dispatch was recorded but the inner tool never ran is a run the
   // model spent somewhere else, not a gate failure.
-  const incomplete = forPrimary.length === 0 || alsoRequired.some((t) => !seen.includes(t));
+  const incomplete = forPrimary.length === 0 || alsoRequired.some(t => !seen.includes(t));
   if (incomplete && probe.expect.attemptIsOptional === true) {
     // The model reached for something else. That is not evidence either way
     // about the gate, so it is reported rather than scored; phase 1 asserts
@@ -503,7 +503,7 @@ for (const probe of probes) {
     const status = leaked || ungated ? "UNGATED" : "NOT ATTEMPTED";
     summary.push(`${leaked || ungated ? "FAIL " : "NOTE "} ${probe.label}  gate=${status}`);
     console.log(probe.label);
-    console.log(`  policy rows:   ${rows.map((r) => `${r.tool}=${r.decision}(${r.rule})`).join(", ") || "NONE"}`);
+    console.log(`  policy rows:   ${rows.map(r => `${r.tool}=${r.decision}(${r.rule})`).join(", ") || "NONE"}`);
     console.log(`  target hit:    no, the model used ${seen.join(", ") || "nothing"} instead`);
     console.log(`  fs effect:     ${effected}`);
     console.log(`  gate:          ${status}`);
@@ -517,9 +517,7 @@ for (const probe of probes) {
   }
 
   if (forPrimary.length === 0) {
-    problems.push(
-      `policy never saw a ${primary} call` + (seen.length > 0 ? `; it saw ${seen.join(", ")}` : ""),
-    );
+    problems.push(`policy never saw a ${primary} call${seen.length > 0 ? `; it saw ${seen.join(", ")}` : ""}`);
   } else {
     const decisive = forPrimary[forPrimary.length - 1];
     if (decisive?.decision !== probe.expect.decision) {
@@ -536,7 +534,7 @@ for (const probe of probes) {
   // Scoped to the tool the probe is about. A model that also reached for
   // `eval` and got prompted for it says nothing about whether the `write`
   // needed a human, and counting that prompt would fail a correct run.
-  const humansForPrimary = asked.filter((a) => a.tool === primary).length;
+  const humansForPrimary = asked.filter(a => a.tool === primary).length;
   if (probe.expect.human === "forbidden" && humansForPrimary > 0) {
     problems.push(`a human was asked about ${primary} ${humansForPrimary} time(s) and should not have been`);
   }
@@ -552,8 +550,8 @@ for (const probe of probes) {
   summary.push(`${verdict} ${probe.label}  gate=${gate}`);
 
   console.log(probe.label);
-  console.log(`  policy rows:   ${rows.map((r) => `${r.tool}=${r.decision}(${r.rule})`).join(", ") || "NONE"}`);
-  console.log(`  humans asked:  ${humans}${humans ? ` (${asked.map((a) => a.tool).join(", ")})` : ""}`);
+  console.log(`  policy rows:   ${rows.map(r => `${r.tool}=${r.decision}(${r.rule})`).join(", ") || "NONE"}`);
+  console.log(`  humans asked:  ${humans}${humans ? ` (${asked.map(a => a.tool).join(", ")})` : ""}`);
   console.log(`  fs effect:     ${effected}`);
   console.log(`  gate:          ${gate}`);
   console.log(`  verdict:       ${problems.length === 0 ? "PASS" : `FAIL: ${problems.join("; ")}`}\n`);

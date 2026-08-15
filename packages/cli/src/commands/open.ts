@@ -21,11 +21,7 @@ import { requireToken, resolveBaseUrl } from "../client.ts";
 /** Clipboard writers by platform, first one that exists wins. */
 const CLIPBOARD_COMMANDS: Record<string, string[][]> = {
   darwin: [["pbcopy"]],
-  linux: [
-    ["wl-copy"],
-    ["xclip", "-selection", "clipboard"],
-    ["xsel", "--clipboard", "--input"],
-  ],
+  linux: [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]],
   win32: [["clip"]],
 };
 
@@ -66,11 +62,7 @@ export async function openCommand(ctx: CliContext): Promise<number> {
   return 0;
 }
 
-async function copyToClipboard(
-  ctx: CliContext,
-  platform: string,
-  token: string,
-): Promise<boolean> {
+async function copyToClipboard(ctx: CliContext, platform: string, token: string): Promise<boolean> {
   const candidates = CLIPBOARD_COMMANDS[platform] ?? [];
   if (candidates.length === 0) return false;
 
@@ -82,9 +74,7 @@ async function copyToClipboard(
   try {
     for (const command of candidates) {
       if (command[0] === undefined) continue;
-      const result = await ctx
-        .exec(["sh", "-c", `${shellJoin(command)} < ${shellJoin([scratch])}`])
-        .catch(() => null);
+      const result = await ctx.exec(["sh", "-c", `${shellJoin(command)} < ${shellJoin([scratch])}`]).catch(() => null);
       if (result !== null && result.code === 0) return true;
     }
     return false;
@@ -101,5 +91,5 @@ async function launch(ctx: CliContext, platform: string, url: string): Promise<b
 }
 
 function shellJoin(command: string[]): string {
-  return command.map((part) => `'${part.replaceAll("'", `'\\''`)}'`).join(" ");
+  return command.map(part => `'${part.replaceAll("'", `'\\''`)}'`).join(" ");
 }

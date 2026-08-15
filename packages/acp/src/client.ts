@@ -25,7 +25,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-
 export type JsonRpcId = number | string;
 
 export type AcpOptionId = "allow_once" | "allow_always" | "reject_once" | "reject_always";
@@ -90,15 +89,8 @@ export interface AcpAgentRegistryNotification {
  * AgentRegistry. The peer is a process boundary, so invalid telemetry is
  * ignored rather than being allowed to corrupt a durable agent record.
  */
-export function parseAgentRegistryNotification(
-  params: unknown,
-): AcpAgentRegistryNotification | undefined {
-  if (
-    typeof params !== "object" ||
-    params === null ||
-    !("agents" in params) ||
-    !Array.isArray(params.agents)
-  ) {
+export function parseAgentRegistryNotification(params: unknown): AcpAgentRegistryNotification | undefined {
+  if (typeof params !== "object" || params === null || !("agents" in params) || !Array.isArray(params.agents)) {
     return undefined;
   }
 
@@ -134,9 +126,7 @@ export function parseAgentRegistryNotification(
         !("durationMs" in metrics) ||
         typeof metrics.usedTokens !== "number" ||
         typeof metrics.durationMs !== "number" ||
-        ("costAmount" in metrics &&
-          metrics.costAmount !== undefined &&
-          typeof metrics.costAmount !== "number"))
+        ("costAmount" in metrics && metrics.costAmount !== undefined && typeof metrics.costAmount !== "number"))
     ) {
       return undefined;
     }
@@ -144,25 +134,16 @@ export function parseAgentRegistryNotification(
       id: candidate.id,
       displayName: candidate.displayName,
       kind: candidate.kind,
-      parentId:
-        "parentId" in candidate && typeof candidate.parentId === "string"
-          ? candidate.parentId
-          : undefined,
+      parentId: "parentId" in candidate && typeof candidate.parentId === "string" ? candidate.parentId : undefined,
       parentSessionId:
         "parentSessionId" in candidate && typeof candidate.parentSessionId === "string"
           ? candidate.parentSessionId
           : undefined,
-      sessionId:
-        "sessionId" in candidate && typeof candidate.sessionId === "string"
-          ? candidate.sessionId
-          : undefined,
+      sessionId: "sessionId" in candidate && typeof candidate.sessionId === "string" ? candidate.sessionId : undefined,
       status: candidate.status,
       createdAt: candidate.createdAt,
       lastActiveAt: candidate.lastActiveAt,
-      taskTitle:
-        "taskTitle" in candidate && typeof candidate.taskTitle === "string"
-          ? candidate.taskTitle
-          : undefined,
+      taskTitle: "taskTitle" in candidate && typeof candidate.taskTitle === "string" ? candidate.taskTitle : undefined,
       model: "model" in candidate && typeof candidate.model === "string" ? candidate.model : undefined,
       metrics:
         metrics === undefined
@@ -170,9 +151,7 @@ export function parseAgentRegistryNotification(
           : {
               usedTokens: metrics.usedTokens,
               costAmount:
-                "costAmount" in metrics && typeof metrics.costAmount === "number"
-                  ? metrics.costAmount
-                  : undefined,
+                "costAmount" in metrics && typeof metrics.costAmount === "number" ? metrics.costAmount : undefined,
               durationMs: metrics.durationMs,
             },
     });
@@ -301,7 +280,7 @@ export class AcpClient {
   /** Serialize one JSON-RPC frame onto the transport. */
   #send(obj: unknown): Promise<void> {
     if (this.#closed) return Promise.reject(new AcpError("transport closed"));
-    const line = JSON.stringify(obj) + "\n";
+    const line = `${JSON.stringify(obj)}\n`;
     const attempt = this.#writeChain.then(() => this.#rawWrite(line));
     // Keep the chain alive after a failed write so one error does not wedge
     // every subsequent frame; the failure still surfaces to this caller.
@@ -318,8 +297,9 @@ export class AcpClient {
    */
   ingest(text: string): void {
     this.#buf += text;
-    let nl: number;
-    while ((nl = this.#buf.indexOf("\n")) >= 0) {
+    for (;;) {
+      const nl = this.#buf.indexOf("\n");
+      if (nl < 0) break;
       const line = this.#buf.slice(0, nl).trim();
       this.#buf = this.#buf.slice(nl + 1);
       if (!line) continue;
@@ -389,12 +369,8 @@ export class AcpClient {
         const optionId = await this.#opts.onPermission(req);
         // Only answer with an option the agent actually offered; an unknown id
         // can be treated as a protocol error and wedge the turn.
-        const offered = new Set((req.options ?? []).map((o) => o.optionId));
-        const chosen = offered.has(optionId)
-          ? optionId
-          : optionId.startsWith("allow")
-            ? "allow_once"
-            : "reject_once";
+        const offered = new Set((req.options ?? []).map(o => o.optionId));
+        const chosen = offered.has(optionId) ? optionId : optionId.startsWith("allow") ? "allow_once" : "reject_once";
         await this.#send({
           jsonrpc: "2.0",
           id,
@@ -412,7 +388,7 @@ export class AcpClient {
         const outcome = await this.#opts.onElicitation({
           sessionId: p.sessionId ?? "",
           message: p.message ?? "",
-          enumValues: Array.isArray(raw) ? raw.filter((v) => typeof v === "string") : [],
+          enumValues: Array.isArray(raw) ? raw.filter(v => typeof v === "string") : [],
           requestedSchema: p.requestedSchema,
         });
         await this.#send({
@@ -700,11 +676,9 @@ function writeGateConfig(): GateConfigFile {
  */
 export function spawnLocalHost(opts: SpawnLocalHostOptions): LocalHost {
   const extra = opts.extraArgs ?? [];
-  const offending = extra.find((a) => FORBIDDEN_HOST_ARGS.test(a));
+  const offending = extra.find(a => FORBIDDEN_HOST_ARGS.test(a));
   if (offending) {
-    throw new AcpError(
-      `extraArgs may not override the approval gate (got ${JSON.stringify(offending)})`,
-    );
+    throw new AcpError(`extraArgs may not override the approval gate (got ${JSON.stringify(offending)})`);
   }
 
   const gate = writeGateConfig();
@@ -734,7 +708,7 @@ export function spawnLocalHost(opts: SpawnLocalHostOptions): LocalHost {
   void proc.exited.then(() => removeGateDir(gate.dir));
 
   const enc = new TextEncoder();
-  const client = new AcpClient(async (line) => {
+  const client = new AcpClient(async line => {
     proc.stdin.write(enc.encode(line));
     await proc.stdin.flush();
   }, opts);
@@ -771,7 +745,7 @@ export function spawnLocalHost(opts: SpawnLocalHostOptions): LocalHost {
     }
   })();
 
-  const exited = proc.exited.then((code) => {
+  const exited = proc.exited.then(code => {
     client.close({ code, stderr });
     return code;
   });

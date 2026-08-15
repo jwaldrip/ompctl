@@ -1,9 +1,9 @@
 /** Choose the daemon this device's Console is currently attached to. */
 
+import { SCOPE_APPROVE } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { SCOPE_APPROVE } from "@ompd/core/contracts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
@@ -22,12 +22,12 @@ export function ConnectionSwitcherScreen({
   onSelect: (id: string) => void;
 }): JSX.Element {
   const [inviting, setInviting] = useState(false);
-  const active = connections.connections.find((entry) => entry.id === connections.activeId);
+  const active = connections.connections.find(entry => entry.id === connections.activeId);
   // Inviting spends this device's own `approve` scope, so the entry point
   // stays gone rather than visible-but-refused when the active pairing
   // doesn't hold it -- the daemon would refuse the mint anyway, and a
   // control that always fails is worse than no control.
-  const canInvite = active !== undefined && active.connection.scopes.includes(SCOPE_APPROVE);
+  const canInvite = active?.connection.scopes.includes(SCOPE_APPROVE);
 
   if (inviting && active !== undefined) {
     return <InviteScreen connection={active.connection} onDone={() => setInviting(false)} />;
@@ -51,13 +51,8 @@ export function ConnectionSwitcherScreen({
         )}
       </View>
       <View style={styles.entries}>
-        {connections.connections.map((entry) => (
-          <ConnectionRow
-            active={entry.id === connections.activeId}
-            entry={entry}
-            key={entry.id}
-            onSelect={onSelect}
-          />
+        {connections.connections.map(entry => (
+          <ConnectionRow active={entry.id === connections.activeId} entry={entry} key={entry.id} onSelect={onSelect} />
         ))}
       </View>
       <Pressable accessibilityRole="button" onPress={onAdd} style={styles.add} testID="add-connection">
@@ -94,7 +89,9 @@ function ConnectionRow({
           {endpoint}
         </Text>
       </View>
-      <Text style={[styles.status, active ? styles.statusActive : styles.statusIdle]}>{active ? "Active" : "Saved"}</Text>
+      <Text style={[styles.status, active ? styles.statusActive : styles.statusIdle]}>
+        {active ? "Active" : "Saved"}
+      </Text>
     </Pressable>
   );
 }

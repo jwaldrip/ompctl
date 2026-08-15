@@ -10,10 +10,10 @@
 
 import type { JSX } from "react";
 import { Pressable, ScrollView, StyleSheet } from "react-native";
-import type { SortField, SortSpec } from "../session/browser.ts";
-import { SORT_LABELS } from "../session/browser.ts";
 import { Data, Kicker } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import type { SortField, SortSpec } from "../session/browser.ts";
+import { SORT_LABELS } from "../session/browser.ts";
 
 const FIELDS: readonly SortField[] = ["status", "age", "lastActive", "messageCount", "size"];
 
@@ -31,7 +31,7 @@ export function SortBar({ sort, onChange }: SortBarProps): JSX.Element {
       style={styles.scroll}
       contentContainerStyle={styles.row}
     >
-      {FIELDS.map((field) => {
+      {FIELDS.map(field => {
         const active = sort.field === field;
         return (
           <Pressable
@@ -40,7 +40,9 @@ export function SortBar({ sort, onChange }: SortBarProps): JSX.Element {
             accessibilityRole="button"
             accessibilityState={{ selected: active }}
             accessibilityLabel={
-              active ? `Sort by ${SORT_LABELS[field]}, ${sort.direction === "asc" ? "ascending" : "descending"}` : `Sort by ${SORT_LABELS[field]}`
+              active
+                ? `Sort by ${SORT_LABELS[field]}, ${sort.direction === "asc" ? "ascending" : "descending"}`
+                : `Sort by ${SORT_LABELS[field]}`
             }
             onPress={() => {
               onChange(field);

@@ -83,6 +83,7 @@ mock.module("react-native-keychain", () => fakeKeychain.module);
 mock.module("@react-native-async-storage/async-storage", () => fakeAsyncStorage.module);
 
 import type { Connection } from "../src/platform/connection.ts";
+
 const secrets = await import("../src/platform/secrets.ts");
 const webSecrets = await import("../src/platform/secrets.web.ts");
 const { clearConnection, loadConnection, loadConnections, saveConnection, setActiveConnection } = await import(
@@ -148,7 +149,12 @@ describe("secrets.web.ts: the target with no keystore", () => {
   });
 });
 
-const DIRECT: Connection = { transport: "direct", url: "ws://127.0.0.1:7777/v1/socket", token: "tok_abc", scopes: ["read"] };
+const DIRECT: Connection = {
+  transport: "direct",
+  url: "ws://127.0.0.1:7777/v1/socket",
+  token: "tok_abc",
+  scopes: ["read"],
+};
 const HUB: Connection = {
   transport: "hub",
   hubUrl: "wss://hub.example.com",
@@ -189,7 +195,9 @@ describe("connection.ts: saved pairing list and keychain secrets", () => {
     expect(raw).toBeDefined();
     expect(JSON.parse(raw as string)).toEqual({
       activeId: "default",
-      connections: [{ id: "default", label: "Local", connection: { transport: "direct", url: DIRECT.url, scopes: DIRECT.scopes } }],
+      connections: [
+        { id: "default", label: "Local", connection: { transport: "direct", url: DIRECT.url, scopes: DIRECT.scopes } },
+      ],
     });
     expect(raw).not.toContain(DIRECT.token);
   });
@@ -229,7 +237,12 @@ describe("connection.ts: saved pairing list and keychain secrets", () => {
 
       const connection = await loadConnection();
 
-      expect(connection).toEqual({ transport: "direct", url: legacyBlob.url, token: legacyBlob.token, scopes: legacyBlob.scopes });
+      expect(connection).toEqual({
+        transport: "direct",
+        url: legacyBlob.url,
+        token: legacyBlob.token,
+        scopes: legacyBlob.scopes,
+      });
       expect(fakeKeychain.store.get(DEFAULT_TOKEN_KEY)).toBe(legacyBlob.token);
       expect(fakeKeychain.store.has(LEGACY_TOKEN_KEY)).toBe(false);
 
@@ -238,7 +251,11 @@ describe("connection.ts: saved pairing list and keychain secrets", () => {
       expect(JSON.parse(rewritten as string)).toEqual({
         activeId: "default",
         connections: [
-          { id: "default", label: "Default", connection: { transport: "direct", url: legacyBlob.url, scopes: legacyBlob.scopes } },
+          {
+            id: "default",
+            label: "Default",
+            connection: { transport: "direct", url: legacyBlob.url, scopes: legacyBlob.scopes },
+          },
         ],
       });
       expect(rewritten).not.toContain(legacyBlob.token);

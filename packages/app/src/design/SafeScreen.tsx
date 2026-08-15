@@ -14,7 +14,7 @@
  */
 
 import type { JSX, ReactNode } from "react";
-import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
+import { type StyleProp, StyleSheet, View, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ground } from "./tokens.ts";
 

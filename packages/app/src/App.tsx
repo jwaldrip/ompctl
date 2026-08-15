@@ -14,7 +14,7 @@ import { SafeScreen } from "./design/SafeScreen.tsx";
 import { ground, ink, stroke, type } from "./design/tokens.ts";
 import type { Connection, ConnectionList } from "./platform/connection.ts";
 import { clearConnection, loadConnections, saveConnection, setActiveConnection } from "./platform/connection.ts";
-import { listenForCollabLinks, type DeepLinkSource } from "./platform/deeplink.ts";
+import { type DeepLinkSource, listenForCollabLinks } from "./platform/deeplink.ts";
 import { CollabSessionScreen } from "./screens/CollabSessionScreen.tsx";
 import { ConnectionSwitcherScreen } from "./screens/ConnectionSwitcherScreen.tsx";
 import { PairScreen } from "./screens/PairScreen.tsx";
@@ -36,20 +36,22 @@ export function App(): JSX.Element {
 
   useEffect(() => listenForCollabLinks(nativeDeepLinks, setCollabRoomId), []);
 
-
   const showConnections = useCallback((connections: ConnectionList, notice?: string) => {
-    const active = connections.connections.find((entry) => entry.id === connections.activeId);
+    const active = connections.connections.find(entry => entry.id === connections.activeId);
     setBoot(active === undefined ? { phase: "pair", notice } : { phase: "console", connections });
   }, []);
 
-  const reloadConnections = useCallback(async (notice?: string) => {
-    showConnections(await loadConnections(), notice);
-  }, [showConnections]);
+  const reloadConnections = useCallback(
+    async (notice?: string) => {
+      showConnections(await loadConnections(), notice);
+    },
+    [showConnections],
+  );
 
   useEffect(() => {
     let cancelled = false;
     void loadConnections()
-      .then((connections) => {
+      .then(connections => {
         if (!cancelled) showConnections(connections);
       })
       .catch((cause: unknown) => {
@@ -61,21 +63,30 @@ export function App(): JSX.Element {
   }, [showConnections]);
 
   /** The store is written before the Console opens, never only into React state. */
-  const pair = useCallback(async (connection: Connection) => {
-    await saveConnection(connection);
-    await reloadConnections();
-  }, [reloadConnections]);
+  const pair = useCallback(
+    async (connection: Connection) => {
+      await saveConnection(connection);
+      await reloadConnections();
+    },
+    [reloadConnections],
+  );
 
-  const activate = useCallback(async (id: string) => {
-    await setActiveConnection(id);
-    await reloadConnections();
-  }, [reloadConnections]);
+  const activate = useCallback(
+    async (id: string) => {
+      await setActiveConnection(id);
+      await reloadConnections();
+    },
+    [reloadConnections],
+  );
 
   /** A rejected token removes only its own pairing, preserving every other daemon. */
-  const unpair = useCallback(async (id: string, notice?: string) => {
-    await clearConnection(id);
-    await reloadConnections(notice);
-  }, [reloadConnections]);
+  const unpair = useCallback(
+    async (id: string, notice?: string) => {
+      await clearConnection(id);
+      await reloadConnections(notice);
+    },
+    [reloadConnections],
+  );
 
   let body: JSX.Element;
   if (boot.phase === "loading") {
@@ -85,7 +96,7 @@ export function App(): JSX.Element {
       </SafeScreen>
     );
   } else if (collabRoomId !== null && boot.phase === "console") {
-    const active = boot.connections.connections.find((entry) => entry.id === boot.connections.activeId);
+    const active = boot.connections.connections.find(entry => entry.id === boot.connections.activeId);
     body =
       active === undefined ? (
         <PairScreen onPair={pair} />
@@ -101,7 +112,9 @@ export function App(): JSX.Element {
       <PairScreen
         notice={collabRoomId === null ? boot.notice : "Pair this device to join the shared room."}
         onCancel={
-          boot.returnToSwitcher === undefined ? undefined : () => setBoot({ phase: "switch", connections: boot.returnToSwitcher! })
+          boot.returnToSwitcher === undefined
+            ? undefined
+            : () => setBoot({ phase: "switch", connections: boot.returnToSwitcher! })
         }
         onPair={pair}
       />
@@ -116,7 +129,7 @@ export function App(): JSX.Element {
       />
     );
   } else {
-    const active = boot.connections.connections.find((entry) => entry.id === boot.connections.activeId);
+    const active = boot.connections.connections.find(entry => entry.id === boot.connections.activeId);
     if (active === undefined) {
       body = <PairScreen onPair={pair} />;
     } else {
@@ -129,7 +142,7 @@ export function App(): JSX.Element {
           <Console
             key={key}
             connection={active.connection}
-            onUnpair={(notice) => {
+            onUnpair={notice => {
               void unpair(active.id, notice);
             }}
           />

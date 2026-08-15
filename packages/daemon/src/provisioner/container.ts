@@ -25,18 +25,18 @@
  * is never silently rounded up to "the same as docker".
  */
 
-import type { LocalHost, SpawnLocalHostOptions } from "@ompd/acp";
-import { spawnLocalHost } from "@ompd/acp";
-import { dangerousMountReason, isInside, type HostKind, type HostMount, type HostSpec } from "@ompd/core";
 import { rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { LocalHost, SpawnLocalHostOptions } from "@ompd/acp";
+import { spawnLocalHost } from "@ompd/acp";
+import { dangerousMountReason, type HostKind, type HostMount, type HostSpec, isInside } from "@ompd/core";
 import { execCommand } from "./exec.ts";
-import { writeGateWrapper, type GateWrapper } from "./gate-wrapper.ts";
+import { type GateWrapper, writeGateWrapper } from "./gate-wrapper.ts";
 import {
-  ProvisionError,
   type CommandRunner,
   type HostHandle,
+  ProvisionError,
   type ProvisionerBackend,
   type SpawnHost,
 } from "./types.ts";
@@ -77,9 +77,7 @@ const CONTAINER_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
  * own stderr on the first `run`, which is a better message than anything a
  * probe could synthesise.
  */
-export async function detectContainerRuntime(
-  run: CommandRunner = execCommand,
-): Promise<string | null> {
+export async function detectContainerRuntime(run: CommandRunner = execCommand): Promise<string | null> {
   for (const runtime of CONTAINER_RUNTIMES) {
     try {
       const probe = await run([runtime, "--version"]);
@@ -216,12 +214,10 @@ const RUNTIME_FLAG_SUPPORT: Record<string, RuntimeFlagSupport> = {
  */
 function refuseIfDangerous(hostPath: string, home: string): void {
   if (!hostPath.startsWith("/")) {
-    throw new ProvisionError(
-      `mount path must be absolute, got ${JSON.stringify(hostPath)}`,
-      "container",
-    );
+    throw new ProvisionError(`mount path must be absolute, got ${JSON.stringify(hostPath)}`, "container");
   }
-  const reason = dangerousMountReason(hostPath) ??
+  const reason =
+    dangerousMountReason(hostPath) ??
     (isInside(home, hostPath) ? `inside the daemon's own state directory ${home}` : null);
   if (reason !== null) {
     throw new ProvisionError(`refusing to mount ${hostPath}: ${reason}`, "container");
@@ -261,17 +257,14 @@ export class ContainerBackend implements ProvisionerBackend {
     // to clean up. The reason lands on the same "host.provision" audit entry
     // `HostProvisioner` already writes for any provision failure -- nothing
     // new to wire, because a thrown `ProvisionError` is already audited there.
-    const mounts: HostMount[] = (spec.mounts ?? []).map((mount) => {
+    const mounts: HostMount[] = (spec.mounts ?? []).map(mount => {
       refuseIfDangerous(mount.hostPath, this.#home);
       return { hostPath: mount.hostPath, mode: mount.mode ?? "ro" };
     });
 
     const runtime = this.#runtime ?? (await detectContainerRuntime(this.#run));
     if (runtime === null) {
-      throw new ProvisionError(
-        `no container runtime found (tried ${CONTAINER_RUNTIMES.join(", ")})`,
-        "container",
-      );
+      throw new ProvisionError(`no container runtime found (tried ${CONTAINER_RUNTIMES.join(", ")})`, "container");
     }
     const flags = RUNTIME_FLAG_SUPPORT[runtime];
     if (flags === undefined) {
@@ -444,10 +437,7 @@ export class ContainerBackend implements ProvisionerBackend {
     // never lands somewhere another process in the image could have prepared.
     const made = await this.#run([runtime, "exec", containerId, "mkdir", "-p", scratch]);
     if (made.code !== 0) {
-      throw new ProvisionError(
-        `could not create ${scratch} in ${containerId}: ${made.stderr.trim()}`,
-        "container",
-      );
+      throw new ProvisionError(`could not create ${scratch} in ${containerId}: ${made.stderr.trim()}`, "container");
     }
     const locked = await this.#run([runtime, "exec", containerId, "chmod", "700", scratch]);
     if (locked.code !== 0) {

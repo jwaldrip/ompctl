@@ -94,9 +94,7 @@ export interface RotationResult {
  * real or was withdrawn on purpose. Only `ok` carries an `Actor`, so a caller
  * cannot read an identity off a refusal even by mistake.
  */
-export type AuthVerdict =
-  | { ok: true; actor: Actor }
-  | { ok: false; reason: "unknown" | "revoked" };
+export type AuthVerdict = { ok: true; actor: Actor } | { ok: false; reason: "unknown" | "revoked" };
 
 /** Notified after a device is revoked, so live connections can be dropped. */
 export type RevocationListener = (deviceId: string) => void;
@@ -256,8 +254,7 @@ export class DeviceAuth {
    */
   rotateToken(deviceId: string, presentedToken?: string, label?: string): RotationResult {
     const device = this.#requireLiveDevice(deviceId);
-    const presented =
-      presentedToken === undefined ? null : this.#store.findAuthTokenByHash(hashToken(presentedToken));
+    const presented = presentedToken === undefined ? null : this.#store.findAuthTokenByHash(hashToken(presentedToken));
 
     let revoked: number;
     if (presented !== null && presented.deviceId === device.id && presented.revokedAt === undefined) {

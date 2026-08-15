@@ -16,10 +16,10 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
-import { isValidElement } from "react";
-import type { ReactElement, ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import type { Agent, ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
+import type { ReactElement, ReactNode } from "react";
+import { isValidElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 // Type-only, so it is erased before it can pull `react-native` in early.
 import type { ConsoleEvent, ConsoleState } from "../src/console/state.ts";
 
@@ -35,7 +35,7 @@ interface Capture {
 }
 
 const capture: Capture = await Bun.file(new URL("../../../scripts/update-shapes.json", import.meta.url)).json();
-const STREAM: readonly unknown[] = capture.stream.map((frame) => frame.update);
+const STREAM: readonly unknown[] = capture.stream.map(frame => frame.update);
 
 /** Pinned so the strip clocks are a fact rather than a race. */
 const NOW = Date.parse("2026-01-01T00:05:00.000Z");
@@ -81,7 +81,10 @@ function board(): ConsoleState {
         input: { command: "rm -rf ./dist" },
       },
     },
-    { t: "say", event: { agentId: FLEET[0]?.id ?? "", seq: 40, text: "Four calls ran and the notes file is written." } },
+    {
+      t: "say",
+      event: { agentId: FLEET[0]?.id ?? "", seq: 40, text: "Four calls ran and the notes file is written." },
+    },
     { t: "status", event: { state: "connected", attempt: 0 } },
   ];
   let state = emptyConsole([]);
@@ -132,7 +135,7 @@ describe("the transcript renders from canned frames", () => {
 
   test("the captured turn's tool calls become cards", () => {
     const session = sessionFor(STATE, OPEN.id);
-    const tools = session.entries.filter((entry) => entry.kind === "tool");
+    const tools = session.entries.filter(entry => entry.kind === "tool");
     expect(tools.length).toBe(4);
     for (const tool of tools) expect(html).toContain(tool.title);
   });
@@ -147,7 +150,7 @@ describe("the transcript renders from canned frames", () => {
 
   test("what the agent answered is in the log, as one message not seven", () => {
     const session = sessionFor(STATE, OPEN.id);
-    const answer = session.entries.find((entry) => entry.kind === "assistant");
+    const answer = session.entries.find(entry => entry.kind === "assistant");
     expect(answer).toBeDefined();
     expect(html).toContain("hello-from-ompd");
   });
@@ -253,9 +256,9 @@ describe("the transcript renders from canned frames", () => {
     // so a pane that opened by itself would hand the agent a browser nobody
     // asked it to drive.
     expect(html).toContain("session-browser-toggle");
-    expect(html).not.toContain("session-browser\"");
+    expect(html).not.toContain('session-browser"');
     // The apostrophe arrives escaped, so the assertion stops short of it.
-    expect(html).toContain("aria-label=\"Open the agent");
+    expect(html).toContain('aria-label="Open the agent');
   });
 });
 

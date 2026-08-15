@@ -14,9 +14,9 @@
  * modifier riding on a button is how it gets granted by accident.
  */
 
+import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import { Glyph } from "../design/icons.tsx";
 import { Body, Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
@@ -151,10 +151,21 @@ function describeInput(input: unknown): string | null {
 
 const styles = StyleSheet.create({
   card: { borderWidth: stroke.heavy, backgroundColor: ground.surface },
-  head: { flexDirection: "row", alignItems: "center", gap: space.snug, paddingHorizontal: space.step, paddingVertical: space.snug },
+  head: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    paddingHorizontal: space.step,
+    paddingVertical: space.snug,
+  },
   tool: { flex: 1, textAlign: "right" },
   body: { padding: space.step, gap: space.snug },
-  input: { backgroundColor: ground.base, padding: space.snug, borderLeftWidth: stroke.hair, borderLeftColor: ground.edge },
+  input: {
+    backgroundColor: ground.base,
+    padding: space.snug,
+    borderLeftWidth: stroke.hair,
+    borderLeftColor: ground.edge,
+  },
   actions: { flexDirection: "row", gap: space.snug, padding: space.step, paddingTop: 0 },
   decision: {
     flex: 1,

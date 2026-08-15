@@ -58,7 +58,7 @@ export class TaskManager {
   }
 
   list(agentId?: string): Task[] {
-    return this.#store.listTasks(agentId).map((t) => this.#withDerivedState(t));
+    return this.#store.listTasks(agentId).map(t => this.#withDerivedState(t));
   }
 
   /**
@@ -115,7 +115,7 @@ export class TaskManager {
     // produced it.
     void this.#sup
       .prompt(input.agentId, input.prompt, actor)
-      .then((result) => {
+      .then(result => {
         const state: TaskState = result.stopReason === CANCELLED_STOP_REASON ? "canceled" : "done";
         this.#store.updateTaskState(id, state, result.stopReason);
       })

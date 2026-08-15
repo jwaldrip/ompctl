@@ -12,8 +12,8 @@
  */
 
 import type { SocketFactory, SocketLike } from "@ompd/core/ompd-client";
-import { connectThroughHub, hubSocketUrl } from "@ompd/tunnel";
 import type { DaemonId, TunnelSocketLike, TunnelTransportFactory } from "@ompd/tunnel";
+import { connectThroughHub, hubSocketUrl } from "@ompd/tunnel";
 
 export interface HubSocketFactoryOptions {
   /** The daemon this device paired with, pinned rather than taken from anything the hub claims. */
@@ -28,7 +28,7 @@ export interface HubSocketFactoryOptions {
  */
 export function createHubSocketFactory(options: HubSocketFactoryOptions): SocketFactory {
   const transport = options.transport ?? defaultTransport;
-  return (url) => {
+  return url => {
     const { base, token } = hubSocketUrl(url);
     if (token === null || token.length === 0) {
       // `OmpdClient` always appends one. A caller reaching this without one
@@ -52,7 +52,7 @@ function adaptToSocketLike(wire: TunnelSocketLike): SocketLike {
     get readyState() {
       return wire.readyState;
     },
-    send: (data) => wire.send(data),
+    send: data => wire.send(data),
     close: (code, reason) => wire.close(code, reason),
     onopen: null,
     onclose: null,
@@ -60,9 +60,9 @@ function adaptToSocketLike(wire: TunnelSocketLike): SocketLike {
     onmessage: null,
   };
   wire.onopen = () => adapter.onopen?.();
-  wire.onclose = (info) => adapter.onclose?.(info);
-  wire.onerror = (info) => adapter.onerror?.(info);
-  wire.onmessage = (data) => adapter.onmessage?.({ data });
+  wire.onclose = info => adapter.onclose?.(info);
+  wire.onerror = info => adapter.onerror?.(info);
+  wire.onmessage = data => adapter.onmessage?.({ data });
   return adapter;
 }
 
@@ -89,15 +89,15 @@ class WebSocketWire implements TunnelSocketLike {
       this.readyState = this.#ws.readyState;
       this.onopen?.();
     };
-    this.#ws.onclose = (event) => {
+    this.#ws.onclose = event => {
       this.readyState = this.#ws.readyState;
       this.onclose?.({ code: event.code, reason: event.reason });
     };
-    this.#ws.onerror = (event) => {
+    this.#ws.onerror = event => {
       const message: unknown = Reflect.get(event, "message");
       this.onerror?.({ message: typeof message === "string" ? message : "hub socket error" });
     };
-    this.#ws.onmessage = (event) => {
+    this.#ws.onmessage = event => {
       this.onmessage?.(typeof event.data === "string" ? event.data : String(event.data));
     };
   }

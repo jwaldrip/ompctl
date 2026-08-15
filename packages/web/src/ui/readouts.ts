@@ -11,8 +11,8 @@
 import type { AgentState } from "@ompd/core/contracts";
 import type { Usage } from "../session/model.ts";
 import { el, formatMoney, formatTokens, setText, toggleClass } from "./dom.ts";
-import { icon } from "./icons.ts";
 import type { GlyphName } from "./icons.ts";
+import { icon } from "./icons.ts";
 
 export interface Readings {
   cwd: string;
@@ -214,9 +214,7 @@ export function createRack(): RackView {
       setText(activity.value, String(readings.tools));
       setText(
         activity.sub,
-        readings.failed > 0
-          ? `${readings.running} running · ${readings.failed} failed`
-          : `${readings.running} running`,
+        readings.failed > 0 ? `${readings.running} running · ${readings.failed} failed` : `${readings.running} running`,
       );
       toggleClass(activity.root, "is-alarm", readings.failed > 0);
 

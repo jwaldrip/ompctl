@@ -54,7 +54,7 @@ export function createTunnelDialer(opts: TunnelDialerOptions): TunnelDaemon {
     acceptor: {
       accept: (token, send) => opts.gateway.acceptTunnelSession(token, send),
     },
-    onWebhook: async (request) => {
+    onWebhook: async request => {
       const response = await opts.gateway.fireWebhook(
         request.routineId,
         request.secret,
@@ -67,14 +67,14 @@ export function createTunnelDialer(opts: TunnelDialerOptions): TunnelDaemon {
         contentType: response.headers.get("content-type") ?? undefined,
       };
     },
-    onRegistered: (instanceId) => {
+    onRegistered: instanceId => {
       audit("tunnel.register", "ok", null, { daemonId: opts.identity.daemonId, instanceId });
       opts.onLog?.(`tunnel registered with hub instance ${instanceId}`);
     },
     onRefused: (code: RefusalCode, message: string) => {
       audit("tunnel.register", "denied", null, { daemonId: opts.identity.daemonId, code, message });
     },
-    onSession: (event) => {
+    onSession: event => {
       audit("tunnel.attach", event.outcome, event.deviceId ?? null, {
         sessionId: event.sessionId,
         ...(event.reason === undefined ? {} : { reason: event.reason }),

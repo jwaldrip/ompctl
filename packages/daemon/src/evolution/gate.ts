@@ -313,7 +313,7 @@ function parseUnifiedDiff(diff: string): ParseResult {
       return { ok: false, reason: `binary patches are not accepted (line ${i + 1})` };
     }
 
-    if (HEADER_KEYWORDS.some((kw) => line.startsWith(kw))) {
+    if (HEADER_KEYWORDS.some(kw => line.startsWith(kw))) {
       if (current === null) return { ok: false, reason: `file metadata outside a section at line ${i + 1}` };
       current.metadataOnlyValid = true;
       continue;

@@ -73,13 +73,13 @@ export interface CliContext {
 
 export function defaultContext(): CliContext {
   return {
-    out: (line) => process.stdout.write(`${line}\n`),
-    err: (line) => process.stderr.write(`${line}\n`),
+    out: line => process.stdout.write(`${line}\n`),
+    err: line => process.stderr.write(`${line}\n`),
     env: process.env,
     cwd: process.cwd(),
     home: process.env.OMPD_HOME ?? join(homedir(), ".ompd"),
     fetch: (input, init) => fetch(input, init),
-    exec: async (command) => {
+    exec: async command => {
       const [bin, ...args] = command;
       const proc = Bun.spawn([bin as string, ...args], { stdout: "pipe", stderr: "pipe" });
       const [stdout, stderr, code] = await Promise.all([

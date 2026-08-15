@@ -7,13 +7,13 @@
  * falling back to something quieter and worse.
  */
 
-import { RedisClient } from "bun";
 import { randomBytes } from "node:crypto";
+import { RedisClient } from "bun";
 import { consoleAudit } from "./audit.ts";
+import { MemoryBackplane, MemoryBus } from "./backplane.ts";
 import { Hub } from "./hub.ts";
 import { RedisBackplane } from "./redis-backplane.ts";
-import { MemoryBackplane, MemoryBus } from "./backplane.ts";
-import { MemoryRegistry, StoredRegistry, type RegistryStore } from "./registry.ts";
+import { MemoryRegistry, type RegistryStore, StoredRegistry } from "./registry.ts";
 
 const redisUrl = process.env.OMPD_HUB_REDIS_URL;
 const operatorToken = process.env.OMPD_HUB_OPERATOR_TOKEN;
@@ -45,12 +45,12 @@ const { backplane, registry } = await (async () => {
   const client = new RedisClient(redisUrl);
   await client.connect();
   const store: RegistryStore = {
-    get: (key) => client.get(key),
+    get: key => client.get(key),
     set: async (key, value) => {
       await client.set(key, value);
     },
-    del: (key) => client.del(key),
-    keys: (pattern) => client.keys(pattern),
+    del: key => client.del(key),
+    keys: pattern => client.keys(pattern),
   };
   return { backplane: redis, registry: new StoredRegistry(store) };
 })();

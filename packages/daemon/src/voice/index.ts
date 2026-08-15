@@ -9,17 +9,17 @@
 
 export {
   VoiceBridge,
+  type VoiceBridgeOptions,
   VoiceBufferOverflowError,
   WIRE_SAMPLE_RATE,
-  type VoiceBridgeOptions,
 } from "./bridge.ts";
 export {
   BunCommandRunner,
-  CommandTimeoutError,
-  withScratchDir,
   type CommandResult,
   type CommandRunner,
+  CommandTimeoutError,
   type EngineAvailability,
+  withScratchDir,
 } from "./exec.ts";
 export {
   loadSpeechRuntime,
@@ -33,36 +33,36 @@ export {
   EmptyTranscriptError,
   NullSttEngine,
   OmpSttEngine,
-  selectSttEngine,
-  STT_ENGINE_ORDER,
-  SttUnavailableError,
   type OmpSttOptions,
+  STT_ENGINE_ORDER,
   type SttEngine,
   type SttSelectionOptions,
   type SttTranscriber,
+  SttUnavailableError,
+  selectSttEngine,
 } from "./stt.ts";
 export {
   NullTtsEngine,
   OmpTtsEngine,
+  type OmpTtsOptions,
   SayTtsEngine,
+  type SayTtsOptions,
   selectTtsEngine,
   speakableSegments,
   TTS_ENGINE_ORDER,
-  TtsUnavailableError,
-  type OmpTtsOptions,
-  type SayTtsOptions,
   type TtsEngine,
   type TtsSelectionOptions,
   type TtsSynthesizer,
+  TtsUnavailableError,
 } from "./tts.ts";
 export {
   chunkFrames,
   detectUtteranceEnd,
   detectUtteranceEndFromEnergies,
   frameEnergy,
+  type ResolvedVadOptions,
   resolveVadOptions,
   VAD_DEFAULTS,
-  type ResolvedVadOptions,
   type VadOptions,
 } from "./vad.ts";
 export {
@@ -70,10 +70,10 @@ export {
   decodeWav,
   encodeWav,
   float32ToPcm,
+  type PcmAudio,
   pcmToBase64,
   pcmToFloat32,
   resampleFloat32,
   resamplePcm,
   WavFormatError,
-  type PcmAudio,
 } from "./wav.ts";

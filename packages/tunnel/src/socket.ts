@@ -26,7 +26,13 @@
  */
 
 import { SealedChannel } from "./channel.ts";
-import { beginClientHandshake, type ClientCredential, type ClientHandshake, type DaemonAuth, type SessionReady } from "./handshake.ts";
+import {
+  beginClientHandshake,
+  type ClientCredential,
+  type ClientHandshake,
+  type DaemonAuth,
+  type SessionReady,
+} from "./handshake.ts";
 import type { DaemonId } from "./identity.ts";
 import { type ClientToHub, type HubToClient, parseFrame } from "./protocol.ts";
 
@@ -113,9 +119,9 @@ class TunnelSocket implements TunnelSocketLike {
 
     const base = opts.hubUrl.replace(/\/+$/, "");
     this.#wire = opts.transport(`${base}/v1/link/${encodeURIComponent(opts.daemonId)}`);
-    this.#wire.onmessage = (data) => void this.#onWire(data);
-    this.#wire.onclose = (info) => this.#finish(info.code, info.reason);
-    this.#wire.onerror = (info) => this.onerror?.(info);
+    this.#wire.onmessage = data => void this.#onWire(data);
+    this.#wire.onclose = info => this.#finish(info.code, info.reason);
+    this.#wire.onerror = info => this.onerror?.(info);
     // Nothing to do on open: the hub speaks first with `linked`, and the
     // handshake cannot start before a session id exists to bind into it.
     this.#wire.onopen = null;
@@ -255,7 +261,7 @@ class TunnelSocket implements TunnelSocketLike {
       this.#fail(`session confirmation did not authenticate: ${describe(cause)}`);
       return;
     }
-    if (!ready || ready.t !== "ready") {
+    if (ready?.t !== "ready") {
       this.#fail("daemon refused the credential");
       return;
     }

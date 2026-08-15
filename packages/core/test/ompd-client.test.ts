@@ -16,11 +16,11 @@ import { describe, expect, test } from "bun:test";
 import type { Agent, AgentId, ClientFrame, ServerFrame, WebViewAction, WebViewActionResult } from "../src/contracts.ts";
 import {
   agentsEndpoint,
-  computeBackoffDelay,
-  OmpdClient,
   type BackoffOptions,
   type ClientErrorEvent,
   type CredentialVerdict,
+  computeBackoffDelay,
+  OmpdClient,
   type Scheduler,
   type SocketCloseInfo,
   type SocketLike,
@@ -130,7 +130,7 @@ class ManualClock {
   }
 
   pendingDelays(): number[] {
-    return this.tasks.filter((task) => !task.cancelled && !task.done).map((task) => task.ms);
+    return this.tasks.filter(task => !task.cancelled && !task.done).map(task => task.ms);
   }
 }
 
@@ -176,7 +176,7 @@ function harness(options: HarnessOptions = {}): Harness {
     pingIntervalMs: options.pingIntervalMs ?? 15_000,
     pongTimeoutMs: options.pongTimeoutMs ?? 10_000,
     isOnline: () => true,
-    createSocket: (url) => {
+    createSocket: url => {
       const socket = new FakeSocket(url);
       sockets.push(socket);
       return socket;
@@ -188,11 +188,11 @@ function harness(options: HarnessOptions = {}): Harness {
     },
   });
 
-  client.on("update", (event) => updates.push(event));
-  client.on("error", (event) => errors.push(event));
-  client.on("status", (event) => statuses.push(event));
-  client.on("unauthorized", (event) => unauthorized.push(event));
-  client.on("webview_action", (event) => webviews.push(event));
+  client.on("update", event => updates.push(event));
+  client.on("error", event => errors.push(event));
+  client.on("status", event => statuses.push(event));
+  client.on("unauthorized", event => unauthorized.push(event));
+  client.on("webview_action", event => webviews.push(event));
 
   return {
     client,
@@ -247,9 +247,7 @@ describe("backoff", () => {
 
   test("grows exponentially and stops at the ceiling", () => {
     const noJitter = () => 0;
-    const delays = [0, 1, 2, 3, 4, 5, 6, 7, 20].map((attempt) =>
-      computeBackoffDelay(attempt, options, noJitter),
-    );
+    const delays = [0, 1, 2, 3, 4, 5, 6, 7, 20].map(attempt => computeBackoffDelay(attempt, options, noJitter));
 
     expect(delays.slice(0, 7)).toEqual([500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000]);
     expect(delays.at(-1)).toBe(30_000);
@@ -331,7 +329,7 @@ describe("reconnect and resume", () => {
 
     expect(lastAttachSeq(first)).toBeUndefined();
     replay(first, log, undefined);
-    expect(h.updates.map((event) => event.seq)).toEqual([1, 2, 3]);
+    expect(h.updates.map(event => event.seq)).toEqual([1, 2, 3]);
 
     first.drop("signal lost");
     log.push("four", "five", "six");
@@ -346,11 +344,11 @@ describe("reconnect and resume", () => {
 
     replay(second, log, 3, 1);
 
-    const seqs = h.updates.map((event) => event.seq);
+    const seqs = h.updates.map(event => event.seq);
     expect(seqs).toEqual([1, 2, 3, 4, 5, 6]);
     expect(new Set(seqs).size).toBe(seqs.length);
-    expect(h.updates.map((event) => event.update)).toEqual(["one", "two", "three", "four", "five", "six"]);
-    expect(h.errors.filter((error) => error.code === "seq_gap")).toEqual([]);
+    expect(h.updates.map(event => event.update)).toEqual(["one", "two", "three", "four", "five", "six"]);
+    expect(h.errors.filter(error => error.code === "seq_gap")).toEqual([]);
     expect(h.client.watermark(AGENT)).toBe(6);
   });
 
@@ -375,7 +373,7 @@ describe("reconnect and resume", () => {
   test("a duplicate update at or below the watermark is dropped, not re-delivered", () => {
     const h = harness();
     const seen: number[] = [];
-    h.client.on("update", (event) => seen.push(event.seq));
+    h.client.on("update", event => seen.push(event.seq));
 
     h.client.start();
     bringUp(h);
@@ -411,9 +409,9 @@ describe("reconnect and resume", () => {
       expect(lastAttachSeq(next)).toBe(log.length);
     }
 
-    const seqs = h.updates.map((event) => event.seq);
+    const seqs = h.updates.map(event => event.seq);
     expect(seqs).toEqual(Array.from({ length: 10 }, (_value, index) => index + 1));
-    expect(h.errors.filter((error) => error.code === "seq_gap")).toEqual([]);
+    expect(h.errors.filter(error => error.code === "seq_gap")).toEqual([]);
   });
 
   test("keeps a separate watermark per agent", () => {
@@ -453,10 +451,10 @@ describe("reconnect and resume", () => {
     socket.deliver({ t: "update", agentId: AGENT, seq: 1, update: "a" });
     socket.deliver({ t: "update", agentId: AGENT, seq: 5, update: "e" });
 
-    const gaps = h.errors.filter((error) => error.code === "seq_gap");
+    const gaps = h.errors.filter(error => error.code === "seq_gap");
     expect(gaps).toHaveLength(1);
     expect(gaps[0]?.message).toContain("2..4");
-    expect(h.updates.map((event) => event.seq)).toEqual([1, 5]);
+    expect(h.updates.map(event => event.seq)).toEqual([1, 5]);
   });
 });
 
@@ -587,7 +585,7 @@ describe("frame handling", () => {
     expect(h.client.connectionState).toBe("connected");
 
     socket.deliver({ t: "update", agentId: AGENT, seq: 1, update: "still flowing" });
-    expect(h.updates.map((event) => event.update)).toEqual(["still flowing"]);
+    expect(h.updates.map(event => event.update)).toEqual(["still flowing"]);
   });
 
   test("an unknown frame type is ignored rather than thrown", () => {
@@ -604,7 +602,7 @@ describe("frame handling", () => {
     expect(socket.closedWith).toBeNull();
 
     socket.deliver({ t: "update", agentId: AGENT, seq: 1, update: "after the unknown" });
-    expect(h.updates.map((event) => event.update)).toEqual(["after the unknown"]);
+    expect(h.updates.map(event => event.update)).toEqual(["after the unknown"]);
   });
 
   test("malformed payloads are reported without killing the connection", () => {
@@ -616,7 +614,7 @@ describe("frame handling", () => {
     expect(() => socket.onmessage?.({ data: JSON.stringify({ nope: true }) })).not.toThrow();
     expect(() => socket.onmessage?.({ data: new Uint8Array([1, 2]) })).not.toThrow();
 
-    expect(h.errors.map((error) => error.code)).toEqual(["bad_frame", "bad_frame", "bad_frame"]);
+    expect(h.errors.map(error => error.code)).toEqual(["bad_frame", "bad_frame", "bad_frame"]);
     expect(socket.closedWith).toBeNull();
     expect(h.client.connectionState).toBe("connected");
   });
@@ -625,8 +623,8 @@ describe("frame handling", () => {
     const h = harness();
     const speech: Array<{ agentId: string; pcm: string }> = [];
     const transcripts: Array<{ text: string; final: boolean }> = [];
-    h.client.on("speech", (event) => speech.push({ agentId: event.agentId, pcm: event.pcm }));
-    h.client.on("transcript", (event) => transcripts.push({ text: event.text, final: event.final }));
+    h.client.on("speech", event => speech.push({ agentId: event.agentId, pcm: event.pcm }));
+    h.client.on("transcript", event => transcripts.push({ text: event.text, final: event.final }));
     h.client.start();
     const socket = bringUp(h);
 
@@ -641,7 +639,7 @@ describe("frame handling", () => {
   test("a say frame reaches listeners as text, with the seq it derives from", () => {
     const h = harness();
     const said: Array<{ agentId: string; seq: number; text: string }> = [];
-    h.client.on("say", (event) => {
+    h.client.on("say", event => {
       said.push({ agentId: event.agentId, seq: event.seq, text: event.text });
     });
     h.client.start();
@@ -656,7 +654,7 @@ describe("frame handling", () => {
   test("say carries its own seq so a replayed summary is not spoken twice", () => {
     const h = harness();
     const seqs: number[] = [];
-    h.client.on("say", (event) => seqs.push(event.seq));
+    h.client.on("say", event => seqs.push(event.seq));
     h.client.start();
     const socket = bringUp(h);
 
@@ -698,7 +696,7 @@ describe("frame handling", () => {
 
     expect(() => socket.deliver({ t: "update", agentId: AGENT, seq: 1, update: "x" })).not.toThrow();
     expect(socket.closedWith).toBeNull();
-    expect(h.updates.map((event) => event.seq)).toEqual([1]);
+    expect(h.updates.map(event => event.seq)).toEqual([1]);
   });
 });
 
@@ -741,7 +739,7 @@ describe("outbound frames", () => {
 
     h.client.prompt(AGENT, "this must not be replayed later");
 
-    expect(h.errors.some((error) => error.code === "offline")).toBe(true);
+    expect(h.errors.some(error => error.code === "offline")).toBe(true);
     h.clock.runNext();
     const second = h.latest();
     second.accept();
@@ -762,7 +760,7 @@ describe("outbound frames", () => {
   test("an instruction lost to a closed socket is reported; a ping is not", () => {
     const h = harness({ pingIntervalMs: 15_000 });
     const errors: string[] = [];
-    h.client.on("error", (event) => errors.push(event.message));
+    h.client.on("error", event => errors.push(event.message));
 
     h.client.start();
     const socket = h.latest();
@@ -796,7 +794,7 @@ describe("liveness", () => {
     expect(socket.framesOfType("ping")).toEqual([{ t: "ping" }]);
     expect(h.clock.runNext()).toBe(10_000);
 
-    expect(h.errors.some((error) => error.code === "timeout")).toBe(true);
+    expect(h.errors.some(error => error.code === "timeout")).toBe(true);
     expect(socket.closedWith?.code).toBe(4000);
     expect(h.statuses.at(-1)?.state).toBe("reconnecting");
   });
@@ -861,7 +859,7 @@ describe("status", () => {
   test("reports connecting, connected, then reconnecting with a delay", () => {
     const h = harness({ backoff: { baseMs: 800, maxMs: 5_000, factor: 2, jitter: 0 } });
     h.client.start();
-    expect(h.statuses.map((event) => event.state)).toEqual(["connecting"]);
+    expect(h.statuses.map(event => event.state)).toEqual(["connecting"]);
 
     bringUp(h);
     expect(h.statuses.at(-1)?.state).toBe("connected");
@@ -886,13 +884,13 @@ describe("status", () => {
       random: () => 0,
       schedule: clock.schedule,
       isOnline: () => online,
-      createSocket: (url) => {
+      createSocket: url => {
         const socket = new FakeSocket(url);
         sockets.push(socket);
         return socket;
       },
     });
-    client.on("status", (event) => statuses.push(event));
+    client.on("status", event => statuses.push(event));
 
     client.start();
     const socket = sockets.at(-1);
@@ -916,9 +914,7 @@ describe("credential probe & agentsEndpoint mapping", () => {
     expect(agentsEndpoint("ws://127.0.0.1:7717/v1/socket")).toBe("http://127.0.0.1:7717/v1/agents");
     expect(agentsEndpoint("ws://127.0.0.1:7717/v1/socket?token=x")).toBe("http://127.0.0.1:7717/v1/agents");
     expect(agentsEndpoint("wss://ompd.example.com/v1/socket")).toBe("https://ompd.example.com/v1/agents");
-    expect(agentsEndpoint("wss://home.example:443/v1/socket?token=x#frag")).toBe(
-      "https://home.example:443/v1/agents",
-    );
+    expect(agentsEndpoint("wss://home.example:443/v1/socket?token=x#frag")).toBe("https://home.example:443/v1/agents");
     expect(agentsEndpoint("https://host/anything")).toBe("https://host/v1/agents");
   });
 
@@ -963,10 +959,10 @@ describe("webView surface", () => {
     second.deliver({ t: "hello", deviceId: "dev_test", agents: [AGENT_RECORD] });
 
     const sent = second.sent;
-    const attach1Idx = sent.findIndex((f) => f.t === "attach" && f.agentId === AGENT);
-    const attach2Idx = sent.findIndex((f) => f.t === "attach" && f.agentId === agent2);
-    const reg1Idx = sent.findIndex((f) => f.t === "webview_register" && f.agentId === AGENT);
-    const reg2Idx = sent.findIndex((f) => f.t === "webview_register" && f.agentId === agent2);
+    const attach1Idx = sent.findIndex(f => f.t === "attach" && f.agentId === AGENT);
+    const attach2Idx = sent.findIndex(f => f.t === "attach" && f.agentId === agent2);
+    const reg1Idx = sent.findIndex(f => f.t === "webview_register" && f.agentId === AGENT);
+    const reg2Idx = sent.findIndex(f => f.t === "webview_register" && f.agentId === agent2);
 
     expect(attach1Idx).toBeGreaterThan(-1);
     expect(attach2Idx).toBeGreaterThan(-1);
@@ -1058,7 +1054,7 @@ describe("webView surface", () => {
   test("losing webview_register to a closed socket does not raise an error while webview_result does", () => {
     const h = harness();
     const errors: string[] = [];
-    h.client.on("error", (event) => errors.push(event.message));
+    h.client.on("error", event => errors.push(event.message));
     h.client.start();
     const first = bringUp(h);
 

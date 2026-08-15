@@ -20,8 +20,8 @@ import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { EMPTY_BROWSER } from "../src/session/browser.ts";
 import type { BrowserSession, BrowserState } from "../src/session/browser.ts";
+import { EMPTY_BROWSER } from "../src/session/browser.ts";
 import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
 
 // Dynamic on purpose, same reason as `smoke.test.tsx`: a static import of
@@ -71,8 +71,8 @@ function stylesForMarkup(markup: string): string {
   }
 
   return [...rnwStyleSheet.getSheet().textContent.matchAll(/[^{}]+\{[^{}]*\}/g)]
-    .filter((rule) => [...classNames].some((className) => hasClassSelector(rule[0], className)))
-    .map((rule) => rule[0])
+    .filter(rule => [...classNames].some(className => hasClassSelector(rule[0], className)))
+    .map(rule => rule[0])
     .join("\n");
 }
 
@@ -111,14 +111,14 @@ describe("the session browser renders a realistic corpus", () => {
   });
 
   test("the visible count excludes archived by default", () => {
-    const archivedCount = CORPUS.filter((s) => s.status === "archived").length;
+    const archivedCount = CORPUS.filter(s => s.status === "archived").length;
     const visibleCount = CORPUS.length - archivedCount;
     expect(archivedCount).toBeGreaterThan(0);
     expect(html).toContain(`${visibleCount} sessions`);
   });
 
   test("archived hidden count is shown on the toggle", () => {
-    const archivedCount = CORPUS.filter((s) => s.status === "archived").length;
+    const archivedCount = CORPUS.filter(s => s.status === "archived").length;
     expect(html).toContain(`data-testid="archived-hidden-count"`);
     expect(html).toContain(`>${archivedCount}<`);
   });
@@ -141,8 +141,8 @@ describe("the session browser renders a realistic corpus", () => {
 });
 
 describe("takeover and archive are visually distinct actions", () => {
-  const live = CORPUS.find((s) => s.status === "live-tui") as BrowserSession;
-  const dormant = CORPUS.find((s) => s.status === "dormant") as BrowserSession;
+  const live = CORPUS.find(s => s.status === "live-tui") as BrowserSession;
+  const dormant = CORPUS.find(s => s.status === "dormant") as BrowserSession;
   const html = render(browserState());
 
   test("a dormant row's takeover action reads Resume, not Archive or Delete", () => {
@@ -159,17 +159,22 @@ describe("takeover and archive are visually distinct actions", () => {
     expect(html).toContain(`data-testid="session-archive-${dormant.id}"`);
     expect(html).toContain(`Archive ${dormant.title}`);
     // The two actions are not the same pressable: distinct testIDs prove it.
-    expect(html).not.toContain(`data-testid="session-archive-${dormant.id}"data-testid="session-takeover-${dormant.id}"`);
+    expect(html).not.toContain(
+      `data-testid="session-archive-${dormant.id}"data-testid="session-takeover-${dormant.id}"`,
+    );
   });
 
   test("archive's label never says delete, remove, or destroy", () => {
-    const archiveButtonRegion = html.slice(html.indexOf(`session-archive-${dormant.id}`) - 40, html.indexOf(`session-archive-${dormant.id}`) + 120);
+    const archiveButtonRegion = html.slice(
+      html.indexOf(`session-archive-${dormant.id}`) - 40,
+      html.indexOf(`session-archive-${dormant.id}`) + 120,
+    );
     expect(archiveButtonRegion.toLowerCase()).not.toContain("delete");
     expect(archiveButtonRegion.toLowerCase()).not.toContain("destroy");
   });
 
   test("an archived row's primary action reads Restore, not Resume or Attach", () => {
-    const archived = CORPUS.find((s) => s.status === "archived") as BrowserSession;
+    const archived = CORPUS.find(s => s.status === "archived") as BrowserSession;
     // Archived is hidden by default; show it to reach the row at all.
     const withArchived = render({ ...browserState(), showArchived: true });
     expect(withArchived).toContain(`data-testid="session-unarchive-${archived.id}"`);
@@ -197,7 +202,7 @@ describe("collapsed group status precedence, rendered", () => {
     const dir = "/Users/op/dev/src/github.com/op/repo-3"; // 4 sessions
     // Show archived too, so every session in the group is accounted for
     // regardless of status; the point here is collapse, not visibility.
-    const group = CORPUS.filter((s) => s.cwd === dir);
+    const group = CORPUS.filter(s => s.cwd === dir);
     const expanded = render({ ...browserState(), showArchived: true });
     const collapsed = render({ ...browserState(), showArchived: true, collapsedGroups: new Set([dir]) });
 
@@ -247,7 +252,7 @@ describe("renders at a 390px phone width without a fixed width past it", () => {
   });
 
   test("no declared width in the rendered tree exceeds the 390px viewport", () => {
-    const widths = [...html.matchAll(/width:\s*(\d+(?:\.\d+)?)px/gi)].map((m) => Number(m[1]));
+    const widths = [...html.matchAll(/width:\s*(\d+(?:\.\d+)?)px/gi)].map(m => Number(m[1]));
     expect(widths.length).toBeGreaterThan(0);
     const max = Math.max(...widths);
     expect(max).toBeLessThanOrEqual(390);

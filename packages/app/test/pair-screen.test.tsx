@@ -12,12 +12,11 @@
  * defect this test exists to catch.
  */
 
-import { resetWindowSize, setWindowWidth } from "./rnw.ts";
-
 import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Connection } from "../src/platform/connection.ts";
+import { resetWindowSize, setWindowWidth } from "./rnw.ts";
 
 // Dynamic on purpose, the same way `smoke.test.tsx` and `session-webview.test.tsx`
 // load their screens: bun evaluates a file's whole static import graph before
@@ -40,7 +39,6 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(resetWindowSize);
 
-
 /**
  * Type into a rendered `TextInput` by invoking the change handler React
  * actually attached to it.
@@ -61,7 +59,7 @@ afterEach(resetWindowSize);
  * the vacuous version.
  */
 function typeInto(input: HTMLInputElement, value: string): void {
-  const key = Object.keys(input).find((name) => name.startsWith("__reactProps$"));
+  const key = Object.keys(input).find(name => name.startsWith("__reactProps$"));
   if (key === undefined) throw new Error("no React props on the rendered input: the change path cannot be driven");
   const props = Reflect.get(input, key) as { onChange?: (event: unknown) => void };
   if (typeof props.onChange !== "function") throw new Error("the rendered input has no onChange handler");
@@ -102,7 +100,7 @@ function mountPairScreen(): Harness {
   const paired: Connection[] = [];
 
   act(() => {
-    root.render(<PairScreen onPair={(connection) => paired.push(connection)} />);
+    root.render(<PairScreen onPair={connection => paired.push(connection)} />);
   });
 
   const endpointInput = host.querySelector('[data-testid="pair-endpoint"]');
@@ -133,11 +131,11 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
   test("form width honors the 390px phone viewport", () => {
     setWindowWidth(390);
     const h = mountPairScreen();
-    const maxWidths = [...rnwStyleSheet.getSheet().textContent.matchAll(/max-width:\s*(\d+(?:\.\d+)?)px/gi)].map((m) =>
+    const maxWidths = [...rnwStyleSheet.getSheet().textContent.matchAll(/max-width:\s*(\d+(?:\.\d+)?)px/gi)].map(m =>
       Number(m[1]),
     );
 
-    expect(maxWidths.every((maxWidth) => maxWidth <= 390)).toBe(true);
+    expect(maxWidths.every(maxWidth => maxWidth <= 390)).toBe(true);
     expect(h.form.style.maxWidth).toBe("");
 
     h.unmount();
@@ -149,7 +147,6 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
 
     h.unmount();
   });
-
 
   test("no input at all leaves Connect disabled and inert", () => {
     const h = mountPairScreen();

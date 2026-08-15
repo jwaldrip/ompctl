@@ -17,19 +17,19 @@
  */
 
 import { discoverMCPServers } from "@oh-my-pi/pi-coding-agent";
-import { redactString, type ConnectorStatus, type ConnectorSummary, type WorkspaceSourceLevel } from "@ompd/core";
+import { type ConnectorStatus, type ConnectorSummary, redactString, type WorkspaceSourceLevel } from "@ompd/core";
 
 /** See the identical helper in `./skills.ts`; duplicated rather than shared because MCP source metadata has no `Skill`-shaped source to import a type from. */
 function pluginNameFromPath(path: string | undefined): string | undefined {
-	if (path === undefined) return undefined;
-	const cacheMatch = /[/\\]plugins[/\\]cache[/\\][^/\\]+[/\\]([^/\\]+)[/\\]/.exec(path);
-	if (cacheMatch?.[1] !== undefined) return cacheMatch[1];
-	const pluginMatch = /[/\\]plugins[/\\]([^/\\]+)[/\\]/.exec(path);
-	return pluginMatch?.[1];
+  if (path === undefined) return undefined;
+  const cacheMatch = /[/\\]plugins[/\\]cache[/\\][^/\\]+[/\\]([^/\\]+)[/\\]/.exec(path);
+  if (cacheMatch?.[1] !== undefined) return cacheMatch[1];
+  const pluginMatch = /[/\\]plugins[/\\]([^/\\]+)[/\\]/.exec(path);
+  return pluginMatch?.[1];
 }
 
 function connectorLevel(value: string | undefined): WorkspaceSourceLevel | undefined {
-	return value === "user" || value === "project" || value === "native" ? value : undefined;
+  return value === "user" || value === "project" || value === "native" ? value : undefined;
 }
 
 /**
@@ -39,13 +39,13 @@ function connectorLevel(value: string | undefined): WorkspaceSourceLevel | undef
  * build a plain object literal instead of standing up a real one.
  */
 export interface MCPDiscoveryResult {
-	manager: {
-		getAllServerNames(): string[];
-		getConnectionStatus(name: string): ConnectorStatus;
-		getSource(name: string): { providerName?: string; level?: string; path?: string } | undefined;
-		disconnectAll(): Promise<void>;
-	};
-	errors: Array<{ path: string; error: string }>;
+  manager: {
+    getAllServerNames(): string[];
+    getConnectionStatus(name: string): ConnectorStatus;
+    getSource(name: string): { providerName?: string; level?: string; path?: string } | undefined;
+    disconnectAll(): Promise<void>;
+  };
+  errors: Array<{ path: string; error: string }>;
 }
 
 /**
@@ -63,33 +63,33 @@ export interface MCPDiscoveryResult {
  * processes, the same seam `Supervisor.spawnHost` uses for the same reason.
  */
 export async function listConnectorCatalog(
-	cwd?: string,
-	discover: (cwd?: string) => Promise<MCPDiscoveryResult> = discoverMCPServers,
+  cwd?: string,
+  discover: (cwd?: string) => Promise<MCPDiscoveryResult> = discoverMCPServers,
 ): Promise<ConnectorSummary[]> {
-	const { manager, errors } = await discover(cwd);
-	try {
-		const errorByServer = new Map(errors.map((e) => [e.path.replace(/^mcp:/, ""), e.error]));
-		const summaries: ConnectorSummary[] = manager.getAllServerNames().map((name) => {
-			const status: ConnectorStatus = manager.getConnectionStatus(name);
-			const source = manager.getSource(name);
-			const rawError = status === "connected" ? undefined : errorByServer.get(name);
-			const pluginName = pluginNameFromPath(source?.path);
-			return {
-				name,
-				connected: status === "connected",
-				status,
-				...(source?.providerName === undefined ? {} : { providerName: source.providerName }),
-				...(connectorLevel(source?.level) === undefined ? {} : { level: connectorLevel(source?.level) }),
-				...(pluginName === undefined ? {} : { pluginName }),
-				...(rawError === undefined ? {} : { error: redactString(rawError) }),
-			};
-		});
-		summaries.sort((a, b) => a.name.localeCompare(b.name));
-		return summaries;
-	} finally {
-		// Torn down unconditionally, success or failure: a listing call must
-		// never be the reason an MCP server process is still running after it
-		// returns.
-		await manager.disconnectAll();
-	}
+  const { manager, errors } = await discover(cwd);
+  try {
+    const errorByServer = new Map(errors.map(e => [e.path.replace(/^mcp:/, ""), e.error]));
+    const summaries: ConnectorSummary[] = manager.getAllServerNames().map(name => {
+      const status: ConnectorStatus = manager.getConnectionStatus(name);
+      const source = manager.getSource(name);
+      const rawError = status === "connected" ? undefined : errorByServer.get(name);
+      const pluginName = pluginNameFromPath(source?.path);
+      return {
+        name,
+        connected: status === "connected",
+        status,
+        ...(source?.providerName === undefined ? {} : { providerName: source.providerName }),
+        ...(connectorLevel(source?.level) === undefined ? {} : { level: connectorLevel(source?.level) }),
+        ...(pluginName === undefined ? {} : { pluginName }),
+        ...(rawError === undefined ? {} : { error: redactString(rawError) }),
+      };
+    });
+    summaries.sort((a, b) => a.name.localeCompare(b.name));
+    return summaries;
+  } finally {
+    // Torn down unconditionally, success or failure: a listing call must
+    // never be the reason an MCP server process is still running after it
+    // returns.
+    await manager.disconnectAll();
+  }
 }

@@ -8,7 +8,7 @@
  * it configures.
  */
 
-import { SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, type HostMount } from "@ompd/core";
+import { type HostMount, SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ } from "@ompd/core";
 
 /** Raised for anything the user could fix by retyping the line. */
 export class UsageError extends Error {
@@ -192,11 +192,11 @@ function numberFlag(flags: Map<string, string | true>, name: string): number | u
 export function parseScopes(raw: string): string[] {
   const parts = raw
     .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
+    .map(part => part.trim())
+    .filter(part => part.length > 0);
   if (parts.length === 0) throw new UsageError("--scopes was empty");
 
-  const unknown = parts.filter((part) => !KNOWN_SCOPES.includes(part));
+  const unknown = parts.filter(part => !KNOWN_SCOPES.includes(part));
   if (unknown.length > 0) {
     throw new UsageError(`unknown scope ${unknown.join(", ")}; known scopes are ${KNOWN_SCOPES.join(", ")}`);
   }
@@ -212,11 +212,11 @@ export function parseScopes(raw: string): string[] {
 export function parseMounts(raw: string): HostMount[] {
   const parts = raw
     .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
+    .map(part => part.trim())
+    .filter(part => part.length > 0);
   if (parts.length === 0) throw new UsageError("--mounts was empty");
 
-  return parts.map((part) => {
+  return parts.map(part => {
     const match = /^(.+):(ro|rw)$/.exec(part);
     if (match !== null) return { hostPath: match[1] as string, mode: match[2] as "ro" | "rw" };
     if (part.includes(":")) {
@@ -291,9 +291,7 @@ export function parseCommand(argv: string[]): Command {
           value: requirePositional(configArgs, 1, "value"),
         };
       }
-      throw new UsageError(
-        `unknown config action ${sub}; use config, config get <key>, or config set <key> <value>`,
-      );
+      throw new UsageError(`unknown config action ${sub}; use config, config get <key>, or config set <key> <value>`);
     }
 
     case "pair": {
@@ -432,9 +430,7 @@ export function parseCommand(argv: string[]): Command {
       // launch agent that quietly stops working when a directory is removed,
       // and nobody should be able to agree to that by pressing return.
       const allowSourcePath = flags.get("allow-source-path") === true;
-      return prefix === undefined
-        ? { kind: "install", allowSourcePath }
-        : { kind: "install", prefix, allowSourcePath };
+      return prefix === undefined ? { kind: "install", allowSourcePath } : { kind: "install", prefix, allowSourcePath };
     }
 
     case "uninstall":

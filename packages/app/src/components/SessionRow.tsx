@@ -17,13 +17,13 @@
 
 import type { JSX } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import type { BrowserSession, SessionStatus } from "../session/browser.ts";
-import { formatAge, formatBytes, SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 import { shortenPath } from "../design/format.ts";
-import { Glyph } from "../design/icons.tsx";
 import type { GlyphName } from "../design/icons.tsx";
+import { Glyph } from "../design/icons.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import type { BrowserSession, SessionStatus } from "../session/browser.ts";
+import { formatAge, formatBytes, SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 
 export interface SessionRowProps {
   session: BrowserSession;

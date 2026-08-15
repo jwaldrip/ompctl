@@ -94,9 +94,7 @@ export class ProposalStore {
     const rows = (
       state === undefined
         ? this.#db.query(`SELECT * FROM proposals ORDER BY created_at DESC`).all()
-        : this.#db
-            .query(`SELECT * FROM proposals WHERE state=? ORDER BY created_at DESC`)
-            .all(state)
+        : this.#db.query(`SELECT * FROM proposals WHERE state=? ORDER BY created_at DESC`).all(state)
     ) as ProposalRow[];
     return rows.map(rowToProposal);
   }
@@ -104,9 +102,7 @@ export class ProposalStore {
 
 function rowToProposal(row: ProposalRow): Proposal {
   const verdict =
-    row.verdict_passed === null
-      ? undefined
-      : { passed: row.verdict_passed === 1, log: row.verdict_log ?? "" };
+    row.verdict_passed === null ? undefined : { passed: row.verdict_passed === 1, log: row.verdict_log ?? "" };
 
   return {
     id: row.id,

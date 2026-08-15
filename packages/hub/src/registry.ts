@@ -11,7 +11,7 @@
  * than admitting any, which is the right direction to fail.
  */
 
-import { fingerprint, type DaemonId, ID_PATTERN } from "@ompd/tunnel";
+import { type DaemonId, fingerprint, ID_PATTERN } from "@ompd/tunnel";
 
 export interface EnrolledDaemon {
   readonly daemonId: DaemonId;

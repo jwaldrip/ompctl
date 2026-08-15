@@ -7,7 +7,6 @@
  */
 
 import { Database } from "bun:sqlite";
-import { redact, redactString } from "./redact.ts";
 import type {
   Agent,
   AgentId,
@@ -27,6 +26,7 @@ import type {
   Task,
   TaskState,
 } from "./contracts.ts";
+import { redact, redactString } from "./redact.ts";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -306,7 +306,7 @@ export class Store {
    */
   #migrateAgentHubMetadata(): void {
     const columns = new Set(
-      (this.#db.query("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map((column) => column.name),
+      (this.#db.query("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map(column => column.name),
     );
     for (const [name, type] of [
       ["parent_agent_id", "TEXT"],
@@ -349,9 +349,7 @@ export class Store {
   }
 
   setAgentState(id: AgentId, state: AgentState): void {
-    this.#db
-      .query(`UPDATE agents SET state=?, last_active_at=? WHERE id=?`)
-      .run(state, new Date().toISOString(), id);
+    this.#db.query(`UPDATE agents SET state=?, last_active_at=? WHERE id=?`).run(state, new Date().toISOString(), id);
   }
 
   getAgent(id: AgentId): Agent | null {
@@ -360,9 +358,7 @@ export class Store {
   }
 
   listAgents(): Agent[] {
-    const rows = this.#db
-      .query(`SELECT * FROM agents ORDER BY last_active_at DESC`)
-      .all() as AgentRow[];
+    const rows = this.#db.query(`SELECT * FROM agents ORDER BY last_active_at DESC`).all() as AgentRow[];
     return rows.map(rowToAgent);
   }
 
@@ -370,9 +366,9 @@ export class Store {
 
   /** Append an update and return its assigned sequence number. */
   appendUpdate(agentId: AgentId, payload: unknown): number {
-    const row = this.#db
-      .query(`SELECT COALESCE(MAX(seq),0)+1 AS next FROM updates WHERE agent_id=?`)
-      .get(agentId) as { next: number };
+    const row = this.#db.query(`SELECT COALESCE(MAX(seq),0)+1 AS next FROM updates WHERE agent_id=?`).get(agentId) as {
+      next: number;
+    };
     this.#db
       .query(`INSERT INTO updates (agent_id,seq,ts,payload) VALUES (?,?,?,?)`)
       .run(agentId, row.next, new Date().toISOString(), JSON.stringify(redact(payload)));
@@ -384,7 +380,7 @@ export class Store {
     const rows = this.#db
       .query(`SELECT seq,ts,payload FROM updates WHERE agent_id=? AND seq>? ORDER BY seq LIMIT ?`)
       .all(agentId, sinceSeq, limit) as Array<{ seq: number; ts: string; payload: string }>;
-    return rows.map((r) => ({ seq: r.seq, ts: r.ts, payload: JSON.parse(r.payload) }));
+    return rows.map(r => ({ seq: r.seq, ts: r.ts, payload: JSON.parse(r.payload) }));
   }
 
   // -- approvals -----------------------------------------------------------
@@ -428,12 +424,10 @@ export class Store {
   listApprovals(agentId?: AgentId): ApprovalRecord[] {
     const rows = (
       agentId
-        ? this.#db
-            .query(`SELECT * FROM approvals WHERE agent_id=? ORDER BY created_at DESC`)
-            .all(agentId)
+        ? this.#db.query(`SELECT * FROM approvals WHERE agent_id=? ORDER BY created_at DESC`).all(agentId)
         : this.#db.query(`SELECT * FROM approvals ORDER BY created_at DESC LIMIT 200`).all()
     ) as Array<Record<string, string | null>>;
-    return rows.map((r) => ({
+    return rows.map(r => ({
       requestId: r.request_id as string,
       agentId: r.agent_id as string,
       tool: r.tool as string,
@@ -456,22 +450,11 @@ export class Store {
         `INSERT OR REPLACE INTO devices (id,name,public_key,scopes,created_at,last_seen_at,revoked_at)
          VALUES (?,?,?,?,?,?,?)`,
       )
-      .run(
-        d.id,
-        d.name,
-        d.publicKey,
-        JSON.stringify(d.scopes),
-        d.createdAt,
-        d.lastSeenAt ?? null,
-        d.revokedAt ?? null,
-      );
+      .run(d.id, d.name, d.publicKey, JSON.stringify(d.scopes), d.createdAt, d.lastSeenAt ?? null, d.revokedAt ?? null);
   }
 
   getDevice(id: string): Device | null {
-    const r = this.#db.query(`SELECT * FROM devices WHERE id=?`).get(id) as Record<
-      string,
-      string | null
-    > | null;
+    const r = this.#db.query(`SELECT * FROM devices WHERE id=?`).get(id) as Record<string, string | null> | null;
     if (!r) return null;
     return {
       id: r.id as string,
@@ -492,10 +475,10 @@ export class Store {
    * from the list on revocation would make the act of revoking unverifiable.
    */
   listDevices(): Device[] {
-    const rows = this.#db
-      .query(`SELECT * FROM devices ORDER BY created_at DESC`)
-      .all() as Array<Record<string, string | null>>;
-    return rows.map((r) => ({
+    const rows = this.#db.query(`SELECT * FROM devices ORDER BY created_at DESC`).all() as Array<
+      Record<string, string | null>
+    >;
+    return rows.map(r => ({
       id: r.id as string,
       name: r.name as string,
       publicKey: r.public_key as string,
@@ -519,9 +502,7 @@ export class Store {
     const at = new Date().toISOString();
     this.#db.transaction(() => {
       this.#db.query(`UPDATE devices SET revoked_at=? WHERE id=?`).run(at, id);
-      this.#db
-        .query(`UPDATE auth_tokens SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL`)
-        .run(at, id);
+      this.#db.query(`UPDATE auth_tokens SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL`).run(at, id);
     })();
   }
 
@@ -536,9 +517,7 @@ export class Store {
     };
     if (input.label !== undefined) record.label = input.label;
     this.#db
-      .query(
-        `INSERT INTO auth_tokens (id,device_id,token_hash,label,created_at) VALUES (?,?,?,?,?)`,
-      )
+      .query(`INSERT INTO auth_tokens (id,device_id,token_hash,label,created_at) VALUES (?,?,?,?,?)`)
       .run(record.id, record.deviceId, record.tokenHash, input.label ?? null, record.createdAt);
     return record;
   }
@@ -551,9 +530,10 @@ export class Store {
    * only one of them is worth an audit line.
    */
   findAuthTokenByHash(tokenHash: string): AuthTokenRecord | null {
-    const row = this.#db.query(`SELECT * FROM auth_tokens WHERE token_hash=?`).get(tokenHash) as
-      | Record<string, string | null>
-      | null;
+    const row = this.#db.query(`SELECT * FROM auth_tokens WHERE token_hash=?`).get(tokenHash) as Record<
+      string,
+      string | null
+    > | null;
     return row ? rowToAuthToken(row) : null;
   }
 
@@ -561,18 +541,14 @@ export class Store {
     const rows = (
       deviceId === undefined
         ? this.#db.query(`SELECT * FROM auth_tokens ORDER BY created_at DESC`).all()
-        : this.#db
-            .query(`SELECT * FROM auth_tokens WHERE device_id=? ORDER BY created_at DESC`)
-            .all(deviceId)
+        : this.#db.query(`SELECT * FROM auth_tokens WHERE device_id=? ORDER BY created_at DESC`).all(deviceId)
     ) as Array<Record<string, string | null>>;
     return rows.map(rowToAuthToken);
   }
 
   /** Record that a credential was presented. Callers throttle this; see DeviceAuth. */
   touchAuthToken(id: string): void {
-    this.#db
-      .query(`UPDATE auth_tokens SET last_used_at=? WHERE id=?`)
-      .run(new Date().toISOString(), id);
+    this.#db.query(`UPDATE auth_tokens SET last_used_at=? WHERE id=?`).run(new Date().toISOString(), id);
   }
 
   /**
@@ -620,7 +596,7 @@ export class Store {
     const rows = this.#db.query(`SELECT * FROM routines ORDER BY created_at`).all() as Array<
       Record<string, string | number | null>
     >;
-    return rows.map((r) => ({
+    return rows.map(r => ({
       id: r.id as string,
       name: r.name as string,
       enabled: r.enabled === 1,
@@ -718,7 +694,7 @@ export class Store {
     const rows = this.#db
       .query(`SELECT * FROM runs WHERE routine_id=? ORDER BY started_at DESC LIMIT ?`)
       .all(routineId, limit) as Array<Record<string, string | null>>;
-    return rows.map((r) => ({
+    return rows.map(r => ({
       id: r.id as string,
       routineId: r.routine_id as string,
       agentId: r.agent_id ?? undefined,
@@ -780,9 +756,7 @@ export class Store {
     const rows = (
       agentId === undefined
         ? this.#db.query(`SELECT * FROM tasks ORDER BY created_at DESC`).all()
-        : this.#db
-            .query(`SELECT * FROM tasks WHERE agent_id=? ORDER BY created_at DESC`)
-            .all(agentId)
+        : this.#db.query(`SELECT * FROM tasks WHERE agent_id=? ORDER BY created_at DESC`).all(agentId)
     ) as TaskRow[];
     return rows.map(rowToTask);
   }
@@ -900,7 +874,7 @@ export class Store {
     const rows = this.#db.query(`SELECT session_id FROM session_archive`).all() as Array<{
       session_id: string;
     }>;
-    return new Set(rows.map((r) => r.session_id));
+    return new Set(rows.map(r => r.session_id));
   }
 
   /** The cached message count for a session, or null on a cache miss -- an empty table (deleted wholesale, or never populated) is exactly that: every session simply misses. */
@@ -908,9 +882,7 @@ export class Store {
     const row = this.#db
       .query(`SELECT mtime_ms,size_bytes,message_count FROM session_scan_cache WHERE session_id=?`)
       .get(sessionId) as { mtime_ms: number; size_bytes: number; message_count: number } | null;
-    return row
-      ? { mtimeMs: row.mtime_ms, sizeBytes: row.size_bytes, messageCount: row.message_count }
-      : null;
+    return row ? { mtimeMs: row.mtime_ms, sizeBytes: row.size_bytes, messageCount: row.message_count } : null;
   }
 
   setSessionScanCache(sessionId: string, entry: SessionScanCacheEntry): void {
@@ -992,9 +964,7 @@ export class Store {
 
   audit(entry: AuditInput): void {
     this.#db
-      .query(
-        `INSERT INTO audit (ts,action,actor_device_id,agent_id,detail,outcome) VALUES (?,?,?,?,?,?)`,
-      )
+      .query(`INSERT INTO audit (ts,action,actor_device_id,agent_id,detail,outcome) VALUES (?,?,?,?,?,?)`)
       .run(
         new Date().toISOString(),
         entry.action,
@@ -1009,7 +979,7 @@ export class Store {
     const rows = this.#db.query(`SELECT * FROM audit ORDER BY id DESC LIMIT ?`).all(limit) as Array<
       Record<string, string | number | null>
     >;
-    return rows.map((r) => ({
+    return rows.map(r => ({
       id: r.id as number,
       ts: r.ts as string,
       action: r.action as AuditAction,

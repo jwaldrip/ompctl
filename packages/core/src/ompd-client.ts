@@ -27,8 +27,8 @@ import type {
   CollabSignalFrame,
   CollabSignalInput,
   CollabVoiceFrame,
-  CollabVoiceNoteInput,
   CollabVoiceNoteFrame,
+  CollabVoiceNoteInput,
   CollabVoiceParticipant,
   PlanReviewChoice,
   ServerFrame,
@@ -382,7 +382,6 @@ export class OmpdClient {
   /** Rooms this client must rejoin after a socket reconnect. */
   private readonly rooms = new Set<string>();
 
-
   private socket: SocketLike | null = null;
   /** Invalidates handlers belonging to a socket we have already abandoned. */
   private generation = 0;
@@ -586,7 +585,7 @@ export class OmpdClient {
       // authenticated us and said `hello`.
       this.startPingLoop();
     };
-    socket.onmessage = (message) => {
+    socket.onmessage = message => {
       if (generation !== this.generation) return;
       this.handleRaw(message.data);
     };
@@ -596,7 +595,7 @@ export class OmpdClient {
       // so the two paths cannot both schedule a reconnect.
       this.emit("error", { message: "websocket error", code: "socket" });
     };
-    socket.onclose = (info) => {
+    socket.onclose = info => {
       if (generation !== this.generation) return;
       this.socket = null;
       this.clearTimers();
@@ -696,7 +695,7 @@ export class OmpdClient {
     if (this.probing || this.rejected || !this.started) return;
     this.probing = true;
     void this.probeCredential().then(
-      (verdict) => {
+      verdict => {
         this.probing = false;
         if (verdict === "rejected") this.declareRejected(reason);
       },
@@ -846,7 +845,6 @@ export class OmpdClient {
           choices: frame.choices,
         });
         return;
-        return;
       case "error":
         // An error frame is a message about a request, not a transport
         // failure. Tearing down the socket here would turn "that prompt was
@@ -987,9 +985,9 @@ function createPlatformSocket(url: string): SocketLike {
     onmessage: null,
   };
   ws.onopen = () => adapter.onopen?.();
-  ws.onclose = (event) => adapter.onclose?.({ code: event.code, reason: event.reason });
-  ws.onerror = (event) => adapter.onerror?.(event);
-  ws.onmessage = (event) => adapter.onmessage?.({ data: event.data });
+  ws.onclose = event => adapter.onclose?.({ code: event.code, reason: event.reason });
+  ws.onerror = event => adapter.onerror?.(event);
+  ws.onmessage = event => adapter.onmessage?.({ data: event.data });
   return adapter;
 }
 

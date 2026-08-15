@@ -16,16 +16,16 @@
  * driver to destroy the machine.
  */
 
+import { rmSync } from "node:fs";
 import type { LocalHost, SpawnLocalHostOptions } from "@ompd/acp";
 import { spawnLocalHost } from "@ompd/acp";
 import type { HostKind, HostSpec } from "@ompd/core";
-import { rmSync } from "node:fs";
 import { execCommand } from "./exec.ts";
-import { writeGateWrapper, type GateWrapper } from "./gate-wrapper.ts";
+import { type GateWrapper, writeGateWrapper } from "./gate-wrapper.ts";
 import {
-  ProvisionError,
   type CommandRunner,
   type HostHandle,
+  ProvisionError,
   type ProvisionerBackend,
   type SpawnHost,
 } from "./types.ts";

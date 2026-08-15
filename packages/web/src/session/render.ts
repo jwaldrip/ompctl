@@ -16,7 +16,15 @@
 import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import { el, formatPayload, setText, toggleClass } from "../ui/dom.ts";
 import { icon } from "../ui/icons.ts";
-import type { ApprovalEntry, AssistantEntry, Entry, SessionState, ToolEntry, UnknownEntry, UserEntry } from "./model.ts";
+import type {
+  ApprovalEntry,
+  AssistantEntry,
+  Entry,
+  SessionState,
+  ToolEntry,
+  UnknownEntry,
+  UserEntry,
+} from "./model.ts";
 
 export interface TimelineOptions {
   onDecide(requestId: string, choice: ApprovalChoice, scope: ApprovalScope): void;
@@ -147,9 +155,7 @@ export function createTimeline(options: TimelineOptions): TimelineView {
     outputWrap.hidden = entry.output === null;
 
     const locations =
-      entry.locations.length > 0
-        ? el("p", { class: "annot-locations", text: entry.locations.join("  ") })
-        : null;
+      entry.locations.length > 0 ? el("p", { class: "annot-locations", text: entry.locations.join("  ") }) : null;
 
     const body = el("div", {
       class: "annot-body",

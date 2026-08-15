@@ -23,8 +23,8 @@
  * scopes.
  */
 
-import { SealedChannel } from "./channel.ts";
 import { toBase64Url } from "./bytes.ts";
+import { SealedChannel } from "./channel.ts";
 import {
   answerClientHandshake,
   type ClientCredential,
@@ -36,8 +36,8 @@ import { type DaemonKeyPair, signWith } from "./identity.ts";
 import {
   type DaemonToHub,
   type HubToDaemon,
-  parseFrame,
   PROTOCOL_VERSION,
+  parseFrame,
   type RefusalCode,
   registrationLabel,
 } from "./protocol.ts";
@@ -161,7 +161,7 @@ export class TunnelDaemon {
     this.#hubUrl = opts.hubUrl.replace(/\/+$/, "");
     this.#identity = opts.identity;
     this.#acceptor = opts.acceptor;
-    this.#transport = opts.transport ?? ((url) => new WebSocket(url) as unknown as DialSocket);
+    this.#transport = opts.transport ?? (url => new WebSocket(url) as unknown as DialSocket);
     this.#minBackoffMs = opts.minBackoffMs ?? DEFAULT_MIN_BACKOFF_MS;
     this.#maxBackoffMs = opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.#onLog = opts.onLog ?? (() => {});
@@ -212,9 +212,9 @@ export class TunnelDaemon {
     if (this.#stopped) return;
     const socket = this.#transport(`${this.#hubUrl}/v1/daemon`);
     this.#socket = socket;
-    socket.onmessage = (data) => void this.#onFrame(data);
-    socket.onerror = (info) => this.#onLog(`tunnel error: ${info.message}`);
-    socket.onclose = (info) => this.#onClose(info);
+    socket.onmessage = data => void this.#onFrame(data);
+    socket.onerror = info => this.#onLog(`tunnel error: ${info.message}`);
+    socket.onclose = info => this.#onClose(info);
     socket.onopen = null;
   }
 
@@ -295,7 +295,6 @@ export class TunnelDaemon {
     });
   }
 
-
   async #onWebhookRequest(frame: Extract<HubToDaemon, { t: "webhook_request" }>): Promise<void> {
     const handler = this.#onWebhook;
     if (handler === undefined) {
@@ -351,7 +350,7 @@ export class TunnelDaemon {
   /** First frame of a session: unsealed, because it is what makes the key. */
   async #onHello(session: Session, payload: string): Promise<void> {
     const hello = parseFrame<ClientHello>(payload);
-    if (!hello || hello.t !== "hello") {
+    if (hello?.t !== "hello") {
       this.#refuse(session, "bad_request", "first frame was not a hello");
       return;
     }
@@ -390,15 +389,19 @@ export class TunnelDaemon {
       this.#refuse(session, "bad_request", "credential frame did not authenticate");
       return;
     }
-    if (!credential || credential.t !== "credential" || typeof credential.token !== "string") {
+    if (credential?.t !== "credential" || typeof credential.token !== "string") {
       this.#refuse(session, "bad_request", "credential frame was malformed");
       return;
     }
 
-    const admitted = this.#acceptor.accept(credential.token, (raw) => void this.#sealTo(session, raw));
+    const admitted = this.#acceptor.accept(credential.token, raw => void this.#sealTo(session, raw));
     if (!admitted.ok) {
       this.#onSession?.({ sessionId: session.sessionId, outcome: "denied", reason: admitted.reason });
-      this.#refuse(session, admitted.reason === "revoked" ? "revoked" : "unknown_client", `credential was ${admitted.reason}`);
+      this.#refuse(
+        session,
+        admitted.reason === "revoked" ? "revoked" : "unknown_client",
+        `credential was ${admitted.reason}`,
+      );
       return;
     }
 

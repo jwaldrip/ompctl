@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { fromBase64Url, toBase64Url, utf8 } from "../src/bytes.ts";
 import { ChannelError, SealedChannel } from "../src/channel.ts";
+import { answerClientHandshake, beginClientHandshake, HandshakeError, handshakeTranscript } from "../src/handshake.ts";
 import {
-  answerClientHandshake,
-  beginClientHandshake,
-  HandshakeError,
-  handshakeTranscript,
-} from "../src/handshake.ts";
-import { fingerprint, generateIdentity, identityFromPrivate, keyMatchesId, signWith, verifyWith } from "../src/identity.ts";
+  fingerprint,
+  generateIdentity,
+  identityFromPrivate,
+  keyMatchesId,
+  signWith,
+  verifyWith,
+} from "../src/identity.ts";
 
 const SESSION = "sess_abc123";
 
@@ -261,7 +263,7 @@ describe("sealed channel", () => {
     // asynchronous, so without ordering inside the channel these finish in
     // whichever order the runtime completes them, reach the wire transposed,
     // and the far side refuses a stream that was never corrupted.
-    const sealed = await Promise.all(["one", "two", "three", "four"].map((text) => clientChannel.seal(text)));
+    const sealed = await Promise.all(["one", "two", "three", "four"].map(text => clientChannel.seal(text)));
     const opened: string[] = [];
     for (const frame of sealed) opened.push(await daemonChannel.open(frame));
     expect(opened).toEqual(["one", "two", "three", "four"]);
@@ -272,7 +274,7 @@ describe("sealed channel", () => {
     const sealed: string[] = [];
     for (const text of ["a", "b", "c"]) sealed.push(await clientChannel.seal(text));
     // Three arriving together, handled without awaiting between them.
-    expect(await Promise.all(sealed.map((frame) => daemonChannel.open(frame)))).toEqual(["a", "b", "c"]);
+    expect(await Promise.all(sealed.map(frame => daemonChannel.open(frame)))).toEqual(["a", "b", "c"]);
   });
 
   test("a tampered ciphertext does not open", async () => {

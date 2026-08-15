@@ -75,7 +75,7 @@ export class RedisBackplane implements Backplane {
     await subscriber.connect();
     const backplane = new RedisBackplane(opts, commands, subscriber);
 
-    await subscriber.subscribe(CHANNEL_PREFIX + opts.instanceId, (message) => {
+    await subscriber.subscribe(CHANNEL_PREFIX + opts.instanceId, message => {
       let parsed: unknown;
       try {
         parsed = JSON.parse(message);
@@ -102,7 +102,7 @@ export class RedisBackplane implements Backplane {
     // with nothing to notice, so both legs of every cross-instance session
     // would sit there looking connected. Reporting it is what turns a silent
     // hole into a teardown and a resume.
-    subscriber.onclose = (error) => {
+    subscriber.onclose = error => {
       if (backplane.#closing) return;
       backplane.#onDisrupted?.(`backplane subscriber closed: ${error instanceof Error ? error.message : error}`);
     };
@@ -201,7 +201,7 @@ export class RedisBackplane implements Backplane {
       // A closed socket's in-flight abort rejects on a later tick than the
       // synchronous `close()` call above, so the handler must still be
       // installed when that tick runs rather than being torn down with it.
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise(resolve => setTimeout(resolve, 10));
     } finally {
       process.off("unhandledRejection", swallowTeardownAbort);
     }

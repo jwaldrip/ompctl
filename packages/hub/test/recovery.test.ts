@@ -64,7 +64,7 @@ class FakeAgent {
         return {
           ok: true,
           deviceId,
-          deliver: (raw) => {
+          deliver: raw => {
             const frame = JSON.parse(raw) as { t?: string; sinceSeq?: number };
             if (frame.t !== "attach") return;
             const since = frame.sinceSeq ?? 0;
@@ -101,7 +101,7 @@ function openClient(hubUrl: string, daemonId: string, token: string): Client {
   state.socket.onopen = () => {
     state.opened = true;
   };
-  state.socket.onmessage = (data) => {
+  state.socket.onmessage = data => {
     const frame = JSON.parse(data) as { t?: string; seq?: number };
     if (frame.t === "update" && typeof frame.seq === "number") state.seqs.push(frame.seq);
   };
@@ -270,7 +270,7 @@ describe("a dropped connection loses no part of a turn", () => {
     const lossy = (target: string): TunnelSocketLike => {
       const inner = browserTransport(target);
       let downstream: ((data: string) => void) | null = null;
-      inner.onmessage = (data) => {
+      inner.onmessage = data => {
         const frame = JSON.parse(data) as { t?: string };
         if (dropNext && frame.t === "data") {
           dropNext = false;
@@ -303,7 +303,7 @@ describe("a dropped connection loses no part of a turn", () => {
     socket.onopen = () => {
       opened = true;
     };
-    socket.onmessage = (data) => {
+    socket.onmessage = data => {
       const frame = JSON.parse(data) as { t?: string; seq?: number };
       if (frame.t === "update" && typeof frame.seq === "number") seqs.push(frame.seq);
     };

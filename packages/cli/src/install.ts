@@ -136,7 +136,7 @@ export function isExecutableFile(path: string): boolean {
 
 /** Every `PATH` entry, in order, with the empties dropped. */
 export function pathEntries(env: Record<string, string | undefined>): string[] {
-  return (env.PATH ?? "").split(":").filter((entry) => entry.length > 0);
+  return (env.PATH ?? "").split(":").filter(entry => entry.length > 0);
 }
 
 /** The first executable named `name` on `PATH`, or null. */
@@ -245,10 +245,7 @@ export function pathAdvice(env: Record<string, string | undefined>, prefix: stri
   const shell = (env.SHELL ?? "").split("/").pop() ?? "";
   const advice = SHELL_ADVICE[shell] ?? FALLBACK_ADVICE;
 
-  const line =
-    advice.syntax === "fish"
-      ? `fish_add_path ${prefix}`
-      : `export PATH="${prefix}:$PATH"`;
+  const line = advice.syntax === "fish" ? `fish_add_path ${prefix}` : `export PATH="${prefix}:$PATH"`;
 
   return {
     onPath: pathEntries(env).includes(prefix),

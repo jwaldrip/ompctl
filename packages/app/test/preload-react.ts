@@ -17,7 +17,7 @@ import { mock } from "bun:test";
 import { createRequire } from "node:module";
 
 const appRequire = createRequire(import.meta.url);
-const workspaceRequire = createRequire(new URL("../../../../package.json", import.meta.url));
+const workspaceRequire = createRequire(new URL("../../../package.json", import.meta.url));
 
 // App code is intentionally on RN's exact React 19.1.4, while the monorepo
 // catalog supplies React 19.2.7 for unrelated web packages. RNW is hoisted to

@@ -18,12 +18,12 @@
  * become one of these calls on its own.
  */
 
-import { forwardRef, useCallback, useImperativeHandle, useRef } from "react";
-import { View, type StyleProp, type ViewStyle } from "react-native";
-import WebView, { type WebViewMessageEvent, type WebViewNavigation } from "react-native-webview";
-import { captureRef } from "react-native-view-shot";
 import type { WebViewAction, WebViewActionResult } from "@ompd/core/contracts";
 import { undriveableUrlReason } from "@ompd/core/policy";
+import { forwardRef, useCallback, useImperativeHandle, useRef } from "react";
+import { type StyleProp, View, type ViewStyle } from "react-native";
+import { captureRef } from "react-native-view-shot";
+import WebView, { type WebViewMessageEvent, type WebViewNavigation } from "react-native-webview";
 import { buildInjectedScript, mintNonce, parseBridgeMessage } from "./bridge.ts";
 
 export interface WebViewDriverHandle {
@@ -89,7 +89,7 @@ export const WebViewDriver = forwardRef<WebViewDriverHandle, WebViewDriverProps>
       const view = webViewRef.current;
       if (!view) return Promise.resolve({ kind: "error", message: "webview is not mounted" });
 
-      return new Promise<WebViewActionResult>((resolve) => {
+      return new Promise<WebViewActionResult>(resolve => {
         const nonce = mintNonce();
         const timer = setTimeout(() => {
           if (pendingRef.current?.nonce === nonce) {
@@ -111,7 +111,7 @@ export const WebViewDriver = forwardRef<WebViewDriverHandle, WebViewDriverProps>
       if (pendingNavigateRef.current) {
         return Promise.resolve({ kind: "error", message: "another navigation is already in flight" });
       }
-      return new Promise<WebViewActionResult>((resolve) => {
+      return new Promise<WebViewActionResult>(resolve => {
         const timer = setTimeout(() => {
           if (pendingNavigateRef.current) {
             pendingNavigateRef.current = null;
@@ -141,7 +141,7 @@ export const WebViewDriver = forwardRef<WebViewDriverHandle, WebViewDriverProps>
   useImperativeHandle(
     ref,
     () => ({
-      act: (action) => {
+      act: action => {
         switch (action.kind) {
           case "navigate":
             return navigate(action.url);

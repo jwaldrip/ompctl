@@ -10,11 +10,11 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  type ApprovalSubject,
+  type CallSubject,
   coverFor,
   subjectsOf,
   uncoveredMutations,
-  type ApprovalSubject,
-  type CallSubject,
 } from "../../../scripts/gate-correlation.ts";
 
 const MARKER = "/tmp/ompd-routine-live-work-vCgsP3/routine-marker.txt";

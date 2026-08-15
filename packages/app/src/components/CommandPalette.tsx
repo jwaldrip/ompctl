@@ -32,7 +32,7 @@ export function CommandPalette({ skills, query, onInvoke }: CommandPaletteProps)
       <FlatList
         testID="command-palette-list"
         data={matches}
-        keyExtractor={(skill) => `${skill.kind}:${skill.name}:${skill.source}`}
+        keyExtractor={skill => `${skill.kind}:${skill.name}:${skill.source}`}
         renderItem={({ item }) => (
           <Pressable
             testID={`command-${item.kind}-${item.name}`}

@@ -14,16 +14,16 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { AssistantEntry, SessionState, ToolEntry } from "../src/session/model.ts";
 import {
-  EMPTY_SESSION,
   appendApproval,
   appendPrompt,
+  EMPTY_SESSION,
   endTurn,
   reduce,
   reduceAll,
   resolveApproval,
 } from "../src/session/model.ts";
-import type { AssistantEntry, SessionState, ToolEntry } from "../src/session/model.ts";
 
 interface Capture {
   counts: Record<string, number>;
@@ -31,7 +31,7 @@ interface Capture {
 }
 
 const capture: Capture = await Bun.file(new URL("../../../scripts/update-shapes.json", import.meta.url)).json();
-const STREAM = capture.stream.map((frame) => frame.update);
+const STREAM = capture.stream.map(frame => frame.update);
 
 function replay(): SessionState {
   return reduceAll(EMPTY_SESSION, STREAM);
@@ -65,15 +65,13 @@ describe("captured turn", () => {
     const messages = assistantsOf(state);
     const ids = STREAM.filter(
       (update): update is { sessionUpdate: string; messageId: string } =>
-        typeof update === "object" &&
-        update !== null &&
-        Reflect.get(update, "sessionUpdate") === "agent_message_chunk",
-    ).map((update) => update.messageId);
+        typeof update === "object" && update !== null && Reflect.get(update, "sessionUpdate") === "agent_message_chunk",
+    ).map(update => update.messageId);
     const distinct = new Set(ids);
 
     expect(distinct.size).toBe(2);
     expect(messages.length).toBe(distinct.size);
-    expect(messages.map((message) => message.id).sort()).toEqual([...distinct].sort());
+    expect(messages.map(message => message.id).sort()).toEqual([...distinct].sort());
   });
 
   test("a coalesced message is the concatenation of its chunks, in order", () => {
@@ -91,16 +89,16 @@ describe("captured turn", () => {
     const tools = toolsOf(state);
 
     expect(tools.length).toBe(4);
-    expect(new Set(tools.map((tool) => tool.id)).size).toBe(4);
-    expect(tools.map((tool) => tool.toolKind)).toEqual(["think", "read", "execute", "think"]);
+    expect(new Set(tools.map(tool => tool.id)).size).toBe(4);
+    expect(tools.map(tool => tool.toolKind)).toEqual(["think", "read", "execute", "think"]);
     // Every card ends settled, which only holds if the updates found their card.
-    expect(tools.map((tool) => tool.status)).toEqual(["completed", "completed", "completed", "completed"]);
+    expect(tools.map(tool => tool.status)).toEqual(["completed", "completed", "completed", "completed"]);
     expect(state.activity).toEqual({ tools: 4, running: 0, failed: 0 });
   });
 
   test("a mutated card keeps its announced identity and gains its output", () => {
     const state = replay();
-    const execute = toolsOf(state).find((tool) => tool.toolKind === "execute");
+    const execute = toolsOf(state).find(tool => tool.toolKind === "execute");
 
     expect(execute?.title).toBe("$ echo hello-from-ompd");
     expect(execute?.status).toBe("completed");
@@ -110,7 +108,7 @@ describe("captured turn", () => {
 
   test("locations announced with a read survive onto the card", () => {
     const state = replay();
-    const read = toolsOf(state).find((tool) => tool.toolKind === "read");
+    const read = toolsOf(state).find(tool => tool.toolKind === "read");
     expect(read?.locations.length).toBe(1);
     expect(read?.locations[0]?.endsWith("notes.md")).toBe(true);
   });
@@ -118,7 +116,7 @@ describe("captured turn", () => {
   test("the plan reflects the last plan update, not the sum of both", () => {
     const state = replay();
     expect(state.plan.length).toBe(3);
-    expect(state.plan.map((entry) => entry.status)).toEqual(["completed", "completed", "completed"]);
+    expect(state.plan.map(entry => entry.status)).toEqual(["completed", "completed", "completed"]);
     expect(state.plan[0]?.content).toBe("Read notes.md");
   });
 
@@ -144,7 +142,7 @@ describe("captured turn", () => {
 
   test("the replayed turn is entirely renderable: nothing landed in the unknown bucket", () => {
     const state = replay();
-    expect(state.entries.filter((entry) => entry.kind === "unknown")).toEqual([]);
+    expect(state.entries.filter(entry => entry.kind === "unknown")).toEqual([]);
   });
 
   test("replaying the same stream twice produces identical state", () => {
@@ -184,7 +182,7 @@ describe("purity", () => {
 
     const after = reduce(before, { sessionUpdate: "tool_call_update", toolCallId: target?.id, status: "failed" });
 
-    const changedIndex = before.entries.findIndex((entry) => entry.id === target?.id);
+    const changedIndex = before.entries.findIndex(entry => entry.id === target?.id);
     for (let index = 0; index < before.entries.length; index += 1) {
       if (index === changedIndex) {
         expect(after.entries[index]).not.toBe(before.entries[index]);
@@ -230,8 +228,8 @@ describe("streaming", () => {
       { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "two" }, messageId: "b" },
     ]);
     const messages = assistantsOf(state);
-    expect(messages.map((message) => message.text)).toEqual(["one", "two"]);
-    expect(messages.map((message) => message.streaming)).toEqual([false, true]);
+    expect(messages.map(message => message.text)).toEqual(["one", "two"]);
+    expect(messages.map(message => message.streaming)).toEqual([false, true]);
   });
 
   test("a message resumed after a tool call rejoins its own bubble", () => {
@@ -242,7 +240,7 @@ describe("streaming", () => {
     ]);
     expect(assistantsOf(state).length).toBe(1);
     expect(assistantsOf(state)[0]?.text).toBe("before after");
-    expect(state.entries.map((entry) => entry.kind)).toEqual(["assistant", "tool"]);
+    expect(state.entries.map(entry => entry.kind)).toEqual(["assistant", "tool"]);
   });
 
   test("thinking is kept apart from the reply even under the same channel rules", () => {
@@ -251,7 +249,7 @@ describe("streaming", () => {
       { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" }, messageId: "m" },
     ]);
     const messages = assistantsOf(state);
-    expect(messages.map((message) => message.thought)).toEqual([true, false]);
+    expect(messages.map(message => message.thought)).toEqual([true, false]);
   });
 });
 
@@ -325,7 +323,7 @@ describe("prompts and clearances", () => {
       input: { command: "rm -rf /tmp/x" },
     });
 
-    expect(asked.entries.map((entry) => entry.kind)).toEqual(["tool", "approval"]);
+    expect(asked.entries.map(entry => entry.kind)).toEqual(["tool", "approval"]);
     expect(asked.pendingApprovals.length).toBe(1);
     expect(appendApproval(asked, { requestId: "r1", tool: "bash", title: "dup", input: null })).toBe(asked);
 

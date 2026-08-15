@@ -1,4 +1,15 @@
-export { canonical, concat, equalBytes, fromBase64Url, fromBase64UrlExact, fromUtf8, toBase64Url, toHex, utf8 } from "./bytes.ts";
+export {
+  canonical,
+  concat,
+  equalBytes,
+  fromBase64Url,
+  fromBase64UrlExact,
+  fromUtf8,
+  toBase64Url,
+  toHex,
+  utf8,
+} from "./bytes.ts";
+export { ChannelError, type ChannelKeys, type ChannelRole, deriveChannelKeys, SealedChannel } from "./channel.ts";
 export {
   type AcceptResult,
   type DialSocket,
@@ -8,7 +19,6 @@ export {
   TunnelDaemon,
   type TunnelDaemonOptions,
 } from "./daemon.ts";
-export { type ChannelKeys, type ChannelRole, ChannelError, deriveChannelKeys, SealedChannel } from "./channel.ts";
 export {
   answerClientHandshake,
   beginClientHandshake,
@@ -41,12 +51,12 @@ export {
   type DaemonToHub,
   type HubToClient,
   type HubToDaemon,
-  parseFrame,
   PROTOCOL_VERSION,
+  parseFrame,
   type RefusalCode,
   registrationLabel,
-  type SealedPayload,
   SESSION_ID_PATTERN,
+  type SealedPayload,
   type SessionId,
 } from "./protocol.ts";
 export {

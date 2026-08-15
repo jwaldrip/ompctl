@@ -36,7 +36,7 @@ describe("listSkillCatalog", () => {
   test("enumerates skills and commands, each reporting where it came from", async () => {
     const catalog = await listSkillCatalog(
       "/tmp/workspace",
-      async (cwd) => {
+      async cwd => {
         expect(cwd).toBe("/tmp/workspace");
         return {
           skills: [
@@ -70,13 +70,13 @@ describe("listSkillCatalog", () => {
       },
     );
 
-    expect(catalog.map((s) => s.name)).toEqual([
+    expect(catalog.map(s => s.name)).toEqual([
       "absinthe-resolvers",
       "account-for-every-source-in-a-report",
       "zzz-last-command",
     ]);
 
-    const plugin = catalog.find((s) => s.name === "absinthe-resolvers");
+    const plugin = catalog.find(s => s.name === "absinthe-resolvers");
     expect(plugin).toEqual({
       name: "absinthe-resolvers",
       description: "An example skill.",
@@ -89,11 +89,11 @@ describe("listSkillCatalog", () => {
 
     // A skill with no plugin in its path reports no pluginName -- the honest
     // answer, not a guess.
-    const managed = catalog.find((s) => s.name === "account-for-every-source-in-a-report");
+    const managed = catalog.find(s => s.name === "account-for-every-source-in-a-report");
     expect(managed?.pluginName).toBeUndefined();
     expect(managed?.providerName).toBe("Managed Skills (auto-learn)");
 
-    const cmd = catalog.find((s) => s.name === "zzz-last-command");
+    const cmd = catalog.find(s => s.name === "zzz-last-command");
     expect(cmd?.kind).toBe("command");
     expect(cmd?.source).toBe("via Claude Code (User)");
     expect(cmd?.pluginName).toBeUndefined();

@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { Store, type Actor, type Agent } from "@ompd/core";
+import { type Actor, type Agent, Store } from "@ompd/core";
 import { TaskManager, TaskNotFoundError, type TaskPrompter } from "../src/workspace/tasks.ts";
 
 const paths: string[] = [];
@@ -71,7 +71,7 @@ function deferredPrompter(): {
       calledSignal.resolve({ agentId, text, actor: callerActor });
       return promptSignal.promise;
     },
-    cancel: async (agentId) => {
+    cancel: async agentId => {
       cancels.push({ agentId });
     },
   };
@@ -143,9 +143,7 @@ describe("TaskManager.create", () => {
     const store = freshStore();
     const { prompter } = deferredPrompter();
     const manager = new TaskManager({ store, supervisor: prompter });
-    await expect(
-      manager.create({ title: "t", prompt: "p", agentId: "agt_does_not_exist" }, actor),
-    ).rejects.toThrow();
+    await expect(manager.create({ title: "t", prompt: "p", agentId: "agt_does_not_exist" }, actor)).rejects.toThrow();
   });
 
   test("'waiting' is derived from the owning agent's live state, not stored", async () => {
@@ -223,6 +221,6 @@ describe("task persistence", () => {
     expect(reopened?.result).toBe("end_turn");
 
     const listed = manager.list(agent.id);
-    expect(listed.map((t) => t.id)).toContain(created.id);
+    expect(listed.map(t => t.id)).toContain(created.id);
   });
 });

@@ -36,7 +36,14 @@ export interface TaskSidebarProps {
 /** A composer draft longer than this is titled by truncation, not repeated verbatim in the strip's headline. */
 const TITLE_CLAMP = 48;
 
-export function TaskSidebar({ tasks, skills, selectedTaskId, onSelectTask, onStartTask, now }: TaskSidebarProps): JSX.Element {
+export function TaskSidebar({
+  tasks,
+  skills,
+  selectedTaskId,
+  onSelectTask,
+  onStartTask,
+  now,
+}: TaskSidebarProps): JSX.Element {
   const [draft, setDraft] = useState("");
   const trimmed = draft.trim();
   const paletteOpen = draft.startsWith("/") && trimmed.length > 0;
@@ -69,7 +76,7 @@ export function TaskSidebar({ tasks, skills, selectedTaskId, onSelectTask, onSta
             onSubmitEditing={() => start()}
           />
         </View>
-        {paletteOpen ? <CommandPalette skills={skills} query={draft} onInvoke={(skill) => start(skill.name)} /> : null}
+        {paletteOpen ? <CommandPalette skills={skills} query={draft} onInvoke={skill => start(skill.name)} /> : null}
       </View>
 
       <ScrollView testID="task-sidebar-scroll">
@@ -78,8 +85,14 @@ export function TaskSidebar({ tasks, skills, selectedTaskId, onSelectTask, onSta
             <Kicker color={ink.muted} style={styles.sectionLabel}>
               In flight
             </Kicker>
-            {tasks.inFlight.map((task) => (
-              <TaskCard key={task.id} task={task} selected={task.id === selectedTaskId} onSelect={onSelectTask} now={now} />
+            {tasks.inFlight.map(task => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                selected={task.id === selectedTaskId}
+                onSelect={onSelectTask}
+                now={now}
+              />
             ))}
           </View>
         ) : null}
@@ -89,8 +102,14 @@ export function TaskSidebar({ tasks, skills, selectedTaskId, onSelectTask, onSta
             <Kicker color={ink.muted} style={styles.sectionLabel}>
               Recent
             </Kicker>
-            {tasks.recent.map((task) => (
-              <TaskCard key={task.id} task={task} selected={task.id === selectedTaskId} onSelect={onSelectTask} now={now} />
+            {tasks.recent.map(task => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                selected={task.id === selectedTaskId}
+                onSelect={onSelectTask}
+                now={now}
+              />
             ))}
           </View>
         ) : null}

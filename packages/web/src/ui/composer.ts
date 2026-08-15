@@ -124,7 +124,7 @@ export function createComposer(options: ComposerOptions): ComposerView {
       return;
     }
     const needle = typed.toLowerCase();
-    matches = commands.filter((name) => name.toLowerCase().startsWith(needle)).slice(0, MENU_LIMIT);
+    matches = commands.filter(name => name.toLowerCase().startsWith(needle)).slice(0, MENU_LIMIT);
     if (matches.length === 0) {
       closeMenu();
       return;

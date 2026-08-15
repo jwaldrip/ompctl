@@ -45,7 +45,7 @@ function echoAcceptor(name: string, tokens: Record<string, string | "revoked">):
       return {
         ok: true,
         deviceId: found,
-        deliver: (raw) => send(JSON.stringify({ from: name, echo: JSON.parse(raw) })),
+        deliver: raw => send(JSON.stringify({ from: name, echo: JSON.parse(raw) })),
         close: () => {},
       };
     },
@@ -84,9 +84,9 @@ function openClient(hubUrl: string, daemonId: string, token: string) {
   socket.onopen = () => {
     opened = true;
   };
-  socket.onmessage = (data) => received.push(data);
-  socket.onerror = (info) => errors.push(info.message);
-  socket.onclose = (info) => {
+  socket.onmessage = data => received.push(data);
+  socket.onerror = info => errors.push(info.message);
+  socket.onclose = info => {
     closed = info;
   };
   return {
@@ -140,7 +140,7 @@ describe("through the hub", () => {
       identity,
       acceptor: echoAcceptor("webhook-daemon", {}),
       transport: browserTransport,
-      onWebhook: async (request) => {
+      onWebhook: async request => {
         received.push(request);
         return {
           status: 202,
@@ -153,14 +153,11 @@ describe("through the hub", () => {
     daemon.start();
     await until(() => daemon.registered, "webhook daemon to register");
 
-    const response = await fetch(
-      `${httpUrl(publicUrl)}/v1/webhooks/${identity.daemonId}/rtn_webhook`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-webhook-secret": "per-routine-secret" },
-        body: JSON.stringify({ event: "pushed" }),
-      },
-    );
+    const response = await fetch(`${httpUrl(publicUrl)}/v1/webhooks/${identity.daemonId}/rtn_webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-webhook-secret": "per-routine-secret" },
+      body: JSON.stringify({ event: "pushed" }),
+    });
 
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ run: { id: "run_webhook" } });
@@ -207,7 +204,7 @@ describe("through the hub", () => {
         set readyState(value: number) {
           inner.readyState = value;
         },
-        send: (data) => {
+        send: data => {
           seen.push(data);
           inner.send(data);
         },
@@ -251,7 +248,7 @@ describe("through the hub", () => {
     socket.onopen = () => {
       opened = true;
     };
-    socket.onmessage = (data) => echoed.push(data);
+    socket.onmessage = data => echoed.push(data);
 
     await until(() => opened, "the session to open");
     socket.send(JSON.stringify({ t: "prompt", text: "secret work" }));
@@ -321,7 +318,7 @@ describe("refusals", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: "unknown_daemon" });
 
-    const denied = hub?.audit.forAction("client.link").filter((entry) => entry.outcome === "denied") ?? [];
+    const denied = hub?.audit.forAction("client.link").filter(entry => entry.outcome === "denied") ?? [];
     expect(denied[0]?.code).toBe("unknown_daemon");
   });
 
@@ -344,7 +341,7 @@ describe("refusals", () => {
       identity: stranger,
       acceptor: echoAcceptor("stranger", {}),
       transport: browserTransport,
-      onRefused: (code) => refusals.push(code),
+      onRefused: code => refusals.push(code),
     });
     running.push(daemon);
     daemon.start();
@@ -353,7 +350,7 @@ describe("refusals", () => {
     expect(refusals[0]).toBe("unknown_daemon");
     expect(daemon.registered).toBe(false);
 
-    const denied = fleet.hubs[0]?.audit.forAction("daemon.register").filter((e) => e.outcome === "denied") ?? [];
+    const denied = fleet.hubs[0]?.audit.forAction("daemon.register").filter(e => e.outcome === "denied") ?? [];
     expect(denied[0]?.code).toBe("unknown_daemon");
   });
 
@@ -370,7 +367,7 @@ describe("refusals", () => {
       identity: { daemonId: real.daemonId, publicKey: real.publicKey, privateKey: impostor.privateKey },
       acceptor: echoAcceptor("impostor", {}),
       transport: browserTransport,
-      onRefused: (code) => refusals.push(code),
+      onRefused: code => refusals.push(code),
     });
     running.push(daemon);
     daemon.start();
@@ -389,7 +386,7 @@ describe("refusals", () => {
       identity,
       acceptor: echoAcceptor("alpha", { good: "dev_a" }),
       transport: browserTransport,
-      onSession: (event) => sessions.push(event),
+      onSession: event => sessions.push(event),
     });
     running.push(daemon);
     daemon.start();
@@ -416,7 +413,7 @@ describe("refusals", () => {
       identity,
       acceptor: echoAcceptor("alpha", { withdrawn: "revoked" }),
       transport: browserTransport,
-      onSession: (event) => sessions.push(event),
+      onSession: event => sessions.push(event),
     });
     running.push(daemon);
     daemon.start();

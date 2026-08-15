@@ -60,8 +60,8 @@ export function listLiveClientPresences(root: string = runDaemonsRoot()): Client
   let projectHashDirs: string[];
   try {
     projectHashDirs = readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name);
   } catch {
     return [];
   }
@@ -72,8 +72,8 @@ export function listLiveClientPresences(root: string = runDaemonsRoot()): Client
     let fileNames: string[];
     try {
       fileNames = readdirSync(clientsDir, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-        .map((entry) => entry.name);
+        .filter(entry => entry.isFile() && entry.name.endsWith(".json"))
+        .map(entry => entry.name);
     } catch {
       continue;
     }

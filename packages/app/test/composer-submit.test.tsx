@@ -22,7 +22,7 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 function typeInto(input: HTMLElement, value: string): void {
-  const key = Object.keys(input).find((name) => name.startsWith("__reactProps$"));
+  const key = Object.keys(input).find(name => name.startsWith("__reactProps$"));
   if (key === undefined) throw new Error("no React props on the rendered input");
   const props = Reflect.get(input, key) as { onChange?: (event: unknown) => void };
   if (typeof props.onChange !== "function") throw new Error("the rendered input has no onChange handler");
@@ -49,18 +49,12 @@ describe("composer submit", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => {
-      root.render(
-        <Transcript entries={session.entries} canApprove onDecide={() => {}} spoken={null} />,
-      );
+      root.render(<Transcript entries={session.entries} canApprove onDecide={() => {}} spoken={null} />);
     });
 
     const row = host.querySelector('[data-testid="entry-user-prompt-0"]');
     expect(row).not.toBeNull();
-    const label =
-      row?.getAttribute("aria-label") ??
-      row?.getAttribute("accessibilityLabel") ??
-      row?.textContent ??
-      "";
+    const label = row?.getAttribute("aria-label") ?? row?.getAttribute("accessibilityLabel") ?? row?.textContent ?? "";
     expect(label).toContain("pineapple-nonce-xyz");
 
     act(() => {
@@ -80,7 +74,7 @@ describe("composer submit", () => {
         <Composer
           enabled
           busy={false}
-          onSubmit={(text) => {
+          onSubmit={text => {
             submitted.push(text);
           }}
           onCancel={() => {}}

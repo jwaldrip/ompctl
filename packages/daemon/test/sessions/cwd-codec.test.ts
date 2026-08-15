@@ -70,9 +70,9 @@ describe("encodeSessionDirName", () => {
 
   test("home-relative multi segment, including a real dotted directory name", () => {
     const { home, tmp } = buildFixture();
-    expect(
-      encodeSessionDirName(join(home, "dev", "src", "github.com", "acme", "widgets"), home, tmp),
-    ).toBe("-dev-src-github.com-acme-widgets");
+    expect(encodeSessionDirName(join(home, "dev", "src", "github.com", "acme", "widgets"), home, tmp)).toBe(
+      "-dev-src-github.com-acme-widgets",
+    );
   });
 
   test("temp root itself encodes to bare -tmp", () => {
@@ -91,9 +91,7 @@ describe("encodeSessionDirName", () => {
     const { home, tmp, privateRoot } = buildFixture();
     // /private/tmp is real but distinct from the per-process temp root, the
     // same way `cd /tmp` differs from `os.tmpdir()` on macOS.
-    expect(encodeSessionDirName(join(privateRoot, "tmp"), home, tmp, privateRoot)).toBe(
-      "--tmp--",
-    );
+    expect(encodeSessionDirName(join(privateRoot, "tmp"), home, tmp, privateRoot)).toBe("--tmp--");
     expect(encodeSessionDirName(join(privateRoot, "tmp", "ompd-proof"), home, tmp, privateRoot)).toBe(
       "--tmp-ompd-proof--",
     );

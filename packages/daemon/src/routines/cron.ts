@@ -44,13 +44,7 @@ const FIELD_RANGES: Record<CronFieldName, FieldRange> = {
   dayOfWeek: { min: 0, max: 7 },
 };
 
-const FIELD_ORDER: readonly CronFieldName[] = [
-  "minute",
-  "hour",
-  "dayOfMonth",
-  "month",
-  "dayOfWeek",
-];
+const FIELD_ORDER: readonly CronFieldName[] = ["minute", "hour", "dayOfMonth", "month", "dayOfWeek"];
 
 export interface CronSchedule {
   minute: Set<number>;

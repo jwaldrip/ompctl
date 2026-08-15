@@ -66,15 +66,18 @@ describe("groupByPlugin", () => {
       [],
     );
     expect(groups).toHaveLength(2);
-    const cld = groups.find((g) => g.key === "cld");
-    expect(cld?.skills.map((s) => s.name)).toEqual(["deploy", "review"]);
-    const haiku = groups.find((g) => g.key === "haiku-method");
-    expect(haiku?.skills.map((s) => s.name)).toEqual(["dispatch"]);
+    const cld = groups.find(g => g.key === "cld");
+    expect(cld?.skills.map(s => s.name)).toEqual(["deploy", "review"]);
+    const haiku = groups.find(g => g.key === "haiku-method");
+    expect(haiku?.skills.map(s => s.name)).toEqual(["dispatch"]);
   });
 
   test("without a plugin name, items fall back to the loader's display name rather than scattering singly", () => {
     const groups = groupByPlugin(
-      [skill("a", { providerName: "Claude Code", pluginName: undefined }), skill("b", { providerName: "Claude Code", pluginName: undefined })],
+      [
+        skill("a", { providerName: "Claude Code", pluginName: undefined }),
+        skill("b", { providerName: "Claude Code", pluginName: undefined }),
+      ],
       [],
     );
     expect(groups).toHaveLength(1);
@@ -94,8 +97,8 @@ describe("groupByPlugin", () => {
       [connector("infra-db", { providerName: "OMP Extension Packages", pluginName: "infra" })],
     );
     expect(groups).toHaveLength(1);
-    expect(groups[0]?.skills.map((s) => s.name)).toEqual(["deploy"]);
-    expect(groups[0]?.connectors.map((c) => c.name)).toEqual(["infra-db"]);
+    expect(groups[0]?.skills.map(s => s.name)).toEqual(["deploy"]);
+    expect(groups[0]?.connectors.map(c => c.name)).toEqual(["infra-db"]);
   });
 
   test("groups order native first, then marketplace, then local, alphabetically within a tier", () => {
@@ -108,8 +111,8 @@ describe("groupByPlugin", () => {
       ],
       [],
     );
-    expect(groups.map((g) => g.origin)).toEqual(["native", "marketplace", "marketplace", "local"]);
-    expect(groups.map((g) => g.label)).toEqual(["OMP", "alpha", "zeta", "Cursor"]);
+    expect(groups.map(g => g.origin)).toEqual(["native", "marketplace", "marketplace", "local"]);
+    expect(groups.map(g => g.label)).toEqual(["OMP", "alpha", "zeta", "Cursor"]);
   });
 
   test("a realistic corpus (dozens of plugins) groups cleanly with no crossover", () => {
@@ -144,9 +147,12 @@ describe("skillInvocation and filterSkills", () => {
   });
 
   test("matches on name or on description, case-insensitively", () => {
-    const skills = [skill("alpha", { description: "handles onboarding" }), skill("beta", { description: "ships releases" })];
-    expect(filterSkills(skills, "ONBOARD").map((s) => s.name)).toEqual(["alpha"]);
-    expect(filterSkills(skills, "SHIP").map((s) => s.name)).toEqual(["beta"]);
+    const skills = [
+      skill("alpha", { description: "handles onboarding" }),
+      skill("beta", { description: "ships releases" }),
+    ];
+    expect(filterSkills(skills, "ONBOARD").map(s => s.name)).toEqual(["alpha"]);
+    expect(filterSkills(skills, "SHIP").map(s => s.name)).toEqual(["beta"]);
   });
 
   test("no match is an empty list, not an exception or the full catalogue", () => {
@@ -165,15 +171,19 @@ describe("connectorHealth", () => {
       connector("connecting", { status: "connecting", connected: false }),
       connector("down", { status: "disconnected", connected: false, error: "ECONNREFUSED" }),
     ]);
-    expect(health.connected.map((c) => c.name)).toEqual(["up"]);
-    expect(health.down.map((c) => c.name)).toEqual(["connecting", "down"]);
+    expect(health.connected.map(c => c.name)).toEqual(["up"]);
+    expect(health.down.map(c => c.name)).toEqual(["connecting", "down"]);
   });
 
   test("a down connector's reason is surfaced, not hidden behind a generic status word", () => {
     const health = connectorHealth([
-      connector("stripe", { status: "disconnected", connected: false, error: "OAuth token expired 2026-01-01T00:00:00Z" }),
+      connector("stripe", {
+        status: "disconnected",
+        connected: false,
+        error: "OAuth token expired 2026-01-01T00:00:00Z",
+      }),
     ]);
-    const stripe = health.down.find((c) => c.name === "stripe");
+    const stripe = health.down.find(c => c.name === "stripe");
     expect(stripe).toBeDefined();
     expect(connectorReason(stripe as ConnectorSummary)).toBe("OAuth token expired 2026-01-01T00:00:00Z");
   });

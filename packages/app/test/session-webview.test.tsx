@@ -15,9 +15,9 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
+import type { Agent } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { Agent } from "@ompd/core/contracts";
 import type { PendingWebViewAction } from "../src/console/state.ts";
 import { EMPTY_SESSION } from "../src/session/model.ts";
 
@@ -97,7 +97,7 @@ function mountScreen(pendingWebViewAction?: PendingWebViewAction): Harness {
 
   return {
     calls,
-    rerender: (agent) => {
+    rerender: agent => {
       current = agent ?? current;
       draw(current);
     },
@@ -120,7 +120,6 @@ function mountScreen(pendingWebViewAction?: PendingWebViewAction): Harness {
     },
   };
 }
-
 
 describe("the session screen's WebView registration", () => {
   test("a selected screen registers even while its browser pane is closed", () => {

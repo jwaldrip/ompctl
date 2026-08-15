@@ -12,36 +12,36 @@
  */
 
 import {
-  AcpClient,
-  DEFAULT_PROMPT_TIMEOUT_MS,
-  parseApprovalPrompt,
-  spawnLocalHost,
   type AcpAgentRegistrySnapshot,
+  AcpClient,
   type AcpOptionId,
+  DEFAULT_PROMPT_TIMEOUT_MS,
   type ElicitationOutcome,
   type ElicitationRequest,
   type LocalHost,
   type PermissionRequest,
+  parseApprovalPrompt,
   type SpawnLocalHostOptions,
+  spawnLocalHost,
 } from "@ompd/acp";
 import {
-  DefaultPolicy,
-  SCOPE_APPROVE,
-  SCOPE_MANAGE,
-  SCOPE_PROMPT,
-  TERMINAL_AGENT_STATES,
-  toAcpOption,
   type Actor,
   type Agent,
   type AgentId,
   type AgentState,
+  DefaultPolicy,
   type HostRef,
   type HostSpec,
-  type Policy,
-  type PolicyDecision,
-  type Store,
   type PlanReviewChoice,
   type PlanReviewRequest,
+  type Policy,
+  type PolicyDecision,
+  SCOPE_APPROVE,
+  SCOPE_MANAGE,
+  SCOPE_PROMPT,
+  type Store,
+  TERMINAL_AGENT_STATES,
+  toAcpOption,
 } from "@ompd/core";
 import type { HostHandle, Provisioner } from "./provisioner/types.ts";
 
@@ -364,7 +364,7 @@ export class Supervisor {
       return false;
     }
     const pending = this.#pendingPlanReviews.get(requestId);
-    if (!pending || !pending.choices.includes(choice)) return false;
+    if (!pending?.choices.includes(choice)) return false;
     pending.resolve(choice);
     this.#store.audit({
       action: "approval.decide",
@@ -423,11 +423,7 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, { resumed: true }, async (sessionEntry, agentId) => {
-      await sessionEntry.host.client.loadSession(
-        input.sessionId,
-        input.cwd,
-        this.#mcpServersFor?.(agentId) ?? [],
-      );
+      await sessionEntry.host.client.loadSession(input.sessionId, input.cwd, this.#mcpServersFor?.(agentId) ?? []);
       return input.sessionId;
     });
   }
@@ -632,7 +628,7 @@ export class Supervisor {
     // it leaves the container running. Awaited rather than fired off, so a
     // daemon shutting down does not race its own teardown and leak one.
     await Promise.all(
-      entries.map(async (entry) => {
+      entries.map(async entry => {
         if (entry.handle === undefined) return;
         await this.#destroyHandle(entry.handle);
       }),
@@ -648,12 +644,7 @@ export class Supervisor {
    * lacks approve scope. It never throws, because the caller is a websocket
    * frame handler and a malformed frame must not take the daemon down.
    */
-  decide(
-    requestId: string,
-    choice: "allow" | "deny",
-    scope: "once" | "always",
-    actor: Actor,
-  ): boolean {
+  decide(requestId: string, choice: "allow" | "deny", scope: "once" | "always", actor: Actor): boolean {
     // Authorization is checked before the request lookup, so an unauthorized
     // caller cannot probe which request ids exist. It is reported as a boolean
     // rather than thrown because this is called straight from a websocket
@@ -764,7 +755,7 @@ export class Supervisor {
    */
   async #requestPlanReview(agentId: AgentId, req: ElicitationRequest): Promise<ElicitationOutcome> {
     const requestId = `pln_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-    const choice = await new Promise<PlanReviewChoice | null>((resolve) => {
+    const choice = await new Promise<PlanReviewChoice | null>(resolve => {
       const timer = setTimeout(() => {
         this.#pendingPlanReviews.delete(requestId);
         resolve(null);
@@ -774,7 +765,7 @@ export class Supervisor {
         agentId,
         message: req.message,
         choices: PLAN_APPROVAL_CHOICES,
-        resolve: (selected) => {
+        resolve: selected => {
           clearTimeout(timer);
           this.#pendingPlanReviews.delete(requestId);
           resolve(selected);
@@ -791,11 +782,7 @@ export class Supervisor {
     return choice === null ? { action: "decline" } : { action: "accept", value: choice };
   }
 
-  async #gateElicitedToolCall(
-    agentId: AgentId,
-    agent: Agent,
-    req: ElicitationRequest,
-  ): Promise<ElicitationOutcome> {
+  async #gateElicitedToolCall(agentId: AgentId, agent: Agent, req: ElicitationRequest): Promise<ElicitationOutcome> {
     const parsed = parseApprovalPrompt(req.message);
     if (!parsed) {
       // Approve/Deny, but not a tool approval we can read. Declining is a
@@ -918,7 +905,7 @@ export class Supervisor {
       choice: "allow" | "deny";
       scope?: "once" | "always";
       actor: Actor;
-    } | null>((resolve) => {
+    } | null>(resolve => {
       const timer = setTimeout(() => {
         this.#pending.delete(requestId);
         resolve(null);
@@ -930,7 +917,7 @@ export class Supervisor {
         tool,
         title,
         input,
-        resolve: (v) => {
+        resolve: v => {
           clearTimeout(timer);
           this.#pending.delete(requestId);
           resolve(v);
@@ -943,10 +930,7 @@ export class Supervisor {
       this.#setState(agentId, stateBeforeApproval);
     }
 
-    const option = toAcpOption(
-      decision,
-      answer ? { choice: answer.choice, scope: answer.scope } : undefined,
-    );
+    const option = toAcpOption(decision, answer ? { choice: answer.choice, scope: answer.scope } : undefined);
     const allowed = option.startsWith("allow");
     this.#store.resolveApproval(
       requestId,
@@ -1034,15 +1018,15 @@ export class Supervisor {
       // A provisioned host resolves omp on the far side, so the daemon's own
       // path means nothing to it; its handle owns that decision.
       ompPath: handle === undefined ? this.#ompPath : undefined,
-      onPermission: (req) => this.#onPermission(req),
+      onPermission: req => this.#onPermission(req),
       // Gate 2. Required for the same reason `onPermission` is: a host that
       // falls back to OMP's own default answer is the hole this closes.
-      onElicitation: (req) => this.#onElicitation(req),
+      onElicitation: req => this.#onElicitation(req),
       // A turn must outlast the approvals it raises, or an unanswered
       // approval surfaces as a transport error instead of a recorded denial.
       promptTimeoutMs: this.#promptTimeout,
       onUpdate: (sessionId, update) => this.#onUpdate(sessionId, update),
-      onAgentRegistry: (agents) => {
+      onAgentRegistry: agents => {
         if (key) this.#onAgentRegistry(key, agents);
         else pendingRegistrySnapshots.push(agents);
       },
@@ -1114,7 +1098,7 @@ export class Supervisor {
     const entry = this.#hosts.get(key);
     if (!entry) return;
 
-    const unresolved = snapshots.filter((snapshot) => snapshot.kind === "sub");
+    const unresolved = snapshots.filter(snapshot => snapshot.kind === "sub");
     const seen = new Set<string>();
     let changed = false;
 
@@ -1123,9 +1107,7 @@ export class Supervisor {
       for (let index = unresolved.length - 1; index >= 0; index -= 1) {
         const snapshot = unresolved[index]!;
         const parentAgentId =
-          (snapshot.parentSessionId === undefined
-            ? undefined
-            : this.#sessionAgent.get(snapshot.parentSessionId)) ??
+          (snapshot.parentSessionId === undefined ? undefined : this.#sessionAgent.get(snapshot.parentSessionId)) ??
           (snapshot.parentId === undefined ? undefined : entry.registryAgents.get(snapshot.parentId));
         const parent = parentAgentId === undefined ? undefined : this.#store.getAgent(parentAgentId);
         if (parent == null) continue;
@@ -1177,7 +1159,6 @@ export class Supervisor {
     }
     if (changed) this.#events.onAgentsChanged?.(this.listAgents());
   }
-
 
   /**
    * The ACP stream died on its own: the child crashed, or something outside

@@ -58,8 +58,8 @@ function readQueryConnection(): Connection | null {
   const url = params.get("url") ?? defaultSocketUrl();
   const scopes = (params.get("scopes") ?? "")
     .split(",")
-    .map((scope) => scope.trim())
-    .filter((scope) => scope.length > 0);
+    .map(scope => scope.trim())
+    .filter(scope => scope.length > 0);
 
   params.delete("token");
   params.delete("url");
@@ -77,6 +77,6 @@ function coerce(value: unknown): Connection | null {
   const token: unknown = Reflect.get(value, "token");
   const scopes: unknown = Reflect.get(value, "scopes");
   if (typeof url !== "string" || typeof token !== "string") return null;
-  const parsedScopes = Array.isArray(scopes) ? scopes.filter((scope) => typeof scope === "string") : [];
+  const parsedScopes = Array.isArray(scopes) ? scopes.filter(scope => typeof scope === "string") : [];
   return { url, token, scopes: parsedScopes };
 }

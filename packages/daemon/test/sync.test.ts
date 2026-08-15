@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { DefaultPolicy, SCOPE_MANAGE, Store, type Routine } from "@ompd/core";
+import { DefaultPolicy, type Routine, SCOPE_MANAGE, Store } from "@ompd/core";
 import { Gateway, GatewayEvents, type SyncSettings } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { Supervisor } from "../src/supervisor.ts";
@@ -11,9 +11,13 @@ const gateways: Gateway[] = [];
 const stores: Store[] = [];
 
 afterEach(async () => {
-  await Promise.all(gateways.splice(0).map((gateway) => gateway.close()));
-  stores.splice(0).forEach((store) => store.close());
-  paths.splice(0).forEach((path) => rmSync(path, { force: true }));
+  await Promise.all(gateways.splice(0).map(gateway => gateway.close()));
+  stores.splice(0).forEach(store => {
+    store.close();
+  });
+  paths.splice(0).forEach(path => {
+    rmSync(path, { force: true });
+  });
 });
 
 async function daemon(settings: SyncSettings = { policyMode: "standard", keepAwake: true }) {
@@ -30,7 +34,7 @@ async function daemon(settings: SyncSettings = { policyMode: "standard", keepAwa
     port: 0,
     syncConfig: {
       read: () => settings,
-      apply: (next) => Object.assign(settings, next),
+      apply: next => Object.assign(settings, next),
     },
     skills: { list: async () => [{ name: "deploy", description: "Deploy", kind: "skill", source: "project" }] },
     connectors: { list: async () => [{ name: "github", connected: true, status: "connected" }] },
@@ -43,7 +47,7 @@ async function daemon(settings: SyncSettings = { policyMode: "standard", keepAwa
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: "sync-test", publicKey: "sync-test-key" }),
   });
-  const code = (await paired.json() as { code: string }).code;
+  const code = ((await paired.json()) as { code: string }).code;
   const token = gateway.approvePairing(code, [SCOPE_MANAGE]);
   return {
     store,
@@ -79,7 +83,7 @@ describe("configuration sync", () => {
 
     const response = await source.request("/v1/sync/export");
     expect(response.status).toBe(200);
-    const document = await response.json() as Record<string, unknown>;
+    const document = (await response.json()) as Record<string, unknown>;
     const serialized = JSON.stringify(document);
 
     expect(serialized).not.toContain(source.token);

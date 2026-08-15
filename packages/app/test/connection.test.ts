@@ -24,6 +24,7 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
+
 const { coerce } = await import("../src/platform/connection.ts");
 
 describe("coerce: a device paired before endpoints existed", () => {

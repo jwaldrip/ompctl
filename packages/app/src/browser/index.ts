@@ -18,9 +18,9 @@ import type { WebViewPlatformStatus } from "@ompd/core/contracts";
 import { WEBVIEW_PLATFORM_STATUS } from "./capability.ts";
 import { WebViewDriver } from "./WebViewDriver.tsx";
 
-export type { WebViewDriverHandle, WebViewDriverProps } from "./WebViewDriver.tsx";
+export { type BridgeEvent, parseBridgeMessage } from "./bridge.ts";
 export { WEBVIEW_PLATFORM_STATUS } from "./capability.ts";
-export { parseBridgeMessage, type BridgeEvent } from "./bridge.ts";
+export type { WebViewDriverHandle, WebViewDriverProps } from "./WebViewDriver.tsx";
 
 export interface WebViewCapability {
   Driver: typeof WebViewDriver;

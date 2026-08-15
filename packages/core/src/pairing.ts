@@ -36,9 +36,7 @@
 /** Scheme both endpoint forms share. */
 export const ENDPOINT_SCHEME = "ompd:";
 
-export type Endpoint =
-  | { transport: "direct"; url: string }
-  | { transport: "hub"; hubUrl: string; daemonId: string };
+export type Endpoint = { transport: "direct"; url: string } | { transport: "hub"; hubUrl: string; daemonId: string };
 
 /** How far an endpoint reaches, which is the only thing an operator picking one cares about. */
 export type EndpointReach = "same-machine" | "same-network" | "anywhere";
@@ -148,9 +146,7 @@ export function normalizeHubUrl(value: string): string {
 
 /** One line naming an endpoint, for a CLI listing or a device's status row. */
 export function describeEndpoint(endpoint: Endpoint): string {
-  return endpoint.transport === "direct"
-    ? endpoint.url
-    : `${endpoint.hubUrl} (daemon ${endpoint.daemonId})`;
+  return endpoint.transport === "direct" ? endpoint.url : `${endpoint.hubUrl} (daemon ${endpoint.daemonId})`;
 }
 
 function safeUrl(value: string): URL | null {
@@ -225,7 +221,7 @@ function coercePairedConnection(value: unknown): PairedConnection | null {
   if (typeof value !== "object" || value === null) return null;
   const c = value as Record<string, unknown>;
   if (typeof c.token !== "string" || c.token.length === 0) return null;
-  if (!Array.isArray(c.scopes) || !c.scopes.every((s) => typeof s === "string")) return null;
+  if (!Array.isArray(c.scopes) || !c.scopes.every(s => typeof s === "string")) return null;
   const scopes = c.scopes as string[];
   if (c.transport === "direct" && typeof c.url === "string" && isSocketUrl(c.url)) {
     return { transport: "direct", url: c.url, token: c.token, scopes };

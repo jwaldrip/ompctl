@@ -16,20 +16,19 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
+import { AcpClient, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 import {
+  type Actor,
+  type AgentId,
+  type Routine,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   SCOPE_READ,
   Store,
   TERMINAL_AGENT_STATES,
-  type Actor,
-  type AgentId,
-  type Routine,
-  type Run,
 } from "@ompd/core";
-import { AcpClient, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
+import { CronError, hashWebhookSecret, nextFireTime, Scheduler } from "../src/routines/index.ts";
 import { Supervisor } from "../src/supervisor.ts";
-import { CronError, Scheduler, hashWebhookSecret, nextFireTime } from "../src/routines/index.ts";
 import { createFakeHost, type FakeHostController } from "./fake-host.ts";
 
 const DENVER = "America/Denver";
@@ -131,9 +130,7 @@ describe("nextFireTime", () => {
     expect(next.toISOString()).toBe("2026-11-01T07:30:00.000Z");
 
     // And the following fire is the next day, not the repeat.
-    expect(nextFireTime("30 1 * * *", next, DENVER).toISOString()).toBe(
-      "2026-11-02T08:30:00.000Z",
-    );
+    expect(nextFireTime("30 1 * * *", next, DENVER).toISOString()).toBe("2026-11-02T08:30:00.000Z");
   });
 
   test("a fire time inside a repeated hour is never behind the instant asked about", () => {
@@ -261,9 +258,7 @@ function harness(opts: HarnessOptions = {}): Harness {
       return host;
     }
     const bound = opts.transportTimeoutMs;
-    const host = fake.factory(
-      bound === undefined ? o : { ...o, requestTimeoutMs: bound, promptTimeoutMs: bound },
-    );
+    const host = fake.factory(bound === undefined ? o : { ...o, requestTimeoutMs: bound, promptTimeoutMs: bound });
     hosts.push(host);
     return host;
   };
@@ -289,7 +284,7 @@ function harness(opts: HarnessOptions = {}): Harness {
     scheduler,
     actor,
     hosts,
-    advance: (ms) => {
+    advance: ms => {
       clock += ms;
     },
   };
@@ -344,7 +339,7 @@ function holdTurns(fake: FakeHostController): HeldTurns {
   });
 
   return {
-    reached: (count) => {
+    reached: count => {
       if (seen >= count) return Promise.resolve();
       let waiter = waiting.get(count);
       if (!waiter) {
@@ -360,7 +355,7 @@ function holdTurns(fake: FakeHostController): HeldTurns {
 describe("Scheduler execution", () => {
   test("a successful run records the assistant's own words as its summary", async () => {
     const h = harness();
-    h.fake.onPrompt((sessionId) => {
+    h.fake.onPrompt(sessionId => {
       h.fake.emitUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "nothing broke overnight" },
@@ -469,7 +464,7 @@ describe("Scheduler execution", () => {
 
     turns.release();
     expect((await first).state).toBe("succeeded");
-    expect(h.store.listRuns(routine.id).filter((r) => r.state === "skipped")).toHaveLength(1);
+    expect(h.store.listRuns(routine.id).filter(r => r.state === "skipped")).toHaveLength(1);
   });
 
   test("a non-singleton routine runs concurrently instead of skipping", async () => {
@@ -485,12 +480,12 @@ describe("Scheduler execution", () => {
     const second = h.scheduler.runNow(routine.id, h.actor);
     await turns.reached(2);
 
-    expect(h.store.listRuns(routine.id).filter((r) => r.state === "running")).toHaveLength(2);
+    expect(h.store.listRuns(routine.id).filter(r => r.state === "running")).toHaveLength(2);
 
     turns.release();
     expect((await first).state).toBe("succeeded");
     expect((await second).state).toBe("succeeded");
-    expect(h.store.listRuns(routine.id).filter((r) => r.state === "skipped")).toHaveLength(0);
+    expect(h.store.listRuns(routine.id).filter(r => r.state === "skipped")).toHaveLength(0);
   });
 
   test("a run past its timeout is recorded timed_out and its agent is stopped", async () => {
@@ -571,7 +566,7 @@ describe("Scheduler execution", () => {
     });
     expect(run.state).toBe("succeeded");
 
-    const entries = h.store.listAudit().filter((e) => e.action === "routine.run");
+    const entries = h.store.listAudit().filter(e => e.action === "routine.run");
     expect(entries).toHaveLength(1);
     expect(entries[0]?.actorDeviceId).toBe("phone");
     expect(entries[0]?.detail.routineId).toBe(routine.id);
@@ -583,9 +578,9 @@ describe("Scheduler execution", () => {
     const h = harness();
     const routine = defineRoutine(h.store);
 
-    await expect(
-      h.scheduler.runNow(routine.id, { deviceId: "phone", scopes: [SCOPE_PROMPT] }),
-    ).rejects.toThrow(/manage/);
+    await expect(h.scheduler.runNow(routine.id, { deviceId: "phone", scopes: [SCOPE_PROMPT] })).rejects.toThrow(
+      /manage/,
+    );
 
     expect(h.store.listRuns(routine.id)).toHaveLength(0);
     expect(h.store.listAgents()).toHaveLength(0);
@@ -633,7 +628,7 @@ describe("Scheduler ticks", () => {
 
     expect(h.store.listRuns(routine.id)).toHaveLength(0);
     expect(h.store.listAgents()).toHaveLength(0);
-    expect(h.store.listAudit().filter((e) => e.action === "routine.run")).toHaveLength(0);
+    expect(h.store.listAudit().filter(e => e.action === "routine.run")).toHaveLength(0);
   });
 
   test("a cron routine fires on its own schedule", async () => {
@@ -689,9 +684,7 @@ describe("Scheduler ticks", () => {
     expect(h.store.listRuns(good.id)[0]?.state).toBe("succeeded");
 
     // The fault is reported, and reported once rather than every tick.
-    const faults = h.store
-      .listAudit()
-      .filter((e) => e.action === "routine.run" && e.detail.phase === "schedule");
+    const faults = h.store.listAudit().filter(e => e.action === "routine.run" && e.detail.phase === "schedule");
     expect(faults).toHaveLength(1);
     expect(faults[0]?.outcome).toBe("error");
   });
@@ -814,7 +807,7 @@ describe("Scheduler shutdown", () => {
 
     const next = await h.scheduler.runNow(routine.id, h.actor);
     expect(next.state).toBe("succeeded");
-    expect(h.store.listRuns(routine.id).filter((r) => r.state === "skipped")).toHaveLength(0);
+    expect(h.store.listRuns(routine.id).filter(r => r.state === "skipped")).toHaveLength(0);
 
     void running;
   });

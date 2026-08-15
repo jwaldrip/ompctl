@@ -1,0 +1,127 @@
+# Builds and deploys the ompd hub. NOT RUN: this workflow has never executed
+# and nothing described here exists in any GCP project yet.
+#
+# Manual dispatch only. The hub brokers access to machines that execute code,
+# so it does not deploy itself on a push to a branch.
+name: hub-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # The redis-backed backplane is the part that only works or fails for
+      # real against a real Redis, so the deploy path runs it against one
+      # rather than against the memory implementation.
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - name: Test the tunnel and the hub
+        env:
+          OMPD_TEST_REDIS_URL: redis://127.0.0.1:6379
+        run: bun test packages/tunnel packages/hub
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push hub + web images
+        # `gcloud builds submit --tag ... --file ...` does not exist: `--tag`
+        # mode hardcodes `docker build -t TAG .` against `./Dockerfile` in the
+        # source root, with no flag to point it at a different Dockerfile
+        # path. Both images live outside the repo root, so each has its own
+        # committed Cloud Build config (packages/*/deploy/cloudbuild.yaml)
+        # rather than one generated inline, which a `run: |` block's own YAML
+        # indentation makes impossible to terminate correctly.
+        #
+        # `--async` + poll, not the default synchronous log-streaming submit:
+        # streaming requires the caller to be project Viewer/Owner (a
+        # primitive role Cloud Build checks specifically, not satisfied by
+        # any granular role such as logging.viewer), which the deployer SA
+        # deliberately does not hold. The build itself does not need it.
+        run: |
+          REG="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd"
+
+          submit_and_wait() {
+            local config="$1" tag="$2"
+            local id
+            id="$(gcloud builds submit \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --config "$config" \
+              --substitutions "_IMAGE_TAG=${tag}" \
+              --async \
+              --format='value(id)' \
+              .)"
+            echo "submitted build $id for $tag"
+            for i in $(seq 1 60); do
+              status="$(gcloud builds describe "$id" --project "${{ vars.GCP_PROJECT_ID }}" --format='value(status)')"
+              case "$status" in
+                SUCCESS) echo "build $id succeeded"; return 0 ;;
+                WORKING|QUEUED|PENDING) sleep 10 ;;
+                *)
+                  echo "::error::build $id ended in status $status"
+                  return 1
+                  ;;
+              esac
+            done
+            echo "::error::build $id did not finish within the poll window"
+            return 1
+          }
+
+          submit_and_wait packages/hub/deploy/cloudbuild.yaml "${REG}/hub:${{ github.sha }}"
+          submit_and_wait packages/web/deploy/cloudbuild.yaml "${REG}/web:${{ github.sha }}"
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Apply
+        working-directory: packages/hub/deploy
+        run: |
+          terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          terraform apply -auto-approve \
+            -var "project_id=${{ vars.GCP_PROJECT_ID }}" \
+            -var "region=${{ vars.GCP_REGION }}" \
+            -var "network_id=${{ vars.GCP_NETWORK_ID }}" \
+            -var "connector_id=${{ vars.GCP_VPC_CONNECTOR_ID }}" \
+            -var "image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/hub:${{ github.sha }}" \
+            -var "web_image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/web:${{ github.sha }}" \
+            -var "app_domain=${{ vars.OMPCTL_APP_DOMAIN || 'app.ompctl.ai' }}" \
+            -var "hub_domain=${{ vars.OMPCTL_HUB_DOMAIN || 'hub.ompctl.ai' }}" \
+            -var "apple_team_id=${{ vars.OMPCTL_APPLE_TEAM_ID }}" \
+            -var "play_cert_sha256=${{ vars.OMPCTL_PLAY_CERT_SHA256 }}"
+          echo "::group::Squarespace DNS records to create"
+          terraform output -json squarespace_dns_records
+          terraform output -json product_identity
+          echo "::endgroup::"

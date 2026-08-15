@@ -10,6 +10,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Agent } from "@ompd/core/contracts";
+import type { ConsoleEvent, ConsoleState } from "../src/console/state.ts";
 import {
   allStats,
   apply,
@@ -19,7 +20,6 @@ import {
   sessionFor,
   stripStats,
 } from "../src/console/state.ts";
-import type { ConsoleEvent, ConsoleState } from "../src/console/state.ts";
 import { EMPTY_SESSION } from "../src/session/model.ts";
 
 interface Capture {
@@ -27,7 +27,7 @@ interface Capture {
 }
 
 const capture: Capture = await Bun.file(new URL("../../../scripts/update-shapes.json", import.meta.url)).json();
-const STREAM: readonly unknown[] = capture.stream.map((frame) => frame.update);
+const STREAM: readonly unknown[] = capture.stream.map(frame => frame.update);
 
 function agent(id: string, overrides: Partial<Agent> = {}): Agent {
   return {
@@ -79,7 +79,7 @@ describe("a canned stream drives the board", () => {
   test("the transcript is the reducer's, not a second copy of it", () => {
     const state = drive([{ t: "agents", event: { agents: [agent("a1")] } }, ...turn("a1")]);
     const session = sessionFor(state, "a1");
-    expect(session.entries.filter((entry) => entry.kind === "tool").length).toBe(4);
+    expect(session.entries.filter(entry => entry.kind === "tool").length).toBe(4);
     expect(sessionFor(state, "a2")).toBe(EMPTY_SESSION);
   });
 
@@ -98,7 +98,7 @@ describe("a canned stream drives the board", () => {
       },
     ]);
 
-    expect(browserSessionsOf(state).map((session) => session.id)).toEqual(["primary"]);
+    expect(browserSessionsOf(state).map(session => session.id)).toEqual(["primary"]);
   });
 });
 
@@ -126,7 +126,7 @@ describe("clearances", () => {
   test("a decision settles the card and clears the count", () => {
     const state = drive([...asked, { t: "decide", agentId: "a1", requestId: "r1", choice: "deny" }]);
     expect(stripStats(sessionFor(state, "a1")).clearances).toBe(0);
-    const card = sessionFor(state, "a1").entries.find((entry) => entry.kind === "approval");
+    const card = sessionFor(state, "a1").entries.find(entry => entry.kind === "approval");
     expect(card).toMatchObject({ decision: "deny" });
   });
 });
@@ -206,9 +206,7 @@ describe("the roster is the authority", () => {
       { t: "agents", event: { agents: [agent("a1", { state: "idle" })] } },
     ]);
 
-    const streaming = sessionFor(state, "a1").entries.filter(
-      (entry) => entry.kind === "assistant" && entry.streaming,
-    );
+    const streaming = sessionFor(state, "a1").entries.filter(entry => entry.kind === "assistant" && entry.streaming);
     expect(streaming.length).toBe(0);
   });
 });

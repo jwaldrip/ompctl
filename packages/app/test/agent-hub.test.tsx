@@ -77,10 +77,10 @@ describe("AgentHub", () => {
 
   test("callers exclude the main agent so it is not duplicated with the Fleet row", () => {
     // The exact filter Console.tsx and main.ts apply before calling AgentHub/agentHubTree.
-    const subagentsOnly = agents.filter((agent) => agent.parentAgentId !== undefined);
+    const subagentsOnly = agents.filter(agent => agent.parentAgentId !== undefined);
     const roots = agentHubTree(subagentsOnly);
 
-    expect(roots.map((node) => node.agent.id)).toEqual(["agt_scout"]);
+    expect(roots.map(node => node.agent.id)).toEqual(["agt_scout"]);
     expect(roots[0]?.children[0]?.agent.id).toBe("agt_reviewer");
   });
 });

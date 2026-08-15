@@ -46,14 +46,14 @@ describe(".ompsession document boot", () => {
       bootOpenedOmpSession({
         readInitialDocument: async () => openedDocument,
         loadConnection: async () => direct,
-        listSessions: async (connection) => {
+        listSessions: async connection => {
           requested.push(connection);
           return [liveSession];
         },
-        selectAgent: (agentId) => {
+        selectAgent: agentId => {
           selected.push(agentId);
         },
-        onHandoff: (handoff) => {
+        onHandoff: handoff => {
           handoffs.push(handoff);
         },
       }),
@@ -81,7 +81,7 @@ describe(".ompsession document boot", () => {
         readInitialDocument: async () => ({ ...openedDocument, text }),
         loadConnection: async () => direct,
         listSessions: async () => [liveSession],
-        selectAgent: (agentId) => {
+        selectAgent: agentId => {
           selected.push(agentId);
         },
       }),
@@ -92,7 +92,10 @@ describe(".ompsession document boot", () => {
 
   test("refuses to connect a handoff to a different daemon without a pairing for it", async () => {
     let listed = false;
-    const text = JSON.stringify({ ...JSON.parse(openedDocument.text), daemonHint: "wss://other.example.test/v1/socket" });
+    const text = JSON.stringify({
+      ...JSON.parse(openedDocument.text),
+      daemonHint: "wss://other.example.test/v1/socket",
+    });
 
     await expect(
       bootOpenedOmpSession({

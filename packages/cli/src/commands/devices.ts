@@ -14,10 +14,10 @@ import { randomUUID } from "node:crypto";
 import type { Device } from "@ompd/core";
 import {
   describeEndpoint,
-  encodePairingBundle,
   type Endpoint,
   type EndpointOffer,
   type EndpointReach,
+  encodePairingBundle,
   type PairedConnection,
   type PairingBundle,
 } from "@ompd/core/pairing";
@@ -70,9 +70,7 @@ export async function fetchEndpointOffers(ctx: CliContext): Promise<EndpointOffe
     const response = await api<EndpointsResponse>(ctx, "/v1/endpoints");
     return response.offers ?? [];
   } catch (err) {
-    ctx.err(
-      `  could not list reachable endpoints: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    ctx.err(`  could not list reachable endpoints: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -83,7 +81,7 @@ function printEndpointOffers(ctx: CliContext, offers: EndpointOffer[]): void {
     return;
   }
   for (const reach of REACH_ORDER) {
-    const forReach = offers.filter((offer) => offer.reach === reach);
+    const forReach = offers.filter(offer => offer.reach === reach);
     if (forReach.length === 0) continue;
     ctx.out(`  ${reach}`);
     for (const offer of forReach) {
@@ -102,7 +100,7 @@ function printEndpointOffers(ctx: CliContext, offers: EndpointOffer[]): void {
 function bestEndpointOffer(offers: EndpointOffer[] | null): EndpointOffer | null {
   if (offers === null) return null;
   for (const reach of REACH_ORDER) {
-    const match = offers.find((offer) => offer.reach === reach);
+    const match = offers.find(offer => offer.reach === reach);
     if (match !== undefined) return match;
   }
   return null;
@@ -157,10 +155,7 @@ async function printPairingQr(
   ctx.out(`  ${encoded}`);
 }
 
-export async function pairCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "pair" }>,
-): Promise<number> {
+export async function pairCommand(ctx: CliContext, cmd: Extract<Command, { kind: "pair" }>): Promise<number> {
   const response = await api<PairResponse>(ctx, "/v1/pair", {
     anonymous: true,
     method: "POST",
@@ -192,10 +187,7 @@ export async function pairCommand(
   return 0;
 }
 
-export async function approveCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "approve" }>,
-): Promise<number> {
+export async function approveCommand(ctx: CliContext, cmd: Extract<Command, { kind: "approve" }>): Promise<number> {
   const response = await api<ApproveResponse>(ctx, "/v1/pairings/approve", {
     method: "POST",
     body: { code: cmd.code, scopes: cmd.scopes },
@@ -251,10 +243,7 @@ export async function approveCommand(
  * refuses any scope this shell's own token does not hold, so composing the
  * calls here cannot mint an account more powerful than one `approve` could.
  */
-export async function inviteCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "invite" }>,
-): Promise<number> {
+export async function inviteCommand(ctx: CliContext, cmd: Extract<Command, { kind: "invite" }>): Promise<number> {
   const pairResponse = await api<PairResponse>(ctx, "/v1/pair", {
     anonymous: true,
     method: "POST",
@@ -312,7 +301,7 @@ export async function devicesCommand(ctx: CliContext): Promise<number> {
     return 0;
   }
 
-  const rows = devices.map((device) => [
+  const rows = devices.map(device => [
     device.id,
     device.name,
     device.scopes.join(","),
@@ -323,10 +312,7 @@ export async function devicesCommand(ctx: CliContext): Promise<number> {
   return 0;
 }
 
-export async function revokeCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "revoke" }>,
-): Promise<number> {
+export async function revokeCommand(ctx: CliContext, cmd: Extract<Command, { kind: "revoke" }>): Promise<number> {
   await api(ctx, `/v1/devices/${encodeURIComponent(cmd.deviceId)}`, { method: "DELETE" });
   ctx.out(`revoked ${cmd.deviceId}`);
   ctx.out("  its tokens stop working on the next request or frame");
@@ -342,10 +328,7 @@ export async function revokeCommand(
  * whether it is on this machine, in a phone's local storage, or in someone
  * else's clipboard.
  */
-export async function rotateCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "rotate" }>,
-): Promise<number> {
+export async function rotateCommand(ctx: CliContext, cmd: Extract<Command, { kind: "rotate" }>): Promise<number> {
   const response = await api<RotateResponse>(ctx, "/v1/tokens/rotate", {
     method: "POST",
     body: cmd.deviceId === undefined ? {} : { deviceId: cmd.deviceId },

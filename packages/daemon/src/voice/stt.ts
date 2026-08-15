@@ -19,8 +19,8 @@
 // that reaches the native speech runtime goes through `loadSpeechRuntime`,
 // which explains why.
 import { DEFAULT_STT_MODEL_KEY, type SttModelKey } from "@oh-my-pi/pi-coding-agent/stt/models";
-import { loadSpeechRuntime, type SttTranscriber } from "./speech-runtime.ts";
 import type { EngineAvailability } from "./exec.ts";
+import { loadSpeechRuntime, type SttTranscriber } from "./speech-runtime.ts";
 import { pcmToFloat32, resampleFloat32 } from "./wav.ts";
 
 export interface SttEngine {

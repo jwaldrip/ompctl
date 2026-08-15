@@ -7,8 +7,8 @@
 
 import type { JSX, ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import { connectorHealth, groupByPlugin, ORIGIN_LABELS } from "../cowork/catalog.ts";
 import type { PluginGroup } from "../cowork/catalog.ts";
+import { connectorHealth, groupByPlugin, ORIGIN_LABELS } from "../cowork/catalog.ts";
 import type { ConnectorSummary, SkillSummary } from "../cowork/types.ts";
 import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
@@ -38,7 +38,7 @@ export function SkillsView({ skills, onInvoke }: SkillsViewProps): JSX.Element {
           hint="A skill lives under skills/ in a plugin or an OMP config directory."
         />
       ) : (
-        skills.map((skill) => (
+        skills.map(skill => (
           <SkillCard key={`${skill.kind}:${skill.name}:${skill.source}`} skill={skill} onInvoke={onInvoke} />
         ))
       )}
@@ -57,19 +57,23 @@ export function ConnectorsView({ connectors }: { connectors: readonly ConnectorS
     <ScrollView testID="connectors-view" contentContainerStyle={styles.list}>
       <Head glyph="connector" count={connectors.length} noun="connector" testID="connectors-count" />
       {connectors.length === 0 ? (
-        <Empty glyph="connector" title="No connectors configured." hint="Wire one in .mcp.json or a plugin's own config." />
+        <Empty
+          glyph="connector"
+          title="No connectors configured."
+          hint="Wire one in .mcp.json or a plugin's own config."
+        />
       ) : (
         <>
           {health.down.length > 0 ? (
             <Section label={`Needs attention (${health.down.length})`}>
-              {health.down.map((connector) => (
+              {health.down.map(connector => (
                 <ConnectorRow key={connector.name} connector={connector} />
               ))}
             </Section>
           ) : null}
           {health.connected.length > 0 ? (
             <Section label={`Connected (${health.connected.length})`}>
-              {health.connected.map((connector) => (
+              {health.connected.map(connector => (
                 <ConnectorRow key={connector.name} connector={connector} />
               ))}
             </Section>
@@ -98,7 +102,7 @@ export function PluginsView({ skills, connectors }: PluginsViewProps): JSX.Eleme
       {groups.length === 0 ? (
         <Empty glyph="plugin" title="No plugins discovered." />
       ) : (
-        groups.map((group) => <PluginGroupCard key={group.key} group={group} />)
+        groups.map(group => <PluginGroupCard key={group.key} group={group} />)
       )}
     </ScrollView>
   );
@@ -114,10 +118,10 @@ function PluginGroupCard({ group }: { group: PluginGroup }): JSX.Element {
           group.skills.length === 1 ? "" : "s"
         } · ${group.connectors.length} connector${group.connectors.length === 1 ? "" : "s"}`}</Data>
       </View>
-      {group.skills.map((skill) => (
+      {group.skills.map(skill => (
         <SkillRow key={`${skill.kind}:${skill.name}:${skill.source}`} skill={skill} />
       ))}
-      {group.connectors.map((connector) => (
+      {group.connectors.map(connector => (
         <ConnectorNameRow key={connector.name} connector={connector} />
       ))}
     </View>
@@ -149,7 +153,17 @@ function ConnectorNameRow({ connector }: { connector: ConnectorSummary }): JSX.E
 // Shared
 // ---------------------------------------------------------------------------
 
-function Head({ glyph, count, noun, testID }: { glyph: GlyphName; count: number; noun: string; testID: string }): JSX.Element {
+function Head({
+  glyph,
+  count,
+  noun,
+  testID,
+}: {
+  glyph: GlyphName;
+  count: number;
+  noun: string;
+  testID: string;
+}): JSX.Element {
   return (
     <View style={styles.head}>
       <Glyph name={glyph} size={16} color={ink.plain} />

@@ -7,14 +7,14 @@
  */
 
 import "./rnw.ts";
-import { resetCameraMock, scanCode, setCameraAvailability } from "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
+import type { PairingBundle } from "@ompd/core/pairing";
+import { encodePairingBundle } from "@ompd/core/pairing";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { encodePairingBundle } from "@ompd/core/pairing";
-import type { PairingBundle } from "@ompd/core/pairing";
 import type { Connection } from "../src/platform/connection.ts";
+import { resetCameraMock, scanCode, setCameraAvailability } from "./rnw.ts";
 
 // Dynamic on purpose, the same way `pair-screen.test.tsx` loads its screen:
 // bun evaluates a file's whole static import graph before its body runs, so a
@@ -33,7 +33,12 @@ afterEach(resetCameraMock);
 const VALID_BUNDLE: PairingBundle = {
   v: 1,
   label: "Jason's Mac",
-  connection: { transport: "direct", url: "ws://10.4.1.221:7777/v1/socket", token: "tok_abc", scopes: ["read", "prompt"] },
+  connection: {
+    transport: "direct",
+    url: "ws://10.4.1.221:7777/v1/socket",
+    token: "tok_abc",
+    scopes: ["read", "prompt"],
+  },
 };
 
 interface Harness {

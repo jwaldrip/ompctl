@@ -22,7 +22,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Agent, AgentState } from "@ompd/core";
-import { SleepGuard, type AwakeProcess } from "../src/awake.ts";
+import { type AwakeProcess, SleepGuard } from "../src/awake.ts";
 import { Ompd } from "../src/daemon.ts";
 import { createFakeHost, type FakeHostController } from "./fake-host.ts";
 
@@ -53,7 +53,7 @@ function fakeCaffeinate(): FakeCaffeinate {
     commands,
     alive: () => live.size,
     die: () => last?.settle(),
-    spawn: (command) => {
+    spawn: command => {
       commands.push(command);
       const exit = Promise.withResolvers<number>();
       const proc: AwakeProcess = {
@@ -176,7 +176,7 @@ describe("the idle-sleep assertion", () => {
   test("a host with no caffeinate says so once and stops trying", () => {
     const said: string[] = [];
     const guard = new SleepGuard({
-      onLog: (line) => said.push(line),
+      onLog: line => said.push(line),
       spawn: () => {
         throw new Error("no such file or directory: caffeinate");
       },

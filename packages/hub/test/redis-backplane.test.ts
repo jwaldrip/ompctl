@@ -12,8 +12,8 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { generateIdentity, TunnelDaemon } from "@ompd/tunnel";
-import type { RelayEnvelope } from "../src/backplane.ts";
 import { RecordingAudit } from "../src/audit.ts";
+import type { RelayEnvelope } from "../src/backplane.ts";
 import { Hub } from "../src/hub.ts";
 import { RedisBackplane } from "../src/redis-backplane.ts";
 import { MemoryRegistry } from "../src/registry.ts";
@@ -85,8 +85,8 @@ describeRedis("redis backplane", () => {
 
     const atB: RelayEnvelope[] = [];
     const atC: RelayEnvelope[] = [];
-    b.onEnvelope((envelope) => atB.push(envelope));
-    c.onEnvelope((envelope) => atC.push(envelope));
+    b.onEnvelope(envelope => atB.push(envelope));
+    c.onEnvelope(envelope => atC.push(envelope));
 
     await a.send(b.instanceId, { k: "open", sessionId: "s1", from: a.instanceId, daemonId: "dmn_x" });
     await until(() => atB.length === 1, "the envelope to arrive at B");
@@ -124,7 +124,7 @@ describeRedis("redis backplane", () => {
       acceptor: {
         accept: (token, send) =>
           token === "token-a"
-            ? { ok: true, deviceId: "dev_a", deliver: (raw) => send(`echoed:${raw}`), close: () => {} }
+            ? { ok: true, deviceId: "dev_a", deliver: raw => send(`echoed:${raw}`), close: () => {} }
             : { ok: false, reason: "unknown" },
       },
     });
@@ -143,7 +143,7 @@ describeRedis("redis backplane", () => {
     socket.onopen = () => {
       opened = true;
     };
-    socket.onmessage = (data) => got.push(data);
+    socket.onmessage = data => got.push(data);
     await until(() => opened, "a session across two hub processes");
 
     socket.send("ping");

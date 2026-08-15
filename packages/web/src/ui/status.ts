@@ -51,10 +51,7 @@ export function createStatus(): StatusView {
 
   function render(event: StatusEvent): void {
     element.className = `status status-${event.state}`;
-    element.setAttribute(
-      "title",
-      event.reason ? `${LABEL[event.state]}: ${event.reason}` : LABEL[event.state],
-    );
+    element.setAttribute("title", event.reason ? `${LABEL[event.state]}: ${event.reason}` : LABEL[event.state]);
 
     stopCountdown();
     const waiting = event.state === "reconnecting" || event.state === "offline";

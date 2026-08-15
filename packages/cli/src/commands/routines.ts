@@ -44,7 +44,7 @@ export async function routinesCommand(ctx: CliContext): Promise<number> {
     return 0;
   }
 
-  const rows = routines.map((routine) => [
+  const rows = routines.map(routine => [
     routine.id,
     routine.enabled ? "enabled" : "disabled",
     routine.name,
@@ -55,10 +55,7 @@ export async function routinesCommand(ctx: CliContext): Promise<number> {
   return 0;
 }
 
-export async function runCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "run" }>,
-): Promise<number> {
+export async function runCommand(ctx: CliContext, cmd: Extract<Command, { kind: "run" }>): Promise<number> {
   const response = await api<RunResponse>(ctx, `/v1/routines/${encodeURIComponent(cmd.routineId)}/run`, {
     method: "POST",
   });

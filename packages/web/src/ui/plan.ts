@@ -92,7 +92,7 @@ export function createPlan(options: PlanOptions): PlanView {
     element,
     render(plan: readonly PlanEntry[], review: PlanReview | null): void {
       currentReview = review;
-      const pending = review !== null || plan.some((entry) => entry.status === "pending");
+      const pending = review !== null || plan.some(entry => entry.status === "pending");
       element.hidden = plan.length === 0 && review === null;
       reviewPanel.hidden = !pending;
       const canRespond = review !== null;

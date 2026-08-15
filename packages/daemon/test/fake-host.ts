@@ -10,12 +10,7 @@
  * agent's behaviour is chosen by the test.
  */
 
-import {
-  AcpClient,
-  type AcpAgentRegistrySnapshot,
-  type LocalHost,
-  type SpawnLocalHostOptions,
-} from "@ompd/acp";
+import { type AcpAgentRegistrySnapshot, AcpClient, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 
 export interface ScriptedToolCall {
   toolCallId: string;
@@ -106,7 +101,7 @@ export function createFakeHost(): FakeHostController {
 
   /** Deliver a frame to one host's client as if it came off the wire. */
   const toClient = (client: AcpClient | null, obj: unknown): void => {
-    client?.ingest(JSON.stringify(obj) + "\n");
+    client?.ingest(`${JSON.stringify(obj)}\n`);
   };
 
   /**
@@ -247,10 +242,7 @@ export function createFakeHost(): FakeHostController {
       // streaming, not wait politely for it to finish on its own.
       const cancelled = Promise.withResolvers<unknown>();
       inFlight.set(sessionId, cancelled);
-      const result = await Promise.race([
-        Promise.resolve(promptHandler(sessionId, text)),
-        cancelled.promise,
-      ]);
+      const result = await Promise.race([Promise.resolve(promptHandler(sessionId, text)), cancelled.promise]);
       inFlight.delete(sessionId);
       toClient(client, { jsonrpc: "2.0", id: msg.id, result });
       return;
@@ -277,7 +269,7 @@ export function createFakeHost(): FakeHostController {
 
   const factory = (opts: SpawnLocalHostOptions): LocalHost => {
     const pid = nextPid++;
-    const client: AcpClient = new AcpClient((line) => {
+    const client: AcpClient = new AcpClient(line => {
       // Detach so the client is never re-entered from inside its own write.
       queueMicrotask(() => void fromClient(client, line));
     }, opts);
@@ -300,11 +292,11 @@ export function createFakeHost(): FakeHostController {
     loadRequests,
     prompts,
     cancels,
-    modeOf: (sessionId) => modes.get(sessionId) ?? "default",
-    onPrompt: (fn) => {
+    modeOf: sessionId => modes.get(sessionId) ?? "default",
+    onPrompt: fn => {
       promptHandler = fn;
     },
-    onClose: (fn) => {
+    onClose: fn => {
       closeHandler = fn;
     },
     emitUpdate: (sessionId, update) => {
@@ -314,7 +306,7 @@ export function createFakeHost(): FakeHostController {
         params: { sessionId, update },
       });
     },
-    emitAgentRegistry: (agents) => {
+    emitAgentRegistry: agents => {
       toClient(latest, {
         jsonrpc: "2.0",
         method: "notifications/agent_registry",
@@ -322,9 +314,9 @@ export function createFakeHost(): FakeHostController {
       });
     },
     requestPermission: (sessionId, call) =>
-      new Promise<string>((resolve) => {
+      new Promise<string>(resolve => {
         const id = nextId++;
-        waiters.set(id, (result) => {
+        waiters.set(id, result => {
           const outcome = (result as { outcome?: { optionId?: string } } | undefined)?.outcome;
           resolve(outcome?.optionId ?? "<none>");
         });
@@ -345,17 +337,13 @@ export function createFakeHost(): FakeHostController {
         });
       }),
     elicit: (sessionId, message, enumValues) =>
-      new Promise<string>((resolve) => {
+      new Promise<string>(resolve => {
         const id = nextId++;
-        waiters.set(id, (result) => {
+        waiters.set(id, result => {
           const r = result as { action?: string; content?: { value?: unknown } } | undefined;
           // `accept` with a value is a choice. Anything else is what the real
           // host sees when a client has nothing to say, and it denies.
-          resolve(
-            r?.action === "accept" && typeof r.content?.value === "string"
-              ? r.content.value
-              : "<declined>",
-          );
+          resolve(r?.action === "accept" && typeof r.content?.value === "string" ? r.content.value : "<declined>");
         });
         toClient(routeTo(sessionId), {
           jsonrpc: "2.0",

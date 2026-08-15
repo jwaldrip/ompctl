@@ -7,8 +7,8 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { redact, REDACTED, Store } from "../src/index.ts";
 import type { Agent, Device } from "../src/index.ts";
+import { REDACTED, redact, Store } from "../src/index.ts";
 
 const stores: Store[] = [];
 const fresh = (): Store => {
@@ -61,9 +61,9 @@ describe("update replay", () => {
     for (let i = 0; i < 3; i++) s.appendUpdate("agt_b", { i });
 
     const a = s.updatesSince("agt_a", 0);
-    expect(a.map((u) => u.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(a.map(u => u.seq)).toEqual([1, 2, 3, 4, 5]);
     // Per-agent counters, not a global one: agent b starts at 1.
-    expect(s.updatesSince("agt_b", 0).map((u) => u.seq)).toEqual([1, 2, 3]);
+    expect(s.updatesSince("agt_b", 0).map(u => u.seq)).toEqual([1, 2, 3]);
   });
 
   test("reattaching mid-stream replays exactly the gap", () => {
@@ -73,7 +73,7 @@ describe("update replay", () => {
 
     // A client that saw through seq 4 must get 5..10 and nothing it already has.
     const gap = s.updatesSince("agt_a", 4);
-    expect(gap.map((u) => u.seq)).toEqual([5, 6, 7, 8, 9, 10]);
+    expect(gap.map(u => u.seq)).toEqual([5, 6, 7, 8, 9, 10]);
     expect(s.updatesSince("agt_a", 10)).toHaveLength(0);
   });
 });
@@ -101,7 +101,7 @@ describe("approval finality", () => {
     });
     s.resolveApproval("req1", "allow", "always", "spoofed", "dev2");
 
-    const rec = s.listApprovals("agt_a").find((r) => r.requestId === "req1");
+    const rec = s.listApprovals("agt_a").find(r => r.requestId === "req1");
     expect(rec?.decision).toBe("deny");
     expect(rec?.rule).toBe("critical");
     expect(rec?.actorDeviceId).toBe("dev1");
@@ -284,8 +284,13 @@ describe("auth tokens", () => {
     s.addAuthToken({ id: "tok_a", deviceId: "dev_phone", tokenHash: "hash_a" });
     s.addAuthToken({ id: "tok_b", deviceId: "dev_laptop", tokenHash: "hash_b" });
 
-    expect(s.listAuthTokens().map((t) => t.id).toSorted()).toEqual(["tok_a", "tok_b"]);
-    expect(s.listAuthTokens("dev_phone").map((t) => t.id)).toEqual(["tok_a"]);
+    expect(
+      s
+        .listAuthTokens()
+        .map(t => t.id)
+        .toSorted(),
+    ).toEqual(["tok_a", "tok_b"]);
+    expect(s.listAuthTokens("dev_phone").map(t => t.id)).toEqual(["tok_a"]);
   });
 
   test("last_used_at starts empty and is set by a touch", () => {
@@ -330,7 +335,7 @@ describe("interrupted runs", () => {
 
     expect(s.failInterruptedRuns("the daemon exited")).toBe(3);
 
-    const settled = new Map(s.listRuns("rtn_a").map((run) => [run.id, run]));
+    const settled = new Map(s.listRuns("rtn_a").map(run => [run.id, run]));
     expect(settled.get("run_q")?.state).toBe("failed");
     expect(settled.get("run_q")?.error).toBe("the daemon exited");
     expect(settled.get("run_q")?.finishedAt).toBeDefined();
@@ -379,7 +384,7 @@ describe("queued intents", () => {
     });
 
     const pending = s.listPendingQueuedIntents();
-    expect(pending.map((intent) => intent.id)).toEqual(["qi_1", "qi_2", "qi_3"]);
+    expect(pending.map(intent => intent.id)).toEqual(["qi_1", "qi_2", "qi_3"]);
   });
 
   test("claim transitions pending to claimed, and markDelivered requires claimed status", () => {
@@ -396,7 +401,7 @@ describe("queued intents", () => {
 
     // Acking an unclaimed (pending) intent does nothing -- pending rows remain pending
     expect(s.markQueuedIntentsDelivered(["qi_claim_me"])).toBe(0);
-    expect(s.listPendingQueuedIntents().map((intent) => intent.id)).toEqual(["qi_claim_me"]);
+    expect(s.listPendingQueuedIntents().map(intent => intent.id)).toEqual(["qi_claim_me"]);
 
     // Atomic claim transitions to claimed
     const claimed = s.claimQueuedIntent("qi_claim_me");

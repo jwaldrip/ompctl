@@ -258,9 +258,7 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
   const settled = channel === "user" ? state.entries : closeStreams(state.entries);
   const id = messageId ?? `${channel}-${state.ordinal}`;
   const entry: Entry =
-    channel === "user"
-      ? { kind: "user", id, text }
-      : { kind: "assistant", id, text, streaming: true, thought };
+    channel === "user" ? { kind: "user", id, text } : { kind: "assistant", id, text, streaming: true, thought };
   return {
     ...state,
     entries: [...settled, entry],
@@ -302,7 +300,7 @@ function findChunkTarget(
 
 function closeStreams(entries: readonly Entry[]): Entry[] {
   let changed = false;
-  const next = entries.map((entry) => {
+  const next = entries.map(entry => {
     if (entry.kind !== "assistant" || !entry.streaming) return entry;
     changed = true;
     return { ...entry, streaming: false };
@@ -371,7 +369,8 @@ function reduceToolCallUpdate(state: SessionState, payload: unknown): SessionSta
   const entry: ToolEntry = {
     kind: "tool",
     id: before.id,
-    toolKind: typeof payload === "object" && payload !== null && "kind" in payload ? readToolKind(payload) : before.toolKind,
+    toolKind:
+      typeof payload === "object" && payload !== null && "kind" in payload ? readToolKind(payload) : before.toolKind,
     title: title ?? before.title,
     status: status ?? before.status,
     input: rawInput === undefined ? before.input : rawInput,
@@ -395,12 +394,7 @@ function indexOfTool(entries: readonly Entry[], toolCallId: string): number {
   return -1;
 }
 
-function countActivity(
-  activity: Activity,
-  before: ToolStatus | null,
-  after: ToolStatus,
-  added: boolean,
-): Activity {
+function countActivity(activity: Activity, before: ToolStatus | null, after: ToolStatus, added: boolean): Activity {
   const wasRunning = before === "pending" || before === "in_progress";
   const isRunning = after === "pending" || after === "in_progress";
   const wasFailed = before === "failed";
@@ -509,7 +503,7 @@ export function appendPrompt(state: SessionState, text: string): SessionState {
 
 /** A clearance request, placed in the timeline where it interrupted the work. */
 export function appendApproval(state: SessionState, approval: Approval): SessionState {
-  const existing = state.pendingApprovals.some((pending) => pending.requestId === approval.requestId);
+  const existing = state.pendingApprovals.some(pending => pending.requestId === approval.requestId);
   if (existing) return state;
   const entry: ApprovalEntry = {
     kind: "approval",
@@ -530,8 +524,8 @@ export function appendApproval(state: SessionState, approval: Approval): Session
 
 /** Settles a clearance. The card stays, showing what was decided. */
 export function resolveApproval(state: SessionState, requestId: string, decision: ApprovalChoice): SessionState {
-  const index = state.entries.findIndex((entry) => entry.kind === "approval" && entry.requestId === requestId);
-  const pending = state.pendingApprovals.filter((approval) => approval.requestId !== requestId);
+  const index = state.entries.findIndex(entry => entry.kind === "approval" && entry.requestId === requestId);
+  const pending = state.pendingApprovals.filter(approval => approval.requestId !== requestId);
   if (index < 0) {
     if (pending.length === state.pendingApprovals.length) return state;
     return { ...state, pendingApprovals: pending };

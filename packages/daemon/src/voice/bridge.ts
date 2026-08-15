@@ -19,7 +19,7 @@
  *    not an unhandled rejection.
  */
 
-import { SCOPE_PROMPT, type Actor, type AgentId, type ClientFrame, type ServerFrame } from "@ompd/core";
+import { type Actor, type AgentId, type ClientFrame, SCOPE_PROMPT, type ServerFrame } from "@ompd/core";
 import { UnauthorizedError } from "../supervisor.ts";
 import { NullSttEngine, type SttEngine } from "./stt.ts";
 import { NullTtsEngine, speakableSegments, type TtsEngine } from "./tts.ts";

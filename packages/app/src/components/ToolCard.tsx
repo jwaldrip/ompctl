@@ -49,7 +49,7 @@ export function ToolCard({ entry }: { entry: ToolEntry }): JSX.Element {
 
         {entry.locations.length > 0 ? (
           <View style={styles.locations}>
-            {entry.locations.slice(0, 4).map((path) => (
+            {entry.locations.slice(0, 4).map(path => (
               <Label key={path} color={ink.muted} numberOfLines={1}>
                 {shortenPath(path, 2)}
               </Label>

@@ -18,13 +18,13 @@
  * but the daemon is the one that enforces the ceiling, not this screen.
  */
 
+import { SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ } from "@ompd/core/contracts";
+import type { PairedConnection } from "@ompd/core/pairing";
+import { encodePairingBundle } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
-import { SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ } from "@ompd/core/contracts";
-import { encodePairingBundle } from "@ompd/core/pairing";
-import type { PairedConnection } from "@ompd/core/pairing";
 import { restRoot } from "../cowork/useCowork.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
@@ -49,7 +49,6 @@ interface ApproveResponse {
   name: string;
 }
 
-
 export function InviteScreen({ connection, onDone }: { connection: Connection; onDone: () => void }): JSX.Element {
   const [name, setName] = useState("New device");
   const [scopes, setScopes] = useState<Set<string>>(() => new Set(connection.scopes));
@@ -73,7 +72,10 @@ export function InviteScreen({ connection, onDone }: { connection: Connection; o
         // A throwaway provenance string, the same convention `ompd pair`'s CLI
         // counterpart uses -- not real cryptography; see `platform/connection.ts`
         // for why a saved connection's token is what actually carries authority.
-        body: JSON.stringify({ name, publicKey: `app:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` }),
+        body: JSON.stringify({
+          name,
+          publicKey: `app:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+        }),
       });
       if (!pairRes.ok) throw new Error(`could not start pairing: ${pairRes.status}`);
       const { code } = (await pairRes.json()) as PairResponse;
@@ -110,16 +112,16 @@ export function InviteScreen({ connection, onDone }: { connection: Connection; o
     }
   }, [connection, name, root, scopes]);
 
+  // Minted once on mount with this device's own scopes; re-minting is an
+  // explicit re-press of "Generate", not a reaction to every keystroke in
+  // the name field or every scope toggle.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see comment above
   useEffect(() => {
     void mint();
-    // Minted once on mount with this device's own scopes; re-minting is an
-    // explicit re-press of "Generate", not a reaction to every keystroke in
-    // the name field or every scope toggle.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleScope = useCallback((scope: string) => {
-    setScopes((current) => {
+    setScopes(current => {
       const next = new Set(current);
       if (next.has(scope)) next.delete(scope);
       else next.add(scope);
@@ -154,7 +156,7 @@ export function InviteScreen({ connection, onDone }: { connection: Connection; o
       <View style={styles.field}>
         <Kicker color={ink.muted}>Scopes</Kicker>
         <View style={styles.scopes}>
-          {ALL_SCOPES.map((scope) => {
+          {ALL_SCOPES.map(scope => {
             const checked = scopes.has(scope);
             return (
               <Pressable
@@ -172,7 +174,12 @@ export function InviteScreen({ connection, onDone }: { connection: Connection; o
         </View>
       </View>
 
-      <Pressable accessibilityRole="button" onPress={() => void mint()} style={styles.generate} testID="invite-generate">
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => void mint()}
+        style={styles.generate}
+        testID="invite-generate"
+      >
         <Label color={signal.sage}>Generate</Label>
       </Pressable>
 
@@ -224,7 +231,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.step,
   },
   scopeChecked: { borderColor: signal.sage },
-  generate: { alignItems: "center", borderColor: ground.edge, borderWidth: stroke.hair, justifyContent: "center", minHeight: TOUCH_TARGET },
+  generate: {
+    alignItems: "center",
+    borderColor: ground.edge,
+    borderWidth: stroke.hair,
+    justifyContent: "center",
+    minHeight: TOUCH_TARGET,
+  },
   result: { alignItems: "center", flex: 1, justifyContent: "center" },
   centered: { alignItems: "center", justifyContent: "center" },
   notice: {

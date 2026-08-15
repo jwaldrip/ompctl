@@ -23,16 +23,10 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  SCOPE_MANAGE,
-  type Actor,
-  type AuditEntry,
-  type Proposal,
-  type Store,
-} from "@ompd/core";
+import { type Actor, type AuditEntry, type Proposal, SCOPE_MANAGE, type Store } from "@ompd/core";
 import { UnauthorizedError } from "../supervisor.ts";
 import { evaluateProposal } from "./gate.ts";
-import { ProposalStore } from "./proposal-store.ts";
+import type { ProposalStore } from "./proposal-store.ts";
 import { evaluateInWorktree } from "./worktree.ts";
 
 export interface EvolutionEngineOptions {
@@ -133,12 +127,11 @@ export class EvolutionEngine {
       // diff that under-reports itself.
       touchedPaths: verdict.touchedPaths,
       state: verdict.nextState,
-      verdict:
-        verdict.outcome === "accepted" ? undefined : { passed: false, log: verdict.reason },
+      verdict: verdict.outcome === "accepted" ? undefined : { passed: false, log: verdict.reason },
     };
     this.#proposals.upsert(stored);
 
-    const underReported = verdict.touchedPaths.filter((p) => !claimed.includes(p));
+    const underReported = verdict.touchedPaths.filter(p => !claimed.includes(p));
     this.#store.audit({
       action: "proposal.submit",
       outcome: verdict.outcome === "accepted" ? "ok" : "denied",
@@ -256,11 +249,7 @@ export class EvolutionEngine {
     const scratch = await mkdtemp(join(tmpdir(), "ompd-promote-"));
     const patchPath = join(scratch, "proposal.patch");
     try {
-      await writeFile(
-        patchPath,
-        proposal.diff.endsWith("\n") ? proposal.diff : `${proposal.diff}\n`,
-        "utf8",
-      );
+      await writeFile(patchPath, proposal.diff.endsWith("\n") ? proposal.diff : `${proposal.diff}\n`, "utf8");
 
       const check = await this.#git(["apply", "--check", "--whitespace=nowarn", patchPath]);
       if (check.code !== 0) {
@@ -383,7 +372,7 @@ export class EvolutionEngine {
         `Observed ${failures.length} failing \`${action}\` entries in the audit log.`,
         "",
         "Distinct reasons:",
-        ...reasons.map((r) => `- ${r}`),
+        ...reasons.map(r => `- ${r}`),
         "",
         "Drafted by the evolution engine from the audit log. No fix is proposed here;",
         "this records the pattern so an operator can decide what to change.",
@@ -398,7 +387,7 @@ export class EvolutionEngine {
           "--- /dev/null",
           `+++ b/${path}`,
           `@@ -0,0 +1,${body.length} @@`,
-          ...body.map((line) => `+${line}`),
+          ...body.map(line => `+${line}`),
           "",
         ].join("\n"),
         evidence: { action, failures: failures.length, reasons },
@@ -445,10 +434,7 @@ export class EvolutionEngine {
       env: { ...process.env, GIT_PAGER: "cat", GIT_TERMINAL_PROMPT: "0" },
     });
     await proc.exited;
-    const [out, err] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     return { code: proc.exitCode ?? -1, output: `${out}${err}` };
   }
 }

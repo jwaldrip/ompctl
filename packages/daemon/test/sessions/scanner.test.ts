@@ -21,15 +21,10 @@ function tempRoot(prefix: string): string {
   return dir;
 }
 
-function writeSessionFile(
-  groupDir: string,
-  filenameTimestamp: string,
-  id: string,
-  lines: unknown[],
-): string {
+function writeSessionFile(groupDir: string, filenameTimestamp: string, id: string, lines: unknown[]): string {
   mkdirSync(groupDir, { recursive: true });
   const filePath = join(groupDir, `${filenameTimestamp}_${id}.jsonl`);
-  writeFileSync(filePath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  writeFileSync(filePath, `${lines.map(l => JSON.stringify(l)).join("\n")}\n`);
   return filePath;
 }
 
@@ -41,7 +36,13 @@ describe("scanSessionFiles", () => {
     const root = tempRoot("scanner-multi-group-");
     writeSessionFile(join(root, "-Downloads"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
       { type: "title", v: 1, title: "Convert manuscript", source: "auto", updatedAt: "2026-08-11T01:17:41.394Z" },
-      { type: "session", version: 3, id: SESSION_ID_A, timestamp: "2026-08-11T01:11:48.090Z", cwd: "/Users/x/Downloads" },
+      {
+        type: "session",
+        version: 3,
+        id: SESSION_ID_A,
+        timestamp: "2026-08-11T01:11:48.090Z",
+        cwd: "/Users/x/Downloads",
+      },
     ]);
     writeSessionFile(join(root, "--private-tmp--"), "2026-08-13T01-44-21-962Z", SESSION_ID_B, [
       { type: "title", v: 1, title: "", updatedAt: "2026-08-13T01:44:21.962Z" },
@@ -50,7 +51,7 @@ describe("scanSessionFiles", () => {
 
     const files = scanSessionFiles(root);
     expect(files).toHaveLength(2);
-    const groups = new Set(files.map((f) => f.flattenedDir));
+    const groups = new Set(files.map(f => f.flattenedDir));
     expect(groups).toEqual(new Set(["-Downloads", "--private-tmp--"]));
   });
 
@@ -76,9 +77,7 @@ describe("scanSessionFiles", () => {
 
   test("an empty title header degrades to an empty string, not a throw", () => {
     const root = tempRoot("scanner-empty-title-");
-    writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
-      { type: "title", v: 1, title: "" },
-    ]);
+    writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [{ type: "title", v: 1, title: "" }]);
     const files = scanSessionFiles(root);
     expect(files).toHaveLength(1);
     expect(files[0]!.title).toBe("");
@@ -156,7 +155,7 @@ describe("countMessages", () => {
       "not valid json at all",
       JSON.stringify({ type: "message", id: "b", message: { role: "assistant", content: [] } }),
     ];
-    writeFileSync(path, lines.join("\n") + "\n");
+    writeFileSync(path, `${lines.join("\n")}\n`);
     expect(countMessages(path)).toBe(2);
   });
 });

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { SCOPE_MANAGE, Store, type Actor } from "@ompd/core";
 import { parseAgentRegistryNotification } from "@ompd/acp";
+import { type Actor, SCOPE_MANAGE, Store } from "@ompd/core";
 import { Supervisor } from "../src/supervisor.ts";
 import { createFakeHost } from "./fake-host.ts";
 
@@ -79,7 +79,7 @@ describe("Agent Hub registry mirroring", () => {
     ).not.toBeUndefined();
     await Bun.sleep(0);
 
-    const child = supervisor.listAgents().find((agent) => agent.parentAgentId === parent.id);
+    const child = supervisor.listAgents().find(agent => agent.parentAgentId === parent.id);
     expect(child).toMatchObject({
       name: "Policy Scout",
       parentAgentId: parent.id,

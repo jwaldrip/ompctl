@@ -22,8 +22,8 @@
  * active-connection pointer, and one-time migrations from the former shapes.
  */
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { isHubUrl, isSocketUrl } from "@ompd/core/pairing";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { deleteSecret, readSecret, writeSecret } from "./secrets";
 
 const STORAGE_KEY = "ompd.connection";
@@ -83,7 +83,7 @@ export async function loadConnections(): Promise<ConnectionList> {
 /** The connection Console should open, retained for callers that need only one. */
 export async function loadConnection(): Promise<Connection | null> {
   const list = await loadConnections();
-  return list.connections.find((entry) => entry.id === list.activeId)?.connection ?? null;
+  return list.connections.find(entry => entry.id === list.activeId)?.connection ?? null;
 }
 
 /**
@@ -114,7 +114,7 @@ export async function saveConnection(connection: Connection, label?: string): Pr
 /** Select a saved pairing without copying its bearer token through app state. */
 export async function setActiveConnection(id: string): Promise<void> {
   const stored = await readStoredList();
-  if (stored === null || !stored.connections.some((entry) => entry.id === id)) {
+  if (stored === null || !stored.connections.some(entry => entry.id === id)) {
     throw new Error(`saved connection "${id}" does not exist`);
   }
   await writeStoredList({ ...stored, activeId: id });
@@ -127,7 +127,7 @@ export async function setActiveConnection(id: string): Promise<void> {
  */
 export async function clearConnection(id: string): Promise<void> {
   const stored = await readStoredList();
-  const remaining = stored?.connections.filter((entry) => entry.id !== id) ?? [];
+  const remaining = stored?.connections.filter(entry => entry.id !== id) ?? [];
   const activeId = pickActiveId(stored?.activeId ?? null, remaining);
   const metadata =
     remaining.length === 0
@@ -259,8 +259,11 @@ function parseJsonObject(raw: string): object | null {
   }
 }
 
-function pickActiveId<T extends { readonly id: string }>(activeId: string | null, connections: readonly T[]): string | null {
-  return connections.some((entry) => entry.id === activeId) ? activeId : (connections[0]?.id ?? null);
+function pickActiveId<T extends { readonly id: string }>(
+  activeId: string | null,
+  connections: readonly T[],
+): string | null {
+  return connections.some(entry => entry.id === activeId) ? activeId : (connections[0]?.id ?? null);
 }
 
 function emptyList(): ConnectionList {
@@ -269,9 +272,9 @@ function emptyList(): ConnectionList {
 
 function defaultLabel(connection: Connection, existing: readonly SavedConnection[]): string {
   const base = connection.transport === "hub" ? "Cloud" : "Local";
-  if (!existing.some((entry) => entry.label === base)) return base;
+  if (!existing.some(entry => entry.label === base)) return base;
   let suffix = 2;
-  while (existing.some((entry) => entry.label === `${base} ${suffix}`)) suffix += 1;
+  while (existing.some(entry => entry.label === `${base} ${suffix}`)) suffix += 1;
   return `${base} ${suffix}`;
 }
 
@@ -279,6 +282,6 @@ function mintId(existing: readonly SavedConnection[]): string {
   let id: string;
   do {
     id = `conn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-  } while (existing.some((entry) => entry.id === id));
+  } while (existing.some(entry => entry.id === id));
   return id;
 }

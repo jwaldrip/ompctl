@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const appRoot = join(import.meta.dir, "..");
@@ -14,10 +14,7 @@ describe("store identity", () => {
   });
 
   test("iOS Xcode project uses ai.ompctl.app", () => {
-    const pbx = readFileSync(
-      join(appRoot, "ios/ompd.xcodeproj/project.pbxproj"),
-      "utf8",
-    );
+    const pbx = readFileSync(join(appRoot, "ios/ompd.xcodeproj/project.pbxproj"), "utf8");
     expect(pbx).toContain("PRODUCT_BUNDLE_IDENTIFIER = ai.ompctl.app;");
     expect(pbx).not.toContain("org.reactjs.native.example");
     expect(pbx).toContain("LaunchSmokeUITests.swift");
@@ -41,10 +38,7 @@ describe("store identity", () => {
   test("Android kotlin sources live under ai/ompctl/app", () => {
     expect(existsSync(join(appRoot, "android/app/src/main/java/ai/ompctl/app/MainActivity.kt"))).toBe(true);
     expect(existsSync(join(appRoot, "android/app/src/main/java/com/ompd/MainActivity.kt"))).toBe(false);
-    const main = readFileSync(
-      join(appRoot, "android/app/src/main/java/ai/ompctl/app/MainActivity.kt"),
-      "utf8",
-    );
+    const main = readFileSync(join(appRoot, "android/app/src/main/java/ai/ompctl/app/MainActivity.kt"), "utf8");
     expect(main.startsWith("package ai.ompctl.app")).toBe(true);
   });
 

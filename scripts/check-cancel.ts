@@ -24,7 +24,7 @@ const streaming = Promise.withResolvers<void>();
 
 let chunks = 0;
 ws.addEventListener("open", () => open.resolve());
-ws.addEventListener("message", (event) => {
+ws.addEventListener("message", event => {
   const frame: unknown = JSON.parse(String(event.data));
   if (frame === null || typeof frame !== "object" || !("t" in frame)) return;
   if (frame.t !== "update" || !("update" in frame)) return;

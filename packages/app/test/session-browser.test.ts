@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { BrowserSession, BrowserState, SessionStatus, SortField } from "../src/session/browser.ts";
 import {
   browserReduce,
   browserView,
@@ -16,8 +17,7 @@ import {
   groupByCwd,
   SORT_LABELS,
 } from "../src/session/browser.ts";
-import type { BrowserSession, BrowserState, SessionStatus, SortField } from "../src/session/browser.ts";
-import { makeSession as session, makeSessionCorpus } from "./fixtures/session-corpus.ts";
+import { makeSessionCorpus, makeSession as session } from "./fixtures/session-corpus.ts";
 
 const CORPUS = makeSessionCorpus(12);
 
@@ -26,10 +26,10 @@ describe("grouping by cwd", () => {
     const groups = groupByCwd(CORPUS, DEFAULT_SORT);
     const total = groups.reduce((sum, g) => sum + g.sessions.length, 0);
     expect(total).toBe(CORPUS.length);
-    const cwds = new Set(CORPUS.map((s) => s.cwd));
+    const cwds = new Set(CORPUS.map(s => s.cwd));
     expect(groups.length).toBe(cwds.size);
     for (const group of groups) {
-      expect(group.sessions.every((s) => s.cwd === group.cwd)).toBe(true);
+      expect(group.sessions.every(s => s.cwd === group.cwd)).toBe(true);
     }
   });
 
@@ -40,7 +40,7 @@ describe("grouping by cwd", () => {
 
   test("groups order by worst status first, most severe group leading", () => {
     const groups = groupByCwd(CORPUS, DEFAULT_SORT);
-    const severities = groups.map((g) => g.worstStatus);
+    const severities = groups.map(g => g.worstStatus);
     const rank: Record<SessionStatus, number> = { "live-tui": 0, "live-ompd": 1, dormant: 2, archived: 3 };
     for (let i = 1; i < severities.length; i++) {
       expect(rank[severities[i - 1] as SessionStatus]).toBeLessThanOrEqual(rank[severities[i] as SessionStatus]);
@@ -102,7 +102,7 @@ describe("status precedence in a collapsed group", () => {
 
     let state: BrowserState = { ...EMPTY_BROWSER, sessions: rows };
     state = browserReduce(state, { t: "toggleGroup", cwd: dir });
-    const collapsedGroup = browserView(state).groups.find((g) => g.cwd === dir);
+    const collapsedGroup = browserView(state).groups.find(g => g.cwd === dir);
     // The group is still present, still full, and still reports the same
     // worst status; only whether a UI chooses to render its rows changed.
     expect(collapsedGroup?.worstStatus).toBe("live-tui");
@@ -117,11 +117,11 @@ describe("every sort order", () => {
   for (const field of fields) {
     test(`${field} ascending is monotonic across the whole corpus`, () => {
       const groups = groupByCwd(CORPUS, { field, direction: "asc" });
-      const flat = groups.flatMap((g) => g.sessions);
+      const flat = groups.flatMap(g => g.sessions);
       // Grouped output re-partitions by cwd; verify monotonicity within each
       // group, which is what the field claims to guarantee.
       for (const group of groups) {
-        const values = group.sessions.map((s) => sortKey(s, field));
+        const values = group.sessions.map(s => sortKey(s, field));
         for (let i = 1; i < values.length; i++) {
           expect(values[i - 1]).toBeLessThanOrEqual(values[i] as number);
         }
@@ -136,7 +136,7 @@ describe("every sort order", () => {
       // promised. Monotonicity in both directions is what it does promise.
       const groups = groupByCwd(CORPUS, { field, direction: "desc" });
       for (const group of groups) {
-        const values = group.sessions.map((s) => sortKey(s, field));
+        const values = group.sessions.map(s => sortKey(s, field));
         for (let i = 1; i < values.length; i++) {
           expect(values[i - 1]).toBeGreaterThanOrEqual(values[i] as number);
         }
@@ -192,12 +192,12 @@ describe("archived sessions", () => {
 
   test("hidden by default", () => {
     const view = browserView(withArchived());
-    const archivedCount = CORPUS.filter((s) => s.status === "archived").length;
+    const archivedCount = CORPUS.filter(s => s.status === "archived").length;
     expect(archivedCount).toBeGreaterThan(0);
     expect(view.hiddenArchived).toBe(archivedCount);
     expect(view.visibleCount).toBe(CORPUS.length - archivedCount);
     for (const group of view.groups) {
-      expect(group.sessions.every((s) => s.status !== "archived")).toBe(true);
+      expect(group.sessions.every(s => s.status !== "archived")).toBe(true);
     }
   });
 
@@ -208,7 +208,7 @@ describe("archived sessions", () => {
     const view = browserView(state);
     expect(view.hiddenArchived).toBe(0);
     expect(view.visibleCount).toBe(CORPUS.length);
-    const archivedSeen = view.groups.some((g) => g.sessions.some((s) => s.status === "archived"));
+    const archivedSeen = view.groups.some(g => g.sessions.some(s => s.status === "archived"));
     expect(archivedSeen).toBe(true);
   });
 
@@ -221,22 +221,22 @@ describe("archived sessions", () => {
   });
 
   test("archiving a session removes it from the default view without deleting it", () => {
-    const target = CORPUS.find((s) => s.status === "dormant") as BrowserSession;
+    const target = CORPUS.find(s => s.status === "dormant") as BrowserSession;
     let state: BrowserState = { ...EMPTY_BROWSER, sessions: CORPUS };
     state = browserReduce(state, { t: "archive", id: target.id });
-    expect(state.sessions.find((s) => s.id === target.id)?.status).toBe("archived");
+    expect(state.sessions.find(s => s.id === target.id)?.status).toBe("archived");
     expect(state.sessions).toHaveLength(CORPUS.length);
     const view = browserView(state);
-    expect(view.groups.some((g) => g.sessions.some((s) => s.id === target.id))).toBe(false);
+    expect(view.groups.some(g => g.sessions.some(s => s.id === target.id))).toBe(false);
   });
 
   test("unarchiving returns a session to dormant and back into the default view", () => {
-    const target = CORPUS.find((s) => s.status === "archived") as BrowserSession;
+    const target = CORPUS.find(s => s.status === "archived") as BrowserSession;
     let state: BrowserState = { ...EMPTY_BROWSER, sessions: CORPUS };
     state = browserReduce(state, { t: "unarchive", id: target.id });
-    expect(state.sessions.find((s) => s.id === target.id)?.status).toBe("dormant");
+    expect(state.sessions.find(s => s.id === target.id)?.status).toBe("dormant");
     const view = browserView(state);
-    expect(view.groups.some((g) => g.sessions.some((s) => s.id === target.id))).toBe(true);
+    expect(view.groups.some(g => g.sessions.some(s => s.id === target.id))).toBe(true);
   });
 });
 

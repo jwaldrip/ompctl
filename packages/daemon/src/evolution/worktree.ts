@@ -45,9 +45,7 @@ interface CommandResult {
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
-export async function evaluateInWorktree(
-  input: WorktreeEvaluationInput,
-): Promise<WorktreeEvaluation> {
+export async function evaluateInWorktree(input: WorktreeEvaluationInput): Promise<WorktreeEvaluation> {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const baseRef = input.baseRef ?? "HEAD";
 
@@ -110,11 +108,7 @@ export async function evaluateInWorktree(
     };
   } finally {
     if (added) {
-      await run(
-        ["git", "-C", input.repoRoot, "worktree", "remove", "--force", worktreePath],
-        input.repoRoot,
-        60_000,
-      );
+      await run(["git", "-C", input.repoRoot, "worktree", "remove", "--force", worktreePath], input.repoRoot, 60_000);
       await run(["git", "-C", input.repoRoot, "worktree", "prune"], input.repoRoot, 60_000);
     }
     await rm(scratch, { recursive: true, force: true });
@@ -141,16 +135,10 @@ async function run(argv: string[], cwd: string, timeoutMs: number): Promise<Comm
   if (outcome === "timeout") {
     proc.kill("SIGKILL");
     await proc.exited;
-    const partial = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
+    const partial = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     return { code: -1, timedOut: true, output: partial.join("") };
   }
 
-  const [out, err] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code: proc.exitCode ?? -1, timedOut: false, output: `${out}${err}` };
 }

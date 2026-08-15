@@ -22,11 +22,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Ompd } from "../packages/daemon/src/daemon.ts";
-import {
-  pcmToBase64,
-  selectTtsEngine,
-  speakableSegments,
-} from "../packages/daemon/src/voice/index.ts";
+import { pcmToBase64, selectTtsEngine, speakableSegments } from "../packages/daemon/src/voice/index.ts";
 
 /**
  * Short, unambiguous, and nothing like a hallucination. The agent's reply is
@@ -42,7 +38,7 @@ const daemon = new Ompd({
   home,
   overrides: { port: 0 },
   repoRoot: home,
-  onLog: (line) => console.error(`[daemon] ${line}`),
+  onLog: line => console.error(`[daemon] ${line}`),
 });
 
 const info = await daemon.start();

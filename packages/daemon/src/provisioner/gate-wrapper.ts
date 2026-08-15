@@ -65,7 +65,7 @@ const SAFE_TOKEN = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 function renderArgv(argv: string[], what: string, kind: string): string {
   if (argv.length === 0) throw new ProvisionError(`${what} is empty`, kind);
-  const unsafe = argv.find((token) => !SAFE_TOKEN.test(token));
+  const unsafe = argv.find(token => !SAFE_TOKEN.test(token));
   if (unsafe !== undefined) {
     throw new ProvisionError(`${what} contains an unsafe token ${JSON.stringify(unsafe)}`, kind);
   }

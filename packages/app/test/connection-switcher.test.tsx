@@ -26,7 +26,13 @@ const connections: ConnectionList = {
     {
       id: "cloud",
       label: "Cloud",
-      connection: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: "dmn_cloud", token: "tok_cloud", scopes: [] },
+      connection: {
+        transport: "hub",
+        hubUrl: "wss://hub.example.com",
+        daemonId: "dmn_cloud",
+        token: "tok_cloud",
+        scopes: [],
+      },
     },
   ],
 };
@@ -54,7 +60,7 @@ describe("ConnectionSwitcherScreen", () => {
             adding = true;
           }}
           onBack={() => {}}
-          onSelect={(id) => selected.push(id)}
+          onSelect={id => selected.push(id)}
         />,
       );
     });
@@ -66,7 +72,14 @@ describe("ConnectionSwitcherScreen", () => {
     expect(adding).toBe(true);
 
     act(() => {
-      root.render(<PairScreen onCancel={() => { cancelled = true; }} onPair={() => {}} />);
+      root.render(
+        <PairScreen
+          onCancel={() => {
+            cancelled = true;
+          }}
+          onPair={() => {}}
+        />,
+      );
     });
     act(() => {
       button(host, "pair-cancel").click();
@@ -85,7 +98,9 @@ describe("ConnectionSwitcherScreen", () => {
     const root = createRoot(host);
 
     act(() => {
-      root.render(<ConnectionSwitcherScreen connections={connections} onAdd={() => {}} onBack={() => {}} onSelect={() => {}} />);
+      root.render(
+        <ConnectionSwitcherScreen connections={connections} onAdd={() => {}} onBack={() => {}} onSelect={() => {}} />,
+      );
     });
     expect(host.querySelector('[data-testid="invite-device"]')).toBeNull();
 
@@ -102,7 +117,12 @@ describe("ConnectionSwitcherScreen", () => {
         {
           id: "local",
           label: "Local",
-          connection: { transport: "direct", url: "ws://127.0.0.1:7777/v1/socket", token: "tok_local", scopes: ["read", "approve"] },
+          connection: {
+            transport: "direct",
+            url: "ws://127.0.0.1:7777/v1/socket",
+            token: "tok_local",
+            scopes: ["read", "approve"],
+          },
         },
       ],
     };
@@ -119,7 +139,9 @@ describe("ConnectionSwitcherScreen", () => {
     }) as unknown as typeof fetch;
 
     act(() => {
-      root.render(<ConnectionSwitcherScreen connections={approving} onAdd={() => {}} onBack={() => {}} onSelect={() => {}} />);
+      root.render(
+        <ConnectionSwitcherScreen connections={approving} onAdd={() => {}} onBack={() => {}} onSelect={() => {}} />,
+      );
     });
     expect(button(host, "invite-device")).not.toBeNull();
 

@@ -41,11 +41,11 @@
  *   bun run scripts/check-routine-live.ts --port 7793 --keep
  */
 
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store, type AgentId, type ApprovalRecord, type Routine, type Run } from "@ompd/core";
-import { Ompd, nextFireTime } from "@ompd/daemon";
+import { type AgentId, type ApprovalRecord, type Routine, type Run, Store } from "@ompd/core";
+import { nextFireTime, Ompd } from "@ompd/daemon";
 import { coverFor, MUTATING_KINDS, subjectsOf, uncoveredMutations } from "./gate-correlation.ts";
 
 const REPO_ROOT = new URL("..", import.meta.url).pathname;
@@ -150,7 +150,7 @@ async function hostProcesses(): Promise<string[]> {
   if (listed.length === 0) return [];
 
   const found: string[] = [];
-  for (const pid of listed.split("\n").map((line) => line.trim())) {
+  for (const pid of listed.split("\n").map(line => line.trim())) {
     if (pid.length === 0) continue;
     const ps = Bun.spawn(["ps", "-o", "command=", "-p", pid], { stdout: "pipe", stderr: "ignore" });
     const command = (await new Response(ps.stdout).text()).trim();
@@ -163,7 +163,7 @@ async function hostProcesses(): Promise<string[]> {
 /** Gate-config overlays in the temp dir: one per live host, litter otherwise. */
 function gateDirs(): string[] {
   return readdirSync(tmpdir())
-    .filter((name) => name.startsWith("ompd-gate-"))
+    .filter(name => name.startsWith("ompd-gate-"))
     .toSorted();
 }
 
@@ -175,10 +175,7 @@ async function cli(home: string, ...args: string[]): Promise<string> {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [out, err] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   await proc.exited;
   return `${out}${err}`.trimEnd();
 }
@@ -235,7 +232,7 @@ function reportGate(calls: ToolCall[], approvals: ApprovalRecord[]): ToolCall[] 
     const cover = coverFor(call, approvals);
     const gate =
       cover.length > 0
-        ? `asked (${cover.map((row) => row.rule || "pending").join(", ")})`
+        ? `asked (${cover.map(row => row.rule || "pending").join(", ")})`
         : MUTATING_KINDS[call.kind] === true
           ? "NEVER ASKED"
           : "not gated, non-mutating";
@@ -312,7 +309,7 @@ async function watch(
 
     if (Date.now() >= nextHeartbeat) {
       nextHeartbeat = Date.now() + HEARTBEAT_MS;
-      const states = [...seen.latest.values()].map((run) => run.state).toSorted();
+      const states = [...seen.latest.values()].map(run => run.state).toSorted();
       const left = Math.round((deadline - Date.now()) / 1000);
       log(`waiting on ${label}; ${left}s left; runs=[${states.join(",")}]`);
     }
@@ -328,8 +325,7 @@ function reportRuns(daemon: Ompd, routineId: string): void {
     return;
   }
   for (const run of runs.toReversed()) {
-    const finished =
-      run.finishedAt === undefined ? "unfinished" : `finished ${stamp(new Date(run.finishedAt))}`;
+    const finished = run.finishedAt === undefined ? "unfinished" : `finished ${stamp(new Date(run.finishedAt))}`;
     const agent = run.agentId === undefined ? "" : `  ${run.agentId}`;
     console.log(
       `  ${routineId}: ${run.id}  ${run.state.padEnd(9)}  started ${stamp(new Date(run.startedAt))}  ${finished}${agent}`,
@@ -352,9 +348,7 @@ function reportStranded(home: string, routineIds: string[], failures: string[]):
   const store = new Store(join(home, "ompd.db"));
   try {
     for (const routineId of routineIds) {
-      const stranded = store
-        .listRuns(routineId)
-        .filter((run) => run.state === "queued" || run.state === "running");
+      const stranded = store.listRuns(routineId).filter(run => run.state === "queued" || run.state === "running");
       const active = store.hasActiveRun(routineId);
       console.log(`  ${routineId}: ${stranded.length} mid-flight run(s), hasActiveRun=${active}`);
       for (const run of stranded) {
@@ -378,11 +372,7 @@ function reportStranded(home: string, routineIds: string[], failures: string[]):
  * already recorded by the time anything is deleted. Leaving the litter behind to
  * prove a point would just make the next run's baseline wrong.
  */
-async function reportLeaks(
-  baselineHosts: string[],
-  baselineGates: string[],
-  failures: string[],
-): Promise<void> {
+async function reportLeaks(baselineHosts: string[], baselineGates: string[], failures: string[]): Promise<void> {
   await Bun.sleep(REAP_GRACE_MS);
   const hosts = await hostProcesses();
   const gates = gateDirs();
@@ -393,7 +383,7 @@ async function reportLeaks(
     failures.push(`${hosts.length - baselineHosts.length} acp host process(es) leaked`);
   }
 
-  const leaked = gates.filter((dir) => !baselineGates.includes(dir));
+  const leaked = gates.filter(dir => !baselineGates.includes(dir));
   if (leaked.length === 0) return;
   failures.push(
     `${leaked.length} gate config dir(s) leaked: ${leaked.join(", ")} (spawnLocalHost writes the overlay before Bun.spawn, and cleanup hangs off proc.exited, so a spawn that throws never removes it)`,
@@ -448,7 +438,7 @@ async function phaseWrite(port: number, keep: boolean): Promise<PhaseResult> {
     home,
     overrides: { port, host: "127.0.0.1" },
     repoRoot: REPO_ROOT,
-    onLog: (line) => console.log(`    daemon| ${line}`),
+    onLog: line => console.log(`    daemon| ${line}`),
   });
 
   // Computed before start so the lead is measured from the moment the scheduler
@@ -514,23 +504,21 @@ async function phaseWrite(port: number, keep: boolean): Promise<PhaseResult> {
       daemon,
       [failId],
       90_000,
-      (s) => [...s.latest.values()].some((run) => run.state === "failed"),
+      s => [...s.latest.values()].some(run => run.state === "failed"),
       "the bad-cwd routine to fail at least once",
     );
-    const earlyFailures = [...early.latest.values()].filter((run) => run.state === "failed");
+    const earlyFailures = [...early.latest.values()].filter(run => run.state === "failed");
     if (earlyFailures.length === 0) {
       failures.push("the bad-cwd routine never produced a failed run");
     } else {
-      findings.push(
-        `the bad-cwd routine failed ${earlyFailures.length} time(s) before the cron routine came due`,
-      );
+      findings.push(`the bad-cwd routine failed ${earlyFailures.length} time(s) before the cron routine came due`);
     }
 
     const observed = await watch(
       daemon,
       [writeId],
       300_000,
-      (s) => [...s.latest.values()].some((run) => run.finishedAt !== undefined),
+      s => [...s.latest.values()].some(run => run.finishedAt !== undefined),
       "the cron routine to fire and settle",
     );
 
@@ -576,8 +564,7 @@ async function phaseWrite(port: number, keep: boolean): Promise<PhaseResult> {
       }
 
       section("every tool call the turn made, joined against the approvals");
-      const approvals =
-        writeRun.agentId === undefined ? [] : daemon.store.listApprovals(writeRun.agentId);
+      const approvals = writeRun.agentId === undefined ? [] : daemon.store.listApprovals(writeRun.agentId);
       const calls = writeRun.agentId === undefined ? [] : toolCalls(daemon, writeRun.agentId);
       const ungated = reportGate(calls, approvals);
 
@@ -591,15 +578,13 @@ async function phaseWrite(port: number, keep: boolean): Promise<PhaseResult> {
       }
       if (ungated.length > 0) {
         failures.push(
-          `${ungated.length} mutating tool call(s) ran without reaching the gate: ${ungated.map((c) => `${c.kind}/${c.title}`).join("; ")}`,
+          `${ungated.length} mutating tool call(s) ran without reaching the gate: ${ungated.map(c => `${c.kind}/${c.title}`).join("; ")}`,
         );
       }
-      const automatic = approvals.filter(
-        (a) => a.decision === "allow" && a.actorDeviceId === null && a.decidedAt !== "",
-      );
+      const automatic = approvals.filter(a => a.decision === "allow" && a.actorDeviceId === null && a.decidedAt !== "");
       if (automatic.length > 0) {
         findings.push(
-          `policy allowed ${automatic.length} tool call(s) unattended, by rule ${[...new Set(automatic.map((a) => a.rule))].join(", ")}`,
+          `policy allowed ${automatic.length} tool call(s) unattended, by rule ${[...new Set(automatic.map(a => a.rule))].join(", ")}`,
         );
       }
 
@@ -608,9 +593,7 @@ async function phaseWrite(port: number, keep: boolean): Promise<PhaseResult> {
       if (agent === null) {
         failures.push("the run recorded no agent");
       } else {
-        console.log(
-          `  ${agent.id}  state=${agent.state}  host=${agent.host.kind}:${agent.host.id}  cwd=${agent.cwd}`,
-        );
+        console.log(`  ${agent.id}  state=${agent.state}  host=${agent.host.kind}:${agent.host.id}  cwd=${agent.cwd}`);
         if (agent.state !== "stopped") failures.push(`the run's agent is ${agent.state}, not stopped`);
         findings.push(`the run's agent ended in state ${agent.state}`);
       }
@@ -618,9 +601,7 @@ async function phaseWrite(port: number, keep: boolean): Promise<PhaseResult> {
 
     section("the malformed cron expression");
     const brokenRuns = daemon.store.listRuns(brokenId);
-    const brokenAudit = daemon.store
-      .listAudit(500)
-      .filter((entry) => entry.detail.routineId === brokenId);
+    const brokenAudit = daemon.store.listAudit(500).filter(entry => entry.detail.routineId === brokenId);
     console.log(`  runs: ${brokenRuns.length}`);
     for (const entry of brokenAudit) {
       console.log(`  audit ${entry.ts} ${entry.outcome} ${JSON.stringify(entry.detail)}`);
@@ -634,16 +615,14 @@ async function phaseWrite(port: number, keep: boolean): Promise<PhaseResult> {
 
     section("failure isolation: the timer survived both failures");
     const failRuns = daemon.store.listRuns(failId);
-    const states = [...new Set(failRuns.map((run) => run.state))].join("/");
+    const states = [...new Set(failRuns.map(run => run.state))].join("/");
     console.log(`  bad-cwd runs recorded: ${failRuns.length}, all ${states}`);
     const pivot = writeRun === undefined ? Date.now() : new Date(writeRun.startedAt).getTime();
-    const before = failRuns.filter((run) => new Date(run.startedAt).getTime() < pivot).length;
-    const after = failRuns.filter((run) => new Date(run.startedAt).getTime() > pivot).length;
+    const before = failRuns.filter(run => new Date(run.startedAt).getTime() < pivot).length;
+    const after = failRuns.filter(run => new Date(run.startedAt).getTime() > pivot).length;
     console.log(`  ${before} came due before the successful run, ${after} after it`);
     if (before === 0) failures.push("no failing run preceded the successful one");
-    findings.push(
-      `${before} failing run(s) before and ${after} after the successful one; the timer never stopped`,
-    );
+    findings.push(`${before} failing run(s) before and ${after} after the successful one; the timer never stopped`);
   } finally {
     section("shutdown and leak census");
     const live = await hostProcesses();
@@ -688,7 +667,7 @@ async function phaseSingleton(port: number, keep: boolean): Promise<PhaseResult>
     home,
     overrides: { port, host: "127.0.0.1" },
     repoRoot: REPO_ROOT,
-    onLog: (line) => console.log(`    daemon| ${line}`),
+    onLog: line => console.log(`    daemon| ${line}`),
   });
 
   const bashId = "rt_live_bash";
@@ -720,10 +699,10 @@ async function phaseSingleton(port: number, keep: boolean): Promise<PhaseResult>
       daemon,
       [bashId],
       420_000,
-      (s) => {
+      s => {
         const runs = [...s.latest.values()];
-        const skipped = runs.some((run) => run.state === "skipped");
-        const settled = runs.some((run) => run.state !== "skipped" && run.finishedAt !== undefined);
+        const skipped = runs.some(run => run.state === "skipped");
+        const settled = runs.some(run => run.state !== "skipped" && run.finishedAt !== undefined);
         return skipped && settled;
       },
       "one skipped fire and the first run settling",
@@ -733,8 +712,8 @@ async function phaseSingleton(port: number, keep: boolean): Promise<PhaseResult>
     reportRuns(daemon, bashId);
 
     const runs = daemon.store.listRuns(bashId).toReversed();
-    const real = runs.filter((run) => run.state !== "skipped");
-    const skipped = runs.filter((run) => run.state === "skipped");
+    const real = runs.filter(run => run.state !== "skipped");
+    const skipped = runs.filter(run => run.state === "skipped");
     const first = real[0];
 
     if (first === undefined) {
@@ -743,15 +722,14 @@ async function phaseSingleton(port: number, keep: boolean): Promise<PhaseResult>
     }
 
     const startedAt = new Date(first.startedAt).getTime();
-    const finishedAt =
-      first.finishedAt === undefined ? Date.now() : new Date(first.finishedAt).getTime();
+    const finishedAt = first.finishedAt === undefined ? Date.now() : new Date(first.finishedAt).getTime();
     const held = (finishedAt - startedAt) / 1000;
     findings.push(`the first run held the routine for ${held.toFixed(1)}s, ending ${first.state}`);
     if (held < 60) {
       failures.push(`the first run lasted ${held.toFixed(1)}s, so it never outlasted its own minute`);
     }
 
-    const overlapping = skipped.filter((run) => {
+    const overlapping = skipped.filter(run => {
       const at = new Date(run.startedAt).getTime();
       return at > startedAt && at <= finishedAt;
     });
@@ -769,15 +747,15 @@ async function phaseSingleton(port: number, keep: boolean): Promise<PhaseResult>
     const ungated = reportGate(calls, approvals);
     if (ungated.length > 0) {
       failures.push(
-        `${ungated.length} mutating tool call(s) ran without reaching the gate: ${ungated.map((c) => `${c.kind}/${c.title}`).join("; ")}`,
+        `${ungated.length} mutating tool call(s) ran without reaching the gate: ${ungated.map(c => `${c.kind}/${c.title}`).join("; ")}`,
       );
     }
     if (approvals.length === 0) {
       findings.push("no approval was requested at all, so the gate was never reached");
     } else {
-      const pending = approvals.filter((a) => a.decidedAt === "");
-      const denied = approvals.filter((a) => a.decision === "deny" && a.decidedAt !== "");
-      const noAnswer = denied.filter((a) => a.actorDeviceId === null);
+      const pending = approvals.filter(a => a.decidedAt === "");
+      const denied = approvals.filter(a => a.decision === "deny" && a.decidedAt !== "");
+      const noAnswer = denied.filter(a => a.actorDeviceId === null);
       findings.push(
         `${approvals.length} approval(s) requested, ${denied.length} decided as deny (${noAnswer.length} of those by the daemon's own timeout), ${pending.length} never decided at all`,
       );
@@ -836,7 +814,7 @@ for (const result of results) {
   for (const finding of result.findings) console.log(`  [${result.name}] ${finding}`);
 }
 
-const failures = results.flatMap((r) => r.failures.map((f) => `[${r.name}] ${f}`));
+const failures = results.flatMap(r => r.failures.map(f => `[${r.name}] ${f}`));
 console.log("");
 if (failures.length > 0) {
   for (const failure of failures) console.log(`FAIL ${failure}`);

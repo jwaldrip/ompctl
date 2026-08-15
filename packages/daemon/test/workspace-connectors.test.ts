@@ -14,13 +14,16 @@ import type { ConnectorStatus } from "@ompd/core";
 import { listConnectorCatalog, type MCPDiscoveryResult } from "../src/workspace/connectors.ts";
 
 function fakeManager(
-  servers: Record<string, { status: ConnectorStatus; source?: { providerName?: string; level?: string; path?: string } }>,
+  servers: Record<
+    string,
+    { status: ConnectorStatus; source?: { providerName?: string; level?: string; path?: string } }
+  >,
 ): { manager: MCPDiscoveryResult["manager"]; disconnectCalls: number[] } {
   const disconnectCalls: number[] = [];
   const manager: MCPDiscoveryResult["manager"] = {
     getAllServerNames: () => Object.keys(servers),
-    getConnectionStatus: (name) => servers[name]?.status ?? "disconnected",
-    getSource: (name) => servers[name]?.source,
+    getConnectionStatus: name => servers[name]?.status ?? "disconnected",
+    getSource: name => servers[name]?.source,
     disconnectAll: async () => {
       disconnectCalls.push(Date.now());
     },
@@ -40,14 +43,14 @@ describe("listConnectorCatalog", () => {
       errors: [{ path: "mcp:flaky", error: "connect ECONNREFUSED 127.0.0.1:9999" }],
     }));
 
-    const flaky = connectors.find((c) => c.name === "flaky");
+    const flaky = connectors.find(c => c.name === "flaky");
     expect(flaky?.connected).toBe(false);
     expect(flaky?.status).toBe("disconnected");
     expect(flaky?.error).toBe("connect ECONNREFUSED 127.0.0.1:9999");
 
     // A connector that IS connected reports no error at all -- the field's
     // absence is itself the "nothing is wrong" signal.
-    const healthy = connectors.find((c) => c.name === "healthy");
+    const healthy = connectors.find(c => c.name === "healthy");
     expect(healthy?.connected).toBe(true);
     expect(healthy?.error).toBeUndefined();
 
@@ -72,7 +75,7 @@ describe("listConnectorCatalog", () => {
 
     const serialized = JSON.stringify(connectors);
     expect(serialized).not.toContain(secret);
-    expect(connectors.find((c) => c.name === "leaky")?.error).toContain("[redacted]");
+    expect(connectors.find(c => c.name === "leaky")?.error).toContain("[redacted]");
   });
 
   test("never returns a config field, by construction: only the declared ConnectorSummary keys appear", async () => {
@@ -103,7 +106,7 @@ describe("listConnectorCatalog", () => {
     });
 
     const connectors = await listConnectorCatalog(undefined, async () => ({ manager, errors: [] }));
-    expect(connectors.map((c) => c.name)).toEqual(["alpha", "zeta"]);
+    expect(connectors.map(c => c.name)).toEqual(["alpha", "zeta"]);
     expect(connectors[0]?.pluginName).toBe("cld");
     expect(connectors[1]?.pluginName).toBeUndefined();
   });

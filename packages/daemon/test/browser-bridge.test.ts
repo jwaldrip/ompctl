@@ -15,20 +15,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import {
-  DefaultPolicy,
-  Store,
   type Agent,
+  DefaultPolicy,
   type Policy,
   type PolicyContext,
   type PolicyDecision,
+  Store,
   type WebViewAction,
 } from "@ompd/core";
 import {
   NO_RESPONSE,
   NO_TARGET,
   PROMPT_NOT_WIRED,
-  WebViewBridge,
   type WebViewApprovalGate,
+  WebViewBridge,
   type WebViewDispatch,
 } from "../src/browser/bridge.ts";
 
@@ -109,7 +109,7 @@ describe("WebViewBridge: an action reaches the policy engine", () => {
   test("a prompted navigate asks the gate and dispatches the exact approved action", async () => {
     const asked: Parameters<WebViewApprovalGate["request"]>[0][] = [];
     const approvals: WebViewApprovalGate = {
-      request: (input) => {
+      request: input => {
         asked.push(input);
         return Promise.resolve({ allowed: true, reason: "approved once" });
       },
@@ -140,7 +140,7 @@ describe("WebViewBridge: an action reaches the policy engine", () => {
   test("a gate refusal carries its reason and never dispatches", async () => {
     const asked: Parameters<WebViewApprovalGate["request"]>[0][] = [];
     const approvals: WebViewApprovalGate = {
-      request: (input) => {
+      request: input => {
         asked.push(input);
         return Promise.resolve({ allowed: false, reason: "operator denied this click" });
       },
@@ -152,16 +152,14 @@ describe("WebViewBridge: an action reaches the policy engine", () => {
       kind: "error",
       message: "operator denied this click",
     });
-    expect(asked).toEqual([
-      { agentId, tool: "webview_click", title: "Click n3", action },
-    ]);
+    expect(asked).toEqual([{ agentId, tool: "webview_click", title: "Click n3", action }]);
     expect(sent).toEqual([]);
   });
 
   test("a type approval title names the ref and text", async () => {
     const asked: Parameters<WebViewApprovalGate["request"]>[0][] = [];
     const approvals: WebViewApprovalGate = {
-      request: (input) => {
+      request: input => {
         asked.push(input);
         return Promise.resolve({ allowed: false, reason: "operator denied typing" });
       },

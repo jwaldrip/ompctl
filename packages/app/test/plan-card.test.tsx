@@ -24,7 +24,7 @@ function renderCard(onRespond: (requestId: string, choice: "Approve and execute"
         plan={[{ content: "Inspect the live path", priority: "high", status: "pending" }]}
         review={{
           requestId: "pln_review",
-          message: "Approve plan \"Inspect the live path\"?",
+          message: 'Approve plan "Inspect the live path"?',
           choices: ["Approve and execute", "Refine plan"],
         }}
       />,

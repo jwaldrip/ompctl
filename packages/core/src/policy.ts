@@ -11,12 +11,12 @@
  */
 
 import {
-  SCOPE_APPROVE,
-  SCOPE_PROMPT,
-  SCOPE_READ,
   type Policy,
   type PolicyContext,
   type PolicyDecision,
+  SCOPE_APPROVE,
+  SCOPE_PROMPT,
+  SCOPE_READ,
 } from "./contracts.ts";
 
 /**
@@ -173,7 +173,7 @@ const CRITICAL_COMMAND_PATTERNS: RegExp[] = [
 export function commandSegments(command: string): string[] {
   return command
     .split(/&&|\|\||;|\||\n|(?<!&)&(?!&)/)
-    .map((s) => s.trim())
+    .map(s => s.trim())
     .filter(Boolean);
 }
 
@@ -209,10 +209,8 @@ export class DefaultPolicy implements Policy {
     // so the same pattern would match on one call and miss on the next. A
     // stateful matcher in a security check is a bug that only shows up under
     // load, which is the worst time to find it.
-    this.#critical = [...CRITICAL_COMMAND_PATTERNS, ...(config.extraCritical ?? [])].map((p) =>
-      p.flags.includes("g") || p.flags.includes("y")
-        ? new RegExp(p.source, p.flags.replace(/[gy]/g, ""))
-        : p,
+    this.#critical = [...CRITICAL_COMMAND_PATTERNS, ...(config.extraCritical ?? [])].map(p =>
+      p.flags.includes("g") || p.flags.includes("y") ? new RegExp(p.source, p.flags.replace(/[gy]/g, "")) : p,
     );
   }
 
@@ -302,7 +300,7 @@ export class DefaultPolicy implements Policy {
 
   #inWorkspace(cwd: string, path: string): boolean {
     const roots = this.#config.workspaceRoots ?? [cwd];
-    return roots.some((root) => isInside(root, path, cwd));
+    return roots.some(root => isInside(root, path, cwd));
   }
 
   #criticalMatch(command: string): string | null {

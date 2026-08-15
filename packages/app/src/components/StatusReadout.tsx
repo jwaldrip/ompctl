@@ -8,6 +8,7 @@
  * fact, and a spinner is a promise the app cannot keep.
  */
 
+import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { StyleSheet, View } from "react-native";
 import { formatMoney, formatTokens } from "../design/format.ts";
@@ -15,7 +16,6 @@ import { Glyph } from "../design/icons.tsx";
 import { Data, Kicker, Label } from "../design/text.tsx";
 import type { SignalName } from "../design/tokens.ts";
 import { ground, ink, pressureSignal, signal, signalWash, space, stroke } from "../design/tokens.ts";
-import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { Usage } from "../session/model.ts";
 
 /** What each connection state means, in the words shown on screen. */
@@ -71,11 +71,7 @@ export function StatusReadout({ state, attempt, delayMs, usage, clearances }: St
           label="context"
           tone={pressure}
           testID="status-context"
-          value={
-            usage === null || usage.size === 0
-              ? "--"
-              : `${formatTokens(usage.used)}/${formatTokens(usage.size)}`
-          }
+          value={usage === null || usage.size === 0 ? "--" : `${formatTokens(usage.used)}/${formatTokens(usage.size)}`}
         />
         <Meter
           glyph="cost"

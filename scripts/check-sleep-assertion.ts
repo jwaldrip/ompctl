@@ -46,8 +46,8 @@ async function assertions(): Promise<string[]> {
   }
 
   return records
-    .filter((record) => record.some((line) => line.includes(`on behalf of Process ID ${process.pid}`)))
-    .map((record) => record.join("\n  "));
+    .filter(record => record.some(line => line.includes(`on behalf of Process ID ${process.pid}`)))
+    .map(record => record.join("\n  "));
 }
 
 async function report(label: string): Promise<string[]> {
@@ -57,9 +57,7 @@ async function report(label: string): Promise<string[]> {
   const lines = await assertions();
   console.log(`\n### ${label}`);
   console.log(`$ pmset -g assertions   # assertions held on behalf of pid ${process.pid}`);
-  console.log(
-    lines.length === 0 ? "  (none held by this daemon)" : lines.map((l) => `  ${l}`).join("\n"),
-  );
+  console.log(lines.length === 0 ? "  (none held by this daemon)" : lines.map(l => `  ${l}`).join("\n"));
   return lines;
 }
 
@@ -70,7 +68,7 @@ const daemon = new Ompd({
   overrides: { port: 0 },
   spawnHost: host.factory,
   voice: false,
-  onLog: (line) => console.log(`  daemon: ${line}`),
+  onLog: line => console.log(`  daemon: ${line}`),
 });
 
 const info = await daemon.start();

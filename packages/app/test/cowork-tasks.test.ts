@@ -3,14 +3,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  EMPTY_TASKS,
-  reduceTasks,
-  taskListView,
-  TASK_STATE_LABELS,
-  TASK_STATE_SIGNALS,
-} from "../src/cowork/tasks.ts";
 import type { TaskListAction, TaskListState } from "../src/cowork/tasks.ts";
+import { EMPTY_TASKS, reduceTasks, TASK_STATE_LABELS, TASK_STATE_SIGNALS, taskListView } from "../src/cowork/tasks.ts";
 import type { Task, TaskState } from "../src/cowork/types.ts";
 
 function task(id: string, overrides: Partial<Task> = {}): Task {
@@ -68,8 +62,8 @@ describe("taskListView", () => {
       { t: "load", tasks: [task("running", { state: "running" }), task("done", { state: "done" })] },
     ]);
     const view = taskListView(state);
-    expect(view.inFlight.map((t) => t.id)).toEqual(["running"]);
-    expect(view.recent.map((t) => t.id)).toEqual(["done"]);
+    expect(view.inFlight.map(t => t.id)).toEqual(["running"]);
+    expect(view.recent.map(t => t.id)).toEqual(["done"]);
   });
 
   test("a task waiting on a person ranks ahead of one merely running", () => {
@@ -83,7 +77,7 @@ describe("taskListView", () => {
       },
     ]);
     const view = taskListView(state);
-    expect(view.inFlight.map((t) => t.id)).toEqual(["w", "r"]);
+    expect(view.inFlight.map(t => t.id)).toEqual(["w", "r"]);
   });
 
   test("within the same urgency tier, the most recently updated task sorts first", () => {
@@ -96,7 +90,7 @@ describe("taskListView", () => {
         ],
       },
     ]);
-    expect(taskListView(state).inFlight.map((t) => t.id)).toEqual(["newer", "older"]);
+    expect(taskListView(state).inFlight.map(t => t.id)).toEqual(["newer", "older"]);
   });
 
   test("recent tasks are most-recently-updated first regardless of terminal state", () => {
@@ -110,7 +104,7 @@ describe("taskListView", () => {
         ],
       },
     ]);
-    expect(taskListView(state).recent.map((t) => t.id)).toEqual(["failed-recent", "canceled-mid", "done-old"]);
+    expect(taskListView(state).recent.map(t => t.id)).toEqual(["failed-recent", "canceled-mid", "done-old"]);
   });
 
   test("an empty board views as two empty lists, not undefined", () => {

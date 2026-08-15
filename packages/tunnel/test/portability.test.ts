@@ -17,7 +17,7 @@ describe("portability", () => {
     const built = await Bun.build({ entrypoints: [entry], target: "browser", minify: false });
     // A node builtin does not resolve for this target, so the build reports it
     // rather than silently shimming.
-    expect(built.logs.filter((entry2) => entry2.level === "error")).toEqual([]);
+    expect(built.logs.filter(entry2 => entry2.level === "error")).toEqual([]);
     expect(built.success).toBe(true);
   });
 

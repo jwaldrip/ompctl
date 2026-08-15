@@ -38,7 +38,7 @@ function writeSessionFile(
   const groupDir = join(sessionsRoot, flattenedDir);
   mkdirSync(groupDir, { recursive: true });
   const filePath = join(groupDir, `${filenameTimestamp}_${id}.jsonl`);
-  writeFileSync(filePath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  writeFileSync(filePath, `${lines.map(l => JSON.stringify(l)).join("\n")}\n`);
   return filePath;
 }
 
@@ -78,20 +78,16 @@ describe("SessionIndex.build", () => {
   test("spans multiple cwd groups", () => {
     const sessionsRoot = tempRoot("session-index-groups-");
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
-    writeSessionFile(sessionsRoot, "-Downloads", "2026-08-11T01-11-48-090Z", SESSION_A, [
-      titleLine("Manuscript"),
-    ]);
+    writeSessionFile(sessionsRoot, "-Downloads", "2026-08-11T01-11-48-090Z", SESSION_A, [titleLine("Manuscript")]);
     writeSessionFile(sessionsRoot, "-dev-src-github.com-acme-widgets", "2026-08-12T00-00-00-000Z", SESSION_B, [
       titleLine("Widgets work"),
     ]);
-    writeSessionFile(sessionsRoot, "--private-tmp--", "2026-08-13T00-00-00-000Z", SESSION_C, [
-      titleLine(""),
-    ]);
+    writeSessionFile(sessionsRoot, "--private-tmp--", "2026-08-13T00-00-00-000Z", SESSION_C, [titleLine("")]);
 
     const index = buildIndex(sessionsRoot, store);
     const summaries = index.build();
     expect(summaries).toHaveLength(3);
-    expect(new Set(summaries.map((s) => s.flattenedDir))).toEqual(
+    expect(new Set(summaries.map(s => s.flattenedDir))).toEqual(
       new Set(["-Downloads", "-dev-src-github.com-acme-widgets", "--private-tmp--"]),
     );
   });
@@ -143,9 +139,7 @@ describe("SessionIndex.build", () => {
     const sessionsRoot = tempRoot("session-index-live-ompd-");
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
     writeSessionFile(sessionsRoot, "-x", "2026-08-11T01-11-48-090Z", SESSION_A, [titleLine("t")]);
-    store.upsertAgent(
-      fakeAgent({ id: "agt_abc", acpSessionId: SESSION_A, state: "busy" }),
-    );
+    store.upsertAgent(fakeAgent({ id: "agt_abc", acpSessionId: SESSION_A, state: "busy" }));
 
     // Also register a client presence for the same session, to prove
     // live-ompd is checked first regardless.
@@ -247,10 +241,10 @@ describe("SessionIndex archiving", () => {
     index.archive(SESSION_A);
 
     const defaultView = index.query();
-    expect(defaultView.map((s) => s.id)).toEqual([SESSION_B]);
+    expect(defaultView.map(s => s.id)).toEqual([SESSION_B]);
 
     const withArchived = index.query({ includeArchived: true });
-    expect(new Set(withArchived.map((s) => s.id))).toEqual(new Set([SESSION_A, SESSION_B]));
+    expect(new Set(withArchived.map(s => s.id))).toEqual(new Set([SESSION_A, SESSION_B]));
   });
 
   test("unarchive reverses the mark", () => {
@@ -268,9 +262,7 @@ describe("SessionIndex archiving", () => {
   test("archiving never deletes the session file", () => {
     const sessionsRoot = tempRoot("session-index-no-delete-");
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
-    const path = writeSessionFile(sessionsRoot, "-x", "2026-08-11T01-11-48-090Z", SESSION_A, [
-      titleLine("t"),
-    ]);
+    const path = writeSessionFile(sessionsRoot, "-x", "2026-08-11T01-11-48-090Z", SESSION_A, [titleLine("t")]);
 
     const index = buildIndex(sessionsRoot, store);
     index.archive(SESSION_A);
@@ -321,16 +313,8 @@ describe("SessionIndex sorting", () => {
     seedThreeSessions(sessionsRoot);
     const index = buildIndex(sessionsRoot, store);
 
-    expect(index.query({ sort: "age", sortDir: "asc" }).map((s) => s.id)).toEqual([
-      SESSION_A,
-      SESSION_B,
-      SESSION_C,
-    ]);
-    expect(index.query({ sort: "age", sortDir: "desc" }).map((s) => s.id)).toEqual([
-      SESSION_C,
-      SESSION_B,
-      SESSION_A,
-    ]);
+    expect(index.query({ sort: "age", sortDir: "asc" }).map(s => s.id)).toEqual([SESSION_A, SESSION_B, SESSION_C]);
+    expect(index.query({ sort: "age", sortDir: "desc" }).map(s => s.id)).toEqual([SESSION_C, SESSION_B, SESSION_A]);
   });
 
   test("sorts by lastActivity", () => {
@@ -339,7 +323,7 @@ describe("SessionIndex sorting", () => {
     seedThreeSessions(sessionsRoot);
     const index = buildIndex(sessionsRoot, store);
 
-    expect(index.query({ sort: "lastActivity", sortDir: "asc" }).map((s) => s.id)).toEqual([
+    expect(index.query({ sort: "lastActivity", sortDir: "asc" }).map(s => s.id)).toEqual([
       SESSION_A,
       SESSION_B,
       SESSION_C,
@@ -352,12 +336,12 @@ describe("SessionIndex sorting", () => {
     seedThreeSessions(sessionsRoot);
     const index = buildIndex(sessionsRoot, store);
 
-    expect(index.query({ sort: "messageCount", sortDir: "asc" }).map((s) => s.id)).toEqual([
+    expect(index.query({ sort: "messageCount", sortDir: "asc" }).map(s => s.id)).toEqual([
       SESSION_A,
       SESSION_B,
       SESSION_C,
     ]);
-    expect(index.query({ sort: "messageCount", sortDir: "desc" }).map((s) => s.id)).toEqual([
+    expect(index.query({ sort: "messageCount", sortDir: "desc" }).map(s => s.id)).toEqual([
       SESSION_C,
       SESSION_B,
       SESSION_A,
@@ -371,7 +355,7 @@ describe("SessionIndex sorting", () => {
     const index = buildIndex(sessionsRoot, store);
 
     const asc = index.query({ sort: "size", sortDir: "asc" });
-    expect(asc.map((s) => s.id)).toEqual([SESSION_A, SESSION_B, SESSION_C]);
+    expect(asc.map(s => s.id)).toEqual([SESSION_A, SESSION_B, SESSION_C]);
     expect(asc[0]!.byteSize).toBeLessThan(asc[1]!.byteSize);
     expect(asc[1]!.byteSize).toBeLessThan(asc[2]!.byteSize);
   });
@@ -388,7 +372,7 @@ describe("SessionIndex sorting", () => {
     index.archive(SESSION_B);
 
     const withArchived = index.query({ sort: "status", sortDir: "asc", includeArchived: true });
-    expect(withArchived.map((s) => s.status)).toEqual(["live-ompd", "dormant", "archived"]);
+    expect(withArchived.map(s => s.status)).toEqual(["live-ompd", "dormant", "archived"]);
   });
 
   test("cwd filter matches either the decoded cwd or the raw flattened dir", () => {
@@ -399,7 +383,7 @@ describe("SessionIndex sorting", () => {
 
     const index = buildIndex(sessionsRoot, store);
     const byFlattened = index.query({ cwd: "-x" });
-    expect(byFlattened.map((s) => s.id)).toEqual([SESSION_A]);
+    expect(byFlattened.map(s => s.id)).toEqual([SESSION_A]);
   });
 });
 
@@ -407,15 +391,9 @@ describe("SessionIndex.grouped", () => {
   test("groups sessions by directory and orders groups by most recent activity", () => {
     const sessionsRoot = tempRoot("session-index-grouped-");
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
-    const older = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [
-      titleLine("a1"),
-    ]);
-    const newer1 = writeSessionFile(sessionsRoot, "-b", "2026-08-11T00-00-00-000Z", SESSION_B, [
-      titleLine("b1"),
-    ]);
-    const newer2 = writeSessionFile(sessionsRoot, "-a", "2026-08-12T00-00-00-000Z", SESSION_C, [
-      titleLine("a2"),
-    ]);
+    const older = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a1")]);
+    const newer1 = writeSessionFile(sessionsRoot, "-b", "2026-08-11T00-00-00-000Z", SESSION_B, [titleLine("b1")]);
+    const newer2 = writeSessionFile(sessionsRoot, "-a", "2026-08-12T00-00-00-000Z", SESSION_C, [titleLine("a2")]);
     const base = new Date("2026-08-13T00:00:00.000Z").getTime();
     utimesSync(older, new Date(base), new Date(base));
     utimesSync(newer1, new Date(base + 1000), new Date(base + 1000));

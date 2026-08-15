@@ -69,7 +69,7 @@ export function handleCollabDeepLink(raw: string, openCollabSession: OpenCollabS
 export function listenForCollabLinks(source: DeepLinkSource, openCollabSession: OpenCollabSession): () => void {
   let active = true;
   void source.getInitialURL().then(
-    (url) => {
+    url => {
       if (active && url !== null) handleCollabDeepLink(url, openCollabSession);
     },
     () => {

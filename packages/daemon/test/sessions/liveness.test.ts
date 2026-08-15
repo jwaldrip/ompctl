@@ -20,12 +20,7 @@ function tempRoot(prefix: string): string {
   return dir;
 }
 
-function writeClientRecord(
-  root: string,
-  projectHash: string,
-  fileName: string,
-  record: Record<string, unknown>,
-): void {
+function writeClientRecord(root: string, projectHash: string, fileName: string, record: Record<string, unknown>): void {
   const clientsDir = join(root, projectHash, "clients");
   mkdirSync(clientsDir, { recursive: true });
   writeFileSync(join(clientsDir, fileName), JSON.stringify(record));
@@ -115,7 +110,7 @@ describe("listLiveClientPresences", () => {
     });
     const live = listLiveClientPresences(root);
     expect(live).toHaveLength(2);
-    expect(new Set(live.map((r) => r.sessionId))).toEqual(new Set(["session-a", "session-b"]));
+    expect(new Set(live.map(r => r.sessionId))).toEqual(new Set(["session-a", "session-b"]));
   });
 
   test("a missing run/daemons root returns an empty list rather than throwing", () => {

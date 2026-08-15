@@ -16,12 +16,12 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  decodePcm16,
-  SPEECH_SAMPLE_RATE,
-  SpeechPlayer,
   type AudioBufferLike,
   type AudioSink,
   type AudioSourceLike,
+  decodePcm16,
+  SPEECH_SAMPLE_RATE,
+  SpeechPlayer,
 } from "../src/voice/playback.ts";
 
 /** base64 of little-endian PCM16 for the given samples. */
@@ -129,11 +129,7 @@ describe("playback", () => {
     const player = playerFor(recorded);
 
     expect(await player.play(encode([100, 200, 300]))).toBe(true);
-    expect(Array.from(recorded.started[0] ?? [])).toEqual([
-      100 / 32_768,
-      200 / 32_768,
-      300 / 32_768,
-    ]);
+    expect(Array.from(recorded.started[0] ?? [])).toEqual([100 / 32_768, 200 / 32_768, 300 / 32_768]);
     expect(player.pending).toBe(0);
   });
 
@@ -181,7 +177,7 @@ describe("playback", () => {
   test("an undecodable frame is reported, not thrown, and plays nothing", async () => {
     const recorded = recordingSink();
     const logs: string[] = [];
-    const player = playerFor(recorded, (line) => logs.push(line));
+    const player = playerFor(recorded, line => logs.push(line));
 
     expect(await player.play("")).toBe(false);
     expect(recorded.started).toHaveLength(0);

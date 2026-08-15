@@ -7,9 +7,9 @@
  * ACP would teach an operator that their decision landed when it did not.
  */
 
+import type { PlanReviewChoice } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import type { PlanReviewChoice } from "@ompd/core/contracts";
 import { Body, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { PlanEntry, PlanReview } from "../session/model.ts";
@@ -23,7 +23,7 @@ export interface PlanCardProps {
 }
 
 export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanCardProps): JSX.Element | null {
-  const hasPendingPlan = review !== null || plan.some((entry) => entry.status === "pending");
+  const hasPendingPlan = review !== null || plan.some(entry => entry.status === "pending");
   if (!hasPendingPlan) return null;
 
   const canRespond = review !== null && canApprove;
@@ -42,8 +42,9 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
       {plan.length === 0 ? null : (
         <View style={styles.steps}>
           {plan.map((entry, index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: PlanEntry carries no stable id; the plan list is replaced wholesale, never reordered.
             <Label color={entry.status === "completed" ? ink.muted : ink.plain} key={`${index}-${entry.content}`}>
-              {entry.status === "completed" ? "Done" : "Plan"}  {entry.content}
+              {entry.status === "completed" ? "Done" : "Plan"} {entry.content}
             </Label>
           ))}
         </View>
@@ -68,7 +69,9 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
           tone={signal.ochre}
         />
       </View>
-      {!canApprove ? <Label color={ink.muted}>{refusal ?? "This device does not hold the approve scope."}</Label> : null}
+      {!canApprove ? (
+        <Label color={ink.muted}>{refusal ?? "This device does not hold the approve scope."}</Label>
+      ) : null}
     </View>
   );
 }
@@ -93,7 +96,12 @@ function Decision({
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.decision, { borderColor: tone }, disabled && styles.disabled, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.decision,
+        { borderColor: tone },
+        disabled && styles.disabled,
+        pressed && styles.pressed,
+      ]}
       testID={testID}
     >
       <Label color={disabled ? ink.faint : tone}>{label}</Label>

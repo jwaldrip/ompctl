@@ -106,9 +106,9 @@ export function subjectsOf(payload: unknown): { paths: string[]; command: string
  */
 export function coverFor(call: CallSubject, approvals: readonly ApprovalSubject[]): ApprovalSubject[] {
   const wanted = new Set(call.paths);
-  return approvals.filter((approval) => {
+  return approvals.filter(approval => {
     const subject = subjectsOf(approval.input);
-    if (subject.paths.some((path) => wanted.has(path))) return true;
+    if (subject.paths.some(path => wanted.has(path))) return true;
     return call.command !== null && subject.command === call.command;
   });
 }

@@ -19,19 +19,19 @@ import type {
   AgentsEvent,
   ApprovalEvent,
   ClientErrorEvent,
-  SayEvent,
+  ConnectionState,
   PlanReviewEvent,
+  SayEvent,
   StatusEvent,
   UnauthorizedEvent,
   UpdateEvent,
-  ConnectionState,
 } from "@ompd/core/ompd-client";
 import type { BrowserSession } from "../session/browser.ts";
 import type { SessionState } from "../session/model.ts";
 import {
-  EMPTY_SESSION,
   appendApproval,
   appendPrompt,
+  EMPTY_SESSION,
   endTurn,
   reduce,
   resolveApproval,
@@ -159,26 +159,22 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       const { agentId, seq, update } = event.event;
       const watermarks = new Map(state.watermarks);
       watermarks.set(agentId, seq);
-      return { ...withSession(state, agentId, (session) => reduce(session, update)), watermarks };
+      return { ...withSession(state, agentId, session => reduce(session, update)), watermarks };
     }
 
     case "approval": {
       const { agentId, requestId, tool, title, input } = event.event;
-      const next = withSession(state, agentId, (session) =>
-        appendApproval(session, { requestId, tool, title, input }),
-      );
+      const next = withSession(state, agentId, session => appendApproval(session, { requestId, tool, title, input }));
       if (agentId === state.selected) return next;
-      const name = state.agents.find((agent) => agent.id === agentId)?.name ?? "An agent";
+      const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
       return { ...next, notice: `${name} needs a clearance.` };
     }
 
     case "plan_review": {
       const { agentId, requestId, message, choices } = event.event;
-      const next = withSession(state, agentId, (session) =>
-        setPlanReview(session, { requestId, message, choices }),
-      );
+      const next = withSession(state, agentId, session => setPlanReview(session, { requestId, message, choices }));
       if (agentId === state.selected) return next;
-      const name = state.agents.find((agent) => agent.id === agentId)?.name ?? "An agent";
+      const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
       return { ...next, notice: `${name} needs a plan review.` };
     }
 
@@ -208,15 +204,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     }
 
     case "prompt":
-      return withSession(state, event.agentId, (session) => appendPrompt(session, event.text));
+      return withSession(state, event.agentId, session => appendPrompt(session, event.text));
 
     case "decide":
-      return withSession(state, event.agentId, (session) =>
-        resolveApproval(session, event.requestId, event.choice),
-      );
+      return withSession(state, event.agentId, session => resolveApproval(session, event.requestId, event.choice));
 
     case "plan_decide":
-      return withSession(state, event.agentId, (session) => resolvePlanReview(session, event.requestId));
+      return withSession(state, event.agentId, session => resolvePlanReview(session, event.requestId));
     case "webview_action": {
       const pendingWebViewActions = new Map(state.pendingWebViewActions);
       pendingWebViewActions.set(event.agentId, { requestId: event.requestId, action: event.action });
@@ -246,8 +240,8 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
  * something that no longer exists.
  */
 function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleState {
-  const before = new Map(state.agents.map((agent) => [agent.id, agent]));
-  const live = new Set(agents.map((agent) => agent.id));
+  const before = new Map(state.agents.map(agent => [agent.id, agent]));
+  const live = new Set(agents.map(agent => agent.id));
 
   const sessions = new Map(state.sessions);
   for (const agent of agents) {
@@ -361,18 +355,20 @@ export function fleetClearances(state: ConsoleState): number {
  * sessions this device has never attached to.
  */
 export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
-  return state.agents.filter((agent) => agent.parentAgentId === undefined).map((agent) => {
-    const session = state.sessions.get(agent.id) ?? EMPTY_SESSION;
-    return {
-      id: agent.id,
-      title: agent.name,
-      cwd: agent.cwd,
-      status: "live-ompd",
-      createdAt: agent.createdAt,
-      lastActiveAt: agent.lastActiveAt,
-      messageCount: session.entries.length,
-      // Not knowable from a live ACP stream; the disk-backed index owns this.
-      sizeBytes: 0,
-    };
-  });
+  return state.agents
+    .filter(agent => agent.parentAgentId === undefined)
+    .map(agent => {
+      const session = state.sessions.get(agent.id) ?? EMPTY_SESSION;
+      return {
+        id: agent.id,
+        title: agent.name,
+        cwd: agent.cwd,
+        status: "live-ompd",
+        createdAt: agent.createdAt,
+        lastActiveAt: agent.lastActiveAt,
+        messageCount: session.entries.length,
+        // Not knowable from a live ACP stream; the disk-backed index owns this.
+        sizeBytes: 0,
+      };
+    });
 }

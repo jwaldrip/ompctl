@@ -15,14 +15,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import {
-  SCOPE_APPROVE,
-  SCOPE_MANAGE,
-  SCOPE_PROMPT,
-  SCOPE_READ,
-  Store,
-  type Actor,
-} from "@ompd/core";
+import { type Actor, SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
 import { Supervisor, UnauthorizedError } from "../src/supervisor.ts";
 
 const paths: string[] = [];
@@ -71,9 +64,7 @@ describe("forged actors", () => {
       scopes: [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE],
     };
 
-    await expect(sup.createAgent({ name: "x", cwd: "/tmp" }, forged)).rejects.toThrow(
-      UnauthorizedError,
-    );
+    await expect(sup.createAgent({ name: "x", cwd: "/tmp" }, forged)).rejects.toThrow(UnauthorizedError);
     await expect(sup.prompt("agt_x", "hi", forged)).rejects.toThrow(UnauthorizedError);
     expect(sup.decide("req", "allow", "once", forged)).toBe(false);
   });
@@ -84,9 +75,7 @@ describe("forged actors", () => {
     pair("phone", [SCOPE_READ]);
     const overclaiming: Actor = { deviceId: "phone", scopes: [SCOPE_READ, SCOPE_MANAGE] };
 
-    await expect(sup.createAgent({ name: "x", cwd: "/tmp" }, overclaiming)).rejects.toThrow(
-      UnauthorizedError,
-    );
+    await expect(sup.createAgent({ name: "x", cwd: "/tmp" }, overclaiming)).rejects.toThrow(UnauthorizedError);
   });
 
   test("a device cannot escalate by omitting scopes it does hold", async () => {
@@ -106,9 +95,7 @@ describe("scope separation", () => {
     const { sup, pair } = harness();
     const reader = pair("reader", [SCOPE_READ]);
 
-    await expect(sup.createAgent({ name: "x", cwd: "/tmp" }, reader)).rejects.toThrow(
-      UnauthorizedError,
-    );
+    await expect(sup.createAgent({ name: "x", cwd: "/tmp" }, reader)).rejects.toThrow(UnauthorizedError);
     await expect(sup.prompt("agt_x", "hi", reader)).rejects.toThrow(UnauthorizedError);
     await expect(sup.cancel("agt_x", reader)).rejects.toThrow(UnauthorizedError);
     await expect(sup.stopAgent("agt_x", reader)).rejects.toThrow(UnauthorizedError);
@@ -144,9 +131,7 @@ describe("revocation", () => {
     store.revokeDevice("phone");
 
     await expect(sup.prompt("agt_missing", "hi", phone)).rejects.toThrow(UnauthorizedError);
-    await expect(sup.createAgent({ name: "x", cwd: "/tmp" }, phone)).rejects.toThrow(
-      UnauthorizedError,
-    );
+    await expect(sup.createAgent({ name: "x", cwd: "/tmp" }, phone)).rejects.toThrow(UnauthorizedError);
     expect(sup.decide("req", "allow", "once", phone)).toBe(false);
   });
 });
@@ -166,7 +151,7 @@ describe("auditing", () => {
     const reader = pair("reader", [SCOPE_READ]);
     await expect(sup.prompt("agt_x", "hi", reader)).rejects.toThrow(UnauthorizedError);
 
-    const row = store.listAudit().find((a) => a.outcome === "denied");
+    const row = store.listAudit().find(a => a.outcome === "denied");
     expect(row?.actorDeviceId).toBe("reader");
     expect(String(row?.detail.reason)).toContain(SCOPE_PROMPT);
     expect(String(row?.detail.action)).toBe("agent.prompt");
@@ -174,11 +159,11 @@ describe("auditing", () => {
 
   test("an unknown device is audited as such", async () => {
     const { sup, store } = harness();
-    await expect(
-      sup.prompt("agt_x", "hi", { deviceId: "ghost", scopes: [SCOPE_PROMPT] }),
-    ).rejects.toThrow(UnauthorizedError);
+    await expect(sup.prompt("agt_x", "hi", { deviceId: "ghost", scopes: [SCOPE_PROMPT] })).rejects.toThrow(
+      UnauthorizedError,
+    );
 
-    const row = store.listAudit().find((a) => a.outcome === "denied");
+    const row = store.listAudit().find(a => a.outcome === "denied");
     expect(row?.actorDeviceId).toBe("ghost");
     expect(String(row?.detail.reason)).toBe("unknown device");
   });

@@ -18,7 +18,6 @@
  * assistive technology rather than given a label of its own.
  */
 
-import { FontAwesomeIcon } from "@fortawesome/react-native-fontawesome";
 import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import {
   faArrowRightToBracket,
@@ -60,6 +59,7 @@ import {
   faWindowMaximize,
   faXmark,
 } from "@fortawesome/free-solid-svg-icons";
+import { FontAwesomeIcon } from "@fortawesome/react-native-fontawesome";
 import type { JSX } from "react";
 import { ink } from "./tokens.ts";
 

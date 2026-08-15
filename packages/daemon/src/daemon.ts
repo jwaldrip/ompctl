@@ -33,26 +33,26 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { joinAssistantText, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 import {
+  type Actor,
+  type AgentId,
   DEFAULT_DAEMON_PORT,
   DefaultPolicy,
+  type Device,
+  type EndpointOffer,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   SCOPE_READ,
-  Store,
-  type Actor,
-  type AgentId,
-  type Device,
-  type EndpointOffer,
   type ServerFrame,
+  Store,
 } from "@ompd/core";
 import type { TunnelDaemon } from "@ompd/tunnel";
-import { SleepGuard, type AwakeProcess } from "./awake.ts";
-import { createTunnelDialer } from "./tunnel/dial.ts";
-import { identityPath, loadIdentity } from "./tunnel/identity.ts";
+import { type AwakeProcess, SleepGuard } from "./awake.ts";
+import { NO_TARGET, type WebViewApprovalGate, WebViewBridge, type WebViewDispatch } from "./browser/bridge.ts";
+import { mcpServerDescriptor, startWebViewMcpServer, type WebViewMcpServer } from "./browser/mcp-server.ts";
 import { reachableEndpoints } from "./endpoints.ts";
 import { EvolutionEngine, ProposalStore } from "./evolution/index.ts";
-import { HttpIntentPeer, QueuedIntentDrainer, type IntentPeer } from "./federation/queued-intents.ts";
+import { HttpIntentPeer, type IntentPeer, QueuedIntentDrainer } from "./federation/queued-intents.ts";
 import { Gateway, GatewayEvents, type VoiceHandler } from "./gateway/index.ts";
 import { homeIdFor } from "./home-id.ts";
 import { HostRegistry } from "./hosts.ts";
@@ -60,26 +60,17 @@ import { ContainerBackend, HostProvisioner, LocalBackend } from "./provisioner/i
 import { Scheduler } from "./routines/index.ts";
 import { SessionIndex } from "./sessions/session-index.ts";
 import { Supervisor } from "./supervisor.ts";
-import { listConnectorCatalog, listSkillCatalog, TaskManager } from "./workspace/index.ts";
+import { createTunnelDialer } from "./tunnel/dial.ts";
+import { identityPath, loadIdentity } from "./tunnel/identity.ts";
 import {
-  NO_TARGET,
-  WebViewBridge,
-  type WebViewApprovalGate,
-  type WebViewDispatch,
-} from "./browser/bridge.ts";
-import {
-  mcpServerDescriptor,
-  startWebViewMcpServer,
-  type WebViewMcpServer,
-} from "./browser/mcp-server.ts";
-import {
-  speakableSegments,
+  type SttEngine,
   selectSttEngine,
   selectTtsEngine,
-  VoiceBridge,
-  type SttEngine,
+  speakableSegments,
   type TtsEngine,
+  VoiceBridge,
 } from "./voice/index.ts";
+import { listConnectorCatalog, listSkillCatalog, TaskManager } from "./workspace/index.ts";
 
 export const OMPD_VERSION = "0.1.0";
 
@@ -128,12 +119,7 @@ function truncateOnWord(text: string, limit: number): string {
 export const LOCAL_OPERATOR_DEVICE_ID = "dev_local_operator";
 
 /** The local operator holds everything; it is the machine's own account. */
-const LOCAL_OPERATOR_SCOPES: readonly string[] = [
-  SCOPE_READ,
-  SCOPE_PROMPT,
-  SCOPE_MANAGE,
-  SCOPE_APPROVE,
-];
+const LOCAL_OPERATOR_SCOPES: readonly string[] = [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE];
 
 const POLICY_MODES: readonly string[] = ["strict", "standard", "trusted"];
 
@@ -309,9 +295,7 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
     throw new Error(`${path}: port must be an integer between 0 and 65535`);
   }
   if (!POLICY_MODES.includes(merged.policyMode)) {
-    throw new Error(
-      `${path}: policyMode must be one of ${POLICY_MODES.join(", ")}, got ${String(merged.policyMode)}`,
-    );
+    throw new Error(`${path}: policyMode must be one of ${POLICY_MODES.join(", ")}, got ${String(merged.policyMode)}`);
   }
   if (typeof merged.ompPath !== "string" || merged.ompPath.length === 0) {
     throw new Error(`${path}: ompPath must be a non-empty string`);
@@ -480,7 +464,7 @@ export class Ompd {
       onLog: this.#onLog,
       spawn: opts.spawnAwake,
     });
-    this.#events.add({ onAgentsChanged: (agents) => this.#sleepGuard.update(agents) });
+    this.#events.add({ onAgentsChanged: agents => this.#sleepGuard.update(agents) });
 
     // Hosts are named here so the provisioner and supervisor share one
     // registry: a container agent's session would otherwise be the only kind
@@ -517,7 +501,7 @@ export class Ompd {
         send: (agentId, requestId, action) => sendWebViewAction(agentId, requestId, action),
       },
       approvals: {
-        request: (input) => requestWebViewApproval(input),
+        request: input => requestWebViewApproval(input),
       },
     });
 
@@ -530,7 +514,7 @@ export class Ompd {
       spawnHost: this.#hosts.spawn,
       provisioner: this.#provisioner,
       onLog: this.#onLog,
-      mcpServersFor: (agentId) => {
+      mcpServersFor: agentId => {
         const server = this.#webViewMcpServer;
         if (server === undefined) throw new Error("webview MCP server is not started");
         return [mcpServerDescriptor(server, agentId)];
@@ -548,7 +532,7 @@ export class Ompd {
       this.#queuedIntentDrainer = new QueuedIntentDrainer({
         supervisor: this.#supervisor,
         peer: intentPeer,
-        onError: (error) => this.#onLog(`queued intent drain failed: ${error.message}`),
+        onError: error => this.#onLog(`queued intent drain failed: ${error.message}`),
       });
       this.#intentPollIntervalMs =
         opts.intentPollIntervalMs ??
@@ -577,7 +561,7 @@ export class Ompd {
       supervisor: this.#supervisor,
       store: this.#store,
       events: this.#events,
-      onError: (err) => this.#onLog(`unhandled request error: ${err.stack ?? err.message}`),
+      onError: err => this.#onLog(`unhandled request error: ${err.stack ?? err.message}`),
       host: this.#config.host,
       port: this.#config.port,
       version: OMPD_VERSION,
@@ -588,9 +572,8 @@ export class Ompd {
       sessions: this.#hosts,
       sessionIndex: this.#sessionIndex,
       endpoints: () => this.#reachableEndpoints(),
-      onWebViewResult: (agentId, requestId, result) =>
-        this.#webViewBridge.resolveResult(agentId, requestId, result),
-      onWebViewUnavailable: (agentId) => this.#webViewBridge.cancelAgent(agentId, NO_TARGET),
+      onWebViewResult: (agentId, requestId, result) => this.#webViewBridge.resolveResult(agentId, requestId, result),
+      onWebViewUnavailable: agentId => this.#webViewBridge.cancelAgent(agentId, NO_TARGET),
       staticRoot: opts.staticRoot ?? defaultStaticRoot(),
       skills: { list: listSkillCatalog },
       connectors: { list: listConnectorCatalog },
@@ -600,7 +583,7 @@ export class Ompd {
           const config = loadConfig(this.#home);
           return { policyMode: config.policyMode, keepAwake: config.keepAwake };
         },
-        apply: (settings) => this.#applySyncConfig(settings),
+        apply: settings => this.#applySyncConfig(settings),
       },
       // A rotation can be driven from any device, including a phone. The one
       // credential that also lives on disk has to follow, or `ompd rotate`
@@ -627,8 +610,7 @@ export class Ompd {
           }
         : {}),
     });
-    sendWebViewAction = (agentId, requestId, action) =>
-      this.#gateway.sendWebViewAction(agentId, requestId, action);
+    sendWebViewAction = (agentId, requestId, action) => this.#gateway.sendWebViewAction(agentId, requestId, action);
   }
 
   #applySyncConfig(settings: { policyMode: OmpdConfig["policyMode"]; keepAwake: boolean }): void {
@@ -743,7 +725,7 @@ export class Ompd {
     const records = this.#store.updatesSince(agentId, fromSeq);
     if (records.length === 0) return null;
 
-    const reply = joinAssistantText(records.map((record) => record.payload));
+    const reply = joinAssistantText(records.map(record => record.payload));
     if (reply.length === 0) return null;
 
     // OMP's own markdown-to-speech transform, so the daemon and the terminal
@@ -755,8 +737,7 @@ export class Ompd {
     // Capped at the source. A client is going to read this out; handing it an
     // unbounded transcript would have a phone talking for a quarter of an hour
     // with no way to know it was going to.
-    const text =
-      spoken.length <= SAY_MAX_CHARS ? spoken : `${truncateOnWord(spoken, SAY_MAX_CHARS)}...`;
+    const text = spoken.length <= SAY_MAX_CHARS ? spoken : `${truncateOnWord(spoken, SAY_MAX_CHARS)}...`;
 
     // The last update the text actually derives from, so a client can tell
     // turns apart and refuse to say one twice.
@@ -883,9 +864,7 @@ export class Ompd {
     // and until something does, `hasActiveRun` keeps a singleton routine
     // silent. Reconciled before the scheduler is armed, so nothing this
     // rewrites can be a run of this daemon's own.
-    const interrupted = this.#store.failInterruptedRuns(
-      "the daemon exited while this run was in flight",
-    );
+    const interrupted = this.#store.failInterruptedRuns("the daemon exited while this run was in flight");
     if (interrupted > 0) {
       this.#onLog?.(`settled ${interrupted} run(s) left mid-flight by a previous daemon`);
     }

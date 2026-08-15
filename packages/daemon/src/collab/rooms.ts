@@ -10,8 +10,8 @@
 
 import type {
   Actor,
-  CollabSignalInput,
   CollabSignalFrame,
+  CollabSignalInput,
   CollabVoiceNoteFrame,
   CollabVoiceNoteInput,
   CollabVoiceParticipant,
@@ -189,7 +189,11 @@ export class CollabRooms {
   }
 
   #requireSignal(input: CollabSignalInput): void {
-    if (typeof input.targetParticipantId !== "string" || input.targetParticipantId.length === 0 || input.targetParticipantId.length > 256) {
+    if (
+      typeof input.targetParticipantId !== "string" ||
+      input.targetParticipantId.length === 0 ||
+      input.targetParticipantId.length > 256
+    ) {
       throw new CollabRoomError("bad_frame", "room signaling target is invalid");
     }
 

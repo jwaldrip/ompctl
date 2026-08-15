@@ -11,7 +11,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { DefaultPolicy, Store, type Agent, type WebViewAction, type WebViewActionResult } from "@ompd/core";
+import { type Agent, DefaultPolicy, Store, type WebViewAction, type WebViewActionResult } from "@ompd/core";
 import { WebViewBridge, type WebViewDispatch } from "../src/browser/bridge.ts";
 import { mcpServerDescriptor, startWebViewMcpServer, type WebViewMcpServer } from "../src/browser/mcp-server.ts";
 
@@ -55,7 +55,12 @@ function harness(reply: WebViewActionResult) {
   return { server, bridge, sent, agentId: agent.id };
 }
 
-async function rpc(url: string, method: string, params?: unknown, id: string | number = 1): Promise<{
+async function rpc(
+  url: string,
+  method: string,
+  params?: unknown,
+  id: string | number = 1,
+): Promise<{
   result?: { content: Array<{ type: string; text: string }>; isError?: boolean; tools?: Array<{ name: string }> };
 }> {
   const res = await fetch(url, {
@@ -70,8 +75,14 @@ describe("WebView MCP server: the tool-call boundary", () => {
   test("tools/list advertises exactly the five webview_* tools, matching the relay's vocabulary", async () => {
     const { server, agentId } = harness({ kind: "ack", url: "x", title: "x" });
     const body = await rpc(server.urlFor(agentId), "tools/list");
-    const names = (body.result?.tools ?? []).map((t) => t.name).sort();
-    expect(names).toEqual(["webview_click", "webview_navigate", "webview_observe", "webview_screenshot", "webview_type"]);
+    const names = (body.result?.tools ?? []).map(t => t.name).sort();
+    expect(names).toEqual([
+      "webview_click",
+      "webview_navigate",
+      "webview_observe",
+      "webview_screenshot",
+      "webview_type",
+    ]);
   });
 
   test("tools/call for webview_observe (read-only) reaches the device and returns its observation as tool content", async () => {

@@ -81,7 +81,8 @@ const TOOLS: ToolSchema[] = [
   },
   {
     name: "webview_screenshot",
-    description: "Capture the WebView's current appearance as a PNG. For layout/visual judgment, not for finding a click target -- use webview_observe for that.",
+    description:
+      "Capture the WebView's current appearance as a PNG. For layout/visual judgment, not for finding a click target -- use webview_observe for that.",
     inputSchema: { type: "object", properties: {} },
   },
 ];
@@ -136,7 +137,7 @@ export function startWebViewMcpServer(bridge: WebViewBridge): WebViewMcpServer {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: async (req) => {
+    fetch: async req => {
       if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
       const match = ROUTE.exec(new URL(req.url).pathname);
       if (!match) return new Response("not found", { status: 404 });

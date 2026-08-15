@@ -432,13 +432,27 @@ export interface CollabVoiceNoteMetadata {
 export type CollabSignalInput =
   | { t: "room_offer"; roomId: string; targetParticipantId: string; sdp: string }
   | { t: "room_answer"; roomId: string; targetParticipantId: string; sdp: string }
-  | { t: "ice_candidate"; roomId: string; targetParticipantId: string; candidate: string; sdpMid?: string; sdpMLineIndex?: number };
+  | {
+      t: "ice_candidate";
+      roomId: string;
+      targetParticipantId: string;
+      candidate: string;
+      sdpMid?: string;
+      sdpMLineIndex?: number;
+    };
 
 /** Signaling the daemon has authenticated and routed to the intended room peer. */
 export type CollabSignalFrame =
   | { t: "room_offer"; roomId: string; from: CollabVoiceParticipant; sdp: string }
   | { t: "room_answer"; roomId: string; from: CollabVoiceParticipant; sdp: string }
-  | { t: "ice_candidate"; roomId: string; from: CollabVoiceParticipant; candidate: string; sdpMid?: string; sdpMLineIndex?: number };
+  | {
+      t: "ice_candidate";
+      roomId: string;
+      from: CollabVoiceParticipant;
+      candidate: string;
+      sdpMid?: string;
+      sdpMLineIndex?: number;
+    };
 
 export type CollabClientFrame =
   | { t: "room_join"; roomId: string }
@@ -598,9 +612,7 @@ export interface Proposal {
 
 export function isProtectedPath(p: string): boolean {
   const norm = p.replace(/\\/g, "/").replace(/^\.\//, "");
-  return PROTECTED_PATHS.some((prefix) =>
-    prefix.endsWith("/") ? norm.startsWith(prefix) : norm === prefix,
-  );
+  return PROTECTED_PATHS.some(prefix => (prefix.endsWith("/") ? norm.startsWith(prefix) : norm === prefix));
 }
 
 // ---------------------------------------------------------------------------

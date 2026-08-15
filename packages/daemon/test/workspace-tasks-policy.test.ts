@@ -13,10 +13,10 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { DefaultPolicy, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store, type Agent } from "@ompd/core";
-import { Supervisor } from "../src/supervisor.ts";
-import { HostRegistry } from "../src/hosts.ts";
+import { type Agent, DefaultPolicy, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
+import { HostRegistry } from "../src/hosts.ts";
+import { Supervisor } from "../src/supervisor.ts";
 import { TaskManager } from "../src/workspace/tasks.ts";
 import { createFakeHost, type FakeHostController } from "./fake-host.ts";
 
@@ -85,7 +85,7 @@ async function harness(opts: { approvalTimeoutMs?: number } = {}): Promise<Harne
       return gw.approvePairing(parsed.code, scopes);
     },
     http,
-    createAgent: async (token) => {
+    createAgent: async token => {
       const res = await http(
         "/v1/agents",
         { method: "POST", body: JSON.stringify({ name: "a", cwd: "/work" }) },
@@ -125,7 +125,7 @@ describe("POST /v1/tasks and the policy engine", () => {
     // the prompt through anything other than `Supervisor.prompt`, this
     // request would never arrive at all.
     const permissionSeen = Promise.withResolvers<string>();
-    h.fake.onPrompt(async (sessionId) => {
+    h.fake.onPrompt(async sessionId => {
       const option = await h.fake.requestPermission(sessionId, bashCall("touch /tmp/from-a-skill"));
       permissionSeen.resolve(option);
       return { stopReason: "end_turn" };

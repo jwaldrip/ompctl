@@ -125,7 +125,7 @@ export function filterSkills(skills: readonly SkillSummary[], query: string): Sk
   const needle = query.trim().replace(/^\//, "").toLowerCase();
   if (needle.length === 0) return skills.slice();
   return skills.filter(
-    (skill) => skill.name.toLowerCase().includes(needle) || skill.description.toLowerCase().includes(needle),
+    skill => skill.name.toLowerCase().includes(needle) || skill.description.toLowerCase().includes(needle),
   );
 }
 
@@ -180,10 +180,11 @@ const CREDENTIAL_PATTERNS: readonly RegExp[] = [
 ];
 
 export function looksLikeCredential(text: string): boolean {
-  return CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text));
+  return CREDENTIAL_PATTERNS.some(pattern => pattern.test(text));
 }
 
-const WITHHELD_REASON = "Connector reported an error that looked like it might contain a credential, so it was withheld. This is a bug worth reporting, not expected behavior.";
+const WITHHELD_REASON =
+  "Connector reported an error that looked like it might contain a credential, so it was withheld. This is a bug worth reporting, not expected behavior.";
 const NO_REASON = "No reason reported.";
 
 /**

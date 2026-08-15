@@ -139,7 +139,6 @@ export function parseApprovalPrompt(message: string): ParsedApprovalPrompt | nul
     if (key === "Command" && command === null) {
       command = ELISION.test(value) ? null : value;
       if (command === null) truncated = true;
-      continue;
     }
     // `Content:` is the write body, which omp puts on the following lines. It
     // is not a target and is deliberately not scanned: a path mentioned inside

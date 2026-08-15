@@ -24,7 +24,7 @@
  * already sends on every change.
  */
 
-import { spawnLocalHost, type AcpClient, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
+import { type AcpClient, type LocalHost, type SpawnLocalHostOptions, spawnLocalHost } from "@ompd/acp";
 
 /** The config option id carrying the session mode. */
 export const MODE_OPTION_ID = "mode";
@@ -72,8 +72,7 @@ function parseChoice(raw: unknown): SessionConfigChoice | null {
   if (raw === null || typeof raw !== "object") return null;
   if (!("value" in raw) || typeof raw.value !== "string") return null;
   const name = "name" in raw && typeof raw.name === "string" ? raw.name : raw.value;
-  const description =
-    "description" in raw && typeof raw.description === "string" ? raw.description : undefined;
+  const description = "description" in raw && typeof raw.description === "string" ? raw.description : undefined;
   return { value: raw.value, name, description };
 }
 
@@ -94,8 +93,7 @@ function parseOption(raw: unknown): SessionConfigOption | null {
     name: "name" in raw && typeof raw.name === "string" ? raw.name : raw.id,
     category: "category" in raw && typeof raw.category === "string" ? raw.category : raw.id,
     type: "type" in raw && typeof raw.type === "string" ? raw.type : "select",
-    currentValue:
-      "currentValue" in raw && typeof raw.currentValue === "string" ? raw.currentValue : "",
+    currentValue: "currentValue" in raw && typeof raw.currentValue === "string" ? raw.currentValue : "",
     options: choices,
   };
 }
@@ -132,7 +130,7 @@ export class HostRegistry implements SessionConfig {
    * it as a plain function.
    */
   get spawn(): (opts: SpawnLocalHostOptions) => LocalHost {
-    return (opts) => this.#register(opts);
+    return opts => this.#register(opts);
   }
 
   configFor(sessionId: string): SessionConfigOption[] | undefined {
@@ -165,7 +163,7 @@ export class HostRegistry implements SessionConfig {
         this.#observe(sessionId, update);
         opts.onUpdate?.(sessionId, update);
       },
-      onClose: (info) => {
+      onClose: info => {
         for (const sessionId of owned) {
           this.#clients.delete(sessionId);
           this.#config.delete(sessionId);
@@ -221,7 +219,7 @@ export class HostRegistry implements SessionConfig {
     if (!options) return;
     this.#config.set(
       sessionId,
-      options.map((option) => (option.id === optionId ? { ...option, currentValue: value } : option)),
+      options.map(option => (option.id === optionId ? { ...option, currentValue: value } : option)),
     );
   }
 }

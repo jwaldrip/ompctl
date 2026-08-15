@@ -12,8 +12,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { run } from "../src/main.ts";
 import type { CliContext } from "../src/client.ts";
+import { run } from "../src/main.ts";
 
 interface Harness {
   ctx: CliContext;
@@ -32,13 +32,13 @@ function harness(opts: { token?: string; platform?: string; execFails?: boolean 
   const err: string[] = [];
   const execs: string[][] = [];
   const ctx: CliContext = {
-    out: (l) => out.push(l),
-    err: (l) => err.push(l),
+    out: l => out.push(l),
+    err: l => err.push(l),
     env: { OMPD_HOME: home, OMPD_PLATFORM: opts.platform ?? "darwin" },
     cwd: home,
     home,
     fetch: async () => new Response("{}", { status: 200 }),
-    exec: async (command) => {
+    exec: async command => {
       execs.push(command);
       return opts.execFails === true
         ? { code: 1, stdout: "", stderr: "not found" }
@@ -60,7 +60,7 @@ describe("ompd open", () => {
     const everyArg = h.execs.flat().join(" ");
     expect(everyArg).not.toContain(token);
 
-    const opened = h.execs.find((c) => c[0] === "open");
+    const opened = h.execs.find(c => c[0] === "open");
     expect(opened?.[1]).toBe("http://127.0.0.1:7777");
     expect(opened?.[1]).not.toContain("token");
     expect(opened?.[1]).not.toContain("?");
@@ -79,7 +79,7 @@ describe("ompd open", () => {
   test("copies to the clipboard and says so", async () => {
     const h = harness({ token: "tok_abc" });
     await run(["open"], h.ctx);
-    const clip = h.execs.find((c) => c.join(" ").includes("pbcopy"));
+    const clip = h.execs.find(c => c.join(" ").includes("pbcopy"));
     expect(clip).toBeDefined();
     expect(h.out.join("\n")).toContain("clipboard");
     rmSync(h.home, { recursive: true, force: true });
@@ -102,16 +102,16 @@ describe("ompd open", () => {
     expect(code).not.toBe(0);
     expect(h.err.join("\n")).toContain("ompd pair");
     // Nothing should have been launched on a failed run.
-    expect(h.execs.find((c) => c[0] === "open")).toBeUndefined();
+    expect(h.execs.find(c => c[0] === "open")).toBeUndefined();
     rmSync(h.home, { recursive: true, force: true });
   });
 
   test("picks the platform's clipboard tool", async () => {
     const h = harness({ token: "tok_abc", platform: "linux" });
     await run(["open"], h.ctx);
-    const joined = h.execs.map((c) => c.join(" ")).join("\n");
+    const joined = h.execs.map(c => c.join(" ")).join("\n");
     expect(joined).toContain("wl-copy");
-    expect(h.execs.find((c) => c[0] === "xdg-open")).toBeDefined();
+    expect(h.execs.find(c => c[0] === "xdg-open")).toBeDefined();
     rmSync(h.home, { recursive: true, force: true });
   });
 });

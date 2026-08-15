@@ -6,14 +6,14 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  type Agent,
   DefaultPolicy,
   isInside,
-  toAcpOption,
+  type PolicyContext,
   SCOPE_APPROVE,
   SCOPE_PROMPT,
   SCOPE_READ,
-  type Agent,
-  type PolicyContext,
+  toAcpOption,
 } from "../src/index.ts";
 
 const agent: Agent = {
@@ -73,9 +73,7 @@ describe("read scope", () => {
 
   test("a workspace read is allowed with read scope", () => {
     const p = new DefaultPolicy();
-    expect(p.evaluate(ctx({ tool: "read", input: { path: "/work/repo/a.ts" } })).action).toBe(
-      "allow",
-    );
+    expect(p.evaluate(ctx({ tool: "read", input: { path: "/work/repo/a.ts" } })).action).toBe("allow");
   });
 
   test("reading outside the workspace prompts rather than auto-allowing", () => {
@@ -182,9 +180,7 @@ describe("scope gating", () => {
 
   test("read scope alone cannot run a command", () => {
     const p = new DefaultPolicy();
-    const d = p.evaluate(
-      ctx({ input: { command: "ls" }, actor: { deviceId: "d", scopes: [SCOPE_READ] } }),
-    );
+    const d = p.evaluate(ctx({ input: { command: "ls" }, actor: { deviceId: "d", scopes: [SCOPE_READ] } }));
     expect(d.action).toBe("deny");
   });
 });
@@ -196,16 +192,12 @@ describe("toAcpOption", () => {
 
   test("a human allow cannot upgrade a policy deny", () => {
     // The client said allow; policy said deny. Policy wins.
-    expect(toAcpOption({ action: "deny", reason: "" }, { choice: "allow", scope: "always" })).toBe(
-      "reject_once",
-    );
+    expect(toAcpOption({ action: "deny", reason: "" }, { choice: "allow", scope: "always" })).toBe("reject_once");
   });
 
   test("a human decision only applies to a prompt", () => {
     expect(toAcpOption({ action: "prompt", reason: "" }, { choice: "allow" })).toBe("allow_once");
-    expect(toAcpOption({ action: "prompt", reason: "" }, { choice: "allow", scope: "always" })).toBe(
-      "allow_always",
-    );
+    expect(toAcpOption({ action: "prompt", reason: "" }, { choice: "allow", scope: "always" })).toBe("allow_always");
     expect(toAcpOption({ action: "prompt", reason: "" }, { choice: "deny" })).toBe("reject_once");
   });
 });

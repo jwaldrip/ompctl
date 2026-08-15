@@ -13,17 +13,17 @@
  * confirmation card between "scanned" and "saved" is that choice.
  */
 
+import { parsePairingBundle } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useCallback, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from "react-native-vision-camera";
 import type { Code } from "react-native-vision-camera";
-import { parsePairingBundle } from "@ompd/core/pairing";
+import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from "react-native-vision-camera";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
-import type { Connection } from "../platform/connection.ts";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import type { Connection } from "../platform/connection.ts";
 
 export function ScanScreen({
   onCancel,
@@ -149,7 +149,13 @@ const styles = StyleSheet.create({
     padding: space.step,
   },
   noticeText: { flex: 1 },
-  confirm: { backgroundColor: ground.raised, borderTopColor: ground.edge, borderTopWidth: stroke.hair, gap: space.step, padding: space.loose },
+  confirm: {
+    backgroundColor: ground.raised,
+    borderTopColor: ground.edge,
+    borderTopWidth: stroke.hair,
+    gap: space.step,
+    padding: space.loose,
+  },
   confirmRow: { flexDirection: "row", gap: space.step },
   confirmCancel: { alignItems: "center", flex: 1, justifyContent: "center", minHeight: TOUCH_TARGET },
   confirmAccept: {

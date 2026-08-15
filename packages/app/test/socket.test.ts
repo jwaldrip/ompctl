@@ -13,9 +13,16 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ClientHello, ClientToHub, DaemonKeyPair, HubToClient, TunnelSocketLike } from "@ompd/tunnel";
+import type {
+  ClientCredential,
+  ClientHello,
+  ClientToHub,
+  DaemonKeyPair,
+  HubToClient,
+  SessionReady,
+  TunnelSocketLike,
+} from "@ompd/tunnel";
 import { answerClientHandshake, generateIdentity, PROTOCOL_VERSION, SealedChannel } from "@ompd/tunnel";
-import type { ClientCredential, SessionReady } from "@ompd/tunnel";
 import { createHubSocketFactory } from "../src/platform/socket.ts";
 
 const SESSION_ID = "sess_test0001";
@@ -118,7 +125,7 @@ describe("createHubSocketFactory", () => {
     let seenUrl: string | null = null;
     const factory = createHubSocketFactory({
       daemonId: generateIdentity().daemonId,
-      transport: (url) => {
+      transport: url => {
         seenUrl = url;
         return new InertWire();
       },
@@ -147,7 +154,7 @@ describe("createHubSocketFactory", () => {
     const wires: FakeDaemonWire[] = [];
     const factory = createHubSocketFactory({
       daemonId: identity.daemonId,
-      transport: (url) => {
+      transport: url => {
         // The stripped base this factory owns; the sealed exchange below is
         // `@ompd/tunnel`'s job, not this file's, so this is the one assertion
         // about the url worth repeating at the point the credential actually
@@ -163,15 +170,15 @@ describe("createHubSocketFactory", () => {
     const socket = factory("wss://hub.example.com?token=super-secret");
     await new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve();
-      socket.onerror = (error) => reject(error instanceof Error ? error : new Error(String(error)));
+      socket.onerror = error => reject(error instanceof Error ? error : new Error(String(error)));
     });
 
     const wire = wires.at(-1);
     if (!wire) throw new Error("no wire was ever dialed");
     expect(wire.receivedToken).toBe("super-secret");
 
-    const sessionFrame = new Promise<unknown>((resolve) => {
-      socket.onmessage = (message) => resolve(message);
+    const sessionFrame = new Promise<unknown>(resolve => {
+      socket.onmessage = message => resolve(message);
     });
     await wire.pushSessionFrame("application-payload");
 

@@ -22,8 +22,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store, type Actor, type Proposal } from "@ompd/core";
-import { EvolutionEngine, ProposalStore, evaluateProposal } from "../src/evolution/index.ts";
+import { type Actor, type Proposal, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
+import { EvolutionEngine, evaluateProposal, ProposalStore } from "../src/evolution/index.ts";
 import { UnauthorizedError } from "../src/supervisor.ts";
 
 // ---------------------------------------------------------------------------
@@ -85,10 +85,7 @@ async function git(cwd: string, args: string[]): Promise<{ code: number; out: st
     env: { ...process.env, GIT_PAGER: "cat", GIT_TERMINAL_PROMPT: "0" },
   });
   await proc.exited;
-  const [out, err] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code: proc.exitCode ?? -1, out: `${out}${err}` };
 }
 
@@ -530,13 +527,7 @@ describe("gate: malformed diffs are rejected", () => {
     },
     {
       name: "/dev/null on both sides",
-      diff: [
-        "diff --git a/x b/x",
-        "--- /dev/null",
-        "+++ /dev/null",
-        "@@ -0,0 +0,0 @@",
-        "",
-      ].join("\n"),
+      diff: ["diff --git a/x b/x", "--- /dev/null", "+++ /dev/null", "@@ -0,0 +0,0 @@", ""].join("\n"),
     },
     {
       name: "an unparseable hunk header",
@@ -551,44 +542,19 @@ describe("gate: malformed diffs are rejected", () => {
     },
     {
       name: "a binary patch",
-      diff: [
-        "diff --git a/logo.png b/logo.png",
-        "GIT binary patch",
-        "literal 24",
-        "zcmZQzU|",
-        "",
-      ].join("\n"),
+      diff: ["diff --git a/logo.png b/logo.png", "GIT binary patch", "literal 24", "zcmZQzU|", ""].join("\n"),
     },
     {
       name: "a rename missing its target",
-      diff: [
-        "diff --git a/docs/a.md b/docs/b.md",
-        "similarity index 100%",
-        "rename from docs/a.md",
-        "",
-      ].join("\n"),
+      diff: ["diff --git a/docs/a.md b/docs/b.md", "similarity index 100%", "rename from docs/a.md", ""].join("\n"),
     },
     {
       name: "an absolute path",
-      diff: [
-        "--- /etc/passwd",
-        "+++ /etc/passwd",
-        "@@ -1,1 +1,1 @@",
-        "-a",
-        "+b",
-        "",
-      ].join("\n"),
+      diff: ["--- /etc/passwd", "+++ /etc/passwd", "@@ -1,1 +1,1 @@", "-a", "+b", ""].join("\n"),
     },
     {
       name: "a path escaping the repository root",
-      diff: [
-        "--- a/../../outside.ts",
-        "+++ b/../../outside.ts",
-        "@@ -1,1 +1,1 @@",
-        "-a",
-        "+b",
-        "",
-      ].join("\n"),
+      diff: ["--- a/../../outside.ts", "+++ b/../../outside.ts", "@@ -1,1 +1,1 @@", "-a", "+b", ""].join("\n"),
     },
     {
       name: "junk inside a file section",
@@ -690,7 +656,7 @@ describe("submit", () => {
     // The stored proposal carries the truth, not the claim.
     expect(submitted.touchedPaths).toEqual(["README.md", "src/app.ts"]);
 
-    const entry = h.store.listAudit(10).find((e) => e.action === "proposal.submit");
+    const entry = h.store.listAudit(10).find(e => e.action === "proposal.submit");
     expect(entry?.detail.claimedPaths).toEqual(["README.md"]);
     expect(entry?.detail.underReportedPaths).toEqual(["src/app.ts"]);
   });
@@ -711,7 +677,7 @@ describe("submit", () => {
       ].join("\n"),
     });
 
-    const entry = h.store.listAudit(10).find((e) => e.action === "proposal.submit");
+    const entry = h.store.listAudit(10).find(e => e.action === "proposal.submit");
     expect(entry?.outcome).toBe("denied");
     expect(entry?.detail.protectedPaths).toEqual(["mise.toml"]);
   });
@@ -867,7 +833,7 @@ describe("promote: requires an operator", () => {
     expect(head).toBe(promoted.promotedCommit ?? "");
     expect((await git(h.root, ["log", "-1", "--format=%s"])).out.trim()).toBe("patch app");
 
-    const entry = h.store.listAudit(20).find((e) => e.action === "proposal.promote");
+    const entry = h.store.listAudit(20).find(e => e.action === "proposal.promote");
     expect(entry?.outcome).toBe("ok");
     expect(entry?.detail.commit).toBe(promoted.promotedCommit);
     expect(entry?.actorDeviceId).toBe("laptop");
@@ -927,9 +893,7 @@ describe("rollback", () => {
 
     // The promoted commit is still reachable, which is what makes the history
     // an audit trail rather than a rewrite.
-    expect((await git(h.root, ["cat-file", "-t", promoted.promotedCommit ?? ""])).out.trim()).toBe(
-      "commit",
-    );
+    expect((await git(h.root, ["cat-file", "-t", promoted.promotedCommit ?? ""])).out.trim()).toBe("commit");
   });
 
   test("rollback is refused without manage scope", async () => {
@@ -972,7 +936,7 @@ describe("observe: drafting only", () => {
     const drafts = h.engine.observe(h.store);
 
     expect(drafts.length).toBeGreaterThan(0);
-    const draft = drafts.find((d) => d.evidence.action === "agent.create");
+    const draft = drafts.find(d => d.evidence.action === "agent.create");
     expect(draft).toBeDefined();
     expect(draft?.evidence.failures).toBe(4);
     expect(draft?.evidence.reasons).toContain("host spawn failed");

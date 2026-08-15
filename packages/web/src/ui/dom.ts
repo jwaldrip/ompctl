@@ -10,10 +10,7 @@ export interface ElementSpec {
   children?: (Node | null | undefined)[];
 }
 
-export function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  spec: ElementSpec = {},
-): HTMLElementTagNameMap[K] {
+export function el<K extends keyof HTMLElementTagNameMap>(tag: K, spec: ElementSpec = {}): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (spec.class !== undefined) node.className = spec.class;
   if (spec.text !== undefined) node.textContent = spec.text;
@@ -148,7 +145,7 @@ export function formatMoney(amount: number, currency: string): string {
  */
 export function shortenPath(path: string, segments = 2): string {
   const home = path.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
-  const parts = home.split("/").filter((part) => part.length > 0);
+  const parts = home.split("/").filter(part => part.length > 0);
   if (parts.length <= segments + (home.startsWith("~") ? 1 : 0)) return home;
   return `…/${parts.slice(-segments).join("/")}`;
 }

@@ -62,7 +62,7 @@ export function formatMoney(amount: number, currency: string): string {
  */
 export function shortenPath(path: string, segments = 2): string {
   const home = path.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
-  const parts = home.split("/").filter((part) => part.length > 0);
+  const parts = home.split("/").filter(part => part.length > 0);
   if (parts.length <= segments + (home.startsWith("~") ? 1 : 0)) return home;
   return `…/${parts.slice(-segments).join("/")}`;
 }

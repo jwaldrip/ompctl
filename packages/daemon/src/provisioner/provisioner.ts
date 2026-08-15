@@ -17,7 +17,7 @@ import type { Actor, HostKind, HostSpec, Store } from "@ompd/core";
 import { CloudBackend, type CloudDriver } from "./cloud.ts";
 import { ContainerBackend } from "./container.ts";
 import { LocalBackend } from "./local.ts";
-import { ProvisionError, type HostHandle, type Provisioner, type ProvisionerBackend } from "./types.ts";
+import { type HostHandle, ProvisionError, type Provisioner, type ProvisionerBackend } from "./types.ts";
 
 export interface ProvisionerOptions {
   store: Store;
@@ -99,10 +99,7 @@ export class HostProvisioner implements Provisioner {
         outcome: "error",
         detail: { kind: String(spec.kind), reason: "no backend for this host kind" },
       });
-      throw new ProvisionError(
-        `no backend for host kind ${JSON.stringify(spec.kind)}`,
-        String(spec.kind),
-      );
+      throw new ProvisionError(`no backend for host kind ${JSON.stringify(spec.kind)}`, String(spec.kind));
     }
 
     let inner: HostHandle;
@@ -139,10 +136,7 @@ export class HostProvisioner implements Provisioner {
       ref: inner.ref,
       spawn: (opts: SpawnLocalHostOptions): LocalHost => {
         if (tracked.destroyed) {
-          throw new ProvisionError(
-            `host ${inner.ref.id} has been destroyed and cannot be reconnected`,
-            spec.kind,
-          );
+          throw new ProvisionError(`host ${inner.ref.id} has been destroyed and cannot be reconnected`, spec.kind);
         }
         const connection = inner.spawn(opts);
         tracked.lastUsedAt = this.#now();
@@ -177,7 +171,7 @@ export class HostProvisioner implements Provisioner {
   }
 
   async list(): Promise<HostHandle[]> {
-    return [...this.#hosts.values()].map((tracked) => tracked.wrapped);
+    return [...this.#hosts.values()].map(tracked => tracked.wrapped);
   }
 
   /**
@@ -203,7 +197,7 @@ export class HostProvisioner implements Provisioner {
       this.#timer = null;
     }
     const ids = [...this.#hosts.keys()];
-    await Promise.all(ids.map((id) => this.#destroy(id, "shutdown").catch(() => undefined)));
+    await Promise.all(ids.map(id => this.#destroy(id, "shutdown").catch(() => undefined)));
     await Promise.allSettled([...this.#inFlight]);
   }
 
@@ -257,7 +251,7 @@ export class HostProvisioner implements Provisioner {
 
   #startTimerIfNeeded(): void {
     if (this.#timer !== null) return;
-    if (![...this.#hosts.values()].some((tracked) => tracked.ttlMs !== null)) return;
+    if (![...this.#hosts.values()].some(tracked => tracked.ttlMs !== null)) return;
     this.#timer = setInterval(() => this.#sweep(), this.#sweepIntervalMs);
     // A pending sweep must never be the reason the daemon cannot exit.
     this.#timer.unref();
@@ -265,7 +259,7 @@ export class HostProvisioner implements Provisioner {
 
   #stopTimerIfIdle(): void {
     if (this.#timer === null) return;
-    if ([...this.#hosts.values()].some((tracked) => tracked.ttlMs !== null)) return;
+    if ([...this.#hosts.values()].some(tracked => tracked.ttlMs !== null)) return;
     clearInterval(this.#timer);
     this.#timer = null;
   }

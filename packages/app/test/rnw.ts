@@ -26,9 +26,9 @@
  */
 
 import { mock } from "bun:test";
-import { createElement } from "react";
-import type { ReactNode } from "react";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { ReactNode } from "react";
+import { createElement } from "react";
 
 // One registration for the whole suite. Individual tests used to register and
 // unregister themselves, which is how a second file in the same process died
@@ -59,7 +59,7 @@ export function backHandlerCount(): number {
  * An empty array means nothing was listening.
  */
 export function pressHardwareBack(): boolean[] {
-  return [...handlers].map((handler) => handler());
+  return [...handlers].map(handler => handler());
 }
 
 /** Window size seen by `useWindowDimensions`. RNW refuses Dimensions.set in the browser. */
@@ -175,7 +175,15 @@ export function resetCameraMock(): void {
 }
 
 mock.module("react-native-vision-camera", () => ({
-  Camera: ({ codeScanner, isActive, testID }: { codeScanner?: MockCodeScanner; isActive?: boolean; testID?: string }) => {
+  Camera: ({
+    codeScanner,
+    isActive,
+    testID,
+  }: {
+    codeScanner?: MockCodeScanner;
+    isActive?: boolean;
+    testID?: string;
+  }) => {
     activeCodeScanner = isActive === true ? (codeScanner ?? null) : null;
     return createElement("div", { "data-testid": testID });
   },

@@ -24,21 +24,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "@ompd/core";
-import {
-  LOCAL_OPERATOR_DEVICE_ID,
-  Ompd,
-  endpointPath,
-  loadConfig,
-  type OmpdOptions,
-} from "../src/daemon.ts";
 import { NO_TARGET } from "../src/browser/bridge.ts";
-import {
-  base64ToPcm,
-  pcmToBase64,
-  type PcmAudio,
-  type SttEngine,
-  type TtsEngine,
-} from "../src/voice/index.ts";
+import { endpointPath, LOCAL_OPERATOR_DEVICE_ID, loadConfig, Ompd, type OmpdOptions } from "../src/daemon.ts";
+import { base64ToPcm, type PcmAudio, pcmToBase64, type SttEngine, type TtsEngine } from "../src/voice/index.ts";
 import { createFakeHost } from "./fake-host.ts";
 
 const scratch: string[] = [];
@@ -131,10 +119,7 @@ describe("config", () => {
     writeFileSync(join(home, "config.json"), JSON.stringify({ replica: true }));
     expect(() => loadConfig(home)).toThrow(/replica requires a non-empty replicaSyncToken/);
 
-    writeFileSync(
-      join(home, "config.json"),
-      JSON.stringify({ intentPeerUrl: "https://cloud.example" }),
-    );
+    writeFileSync(join(home, "config.json"), JSON.stringify({ intentPeerUrl: "https://cloud.example" }));
     expect(() => loadConfig(home)).toThrow(/intentPeerUrl and intentPeerToken must both be set/);
 
     writeFileSync(
@@ -395,18 +380,16 @@ describe("local operator bootstrap", () => {
       body: JSON.stringify({ code, scopes: ["read"] }),
     });
     const { token: phone } = (await granted.json()) as { token: string };
-    expect(
-      (await fetch(`${firstInfo.url}/v1/agents`, { headers: { authorization: `Bearer ${phone}` } }))
-        .status,
-    ).toBe(200);
+    expect((await fetch(`${firstInfo.url}/v1/agents`, { headers: { authorization: `Bearer ${phone}` } })).status).toBe(
+      200,
+    );
     await first.stop();
 
     const second = build(home);
     const secondInfo = await second.start();
-    expect(
-      (await fetch(`${secondInfo.url}/v1/agents`, { headers: { authorization: `Bearer ${phone}` } }))
-        .status,
-    ).toBe(200);
+    expect((await fetch(`${secondInfo.url}/v1/agents`, { headers: { authorization: `Bearer ${phone}` } })).status).toBe(
+      200,
+    );
   });
 
   test("a token file that no longer names a live credential is replaced", async () => {
@@ -504,14 +487,8 @@ describe("rotation", () => {
     expect(after).not.toBe(before);
     expect(statSync(join(home, "token")).mode & 0o777).toBe(0o600);
 
-    expect(
-      (await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${before}` } }))
-        .status,
-    ).toBe(401);
-    expect(
-      (await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${after}` } }))
-        .status,
-    ).toBe(200);
+    expect((await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${before}` } })).status).toBe(401);
+    expect((await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${after}` } })).status).toBe(200);
   });
 
   test("a rotated operator token survives the next restart", async () => {
@@ -561,20 +538,16 @@ describe("rotation", () => {
     const rotated = await fetch(`${info.url}/v1/tokens/rotate`, {
       method: "POST",
       headers: { authorization: `Bearer ${operator}`, "content-type": "application/json" },
-      body: JSON.stringify({ deviceId: daemon.store.listDevices().find((d) => d.name === "phone")?.id }),
+      body: JSON.stringify({ deviceId: daemon.store.listDevices().find(d => d.name === "phone")?.id }),
     });
     const body = (await rotated.json()) as { token: string; tokenPath?: string };
     expect(body.tokenPath).toBeUndefined();
     expect(await tokenOf(home)).toBe(operator);
 
-    expect(
-      (await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${phone}` } }))
-        .status,
-    ).toBe(401);
-    expect(
-      (await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${body.token}` } }))
-        .status,
-    ).toBe(200);
+    expect((await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${phone}` } })).status).toBe(401);
+    expect((await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${body.token}` } })).status).toBe(
+      200,
+    );
   });
 });
 
@@ -611,12 +584,7 @@ describe("static hosting", () => {
     const daemon = build(tempDir("ompd-daemon-"), { staticRoot: root });
     const info = await daemon.start();
 
-    for (const attempt of [
-      "/../secret.txt",
-      "/..%2Fsecret.txt",
-      "/%2e%2e/secret.txt",
-      "/a/../../secret.txt",
-    ]) {
+    for (const attempt of ["/../secret.txt", "/..%2Fsecret.txt", "/%2e%2e/secret.txt", "/a/../../secret.txt"]) {
       const response = await fetch(`${info.url}${attempt}`);
       const body = response.ok ? await response.text() : "";
       expect(body).not.toContain("TOP-SECRET");
@@ -675,7 +643,7 @@ describe("operator routes", () => {
     // the refused attempt did not burn the code.
     const allowed = await approve(approver, target, ["read"]);
     expect(allowed.status).toBe(200);
-    expect(daemon.store.listDevices().find((d) => d.name === "target")?.scopes).toEqual(["read"]);
+    expect(daemon.store.listDevices().find(d => d.name === "target")?.scopes).toEqual(["read"]);
   });
 
   test("a device without approve scope cannot approve at all", async () => {
@@ -711,7 +679,7 @@ describe("operator routes", () => {
       body: JSON.stringify({ code: otherCode, scopes: ["read"] }),
     });
     expect(refused.status).toBe(403);
-    expect(daemon.store.listDevices().some((d) => d.name === "other")).toBe(false);
+    expect(daemon.store.listDevices().some(d => d.name === "other")).toBe(false);
   });
 
   test("revoking a device stops its token on the next request", async () => {
@@ -735,7 +703,7 @@ describe("operator routes", () => {
 
     expect((await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${phone}` } })).status).toBe(200);
 
-    const phoneId = daemon.store.listDevices().find((d) => d.name === "phone")?.id ?? "";
+    const phoneId = daemon.store.listDevices().find(d => d.name === "phone")?.id ?? "";
     const revoked = await fetch(`${info.url}/v1/devices/${phoneId}`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${operator}` },
@@ -744,7 +712,7 @@ describe("operator routes", () => {
 
     expect((await fetch(`${info.url}/v1/agents`, { headers: { authorization: `Bearer ${phone}` } })).status).toBe(401);
     // The row stays, marked, so revoking remains auditable.
-    expect(daemon.store.listDevices().find((d) => d.id === phoneId)?.revokedAt).toBeDefined();
+    expect(daemon.store.listDevices().find(d => d.id === phoneId)?.revokedAt).toBeDefined();
   });
 
   test("status reports uptime and agents by state", async () => {
@@ -793,7 +761,7 @@ async function socketFor(port: number, token: string): Promise<TestSocket> {
   const frames: Frame[] = [];
   const waiters = new Set<() => void>();
 
-  ws.addEventListener("message", (event) => {
+  ws.addEventListener("message", event => {
     frames.push(JSON.parse(String(event.data)) as Frame);
     for (const waiter of [...waiters]) waiter();
   });
@@ -801,7 +769,7 @@ async function socketFor(port: number, token: string): Promise<TestSocket> {
   ws.addEventListener("open", () => open.resolve());
   await open.promise;
 
-  const settle = <T,>(check: () => T | null): Promise<T> => {
+  const settle = <T>(check: () => T | null): Promise<T> => {
     const done = Promise.withResolvers<T>();
     const attempt = (): void => {
       const value = check();
@@ -816,20 +784,15 @@ async function socketFor(port: number, token: string): Promise<TestSocket> {
 
   return {
     frames,
-    send: (frame) => ws.send(JSON.stringify(frame)),
-    next: (match) => settle(() => frames.find(match) ?? null),
-    until: (predicate) => settle(() => (predicate() ? true : null)).then(() => undefined),
+    send: frame => ws.send(JSON.stringify(frame)),
+    next: match => settle(() => frames.find(match) ?? null),
+    until: predicate => settle(() => (predicate() ? true : null)).then(() => undefined),
     close: () => ws.close(),
   };
 }
 
 /** Run the real two-step pairing and return the minted token. */
-async function pairDevice(
-  base: string,
-  approver: string,
-  name: string,
-  scopes: string[],
-): Promise<string> {
+async function pairDevice(base: string, approver: string, name: string, scopes: string[]): Promise<string> {
   const begun = await fetch(`${base}/v1/pair`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -879,10 +842,10 @@ describe("WebView composition", () => {
     phone.send({ t: "attach", agentId: agent.id });
     phone.send({ t: "webview_register", agentId: agent.id });
     phone.send({ t: "ping" });
-    await phone.next((frame) => frame.t === "pong");
+    await phone.next(frame => frame.t === "pong");
     // A rejected register would otherwise surface only as a five-second hang
     // below, which reads as a slow test rather than a refused registration.
-    expect(phone.frames.filter((frame) => frame.t === "error")).toEqual([]);
+    expect(phone.frames.filter(frame => frame.t === "error")).toEqual([]);
 
     const call = fetch(String(descriptor?.url), {
       method: "POST",
@@ -897,15 +860,11 @@ describe("WebView composition", () => {
     // Racing the two sides turns "the bridge answered without ever reaching a
     // device" into that message, instead of a timeout that says nothing.
     const first = await Promise.race([
-      phone
-        .next((frame) => frame.t === "webview_action")
-        .then((frame) => ({ kind: "action" as const, frame })),
-      call.then((response) => ({ kind: "response" as const, response })),
+      phone.next(frame => frame.t === "webview_action").then(frame => ({ kind: "action" as const, frame })),
+      call.then(response => ({ kind: "response" as const, response })),
     ]);
     if (first.kind !== "action") {
-      throw new Error(
-        `the MCP call settled before dispatch: ${first.response.status} ${await first.response.text()}`,
-      );
+      throw new Error(`the MCP call settled before dispatch: ${first.response.status} ${await first.response.text()}`);
     }
     const action = first.frame;
     expect(action).toMatchObject({
@@ -961,15 +920,13 @@ describe("WebView composition", () => {
     });
     expect(created.status).toBe(201);
     const { agent } = (await created.json()) as { agent: { id: string } };
-    const mcpUrl = String(
-      (fake.newRequests[0]?.mcpServers[0] as { url?: unknown } | undefined)?.url,
-    );
+    const mcpUrl = String((fake.newRequests[0]?.mcpServers[0] as { url?: unknown } | undefined)?.url);
 
     const phone = await socketFor(info.port, operator);
     phone.send({ t: "attach", agentId: agent.id });
     phone.send({ t: "webview_register", agentId: agent.id });
     phone.send({ t: "ping" });
-    await phone.next((frame) => frame.t === "pong");
+    await phone.next(frame => frame.t === "pong");
 
     const allowedUrl = "https://example.com/approved";
     const allowedCall = fetch(mcpUrl, {
@@ -982,9 +939,7 @@ describe("WebView composition", () => {
         params: { name: "webview_navigate", arguments: { url: allowedUrl } },
       }),
     });
-    const allowedApproval = await phone.next(
-      (frame) => frame.t === "approval" && frame.tool === "webview_navigate",
-    );
+    const allowedApproval = await phone.next(frame => frame.t === "approval" && frame.tool === "webview_navigate");
     expect(allowedApproval).toMatchObject({
       t: "approval",
       agentId: agent.id,
@@ -1001,7 +956,7 @@ describe("WebView composition", () => {
     });
 
     const allowedAction = await phone.next(
-      (frame) =>
+      frame =>
         frame.t === "webview_action" &&
         frame.action !== null &&
         typeof frame.action === "object" &&
@@ -1029,8 +984,8 @@ describe("WebView composition", () => {
     });
     expect(daemon.store.getAgent(agent.id)?.state).toBe("idle");
 
-    const actionCount = phone.frames.filter((frame) => frame.t === "webview_action").length;
-    const approvalCount = phone.frames.filter((frame) => frame.t === "approval").length;
+    const actionCount = phone.frames.filter(frame => frame.t === "webview_action").length;
+    const approvalCount = phone.frames.filter(frame => frame.t === "approval").length;
     const deniedUrl = "https://example.com/denied";
     const deniedCall = fetch(mcpUrl, {
       method: "POST",
@@ -1042,10 +997,8 @@ describe("WebView composition", () => {
         params: { name: "webview_navigate", arguments: { url: deniedUrl } },
       }),
     });
-    await phone.until(
-      () => phone.frames.filter((frame) => frame.t === "approval").length > approvalCount,
-    );
-    const deniedApproval = phone.frames.filter((frame) => frame.t === "approval")[approvalCount];
+    await phone.until(() => phone.frames.filter(frame => frame.t === "approval").length > approvalCount);
+    const deniedApproval = phone.frames.filter(frame => frame.t === "approval")[approvalCount];
     if (deniedApproval === undefined) throw new Error("missing denied navigation approval");
     expect(deniedApproval).toMatchObject({
       agentId: agent.id,
@@ -1065,9 +1018,7 @@ describe("WebView composition", () => {
     };
     expect(deniedBody.result?.isError).toBe(true);
     expect(deniedBody.result?.content?.[0]?.text).toContain("denied");
-    expect(phone.frames.filter((frame) => frame.t === "webview_action")).toHaveLength(
-      actionCount,
-    );
+    expect(phone.frames.filter(frame => frame.t === "webview_action")).toHaveLength(actionCount);
     expect(daemon.store.getAgent(agent.id)?.state).toBe("idle");
   });
 
@@ -1091,14 +1042,12 @@ describe("WebView composition", () => {
       body: JSON.stringify({ name: "browser-worker", cwd: home }),
     });
     const { agent } = (await created.json()) as { agent: { id: string } };
-    const mcpUrl = String(
-      (fake.newRequests[0]?.mcpServers[0] as { url?: unknown } | undefined)?.url,
-    );
+    const mcpUrl = String((fake.newRequests[0]?.mcpServers[0] as { url?: unknown } | undefined)?.url);
     const phone = await socketFor(info.port, operator);
     phone.send({ t: "attach", agentId: agent.id });
     phone.send({ t: "webview_register", agentId: agent.id });
     phone.send({ t: "ping" });
-    await phone.next((frame) => frame.t === "pong");
+    await phone.next(frame => frame.t === "pong");
 
     const url = "https://example.com/unattended";
     const call = fetch(mcpUrl, {
@@ -1111,14 +1060,14 @@ describe("WebView composition", () => {
         params: { name: "webview_navigate", arguments: { url } },
       }),
     });
-    await phone.next((frame) => frame.t === "approval" && frame.tool === "webview_navigate");
+    await phone.next(frame => frame.t === "approval" && frame.tool === "webview_navigate");
 
     const body = (await (await call).json()) as {
       result?: { isError?: boolean; content?: Array<{ text?: string }> };
     };
     expect(body.result?.isError).toBe(true);
     expect(body.result?.content?.[0]?.text).toContain("timed out");
-    expect(phone.frames.filter((frame) => frame.t === "webview_action")).toEqual([]);
+    expect(phone.frames.filter(frame => frame.t === "webview_action")).toEqual([]);
     expect(daemon.store.getAgent(agent.id)?.state).toBe("idle");
   });
 
@@ -1171,7 +1120,7 @@ describe("WebView composition", () => {
     phone.send({ t: "attach", agentId: agent.id });
     phone.send({ t: "webview_register", agentId: agent.id });
     phone.send({ t: "ping" });
-    await phone.next((frame) => frame.t === "pong");
+    await phone.next(frame => frame.t === "pong");
 
     const turn = fetch(`${info.url}/v1/agents/${agent.id}/prompt`, {
       method: "POST",
@@ -1180,10 +1129,7 @@ describe("WebView composition", () => {
     });
 
     const bridgeApproval = await phone.next(
-      (frame) =>
-        frame.t === "approval" &&
-        frame.tool === "webview_navigate" &&
-        frame.title === `Navigate to ${url}`,
+      frame => frame.t === "approval" && frame.tool === "webview_navigate" && frame.title === `Navigate to ${url}`,
     );
     phone.send({
       t: "decide",
@@ -1194,7 +1140,7 @@ describe("WebView composition", () => {
     });
 
     const action = await phone.next(
-      (frame) =>
+      frame =>
         frame.t === "webview_action" &&
         frame.action !== null &&
         typeof frame.action === "object" &&
@@ -1212,11 +1158,9 @@ describe("WebView composition", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ agentId: agent.id, stopReason: "end_turn" });
     expect(daemon.store.getAgent(agent.id)?.state).toBe("idle");
-    expect(
-      daemon.store
-        .listApprovals(agent.id)
-        .filter((approval) => approval.tool === "webview_navigate"),
-    ).toHaveLength(1);
+    expect(daemon.store.listApprovals(agent.id).filter(approval => approval.tool === "webview_navigate")).toHaveLength(
+      1,
+    );
   });
 
   test("fails an in-flight action when the registered device disconnects", async () => {
@@ -1238,15 +1182,13 @@ describe("WebView composition", () => {
       body: JSON.stringify({ name: "browser-worker", cwd: home }),
     });
     const { agent } = (await created.json()) as { agent: { id: string } };
-    const url = String(
-      (fake.newRequests[0]?.mcpServers[0] as { url?: unknown } | undefined)?.url,
-    );
+    const url = String((fake.newRequests[0]?.mcpServers[0] as { url?: unknown } | undefined)?.url);
 
     const phone = await socketFor(info.port, operator);
     phone.send({ t: "attach", agentId: agent.id });
     phone.send({ t: "webview_register", agentId: agent.id });
     phone.send({ t: "ping" });
-    await phone.next((frame) => frame.t === "pong");
+    await phone.next(frame => frame.t === "pong");
 
     const call = fetch(url, {
       method: "POST",
@@ -1260,7 +1202,7 @@ describe("WebView composition", () => {
     });
     // Dispatched, so the bridge is holding a pending row: this is the state
     // that would otherwise wait out the full device timeout.
-    await phone.next((frame) => frame.t === "webview_action");
+    await phone.next(frame => frame.t === "webview_action");
     phone.close();
 
     const body = (await (await call).json()) as {
@@ -1293,7 +1235,7 @@ describe("voice wiring", () => {
     const socket = new WebSocket(`ws://127.0.0.1:${info.port}/v1/socket?token=${token}`);
     const frames: Array<Record<string, unknown>> = [];
     const errored = Promise.withResolvers<Record<string, unknown>>();
-    socket.addEventListener("message", (event) => {
+    socket.addEventListener("message", event => {
       const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
       frames.push(frame);
       if (frame.t === "error") errored.resolve(frame);
@@ -1311,7 +1253,7 @@ describe("voice wiring", () => {
     // The transcript arrived first, so the operator saw the daemon hear them.
     // Swallowing the prompt rejection would end the story there, with a phone
     // showing words that never became a turn.
-    expect(frames.some((frame) => frame.t === "transcript")).toBe(true);
+    expect(frames.some(frame => frame.t === "transcript")).toBe(true);
     expect(String(failure.message)).toContain("agt_missing");
 
     socket.close();
@@ -1340,7 +1282,7 @@ describe("voice wiring", () => {
     const info = await daemon.start();
     const operator = await tokenOf(home);
 
-    fake.onPrompt((sessionId) => {
+    fake.onPrompt(sessionId => {
       fake.emitUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "everything is green" },
@@ -1364,7 +1306,7 @@ describe("voice wiring", () => {
     phone.send({ t: "audio", agentId: agent.id, pcm: pcmToBase64(new Int16Array(16_000).fill(4000)) });
     phone.send({ t: "audio_end", agentId: agent.id });
 
-    const speech = await phone.next((frame) => frame.t === "speech");
+    const speech = await phone.next(frame => frame.t === "speech");
     expect(speech.agentId).toBe(agent.id);
     // Exactly the turn's answer, synthesised once.
     expect(spoken).toEqual(["everything is green"]);
@@ -1372,7 +1314,7 @@ describe("voice wiring", () => {
 
     // The desktop is attached to the same agent and never spoke, so it must
     // not be handed audio it did not ask for.
-    expect(desktop.frames.some((frame) => frame.t === "speech")).toBe(false);
+    expect(desktop.frames.some(frame => frame.t === "speech")).toBe(false);
 
     phone.close();
     desktop.close();
@@ -1399,7 +1341,7 @@ describe("voice wiring", () => {
     const info = await daemon.start();
     const operator = await tokenOf(home);
 
-    fake.onPrompt((sessionId) => {
+    fake.onPrompt(sessionId => {
       fake.emitUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "an answer" },
@@ -1417,7 +1359,7 @@ describe("voice wiring", () => {
     const phone = await socketFor(info.port, operator);
     phone.send({ t: "audio", agentId: agent.id, pcm: pcmToBase64(new Int16Array(16_000).fill(4000)) });
     phone.send({ t: "audio_end", agentId: agent.id });
-    await phone.next((frame) => frame.t === "speech");
+    await phone.next(frame => frame.t === "speech");
     expect(synthesised).toHaveLength(1);
 
     // Now the same device types. The modality follows what the operator just
@@ -1426,7 +1368,7 @@ describe("voice wiring", () => {
     await phone.until(() => daemon.store.listAgents()[0]?.state === "idle");
 
     expect(synthesised).toHaveLength(1);
-    expect(phone.frames.filter((frame) => frame.t === "speech")).toHaveLength(1);
+    expect(phone.frames.filter(frame => frame.t === "speech")).toHaveLength(1);
     phone.close();
   });
 
@@ -1459,7 +1401,7 @@ describe("voice wiring", () => {
     const info = await daemon.start();
     const operator = await tokenOf(home);
 
-    fake.onPrompt((sessionId) => {
+    fake.onPrompt(sessionId => {
       fake.emitUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "one second of speech" },
@@ -1478,7 +1420,7 @@ describe("voice wiring", () => {
     phone.send({ t: "audio", agentId: agent.id, pcm: pcmToBase64(new Int16Array(16_000).fill(4000)) });
     phone.send({ t: "audio_end", agentId: agent.id });
 
-    const speech = await phone.next((frame) => frame.t === "speech");
+    const speech = await phone.next(frame => frame.t === "speech");
     // A second of audio has to arrive as a second of audio at the rate the
     // client will play it, not as 22050 samples a browser stretches to 1.38s.
     expect(base64ToPcm(String(speech.pcm)).length).toBe(16_000 * seconds);
@@ -1507,7 +1449,7 @@ describe("voice wiring", () => {
 
     // Held open until the first socket is gone, so the reply is produced for a
     // device whose connection died mid-turn: a phone changing networks.
-    fake.onPrompt(async (sessionId) => {
+    fake.onPrompt(async sessionId => {
       await answered.promise;
       fake.emitUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
@@ -1526,7 +1468,7 @@ describe("voice wiring", () => {
     const first = await socketFor(info.port, operator);
     first.send({ t: "audio", agentId: agent.id, pcm: pcmToBase64(new Int16Array(16_000).fill(4000)) });
     first.send({ t: "audio_end", agentId: agent.id });
-    await first.next((frame) => frame.t === "transcript");
+    await first.next(frame => frame.t === "transcript");
 
     // The phone loses signal, then comes back on a new socket.
     first.close();
@@ -1535,7 +1477,7 @@ describe("voice wiring", () => {
 
     // Voice belongs to the device, so the answer finds it again. Keyed on the
     // socket, this reply would have been synthesised into a closed connection.
-    const speech = await second.next((frame) => frame.t === "speech");
+    const speech = await second.next(frame => frame.t === "speech");
     expect(speech.agentId).toBe(agent.id);
     second.close();
   });
@@ -1550,7 +1492,7 @@ describe("voice wiring", () => {
     const info = await daemon.start();
     const operator = await tokenOf(home);
 
-    fake.onPrompt((sessionId) => {
+    fake.onPrompt(sessionId => {
       fake.emitUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "Done. Here is the patch:\n\n```ts\nconst x = 1;\n```\n" },
@@ -1594,7 +1536,7 @@ describe("voice wiring", () => {
     const info = await daemon.start();
     const operator = await tokenOf(home);
 
-    fake.onPrompt((sessionId) => {
+    fake.onPrompt(sessionId => {
       fake.emitUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "```\nnothing but a fence\n```" },

@@ -13,11 +13,11 @@
  * the person holding the device.
  */
 
+import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useCallback } from "react";
-import { FlatList, StyleSheet, View } from "react-native";
 import type { ListRenderItemInfo } from "react-native";
-import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
+import { FlatList, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Body, Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
@@ -49,7 +49,7 @@ export function Transcript({ entries, canApprove, refusal, onDecide, spoken }: T
       style={styles.list}
       contentContainerStyle={styles.content}
       data={entries as Entry[]}
-      keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
+      keyExtractor={entry => `${entry.kind}:${entry.id}`}
       renderItem={renderItem}
       ListFooterComponent={
         spoken === null || spoken === undefined || spoken.length === 0 ? null : <Spoken text={spoken} />
@@ -98,9 +98,7 @@ function EntryRow({
           accessibilityLabel={`${entry.thought ? "thinking" : "agent"}: ${entry.text}`}
         >
           <View style={[styles.gutter, { borderLeftColor: entry.thought ? signal.violet : signal.sage }]}>
-            <Kicker color={entry.thought ? signal.violet : signal.sage}>
-              {entry.thought ? "thinking" : "agent"}
-            </Kicker>
+            <Kicker color={entry.thought ? signal.violet : signal.sage}>{entry.thought ? "thinking" : "agent"}</Kicker>
             {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
           </View>
           <Body color={entry.thought ? ink.plain : ink.bright} style={styles.prose}>

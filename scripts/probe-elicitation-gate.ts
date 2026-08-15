@@ -93,7 +93,7 @@ const proc = Bun.spawn(["omp", "acp", "--config", configPath], {
 
 const enc = new TextEncoder();
 const send = (o: unknown): void => {
-  proc.stdin.write(enc.encode(JSON.stringify(o) + "\n"));
+  proc.stdin.write(enc.encode(`${JSON.stringify(o)}\n`));
   void proc.stdin.flush();
 };
 
@@ -104,7 +104,7 @@ const expect = (id: number | string, ms: number): Promise<Frame | null> => {
     waiters.delete(id);
     resolve(null);
   }, ms);
-  waiters.set(id, (f) => {
+  waiters.set(id, f => {
     clearTimeout(timer);
     waiters.delete(id);
     resolve(f);
@@ -124,8 +124,9 @@ void (async () => {
     const { value, done } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
+    for (;;) {
+      const nl = buf.indexOf("\n");
+      if (nl < 0) break;
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
       if (!line) continue;
@@ -224,9 +225,7 @@ if (!init) {
 send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: workdir, mcpServers: [] } });
 const sess = await expect(2, 30_000);
 const sessionId =
-  sess?.result && typeof sess.result === "object"
-    ? ((sess.result as Record<string, unknown>).sessionId as string)
-    : "";
+  sess?.result && typeof sess.result === "object" ? ((sess.result as Record<string, unknown>).sessionId as string) : "";
 
 console.log(
   `mode=${legacy ? "legacy (old overlay, no elicitation)" : "gate2 (write/edit/ast_edit prompt, elicitation advertised)"}`,
@@ -242,8 +241,12 @@ send({
 const turn = await expect(3, 180_000);
 
 const seededNow = existsSync(seeded) ? await Bun.file(seeded).text() : "(gone)";
-console.log(`  stopReason=${JSON.stringify((turn?.result as Record<string, unknown>)?.stopReason ?? turn?.error?.message ?? null)}`);
-console.log(`  session/request_permission: ${permissions.length}${permissions.length ? ` -> ${permissions.join(" | ")}` : ""}`);
+console.log(
+  `  stopReason=${JSON.stringify((turn?.result as Record<string, unknown>)?.stopReason ?? turn?.error?.message ?? null)}`,
+);
+console.log(
+  `  session/request_permission: ${permissions.length}${permissions.length ? ` -> ${permissions.join(" | ")}` : ""}`,
+);
 console.log(`  elicitation/create:         ${elicitations.length}`);
 for (const [i, e] of elicitations.entries()) {
   console.log(`    [${i}] enum=${JSON.stringify(e.enumValues)}`);

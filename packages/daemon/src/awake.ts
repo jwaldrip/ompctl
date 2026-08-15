@@ -28,12 +28,7 @@ import type { Agent, AgentState } from "@ompd/core";
  * the case where someone is away from the machine, deciding on a phone. Going
  * to sleep underneath that decision is the exact failure this prevents.
  */
-export const WORKING_AGENT_STATES: readonly AgentState[] = [
-  "provisioning",
-  "starting",
-  "busy",
-  "waiting",
-];
+export const WORKING_AGENT_STATES: readonly AgentState[] = ["provisioning", "starting", "busy", "waiting"];
 
 /** The part of a spawned process this needs. Narrow so a test can fake it. */
 export interface AwakeProcess {
@@ -71,9 +66,7 @@ export class SleepGuard {
     this.#command = ["caffeinate", "-i", "-w", String(opts.pid ?? process.pid)];
 
     this.#spawn =
-      opts.spawn ??
-      ((command) =>
-        Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" }));
+      opts.spawn ?? (command => Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" }));
   }
 
   /** True while an assertion is held. */
@@ -94,7 +87,7 @@ export class SleepGuard {
    * no second source of truth about what is running.
    */
   update(agents: readonly Agent[]): void {
-    const working = agents.some((agent) => WORKING_AGENT_STATES.includes(agent.state));
+    const working = agents.some(agent => WORKING_AGENT_STATES.includes(agent.state));
     if (working) this.#acquire();
     else this.release();
   }

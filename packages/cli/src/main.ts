@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * `ompd`.
  *
@@ -9,21 +10,12 @@
  * the tool is broken, when in fact they only need to pair.
  */
 
+import { OMPD_VERSION } from "@ompd/daemon";
 import { parseCommand, USAGE, UsageError } from "./args.ts";
-import {
-  ApiError,
-  DaemonUnreachableError,
-  defaultContext,
-  TokenMissingError,
-  type CliContext,
-} from "./client.ts";
+import { ApiError, type CliContext, DaemonUnreachableError, defaultContext, TokenMissingError } from "./client.ts";
 import { agentsCommand, newCommand, promptCommand, stopAgentCommand } from "./commands/agents.ts";
 import { auditCommand } from "./commands/audit.ts";
-import {
-  configGetCommand,
-  configListCommand,
-  configSetCommand,
-} from "./commands/config.ts";
+import { configGetCommand, configListCommand, configSetCommand } from "./commands/config.ts";
 import { startCommand, statusCommand } from "./commands/daemon.ts";
 import {
   approveCommand,
@@ -36,10 +28,9 @@ import {
 import { doctorCommand } from "./commands/doctor.ts";
 import { openCommand } from "./commands/open.ts";
 import { routinesCommand, runCommand, webhookSecretCommand } from "./commands/routines.ts";
-import { syncConfigCommand } from "./commands/sync.ts";
-import { installCommand, uninstallCommand } from "./commands/service.ts";
 import { selfInstallCommand } from "./commands/self-install.ts";
-import { OMPD_VERSION } from "@ompd/daemon";
+import { installCommand, uninstallCommand } from "./commands/service.ts";
+import { syncConfigCommand } from "./commands/sync.ts";
 
 export async function run(argv: string[], ctx: CliContext = defaultContext()): Promise<number> {
   try {

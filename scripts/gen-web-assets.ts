@@ -43,10 +43,10 @@ if (!existsSync(join(dist, "index.html"))) {
 
 const files = walk(dist)
   // Source maps are large and only useful alongside sources that are not shipped.
-  .filter((file) => !file.endsWith(".map"))
+  .filter(file => !file.endsWith(".map"))
   .sort();
 
-const entries = files.map((file) => {
+const entries = files.map(file => {
   const urlPath = `/${relative(dist, file).split("\\").join("/")}`;
   const base64 = readFileSync(file).toString("base64");
   return `  ${JSON.stringify(urlPath)}: ${JSON.stringify(base64)},`;

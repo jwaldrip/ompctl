@@ -37,11 +37,12 @@ export async function selfInstallCommand(
   ctx: CliContext,
   cmd: Extract<Command, { kind: "self-install" }>,
 ): Promise<number> {
-  const prefix = cmd.prefix === undefined
-    ? defaultPrefix(ctx.env)
-    : isAbsolute(cmd.prefix)
-      ? cmd.prefix
-      : resolve(ctx.cwd, cmd.prefix);
+  const prefix =
+    cmd.prefix === undefined
+      ? defaultPrefix(ctx.env)
+      : isAbsolute(cmd.prefix)
+        ? cmd.prefix
+        : resolve(ctx.cwd, cmd.prefix);
   const target = join(prefix, BINARY_NAME);
 
   if (existsSync(target)) {

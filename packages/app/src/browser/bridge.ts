@@ -64,7 +64,9 @@ function coerceResult(value: unknown): WebViewActionResult | null {
     case "screenshot":
       return typeof v.pngBase64 === "string" ? { kind: "screenshot", pngBase64: v.pngBase64 } : null;
     case "ack":
-      return typeof v.url === "string" && typeof v.title === "string" ? { kind: "ack", url: v.url, title: v.title } : null;
+      return typeof v.url === "string" && typeof v.title === "string"
+        ? { kind: "ack", url: v.url, title: v.title }
+        : null;
     case "error":
       return typeof v.message === "string" ? { kind: "error", message: v.message } : null;
     default:
@@ -111,7 +113,19 @@ function coerceNode(value: unknown, depth: number): WebViewNode | null {
 }
 
 /** Attributes read out of the page's DOM. Small on purpose: enough to name a form field or a link, never enough to leak a page's full markup into the model's context. */
-const ATTRIBUTE_ALLOWLIST = ["id", "role", "aria-label", "aria-hidden", "placeholder", "value", "href", "type", "name", "title", "alt"];
+const ATTRIBUTE_ALLOWLIST = [
+  "id",
+  "role",
+  "aria-label",
+  "aria-hidden",
+  "placeholder",
+  "value",
+  "href",
+  "type",
+  "name",
+  "title",
+  "alt",
+];
 const MAX_NODES = 400;
 const MAX_TREE_DEPTH = 24;
 const MAX_TEXT_CHARS = 200;

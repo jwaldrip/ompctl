@@ -9,16 +9,16 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { AssistantEntry, SessionState, ToolEntry } from "../src/session/model.ts";
 import {
-  EMPTY_SESSION,
   appendApproval,
   appendPrompt,
+  EMPTY_SESSION,
   endTurn,
   reduce,
   reduceAll,
   resolveApproval,
 } from "../src/session/model.ts";
-import type { AssistantEntry, SessionState, ToolEntry } from "../src/session/model.ts";
 
 interface Capture {
   counts: Record<string, number>;
@@ -26,7 +26,7 @@ interface Capture {
 }
 
 const capture: Capture = await Bun.file(new URL("../../../scripts/update-shapes.json", import.meta.url)).json();
-export const STREAM: readonly unknown[] = capture.stream.map((frame) => frame.update);
+export const STREAM: readonly unknown[] = capture.stream.map(frame => frame.update);
 
 function toolsOf(state: SessionState): ToolEntry[] {
   return state.entries.filter((entry): entry is ToolEntry => entry.kind === "tool");
@@ -54,9 +54,11 @@ describe("a captured turn", () => {
     const assistants = state.entries.filter((entry): entry is AssistantEntry => entry.kind === "assistant");
     const ids = new Set(
       STREAM.filter(
-        (update) =>
-          typeof update === "object" && update !== null && Reflect.get(update, "sessionUpdate") === "agent_message_chunk",
-      ).map((update) => Reflect.get(update as object, "messageId")),
+        update =>
+          typeof update === "object" &&
+          update !== null &&
+          Reflect.get(update, "sessionUpdate") === "agent_message_chunk",
+      ).map(update => Reflect.get(update as object, "messageId")),
     );
     // Seven payloads, two messages. A bubble per chunk is the bug this catches.
     expect(ids.size).toBe(2);
@@ -66,7 +68,7 @@ describe("a captured turn", () => {
 
   test("a settled turn leaves nothing streaming", () => {
     const state = endTurn(reduceAll(EMPTY_SESSION, STREAM));
-    const streaming = state.entries.filter((entry) => entry.kind === "assistant" && entry.streaming);
+    const streaming = state.entries.filter(entry => entry.kind === "assistant" && entry.streaming);
     expect(streaming.length).toBe(0);
   });
 
@@ -81,10 +83,10 @@ describe("a captured turn", () => {
     // the transcript diff correct and the render wrong.
     const before = reduceAll(EMPTY_SESSION, STREAM.slice(0, 12));
     const entriesBefore = before.entries;
-    const snapshot = entriesBefore.map((entry) => ({ ...entry }));
+    const snapshot = entriesBefore.map(entry => ({ ...entry }));
     reduceAll(before, STREAM.slice(12));
     expect(before.entries).toBe(entriesBefore);
-    expect(before.entries.map((entry) => ({ ...entry }))).toEqual(snapshot);
+    expect(before.entries.map(entry => ({ ...entry }))).toEqual(snapshot);
   });
 });
 

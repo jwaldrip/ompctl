@@ -28,21 +28,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import {
+  type Agent,
+  type AgentId,
+  type ClientFrame,
   DefaultPolicy,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   SCOPE_READ,
-  Store,
-  type Agent,
-  type AgentId,
-  type ClientFrame,
   type ServerFrame,
+  Store,
   type WebViewActionResult,
 } from "@ompd/core";
-import { Supervisor } from "../src/supervisor.ts";
-import { HostRegistry } from "../src/hosts.ts";
 import { Gateway, GatewayEvents, type RoutineRunner } from "../src/gateway/index.ts";
+import { HostRegistry } from "../src/hosts.ts";
+import { Supervisor } from "../src/supervisor.ts";
 import { createFakeHost, type FakeHostController } from "./fake-host.ts";
 
 /**
@@ -179,7 +179,7 @@ async function connect(port: number, token: string | null): Promise<SocketClient
   ws.addEventListener("open", () => opened.resolve(true));
   ws.addEventListener("error", () => opened.resolve(false));
   ws.addEventListener("close", () => opened.resolve(false));
-  ws.addEventListener("message", (event) => {
+  ws.addEventListener("message", event => {
     frames.push(JSON.parse(String(event.data)) as ServerFrame);
     drain();
   });
@@ -188,8 +188,8 @@ async function connect(port: number, token: string | null): Promise<SocketClient
 
   const client: SocketClient = {
     frames,
-    send: (frame) => ws.send(JSON.stringify(frame)),
-    sendRaw: (raw) => ws.send(raw),
+    send: frame => ws.send(JSON.stringify(frame)),
+    sendRaw: raw => ws.send(raw),
     next: (match, label) => {
       const settled = Promise.withResolvers<ServerFrame>();
       let found: ServerFrame | null = null;
@@ -274,7 +274,7 @@ function updateReaching(h: Harness, agentId: AgentId, seq: number): Promise<void
  * that has already fired.
  */
 function waitForPending(h: Harness, agentId: AgentId): Promise<void> {
-  if (h.sup.pendingApprovals().some((approval) => approval.agentId === agentId)) {
+  if (h.sup.pendingApprovals().some(approval => approval.agentId === agentId)) {
     return Promise.resolve();
   }
   const settled = Promise.withResolvers<void>();
@@ -283,7 +283,7 @@ function waitForPending(h: Harness, agentId: AgentId): Promise<void> {
     SIGNAL_DEADLINE_MS,
   );
   const off = h.events.add({
-    onApprovalNeeded: (approval) => {
+    onApprovalNeeded: approval => {
       if (approval.agentId !== agentId) return;
       clearTimeout(timer);
       settled.resolve();
@@ -297,11 +297,7 @@ function waitForPending(h: Harness, agentId: AgentId): Promise<void> {
  * way a client would.
  */
 async function createAgent(h: Harness, token: string, name: string, cwd = "/work"): Promise<Agent> {
-  const res = await h.http(
-    "/v1/agents",
-    { method: "POST", body: JSON.stringify({ name, cwd }) },
-    token,
-  );
+  const res = await h.http("/v1/agents", { method: "POST", body: JSON.stringify({ name, cwd }) }, token);
   if (res.status !== 201) throw new Error(`agent creation failed with ${res.status}`);
   const body = (await res.json()) as { agent: Agent };
   return body.agent;
@@ -321,7 +317,7 @@ const bashCall = (command: string) => ({
  */
 async function barrier(sock: SocketClient, label: string): Promise<void> {
   sock.send({ t: "ping" });
-  await sock.next((f) => f.t === "pong", `pong barrier: ${label}`);
+  await sock.next(f => f.t === "pong", `pong barrier: ${label}`);
 }
 
 afterEach(async () => {
@@ -349,7 +345,7 @@ describe("socket authentication", () => {
 
     // Works first, so the revocation below is the only thing that changed.
     const before = await openSocket(h.port, token);
-    const hello = await before.next((f) => f.t === "hello", "hello");
+    const hello = await before.next(f => f.t === "hello", "hello");
     if (hello.t !== "hello") throw new Error("expected a hello frame");
     expect((await h.http("/v1/agents", {}, token)).status).toBe(200);
     before.close();
@@ -382,13 +378,13 @@ describe("pairing", () => {
     const code = body.code;
     if (typeof code !== "string") throw new Error("pair response carried no code");
 
-    expect(h.store.listAudit().filter((e) => e.action === "device.pair")).toHaveLength(0);
+    expect(h.store.listAudit().filter(e => e.action === "device.pair")).toHaveLength(0);
     expect(await connect(h.port, code)).toBeNull();
     expect((await h.http("/v1/agents", {}, code)).status).toBe(401);
 
     const token = h.gw.approvePairing(code, [SCOPE_READ]);
     expect((await h.http("/v1/agents", {}, token)).status).toBe(200);
-    expect(h.store.listAudit().filter((e) => e.action === "device.pair")).toHaveLength(1);
+    expect(h.store.listAudit().filter(e => e.action === "device.pair")).toHaveLength(1);
   });
 
   test("a pairing code is single use", async () => {
@@ -457,11 +453,11 @@ describe("pairing", () => {
     const h = await harness();
     const token = await h.pair("phone", [SCOPE_READ]);
     const sock = await openSocket(h.port, token);
-    const hello = await sock.next((f) => f.t === "hello", "hello");
+    const hello = await sock.next(f => f.t === "hello", "hello");
     if (hello.t !== "hello") throw new Error("expected a hello frame");
 
     h.gw.revokeDevice(hello.deviceId);
-    expect(h.store.listAudit().filter((e) => e.action === "device.revoke")).toHaveLength(1);
+    expect(h.store.listAudit().filter(e => e.action === "device.revoke")).toHaveLength(1);
   });
 });
 
@@ -488,7 +484,7 @@ describe("token rotation over http", () => {
     const h = await harness();
     const phone = await h.pair("phone", [SCOPE_READ]);
     const other = await h.pair("laptop", [SCOPE_READ]);
-    const target = h.store.listDevices().find((d) => d.name === "laptop")?.id ?? "";
+    const target = h.store.listDevices().find(d => d.name === "laptop")?.id ?? "";
 
     const res = await h.http(
       "/v1/tokens/rotate",
@@ -508,7 +504,7 @@ describe("token rotation over http", () => {
     const h = await harness();
     const manager = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
     const approver = await h.pair("console", [SCOPE_READ, SCOPE_APPROVE]);
-    const target = h.store.listDevices().find((d) => d.name === "console")?.id ?? "";
+    const target = h.store.listDevices().find(d => d.name === "console")?.id ?? "";
 
     const res = await h.http(
       "/v1/tokens/rotate",
@@ -527,7 +523,7 @@ describe("token rotation over http", () => {
     const h = await harness();
     const operator = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE, SCOPE_APPROVE]);
     const phone = await h.pair("phone", [SCOPE_READ]);
-    const target = h.store.listDevices().find((d) => d.name === "phone")?.id ?? "";
+    const target = h.store.listDevices().find(d => d.name === "phone")?.id ?? "";
 
     const res = await h.http(
       "/v1/tokens/rotate",
@@ -564,7 +560,7 @@ describe("token rotation over http", () => {
     const h = await harness();
     const token = await h.pair("phone", [SCOPE_READ]);
     const before = await openSocket(h.port, token);
-    await before.next((f) => f.t === "hello", "hello");
+    await before.next(f => f.t === "hello", "hello");
     before.close();
 
     const res = await h.http("/v1/tokens/rotate", { method: "POST" }, token);
@@ -572,7 +568,7 @@ describe("token rotation over http", () => {
 
     expect(await connect(h.port, token)).toBeNull();
     const after = await openSocket(h.port, replacement);
-    expect((await after.next((f) => f.t === "hello", "hello")).t).toBe("hello");
+    expect((await after.next(f => f.t === "hello", "hello")).t).toBe("hello");
   });
 });
 
@@ -591,7 +587,7 @@ describe("http scopes", () => {
     // Refused by the gateway itself rather than deflected by the supervisor.
     // A request that fails a scope check must not reach the privileged layer,
     // so there is no supervisor-side denial recorded against it.
-    expect(h.store.listAudit().filter((e) => e.outcome === "denied")).toHaveLength(0);
+    expect(h.store.listAudit().filter(e => e.outcome === "denied")).toHaveLength(0);
 
     // Positive controls, so the 403 above is about scope and not about the
     // route being broken for everyone.
@@ -611,7 +607,7 @@ describe("http scopes", () => {
     const refused = await h.http(`/v1/agents/${agent.id}`, { method: "DELETE" }, readOnly);
     expect(refused.status).toBe(403);
     expect(h.store.getAgent(agent.id)?.state).not.toBe("stopped");
-    expect(h.store.listAudit().filter((e) => e.outcome === "denied")).toHaveLength(0);
+    expect(h.store.listAudit().filter(e => e.outcome === "denied")).toHaveLength(0);
 
     const allowed = await h.http(`/v1/agents/${agent.id}`, { method: "DELETE" }, manage);
     expect(allowed.status).toBe(200);
@@ -707,7 +703,7 @@ describe("requests with no Host header", () => {
       hostname: "127.0.0.1",
       port: h.port,
       socket: {
-        open: (s) => {
+        open: s => {
           s.write("GET /v1/agents HTTP/1.0\r\n\r\n");
         },
         data: (_s, chunk) => {
@@ -746,10 +742,8 @@ describe("agent-driven WebView routing", () => {
     phone.send({ t: "webview_register", agentId: agent.id });
     await barrier(phone, "webview registration");
 
-    expect(h.gw.sendWebViewAction(agent.id, "wv_1", { kind: "navigate", url: "https://example.com" })).toBe(
-      true,
-    );
-    const action = await phone.next((frame) => frame.t === "webview_action", "webview action");
+    expect(h.gw.sendWebViewAction(agent.id, "wv_1", { kind: "navigate", url: "https://example.com" })).toBe(true);
+    const action = await phone.next(frame => frame.t === "webview_action", "webview action");
     expect(action).toEqual({
       t: "webview_action",
       agentId: agent.id,
@@ -797,7 +791,7 @@ describe("agent-driven WebView routing", () => {
     });
 
     const refusal = await bystander.next(
-      (frame) => frame.t === "error" && frame.code === "webview_not_registered",
+      frame => frame.t === "error" && frame.code === "webview_not_registered",
       "spoofed webview result refusal",
     );
     expect(refusal).toMatchObject({
@@ -822,7 +816,7 @@ describe("approvals over the socket", () => {
 
     const option = h.fake.requestPermission(agent.acpSessionId ?? "", bashCall("echo hi"));
 
-    const approval = await sock.next((f) => f.t === "approval", "approval");
+    const approval = await sock.next(f => f.t === "approval", "approval");
     if (approval.t !== "approval") throw new Error("expected an approval frame");
     expect(approval.agentId).toBe(agent.id);
     expect(approval.tool).toBe("bash");
@@ -835,7 +829,7 @@ describe("approvals over the socket", () => {
       scope: "once",
     });
 
-    const refusal = await sock.next((f) => f.t === "error", "refusal");
+    const refusal = await sock.next(f => f.t === "error", "refusal");
     if (refusal.t !== "error") throw new Error("expected an error frame");
     expect(refusal.code).toBe("unauthorized");
 
@@ -852,12 +846,7 @@ describe("approvals over the socket", () => {
     // decide were broken outright or the host had crashed, and it would be
     // enforcing nothing.
     const h = await harness({ approvalTimeoutMs: 3000 });
-    const operator = await h.pair("laptop", [
-      SCOPE_READ,
-      SCOPE_MANAGE,
-      SCOPE_PROMPT,
-      SCOPE_APPROVE,
-    ]);
+    const operator = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_APPROVE]);
     const agent = await createAgent(h, operator, "worker");
 
     const sock = await openSocket(h.port, operator);
@@ -865,7 +854,7 @@ describe("approvals over the socket", () => {
     await barrier(sock, "attach");
 
     const option = h.fake.requestPermission(agent.acpSessionId ?? "", bashCall("echo hi"));
-    const approval = await sock.next((f) => f.t === "approval", "approval");
+    const approval = await sock.next(f => f.t === "approval", "approval");
     if (approval.t !== "approval") throw new Error("expected an approval frame");
 
     sock.send({
@@ -895,10 +884,10 @@ describe("approvals over the socket", () => {
     await barrier(bystander, "bystander ready");
 
     const option = h.fake.requestPermission(agent.acpSessionId ?? "", bashCall("echo hi"));
-    await watcher.next((f) => f.t === "approval", "approval on the attached socket");
+    await watcher.next(f => f.t === "approval", "approval on the attached socket");
 
     await barrier(bystander, "bystander drain");
-    expect(bystander.frames.filter((f) => f.t === "approval")).toHaveLength(0);
+    expect(bystander.frames.filter(f => f.t === "approval")).toHaveLength(0);
     await option;
   });
 });
@@ -921,19 +910,15 @@ describe("replay", () => {
     // The phone comes back holding seq 1 and asks for everything after it.
     const phone = await openSocket(h.port, await h.pair("phone", [SCOPE_READ]));
     phone.send({ t: "attach", agentId: agent.id, sinceSeq: 1 });
-    await phone.next((f) => isUpdateFrame(f) && f.seq === 3, "replayed seq 3");
+    await phone.next(f => isUpdateFrame(f) && f.seq === 3, "replayed seq 3");
 
     h.fake.emitUpdate(sessionId, { n: 4 });
-    await phone.next((f) => isUpdateFrame(f) && f.seq === 4, "live seq 4");
+    await phone.next(f => isUpdateFrame(f) && f.seq === 4, "live seq 4");
 
     // Exactly the gap: seq 1 is not resent, 2 and 3 arrive once each, and the
     // live frame follows with no hole in between.
-    expect(phone.frames.filter(isUpdateFrame).map((f) => f.seq)).toEqual([2, 3, 4]);
-    expect(phone.frames.filter(isUpdateFrame).map((f) => f.update)).toEqual([
-      { n: 2 },
-      { n: 3 },
-      { n: 4 },
-    ]);
+    expect(phone.frames.filter(isUpdateFrame).map(f => f.seq)).toEqual([2, 3, 4]);
+    expect(phone.frames.filter(isUpdateFrame).map(f => f.update)).toEqual([{ n: 2 }, { n: 3 }, { n: 4 }]);
   });
 
   test("a second attach does not resend frames the socket already has", async () => {
@@ -949,12 +934,12 @@ describe("replay", () => {
 
     const phone = await openSocket(h.port, await h.pair("phone", [SCOPE_READ]));
     phone.send({ t: "attach", agentId: agent.id, sinceSeq: 0 });
-    await phone.next((f) => isUpdateFrame(f) && f.seq === 2, "replayed seq 2");
+    await phone.next(f => isUpdateFrame(f) && f.seq === 2, "replayed seq 2");
 
     phone.send({ t: "attach", agentId: agent.id, sinceSeq: 0 });
     await barrier(phone, "second attach");
 
-    expect(phone.frames.filter(isUpdateFrame).map((f) => f.seq)).toEqual([1, 2]);
+    expect(phone.frames.filter(isUpdateFrame).map(f => f.seq)).toEqual([1, 2]);
   });
 
   test("updates reach only sockets attached to that agent", async () => {
@@ -988,7 +973,7 @@ describe("replay", () => {
     await barrier(phone, "attach");
 
     h.fake.emitUpdate(sessionId, { n: 1 });
-    await phone.next((f) => isUpdateFrame(f) && f.seq === 1, "seq 1");
+    await phone.next(f => isUpdateFrame(f) && f.seq === 1, "seq 1");
 
     phone.send({ t: "detach", agentId: agent.id });
     await barrier(phone, "detach");
@@ -998,7 +983,7 @@ describe("replay", () => {
     await stored;
     await barrier(phone, "drain after detach");
 
-    expect(phone.frames.filter(isUpdateFrame).map((f) => f.seq)).toEqual([1]);
+    expect(phone.frames.filter(isUpdateFrame).map(f => f.seq)).toEqual([1]);
   });
 });
 
@@ -1008,7 +993,7 @@ describe("hostile frames", () => {
     const sock = await openSocket(h.port, await h.pair("phone", [SCOPE_READ]));
 
     sock.sendRaw("{not json");
-    const error = await sock.next((f) => f.t === "error", "bad_json error");
+    const error = await sock.next(f => f.t === "error", "bad_json error");
     if (error.t !== "error") throw new Error("expected an error frame");
     expect(error.code).toBe("bad_json");
 
@@ -1022,7 +1007,7 @@ describe("hostile frames", () => {
     const sock = await openSocket(h.port, await h.pair("phone", [SCOPE_READ]));
 
     sock.sendRaw(JSON.stringify({ t: "teleport", agentId: "agt_whatever" }));
-    const error = await sock.next((f) => f.t === "error", "unknown_frame error");
+    const error = await sock.next(f => f.t === "error", "unknown_frame error");
     if (error.t !== "error") throw new Error("expected an error frame");
     expect(error.code).toBe("unknown_frame");
 
@@ -1034,7 +1019,7 @@ describe("hostile frames", () => {
     const sock = await openSocket(h.port, await h.pair("phone", [SCOPE_READ]));
 
     sock.sendRaw(JSON.stringify({ agentId: "agt_whatever" }));
-    const error = await sock.next((f) => f.t === "error", "unknown_frame error");
+    const error = await sock.next(f => f.t === "error", "unknown_frame error");
     if (error.t !== "error") throw new Error("expected an error frame");
     expect(error.code).toBe("unknown_frame");
 
@@ -1048,7 +1033,7 @@ describe("hostile frames", () => {
 
     const gadget = await openSocket(h.port, await h.pair("gadget", [SCOPE_PROMPT]));
     gadget.send({ t: "attach", agentId: agent.id });
-    const error = await gadget.next((f) => f.t === "error", "attach refusal");
+    const error = await gadget.next(f => f.t === "error", "attach refusal");
     if (error.t !== "error") throw new Error("expected an error frame");
     expect(error.code).toBe("unauthorized");
 
@@ -1065,7 +1050,7 @@ describe("hostile frames", () => {
     await createAgent(h, manage, "worker");
 
     const gadget = await openSocket(h.port, await h.pair("gadget", [SCOPE_PROMPT]));
-    const hello = await gadget.next((f) => f.t === "hello", "hello");
+    const hello = await gadget.next(f => f.t === "hello", "hello");
     if (hello.t !== "hello") throw new Error("expected a hello frame");
     expect(hello.agents).toEqual([]);
   });
@@ -1078,12 +1063,11 @@ describe("hostile frames", () => {
     for (let i = 0; i < flood; i += 1) sock.send({ t: "ping" });
 
     const answered = (): number =>
-      sock.frames.filter((f) => f.t === "pong" || (f.t === "error" && f.code === "rate_limited"))
-        .length;
+      sock.frames.filter(f => f.t === "pong" || (f.t === "error" && f.code === "rate_limited")).length;
     await sock.until(() => answered() >= flood, "every flood frame answered");
 
-    const pongs = sock.frames.filter((f) => f.t === "pong").length;
-    const limited = sock.frames.filter((f) => f.t === "error" && f.code === "rate_limited").length;
+    const pongs = sock.frames.filter(f => f.t === "pong").length;
+    const limited = sock.frames.filter(f => f.t === "error" && f.code === "rate_limited").length;
 
     expect(pongs + limited).toBe(flood);
     // The bucket engaged rather than passing everything through.
@@ -1100,7 +1084,7 @@ describe("hostile frames", () => {
 
     const phone = await openSocket(h.port, await h.pair("phone", [SCOPE_READ, SCOPE_PROMPT]));
     phone.send({ t: "audio", agentId: agent.id, pcm: "AAAA" });
-    const error = await phone.next((f) => f.t === "error", "voice error");
+    const error = await phone.next(f => f.t === "error", "voice error");
     if (error.t !== "error") throw new Error("expected an error frame");
     expect(error.code).toBe("voice_unavailable");
   });
@@ -1112,12 +1096,7 @@ describe("pending approvals on attach", () => {
     // moment it is raised, so a client that was not connected then sees an
     // agent sitting still with nothing to act on and no way to learn why.
     const h = await harness({ approvalTimeoutMs: 3000 });
-    const operator = await h.pair("laptop", [
-      SCOPE_READ,
-      SCOPE_MANAGE,
-      SCOPE_PROMPT,
-      SCOPE_APPROVE,
-    ]);
+    const operator = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_APPROVE]);
     const agent = await createAgent(h, operator, "worker");
 
     // Block the agent with nobody watching.
@@ -1128,7 +1107,7 @@ describe("pending approvals on attach", () => {
     const late = await openSocket(h.port, operator);
     late.send({ t: "attach", agentId: agent.id });
 
-    const approval = await late.next((f) => f.t === "approval", "replayed approval");
+    const approval = await late.next(f => f.t === "approval", "replayed approval");
     if (approval.t !== "approval") throw new Error("expected an approval frame");
     expect(approval.agentId).toBe(agent.id);
     expect(approval.tool).toBe("bash");
@@ -1148,12 +1127,7 @@ describe("pending approvals on attach", () => {
 
   test("replay carries only the attached agent's approvals, and only once", async () => {
     const h = await harness({ approvalTimeoutMs: 3000 });
-    const operator = await h.pair("laptop", [
-      SCOPE_READ,
-      SCOPE_MANAGE,
-      SCOPE_PROMPT,
-      SCOPE_APPROVE,
-    ]);
+    const operator = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_APPROVE]);
     const mine = await createAgent(h, operator, "mine", "/work/mine");
     const other = await createAgent(h, operator, "other", "/work/other");
 
@@ -1171,7 +1145,7 @@ describe("pending approvals on attach", () => {
     sock.send({ t: "attach", agentId: mine.id });
     await barrier(sock, "second attach");
 
-    const approvals = sock.frames.filter((f) => f.t === "approval");
+    const approvals = sock.frames.filter(f => f.t === "approval");
     expect(approvals).toHaveLength(1);
     expect(approvals[0]?.t === "approval" && approvals[0].agentId).toBe(mine.id);
 
@@ -1196,7 +1170,7 @@ describe("session modes", () => {
     const res = await h.http(`/v1/agents/${agent.id}/config`, {}, operator);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { configOptions: Array<{ id: string; currentValue: string }> };
-    const mode = body.configOptions.find((option) => option.id === "mode");
+    const mode = body.configOptions.find(option => option.id === "mode");
     expect(mode?.currentValue).toBe("default");
   });
 
@@ -1212,7 +1186,7 @@ describe("session modes", () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { configOptions: Array<{ id: string; currentValue: string }> };
-    expect(body.configOptions.find((option) => option.id === "mode")?.currentValue).toBe("plan");
+    expect(body.configOptions.find(option => option.id === "mode")?.currentValue).toBe("plan");
 
     // The response is only worth anything if the agent actually moved. This is
     // the assertion on the far side of the wire.
@@ -1221,7 +1195,7 @@ describe("session modes", () => {
     // And a fresh read agrees, so the cache did not drift from the peer.
     const after = await h.http(`/v1/agents/${agent.id}/config`, {}, operator);
     const seen = (await after.json()) as { configOptions: Array<{ id: string; currentValue: string }> };
-    expect(seen.configOptions.find((option) => option.id === "mode")?.currentValue).toBe("plan");
+    expect(seen.configOptions.find(option => option.id === "mode")?.currentValue).toBe("plan");
   });
 
   test("a mode the session never offered is refused before it reaches the agent", async () => {
@@ -1306,7 +1280,7 @@ describe("cancel", () => {
     readOnly.send({ t: "attach", agentId: agent.id });
     readOnly.send({ t: "cancel", agentId: agent.id });
 
-    const error = await readOnly.next((f) => f.t === "error", "cancel refusal");
+    const error = await readOnly.next(f => f.t === "error", "cancel refusal");
     if (error.t !== "error") throw new Error("expected an error frame");
     expect(error.code).toBe("unauthorized");
     expect(h.fake.cancels).toHaveLength(0);

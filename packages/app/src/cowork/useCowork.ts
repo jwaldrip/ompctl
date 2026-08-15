@@ -19,8 +19,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { Connection } from "../platform/connection.ts";
-import { EMPTY_TASKS, reduceTasks } from "./tasks.ts";
 import type { NewTaskInput, TaskListState } from "./tasks.ts";
+import { EMPTY_TASKS, reduceTasks } from "./tasks.ts";
 import type { ConnectorSummary, SkillSummary, Task } from "./types.ts";
 
 const POLL_INTERVAL_MS = 4000;
@@ -63,7 +63,11 @@ interface TasksResponse {
   tasks: Task[];
 }
 
-export function useCowork(connection: Connection, cwd: string, defaultAgentId: string | null): [CoworkState, CoworkActions] {
+export function useCowork(
+  connection: Connection,
+  cwd: string,
+  defaultAgentId: string | null,
+): [CoworkState, CoworkActions] {
   const [state, setState] = useState<CoworkState>(EMPTY_STATE);
   // Cowork's routes are plain REST, and a hub is a relay for the socket
   // protocol only: there is no HTTP surface behind it to hang these on, so a
@@ -104,7 +108,7 @@ export function useCowork(connection: Connection, cwd: string, defaultAgentId: s
         error: null,
       });
     } catch (cause) {
-      setState((previous) => ({ ...previous, loading: false, error: describe(cause) }));
+      setState(previous => ({ ...previous, loading: false, error: describe(cause) }));
     }
   }, [authFetch, cwd]);
 
@@ -126,7 +130,7 @@ export function useCowork(connection: Connection, cwd: string, defaultAgentId: s
       });
       if (!response.ok) throw new Error(`failed to start task: ${response.status}`);
       const created = (await response.json()) as Task;
-      setState((previous) => ({ ...previous, tasks: reduceTasks(previous.tasks, { t: "upsert", task: created }) }));
+      setState(previous => ({ ...previous, tasks: reduceTasks(previous.tasks, { t: "upsert", task: created }) }));
     },
     [authFetch, defaultAgentId],
   );

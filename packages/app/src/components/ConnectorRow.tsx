@@ -40,7 +40,12 @@ export function ConnectorRow({ connector }: { connector: ConnectorSummary }): JS
         {down ? (
           <View style={styles.reason}>
             <Glyph name="warning" size={11} color={tone} />
-            <Body color={tone} numberOfLines={3} testID={`connector-${connector.name}-reason`} style={styles.reasonText}>
+            <Body
+              color={tone}
+              numberOfLines={3}
+              testID={`connector-${connector.name}-reason`}
+              style={styles.reasonText}
+            >
               {connectorReason(connector)}
             </Body>
           </View>

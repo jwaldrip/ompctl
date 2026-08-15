@@ -126,8 +126,8 @@ async function run(argv: string[]): Promise<RunResult> {
   child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
   child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
   const { promise, resolve } = Promise.withResolvers<RunResult>();
-  child.on("error", (err) => resolve({ code: 127, stdout, stderr: String(err) }));
-  child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
+  child.on("error", err => resolve({ code: 127, stdout, stderr: String(err) }));
+  child.on("close", code => resolve({ code: code ?? 0, stdout, stderr }));
   return await promise;
 }
 
@@ -215,7 +215,7 @@ async function seedOmpHome(workspace: string): Promise<void> {
     `delete from auth_credentials where provider <> '${CONTAINER_PROVIDER}';`,
     "delete from auth_credential_blocks where credential_id not in (select id from auth_credentials);",
     "delete from auth_credential_refresh_leases where credential_id not in (select id from auth_credentials);",
-    ...PRIVATE_TABLES.map((table) => `delete from ${table};`),
+    ...PRIVATE_TABLES.map(table => `delete from ${table};`),
     "vacuum;",
   ];
   const pruned = await run(["sqlite3", db, statements.join("\n")]);
@@ -236,12 +236,7 @@ async function seedOmpHome(workspace: string): Promise<void> {
   chmodSync(db, 0o600);
 }
 
-async function api(
-  base: string,
-  token: string,
-  path: string,
-  init: RequestInit = {},
-): Promise<Response> {
+async function api(base: string, token: string, path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("authorization", `Bearer ${token}`);
   if (init.body !== undefined) headers.set("content-type", "application/json");
@@ -259,7 +254,7 @@ class Client {
 
   constructor(ws: WebSocket) {
     this.#ws = ws;
-    ws.addEventListener("message", (event) => {
+    ws.addEventListener("message", event => {
       const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
       if (frame.t === "hello") {
         this.#hello.resolve(String(frame.deviceId));
@@ -328,10 +323,10 @@ class Client {
     if (queued) return queued;
     const { promise, resolve } = Promise.withResolvers<ApprovalFrame | null>();
     const timer = setTimeout(() => {
-      this.#waiters = this.#waiters.filter((waiter) => waiter !== resolve);
+      this.#waiters = this.#waiters.filter(waiter => waiter !== resolve);
       resolve(null);
     }, ms);
-    this.#waiters.push((approval) => {
+    this.#waiters.push(approval => {
       clearTimeout(timer);
       resolve(approval);
     });
@@ -354,7 +349,7 @@ async function settle(base: string, token: string, agentId: string, ms: number):
   const deadline = Date.now() + ms;
   for (;;) {
     const body = (await (await api(base, token, "/v1/agents")).json()) as { agents: Agent[] };
-    const agent = body.agents.find((candidate) => candidate.id === agentId);
+    const agent = body.agents.find(candidate => candidate.id === agentId);
     const state = agent?.state;
     if (state === "idle" || state === "failed" || state === "stopped") return state;
     if (Date.now() > deadline) throw new Error(`agent ${agentId} never settled (state=${state})`);
@@ -399,7 +394,7 @@ async function main(): Promise<number> {
       overrides: { port: 0, host: "127.0.0.1" },
       repoRoot: workspace,
       voice: false,
-      onLog: (line) => console.log(`  [daemon] ${line}`),
+      onLog: line => console.log(`  [daemon] ${line}`),
     });
     const started = await daemon.start();
     const base = started.url;
@@ -509,7 +504,11 @@ async function main(): Promise<number> {
     const sshDir = join(hostHome, ".ssh");
     if (existsSync(sshDir)) {
       const readSsh = await run(["docker", "exec", containerId, "sh", "-c", `ls -a ${sshDir}`]);
-      record("the host's ~/.ssh is not visible in the container", readSsh.code !== 0, readSsh.stderr.trim().slice(0, 90));
+      record(
+        "the host's ~/.ssh is not visible in the container",
+        readSsh.code !== 0,
+        readSsh.stderr.trim().slice(0, 90),
+      );
     } else {
       console.log(`  (no ${sshDir} on this machine, so that attempt would prove nothing and is skipped)`);
     }
@@ -574,7 +573,11 @@ async function main(): Promise<number> {
       "-c",
       `echo ok > ${workspace}/written-by-the-agent`,
     ]);
-    record("can still write its own workspace", inside.code === 0 && existsSync(join(workspace, "written-by-the-agent")), "");
+    record(
+      "can still write its own workspace",
+      inside.code === 0 && existsSync(join(workspace, "written-by-the-agent")),
+      "",
+    );
     const owner = statSync(join(workspace, "written-by-the-agent"), { throwIfNoEntry: false });
     record("workspace writes belong to the operator", owner?.uid === process.getuid?.(), `uid=${owner?.uid}`);
 
@@ -608,9 +611,7 @@ async function main(): Promise<number> {
     record(
       "denial came from the ACP hook, not omp's own gate",
       !/denied by user/.test(denyText),
-      /rejected by user/.test(denyText)
-        ? "saw 'rejected by user', which is gate 1"
-        : "no gate-2 wording present",
+      /rejected by user/.test(denyText) ? "saw 'rejected by user', which is gate 1" : "no gate-2 wording present",
     );
     const denied = await run(["docker", "exec", containerId, "test", "-f", DENY_MARKER]);
     record("denied command did not run", denied.code !== 0, `${DENY_MARKER} exists=${denied.code === 0}`);
@@ -629,17 +630,21 @@ async function main(): Promise<number> {
     record("agent settled after the allow", afterAllow === "idle", `state=${afterAllow}`);
     const body = await run(["docker", "exec", containerId, "cat", ALLOW_MARKER]);
     record("allowed command ran", body.code === 0, `${ALLOW_MARKER} readable=${body.code === 0}`);
-    record("it ran inside the container", body.stdout.trim() === "Linux", `uname -s = ${body.stdout.trim() || "(empty)"}`);
+    record(
+      "it ran inside the container",
+      body.stdout.trim() === "Linux",
+      `uname -s = ${body.stdout.trim() || "(empty)"}`,
+    );
 
     phase("audit");
     const audit = (await (await api(base, token, "/v1/audit?limit=200")).json()) as {
       entries: Array<{ action: string; outcome: string }>;
     };
-    const decisions = audit.entries.filter((entry) => entry.action === "approval.decide");
+    const decisions = audit.entries.filter(entry => entry.action === "approval.decide");
     record(
       "both decisions are in the audit log",
-      decisions.some((d) => d.outcome === "denied") && decisions.some((d) => d.outcome === "ok"),
-      decisions.map((d) => d.outcome).join(",") || "(none)",
+      decisions.some(d => d.outcome === "denied") && decisions.some(d => d.outcome === "ok"),
+      decisions.map(d => d.outcome).join(",") || "(none)",
     );
     record("no socket errors", client.errors.length === 0, client.errors.join(" | "));
 
@@ -654,7 +659,15 @@ async function main(): Promise<number> {
     if (hostNetwork === "") {
       record("its network was removed with it", false, "never captured a valid network name");
     } else {
-      const netsLeft = await run(["docker", "network", "ls", "--format", "{{.Name}}", "--filter", `name=${hostNetwork}`]);
+      const netsLeft = await run([
+        "docker",
+        "network",
+        "ls",
+        "--format",
+        "{{.Name}}",
+        "--filter",
+        `name=${hostNetwork}`,
+      ]);
       record("its network was removed with it", netsLeft.stdout.trim() === "", hostNetwork);
     }
   } finally {
@@ -708,7 +721,7 @@ async function main(): Promise<number> {
     console.log("  cleanup: workspace and daemon home removed");
   }
 
-  const failed = checks.filter((check) => !check.ok);
+  const failed = checks.filter(check => !check.ok);
   console.log(`\n${checks.length - failed.length} ok, ${failed.length} failed`);
   return failed.length === 0 ? 0 : 1;
 }

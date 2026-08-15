@@ -14,22 +14,13 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import {
-  DefaultPolicy,
-  SCOPE_APPROVE,
-  SCOPE_MANAGE,
-  SCOPE_PROMPT,
-  SCOPE_READ,
-  Store,
-  type Actor,
-} from "@ompd/core";
 import { AcpClient } from "@ompd/acp";
-import { Supervisor, type PendingApproval, type PendingPlanReview } from "../src/supervisor.ts";
+import { type Actor, DefaultPolicy, SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
+import { type PendingApproval, type PendingPlanReview, Supervisor } from "../src/supervisor.ts";
 import { createFakeHost, type FakeHostController } from "./fake-host.ts";
 
 /** A gate-2 approval prompt for `write`, shaped exactly as omp renders one. */
-const writePrompt = (path: string, content = "x"): string =>
-  `Allow tool: write\nPath: ${path}\nContent:\n${content}`;
+const writePrompt = (path: string, content = "x"): string => `Allow tool: write\nPath: ${path}\nContent:\n${content}`;
 
 const paths: string[] = [];
 const stores: Store[] = [];
@@ -66,8 +57,8 @@ function harness(opts: HarnessOptions = {}): Harness {
     promptTimeoutMs: opts.promptTimeoutMs,
     spawnHost: fake.factory,
     events: {
-      onApprovalNeeded: (p) => approvals.push(p),
-      onPlanReviewNeeded: (p) => planReviews.push(p),
+      onApprovalNeeded: p => approvals.push(p),
+      onPlanReviewNeeded: p => planReviews.push(p),
     },
   });
   sups.push(sup);
@@ -241,18 +232,14 @@ describe("human decisions", () => {
  * decides whether the file is written.
  */
 describe("the write gate", () => {
-  const writePrompt = (path: string, content = "x"): string =>
-    `Allow tool: write\nPath: ${path}\nContent:\n${content}`;
+  const writePrompt = (path: string, content = "x"): string => `Allow tool: write\nPath: ${path}\nContent:\n${content}`;
 
   test("a write inside the workspace is allowed without troubling a human", async () => {
     const h = harness();
     const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
     const agent = await h.sup.createAgent({ name: "a", cwd: "/work" }, admin);
 
-    const chosen = await h.fake.elicit(agent.acpSessionId!, writePrompt("/work/out.txt"), [
-      "Approve",
-      "Deny",
-    ]);
+    const chosen = await h.fake.elicit(agent.acpSessionId!, writePrompt("/work/out.txt"), ["Approve", "Deny"]);
 
     expect(chosen).toBe("Approve");
     expect(h.approvals).toHaveLength(0);
@@ -266,10 +253,7 @@ describe("the write gate", () => {
     const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
     const agent = await h.sup.createAgent({ name: "a", cwd: "/work" }, admin);
 
-    const chosen = await h.fake.elicit(agent.acpSessionId!, writePrompt("/etc/hosts"), [
-      "Approve",
-      "Deny",
-    ]);
+    const chosen = await h.fake.elicit(agent.acpSessionId!, writePrompt("/etc/hosts"), ["Approve", "Deny"]);
 
     expect(chosen).toBe("Deny");
     const rec = h.store.listApprovals(agent.id)[0];
@@ -302,10 +286,7 @@ describe("the write gate", () => {
     const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
     const agent = await h.sup.createAgent({ name: "a", cwd: "/work" }, admin);
 
-    const pending = h.fake.elicit(agent.acpSessionId!, writePrompt("/tmp/scratch.txt"), [
-      "Approve",
-      "Deny",
-    ]);
+    const pending = h.fake.elicit(agent.acpSessionId!, writePrompt("/tmp/scratch.txt"), ["Approve", "Deny"]);
     const req = await waitFor(() => h.approvals[0] ?? null, 2_000);
     expect(req.tool).toBe("write");
     expect(h.sup.decide(req.requestId, "allow", "once", admin)).toBe(true);
@@ -322,10 +303,7 @@ describe("the write gate", () => {
     const agent = await h.sup.createAgent({ name: "a", cwd: "/work" }, admin);
 
     // omp's edit tool reports a bare `File:` line and no content.
-    const chosen = await h.fake.elicit(agent.acpSessionId!, "Allow tool: edit\nFile: /etc/passwd", [
-      "Approve",
-      "Deny",
-    ]);
+    const chosen = await h.fake.elicit(agent.acpSessionId!, "Allow tool: edit\nFile: /etc/passwd", ["Approve", "Deny"]);
 
     expect(chosen).toBe("Deny");
     expect(h.store.listApprovals(agent.id)[0]?.tool).toBe("edit");
@@ -338,10 +316,7 @@ describe("the write gate", () => {
     const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
     const agent = await h.sup.createAgent({ name: "a", cwd: "/work" }, admin);
 
-    const chosen = await h.fake.elicit(agent.acpSessionId!, "Allow tool: edit\nFile: src/main.ts", [
-      "Approve",
-      "Deny",
-    ]);
+    const chosen = await h.fake.elicit(agent.acpSessionId!, "Allow tool: edit\nFile: src/main.ts", ["Approve", "Deny"]);
 
     expect(chosen).toBe("Approve");
     expect(h.approvals).toHaveLength(0);
@@ -406,10 +381,7 @@ describe("the write gate", () => {
     const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
     const agent = await h.sup.createAgent({ name: "a", cwd: "/work" }, admin);
 
-    const chosen = await h.fake.elicit(agent.acpSessionId!, "Something else entirely?", [
-      "Approve",
-      "Deny",
-    ]);
+    const chosen = await h.fake.elicit(agent.acpSessionId!, "Something else entirely?", ["Approve", "Deny"]);
 
     expect(chosen).toBe("<declined>");
     expect(h.store.listApprovals(agent.id)).toHaveLength(0);
@@ -432,11 +404,10 @@ describe("the write gate", () => {
     const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
     const agent = await h.sup.createAgent({ name: "a", cwd: "/work" }, admin);
 
-    const pending = h.fake.elicit(
-      agent.acpSessionId!,
-      'Approve plan "Ship it" and start implementation?\n- step one',
-      ["Approve and execute", "Refine plan"],
-    );
+    const pending = h.fake.elicit(agent.acpSessionId!, 'Approve plan "Ship it" and start implementation?\n- step one', [
+      "Approve and execute",
+      "Refine plan",
+    ]);
     const review = await waitFor(() => h.planReviews[0] ?? null, 2_000);
 
     expect(review.agentId).toBe(agent.id);
@@ -464,10 +435,7 @@ describe("the write gate", () => {
     const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
     await h.sup.createAgent({ name: "a", cwd: "/work" }, admin);
 
-    const chosen = await h.fake.elicit("sess_nope", writePrompt("/work/out.txt"), [
-      "Approve",
-      "Deny",
-    ]);
+    const chosen = await h.fake.elicit("sess_nope", writePrompt("/work/out.txt"), ["Approve", "Deny"]);
     expect(chosen).toBe("<declined>");
   });
 });
@@ -481,7 +449,7 @@ describe("approval and turn deadlines", () => {
    * every time an operator failed to answer.
    */
   const promptThatWaitsOnAnApproval = (h: Harness): void => {
-    h.fake.onPrompt(async (sessionId) => {
+    h.fake.onPrompt(async sessionId => {
       const chosen = await h.fake.elicit(sessionId, writePrompt("/etc/hosts"), ["Approve", "Deny"]);
       return { stopReason: chosen === "Approve" ? "end_turn" : "refusal" };
     });
@@ -539,9 +507,7 @@ describe("approval and turn deadlines", () => {
     await expect(silent.newSession("/work")).rejects.toThrow(/timeout after 40ms: session\/new/);
     expect(Date.now() - started).toBeLessThan(300);
 
-    await expect(silent.prompt("sess_1", "hi")).rejects.toThrow(
-      /timeout after 400ms: session\/prompt/,
-    );
+    await expect(silent.prompt("sess_1", "hi")).rejects.toThrow(/timeout after 400ms: session\/prompt/);
     silent.close();
   });
 });
@@ -556,7 +522,7 @@ describe("update persistence", () => {
     await waitFor(() => (h.store.updatesSince(agent.id, 0).length === 4 ? true : null), 2_000);
 
     // A client that dropped after seq 2 gets exactly the gap.
-    expect(h.store.updatesSince(agent.id, 2).map((u) => u.seq)).toEqual([3, 4]);
+    expect(h.store.updatesSince(agent.id, 2).map(u => u.seq)).toEqual([3, 4]);
   });
 });
 
@@ -577,9 +543,9 @@ describe("agent durability", () => {
     await Bun.sleep(50);
 
     // The agent is still registered and still busy.
-    expect(h.sup.listAgents().find((a) => a.id === agent.id)?.state).toBe("busy");
+    expect(h.sup.listAgents().find(a => a.id === agent.id)?.state).toBe("busy");
     await turn;
-    expect(h.sup.listAgents().find((a) => a.id === agent.id)?.state).toBe("idle");
+    expect(h.sup.listAgents().find(a => a.id === agent.id)?.state).toBe("idle");
     expect(h.fake.prompts).toHaveLength(1);
   });
 });

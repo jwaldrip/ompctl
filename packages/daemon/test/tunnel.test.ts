@@ -14,13 +14,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import {
-  DefaultPolicy,
-  SCOPE_PROMPT,
-  SCOPE_READ,
-  type ServerFrame,
-  Store,
-} from "@ompd/core";
+import { DefaultPolicy, SCOPE_PROMPT, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { Supervisor } from "../src/supervisor.ts";
@@ -77,7 +71,7 @@ async function fixture(): Promise<Fixture> {
 /** Open a tunnel session and collect the frames the gateway writes back. */
 function session(gw: Gateway, token: string) {
   const frames: ServerFrame[] = [];
-  const result = gw.acceptTunnelSession(token, (raw) => frames.push(JSON.parse(raw) as ServerFrame));
+  const result = gw.acceptTunnelSession(token, raw => frames.push(JSON.parse(raw) as ServerFrame));
   return { frames, result };
 }
 
@@ -104,7 +98,7 @@ describe("tunnel sessions reuse the local authorization path", () => {
 
     // `hello` reports what the session actually holds. A tunnel that could
     // choose its own scopes would have had to say so here.
-    const hello = frames.find((frame) => frame.t === "hello");
+    const hello = frames.find(frame => frame.t === "hello");
     expect(hello).toMatchObject({ t: "hello", deviceId: "dev_reader" });
   });
 
@@ -123,12 +117,12 @@ describe("tunnel sessions reuse the local authorization path", () => {
     const viaTunnel = session(f.gw, token);
     if (!viaTunnel.result.ok) throw new Error("tunnel session was refused");
     viaTunnel.result.deliver(JSON.stringify({ t: "prompt", agentId: "agt_x", text: "do a thing" }));
-    const tunnelError = viaTunnel.frames.find((frame) => frame.t === "error");
+    const tunnelError = viaTunnel.frames.find(frame => frame.t === "error");
 
     const local = session(f.gw, token);
     if (!local.result.ok) throw new Error("second session was refused");
     local.result.deliver(JSON.stringify({ t: "prompt", agentId: "agt_x", text: "do a thing" }));
-    const localError = local.frames.find((frame) => frame.t === "error");
+    const localError = local.frames.find(frame => frame.t === "error");
 
     expect(tunnelError).toMatchObject({
       t: "error",
@@ -151,9 +145,7 @@ describe("tunnel sessions reuse the local authorization path", () => {
     // problem and arrives asynchronously; what matters is that the synchronous
     // scope refusal did not fire. Asserting this is what stops the test above
     // from passing against a gateway that simply refuses everything.
-    const refused = frames.some(
-      (frame) => frame.t === "error" && frame.message === "prompt requires prompt scope",
-    );
+    const refused = frames.some(frame => frame.t === "error" && frame.message === "prompt requires prompt scope");
     expect(refused).toBe(false);
   });
 
@@ -169,7 +161,7 @@ describe("tunnel sessions reuse the local authorization path", () => {
     // Attach never reaches the supervisor, so nothing would re-check this
     // session on its own. The connection closing is what covers that gap, and
     // it has to cover it for a tunnel exactly as for a local socket.
-    const notice = frames.find((frame) => frame.t === "error" && frame.code === "unauthorized");
+    const notice = frames.find(frame => frame.t === "error" && frame.code === "unauthorized");
     expect(notice).toMatchObject({ message: "this device has been revoked" });
   });
 });
@@ -190,9 +182,9 @@ describe("replay through a tunnel session", () => {
     if (!resumed.result.ok) throw new Error("session was refused");
     resumed.result.deliver(JSON.stringify({ t: "attach", agentId, sinceSeq: 2 }));
 
-    const updates = resumed.frames.filter((frame) => frame.t === "update");
-    expect(updates.map((frame) => (frame.t === "update" ? frame.seq : 0))).toEqual([3, 4, 5]);
-    expect(updates.map((frame) => (frame.t === "update" ? frame.update : null))).toEqual([
+    const updates = resumed.frames.filter(frame => frame.t === "update");
+    expect(updates.map(frame => (frame.t === "update" ? frame.seq : 0))).toEqual([3, 4, 5]);
+    expect(updates.map(frame => (frame.t === "update" ? frame.update : null))).toEqual([
       { chunk: 3 },
       { chunk: 4 },
       { chunk: 5 },
@@ -225,10 +217,10 @@ describe("replay through a tunnel session", () => {
     if (!second.result.ok) throw new Error("resumed session was refused");
     second.result.deliver(JSON.stringify({ t: "attach", agentId, sinceSeq: 1 }));
 
-    const seqs = second.frames.filter((frame) => frame.t === "update").map((f2) => (f2.t === "update" ? f2.seq : 0));
+    const seqs = second.frames.filter(frame => frame.t === "update").map(f2 => (f2.t === "update" ? f2.seq : 0));
     expect(seqs).toEqual([2, 3, 4]);
     // And the dead session received nothing after it closed.
-    const firstSeqs = first.frames.filter((frame) => frame.t === "update").map((f2) => (f2.t === "update" ? f2.seq : 0));
+    const firstSeqs = first.frames.filter(frame => frame.t === "update").map(f2 => (f2.t === "update" ? f2.seq : 0));
     expect(firstSeqs).toEqual([1]);
   });
 });

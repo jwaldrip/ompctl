@@ -5,12 +5,11 @@
  * a test that says a client reached a daemon means exactly that.
  */
 
-import { generateIdentity, type DaemonKeyPair, type TunnelSocketLike } from "@ompd/tunnel";
-import { connectThroughHub } from "@ompd/tunnel";
+import { connectThroughHub, type DaemonKeyPair, generateIdentity, type TunnelSocketLike } from "@ompd/tunnel";
+import { RecordingAudit } from "../src/audit.ts";
 import { MemoryBackplane, MemoryBus } from "../src/backplane.ts";
 import { Hub } from "../src/hub.ts";
 import { MemoryRegistry } from "../src/registry.ts";
-import { RecordingAudit } from "../src/audit.ts";
 
 export const OPERATOR_TOKEN = "operator-secret";
 
@@ -24,7 +23,7 @@ export function browserTransport(url: string): TunnelSocketLike {
     set readyState(_value: number) {
       // The adapter reports the live socket's state; assignment is ignored.
     },
-    send: (data) => socket.send(data),
+    send: data => socket.send(data),
     close: (code, reason) => socket.close(code, reason),
     onopen: null,
     onclose: null,
@@ -32,9 +31,9 @@ export function browserTransport(url: string): TunnelSocketLike {
     onmessage: null,
   };
   socket.onopen = () => shim.onopen?.();
-  socket.onclose = (event) => shim.onclose?.({ code: event.code, reason: event.reason });
+  socket.onclose = event => shim.onclose?.({ code: event.code, reason: event.reason });
   socket.onerror = () => shim.onerror?.({ message: "socket error" });
-  socket.onmessage = (event) => shim.onmessage?.(String(event.data));
+  socket.onmessage = event => shim.onmessage?.(String(event.data));
   return shim;
 }
 
@@ -105,11 +104,7 @@ export { connectThroughHub };
  * a fixed sleep: it finishes as soon as the thing happens, and a failure
  * reports the condition rather than a bare timeout.
  */
-export async function until(
-  check: () => boolean | Promise<boolean>,
-  what: string,
-  timeoutMs = 5000,
-): Promise<void> {
+export async function until(check: () => boolean | Promise<boolean>, what: string, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await check()) return;

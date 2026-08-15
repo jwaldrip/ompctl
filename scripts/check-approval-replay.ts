@@ -47,7 +47,7 @@ let pending: PendingApprovalRow | undefined;
 while (Date.now() < deadline) {
   const res = await api("/v1/approvals");
   const body = (await res.json()) as { pending?: PendingApprovalRow[] };
-  pending = body.pending?.find((row) => row.agentId === agentId);
+  pending = body.pending?.find(row => row.agentId === agentId);
   if (pending) break;
   await Bun.sleep(250);
 }
@@ -61,7 +61,7 @@ const timer = setTimeout(() => gotApproval.reject(new Error("no approval frame a
 
 let updates = 0;
 ws.addEventListener("open", () => ws.send(JSON.stringify({ t: "attach", agentId, sinceSeq: 0 })));
-ws.addEventListener("message", (event) => {
+ws.addEventListener("message", event => {
   const frame: unknown = JSON.parse(String(event.data));
   if (frame === null || typeof frame !== "object" || !("t" in frame)) return;
   if (frame.t === "update") updates += 1;

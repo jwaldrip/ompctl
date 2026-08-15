@@ -7,14 +7,20 @@
  * stream produce byte-identical state to a live daemon.
  */
 
+import type {
+  AgentId,
+  ApprovalChoice,
+  ApprovalScope,
+  PlanReviewChoice,
+  WebViewActionResult,
+} from "@ompd/core/contracts";
+import { OmpdClient } from "@ompd/core/ompd-client";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { AppState } from "react-native";
-import type { AgentId, ApprovalChoice, ApprovalScope, PlanReviewChoice, WebViewActionResult } from "@ompd/core/contracts";
-import { OmpdClient } from "@ompd/core/ompd-client";
 import type { Connection } from "../platform/connection.ts";
 import { createHubSocketFactory } from "../platform/socket.ts";
-import { apply, emptyConsole } from "./state.ts";
 import type { ConsoleState } from "./state.ts";
+import { apply, emptyConsole } from "./state.ts";
 import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
 export type { WebViewTarget } from "./webview.ts";
@@ -96,31 +102,31 @@ export function useConsole(connection: Connection): [ConsoleState, ConsoleAction
 
   useEffect(() => {
     const offs = [
-      client.on("status", (event) => {
+      client.on("status", event => {
         dispatch({ t: "status", event });
       }),
-      client.on("agents", (event) => {
+      client.on("agents", event => {
         dispatch({ t: "agents", event });
       }),
-      client.on("update", (event) => {
+      client.on("update", event => {
         dispatch({ t: "update", event });
       }),
-      client.on("approval", (event) => {
+      client.on("approval", event => {
         dispatch({ t: "approval", event });
       }),
-      client.on("plan_review", (event) => {
+      client.on("plan_review", event => {
         dispatch({ t: "plan_review", event });
       }),
-      client.on("error", (event) => {
+      client.on("error", event => {
         dispatch({ t: "error", event });
       }),
-      client.on("say", (event) => {
+      client.on("say", event => {
         dispatch({ t: "say", event });
       }),
-      client.on("unauthorized", (event) => {
+      client.on("unauthorized", event => {
         dispatch({ t: "unauthorized", event });
       }),
-      client.on("webview_action", (event) => {
+      client.on("webview_action", event => {
         if (!mountedWebViews.current.has(event.agentId)) {
           client.webViewResult(event.agentId, event.requestId, {
             kind: "error",
@@ -149,7 +155,7 @@ export function useConsole(connection: Connection): [ConsoleState, ConsoleAction
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (status) => {
+    const subscription = AppState.addEventListener("change", status => {
       if (status !== "active") return;
       client.reconnectNow();
     });

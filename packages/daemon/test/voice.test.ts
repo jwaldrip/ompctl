@@ -19,10 +19,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { SCOPE_PROMPT, SCOPE_READ, type Actor, type ServerFrame } from "@ompd/core";
+import { type Actor, SCOPE_PROMPT, SCOPE_READ, type ServerFrame } from "@ompd/core";
 import { UnauthorizedError } from "../src/supervisor.ts";
 import {
   base64ToPcm,
+  type CommandResult,
+  type CommandRunner,
   chunkFrames,
   decodeWav,
   detectUtteranceEnd,
@@ -34,26 +36,24 @@ import {
   NullTtsEngine,
   OmpSttEngine,
   OmpTtsEngine,
+  type PcmAudio,
   pcmToBase64,
   pcmToFloat32,
+  resamplePcm,
+  STT_ENGINE_ORDER,
+  type SttEngine,
+  SttUnavailableError,
   selectSttEngine,
   selectTtsEngine,
   speakableSegments,
-  STT_ENGINE_ORDER,
-  SttUnavailableError,
   TTS_ENGINE_ORDER,
+  type TtsEngine,
   TtsUnavailableError,
   VAD_DEFAULTS,
   VoiceBridge,
   VoiceBufferOverflowError,
-  resamplePcm,
   WavFormatError,
   WIRE_SAMPLE_RATE,
-  type CommandResult,
-  type CommandRunner,
-  type PcmAudio,
-  type SttEngine,
-  type TtsEngine,
 } from "../src/voice/index.ts";
 
 // The wire rate, taken from the bridge rather than restated, so a change to the
@@ -254,15 +254,13 @@ interface Harness {
   tts: RecordingTts;
 }
 
-function harness(
-  opts: { stt?: ScriptedStt; maxBufferedSeconds?: number; nativeRate?: number } = {},
-): Harness {
+function harness(opts: { stt?: ScriptedStt; maxBufferedSeconds?: number; nativeRate?: number } = {}): Harness {
   const frames: ServerFrame[] = [];
   const transcripts: string[] = [];
   const stt = opts.stt ?? new ScriptedStt("run the tests");
   const tts = new RecordingTts(opts.nativeRate);
   const bridge = new VoiceBridge({
-    send: (frame) => frames.push(frame),
+    send: frame => frames.push(frame),
     stt,
     tts,
     onTranscript: (_agentId, text) => {
@@ -302,10 +300,7 @@ describe("vad", () => {
   test("does not fire on a brief pause in the middle of speech", () => {
     // 300ms of quiet between two phrases, then only 100ms at the end: well
     // under the 700ms hangover, so the speaker still has the floor.
-    const frames = chunkFrames(
-      concat(sine(400, 0.3), silence(300), sine(400, 0.3), silence(100)),
-      RATE,
-    );
+    const frames = chunkFrames(concat(sine(400, 0.3), silence(300), sine(400, 0.3), silence(100)), RATE);
     expect(detectUtteranceEnd(frames)).toBe(false);
   });
 
@@ -326,12 +321,8 @@ describe("vad", () => {
     // ends early and the speaker gets cut off mid-breath.
     const between = sine(1_000, 0.02);
     const betweenFrames = chunkFrames(between, RATE);
-    expect(frameEnergy(betweenFrames[0] ?? new Int16Array(0))).toBeGreaterThan(
-      VAD_DEFAULTS.silenceThreshold,
-    );
-    expect(frameEnergy(betweenFrames[0] ?? new Int16Array(0))).toBeLessThan(
-      VAD_DEFAULTS.speechThreshold,
-    );
+    expect(frameEnergy(betweenFrames[0] ?? new Int16Array(0))).toBeGreaterThan(VAD_DEFAULTS.silenceThreshold);
+    expect(frameEnergy(betweenFrames[0] ?? new Int16Array(0))).toBeLessThan(VAD_DEFAULTS.speechThreshold);
     // The run must outlast the hangover, or the test would pass on length
     // alone rather than on the threshold that kept the floor.
     expect(betweenFrames.length).toBeGreaterThan(VAD_DEFAULTS.hangoverFrames);
@@ -339,17 +330,13 @@ describe("vad", () => {
     expect(detectUtteranceEnd(chunkFrames(concat(sine(300, 0.3), between), RATE))).toBe(false);
     // A frame that actually falls under the low threshold does end it, so the
     // case above is hysteresis and not a detector that never fires.
-    expect(
-      detectUtteranceEnd(chunkFrames(concat(sine(300, 0.3), between, silence(800)), RATE)),
-    ).toBe(true);
+    expect(detectUtteranceEnd(chunkFrames(concat(sine(300, 0.3), between, silence(800)), RATE))).toBe(true);
     // The same level with no speech before it never enters speech at all.
     expect(detectUtteranceEnd(chunkFrames(concat(between, silence(1_000)), RATE))).toBe(false);
   });
 
   test("rejects an inverted hysteresis rather than silently reordering it", () => {
-    expect(() => detectUtteranceEnd([], { speechThreshold: 0.01, silenceThreshold: 0.5 })).toThrow(
-      RangeError,
-    );
+    expect(() => detectUtteranceEnd([], { speechThreshold: 0.01, silenceThreshold: 0.5 })).toThrow(RangeError);
   });
 
   test("chunking drops only the trailing partial frame", () => {
@@ -478,9 +465,7 @@ describe("speakableSegments", () => {
   test("a multi-sentence reply becomes more than one segment", () => {
     // Load-bearing for streaming synthesis: an engine can only start speaking
     // early if there is an early segment to start on.
-    const segments = speakableSegments(
-      "The suite is green. Twelve tests passed on the first run. Nothing regressed.",
-    );
+    const segments = speakableSegments("The suite is green. Twelve tests passed on the first run. Nothing regressed.");
     expect(segments.length).toBeGreaterThan(1);
     expect(segments.join(" ")).toContain("Twelve tests passed");
   });
@@ -488,7 +473,7 @@ describe("speakableSegments", () => {
   test("the bridge segments before the engine is called", () => {
     // The point of the whole exercise: the synthesiser must never see markdown.
     const { bridge, tts } = harness();
-    return bridge.speak(AGENT, ASSISTANT_TURN).then((spoke) => {
+    return bridge.speak(AGENT, ASSISTANT_TURN).then(spoke => {
       expect(spoke).toBe(true);
       // One segment per speakable unit, not one blob per turn. The old
       // assertion here was `toHaveLength(1)`, which encoded the one-shot
@@ -513,7 +498,7 @@ describe("VoiceBridge", () => {
     const { bridge, frames, transcripts, stt } = harness();
     await stream(bridge, concat(sine(400, 0.3), silence(900)));
 
-    const transcript = frames.find((f) => f.t === "transcript");
+    const transcript = frames.find(f => f.t === "transcript");
     expect(transcript).toEqual({ t: "transcript", agentId: AGENT, text: "run the tests", final: true });
     expect(transcripts).toEqual(["run the tests"]);
     expect(stt.received).toHaveLength(1);
@@ -532,7 +517,7 @@ describe("VoiceBridge", () => {
     await stream(bridge, concat(sine(400, 0.3), silence(300), sine(400, 0.3), silence(100)));
 
     expect(stt.received).toHaveLength(0);
-    expect(frames.filter((f) => f.t === "transcript")).toHaveLength(0);
+    expect(frames.filter(f => f.t === "transcript")).toHaveLength(0);
     expect(bridge.bufferedSeconds(AGENT)).toBeCloseTo(1.2, 2);
   });
 
@@ -543,7 +528,7 @@ describe("VoiceBridge", () => {
 
     await bridge.endAudio(AGENT, speaker);
     expect(stt.received).toHaveLength(1);
-    expect(frames.filter((f) => f.t === "transcript")).toHaveLength(1);
+    expect(frames.filter(f => f.t === "transcript")).toHaveLength(1);
   });
 
   test("audio_end on an empty buffer is a no-op, not an empty transcript", async () => {
@@ -559,9 +544,9 @@ describe("VoiceBridge", () => {
     });
     await stream(bridge, concat(sine(400, 0.3), silence(900)));
 
-    expect(frames.filter((f) => f.t === "transcript")).toHaveLength(0);
+    expect(frames.filter(f => f.t === "transcript")).toHaveLength(0);
     expect(transcripts).toHaveLength(0);
-    const error = frames.find((f) => f.t === "error");
+    const error = frames.find(f => f.t === "error");
     expect(error).toMatchObject({ t: "error", agentId: AGENT, code: "stt_failed" });
     expect(error && "message" in error ? error.message : "").toContain("no speech-to-text engine");
   });
@@ -593,15 +578,12 @@ describe("VoiceBridge", () => {
     }
 
     expect(peak).toBeLessThanOrEqual(1);
-    expect(frames.filter((f) => f.t === "error" && f.code === "voice_buffer_overflow").length)
-      .toBeGreaterThan(0);
+    expect(frames.filter(f => f.t === "error" && f.code === "voice_buffer_overflow").length).toBeGreaterThan(0);
   });
 
   test("audio from a device without prompt scope is refused", async () => {
     const { bridge, frames } = harness();
-    await expect(
-      bridge.pushAudio(AGENT, pcmToBase64(sine(100, 0.3)), listener),
-    ).rejects.toThrow(UnauthorizedError);
+    await expect(bridge.pushAudio(AGENT, pcmToBase64(sine(100, 0.3)), listener)).rejects.toThrow(UnauthorizedError);
     expect(bridge.bufferedSeconds(AGENT)).toBe(0);
     expect(frames).toHaveLength(0);
   });
@@ -629,7 +611,7 @@ describe("VoiceBridge", () => {
     const { bridge, frames, tts } = harness();
     expect(await bridge.speak(AGENT, "Twelve tests passing.")).toBe(true);
 
-    const speech = frames.find((f) => f.t === "speech");
+    const speech = frames.find(f => f.t === "speech");
     expect(speech).toBeDefined();
 
     const pcm = base64ToPcm(speech && "pcm" in speech ? speech.pcm : "");
@@ -642,7 +624,7 @@ describe("VoiceBridge", () => {
 
   test.each([16_000, 22_050, 24_000, 48_000])(
     "an engine rendering at %iHz still puts 16kHz on the wire",
-    async (nativeRate) => {
+    async nativeRate => {
       // The rate is not carried in the frame, so a client decodes at 16kHz
       // whatever arrives. Length alone would pass for a resampler that dropped
       // samples, so the tone itself is measured: a 440Hz sine read at the wrong
@@ -651,7 +633,7 @@ describe("VoiceBridge", () => {
       const { bridge, frames } = harness({ nativeRate });
       expect(await bridge.speak(AGENT, "Twelve tests passing.")).toBe(true);
 
-      const speech = frames.find((f) => f.t === "speech");
+      const speech = frames.find(f => f.t === "speech");
       const pcm = base64ToPcm(speech && "pcm" in speech ? speech.pcm : "");
 
       // 40ms of audio at the wire rate, regardless of what the engine rendered.
@@ -659,7 +641,7 @@ describe("VoiceBridge", () => {
 
       let crossings = 0;
       for (let i = 1; i < pcm.length; i++) {
-        if ((pcm[i - 1] ?? 0) < 0 !== ((pcm[i] ?? 0) < 0)) crossings++;
+        if ((pcm[i - 1] ?? 0) < 0 !== (pcm[i] ?? 0) < 0) crossings++;
       }
       // Two zero crossings per cycle, interpreted at the wire rate.
       const hz = (crossings * WIRE_SAMPLE_RATE) / (2 * pcm.length);
@@ -676,7 +658,7 @@ describe("VoiceBridge", () => {
     const reply = "The suite is green. Twelve tests passed on the first run. Nothing regressed.";
     expect(await bridge.speak(AGENT, reply)).toBe(true);
 
-    const speech = frames.filter((f) => f.t === "speech");
+    const speech = frames.filter(f => f.t === "speech");
     expect(speech.length).toBeGreaterThan(1);
     expect(speech.length).toBe(tts.received.length);
     // Every frame carries real audio; a stream of empties would also be
@@ -703,27 +685,27 @@ describe("VoiceBridge", () => {
       },
     };
     const bridge = new VoiceBridge({
-      send: (frame) => frames.push(frame),
+      send: frame => frames.push(frame),
       tts: failing,
       sampleRate: RATE,
     });
 
     expect(await bridge.speak(AGENT, "First sentence. Second sentence here.")).toBe(false);
-    expect(frames.filter((f) => f.t === "speech")).toHaveLength(1);
+    expect(frames.filter(f => f.t === "speech")).toHaveLength(1);
     expect(frames.at(-1)).toMatchObject({ t: "error", agentId: AGENT, code: "tts_failed" });
   });
 
   test("a null tts engine reports rather than emitting silence", async () => {
     const frames: ServerFrame[] = [];
     const bridge = new VoiceBridge({
-      send: (frame) => frames.push(frame),
+      send: frame => frames.push(frame),
       tts: new NullTtsEngine(["omp: text-to-speech model kokoro is not downloaded"]),
       sampleRate: RATE,
     });
 
     expect(await bridge.speak(AGENT, "Twelve tests passing.")).toBe(false);
-    expect(frames.filter((f) => f.t === "speech")).toHaveLength(0);
-    const error = frames.find((f) => f.t === "error");
+    expect(frames.filter(f => f.t === "speech")).toHaveLength(0);
+    const error = frames.find(f => f.t === "error");
     expect(error).toMatchObject({ t: "error", code: "tts_failed" });
     // Names the engine and the reason, so the operator knows what to fix.
     expect(error && "message" in error ? error.message : "").toContain("kokoro is not downloaded");
@@ -743,7 +725,7 @@ describe("VoiceBridge", () => {
     // was perfect.
     const frames: ServerFrame[] = [];
     const bridge = new VoiceBridge({
-      send: (frame) => frames.push(frame),
+      send: frame => frames.push(frame),
       stt: new ScriptedStt("run the tests"),
       sampleRate: RATE,
       onTranscript: () => {
@@ -753,19 +735,17 @@ describe("VoiceBridge", () => {
 
     await stream(bridge, concat(sine(400, 0.3), silence(900)));
 
-    const transcript = frames.find((f) => f.t === "transcript");
+    const transcript = frames.find(f => f.t === "transcript");
     expect(transcript).toBeDefined();
     expect(transcript && "text" in transcript ? transcript.text : "").toBe("run the tests");
 
-    const error = frames.find((f) => f.t === "error");
+    const error = frames.find(f => f.t === "error");
     expect(error && "code" in error ? error.code : "").toBe("voice_prompt_failed");
     expect(error && "message" in error ? error.message : "").toBe("unknown agent");
 
     // Order matters: the client must see the text it said before the failure
     // of what that text became.
-    expect(frames.indexOf(transcript as ServerFrame)).toBeLessThan(
-      frames.indexOf(error as ServerFrame),
-    );
+    expect(frames.indexOf(transcript as ServerFrame)).toBeLessThan(frames.indexOf(error as ServerFrame));
   });
 
   test("a socket that fails mid-transcript does not wedge the agent forever", async () => {
@@ -778,7 +758,7 @@ describe("VoiceBridge", () => {
     let failNextSend = true;
     const delivered: ServerFrame[] = [];
     const bridge = new VoiceBridge({
-      send: (frame) => {
+      send: frame => {
         if (frame.t === "transcript" && failNextSend) {
           failNextSend = false;
           throw new Error("socket closed");
@@ -803,7 +783,7 @@ describe("VoiceBridge", () => {
       speaker,
     );
     expect(stt.received).toHaveLength(2);
-    expect(delivered.filter((f) => f.t === "transcript")).toHaveLength(1);
+    expect(delivered.filter(f => f.t === "transcript")).toHaveLength(1);
   });
 
   test("reset discards an utterance without transcribing it", async () => {
@@ -846,14 +826,14 @@ describe("null engines", () => {
 
   test("a bridge with no engines configured errors on audio rather than swallowing it", async () => {
     const frames: ServerFrame[] = [];
-    const bridge = new VoiceBridge({ send: (f) => frames.push(f), sampleRate: RATE });
+    const bridge = new VoiceBridge({ send: f => frames.push(f), sampleRate: RATE });
     await bridge.handleFrame(
       { t: "audio", agentId: AGENT, pcm: pcmToBase64(concat(sine(400, 0.3), silence(900))) },
       speaker,
     );
 
-    expect(frames.filter((f) => f.t === "transcript")).toHaveLength(0);
-    expect(frames.find((f) => f.t === "error")).toMatchObject({ code: "stt_failed" });
+    expect(frames.filter(f => f.t === "transcript")).toHaveLength(0);
+    expect(frames.find(f => f.t === "error")).toMatchObject({ code: "stt_failed" });
   });
 
   test("NullTtsEngine throws rather than emitting empty audio", async () => {
@@ -911,9 +891,7 @@ describe("engine selection", () => {
     const client = new FakeSttClient("open the pod bay doors");
     const engine = new OmpSttEngine({ client, isModelCached: async () => true });
 
-    expect(await engine.transcribe(sine(200, 0.5, 220, RATE), RATE)).toBe(
-      "open the pod bay doors",
-    );
+    expect(await engine.transcribe(sine(200, 0.5, 220, RATE), RATE)).toBe("open the pod bay doors");
     const call = client.calls[0];
     expect(call?.modelKey).toBe("parakeet");
     expect(call?.samples).toBe(Math.floor(RATE * 0.2));
@@ -1063,8 +1041,7 @@ describe("speech runtime loading", () => {
     const stt = await new OmpSttEngine().probe();
     const tts = await new OmpTtsEngine().probe();
 
-    const unreachable = (reason: string): boolean =>
-      reason.includes("could not reach its speech runtime");
+    const unreachable = (reason: string): boolean => reason.includes("could not reach its speech runtime");
     expect(unreachable(stt.reason)).toBe(unreachable(tts.reason));
   });
 });
@@ -1083,8 +1060,8 @@ const live = process.env.OMPD_LIVE === "1" ? describe : describe.skip;
 live("live engines", () => {
   test("selection reports what this machine can actually do", async () => {
     const log: string[] = [];
-    const stt = await selectSttEngine({ onLog: (line) => log.push(line) });
-    const tts = await selectTtsEngine({ onLog: (line) => log.push(line) });
+    const stt = await selectSttEngine({ onLog: line => log.push(line) });
+    const tts = await selectTtsEngine({ onLog: line => log.push(line) });
 
     expect(STT_ENGINE_ORDER).toContain(stt.name);
     expect(TTS_ENGINE_ORDER).toContain(tts.name);

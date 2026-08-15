@@ -9,12 +9,12 @@
  */
 
 import "./rnw.ts";
-import { resetWindowSize, setWindowWidth } from "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 // Type-only, so it is erased before it can pull `react-native` in early.
 import type { ConnectorSummary, SkillSummary, Task } from "../src/cowork/types.ts";
+import { resetWindowSize, setWindowWidth } from "./rnw.ts";
 
 // Dynamic on purpose: bun loads a file's whole static import graph before any
 // module body runs, so a static import here would pull the real `react-native`
@@ -97,7 +97,7 @@ function buildSkills(): SkillSummary[] {
 }
 
 function buildConnectors(): ConnectorSummary[] {
-  const connectors: ConnectorSummary[] = CONNECTED_CONNECTORS.map((name) => ({
+  const connectors: ConnectorSummary[] = CONNECTED_CONNECTORS.map(name => ({
     name,
     connected: true,
     status: "connected" as const,
@@ -164,9 +164,9 @@ function renderAt(width: number): string {
 
 test("the fixture corpus is realistic, not three rows", () => {
   expect(SKILLS.length).toBeGreaterThan(30);
-  expect(new Set(SKILLS.map((s) => s.pluginName ?? s.providerName)).size).toBeGreaterThan(6);
+  expect(new Set(SKILLS.map(s => s.pluginName ?? s.providerName)).size).toBeGreaterThan(6);
   expect(CONNECTORS.length).toBeGreaterThan(10);
-  expect(CONNECTORS.filter((c) => c.status !== "connected").length).toBeGreaterThanOrEqual(3);
+  expect(CONNECTORS.filter(c => c.status !== "connected").length).toBeGreaterThanOrEqual(3);
 });
 
 // ---------------------------------------------------------------------------

@@ -28,20 +28,20 @@
  * anything about the other.
  */
 
+import { timingSafeEqual } from "node:crypto";
 import {
   type ClientToHub,
   type DaemonToHub,
   type HubToClient,
   type HubToDaemon,
-  parseFrame,
   PROTOCOL_VERSION,
+  parseFrame,
   type RefusalCode,
   registrationLabel,
   SESSION_ID_PATTERN,
   verifyWith,
 } from "@ompd/tunnel";
 import type { Server, ServerWebSocket } from "bun";
-import { timingSafeEqual } from "node:crypto";
 import type { HubAudit } from "./audit.ts";
 import { consoleAudit } from "./audit.ts";
 import type { Backplane, RelayEnvelope } from "./backplane.ts";
@@ -70,8 +70,6 @@ const RATE_PER_SECOND = 50;
 
 const MAX_FRAME_BYTES = 1_000_000;
 const WEBHOOK_TIMEOUT_MS = 30_000;
-
-type LegKind = "daemon" | "client";
 
 interface DaemonLeg {
   kind: "daemon";
@@ -164,8 +162,8 @@ export class Hub {
     this.#audit = opts.audit ?? consoleAudit;
     this.#now = opts.now ?? Date.now;
 
-    this.#backplane.onEnvelope((envelope) => this.#onEnvelope(envelope));
-    this.#backplane.onDisrupted((reason) => this.#onDisrupted(reason));
+    this.#backplane.onEnvelope(envelope => this.#onEnvelope(envelope));
+    this.#backplane.onDisrupted(reason => this.#onDisrupted(reason));
   }
 
   get instanceId(): string {
@@ -183,9 +181,9 @@ export class Hub {
       fetch: (req, server) => this.#fetch(req, server),
       websocket: {
         maxPayloadLength: MAX_FRAME_BYTES,
-        open: (ws) => this.#open(ws),
+        open: ws => this.#open(ws),
         message: (ws, message) => void this.#message(ws, message),
-        close: (ws) => void this.#close(ws),
+        close: ws => void this.#close(ws),
       },
     });
     this.#timer ??= setInterval(() => void this.#tick(), ACK_INTERVAL_MS);
@@ -236,7 +234,8 @@ export class Hub {
       return new Response("expected a websocket upgrade", { status: 426 });
     }
     const webhook = /^\/v1\/webhooks\/([^/]+)\/([^/]+)$/.exec(path);
-    if (webhook) return await this.#forwardWebhook(req, webhook[1] ?? "", webhook[2] ?? "", url.searchParams.get("token"));
+    if (webhook)
+      return await this.#forwardWebhook(req, webhook[1] ?? "", webhook[2] ?? "", url.searchParams.get("token"));
 
     const link = /^\/v1\/link\/([A-Za-z0-9_]+)$/.exec(path);
     if (link) return await this.#upgradeClient(req, server, link[1] ?? "");
@@ -542,7 +541,8 @@ export class Hub {
         return;
       }
       case "webhook_response": {
-        const status = Number.isInteger(frame.status) && frame.status >= 100 && frame.status <= 599 ? frame.status : 502;
+        const status =
+          Number.isInteger(frame.status) && frame.status >= 100 && frame.status <= 599 ? frame.status : 502;
         const pending = this.#webhooks.get(frame.requestId);
         if (pending && pending.daemonId === leg.daemonId) {
           const headers = frame.contentType === undefined ? undefined : { "content-type": frame.contentType };
@@ -647,7 +647,7 @@ export class Hub {
     });
   }
 
-  async #fromClient(ws: ServerWebSocket<LegState>, leg: ClientLeg, text: string): Promise<void> {
+  async #fromClient(_ws: ServerWebSocket<LegState>, leg: ClientLeg, text: string): Promise<void> {
     const frame = parseFrame<ClientToHub>(text);
     if (!frame) return;
 
@@ -722,7 +722,12 @@ export class Hub {
       }
       case "webhook_request": {
         const daemon = envelope.daemonId === undefined ? undefined : this.#daemons.get(envelope.daemonId);
-        if (!daemon || envelope.daemonId === undefined || envelope.requestId === undefined || envelope.routineId === undefined) {
+        if (
+          !daemon ||
+          envelope.daemonId === undefined ||
+          envelope.requestId === undefined ||
+          envelope.routineId === undefined
+        ) {
           await this.#backplane.send(envelope.from, {
             k: "webhook_response",
             sessionId: envelope.requestId ?? envelope.sessionId,

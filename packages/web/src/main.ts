@@ -16,23 +16,23 @@ import "./styles.css";
 
 import type { Agent, AgentId } from "@ompd/core/contracts";
 import { SCOPE_APPROVE } from "@ompd/core/contracts";
-import { OmpdClient } from "@ompd/core/ompd-client";
 import type { ClientErrorEvent } from "@ompd/core/ompd-client";
-import { clearConnection, defaultSocketUrl, loadConnection, saveConnection } from "./config.ts";
+import { OmpdClient } from "@ompd/core/ompd-client";
 import type { Connection } from "./config.ts";
-import { EMPTY_SESSION, appendApproval, appendPrompt, endTurn, reduce, resolveApproval } from "./session/model.ts";
+import { clearConnection, defaultSocketUrl, loadConnection, saveConnection } from "./config.ts";
 import type { SessionState } from "./session/model.ts";
-import { createTimeline } from "./session/render.ts";
+import { appendApproval, appendPrompt, EMPTY_SESSION, endTurn, reduce, resolveApproval } from "./session/model.ts";
 import type { TimelineView } from "./session/render.ts";
-import { createBay } from "./ui/bay.ts";
+import { createTimeline } from "./session/render.ts";
 import { createAgentHub } from "./ui/agent-hub.ts";
+import { createBay } from "./ui/bay.ts";
 import { createComposer } from "./ui/composer.ts";
 import { el, elapsed, formatMoney, setText, shortenPath } from "./ui/dom.ts";
 import { icon } from "./ui/icons.ts";
-import { createPlan } from "./ui/plan.ts";
 import type { PlanReview } from "./ui/plan.ts";
-import { createDataBlock, createRack } from "./ui/readouts.ts";
+import { createPlan } from "./ui/plan.ts";
 import type { Readings } from "./ui/readouts.ts";
+import { createDataBlock, createRack } from "./ui/readouts.ts";
 import { createStatus } from "./ui/status.ts";
 import { browserSink, SpeechPlayer } from "./voice/playback.ts";
 
@@ -187,7 +187,7 @@ function renderConsole(host: HTMLElement, connection: Connection): void {
   });
 
   const bay = createBay({
-    onSelect: (agentId) => {
+    onSelect: agentId => {
       select(agentId);
     },
   });
@@ -252,10 +252,10 @@ function renderConsole(host: HTMLElement, connection: Connection): void {
   const rack = createRack();
 
   const composer = createComposer({
-    onSubmit: (text) => {
+    onSubmit: text => {
       if (selected === null) return;
       client.prompt(selected, text);
-      mutate(selected, (state) => appendPrompt(state, text));
+      mutate(selected, state => appendPrompt(state, text));
       // Optimistic: the daemon's next roster frame is the authority, but a
       // composer that stays live after a send reads as a dropped prompt.
       turnStarts.set(selected, Date.now());
@@ -307,7 +307,7 @@ function renderConsole(host: HTMLElement, connection: Connection): void {
     const created = createTimeline({
       onDecide: (requestId, choice, scope) => {
         client.decide(agentId, requestId, choice, scope);
-        mutate(agentId, (state) => resolveApproval(state, requestId, choice));
+        mutate(agentId, state => resolveApproval(state, requestId, choice));
       },
     });
     created.setCanApprove(canApprove);
@@ -428,17 +428,17 @@ function renderConsole(host: HTMLElement, connection: Connection): void {
 
   // -- client wiring --------------------------------------------------------
 
-  client.on("status", (event) => {
+  client.on("status", event => {
     status.render(event);
     composer.setEnabled(event.state === "connected" && selected !== null);
   });
 
-  client.on("agents", (event) => {
+  client.on("agents", event => {
     const previous = new Map(agentsById);
     agentsById.clear();
     for (const agent of event.agents) agentsById.set(agent.id, agent);
-    agentHub.render(event.agents.filter((agent) => agent.parentAgentId !== undefined));
-    bay.render(event.agents.filter((agent) => agent.parentAgentId === undefined));
+    agentHub.render(event.agents.filter(agent => agent.parentAgentId !== undefined));
+    bay.render(event.agents.filter(agent => agent.parentAgentId === undefined));
 
     for (const agent of event.agents) {
       const before = previous.get(agent.id);
@@ -486,9 +486,9 @@ function renderConsole(host: HTMLElement, connection: Connection): void {
     paintInstruments();
   });
 
-  client.on("update", (event) => {
+  client.on("update", event => {
     watermarks.set(event.agentId, event.seq);
-    mutate(event.agentId, (state) => reduce(state, event.update));
+    mutate(event.agentId, state => reduce(state, event.update));
   });
 
   // The daemon speaks only to a device that spoke first, so anything arriving
@@ -497,14 +497,14 @@ function renderConsole(host: HTMLElement, connection: Connection): void {
   // and an eagerly built one stays suspended forever.
   const speech = new SpeechPlayer({
     createSink: browserSink,
-    onLog: (line) => console.warn(line),
+    onLog: line => console.warn(line),
   });
-  client.on("speech", (event) => {
+  client.on("speech", event => {
     void speech.play(event.pcm);
   });
 
-  client.on("approval", (event) => {
-    mutate(event.agentId, (state) =>
+  client.on("approval", event => {
+    mutate(event.agentId, state =>
       appendApproval(state, {
         requestId: event.requestId,
         tool: event.tool,
@@ -522,7 +522,7 @@ function renderConsole(host: HTMLElement, connection: Connection): void {
     timelineFor(event.agentId).focusClearance();
   });
 
-  client.on("plan_review", (event) => {
+  client.on("plan_review", event => {
     planReviews.set(event.agentId, {
       requestId: event.requestId,
       message: event.message,
@@ -548,7 +548,7 @@ function renderConsole(host: HTMLElement, connection: Connection): void {
   // a failed connection. Keeping it would leave the console retrying forever
   // against a token nothing will ever accept, which looks exactly like the
   // daemon being down and is the one thing it is not.
-  client.on("unauthorized", (event) => {
+  client.on("unauthorized", event => {
     client.close();
     clearConnection();
     host.replaceChildren();

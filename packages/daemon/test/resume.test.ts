@@ -11,8 +11,8 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { DefaultPolicy, SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store, type Actor } from "@ompd/core";
-import { Supervisor, type PendingApproval } from "../src/supervisor.ts";
+import { type Actor, DefaultPolicy, SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
+import { type PendingApproval, Supervisor } from "../src/supervisor.ts";
 import { createFakeHost, type FakeHostController } from "./fake-host.ts";
 
 const paths: string[] = [];
@@ -43,7 +43,7 @@ function harness(opts: { approvalTimeoutMs?: number; mcpServersFor?: (agentId: s
     spawnHost: fake.factory,
     mcpServersFor: opts.mcpServersFor,
     events: {
-      onApprovalNeeded: (p) => approvals.push(p),
+      onApprovalNeeded: p => approvals.push(p),
       onUpdate: (agentId, seq, update) => updates.push({ agentId, seq, update }),
     },
   });
@@ -100,10 +100,7 @@ describe("resumeAgent", () => {
     });
     const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
 
-    const agent = await h.sup.resumeAgent(
-      { name: "r", cwd: "/work", sessionId: "prior-session-with-webview" },
-      admin,
-    );
+    const agent = await h.sup.resumeAgent({ name: "r", cwd: "/work", sessionId: "prior-session-with-webview" }, admin);
 
     expect(descriptors).toEqual([{ name: "ompd-webview", url: `http://127.0.0.1/webview/${agent.id}` }]);
     expect(h.fake.loadRequests).toEqual([
@@ -178,9 +175,9 @@ describe("resumeAgent", () => {
 
     await h.sup.resumeAgent({ name: "first", cwd: "/work", sessionId: priorSessionId }, admin);
 
-    await expect(
-      h.sup.resumeAgent({ name: "second", cwd: "/work", sessionId: priorSessionId }, admin),
-    ).rejects.toThrow(/already held/);
+    await expect(h.sup.resumeAgent({ name: "second", cwd: "/work", sessionId: priorSessionId }, admin)).rejects.toThrow(
+      /already held/,
+    );
     // Refused before ever asking the peer to load it a second time.
     expect(h.fake.loads).toEqual([priorSessionId]);
   });

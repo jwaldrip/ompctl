@@ -12,11 +12,11 @@
  */
 
 import {
-  undriveableUrlReason,
   type Actor,
   type AgentId,
   type Policy,
   type Store,
+  undriveableUrlReason,
   type WebViewAction,
   type WebViewActionResult,
 } from "@ompd/core";
@@ -147,13 +147,13 @@ export class WebViewBridge {
     }
 
     const requestId = `wv_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-    return await new Promise<WebViewActionResult>((resolve) => {
+    return await new Promise<WebViewActionResult>(resolve => {
       const timer = setTimeout(() => {
         if (this.#pending.delete(requestId)) resolve({ kind: "error", message: NO_RESPONSE });
       }, this.#timeoutMs);
       this.#pending.set(requestId, {
         agentId,
-        resolve: (result) => {
+        resolve: result => {
           clearTimeout(timer);
           resolve(result);
         },
@@ -177,11 +177,7 @@ export class WebViewBridge {
    * request ids are opaque capabilities, but an authenticated client still
    * must not settle another session's action by replaying one it observed.
    */
-  resolveResult(
-    agentId: AgentId,
-    requestId: string,
-    result: WebViewActionResult,
-  ): boolean {
+  resolveResult(agentId: AgentId, requestId: string, result: WebViewActionResult): boolean {
     const pending = this.#pending.get(requestId);
     if (!pending || pending.agentId !== agentId) return false;
     this.#pending.delete(requestId);

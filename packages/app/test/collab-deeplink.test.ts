@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type DeepLinkSource,
   handleCollabDeepLink,
   listenForCollabLinks,
   parseCollabDeepLink,
-  type DeepLinkSource,
 } from "../src/platform/deeplink.ts";
 
 describe("parseCollabDeepLink", () => {
@@ -25,7 +25,7 @@ describe("incoming collaboration deep links", () => {
   test("routes cold-start and warm links directly to the collaboration session view", async () => {
     const received: string[] = [];
     const source = new FakeDeepLinks("https://app.ompctl.ai/collab/room_0123456789");
-    const stop = listenForCollabLinks(source, (roomId) => received.push(roomId));
+    const stop = listenForCollabLinks(source, roomId => received.push(roomId));
 
     await Promise.resolve();
     source.emit("ompctl://collab/room_abcdefghij");
@@ -39,8 +39,8 @@ describe("incoming collaboration deep links", () => {
 
   test("reports whether an incoming URL was a collaboration route", () => {
     const received: string[] = [];
-    expect(handleCollabDeepLink("ompctl://collab/room_0123456789", (roomId) => received.push(roomId))).toBe(true);
-    expect(handleCollabDeepLink("ompctl://pair/example", (roomId) => received.push(roomId))).toBe(false);
+    expect(handleCollabDeepLink("ompctl://collab/room_0123456789", roomId => received.push(roomId))).toBe(true);
+    expect(handleCollabDeepLink("ompctl://pair/example", roomId => received.push(roomId))).toBe(false);
     expect(received).toEqual(["room_0123456789"]);
   });
 });

@@ -122,10 +122,7 @@ export interface SessionGroup {
  * Groups themselves are ordered by the worst status in the group (most severe
  * first), then by recency of the most recent session.
  */
-export function groupByCwd(
-  sessions: readonly BrowserSession[],
-  sort: SortSpec,
-): SessionGroup[] {
+export function groupByCwd(sessions: readonly BrowserSession[], sort: SortSpec): SessionGroup[] {
   const byDir = new Map<string, BrowserSession[]>();
   for (const session of sessions) {
     let bucket = byDir.get(session.cwd);
@@ -151,8 +148,8 @@ export function groupByCwd(
   groups.sort((a, b) => {
     const sev = STATUS_SEVERITY[a.worstStatus] - STATUS_SEVERITY[b.worstStatus];
     if (sev !== 0) return sev;
-    const aRecent = Math.max(...a.sessions.map((s) => Date.parse(s.lastActiveAt)));
-    const bRecent = Math.max(...b.sessions.map((s) => Date.parse(s.lastActiveAt)));
+    const aRecent = Math.max(...a.sessions.map(s => Date.parse(s.lastActiveAt)));
+    const bRecent = Math.max(...b.sessions.map(s => Date.parse(s.lastActiveAt)));
     return bRecent - aRecent;
   });
 
@@ -247,17 +244,13 @@ export function browserReduce(state: BrowserState, action: BrowserAction): Brows
     case "archive":
       return {
         ...state,
-        sessions: state.sessions.map((s) =>
-          s.id === action.id ? { ...s, status: "archived" as const } : s,
-        ),
+        sessions: state.sessions.map(s => (s.id === action.id ? { ...s, status: "archived" as const } : s)),
       };
 
     case "unarchive":
       return {
         ...state,
-        sessions: state.sessions.map((s) =>
-          s.id === action.id ? { ...s, status: "dormant" as const } : s,
-        ),
+        sessions: state.sessions.map(s => (s.id === action.id ? { ...s, status: "dormant" as const } : s)),
       };
   }
 }
@@ -281,14 +274,10 @@ export interface BrowserView {
 
 export function browserView(state: BrowserState): BrowserView {
   const { sessions, sort, showArchived } = state;
-  const visible = showArchived
-    ? sessions
-    : sessions.filter((s) => s.status !== "archived");
+  const visible = showArchived ? sessions : sessions.filter(s => s.status !== "archived");
   const groups = groupByCwd(visible, sort);
   const flatSessions = [...visible].sort((a, b) => compareSessions(a, b, sort));
-  const hiddenArchived = showArchived
-    ? 0
-    : sessions.filter((s) => s.status === "archived").length;
+  const hiddenArchived = showArchived ? 0 : sessions.filter(s => s.status === "archived").length;
 
   return {
     groups,

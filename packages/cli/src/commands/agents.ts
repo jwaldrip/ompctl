@@ -32,21 +32,12 @@ export async function agentsCommand(ctx: CliContext): Promise<number> {
     return 0;
   }
 
-  const rows = agents.map((agent) => [
-    agent.id,
-    agent.state,
-    agent.name,
-    agent.cwd,
-    age(agent.lastActiveAt),
-  ]);
+  const rows = agents.map(agent => [agent.id, agent.state, agent.name, agent.cwd, age(agent.lastActiveAt)]);
   for (const line of table(["ID", "STATE", "NAME", "CWD", "ACTIVE"], rows)) ctx.out(line);
   return 0;
 }
 
-export async function newCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "new" }>,
-): Promise<number> {
+export async function newCommand(ctx: CliContext, cmd: Extract<Command, { kind: "new" }>): Promise<number> {
   // Resolved here, against the shell's cwd. A relative path means nothing to a
   // daemon that may have been started from anywhere, or by launchd from `/`.
   const cwd = resolve(ctx.cwd, cmd.cwd);
@@ -94,15 +85,11 @@ export async function stopAgentCommand(
  * websocket, which a script driving this does not have and does not want; what
  * it needs is to know the turn is over and how it ended.
  */
-export async function promptCommand(
-  ctx: CliContext,
-  cmd: Extract<Command, { kind: "prompt" }>,
-): Promise<number> {
-  const response = await api<PromptResponse>(
-    ctx,
-    `/v1/agents/${encodeURIComponent(cmd.agentId)}/prompt`,
-    { method: "POST", body: { text: cmd.text } },
-  );
+export async function promptCommand(ctx: CliContext, cmd: Extract<Command, { kind: "prompt" }>): Promise<number> {
+  const response = await api<PromptResponse>(ctx, `/v1/agents/${encodeURIComponent(cmd.agentId)}/prompt`, {
+    method: "POST",
+    body: { text: cmd.text },
+  });
   ctx.out(response.stopReason ?? "unknown");
   return 0;
 }
