@@ -32,5 +32,28 @@ target 'ompd' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # fmt 11.0.2 (pinned by React Native 0.81) uses FMT_STRING's consteval
+    # constructor for compile-time format-string checking. Xcode 26.6's
+    # Clang rejects those calls as "not a constant expression" -- an
+    # upstream fmt/Clang compatibility gap, not an app bug. fmt's own
+    # base.h always computes and #defines FMT_USE_CONSTEVAL itself (no
+    # `#ifndef` guard), so an externally injected `-D` is silently
+    # overwritten by the header. The only fix that survives is patching
+    # the vendored header directly, which this reruns on every `pod
+    # install` since CocoaPods recopies the pod source each time.
+    fmt_base_h = File.join(installer.sandbox.pod_dir("fmt"), "include", "fmt", "base.h")
+    fmt_use_consteval_off = "#  define FMT_USE_CONSTEVAL 0  // patched: see Podfile"
+    if File.exist?(fmt_base_h)
+      contents = File.read(fmt_base_h)
+      unless contents.include?(fmt_use_consteval_off)
+        patched = contents.sub(
+          "#if !defined(__cpp_lib_is_constant_evaluated)",
+          "#if 1\n#{fmt_use_consteval_off}\n#elif !defined(__cpp_lib_is_constant_evaluated)",
+        )
+        raise "fmt/base.h FMT_USE_CONSTEVAL anchor not found; pod version changed" if patched == contents
+        File.write(fmt_base_h, patched)
+      end
+    end
   end
 end
