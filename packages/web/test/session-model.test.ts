@@ -130,14 +130,20 @@ describe("captured turn", () => {
     });
   });
 
+  // The fixture's command list is synthetic on purpose: the real
+  // `available_commands_update` advertises every skill the operator has
+  // installed, which is a personal inventory and must never be committed.
+  // What matters here is that the list parses, each entry keeps its prose, and
+  // an `input.hint` survives -- not how many commands one machine happens to
+  // have. See `scripts/capture-updates.ts`.
   test("the command list survives with its prose", () => {
     const state = replay();
-    expect(state.commands.length).toBe(438);
+    expect(state.commands.length).toBe(3);
     expect(state.commands.length).toBe(state.commandDetails.size);
     const model = state.commandDetails.get("model");
-    expect(model?.description).toBe("Show current model selection");
-    const security = state.commandDetails.get("security");
-    expect(security?.hint).toContain("plan");
+    expect(model?.description).toBe("Choose the model for this session");
+    const resume = state.commandDetails.get("resume");
+    expect(resume?.hint).toContain("session");
   });
 
   test("the replayed turn is entirely renderable: nothing landed in the unknown bucket", () => {
