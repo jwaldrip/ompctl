@@ -8,6 +8,9 @@
   "linter": {
     "enabled": true,
     "includes": ["**"],
+    "domains": {
+      "react": "recommended"
+    },
     "rules": {
       "preset": "recommended",
       "a11y": "off",
@@ -66,5 +69,11 @@
       "!.wt/**/*"
     ]
   },
-  "assist": { "actions": { "source": { "organizeImports": "on" } } }
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  }
 }
