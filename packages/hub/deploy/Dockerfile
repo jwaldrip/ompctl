@@ -21,4 +21,4 @@ ENV NODE_ENV=production
 EXPOSE 8080
 
 USER bun
-CMD ["bun", "control-plane/packages/hub/src/main.ts"]
+CMD ["bun", "packages/hub/src/main.ts"]
