@@ -109,8 +109,13 @@ console.log(HUB_ORIGIN);
 {
   const host = hostOf(HUB_ORIGIN);
   const dns = await dnsState(host);
-  const r = await get(`${HUB_ORIGIN}/healthz`);
-  check(`${host}/healthz responds 200 over TLS`, r.status === 200, `${r.status ?? r.error} | ${dns}`);
+  // `/v1/health`, not `/healthz`: the hub only routes the former, so probing
+  // /healthz would 404 a perfectly healthy hub. Worth stating because the web
+  // service DOES answer both in its own code, which makes the mistake easy --
+  // and on Cloud Run /healthz is intercepted by the Google front end and
+  // returns an HTML 404 that never reaches the container at all.
+  const r = await get(`${HUB_ORIGIN}/v1/health`);
+  check(`${host}/v1/health responds 200 over TLS`, r.status === 200, `${r.status ?? r.error} | ${dns}`);
 }
 
 // --- the association documents ----------------------------------------------
