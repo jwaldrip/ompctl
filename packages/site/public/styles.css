@@ -483,3 +483,58 @@ td code {
     background: #f4f4f4;
   }
 }
+
+/* --- screen pairs ------------------------------------------------------ */
+
+/*
+ * Each screen shown twice, phone beside desktop. The point is the layout
+ * decision, so the two frames sit in one row and are captioned individually
+ * rather than stacked into an undifferentiated grid.
+ */
+.pairs {
+  display: grid;
+  gap: var(--gulf);
+  margin: var(--loose) 0 0;
+}
+
+.pair {
+  border-top: 1px solid var(--ground-line);
+  padding-top: var(--loose);
+}
+
+.pair h3 {
+  font-family: var(--face-mono);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-plain);
+  margin-bottom: var(--wide);
+}
+
+/*
+ * A phone frame is portrait and a desktop frame is landscape, so equal columns
+ * would waste half the row. The phone takes what it needs and the console takes
+ * the rest.
+ */
+.pair-shots {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.42fr) 1fr;
+  gap: var(--loose);
+  align-items: start;
+}
+
+/* A pair with only one frame should not leave a hole where the other would be. */
+.pair-shots:has(> :only-child) {
+  grid-template-columns: minmax(220px, 0.5fr);
+}
+
+.pairs .plate--phone img {
+  max-height: 520px;
+}
+
+@media (max-width: 860px) {
+  .pair-shots,
+  .pair-shots:has(> :only-child) {
+    grid-template-columns: 1fr;
+  }
+}

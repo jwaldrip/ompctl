@@ -39,3 +39,6 @@ coverage/
 # e2e run output. Screenshots are artifacts of a run, not sources; the site
 # build consumes them from the run rather than from version control.
 artifacts/
+
+# Site build output. Assembled by `bun run --cwd packages/site build`.
+packages/site/dist/

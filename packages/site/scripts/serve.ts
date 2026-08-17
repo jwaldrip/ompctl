@@ -12,7 +12,10 @@
 import { existsSync, statSync } from "node:fs";
 import { join, normalize } from "node:path";
 
-const root = join(import.meta.dir, "..", "public");
+// Prefer the built output when it exists: verifying `public/` while `dist/` is
+// what ships would let a build-time transform diverge from what was checked.
+const built = join(import.meta.dir, "..", "dist");
+const root = existsSync(built) ? built : join(import.meta.dir, "..", "public");
 // An explicit loopback bind on an unusual port. Binding the wildcard took IPv6
 // only, while a client resolving `127.0.0.1` reached an unrelated dev server that
 // already held IPv4 on the same port -- so the verifier happily audited someone
