@@ -69,9 +69,17 @@ react {
     // extraPackagerArgs = []
 
     /* Hermes Commands */
-    //   The hermes compiler command to run. By default it is 'hermesc'
-    // hermesCommand = "$rootDir/my-custom-hermesc/bin/hermesc"
+    //   Pinned explicitly because the plugin's default hermesCommand is derived from
+    //   the DEFAULT reactNativeDir at extension-creation time, not from the value set
+    //   above. Overriding reactNativeDir for the hoisted monorepo install therefore
+    //   leaves hermesCommand pointing at packages/app/android/node_modules/react-native,
+    //   which does not exist, and the release build fails with "Couldn't determine
+    //   Hermesc location" while debug builds keep working because they bundle through
+    //   Metro and never invoke hermesc.
     //
+    //   %OS-BIN% is substituted by the plugin, so it must survive into the value.
+    hermesCommand = new File(resolvePackage("react-native"), "sdks/hermesc/%OS-BIN%/hermesc").absolutePath
+
     //   The list of flags to pass to the Hermes compiler. By default is "-O", "-output-source-map"
     // hermesFlags = ["-O", "-output-source-map"]
 
