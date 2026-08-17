@@ -6,7 +6,7 @@ Product identity (all platforms):
 |----------|----|
 | iOS | `ai.ompctl.app` |
 | Android | `ai.ompctl.app` |
-| macOS | `ai.ompctl.macos` |
+| macOS | `ai.ompctl.app` |
 | Windows | `ai.ompctl.app` (Publisher `CN=ompd`) |
 
 ## Test tracks
@@ -36,7 +36,7 @@ Product identity (all platforms):
 
 GitHub-hosted macOS runners have no signing identities. The workflow imports the `.p12` into an ephemeral keychain and uses the ASC API key with `-allowProvisioningUpdates` so Xcode can create/download provisioning profiles at archive time.
 
-Create the ASC key under App Store Connect → Users and Access → Integrations → App Store Connect API, role **App Manager** (or Admin). Register bundle IDs `ai.ompctl.app` and `ai.ompctl.macos` before the first upload.
+Create the ASC key under App Store Connect → Users and Access → Integrations → App Store Connect API, role **App Manager** (or Admin). Register bundle ID `ai.ompctl.app` (UNIVERSAL) before the first upload; one App Store Connect record covers iOS and macOS.
 
 ### Google Play (Android Internal testing)
 

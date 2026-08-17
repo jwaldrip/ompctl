@@ -33,7 +33,7 @@ import {
 
 const APP_DIR = join(import.meta.dir, "..", "packages", "app", "macos");
 const OUT = "/tmp/ompctl-macos-build";
-const BUNDLE_ID = "ai.ompctl.macos";
+const BUNDLE_ID = "ai.ompctl.app";
 const NOTARY_PROFILE = "ompctl";
 const APP_IDENTITY = `Developer ID Application: Jason Waldrip (${TEAM_ID})`;
 const INSTALLER_IDENTITY = `Developer ID Installer: Jason Waldrip (${TEAM_ID})`;

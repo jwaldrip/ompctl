@@ -6,7 +6,7 @@ Product domain: **ompctl.ai** (Squarespace).
 |---------|--------|
 | iOS bundle id | `ai.ompctl.app` |
 | Android applicationId | `ai.ompctl.app` |
-| macOS bundle id | `ai.ompctl.macos` |
+| macOS bundle id | `ai.ompctl.app` |
 | Windows package | `ai.ompctl.app` |
 | Web / Universal Links | `https://app.ompctl.ai` (Cloud Run **ompctl-web**) |
 | Hub / relay | `https://hub.ompctl.ai` (Cloud Run **ompd-hub**) |
@@ -44,7 +44,7 @@ Create the printed CNAME/A records under ompctl.ai. Apex stays on Squarespace fo
 
 Register apps under the new bundle ids (not `sh.ompd.*`):
 
-- App Store Connect: `ai.ompctl.app`, `ai.ompctl.macos`
+- App Store Connect: `ai.ompctl.app` (one record, iOS + macOS)
 - Play Console: `ai.ompctl.app`
 
 ## Association fail-closed

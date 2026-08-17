@@ -70,7 +70,7 @@ async function start(env: Record<string, string>): Promise<Started> {
 }
 
 describe("association files", () => {
-  test("apple-app-site-association is served and claims both bundles", async () => {
+  test("apple-app-site-association is served and claims the universal bundle once", async () => {
     const { base } = await start({ OMPCTL_APPLE_TEAM_ID: TEAM, OMPCTL_PLAY_CERT_SHA256: SHA });
     const res = await fetch(`${base}/.well-known/apple-app-site-association`);
     expect(res.status).toBe(200);
@@ -85,7 +85,12 @@ describe("association files", () => {
 
     const ids = body.applinks.details.flatMap(d => d.appIDs);
     expect(ids).toContain(`${TEAM}.ai.ompctl.app`);
-    expect(ids).toContain(`${TEAM}.ai.ompctl.macos`);
+    // iOS and macOS now ship under one universal bundle id, so the same appID
+    // must appear exactly once rather than twice. Asserted because the naive
+    // construction from two variables produced a duplicate, and a malformed
+    // association fails silently instead of erroring.
+    expect(ids.filter(i => i === `${TEAM}.ai.ompctl.app`)).toHaveLength(1);
+    expect(new Set(ids).size).toBe(ids.length);
 
     // Both the modern and legacy shapes, so older iOS still matches.
     const detail = body.applinks.details[0];
