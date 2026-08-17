@@ -34,3 +34,8 @@ jobs:
         run: bun run check
       - name: Unit and integration tests
         run: bun run test
+      # Guards the scrubbed history. Runs on every PR because a single careless
+      # paste into any file would reintroduce what a history rewrite removed, and
+      # the published repo is public.
+      - name: Provenance sweep
+        run: bun run check:provenance
