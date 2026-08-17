@@ -16,9 +16,18 @@
  * plain JavaScript and rejects at the first angle bracket.
  */
 
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+
+// Resolved through Node's own lookup rather than a relative walk up to
+// `node_modules`. A literal `../../../` encodes how deeply this package happens
+// to sit today: it was correct when the app lived at `control-plane/packages/app`
+// in the fork, and silently pointed one directory above the repository root once
+// the tree was extracted to `packages/app`, which broke the web target outright.
+// `require.resolve` cannot drift that way, and it also finds the file when a
+// package manager hoists or nests differently.
+const resolveFromHere = createRequire(import.meta.url).resolve;
 
 const webNodeModules = ["react-native-web", "react-native-svg", "@fortawesome/react-native-fontawesome"];
 
@@ -31,9 +40,7 @@ export default defineConfig({
         // react-native-svg ships a browser build beside its native one but does
         // not declare it in `exports`, so the bundler has to be told.
         find: /^react-native-svg$/,
-        replacement: fileURLToPath(
-          new URL("../../../node_modules/react-native-svg/lib/module/ReactNativeSVG.web.js", import.meta.url),
-        ),
+        replacement: resolveFromHere("react-native-svg/lib/module/ReactNativeSVG.web.js"),
       },
     ],
     extensions: [".web.tsx", ".web.ts", ".web.jsx", ".web.js", ".tsx", ".ts", ".jsx", ".js", ".json"],
