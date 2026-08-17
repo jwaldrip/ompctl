@@ -14,6 +14,7 @@ export {
   type AcceptResult,
   type DialSocket,
   type DialTransport,
+  dialWebSocket,
   type SessionAcceptor,
   type SessionEvent,
   TunnelDaemon,
