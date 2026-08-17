@@ -5,7 +5,8 @@
     "test:web": "E2E_CLIENT=web cucumber-js",
     "test:ios": "E2E_CLIENT=ios cucumber-js",
     "test:android": "E2E_CLIENT=android cucumber-js",
-    "check": "bun ../../scripts/check-types.ts tsconfig.json"
+    "check": "bun ../../scripts/check-types.ts tsconfig.json",
+    "build:android": "detox build --configuration android.emu.debug"
   },
   "devDependencies": {
     "@cucumber/cucumber": "^11.3.0",
