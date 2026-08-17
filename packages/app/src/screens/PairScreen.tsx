@@ -21,7 +21,12 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
-import { ScanScreen } from "./ScanScreen.tsx";
+// Deliberately extensionless, unlike this file's other imports: that is what
+// lets `ScanScreen.web.tsx` win in the browser via `resolve.extensions`, the
+// same mechanism `platform/secrets` already relies on. Naming `./ScanScreen.tsx`
+// here would pin every platform to the native screen, whose vision-camera
+// import fails the web build outright.
+import { ScanScreen } from "./ScanScreen";
 
 export function PairScreen({
   notice,
