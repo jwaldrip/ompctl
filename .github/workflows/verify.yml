@@ -22,7 +22,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     steps:
+      # Full history: the provenance sweep walks every ref, and the default
+      # depth-1 checkout would leave it auditing a single commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -34,3 +38,8 @@ jobs:
         run: bun run check
       - name: Unit and integration tests
         run: bun run test
+      # Guards the scrubbed history. Runs on every PR because a single careless
+      # paste into any file would reintroduce what a history rewrite removed, and
+      # the published repo is public.
+      - name: Provenance sweep
+        run: bun run check:provenance
