@@ -42,7 +42,7 @@ const MARKETPLACE_PLUGINS: Record<string, string[]> = {
   "haiku-method": ["haiku-start", "haiku-pickup", "haiku-zap", "haiku-gate-review"],
   darkrun: ["darkrun-new", "darkrun-pickup", "darkrun-checkpoint"],
   "im-a-cto": ["writing-coach", "story-mine", "voice-builder"],
-  acme-ops: ["acme-billing", "acme-carrier", "acme-context"],
+  "acme-ops": ["acme-billing", "acme-carrier", "acme-context"],
   xlsx: ["xlsx"],
   pdf: ["pdf"],
   docx: ["docx"],

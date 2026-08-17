@@ -16,10 +16,11 @@
 
 # Backend and provider pins.
 #
-# The bucket is intentionally NOT hardcoded here (unlike cld/field-agent):
-# ompctl lives in its own GCP project rather than shared-project, so the bucket
-# name is supplied at `terraform init -backend-config="bucket=..."` time by
-# CI. `prefix` alone is safe to commit; it carries no account information.
+# The bucket is intentionally NOT hardcoded here: it is supplied at
+# `terraform init -backend-config="bucket=..."` time by CI, which keeps the
+# state location out of the tree and lets the same config target a different
+# project without an edit. `prefix` alone is safe to commit; it carries no
+# account information.
 terraform {
   required_version = ">= 1.9"
 

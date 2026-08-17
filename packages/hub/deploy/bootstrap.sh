@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-time identity + project bootstrap so CI can deploy ompctl to its own
-# GCP project. Run once, by hand, by a human holding the example.net billing
-# account. Everything after this is Terraform, applied by GitHub Actions,
-# never from a workstation.
+# GCP project. Run once, by hand, by a human holding the billing account this
+# project should bill to. Everything after this is Terraform, applied by
+# GitHub Actions, never from a workstation.
 #
 # Creates NO application infrastructure (no Cloud Run service, no Redis, no
 # Cloud Run domain mappings -- those are control-plane/packages/hub/deploy's
@@ -18,14 +18,17 @@
 #   BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX ./control-plane/packages/hub/deploy/bootstrap.sh
 set -euo pipefail
 
-: "${BILLING_ACCOUNT_ID:?Set BILLING_ACCOUNT_ID to the example.net billing account (gcloud billing accounts list)}"
+: "${BILLING_ACCOUNT_ID:?Set BILLING_ACCOUNT_ID to the billing account this project bills to (gcloud billing accounts list)}"
 
 PROJECT="${OMPCTL_GCP_PROJECT:-ompctl}"
 REGION="${OMPCTL_GCP_REGION:-us-central1}"
-REPO="${OMPCTL_GITHUB_REPO:-jwaldrip/oh-my-pi}"
+REPO="${OMPCTL_GITHUB_REPO:-jwaldrip/ompctl}"
 POOL="ompctl-github"
 PROVIDER="github"
 SA="ompctl-deployer"
+# ompctl's own state bucket, in ompctl's own project. Sharing another
+# project's bucket would need a cross-project objectAdmin grant and would
+# widen this deploy identity's blast radius past the one project it owns.
 STATE_BUCKET="${OMPCTL_TF_STATE_BUCKET:-ompctl-terraform-state}"
 STATE_PREFIX="hub"
 NETWORK="${OMPCTL_GCP_NETWORK:-default}"
@@ -128,7 +131,19 @@ gcloud compute networks vpc-access connectors describe "$CONNECTOR" \
     --project "$PROJECT" --region "$REGION" \
     --network "$NETWORK" --range "$CONNECTOR_RANGE"
 
-echo "==> terraform state access (bucket only, not project-wide, cross-project)"
+echo "==> terraform state bucket (in this project, versioned)"
+# Terraform cannot create the bucket holding its own state, so it happens
+# here. Versioning is on because a corrupted or truncated state push is
+# recoverable only from a prior generation.
+if gcloud storage buckets describe "gs://${STATE_BUCKET}" --project "$PROJECT" >/dev/null 2>&1; then
+  echo "    already exists"
+else
+  gcloud storage buckets create "gs://${STATE_BUCKET}" \
+    --project "$PROJECT" --location "$REGION" --uniform-bucket-level-access
+  gcloud storage buckets update "gs://${STATE_BUCKET}" --versioning
+fi
+
+echo "==> terraform state access (this bucket only, not project-wide)"
 gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
   --member "serviceAccount:${SA_EMAIL}" --role roles/storage.objectAdmin --quiet >/dev/null
 
