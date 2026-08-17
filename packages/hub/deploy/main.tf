@@ -171,8 +171,15 @@ output "hub_url" {
 
 
 # --- ompctl.ai edge: hub.ompctl.ai (relay) + app.ompctl.ai (web) -------------
-# Squarespace owns DNS for ompctl.ai. Terraform manages GCP only and outputs
-# the records Squarespace must create after apply.
+# Cloud DNS is authoritative for the zone; the registrar only delegates to it.
+# Terraform therefore owns the records outright instead of printing a list for
+# someone to retype into a registrar's panel.
+
+variable "root_domain" {
+  type        = string
+  description = "Apex domain whose Cloud DNS zone this project is authoritative for."
+  default     = "ompctl.ai"
+}
 
 variable "app_domain" {
   type        = string
@@ -206,7 +213,7 @@ variable "play_cert_sha256" {
   description = "Google Play app signing certificate SHA-256 for assetlinks.json (not the upload key)."
 
   validation {
-    condition = can(regex("^(?i)([0-9A-F]{2}:){31}[0-9A-F]{2}$", var.play_cert_sha256)) || can(regex("^(?i)[0-9A-F]{64}$", var.play_cert_sha256))
+    condition     = can(regex("^(?i)([0-9A-F]{2}:){31}[0-9A-F]{2}$", var.play_cert_sha256)) || can(regex("^(?i)[0-9A-F]{64}$", var.play_cert_sha256))
     error_message = "play_cert_sha256 must be the Play app signing cert SHA-256 fingerprint (with or without colons)."
   }
 }
@@ -312,27 +319,74 @@ resource "google_cloud_run_domain_mapping" "hub" {
   }
 }
 
+# --- DNS ----------------------------------------------------------------------
+# Cloud DNS is authoritative for ompctl.ai. The registrar (Squarespace) keeps
+# the registration and delegates by pointing its nameservers at this zone's,
+# which is a one-time change read from the `name_servers` output below.
+#
+# Records are derived from what each Cloud Run domain mapping asks for rather
+# than hardcoded: a mapping returns CNAME for a subdomain and A/AAAA for an
+# apex, and writing the wrong shape by hand is the usual way this breaks.
+resource "google_dns_managed_zone" "ompctl" {
+  project     = var.project_id
+  name        = "ompctl-ai"
+  dns_name    = "${var.root_domain}."
+  description = "Authoritative zone for ${var.root_domain}; delegated from the registrar."
+
+  dnssec_config {
+    state = "on"
+  }
+}
+
+locals {
+  # One record set per (host, type). Cloud DNS rejects duplicate name+type, so
+  # rrdatas for a repeated type are grouped rather than emitted twice.
+  mapping_records = merge([
+    for key, mapping in {
+      app = google_cloud_run_domain_mapping.app
+      hub = google_cloud_run_domain_mapping.hub
+      } : {
+      for type in distinct([for rr in try(mapping.status[0].resource_records, []) : rr.type]) :
+      "${key}-${type}" => {
+        host    = mapping.name
+        type    = type
+        rrdatas = [for rr in try(mapping.status[0].resource_records, []) : rr.rrdata if rr.type == type]
+      }
+    }
+  ]...)
+}
+
+resource "google_dns_record_set" "mapping" {
+  for_each = local.mapping_records
+
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = "${each.value.host}."
+  type         = each.value.type
+  ttl          = 300
+  rrdatas      = each.value.type == "CNAME" ? [for r in each.value.rrdatas : endswith(r, ".") ? r : "${r}."] : each.value.rrdatas
+}
+
 output "app_domain" { value = var.app_domain }
 output "hub_domain" { value = var.hub_domain }
 output "web_url" { value = google_cloud_run_v2_service.web.uri }
 
-output "squarespace_dns_records" {
-  description = "Create these at Squarespace DNS for ompctl.ai after apply."
+# Set these as the nameservers at the registrar. Until they are live, the
+# managed zone is authoritative for nothing and the domain mappings cannot
+# serve, so this output is the handoff for the one manual step that remains.
+output "registrar_nameservers" {
+  description = "Point the registrar's NS records for the root domain at these."
+  value       = google_dns_managed_zone.ompctl.name_servers
+}
+
+output "managed_dns_records" {
+  description = "Records Terraform maintains in the Cloud DNS zone."
   value = {
-    app = [
-      for rr in try(google_cloud_run_domain_mapping.app.status[0].resource_records, []) : {
-        type   = rr.type
-        host   = var.app_domain
-        rrdata = rr.rrdata
-      }
-    ]
-    hub = [
-      for rr in try(google_cloud_run_domain_mapping.hub.status[0].resource_records, []) : {
-        type   = rr.type
-        host   = var.hub_domain
-        rrdata = rr.rrdata
-      }
-    ]
+    for key, record in google_dns_record_set.mapping : key => {
+      host    = record.name
+      type    = record.type
+      rrdatas = record.rrdatas
+    }
   }
 }
 

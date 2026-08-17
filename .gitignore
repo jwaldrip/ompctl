@@ -35,3 +35,12 @@ coverage/
 .worktrees/
 .worktree/
 .wt/
+
+# Terraform working dirs. The provider lock file (.terraform.lock.hcl) is
+# committed on purpose so every apply resolves identical provider versions;
+# only the local plugin cache and any stray local state are ignored.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
