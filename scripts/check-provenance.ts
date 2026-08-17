@@ -55,6 +55,17 @@ const PATTERN = TERMS.join("|");
 /** Batched well under the argument limit; the exact size is not load-bearing. */
 const BATCH = 250;
 
+/** Excluded from the sweep because it necessarily contains every term. */
+const SELF = "scripts/check-provenance.ts";
+
+/**
+ * A shallow checkout makes this audit meaningless: `actions/checkout` defaults to
+ * depth 1, so `rev-list --all` returns a single commit and the sweep passes while
+ * covering nothing. Any real history is far above this, so a count below it means
+ * the checkout, not the repository, is what is clean.
+ */
+const MIN_REVS = 20;
+
 interface Failure {
   readonly reason: string;
 }
@@ -83,7 +94,10 @@ function sweep(repo: string, all: string[]): { hits: string[]; failures: Failure
   const failures: Failure[] = [];
   for (let i = 0; i < all.length; i += BATCH) {
     const batch = all.slice(i, i + BATCH);
-    const r = git(["grep", "-l", "-I", "-i", "-E", PATTERN, ...batch], repo);
+    // This file declares every term as a literal, so without excluding it the
+    // audit reports itself and fails on a clean tree. Excluded by pathspec rather
+    // than by obfuscating the terms, which would make the list unreadable.
+    const r = git(["grep", "-l", "-I", "-i", "-E", PATTERN, ...batch, "--", ".", `:!${SELF}`], repo);
     if (r.status === 0) {
       hits.push(...r.stdout.split("\n").filter(l => l.length > 0));
     } else if (r.status !== 1 || r.stderr.trim().length > 0) {
@@ -111,6 +125,14 @@ if (!patternMatchesSynthetic()) {
 console.log("  ok   pattern matches every term it declares");
 
 const all = revs(repo);
+if (all.length < MIN_REVS) {
+  console.error(
+    `  FAIL only ${all.length} rev(s) visible; expected at least ${MIN_REVS}. ` +
+      "This is a shallow checkout, so the sweep would prove nothing. " +
+      "Use actions/checkout with fetch-depth: 0.",
+  );
+  process.exit(1);
+}
 console.log(`  ok   ${all.length} revs, swept in batches of ${BATCH}`);
 
 const { hits, failures } = sweep(repo, all);
