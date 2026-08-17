@@ -17,6 +17,7 @@ import type { JSX } from "react";
 import { useState } from "react";
 import { Pressable, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
+import { useFormMaxWidth } from "../design/layout.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
@@ -36,6 +37,7 @@ export function PairScreen({
   const [token, setToken] = useState("");
   const [scanning, setScanning] = useState(false);
   const { width } = useWindowDimensions();
+  const formMaxWidth = useFormMaxWidth();
   const endpoint = parseEndpoint(raw);
   const ready = endpoint !== null && token.trim().length > 0;
 
@@ -56,7 +58,7 @@ export function PairScreen({
 
   return (
     <SafeScreen style={styles.screen} testID="pair">
-      <View style={width > 480 ? [styles.form, { maxWidth: 480 }] : styles.form} testID="pair-form">
+      <View style={width > formMaxWidth ? [styles.form, { maxWidth: formMaxWidth }] : styles.form} testID="pair-form">
         <Kicker color={ink.muted}>ompctl</Kicker>
         <Display heading>Take the position</Display>
 

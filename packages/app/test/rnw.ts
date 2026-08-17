@@ -70,6 +70,15 @@ export function setWindowWidth(width: number): void {
   windowSize = { ...windowSize, width };
 }
 
+/**
+ * Set both axes. Screen class is decided from the shortest side, so a test
+ * that only moves width cannot tell a tablet in portrait apart from a phone
+ * turned sideways.
+ */
+export function setWindowSize(width: number, height: number): void {
+  windowSize = { ...windowSize, width, height };
+}
+
 /** Restore the phone-width default after a wide render. */
 export function resetWindowSize(): void {
   windowSize = { width: 390, height: 844, scale: 1, fontScale: 1 };
