@@ -1,14 +1,23 @@
 name: App mobile tests
 
+# The root manifest and lockfile are in scope on purpose. The workspace catalog
+# pins the React version every platform compiles against, so a one-line change
+# there can break the native app while `packages/app/**` is untouched -- which is
+# exactly how a React/renderer version mismatch reached main once already. A
+# dependency change that no mobile job even runs against is not reviewable.
 on:
   pull_request:
     paths:
       - "packages/app/**"
+      - "package.json"
+      - "bun.lock"
       - ".github/workflows/app-mobile-test.yml"
   push:
     branches: [main]
     paths:
       - "packages/app/**"
+      - "package.json"
+      - "bun.lock"
       - ".github/workflows/app-mobile-test.yml"
   workflow_dispatch:
 
