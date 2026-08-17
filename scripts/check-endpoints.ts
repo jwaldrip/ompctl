@@ -27,8 +27,11 @@
 import { resolve4, resolveCname } from "node:dns/promises";
 
 const TEAM_ID = "8H7HVPHS87";
+// iOS and macOS ship under one universal bundle id. Kept as two constants so a
+// future split needs no restructuring here, and so the assertion below still
+// checks each platform's id rather than assuming they are the same.
 const BUNDLE_IOS = "ai.ompctl.app";
-const BUNDLE_MAC = "ai.ompctl.macos";
+const BUNDLE_MAC = "ai.ompctl.app";
 const ANDROID_PKG = "ai.ompctl.app";
 
 /*
@@ -164,7 +167,7 @@ console.log(APP_ORIGIN);
   } else {
     aasaDetail = "endpoint did not serve";
   }
-  check("apple-app-site-association claims both real bundle ids", aasaOk, aasaDetail);
+  check("apple-app-site-association claims every real bundle id", aasaOk, aasaDetail);
 
   const alUrl = `${APP_ORIGIN}/.well-known/assetlinks.json`;
   const al = await get(alUrl);
