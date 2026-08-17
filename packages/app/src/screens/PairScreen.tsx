@@ -57,7 +57,7 @@ export function PairScreen({
   return (
     <SafeScreen style={styles.screen} testID="pair">
       <View style={width > 480 ? [styles.form, { maxWidth: 480 }] : styles.form} testID="pair-form">
-        <Kicker color={ink.muted}>ompd</Kicker>
+        <Kicker color={ink.muted}>ompctl</Kicker>
         <Display heading>Take the position</Display>
 
         {notice === undefined ? null : (

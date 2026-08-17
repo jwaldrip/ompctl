@@ -59,7 +59,7 @@ export function ScanScreen({
   return (
     <SafeScreen style={styles.screen} testID="scan">
       <View style={styles.header}>
-        <Kicker color={ink.faint}>ompd</Kicker>
+        <Kicker color={ink.faint}>ompctl</Kicker>
         <Display color={ink.bright} heading>
           Scan to pair
         </Display>
@@ -68,7 +68,7 @@ export function ScanScreen({
 
       {!hasPermission ? (
         <View style={styles.centered} testID="scan-permission">
-          <Body color={ink.bright}>ompd needs the camera to read a pairing code.</Body>
+          <Body color={ink.bright}>ompctl needs the camera to read a pairing code.</Body>
           <Pressable
             accessibilityRole="button"
             onPress={() => void requestPermission()}

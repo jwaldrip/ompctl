@@ -132,7 +132,7 @@ export function InviteScreen({ connection, onDone }: { connection: Connection; o
   return (
     <SafeScreen style={styles.screen} testID="invite">
       <View style={styles.header}>
-        <Kicker color={ink.muted}>ompd</Kicker>
+        <Kicker color={ink.muted}>ompctl</Kicker>
         <Display heading>Invite a device</Display>
         <Body color={ink.plain}>
           Generates a code for one new device. Scan it there to pair; the code is only good once.
