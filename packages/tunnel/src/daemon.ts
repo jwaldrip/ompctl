@@ -54,6 +54,43 @@ export interface DialSocket {
 
 export type DialTransport = (url: string) => DialSocket;
 
+/**
+ * The default wire: a real `WebSocket`, adapted to `DialSocket`.
+ *
+ * The adaptation is the whole point and cannot be skipped with a cast. A
+ * `WebSocket` hands its handlers DOM events -- `onmessage` receives a
+ * `MessageEvent`, not the `string` this contract promises, and `onerror`
+ * receives an `Event` with no `message` at all. Passing one straight through as
+ * a `DialSocket` typechecks only because a double assertion silences the
+ * mismatch, and then every inbound frame reaches `JSON.parse` as
+ * `"[object MessageEvent]"`, throws, and is swallowed as an unparseable frame.
+ *
+ * The daemon then never answers the hub's registration challenge, so the socket
+ * stays open and unregistered, and every client that tries to reach this daemon
+ * is told `daemon_offline` -- with nothing logged on either side to say why.
+ */
+export function dialWebSocket(url: string): DialSocket {
+  const ws = new WebSocket(url);
+  const socket: DialSocket = {
+    send: data => ws.send(data),
+    close: (code, reason) => ws.close(code, reason),
+    onopen: null,
+    onclose: null,
+    onerror: null,
+    onmessage: null,
+  };
+  // Binary frames are not part of this protocol; decoding one to text would
+  // invent a frame the peer never sent, so only strings are forwarded.
+  ws.onmessage = event => {
+    if (typeof event.data === "string") socket.onmessage?.(event.data);
+  };
+  ws.onopen = () => socket.onopen?.();
+  ws.onclose = event => socket.onclose?.({ code: event.code, reason: event.reason });
+  // `Event` carries no reason. Naming the transport is more use than `undefined`.
+  ws.onerror = () => socket.onerror?.({ message: "websocket error" });
+  return socket;
+}
+
 /** A session the acceptor admitted, or the reason it did not. */
 export type AcceptResult =
   | {
@@ -161,7 +198,7 @@ export class TunnelDaemon {
     this.#hubUrl = opts.hubUrl.replace(/\/+$/, "");
     this.#identity = opts.identity;
     this.#acceptor = opts.acceptor;
-    this.#transport = opts.transport ?? (url => new WebSocket(url) as unknown as DialSocket);
+    this.#transport = opts.transport ?? dialWebSocket;
     this.#minBackoffMs = opts.minBackoffMs ?? DEFAULT_MIN_BACKOFF_MS;
     this.#maxBackoffMs = opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.#onLog = opts.onLog ?? (() => {});
@@ -394,7 +431,24 @@ export class TunnelDaemon {
       return;
     }
 
-    const admitted = this.#acceptor.accept(credential.token, raw => void this.#sealTo(session, raw));
+    // Whatever the acceptor admits may start talking synchronously: the gateway
+    // greets a new client with its initial agent list. Those frames cannot go
+    // out yet. The client is still in its confirming phase and treats the first
+    // sealed frame as the session confirmation, so a greeting that overtakes
+    // `ready` reads as "the daemon refused the credential" even though the
+    // daemon admitted the session and audited it as `ok`. Queue until `ready`
+    // is on the wire, then flush in the order the gateway produced them.
+    let sessionReady = false;
+    const pending: string[] = [];
+    const deliver = (raw: string): void => {
+      if (!sessionReady) {
+        pending.push(raw);
+        return;
+      }
+      void this.#sealTo(session, raw);
+    };
+
+    const admitted = this.#acceptor.accept(credential.token, deliver);
     if (!admitted.ok) {
       this.#onSession?.({ sessionId: session.sessionId, outcome: "denied", reason: admitted.reason });
       this.#refuse(
@@ -408,6 +462,8 @@ export class TunnelDaemon {
     session.admitted = admitted;
     this.#onSession?.({ sessionId: session.sessionId, outcome: "ok", deviceId: admitted.deviceId });
     await this.#sealTo(session, JSON.stringify({ t: "ready", deviceId: admitted.deviceId } satisfies SessionReady));
+    sessionReady = true;
+    for (const raw of pending) await this.#sealTo(session, raw);
   }
 
   async #onSessionFrame(session: Session, payload: string): Promise<void> {
