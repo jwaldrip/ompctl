@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MONO="$(cd "$ROOT/../../.." && pwd)"
-export NODE_PATH="$MONO/node_modules${NODE_PATH:+:$NODE_PATH}"
+# shellcheck source=lib/mono-root.sh
+source "$ROOT/scripts/lib/mono-root.sh"
 cleanup() {
   bash "$ROOT/scripts/stop-metro.sh" || true
   adb reverse --remove-all >/dev/null 2>&1 || true
