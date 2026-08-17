@@ -19,4 +19,10 @@ adb reverse --list || true
 
 cd "$ROOT/android"
 chmod +x ./gradlew
-./gradlew :app:connectedDebugAndroidTest --console=plain
+# Named explicitly rather than running the whole source set. `DetoxTest` also
+# lives in androidTest, and it blocks waiting for a Detox server that only
+# exists when `detox test` launched it, so an unfiltered run would hang and then
+# fail. Naming the class keeps this job doing exactly what it did before and
+# makes it immune to test classes added later.
+./gradlew :app:connectedDebugAndroidTest --console=plain \
+  -Pandroid.testInstrumentationRunnerArguments.class=ai.ompctl.app.LaunchSmokeTest

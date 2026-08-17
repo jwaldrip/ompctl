@@ -110,6 +110,11 @@ android {
         versionCode Integer.parseInt(project.findProperty("OMPD_VERSION_CODE") ?: "1")
         versionName project.findProperty("OMPD_VERSION_NAME") ?: "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Detox drives the app through its own instrumentation entry point and
+        // needs the release-shaped APK under test to be the debug one locally.
+        // Overridable so a CI job can build the same tests against a different
+        // variant without editing this file.
+        testBuildType System.getProperty("testBuildType", "debug")
     }
     signingConfigs {
         debug {
@@ -182,8 +187,7 @@ dependencies {
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
-}
-
-dependencies {
-    // test deps appended below existing block — merged carefully
+    // Detox's Android runtime. Test-only on purpose: it never enters a release
+    // APK, so the Play/TestFlight artifacts are unaffected by its presence.
+    androidTestImplementation("com.wix:detox:+")
 }
