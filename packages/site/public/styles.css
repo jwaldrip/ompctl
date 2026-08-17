@@ -1,0 +1,485 @@
+/*
+ * The site is cut from the app's own material.
+ *
+ * Every value below is lifted from `packages/app/src/design/tokens.ts` rather
+ * than picked to look nice here: the ground steps, the four ink levels, the six
+ * signals and their washes, the four-point grid, and `radius: 0`. A visitor who
+ * installs the thing should recognise the surface they already saw on the site,
+ * and a token change in the app should be a search-and-replace here rather than
+ * a redesign.
+ *
+ * The signals are used for what they MEAN in the product -- sage is ready, amber
+ * is working, ochre is holding, oxide is failed -- never as decoration. That is
+ * the rule inside the app and it is the reason there are six of them.
+ */
+
+/*
+ * Contrast, computed rather than eyeballed.
+ *
+ * Several of the app's own pairings fail WCAG AA for small text on this surface:
+ * `ink.muted` on `ground.base` is 4.50, `ink.faint` is 2.48, and every signal on
+ * its own wash lands between 3.06 and 4.37. Those are fine on a phone where the
+ * same label is a glanceable status next to a large one, and not fine as body
+ * copy on a marketing page, so this sheet uses the brighter step of each pair and
+ * draws chips as signal-on-ground with a hairline instead of signal-on-wash.
+ *
+ * Ratios against `--ground-base` #141310: ink-plain 8.34, sage 7.19, amber 8.38,
+ * ochre 4.61, violet 5.07. Against `--ground-surface` #1C1A16: ink-plain 7.80.
+ * All above the 4.5 needed for text this size.
+ */
+
+:root {
+  /* Warm graphite. Every step shares a hue, so stacking two reads as depth. */
+  --ground-base: #141310;
+  --ground-surface: #1c1a16;
+  --ground-raised: #24211b;
+  --ground-active: #2e2a22;
+  --ground-line: #332f27;
+  --ground-edge: #403a30;
+
+  --ink-bright: #ede7da;
+  --ink-plain: #b5ad9d;
+  --ink-muted: #847c6d;
+  --ink-faint: #5a5449;
+  --ink-inverse: #141310;
+
+  --signal-amber: #e0a33a;
+  --signal-sage: #8fa97b;
+  --signal-ochre: #c1662f;
+  --signal-oxide: #b4462f;
+  --signal-slate: #7a828a;
+  --signal-violet: #8b7bc4;
+
+  --wash-amber: #31281a;
+  --wash-sage: #232a1f;
+  --wash-ochre: #2d1f16;
+  --wash-violet: #231f30;
+
+  /* The app's four-point grid, same names. */
+  --hair: 2px;
+  --tight: 4px;
+  --snug: 8px;
+  --step: 12px;
+  --wide: 16px;
+  --loose: 24px;
+  --gulf: 32px;
+
+  /* Square, everywhere. Named so the rule is visible. */
+  --radius: 0;
+
+  --face-body: Archivo, "Helvetica Neue", Arial, sans-serif;
+  --face-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--ground-base);
+  color: var(--ink-plain);
+  font-family: var(--face-body);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Skip link: keyboard users should not have to walk the nav to reach content. */
+.skip {
+  position: absolute;
+  left: -9999px;
+  background: var(--signal-sage);
+  color: var(--ink-inverse);
+  padding: var(--snug) var(--step);
+  font-family: var(--face-mono);
+  z-index: 10;
+}
+.skip:focus {
+  left: var(--step);
+  top: var(--step);
+}
+
+:focus-visible {
+  outline: var(--hair) solid var(--signal-amber);
+  outline-offset: 2px;
+}
+
+/* --- structure -------------------------------------------------------- */
+
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 var(--loose);
+}
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--wide);
+  border-bottom: 1px solid var(--ground-line);
+  padding: var(--loose) 0;
+}
+
+.wordmark {
+  font-family: var(--face-mono);
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-bright);
+  margin: 0;
+}
+
+.masthead nav {
+  margin-left: auto;
+  display: flex;
+  gap: var(--loose);
+}
+
+.masthead nav a,
+.footer a {
+  color: var(--ink-plain);
+  text-decoration: none;
+  font-family: var(--face-mono);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px solid transparent;
+}
+.masthead nav a:hover,
+.footer a:hover {
+  color: var(--ink-bright);
+  border-bottom-color: var(--signal-amber);
+}
+
+/*
+ * The kicker is the app's own section marker: a small mono label above a
+ * heading. It replaces the emoji-as-section-header habit outright.
+ */
+.kicker {
+  font-family: var(--face-mono);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-plain);
+  margin: 0 0 var(--snug);
+}
+
+h1,
+h2,
+h3 {
+  color: var(--ink-bright);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin: 0 0 var(--step);
+}
+
+h1 {
+  font-size: clamp(38px, 6vw, 68px);
+}
+h2 {
+  font-size: clamp(28px, 3.4vw, 40px);
+}
+h3 {
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+p {
+  max-width: 68ch;
+  margin: 0 0 var(--wide);
+}
+
+code,
+kbd {
+  font-family: var(--face-mono);
+  font-size: 0.92em;
+  color: var(--signal-amber);
+}
+
+/*
+ * Asymmetric on purpose: the lede sits left against a plate on the right.
+ * A centred hero over a gradient is the single most recognisable machine-made
+ * layout, so this is a two-column split that collapses honestly.
+ */
+.hero {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: var(--gulf);
+  align-items: end;
+  padding: clamp(var(--gulf), 7vw, 96px) 0 var(--gulf);
+  border-bottom: 1px solid var(--ground-line);
+}
+
+.hero p.lede {
+  font-size: 21px;
+  color: var(--ink-plain);
+}
+
+.state-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--snug);
+  padding: 0;
+  margin: var(--loose) 0 0;
+  list-style: none;
+}
+
+/*
+ * A signal chip, exactly as the app draws one: signal text on its own wash,
+ * square, hairline-free. The colour is the meaning, not the styling.
+ */
+.chip {
+  font-family: var(--face-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: var(--tight) var(--snug);
+  border-radius: var(--radius);
+}
+.chip.ready {
+  color: var(--signal-sage);
+  border: 1px solid var(--signal-sage);
+}
+.chip.working {
+  color: var(--signal-amber);
+  border: 1px solid var(--signal-amber);
+}
+.chip.holding {
+  color: var(--signal-ochre);
+  border: 1px solid var(--signal-ochre);
+}
+.chip.thinking {
+  color: var(--signal-violet);
+  border: 1px solid var(--signal-violet);
+}
+
+.section {
+  padding: clamp(var(--gulf), 6vw, 88px) 0;
+  border-bottom: 1px solid var(--ground-line);
+}
+
+/* --- plates ----------------------------------------------------------- */
+
+/*
+ * Screenshots are the spine of this page, not decoration, so they are called
+ * plates and they carry real captions. Each is a genuine capture from the
+ * Cucumber suite against a live daemon; none is a mockup.
+ */
+.plates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--loose);
+  margin: var(--loose) 0 0;
+}
+
+.plate {
+  margin: 0;
+  background: var(--ground-surface);
+  border: 1px solid var(--ground-line);
+  border-radius: var(--radius);
+}
+
+.plate img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-bottom: 1px solid var(--ground-line);
+}
+
+/*
+ * Phone captures are 1080x2400. At full column width that renders about 1265px
+ * tall, which pushed the headline clean off the first screen: the hero showed a
+ * giant screenshot and no words. Capping the height makes a phone read as a
+ * device held next to the copy rather than as a poster behind it. The wide
+ * console captures are 2360x1640 and want the opposite, so they keep the
+ * full-bleed treatment.
+ */
+.plate--phone img {
+  width: auto;
+  max-height: 62vh;
+  margin: 0 auto;
+  border-bottom: none;
+  border-left: 1px solid var(--ground-line);
+  border-right: 1px solid var(--ground-line);
+}
+
+.plates .plate--phone img {
+  max-height: 440px;
+}
+
+.plate figcaption {
+  padding: var(--step) var(--wide);
+  font-family: var(--face-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-plain);
+}
+.plate figcaption b {
+  color: var(--ink-plain);
+  font-weight: 500;
+}
+
+/* The console is a wide surface; it gets a full-bleed plate of its own. */
+.plate-wide {
+  grid-column: 1 / -1;
+}
+
+/* --- steps ------------------------------------------------------------ */
+
+/*
+ * Numbered as an ordered list because it IS one: these steps only work in
+ * order. Oversized numerals give the page scale contrast without a hero blob.
+ */
+.steps {
+  counter-reset: step;
+  list-style: none;
+  padding: 0;
+  margin: var(--loose) 0 0;
+  display: grid;
+  gap: var(--loose);
+}
+
+.steps > li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: var(--loose);
+  align-items: start;
+  border-top: 1px solid var(--ground-line);
+  padding-top: var(--loose);
+}
+
+.steps > li::before {
+  content: counter(step, decimal-leading-zero);
+  font-family: var(--face-mono);
+  font-size: 40px;
+  line-height: 1;
+  color: var(--ink-muted);
+}
+
+pre {
+  margin: var(--step) 0 0;
+  padding: var(--step) var(--wide);
+  background: var(--ground-surface);
+  border-left: var(--hair) solid var(--ground-edge);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  font-family: var(--face-mono);
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink-bright);
+}
+pre .prompt {
+  color: var(--ink-plain);
+  user-select: none;
+}
+pre .out {
+  color: var(--ink-plain);
+}
+
+/* --- scopes table ----------------------------------------------------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: var(--loose) 0 0;
+  font-size: 15px;
+}
+caption {
+  text-align: left;
+  color: var(--ink-plain);
+  font-family: var(--face-mono);
+  font-size: 12.5px;
+  padding-bottom: var(--snug);
+}
+th,
+td {
+  text-align: left;
+  padding: var(--step) var(--wide) var(--step) 0;
+  border-bottom: 1px solid var(--ground-line);
+  vertical-align: top;
+}
+th {
+  color: var(--ink-bright);
+  font-family: var(--face-mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+td code {
+  color: var(--signal-sage);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--loose);
+  align-items: baseline;
+  padding: var(--loose) 0 var(--gulf);
+  color: var(--ink-plain);
+  font-family: var(--face-mono);
+  font-size: 12.5px;
+}
+.footer nav {
+  margin-left: auto;
+  display: flex;
+  gap: var(--loose);
+}
+
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+  .masthead {
+    flex-wrap: wrap;
+  }
+  .masthead nav {
+    margin-left: 0;
+    width: 100%;
+  }
+  .steps > li {
+    grid-template-columns: 48px 1fr;
+    gap: var(--step);
+  }
+  .steps > li::before {
+    font-size: 28px;
+  }
+}
+
+/* Print: the getting-started steps are the part anyone would print. */
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+  }
+  .masthead nav,
+  .plates,
+  .footer nav {
+    display: none;
+  }
+  pre {
+    border-left-color: #666;
+    color: #000;
+    background: #f4f4f4;
+  }
+}

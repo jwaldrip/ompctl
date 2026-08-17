@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ompctl - drive your coding agents from your phone</title>
+    <meta
+      name="description"
+      content="ompctl is a control plane for OMP coding agents. A daemon runs on your machine; your phone pairs with it and drives the sessions already running there."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <div class="shell">
+      <header class="masthead">
+        <p class="wordmark">ompctl</p>
+        <nav aria-label="Sections">
+          <a href="#what">What it is</a>
+          <a href="#start">Get started</a>
+          <a href="#scopes">Scopes</a>
+        </nav>
+      </header>
+
+      <main id="main">
+        <section class="hero">
+          <div>
+            <p class="kicker">Control plane for OMP agents</p>
+            <h1>Your agents keep running. You stop having to sit there.</h1>
+            <p class="lede">
+              A daemon holds the sessions on your own machine. Your phone pairs with it over your
+              network, or through a relay when you are not on it, and drives the work that is
+              already in flight. The code never leaves the machine it was always on.
+            </p>
+            <ul class="state-row">
+              <li class="chip ready">ready</li>
+              <li class="chip working">working</li>
+              <li class="chip holding">holding</li>
+              <li class="chip thinking">reasoning</li>
+            </ul>
+          </div>
+          <figure class="plate plate--phone">
+            <img
+              src="/shots/07-sessions-loaded-android.png"
+              width="1080"
+              height="2400"
+              alt="The ompctl session list on an Android phone, showing one live session in /tmp/any-cwd with its age, active time, message count and size."
+            />
+            <figcaption>
+              <b>Sessions, on the phone.</b> One live agent, its age and last activity read straight
+              off the daemon. Captured from the test suite against a running daemon.
+            </figcaption>
+          </figure>
+        </section>
+
+        <section class="section" id="what">
+          <p class="kicker">What it is</p>
+          <h2>A daemon, a paired device, and the sessions between them</h2>
+          <p>
+            <code>ompd</code> runs where your code is. It owns the agent sessions, the working
+            directories, and the credentials. Pairing a device mints one scoped token for that
+            device and nothing else, so a phone can be allowed to read and prompt without being
+            allowed to create sessions or approve tool calls.
+          </p>
+          <p>
+            The console is the same application on every surface, which is why the phone and the
+            desktop show the same state in the same colours. Six of them, each meaning exactly one
+            thing about a session: whether it is working, waiting on you, or stopped.
+          </p>
+
+          <div class="plates">
+            <figure class="plate plate-wide">
+              <img
+                src="/shots/04-fleet-paired-web.png"
+                width="2360"
+                height="1640"
+                alt="The ompctl console on a wide screen: a sessions sidebar on the left listing a live agent, and that session's transcript and composer on the right."
+              />
+              <figcaption>
+                <b>The console on a wide screen.</b> Sessions on the left, the selected session's
+                transcript and composer on the right. The same two panes collapse to one on a phone.
+              </figcaption>
+            </figure>
+            <figure class="plate plate--phone">
+              <img
+                src="/shots/01-pair-empty-android.png"
+                width="1080"
+                height="2400"
+                alt="The ompctl pairing screen on a phone, with empty fields for a daemon endpoint and a device token."
+              />
+              <figcaption>
+                <b>Pairing is deliberate.</b> An endpoint and a token, or a scanned code. Nothing
+                pairs itself.
+              </figcaption>
+            </figure>
+            <figure class="plate plate--phone">
+              <img
+                src="/shots/09-connections-android.png"
+                width="1080"
+                height="2400"
+                alt="The ompctl connections screen listing one active daemon endpoint, with an option to add another connection."
+              />
+              <figcaption>
+                <b>More than one daemon.</b> Each pairing keeps its own credential; switching
+                connections switches which machine you are driving.
+              </figcaption>
+            </figure>
+            <figure class="plate">
+              <img
+                src="/shots/08-sessions-sorted-by-age-web.png"
+                width="2360"
+                height="1640"
+                alt="The ompctl session list sorted by age, with the age column marked as the active sort."
+              />
+              <figcaption>
+                <b>Sorting is real.</b> Status, age, last activity, messages, size. Useful once you
+                have more sessions than fit on a screen.
+              </figcaption>
+            </figure>
+          </div>
+        </section>
+
+        <section class="section" id="start">
+          <p class="kicker">Get started</p>
+          <h2>Four commands and a code</h2>
+          <p>
+            Everything below runs on the machine that holds your code. The daemon binds to loopback
+            unless you tell it otherwise, so nothing is reachable until you decide it should be.
+          </p>
+
+          <ol class="steps">
+            <li>
+              <div>
+                <h3>Install the daemon</h3>
+                <p>
+                  Builds <code>ompd</code> and puts it on your path, then loads it as a launch agent
+                  so it comes back after a reboot.
+                </p>
+                <pre><span class="prompt">$</span> ompd self-install
+<span class="prompt">$</span> ompd install</pre>
+              </div>
+            </li>
+            <li>
+              <div>
+                <h3>Start it where your phone can reach it</h3>
+                <p>
+                  Loopback is the default. Give it an address on your network when you want to pair a
+                  device on the same wifi. Anything that can reach that address can ask the daemon to
+                  run code as you, and only a paired token stands in front of it.
+                </p>
+                <pre><span class="prompt">$</span> ompd start --host 192.168.1.20
+<span class="out">ompd is listening at http://192.168.1.20:7788</span>
+<span class="out">  Reachable from this network at:</span>
+<span class="out">    ws://192.168.1.20:7788/v1/socket</span></pre>
+              </div>
+            </li>
+            <li>
+              <div>
+                <h3>Pair the device</h3>
+                <p>
+                  <code>pair</code> prints a six digit code that expires in ten minutes and can be
+                  spent once. <code>approve</code> turns it into a token, printed one time and never
+                  recoverable. On one machine, <code>ompd invite</code> does both and shows a QR code.
+                </p>
+                <pre><span class="prompt">$</span> ompd pair "my phone" --scopes read,prompt
+<span class="out">code    386707</span>
+<span class="prompt">$</span> ompd approve 386707 --scopes read,prompt</pre>
+              </div>
+            </li>
+            <li>
+              <div>
+                <h3>Point the app at it</h3>
+                <p>
+                  Paste the endpoint and the token into the pairing screen, or scan the code the
+                  invite printed. The app lands on the sessions the daemon already holds. If nothing
+                  is there yet, start one on the machine with <code>ompd new .</code>
+                </p>
+              </div>
+            </li>
+          </ol>
+
+          <div class="plates">
+            <figure class="plate plate--phone">
+              <img
+                src="/shots/05-scan-android.png"
+                width="1080"
+                height="2400"
+                alt="The ompctl scan screen on a phone, explaining that the camera is needed to read a pairing code."
+              />
+              <figcaption>
+                <b>Or scan it.</b> The invite prints a code that carries the endpoint and the token
+                together, so a phone never has to be typed at.
+              </figcaption>
+            </figure>
+          </div>
+        </section>
+
+        <section class="section" id="scopes">
+          <p class="kicker">Scopes</p>
+          <h2>A device gets exactly what you gave it</h2>
+          <p>
+            Scopes are set when the pairing is approved and are checked on every request. A device
+            paired for reading and prompting cannot create a session or answer a clearance, and the
+            console hides those controls rather than showing them and failing.
+          </p>
+
+          <table>
+            <caption>The four scopes, and what a device holding one can do.</caption>
+            <thead>
+              <tr>
+                <th scope="col">Scope</th>
+                <th scope="col">What it allows</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>read</code></td>
+                <td>List sessions and read their transcripts.</td>
+              </tr>
+              <tr>
+                <td><code>prompt</code></td>
+                <td>Send a message to a session and interrupt a turn in flight.</td>
+              </tr>
+              <tr>
+                <td><code>manage</code></td>
+                <td>Create and archive sessions.</td>
+              </tr>
+              <tr>
+                <td><code>approve</code></td>
+                <td>Answer a clearance, and invite another device.</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p>
+            Revoking a device stops its token on the next request or frame. There is no grace
+            period, and the daemon keeps only a hash of the token it issued.
+          </p>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <p>ompctl - a control plane for OMP agents.</p>
+        <nav aria-label="Elsewhere">
+          <a href="https://github.com/jwaldrip/ompctl">Source</a>
+          <a href="#main">Back to top</a>
+        </nav>
+      </footer>
+    </div>
+  </body>
+</html>
