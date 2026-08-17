@@ -37,9 +37,19 @@ Then("I can read {string} in {string}", async function (this: OmpctlWorld, expec
   assert.equal(actual, expected, `${testId} read "${actual}"`);
 });
 
+/**
+ * Case-insensitive on purpose. Casing here is a styling decision, not product
+ * behaviour: the same `Kicker` renders "1 SESSION" in a browser, where CSS
+ * `text-transform` has already been applied to the text a driver reads back,
+ * and "1 session" natively, where the driver reads the untransformed string.
+ * Asserting the casing would test which platform is running, not the app.
+ */
 Then("{string} contains {string}", async function (this: OmpctlWorld, testId: string, needle: string) {
   const actual = await this.app.textOf(testId);
-  assert.ok(actual.includes(needle), `${testId} read "${actual}", which does not contain "${needle}"`);
+  assert.ok(
+    actual.toLowerCase().includes(needle.toLowerCase()),
+    `${testId} read "${actual}", which does not contain "${needle}"`,
+  );
 });
 
 Given("I capture {string}", async function (this: OmpctlWorld, name: string) {
