@@ -19,3 +19,27 @@ buildscript {
 }
 
 apply plugin: "com.facebook.react.rootproject"
+
+/**
+ * Detox does not publish its Android artifact to any public Maven repository:
+ * `com.wix:detox` ships as a small local repo inside the npm package. Without
+ * this, resolution falls through to the configured remotes and fails with a
+ * parse error on a JitPack HTML 404 page rather than a missing-artifact message.
+ *
+ * The location is resolved by asking Node where the package is, rather than by
+ * walking a fixed number of `..` segments up to `node_modules`. A hardcoded
+ * depth is only correct for one directory layout: the same assumption in
+ * `packages/app/vite.config.ts` broke the web target outright when this tree was
+ * extracted one level shallower. This form also survives a package manager
+ * hoisting `detox` somewhere other than the workspace root.
+ */
+allprojects {
+    repositories {
+        maven {
+            url "${providers.exec {
+                commandLine "node", "--print",
+                    "require('path').dirname(require.resolve('detox/package.json'))"
+            }.standardOutput.asText.get().trim()}/Detox-android"
+        }
+    }
+}
