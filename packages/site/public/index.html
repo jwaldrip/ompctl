@@ -26,6 +26,7 @@
           <a href="#what">What it is</a>
           <a href="#start">Get started</a>
           <a href="#scopes">Scopes</a>
+          <a href="#screens">Screens</a>
         </nav>
       </header>
 
@@ -243,6 +244,251 @@
             Revoking a device stops its token on the next request or frame. There is no grace
             period, and the daemon keeps only a hash of the token it issued.
           </p>
+        </section>
+
+        <section class="section" id="screens">
+          <p class="kicker">Every screen, both surfaces</p>
+          <h2>The same application, a phone and a desktop apart</h2>
+          <p>
+            One codebase renders all of these. The pairs below are the same screen captured on an
+            Android phone and in a browser at tablet width, which is how the layout decides whether
+            to show one pane or two. Every frame comes from the test suite running against a live
+            daemon, so what is on this page is what the application actually drew.
+          </p>
+
+          <div class="pairs">
+            <section class="pair">
+              <h3>Pairing</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/01-pair-empty-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The pairing screen on a phone: fields for a daemon endpoint and a device token above a Connect button."
+                  />
+                  <figcaption><b>Phone.</b> The form fills the width it is given.</figcaption>
+                </figure>
+                <figure class="plate">
+                  <img
+                    src="/shots/01-pair-empty-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The same pairing screen in a browser at tablet width, with the form capped to a readable measure rather than stretched."
+                  />
+                  <figcaption>
+                    <b>Desktop.</b> The form caps at a readable measure instead of stretching.
+                  </figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>An endpoint that is not a daemon</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/02-pair-rejects-bad-endpoint-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The pairing screen on a phone showing the message Not a daemon endpoint beneath a URL that is not a daemon."
+                  />
+                  <figcaption><b>Phone.</b> Named before you can submit it.</figcaption>
+                </figure>
+                <figure class="plate">
+                  <img
+                    src="/shots/02-pair-rejects-bad-endpoint-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The same rejection message shown in a browser, with the Connect button still disabled."
+                  />
+                  <figcaption><b>Desktop.</b> Connect stays disabled until both fields parse.</figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>A recognised socket</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/03-pair-endpoint-recognised-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The pairing screen on a phone confirming the entered address is a daemon socket, before any token is given."
+                  />
+                  <figcaption><b>Phone.</b> The endpoint is classified before a token is typed.</figcaption>
+                </figure>
+                <figure class="plate">
+                  <img
+                    src="/shots/03-pair-endpoint-recognised-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The same recognised socket endpoint shown in a browser."
+                  />
+                  <figcaption><b>Desktop.</b> A hub base and a direct socket are told apart.</figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>Sessions, once paired</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/04-fleet-paired-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The session list on a phone immediately after pairing, showing one live agent grouped by its working directory."
+                  />
+                  <figcaption><b>Phone.</b> One pane, the list first.</figcaption>
+                </figure>
+                <figure class="plate">
+                  <img
+                    src="/shots/04-fleet-paired-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The same state in a browser, showing the session list beside the selected session's transcript and composer."
+                  />
+                  <figcaption><b>Desktop.</b> Two panes, list and session together.</figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>The scanner</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/05-scan-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The scan screen on a phone, explaining that the camera is needed to read a pairing code."
+                  />
+                  <figcaption><b>Phone.</b> A camera it has to ask for.</figcaption>
+                </figure>
+                <figure class="plate">
+                  <img
+                    src="/shots/05-scan-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The scan screen in a browser, stating that scanning needs a phone or tablet camera and to paste the endpoint instead."
+                  />
+                  <figcaption>
+                    <b>Desktop.</b> A browser has no camera, and says so rather than half working.
+                  </figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>Leaving the scanner</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/06-scan-cancelled-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The phone back on the manual pairing form after cancelling the scanner, with the fields intact."
+                  />
+                  <figcaption><b>Phone.</b> Back to manual entry, nothing lost.</figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>Sorting the list</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/08-sessions-sorted-by-age-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The session list on a phone sorted by age, with the age column marked as the active sort and its direction shown."
+                  />
+                  <figcaption><b>Phone.</b> Status, age, last activity, messages, size.</figcaption>
+                </figure>
+                <figure class="plate">
+                  <img
+                    src="/shots/08-sessions-sorted-by-age-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The same sort applied in a browser, with the direction indicator on the age column."
+                  />
+                  <figcaption><b>Desktop.</b> The same control, the same state.</figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>Connections</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/09-connections-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The connections screen on a phone listing one active daemon endpoint, with no invite control because this pairing lacks the approve scope."
+                  />
+                  <figcaption>
+                    <b>Phone.</b> No invite control here: this pairing holds read and prompt, not
+                    approve.
+                  </figcaption>
+                </figure>
+                <figure class="plate">
+                  <img
+                    src="/shots/09-connections-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The same connections screen in a browser, listing the active endpoint and an option to add another connection."
+                  />
+                  <figcaption><b>Desktop.</b> Each pairing keeps its own credential.</figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>Back to the sessions</h3>
+              <div class="pair-shots">
+                <figure class="plate plate--phone">
+                  <img
+                    src="/shots/11-back-to-sessions-android.png"
+                    width="1080"
+                    height="2400"
+                    alt="The phone back on the session list after leaving the connections screen, with the live agent still listed."
+                  />
+                  <figcaption><b>Phone.</b> Leaving the switcher returns you where you were.</figcaption>
+                </figure>
+                <figure class="plate">
+                  <img
+                    src="/shots/11-back-to-sessions-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The same return to the session list in a browser, with the transcript pane restored beside it."
+                  />
+                  <figcaption><b>Desktop.</b> The second pane comes back with it.</figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section class="pair">
+              <h3>Sessions loaded from the daemon</h3>
+              <div class="pair-shots">
+                <figure class="plate">
+                  <img
+                    src="/shots/07-sessions-loaded-web.png"
+                    width="2360"
+                    height="1640"
+                    alt="The session list in a browser reporting one session, read from the daemon rather than from fixture data."
+                  />
+                  <figcaption>
+                    <b>Desktop.</b> The count is whatever the daemon holds. An empty list is asserted
+                    absent in the test, so this frame proves real data arrived.
+                  </figcaption>
+                </figure>
+              </div>
+            </section>
+          </div>
         </section>
       </main>
 
