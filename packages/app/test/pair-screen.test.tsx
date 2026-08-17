@@ -16,7 +16,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Connection } from "../src/platform/connection.ts";
-import { resetWindowSize, setWindowWidth } from "./rnw.ts";
+import { resetWindowSize, setWindowSize, setWindowWidth } from "./rnw.ts";
 
 // Dynamic on purpose, the same way `smoke.test.tsx` and `session-webview.test.tsx`
 // load their screens: bun evaluates a file's whole static import graph before
@@ -140,10 +140,21 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
 
     h.unmount();
   });
-  test("keeps the 480px cap for layouts wider than the pairing form", () => {
-    setWindowWidth(768);
+  // 768x844 used to assert a 480px cap here. That encoded the bug: 768pt is a
+  // tablet's short side (iPad mini is 744), so the old width-only rule gave an
+  // iPad in portrait the phone form. Screen class now comes from the shortest
+  // side, so the two cases below are the ones that actually differ.
+  test("a phone turned sideways keeps the phone cap", () => {
+    setWindowSize(844, 390);
     const h = mountPairScreen();
     expect(h.form.style.maxWidth).toBe("480px");
+
+    h.unmount();
+  });
+  test("a tablet in portrait gets the wider tablet cap, not the phone one", () => {
+    setWindowSize(820, 1180);
+    const h = mountPairScreen();
+    expect(h.form.style.maxWidth).toBe("640px");
 
     h.unmount();
   });
