@@ -121,7 +121,10 @@ jobs:
             -var "hub_domain=${{ vars.OMPCTL_HUB_DOMAIN || 'hub.ompctl.ai' }}" \
             -var "apple_team_id=${{ vars.OMPCTL_APPLE_TEAM_ID }}" \
             -var "play_cert_sha256=${{ vars.OMPCTL_PLAY_CERT_SHA256 }}"
-          echo "::group::Squarespace DNS records to create"
-          terraform output -json squarespace_dns_records
+          echo "::group::Registrar nameservers (set these once at the registrar)"
+          terraform output -json registrar_nameservers
+          echo "::endgroup::"
+          echo "::group::Records Terraform maintains in the Cloud DNS zone"
+          terraform output -json managed_dns_records
           terraform output -json product_identity
           echo "::endgroup::"
