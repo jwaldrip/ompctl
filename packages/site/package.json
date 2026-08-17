@@ -2,6 +2,7 @@
   "name": "@ompd/site",
   "private": true,
   "scripts": {
+    "build": "bun run scripts/build.ts",
     "serve": "bun scripts/serve.ts",
     "check:site": "bun run scripts/check-site.ts",
     "check": "bun ../../scripts/check-types.ts tsconfig.json"
