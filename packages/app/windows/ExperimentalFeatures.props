@@ -19,6 +19,24 @@
     -->
     <UseExperimentalNuget>true</UseExperimentalNuget>
 
+    <!--
+      Pin the Windows App SDK. react-native-windows 0.81.30 defaults WinUI3Version
+      to 1.8.260508005 (PropertySheets/WinUI.props), but NuGet on the CI runner was
+      restoring microsoft.windowsappsdk.foundation 1.8.260505001, a different build
+      of 1.8. Nothing in this repository, react-native-windows, or the community
+      modules names that build, so it came from transitive resolution drifting.
+
+      The skew produced two failures that looked unrelated. Microsoft.ReactNative's
+      own link step failed with LNK1104 on a lib path inside the 260505001 package,
+      and react-native-webview's Fabric view failed to compile with
+      "'XamlSupport': is not a member of 'winrt...'", which is what a mismatched
+      WinRT surface looks like rather than a bug in the module.
+
+      Setting it here wins because WinUI.props only applies its default when the
+      property is still empty.
+    -->
+    <WinUI3Version>1.8.260508005</WinUI3Version>
+
     <WindowsAppSDKVerifyTransitiveDependencies>false</WindowsAppSDKVerifyTransitiveDependencies>
     <RunCodegenWindows>false</RunCodegenWindows>
     <ReactExperimentalFeaturesSet>true</ReactExperimentalFeaturesSet>
