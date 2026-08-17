@@ -7,12 +7,12 @@
   IgnorableNamespaces="uap rescap">
 
   <Identity
-    Name="ompd"
+    Name="ompctl"
     Publisher="CN=jwaldrip"
     Version="1.0.0.0" />
 
   <Properties>
-    <DisplayName>ompd</DisplayName>
+    <DisplayName>ompctl</DisplayName>
     <PublisherDisplayName>jwaldrip</PublisherDisplayName>
     <Logo>Images\StoreLogo.png</Logo>
   </Properties>
@@ -31,8 +31,8 @@
       Executable="$targetnametoken$.exe"
       EntryPoint="$targetentrypoint$">
       <uap:VisualElements
-        DisplayName="ompd"
-        Description="ompd"
+        DisplayName="ompctl"
+        Description="ompctl"
         BackgroundColor="transparent"
         Square150x150Logo="Images\Square150x150Logo.png"
         Square44x44Logo="Images\Square44x44Logo.png">
