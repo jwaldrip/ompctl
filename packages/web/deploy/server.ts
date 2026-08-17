@@ -24,7 +24,7 @@ function requireEnv(name: string): string {
 const teamId = requireEnv("OMPCTL_APPLE_TEAM_ID");
 const playSha = requireEnv("OMPCTL_PLAY_CERT_SHA256");
 const bundleIos = process.env.OMPCTL_IOS_BUNDLE_ID?.trim() || "ai.ompctl.app";
-const bundleMac = process.env.OMPCTL_MACOS_BUNDLE_ID?.trim() || "ai.ompctl.macos";
+const bundleMac = process.env.OMPCTL_MACOS_BUNDLE_ID?.trim() || "ai.ompctl.app";
 const androidPkg = process.env.OMPCTL_ANDROID_PACKAGE?.trim() || "ai.ompctl.app";
 
 if (!/^[A-Z0-9]{10}$/.test(teamId)) {
@@ -38,19 +38,30 @@ if (!/^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$|^[0-9A-Fa-f]{64}$/.test(playSha)) {
 }
 
 function aasa(): Response {
+  /*
+   * Deduplicated: iOS and macOS ship under the same universal bundle id, so the
+   * naive two-element list would name the same appID twice. Apple does not
+   * document rejecting that, which is exactly why it is worth removing rather
+   * than shipping and hoping -- a malformed association fails silently, with
+   * Universal Links simply not opening the app.
+   *
+   * Still built from both variables rather than one, so a future split back into
+   * separate ids needs no code change here.
+   */
+  const appIDs = [...new Set([`${teamId}.${bundleIos}`, `${teamId}.${bundleMac}`])];
   const body = {
     applinks: {
       apps: [],
       details: [
         {
-          appIDs: [`${teamId}.${bundleIos}`, `${teamId}.${bundleMac}`],
+          appIDs,
           components: [{ "/": "/collab/*" }],
           paths: ["/collab/*"],
         },
       ],
     },
     webcredentials: {
-      apps: [`${teamId}.${bundleIos}`, `${teamId}.${bundleMac}`],
+      apps: appIDs,
     },
   };
   return new Response(JSON.stringify(body), {

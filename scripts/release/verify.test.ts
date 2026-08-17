@@ -55,7 +55,15 @@ Authority=Apple Worldwide Developer Relations Certification Authority
 Authority=Apple Root CA
 TeamIdentifier=8H7HVPHS87`;
 
-/** The macOS app straight out of the archive: correct identity, no hardened runtime. */
+/*
+ * The macOS app straight out of the archive: correct identity, no hardened runtime.
+ *
+ * These two samples keep `ai.ompctl.macos` deliberately. They are verbatim
+ * captures from the Developer ID build that first exposed the missing hardened
+ * runtime, taken before iOS and macOS were unified under ai.ompctl.app. Rewriting
+ * the identifier would make the "real captured output" claim false, and the
+ * identifier is incidental to what these assert, which is the runtime flag.
+ */
 const MAC_NO_RUNTIME = `Identifier=ai.ompctl.macos
 Format=app bundle with Mach-O universal (x86_64 arm64)
 Authority=Developer ID Application: Jason Waldrip (8H7HVPHS87)

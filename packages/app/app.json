@@ -5,7 +5,7 @@
     "bundleIdentifier": "ai.ompctl.app"
   },
   "macos": {
-    "bundleIdentifier": "ai.ompctl.macos"
+    "bundleIdentifier": "ai.ompctl.app"
   },
   "android": {
     "package": "ai.ompctl.app"

@@ -251,7 +251,7 @@ resource "google_cloud_run_v2_service" "web" {
 
       env {
         name  = "OMPCTL_MACOS_BUNDLE_ID"
-        value = "ai.ompctl.macos"
+        value = "ai.ompctl.app"
       }
 
       env {
@@ -340,7 +340,7 @@ output "product_identity" {
   value = {
     ios_bundle_id     = "ai.ompctl.app"
     android_package   = "ai.ompctl.app"
-    macos_bundle_id   = "ai.ompctl.macos"
+    macos_bundle_id   = "ai.ompctl.app"
     windows_package   = "ai.ompctl.app"
     web_origin        = "https://${var.app_domain}"
     hub_origin        = "https://${var.hub_domain}"

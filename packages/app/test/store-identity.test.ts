@@ -9,7 +9,7 @@ describe("store identity", () => {
     const cfg = JSON.parse(readFileSync(join(appRoot, "app.json"), "utf8"));
     expect(cfg.ios.bundleIdentifier).toBe("ai.ompctl.app");
     expect(cfg.android.package).toBe("ai.ompctl.app");
-    expect(cfg.macos.bundleIdentifier).toBe("ai.ompctl.macos");
+    expect(cfg.macos.bundleIdentifier).toBe("ai.ompctl.app");
     expect(cfg.windows.packageName).toBe("ai.ompctl.app");
   });
 
