@@ -13,6 +13,7 @@
  * instead yields a module that was never bound to the allocated device.
  * `support/detox-lifecycle.ts` owns that call.
  */
+import { execSync } from "node:child_process";
 import { mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { ClientKind, E2EClient } from "./client.ts";
@@ -68,10 +69,31 @@ export class DetoxClient implements E2EClient {
     return new DetoxClient(kind, process.env.E2E_ARTIFACTS ?? join(process.cwd(), "artifacts"));
   }
 
+  /**
+   * A genuinely fresh app per scenario, state included.
+   *
+   * `newInstance` restarts the process but leaves persisted storage alone, and
+   * this app deliberately keeps its device token in the platform keystore. So
+   * once any scenario completes a pairing, every later scenario launches ALREADY
+   * paired and never sees the pair screen: the whole suite passed up to the
+   * pairing scenario and then failed from there down, purely on ordering.
+   *
+   * The web driver gets a clean browser context per scenario, so wiping here is
+   * what keeps one feature file meaning the same thing on both platforms. That
+   * equivalence is the entire point of this layer, and it is worth an extra
+   * second per scenario.
+   */
+  private resetPersistedState(): void {
+    const serial = process.env.DETOX_ADB_NAME;
+    if (this.kind !== "android" || serial === undefined) return;
+    const adb = `${process.env.ANDROID_SDK_ROOT ?? process.env.ANDROID_HOME ?? ""}/platform-tools/adb`;
+    // `pm clear` drops the keystore entry and AsyncStorage together, which is
+    // both faster and more thorough than reinstalling the APK via `delete: true`.
+    execSync(`${adb} -s ${serial} shell pm clear ai.ompctl.app`, { encoding: "utf8", stdio: "pipe" });
+  }
+
   async launch(): Promise<void> {
-    // A fresh instance per scenario. Reusing one carries the previous scenario's
-    // saved pairing into the next, so a scenario asserting the unpaired first
-    // screen would pass only when it happened to run first.
+    this.resetPersistedState();
     await globals().device.launchApp({ newInstance: true, permissions: { camera: "NO" } });
   }
 

@@ -1,0 +1,36 @@
+name: Verify
+
+# Deliberately unfiltered. Every other workflow here is scoped to
+# `packages/app/**`, which left most of the repository with no pull-request
+# coverage at all: a change confined to `packages/core`, `daemon`, `hub`,
+# `tunnel`, `cli`, `web`, or `e2e` triggered nothing, so "merge on green" had
+# nothing to observe. The root `check` and `test` scripts already cover every
+# workspace; they just were not being run.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck + tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      # Frozen on purpose: a lockfile that disagrees with the manifests is the
+      # failure this repository has already shipped once, when a dependency was
+      # edited by hand and the lockfile was left behind.
+      - run: bun install --frozen-lockfile
+      - name: Typecheck and lint every workspace
+        run: bun run check
+      - name: Unit and integration tests
+        run: bun run test
