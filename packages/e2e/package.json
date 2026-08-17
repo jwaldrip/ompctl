@@ -1,0 +1,17 @@
+{
+  "name": "@ompd/e2e",
+  "private": true,
+  "scripts": {
+    "test:web": "E2E_CLIENT=web cucumber-js",
+    "test:ios": "E2E_CLIENT=ios cucumber-js",
+    "test:android": "E2E_CLIENT=android cucumber-js",
+    "check": "bun ../../scripts/check-types.ts tsconfig.json"
+  },
+  "devDependencies": {
+    "@cucumber/cucumber": "^11.3.0",
+    "@types/node": "^22.10.0",
+    "detox": "^20.28.0",
+    "playwright": "^1.50.0",
+    "tsx": "4.23.12"
+  }
+}
