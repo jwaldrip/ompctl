@@ -25,6 +25,7 @@
     "check:evolution": "bun run scripts/check-evolution-lifecycle.ts",
     "check:lan": "bun run scripts/check-lan-roundtrip.ts",
     "check:provenance": "bun run scripts/check-provenance.ts",
+    "check:endpoints": "bun run scripts/check-endpoints.ts",
     "check:tools": "biome check . --no-errors-on-unmatched",
     "check:types": "bun run --workspaces --if-present check",
     "test": "bun run --workspaces --if-present test && bun test packages/acp packages/cli packages/core packages/daemon packages/hub packages/tunnel scripts"
