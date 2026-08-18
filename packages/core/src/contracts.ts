@@ -493,6 +493,14 @@ export type ClientFrame =
   | { t: "tui_acp"; sessionId: string; raw: string }
   /** The TUI has stopped rendering and its in-process ACP server is ready. */
   | { t: "tui_acp_ready"; sessionId: string }
+  /**
+   * Ask for the session index over this socket. A hub-relayed phone cannot
+   * reach the daemon's HTTP surface at all -- the relay carries sealed
+   * websocket frames only, never daemon HTTP paths -- so for that client
+   * this frame is not a convenience beside `GET /v1/sessions`; it is the
+   * only road the index can take.
+   */
+  | { t: "sessions"; query?: SessionQuery }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -529,6 +537,13 @@ export type ServerFrame =
   | { t: "tui_takeover"; sessionId: string }
   /** ACP JSON-RPC carried over the registered TUI's single control socket. */
   | { t: "tui_acp"; sessionId: string; raw: string }
+  /**
+   * The session index answering a `sessions` client frame, sent only to the
+   * socket that asked. Carried on the sealed socket for the same reason the
+   * request is: this is the one copy of the index a relayed phone can ever
+   * reach, so it rides the same leg the rest of the phone's traffic does.
+   */
+  | { t: "sessions"; sessions: SessionSummary[] }
   | { t: "pong" };
 
 // ---------------------------------------------------------------------------
