@@ -74,7 +74,12 @@ jobs:
           if (-not $sdkVersion) {
             throw "No Windows SDK with Windows.h is installed on this runner."
           }
-          & $msbuild ompd.sln /m /restore /p:Configuration=Debug /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$sdkVersion" /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false
+          # NuGet floated Microsoft.WindowsAppSDK to 1.8.251216001, whose
+          # targets refuse this repo's old-style csproj ("requires .NET 6.0").
+          # react-native-windows' own PropertySheets/WinUI.props declare
+          # 1.8.260508005, the version its CI builds against, so build that
+          # one instead of letting restore guess.
+          & $msbuild ompd.sln /m /restore /p:Configuration=Debug /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$sdkVersion" /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false "/p:WinUI3Version=1.8.260508005"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
