@@ -8,6 +8,7 @@
  */
 
 import type {
+  Agent,
   AgentId,
   ApprovalChoice,
   ApprovalScope,
@@ -17,9 +18,10 @@ import type {
 import { OmpdClient } from "@ompd/core/ompd-client";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { AppState } from "react-native";
+import { restRoot } from "../cowork/useCowork.ts";
 import type { Connection } from "../platform/connection.ts";
 import { createHubSocketFactory } from "../platform/socket.ts";
-import type { ConsoleState } from "./state.ts";
+import type { ConsoleState, SessionOpenTarget } from "./state.ts";
 import { apply, emptyConsole } from "./state.ts";
 import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
@@ -33,6 +35,13 @@ export interface ConsoleActions {
   decide: (agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   decidePlan: (agentId: AgentId, requestId: string, choice: PlanReviewChoice) => void;
   dismiss: () => void;
+  /**
+   * Open one browser row. A row whose session an agent already holds opens
+   * that agent the way `select` does; a row the daemon reported `live-tui`
+   * asks the daemon to adopt the TUI first, then opens the agent the
+   * adoption produced.
+   */
+  openSession: (target: SessionOpenTarget) => void;
   /** Register this selected screen as the agent's live WebView target. */
   mountWebView: (agentId: AgentId) => void;
   /** Withdraw the selected screen's target. Safe to call after a failed mount. */
@@ -57,14 +66,55 @@ export function createOmpdClient(connection: Connection): OmpdClient {
   });
 }
 
-export function useConsole(connection: Connection): [ConsoleState, ConsoleActions] {
+/** What `POST /v1/sessions/:id/takeover` answers: the agent the adoption created. */
+interface TakeoverResponse {
+  agent: Agent;
+}
+
+/** Just the slice of `fetch` the takeover needs, so a test can stand in for it. */
+type TakeoverFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+/**
+ * Asks the daemon to adopt the live TUI holding `sessionId`.
+ *
+ * This is the supervisor's takeover path: the TUI process keeps its session
+ * and the daemon wraps it in an agent row this device can then attach to,
+ * which is why the returned agent is the caller's next `select`. The request
+ * rides HTTP because that is the only shape the daemon offers for it; a
+ * hub-relayed connection has no HTTP surface and the socket protocol has no
+ * takeover frame, so relayed devices fail closed here rather than guessing
+ * at a route that does not exist.
+ */
+export async function takeOverLiveTui(
+  sessionId: string,
+  deps: { root: string | null; token: string; fetch?: TakeoverFetch },
+): Promise<Agent> {
+  if (deps.root === null) {
+    throw new Error("taking over a live TUI needs the daemon's HTTP route, which this relayed connection cannot reach");
+  }
+  const request = deps.fetch ?? fetch;
+  const response = await request(`${deps.root}/v1/sessions/${encodeURIComponent(sessionId)}/takeover`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${deps.token}` },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `the daemon refused the takeover (${response.status})`);
+  }
+  return ((await response.json()) as TakeoverResponse).agent;
+}
+
+export function useConsole(
+  connection: Connection,
+  createClient: (connection: Connection) => OmpdClient = createOmpdClient,
+): [ConsoleState, ConsoleActions] {
   const [state, dispatch] = useReducer(apply, connection.scopes, emptyConsole);
 
   // The client outlives every render and must never be rebuilt by one: a new
   // socket per render is a reconnect loop that looks like a flaky daemon.
   const clientRef = useRef<OmpdClient | null>(null);
   if (clientRef.current === null) {
-    clientRef.current = createOmpdClient(connection);
+    clientRef.current = createClient(connection);
   }
   const client = clientRef.current;
 
@@ -77,6 +127,16 @@ export function useConsole(connection: Connection): [ConsoleState, ConsoleAction
    * hook instance, so unpairing and pairing again starts clean.
    */
   const backfilled = useRef(new Set<AgentId>());
+
+  /**
+   * Whether this pairing has already asked for the machine's session index.
+   *
+   * Asked for once, on the first established connection, and never again:
+   * the client replays the request itself after every reconnect, the same
+   * guarantee attachments rely on, so asking again here would only duplicate
+   * the frame.
+   */
+  const askedForSessionIndex = useRef(false);
 
   /**
    * Screen registration is separate from driver mounting. A registered screen
@@ -100,13 +160,28 @@ export function useConsole(connection: Connection): [ConsoleState, ConsoleAction
     [client],
   );
 
+  // Takeover is the one request in this hook that rides HTTP rather than the
+  // socket, because the daemon offers it no frame. A hub relay has no HTTP
+  // surface behind it, so it resolves to no root and the takeover fails
+  // closed, the same rule `useCowork`'s fetches already follow.
+  const takeoverRoot = connection.transport === "direct" ? restRoot(connection.url) : null;
+
   useEffect(() => {
     const offs = [
       client.on("status", event => {
         dispatch({ t: "status", event });
+        if (event.state !== "connected" || askedForSessionIndex.current) return;
+        askedForSessionIndex.current = true;
+        // Archived rows ride along and the browser owns their visibility, so
+        // its archived toggle still counts what it hides rather than the wire
+        // having silently filtered it out.
+        client.listSessions({ includeArchived: true });
       }),
       client.on("agents", event => {
         dispatch({ t: "agents", event });
+      }),
+      client.on("sessions", event => {
+        dispatch({ t: "sessions", event });
       }),
       client.on("update", event => {
         dispatch({ t: "update", event });
@@ -164,16 +239,26 @@ export function useConsole(connection: Connection): [ConsoleState, ConsoleAction
     };
   }, [client]);
 
+  /**
+   * Select and attach in one step, the way every open lands: a strip this
+   * device has never seen asks for the whole transcript, because a console
+   * opened mid-session should show the session. After that the client's own
+   * watermark resumes, so revisiting a strip never replays a log that is
+   * already on screen.
+   */
+  const selectAgent = useCallback(
+    (agentId: AgentId): void => {
+      dispatch({ t: "select", agentId });
+      client.attach(agentId, backfilled.current.has(agentId) ? {} : { sinceSeq: 0 });
+      backfilled.current.add(agentId);
+    },
+    [client],
+  );
+
   const actions = useMemo<ConsoleActions>(
     () => ({
       select(agentId) {
-        dispatch({ t: "select", agentId });
-        // The first time this device sees an agent it asks for the whole
-        // transcript, because a console opened mid-session should show the
-        // session. After that the client's own watermark resumes, so revisiting
-        // a strip never replays a log that is already on screen.
-        client.attach(agentId, backfilled.current.has(agentId) ? {} : { sinceSeq: 0 });
-        backfilled.current.add(agentId);
+        selectAgent(agentId);
       },
       back() {
         dispatch({ t: "select", agentId: null });
@@ -196,6 +281,35 @@ export function useConsole(connection: Connection): [ConsoleState, ConsoleAction
       dismiss() {
         dispatch({ t: "dismiss" });
       },
+      openSession(target) {
+        if (target.agentId !== undefined) {
+          selectAgent(target.agentId);
+          return;
+        }
+        if (!target.liveTui) {
+          // Honesty over silence: the row is on screen, so the tap has to
+          // answer. A dormant resume needs a create-with-session request the
+          // daemon does not offer yet, and pretending otherwise would strand
+          // the operator on a dead control.
+          dispatch({ t: "error", event: { message: "That session is dormant; this build cannot resume it yet." } });
+          return;
+        }
+        void takeOverLiveTui(target.sessionId, { root: takeoverRoot, token: connection.token })
+          .then(agent => {
+            // The adoption created an agent this socket only hears about on
+            // the next roster push, and pushes only reach sockets already
+            // attached to something. Admit the agent the response named so
+            // the open lands instead of tapping a row that does nothing.
+            dispatch({ t: "agent_admitted", agent });
+            selectAgent(agent.id);
+          })
+          .catch(cause => {
+            dispatch({
+              t: "error",
+              event: { message: cause instanceof Error ? cause.message : "the takeover failed" },
+            });
+          });
+      },
       mountWebView(agentId) {
         if (mountedWebViews.current.has(agentId)) return;
         mountedWebViews.current.add(agentId);
@@ -213,7 +327,7 @@ export function useConsole(connection: Connection): [ConsoleState, ConsoleAction
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [client, settleWebViewAction],
+    [client, settleWebViewAction, takeoverRoot, connection.token, selectAgent],
   );
 
   return [state, actions];

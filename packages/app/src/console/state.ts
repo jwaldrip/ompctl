@@ -13,8 +13,15 @@
  * load and its spend.
  */
 
-import type { Agent, AgentId, ApprovalChoice, PlanReviewChoice, WebViewAction } from "@ompd/core/contracts";
-import { SCOPE_APPROVE } from "@ompd/core/contracts";
+import type {
+  Agent,
+  AgentId,
+  ApprovalChoice,
+  PlanReviewChoice,
+  SessionSummary,
+  WebViewAction,
+} from "@ompd/core/contracts";
+import { SCOPE_APPROVE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import type {
   AgentsEvent,
   ApprovalEvent,
@@ -77,6 +84,16 @@ const SCOPE_CODES: Record<string, true> = { forbidden: true, scope: true, unauth
 export interface ConsoleState {
   readonly agents: readonly Agent[];
   readonly sessions: ReadonlyMap<AgentId, SessionState>;
+  /**
+   * Every session on this machine, as the daemon's index last reported it.
+   *
+   * Held separately from `agents` because the two answer different questions:
+   * an agent is a session this daemon currently holds, while the index is
+   * every session on the machine, held by this daemon or not. The browser
+   * must list the second, not the first, or every session no agent is
+   * driving, which is most of a long-running machine's history, is invisible.
+   */
+  readonly sessionIndex: readonly SessionSummary[];
   /** Highest `seq` seen per agent, for the readout and for `say` de-duplication. */
   readonly watermarks: ReadonlyMap<AgentId, number>;
   /** Latest spoken summary per agent. Text only; this build has no voice. */
@@ -100,6 +117,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
   return {
     agents: [],
     sessions: new Map(),
+    sessionIndex: [],
     watermarks: new Map(),
     spoken: new Map(),
     connection: "connecting",
@@ -119,6 +137,8 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
 export type ConsoleEvent =
   | { t: "status"; event: StatusEvent }
   | { t: "agents"; event: AgentsEvent }
+  /** Daemon: the machine's full session index, answering this device's ask. */
+  | { t: "sessions"; event: { sessions: readonly SessionSummary[] } }
   | { t: "update"; event: UpdateEvent }
   | { t: "approval"; event: ApprovalEvent }
   | { t: "plan_review"; event: PlanReviewEvent }
@@ -132,6 +152,13 @@ export type ConsoleEvent =
   /** Local: a clearance this device just settled. */
   | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
+  /**
+   * Local: the daemon adopted a live TUI into this agent at this device's
+   * request. Admitted by hand because the roster push that says the same
+   * thing only reaches sockets already attached to something, and this
+   * device's socket is attached to nothing until the adoption succeeds.
+   */
+  | { t: "agent_admitted"; agent: Agent }
   /** Daemon: an already-authorized action for this agent's registered WebView. */
   | { t: "webview_action"; agentId: AgentId; requestId: string; action: WebViewAction }
   /** Local: exactly this action was answered, or its screen went away. */
@@ -154,6 +181,17 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "agents":
       return applyAgents(state, event.event.agents);
+
+    case "sessions":
+      return applySessions(state, event.event.sessions);
+
+    case "agent_admitted":
+      // A double tap can race the roster push carrying the same agent. The
+      // roster stays the authority; this only admits what the daemon itself
+      // just returned from the adoption.
+      return state.agents.some(agent => agent.id === event.agent.id)
+        ? state
+        : applyAgents(state, [...state.agents, event.agent]);
 
     case "update": {
       const { agentId, seq, update } = event.event;
@@ -280,6 +318,16 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
 }
 
 /**
+ * The index replaces itself wholesale. It is a snapshot of the whole machine,
+ * so merging would only ever keep rows the daemon has already dropped, and a
+ * shorter answer than the last one is the machine telling the truth.
+ */
+function applySessions(state: ConsoleState, sessions: readonly SessionSummary[]): ConsoleState {
+  if (state.sessionIndex === sessions) return state;
+  return { ...state, sessionIndex: sessions };
+}
+
+/**
  * A rendering hint and nothing more. `seq` is the update the prose derives
  * from, so a replay after a reconnect cannot make the app repeat a summary it
  * has already shown, and a stale frame cannot overwrite a newer one.
@@ -344,31 +392,105 @@ export function fleetClearances(state: ConsoleState): number {
 }
 
 /**
- * Adapts this device's live ACP roster into browser rows.
+ * Adapts the daemon's session index into browser rows, with this device's
+ * live roster overlaid.
  *
- * Temporary: `session/list` caps at 50 and only ever describes agents this
- * client is attached to, so every row it can produce is `live-ompd`. The
- * moment the daemon index ships a route over the full on-disk session store,
- * this is the seam that gets replaced: swap the call site in `Console.tsx`
- * for a fetch against that route, which will also be the first source able to
- * report `live-tui`, `dormant`, `archived`, message counts, and sizes for
- * sessions this device has never attached to.
+ * The index is the base because it is the only source that knows every
+ * session on the machine; the roster only knows the ones this daemon
+ * currently holds. A live agent that holds an indexed session is overlaid
+ * onto its row, since the roster is fresher than the last snapshot; every
+ * other row keeps exactly the status the daemon reported.
  */
 export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
-  return state.agents
-    .filter(agent => agent.parentAgentId === undefined)
-    .map(agent => {
-      const session = state.sessions.get(agent.id) ?? EMPTY_SESSION;
-      return {
-        id: agent.id,
-        title: agent.name,
-        cwd: agent.cwd,
-        status: "live-ompd",
-        createdAt: agent.createdAt,
-        lastActiveAt: agent.lastActiveAt,
-        messageCount: session.entries.length,
-        // Not knowable from a live ACP stream; the disk-backed index owns this.
-        sizeBytes: 0,
-      };
+  const holding = new Map<string, Agent>();
+  for (const agent of state.agents) {
+    if (agent.acpSessionId === undefined) continue;
+    // A stopped or failed agent is passed over the same way the daemon's own
+    // index passes it over when naming a holder: the process is gone, and
+    // the session file on disk is `dormant`.
+    if (TERMINAL_AGENT_STATES.includes(agent.state)) continue;
+    holding.set(agent.acpSessionId, agent);
+  }
+
+  const rows: BrowserSession[] = [];
+  const indexed = new Set<string>();
+  for (const summary of state.sessionIndex) {
+    indexed.add(summary.id);
+    const agent = holding.get(summary.id);
+    rows.push({
+      id: summary.id,
+      title: agent?.name ?? summary.title,
+      // `flattenedDir` is always present for exactly this case: a group the
+      // codec could not decode still needs something to display and group by.
+      cwd: summary.cwd ?? summary.flattenedDir,
+      status: agent !== undefined ? "live-ompd" : summary.status,
+      createdAt: summary.createdAt,
+      lastActiveAt: agent?.lastActiveAt ?? summary.lastActivityAt,
+      // Null means one file exceeded the index's counting ceiling. The row
+      // shape has no unknown slot, and inventing a fifth status would lie
+      // harder than a zero.
+      messageCount: summary.messageCount ?? 0,
+      sizeBytes: summary.byteSize,
     });
+  }
+
+  // An agent created since the last ask holds a session the snapshot cannot
+  // know about yet, and a fleet browser that hides the agent someone just
+  // made is a regression on what the roster alone already listed. Those rows
+  // are synthesized from the roster until the next index replaces them;
+  // subagents stay in Agent Hub, where their hierarchy is legible.
+  for (const agent of state.agents) {
+    if (agent.parentAgentId !== undefined) continue;
+    if (agent.acpSessionId !== undefined && indexed.has(agent.acpSessionId)) continue;
+    const session = state.sessions.get(agent.id) ?? EMPTY_SESSION;
+    rows.push({
+      id: agent.acpSessionId ?? agent.id,
+      title: agent.name,
+      cwd: agent.cwd,
+      status: TERMINAL_AGENT_STATES.includes(agent.state) ? "dormant" : "live-ompd",
+      createdAt: agent.createdAt,
+      lastActiveAt: agent.lastActiveAt,
+      messageCount: session.entries.length,
+      // Not knowable before the index sees the session file.
+      sizeBytes: 0,
+    });
+  }
+  return rows;
+}
+
+/**
+ * What opening one browser row has to hit.
+ *
+ * Rows are sessions, not agents, so a tap has to be resolved to whichever
+ * holder can serve it: a live agent from this device's roster, the agent the
+ * index still names, or, for a session a TUI process at the machine holds,
+ * the daemon's live-TUI takeover.
+ */
+export interface SessionOpenTarget {
+  readonly sessionId: string;
+  /** The agent that already holds this session, when one is known. */
+  readonly agentId: AgentId | undefined;
+  /** The daemon's index reported a live TUI process holding this session. */
+  readonly liveTui: boolean;
+}
+
+export function openSessionTarget(state: ConsoleState, rowId: string): SessionOpenTarget {
+  // The roster first: it is fresher than the snapshot, and a synthesized row
+  // carries an agent id directly. Attaching to a terminal agent is still the
+  // right open; it opens the transcript the operator tapped.
+  const holder = state.agents.find(agent => agent.acpSessionId === rowId || agent.id === rowId);
+  if (holder !== undefined) {
+    return { sessionId: rowId, agentId: holder.id, liveTui: false };
+  }
+
+  const summary = state.sessionIndex.find(row => row.id === rowId);
+  if (summary === undefined) {
+    return { sessionId: rowId, agentId: undefined, liveTui: false };
+  }
+  // The roster has not admitted this agent yet, but the daemon's index named
+  // it as holding the session, so the id it named is the one to attach to.
+  if (summary.status === "live-ompd" && summary.agentId !== undefined) {
+    return { sessionId: rowId, agentId: summary.agentId, liveTui: false };
+  }
+  return { sessionId: rowId, agentId: undefined, liveTui: summary.status === "live-tui" };
 }
