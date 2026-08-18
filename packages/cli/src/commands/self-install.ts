@@ -50,9 +50,14 @@ import {
  * rejects it by version sentinel and reports a resolve failure that reads like
  * a missing file.
  *
- * Returns null on success, or the lines explaining what was not found.
+ * Best effort on purpose. The probe that follows is the gate: it runs the staged
+ * binary and refuses to install one that cannot start, whatever the reason. So a
+ * platform whose addon package is not installed -- Linux CI, for one -- must not
+ * be turned into a hard failure here by a step that is only trying to help. If
+ * the addon is genuinely needed and missing, the probe says so and the installed
+ * binary is left alone.
  */
-async function placeNativeAddon(ctx: CliContext, staging: string): Promise<string[] | null> {
+async function placeNativeAddon(ctx: CliContext, staging: string): Promise<void> {
   const name = `pi_natives.${process.platform}-${process.arch}.node`;
   const beside = join(staging, "..", name);
 
@@ -60,26 +65,12 @@ async function placeNativeAddon(ctx: CliContext, staging: string): Promise<strin
   // second prefix gets the same pair rather than re-resolving a package.
   if (isCompiledRuntime()) {
     const sibling = join(process.execPath, "..", name);
-    if (!existsSync(sibling)) {
-      return [
-        `this ompd runs without ${name} beside it, so the copy would inherit the same gap`,
-        `  expected: ${sibling}`,
-      ];
-    }
-    copyFileSync(sibling, beside);
-    return null;
+    if (existsSync(sibling)) copyFileSync(sibling, beside);
+    return;
   }
 
   const resolved = await resolveAddonFromCheckout(ctx, name);
-  if (resolved === null) {
-    return [
-      `could not find ${name} to install beside the binary`,
-      "  the compiled binary loads it at startup, so installing without it would",
-      "  produce an ompd that exits before it serves",
-    ];
-  }
-  copyFileSync(resolved, beside);
-  return null;
+  if (resolved !== null) copyFileSync(resolved, beside);
 }
 
 /** The addon inside the checkout this is being built from, if it is there. */
@@ -147,12 +138,7 @@ export async function selfInstallCommand(
   // The native addon has to be beside it for this to mean anything: the loader
   // searches the binary's own directory, so a staged binary checked without it
   // would fail for a reason the installed one would not have had.
-  const addon = await placeNativeAddon(ctx, staging);
-  if (addon !== null) {
-    rmSync(staging, { force: true });
-    for (const line of addon) ctx.err(line);
-    return 1;
-  }
+  await placeNativeAddon(ctx, staging);
 
   const staged = await ctx.exec([staging, "--version"]);
   if (staged.code !== 0) {
