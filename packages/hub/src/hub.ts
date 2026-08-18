@@ -657,10 +657,15 @@ export class Hub {
           await this.#tearClient(leg, "relay_broken", `client frame ${frame.rseq} arrived out of order`);
           return;
         }
+        // Bookkeeping mirrors the daemon side exactly: `expected` and
+        // `received` track what arrived from this client, while the leg's
+        // relay ledger (`sent`, acked by the client's cumulative count) is
+        // charged only in `to_client`, for frames relayed toward it. Billing
+        // the client's own sends here too counted both directions against a
+        // one-direction ack, so every client leg stayed behind by its own
+        // outbound traffic and was torn at the deadline regardless.
         leg.expected++;
         leg.received++;
-        leg.sent++;
-        if (leg.behindSinceMs === null) leg.behindSinceMs = this.#now();
         await this.#backplane.send(leg.daemonInstance, {
           k: "to_daemon",
           sessionId: leg.sessionId,
@@ -671,12 +676,17 @@ export class Hub {
         return;
       }
       case "ack":
-        await this.#backplane.send(leg.daemonInstance, {
-          k: "ack",
-          sessionId: leg.sessionId,
-          from: this.instanceId,
-          received: frame.received,
-        });
+        // A client's count is about the frames this instance relayed toward
+        // that client, and the only leg it can credit is the one the ack
+        // arrived on, here. Forwarding it to the daemon's instance instead
+        // dropped the number into the daemon-side session ledger -- a count
+        // of the other direction -- and left the client leg unacknowledged
+        // forever, so this hub tore every client leg at the ack deadline
+        // however diligently it acked. The daemon's own acks credit that
+        // ledger directly, on the socket they arrive on; nothing needs to
+        // travel between instances for either side to be judged where it
+        // lives.
+        this.#applyAck(leg, frame.received);
         return;
       case "pong":
         return;
@@ -787,17 +797,6 @@ export class Hub {
         leg.sent++;
         if (leg.behindSinceMs === null) leg.behindSinceMs = this.#now();
         this.#sendClient(ws, { t: "data", rseq: envelope.rseq ?? 0, payload: envelope.payload ?? "" });
-        return;
-      }
-
-      case "ack": {
-        const session = this.#sessions.get(envelope.sessionId);
-        if (session) {
-          this.#applyAck(session, envelope.received ?? 0);
-          return;
-        }
-        const ws = this.#clients.get(envelope.sessionId);
-        if (ws && ws.data.kind === "client") this.#applyAck(ws.data, envelope.received ?? 0);
         return;
       }
 

@@ -111,12 +111,17 @@ export class SealedChannel {
     this.#recvKey = role === "client" ? keys.d2c : keys.c2d;
   }
 
-  /** Frames sealed so far. The relay uses this as its cumulative send count. */
+  /** Frames sealed so far. */
   get sent(): number {
     return this.#sendCounter;
   }
 
-  /** Frames opened so far. The relay reports this as its cumulative ack. */
+  /**
+   * Frames opened so far. Not a relay's cumulative ack: the unsealed
+   * handshake frame is relayed but never opened, so this count sits below the
+   * relay's by one for the life of the session, and the tunnel acks its relay
+   * sequence instead.
+   */
   get received(): number {
     return this.#recvCounter;
   }
