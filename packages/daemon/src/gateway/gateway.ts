@@ -132,46 +132,82 @@ const SESSION_SORT_DIRS: readonly SessionSortDir[] = ["asc", "desc"];
  * whole point of running this behind a phone's pull-to-refresh.
  */
 function parseSessionQuery(url: URL): { query: SessionQuery } | { error: string } {
+  const statusParam = url.searchParams.get("status");
+  const cwdParam = url.searchParams.get("cwd");
+  const includeArchivedParam = url.searchParams.get("includeArchived");
+  const sortParam = url.searchParams.get("sort");
+  const sortDirParam = url.searchParams.get("sortDir");
+  return validateSessionQuery({
+    // The comma-split and the true/1 coercion are HTTP's own serialisation,
+    // nothing more: everything past this point is decided once, in the
+    // shared validator, so the HTTP route and the `sessions` frame cannot
+    // drift apart on what a malformed query means.
+    ...(statusParam
+      ? {
+          status: statusParam
+            .split(",")
+            .map(s => s.trim())
+            .filter(s => s.length > 0),
+        }
+      : {}),
+    ...(cwdParam ? { cwd: cwdParam } : {}),
+    ...(includeArchivedParam !== null
+      ? { includeArchived: includeArchivedParam === "true" || includeArchivedParam === "1" }
+      : {}),
+    ...(sortParam ? { sort: sortParam } : {}),
+    ...(sortDirParam ? { sortDir: sortDirParam } : {}),
+  });
+}
+
+/**
+ * Narrows an untrusted `SessionQuery`-shaped value into a `SessionQuery`.
+ * The one validator both session surfaces call: the HTTP route above and the
+ * `sessions` websocket frame below. An unknown status or sort key is refused
+ * here rather than silently coerced, because a coerced query is a filter that
+ * quietly does not do what the client asked, which on a phone reads as
+ * "sessions are missing".
+ */
+function validateSessionQuery(value: unknown): { query: SessionQuery } | { error: string } {
+  if (value === undefined || value === null) return { query: {} };
+  if (!isRecord(value)) return { error: "query must be an object" };
+
   const query: SessionQuery = {};
 
-  const statusParam = url.searchParams.get("status");
-  if (statusParam) {
-    const requested = statusParam
-      .split(",")
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
-    for (const s of requested) {
-      if (!SESSION_STATUSES.includes(s as SessionLiveStatus)) {
-        return { error: `unknown status "${s}", expected one of ${SESSION_STATUSES.join(", ")}` };
+  if (value.status !== undefined) {
+    if (!Array.isArray(value.status)) return { error: "status must be an array of live statuses" };
+    for (const s of value.status) {
+      if (typeof s !== "string" || !SESSION_STATUSES.includes(s as SessionLiveStatus)) {
+        return { error: `unknown status "${String(s)}", expected one of ${SESSION_STATUSES.join(", ")}` };
       }
     }
-    query.status = requested as SessionLiveStatus[];
+    query.status = value.status as SessionLiveStatus[];
   }
 
-  const cwdParam = url.searchParams.get("cwd");
-  if (cwdParam) query.cwd = cwdParam;
-
-  const includeArchivedParam = url.searchParams.get("includeArchived");
-  if (includeArchivedParam !== null) {
-    query.includeArchived = includeArchivedParam === "true" || includeArchivedParam === "1";
+  if (value.cwd !== undefined) {
+    if (typeof value.cwd !== "string") return { error: "cwd must be a string" };
+    // An empty cwd filters nothing; the HTTP route drops `?cwd=` the same way.
+    if (value.cwd.length > 0) query.cwd = value.cwd;
   }
 
-  const sortParam = url.searchParams.get("sort");
-  if (sortParam) {
-    if (!SESSION_SORT_KEYS.includes(sortParam as SessionSortKey)) {
-      return { error: `unknown sort "${sortParam}", expected one of ${SESSION_SORT_KEYS.join(", ")}` };
+  if (value.includeArchived !== undefined) {
+    if (typeof value.includeArchived !== "boolean") return { error: "includeArchived must be a boolean" };
+    query.includeArchived = value.includeArchived;
+  }
+
+  if (value.sort !== undefined) {
+    if (typeof value.sort !== "string" || !SESSION_SORT_KEYS.includes(value.sort as SessionSortKey)) {
+      return { error: `unknown sort "${String(value.sort)}", expected one of ${SESSION_SORT_KEYS.join(", ")}` };
     }
-    query.sort = sortParam as SessionSortKey;
+    query.sort = value.sort as SessionSortKey;
   }
 
-  const sortDirParam = url.searchParams.get("sortDir");
-  if (sortDirParam) {
-    if (!SESSION_SORT_DIRS.includes(sortDirParam as SessionSortDir)) {
+  if (value.sortDir !== undefined) {
+    if (typeof value.sortDir !== "string" || !SESSION_SORT_DIRS.includes(value.sortDir as SessionSortDir)) {
       return {
-        error: `unknown sortDir "${sortDirParam}", expected one of ${SESSION_SORT_DIRS.join(", ")}`,
+        error: `unknown sortDir "${String(value.sortDir)}", expected one of ${SESSION_SORT_DIRS.join(", ")}`,
       };
     }
-    query.sortDir = sortDirParam as SessionSortDir;
+    query.sortDir = value.sortDir as SessionSortDir;
   }
 
   return { query };
@@ -2116,6 +2152,35 @@ export class Gateway {
             message: "the WebView request is unknown or already settled",
           });
         }
+        return;
+      }
+
+      case "sessions": {
+        // The same read gate and the same validation the HTTP index route
+        // runs, because a hub-relayed phone reaches this frame instead of
+        // that route and must not meet a weaker door here. The reply goes to
+        // the asking socket only: the index is an answer to a request, not a
+        // broadcast, and one phone refreshing must not push 300 rows at every
+        // other client on the daemon.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "sessions requires read scope" });
+          return;
+        }
+        const index = this.#sessionIndex;
+        if (!index) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        const parsed = validateSessionQuery(frame.query);
+        if ("error" in parsed) {
+          this.#send(ws, { t: "error", code: "bad_query", message: parsed.error });
+          return;
+        }
+        this.#send(ws, { t: "sessions", sessions: index.query(parsed.query) });
         return;
       }
 
