@@ -501,6 +501,25 @@ export type ClientFrame =
    * only road the index can take.
    */
   | { t: "sessions"; query?: SessionQuery }
+  /**
+   * Take over a `live-tui` session through this socket. The hub relay
+   * carries one sealed websocket and proxies no daemon HTTP, so `POST
+   * /v1/sessions/:id/takeover` is a road a relayed phone cannot take; this
+   * frame is the only one it can. `cwd` and `pid` are the index row's own
+   * values echoed back, and the daemon verifies them against its index
+   * rather than trusting them: a stale row on the phone must refuse naming
+   * the mismatch, never open a different session than the one was tapped.
+   */
+  | { t: "session_takeover"; sessionId: string; cwd: string; pid: number }
+  /**
+   * Resume a dormant session under a daemon-owned agent. The same relay
+   * constraint as `session_takeover`, and the same echo-and-verify rule for
+   * `cwd`: `session/load` resolves the session file under the directory it
+   * is handed, so an unverified cwd would silently aim the daemon's second
+   * writer at the wrong tree -- the exact corruption a refusal exists to
+   * prevent.
+   */
+  | { t: "session_resume"; sessionId: string; cwd: string }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -544,6 +563,15 @@ export type ServerFrame =
    * reach, so it rides the same leg the rest of the phone's traffic does.
    */
   | { t: "sessions"; sessions: SessionSummary[] }
+  /**
+   * A `session_takeover` or `session_resume` succeeded -- or was already
+   * true: a session the daemon's index reports as held by an agent answers
+   * with that agent's id rather than an error, because the caller's intent
+   * is already satisfied and a second holder would put two writers on one
+   * session file, the exact corruption the takeover path exists to prevent.
+   * Sent only to the socket that asked.
+   */
+  | { t: "session_opened"; sessionId: string; agentId: AgentId }
   | { t: "pong" };
 
 // ---------------------------------------------------------------------------

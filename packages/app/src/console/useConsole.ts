@@ -8,7 +8,6 @@
  */
 
 import type {
-  Agent,
   AgentId,
   ApprovalChoice,
   ApprovalScope,
@@ -18,7 +17,6 @@ import type {
 import { OmpdClient } from "@ompd/core/ompd-client";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { AppState } from "react-native";
-import { restRoot } from "../cowork/useCowork.ts";
 import type { Connection } from "../platform/connection.ts";
 import { createHubSocketFactory } from "../platform/socket.ts";
 import type { ConsoleState, SessionOpenTarget } from "./state.ts";
@@ -37,9 +35,9 @@ export interface ConsoleActions {
   dismiss: () => void;
   /**
    * Open one browser row. A row whose session an agent already holds opens
-   * that agent the way `select` does; a row the daemon reported `live-tui`
-   * asks the daemon to adopt the TUI first, then opens the agent the
-   * adoption produced.
+   * that agent the way `select` does; every other row sends the daemon a
+   * claim over the socket, and the `session_opened` reply -- not this call --
+   * is what opens the agent the daemon named.
    */
   openSession: (target: SessionOpenTarget) => void;
   /** Register this selected screen as the agent's live WebView target. */
@@ -64,44 +62,6 @@ export function createOmpdClient(connection: Connection): OmpdClient {
     token: connection.token,
     createSocket: createHubSocketFactory({ daemonId: connection.daemonId }),
   });
-}
-
-/** What `POST /v1/sessions/:id/takeover` answers: the agent the adoption created. */
-interface TakeoverResponse {
-  agent: Agent;
-}
-
-/** Just the slice of `fetch` the takeover needs, so a test can stand in for it. */
-type TakeoverFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-
-/**
- * Asks the daemon to adopt the live TUI holding `sessionId`.
- *
- * This is the supervisor's takeover path: the TUI process keeps its session
- * and the daemon wraps it in an agent row this device can then attach to,
- * which is why the returned agent is the caller's next `select`. The request
- * rides HTTP because that is the only shape the daemon offers for it; a
- * hub-relayed connection has no HTTP surface and the socket protocol has no
- * takeover frame, so relayed devices fail closed here rather than guessing
- * at a route that does not exist.
- */
-export async function takeOverLiveTui(
-  sessionId: string,
-  deps: { root: string | null; token: string; fetch?: TakeoverFetch },
-): Promise<Agent> {
-  if (deps.root === null) {
-    throw new Error("taking over a live TUI needs the daemon's HTTP route, which this relayed connection cannot reach");
-  }
-  const request = deps.fetch ?? fetch;
-  const response = await request(`${deps.root}/v1/sessions/${encodeURIComponent(sessionId)}/takeover`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${deps.token}` },
-  });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `the daemon refused the takeover (${response.status})`);
-  }
-  return ((await response.json()) as TakeoverResponse).agent;
 }
 
 export function useConsole(
@@ -160,11 +120,21 @@ export function useConsole(
     [client],
   );
 
-  // Takeover is the one request in this hook that rides HTTP rather than the
-  // socket, because the daemon offers it no frame. A hub relay has no HTTP
-  // surface behind it, so it resolves to no root and the takeover fails
-  // closed, the same rule `useCowork`'s fetches already follow.
-  const takeoverRoot = connection.transport === "direct" ? restRoot(connection.url) : null;
+  /**
+   * Select and attach in one step, the way every open lands: a strip this
+   * device has never seen asks for the whole transcript, because a console
+   * opened mid-session should show the session. After that the client's own
+   * watermark resumes, so revisiting a strip never replays a log that is
+   * already on screen.
+   */
+  const selectAgent = useCallback(
+    (agentId: AgentId): void => {
+      dispatch({ t: "select", agentId });
+      client.attach(agentId, backfilled.current.has(agentId) ? {} : { sinceSeq: 0 });
+      backfilled.current.add(agentId);
+    },
+    [client],
+  );
 
   useEffect(() => {
     const offs = [
@@ -179,6 +149,15 @@ export function useConsole(
       }),
       client.on("agents", event => {
         dispatch({ t: "agents", event });
+      }),
+      client.on("session_opened", event => {
+        // The only answer a takeover or resume claim gets: the agent that now
+        // holds the session, or the one that already did. Selecting it is
+        // what makes the tap land, and selecting is also attaching, so this
+        // socket starts receiving the roster pushes that carry the agent the
+        // daemon just made -- no admission by hand, which the roster would
+        // only have to reconcile anyway.
+        selectAgent(event.agentId);
       }),
       client.on("sessions", event => {
         dispatch({ t: "sessions", event });
@@ -225,7 +204,7 @@ export function useConsole(
       for (const off of offs) off();
       client.close();
     };
-  }, [client, settleWebViewAction]);
+  }, [client, settleWebViewAction, selectAgent]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -238,22 +217,6 @@ export function useConsole(
       subscription.remove();
     };
   }, [client]);
-
-  /**
-   * Select and attach in one step, the way every open lands: a strip this
-   * device has never seen asks for the whole transcript, because a console
-   * opened mid-session should show the session. After that the client's own
-   * watermark resumes, so revisiting a strip never replays a log that is
-   * already on screen.
-   */
-  const selectAgent = useCallback(
-    (agentId: AgentId): void => {
-      dispatch({ t: "select", agentId });
-      client.attach(agentId, backfilled.current.has(agentId) ? {} : { sinceSeq: 0 });
-      backfilled.current.add(agentId);
-    },
-    [client],
-  );
 
   const actions = useMemo<ConsoleActions>(
     () => ({
@@ -282,33 +245,34 @@ export function useConsole(
         dispatch({ t: "dismiss" });
       },
       openSession(target) {
-        if (target.agentId !== undefined) {
-          selectAgent(target.agentId);
-          return;
-        }
-        if (!target.liveTui) {
-          // Honesty over silence: the row is on screen, so the tap has to
-          // answer. A dormant resume needs a create-with-session request the
-          // daemon does not offer yet, and pretending otherwise would strand
-          // the operator on a dead control.
-          dispatch({ t: "error", event: { message: "That session is dormant; this build cannot resume it yet." } });
-          return;
-        }
-        void takeOverLiveTui(target.sessionId, { root: takeoverRoot, token: connection.token })
-          .then(agent => {
-            // The adoption created an agent this socket only hears about on
-            // the next roster push, and pushes only reach sockets already
-            // attached to something. Admit the agent the response named so
-            // the open lands instead of tapping a row that does nothing.
-            dispatch({ t: "agent_admitted", agent });
-            selectAgent(agent.id);
-          })
-          .catch(cause => {
+        // Both claims ride the sealed socket rather than the daemon's HTTP
+        // routes, because a hub relay carries one websocket and no HTTP: the
+        // earlier HTTP takeover could only ever work for a device on the same
+        // network as the daemon. The daemon answers `session_opened` with the
+        // agent that now holds the session, and a session already held
+        // answers with the one holding it, so a double tap cannot make a
+        // second holder. Selecting waits for that answer; the reply, not this
+        // dispatch, is what opens the screen.
+        switch (target.kind) {
+          case "agent":
+            selectAgent(target.agentId);
+            return;
+          case "live-tui":
+            client.takeOverSession(target.sessionId, target.cwd, target.pid);
+            return;
+          case "dormant":
+            client.resumeSession(target.sessionId, target.cwd);
+            return;
+          case "unopenable":
+            // Honesty over silence: the row is on screen, so the tap has to
+            // answer. No index row means no cwd to echo, and the daemon
+            // refuses a claim it cannot verify, so say why here rather than
+            // send a frame that cannot land.
             dispatch({
               t: "error",
-              event: { message: cause instanceof Error ? cause.message : "the takeover failed" },
+              event: { message: "That session has no record the daemon can verify, so it cannot be opened from here." },
             });
-          });
+        }
       },
       mountWebView(agentId) {
         if (mountedWebViews.current.has(agentId)) return;
@@ -327,7 +291,7 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [client, settleWebViewAction, takeoverRoot, connection.token, selectAgent],
+    [client, settleWebViewAction, selectAgent],
   );
 
   return [state, actions];

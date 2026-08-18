@@ -183,6 +183,15 @@ export class SessionIndex {
     return summaries;
   }
 
+  /**
+   * One row by session id, or undefined. Sees archived rows too: a caller
+   * verifying a session-open request against the index needs the row's true
+   * status, and "archived" and "not in the catalog" are different answers.
+   */
+  get(sessionId: string): SessionSummary | undefined {
+    return this.build().find(row => row.id === sessionId);
+  }
+
   /** Query, filter, and sort the catalog. Archived sessions are excluded unless `includeArchived` is set. */
   query(q: SessionQuery = {}): SessionSummary[] {
     let rows = this.build();

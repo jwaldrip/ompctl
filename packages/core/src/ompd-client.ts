@@ -135,6 +135,12 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // `attach`: the answer is a snapshot this client asked for, not an
   // instruction that silently did not happen.
   sessions: false,
+  // One-shot instructions, never replayed: a takeover or resume that never
+  // left is an operator action that silently did not happen, the same
+  // failure class as a lost `prompt`, and the operator must hear about it
+  // rather than watch a session that will never open.
+  session_takeover: true,
+  session_resume: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -312,6 +318,17 @@ export interface SessionsEvent {
   sessions: SessionSummary[];
 }
 
+/**
+ * The daemon opened a session this client asked to open -- by takeover or
+ * by resume, including the idempotent answer for one already held. Carries
+ * no agent record on purpose: the `agents` event (or `hello`) delivers the
+ * roster, and a second copy here would be a second thing to keep in sync.
+ */
+export interface SessionOpenedEvent {
+  sessionId: string;
+  agentId: AgentId;
+}
+
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -329,6 +346,7 @@ export interface ClientEventMap {
   collab_voice: CollabVoiceEvent;
   collab_voice_history: CollabVoiceHistoryEvent;
   sessions: SessionsEvent;
+  session_opened: SessionOpenedEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -599,6 +617,32 @@ export class OmpdClient {
     this.sendSessionsQuery();
   }
 
+  /**
+   * Ask the daemon to take a `live-tui` session over. `cwd` and `pid` must
+   * be the row's own values as the index delivered them, because the daemon
+   * verifies the echo and refuses a mismatch. The answer arrives as the
+   * `session_opened` event, or an `error` naming the cause.
+   *
+   * One-shot, unlike `listSessions`: never re-issued after a reconnect, and
+   * deliberately so. A takeover or resume that raced a drop either took (the
+   * daemon answers on the next socket once the index shows it held, which
+   * the idempotent answer covers) or did not (the operator retaps, which is
+   * the only honest retry for an action with side effects this large).
+   * Replaying it blind would take over a session the operator may have
+   * decided, watching a spinner, not to hand over.
+   */
+  takeOverSession(sessionId: string, cwd: string, pid: number): void {
+    this.send({ t: "session_takeover", sessionId, cwd, pid });
+  }
+
+  /**
+   * Ask the daemon to resume a dormant session. The same one-shot contract
+   * as `takeOverSession`, and the same echo-and-verify rule for `cwd`.
+   */
+  resumeSession(sessionId: string, cwd: string): void {
+    this.send({ t: "session_resume", sessionId, cwd });
+  }
+
   // -- connection lifecycle -------------------------------------------------
 
   private openSocket(reason: string): void {
@@ -861,6 +905,9 @@ export class OmpdClient {
         return;
       case "sessions":
         this.emit("sessions", { sessions: frame.sessions });
+        return;
+      case "session_opened":
+        this.emit("session_opened", { sessionId: frame.sessionId, agentId: frame.agentId });
         return;
       case "update":
         this.handleUpdate(frame.agentId, frame.seq, frame.update);
