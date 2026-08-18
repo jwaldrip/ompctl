@@ -70,5 +70,8 @@
       "import": "./src/*.ts"
     },
     "./*.js": "./src/*.ts"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2"
   }
 }

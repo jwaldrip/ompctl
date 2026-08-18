@@ -8,6 +8,8 @@
  * URL-safe alphabet wrong anyway.
  */
 
+import { bytesToUtf8 } from "@noble/ciphers/utils.js";
+
 /**
  * The alphabet, indexed with `charAt` rather than `[]` throughout.
  *
@@ -92,8 +94,16 @@ export function utf8(text: string): Uint8Array {
   return new TextEncoder().encode(text);
 }
 
+/**
+ * Decode UTF-8 without `TextDecoder`.
+ *
+ * React Native ships `TextEncoder` but not `TextDecoder`, so every sealed frame
+ * a phone opened threw on the way out of the channel. `@noble/ciphers` already
+ * carries a portable implementation and is already a dependency here, so this
+ * is one import rather than a second polyfill to keep correct.
+ */
 export function fromUtf8(bytes: Uint8Array): string {
-  return new TextDecoder().decode(bytes);
+  return bytesToUtf8(bytes);
 }
 
 /**

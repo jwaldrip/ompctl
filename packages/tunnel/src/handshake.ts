@@ -23,6 +23,7 @@
 
 import { x25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { randomBytes } from "@noble/hashes/utils.js";
 import { canonical, fromBase64UrlExact, toBase64Url, toHex, utf8 } from "./bytes.ts";
 import { type ChannelKeys, deriveChannelKeys } from "./channel.ts";
 import { type DaemonId, ID_PATTERN, keyMatchesId, signWith, verifyWith } from "./identity.ts";
@@ -174,7 +175,12 @@ export function beginClientHandshake(daemonId: DaemonId): ClientHandshake {
 
   const secret = x25519.utils.randomSecretKey();
   const eph = toBase64Url(x25519.getPublicKey(secret));
-  const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
+  // `randomBytes` rather than `crypto.getRandomValues` directly: React Native
+  // has no `crypto` global at all, so this package must not reach for one. The
+  // host installs a CSPRNG-backed polyfill and `@noble` picks it up, which
+  // keeps one source of randomness for both the nonce and the curve secret
+  // above instead of two that can disagree about where entropy comes from.
+  const nonce = toBase64Url(randomBytes(NONCE_BYTES));
   const hello: ClientHello = { t: "hello", v: PROTOCOL_VERSION, daemonId, nonce, eph };
 
   return {
@@ -240,7 +246,7 @@ export async function answerClientHandshake(input: {
   const clientEph = requireField(input.hello.eph, X25519_BYTES, "client ephemeral key");
   const secret = x25519.utils.randomSecretKey();
   const eph = toBase64Url(x25519.getPublicKey(secret));
-  const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
+  const nonce = toBase64Url(randomBytes(NONCE_BYTES));
   const transcript = handshakeTranscript({
     daemonId: input.daemonId,
     sessionId: requireSessionId(input.sessionId),

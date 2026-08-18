@@ -18,7 +18,10 @@
  * treat any of them as a torn session rather than papering over one.
  */
 
-import { bufferSource, fromBase64Url, toBase64Url, utf8 } from "./bytes.ts";
+import { gcm } from "@noble/ciphers/aes.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { fromBase64Url, fromUtf8, toBase64Url, utf8 } from "./bytes.ts";
 import { PROTOCOL_VERSION } from "./protocol.ts";
 
 const KEY_BITS = 256;
@@ -46,9 +49,9 @@ export class ChannelError extends Error {
 
 export interface ChannelKeys {
   /** Client to daemon. */
-  readonly c2d: CryptoKey;
+  readonly c2d: Uint8Array;
   /** Daemon to client. */
-  readonly d2c: CryptoKey;
+  readonly d2c: Uint8Array;
 }
 
 /**
@@ -59,40 +62,46 @@ export interface ChannelKeys {
  * claimed to be routing to, produces a different key on each side and the first
  * sealed frame fails to open.
  */
-export async function deriveChannelKeys(sharedSecret: Uint8Array, transcript: Uint8Array): Promise<ChannelKeys> {
-  const ikm = await crypto.subtle.importKey("raw", bufferSource(sharedSecret), "HKDF", false, ["deriveBits"]);
-  const derive = async (label: string): Promise<CryptoKey> => {
-    const bits = await crypto.subtle.deriveBits(
-      { name: "HKDF", hash: "SHA-256", salt: bufferSource(transcript), info: bufferSource(utf8(label)) },
-      ikm,
-      KEY_BITS,
-    );
-    return crypto.subtle.importKey("raw", bits, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-  };
+export function deriveChannelKeys(sharedSecret: Uint8Array, transcript: Uint8Array): ChannelKeys {
+  // HKDF and AES-GCM come from `@noble` rather than WebCrypto, for the same
+  // reason the curves already do one file over: the platforms this has to run
+  // on do not all have it. React Native has no `crypto` object at all -- no
+  // `subtle`, no `getRandomValues` -- so a phone could not open a sealed
+  // channel, and the failure surfaced as `undefined is not a function` deep
+  // inside a socket factory. An audited pure-JS implementation is the only
+  // thing that behaves the same in Bun, a browser, and Hermes.
+  //
+  // These are also synchronous, which removes the reason `seal` and `open` had
+  // to serialise themselves against overlapping calls. The chains below are
+  // kept anyway: the counter contract is per-frame ordering, and that is worth
+  // holding independently of whether the primitive happens to be async today.
+  const derive = (label: string): Uint8Array => hkdf(sha256, sharedSecret, transcript, utf8(label), KEY_BITS / 8);
   return {
-    c2d: await derive(`ompd-tunnel-c2d-v${PROTOCOL_VERSION}`),
-    d2c: await derive(`ompd-tunnel-d2c-v${PROTOCOL_VERSION}`),
+    c2d: derive(`ompd-tunnel-c2d-v${PROTOCOL_VERSION}`),
+    d2c: derive(`ompd-tunnel-d2c-v${PROTOCOL_VERSION}`),
   };
 }
 
 export class SealedChannel {
-  readonly #sendKey: CryptoKey;
-  readonly #recvKey: CryptoKey;
+  readonly #sendKey: Uint8Array;
+  readonly #recvKey: Uint8Array;
   #sendCounter = 0;
   #recvCounter = 0;
 
   /**
    * Serialises each direction.
    *
-   * WebCrypto is asynchronous, so two overlapping calls would take their
-   * counters in call order and then finish in whatever order the runtime
-   * happened to complete them. The caller writes on completion, so the frames
-   * reach the wire transposed and the far side, which requires the exact next
-   * counter, refuses a stream that was never actually corrupted.
+   * `seal` and `open` return promises, so two overlapping calls would take
+   * their counters in call order and could still be written in another. The
+   * caller writes on completion, so frames would reach the wire transposed and
+   * the far side, which requires the exact next counter, would refuse a stream
+   * that was never actually corrupted.
    *
    * A daemon streaming two updates in the same tick is enough to hit it, so
    * ordering belongs here rather than in each caller: the counter lives in this
-   * object, and so should the guarantee that it is honoured.
+   * object, and so should the guarantee that it is honoured. The primitives are
+   * synchronous now, which makes this cheap rather than unnecessary -- the
+   * contract is the ordering, not the implementation that needed it.
    */
   #sendChain: Promise<unknown> = Promise.resolve();
   #recvChain: Promise<unknown> = Promise.resolve();
@@ -126,20 +135,14 @@ export class SealedChannel {
     return opened;
   }
 
+  // `async` is kept on both despite the primitives now being synchronous: the
+  // return type is part of this class's contract, and the chains above depend
+  // on it.
   async #sealNow(plaintext: string): Promise<string> {
     if (this.#sendCounter >= MAX_COUNTER) throw new ChannelError("channel exhausted");
     const counter = this.#sendCounter++;
-    const sealed = await crypto.subtle.encrypt(
-      {
-        name: "AES-GCM",
-        iv: bufferSource(nonceFor(counter)),
-        additionalData: bufferSource(aadFor(counter)),
-        tagLength: TAG_BYTES * 8,
-      },
-      this.#sendKey,
-      bufferSource(utf8(plaintext)),
-    );
-    return toBase64Url(new Uint8Array(sealed));
+    const sealed = gcm(this.#sendKey, nonceFor(counter), aadFor(counter)).encrypt(utf8(plaintext));
+    return toBase64Url(sealed);
   }
 
   async #openNow(sealed: string): Promise<string> {
@@ -147,18 +150,9 @@ export class SealedChannel {
     if (raw === null || raw.length < TAG_BYTES) throw new ChannelError("sealed frame was malformed");
 
     const counter = this.#recvCounter;
-    let plaintext: ArrayBuffer;
+    let plaintext: Uint8Array;
     try {
-      plaintext = await crypto.subtle.decrypt(
-        {
-          name: "AES-GCM",
-          iv: bufferSource(nonceFor(counter)),
-          additionalData: bufferSource(aadFor(counter)),
-          tagLength: TAG_BYTES * 8,
-        },
-        this.#recvKey,
-        bufferSource(raw),
-      );
+      plaintext = gcm(this.#recvKey, nonceFor(counter), aadFor(counter)).decrypt(raw);
     } catch {
       // Indistinguishable on purpose: a forged tag, a replayed frame, and a
       // frame the relay dropped all land here, and the session is over either
@@ -168,7 +162,7 @@ export class SealedChannel {
     }
 
     this.#recvCounter++;
-    return new TextDecoder().decode(plaintext);
+    return fromUtf8(plaintext);
   }
 }
 
