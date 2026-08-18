@@ -396,54 +396,85 @@ resource "google_dns_managed_zone" "ompctl" {
   ]
 }
 
+# Cloud Run's mapping targets, written out rather than read from
+# `google_cloud_run_domain_mapping.*.status`.
+#
+# The status block is the authority, but it is only populated AFTER the mapping
+# is created, so a `for_each` over it is unknown at plan time and Terraform
+# refuses the plan outright ("Invalid for_each argument"). These values are
+# Google's published anycast frontends for Cloud Run / App Engine custom
+# domains, and were confirmed against the live mappings for this project:
+# subdomains take the CNAME, an apex takes the four A and four AAAA records.
 locals {
-  mapping_rrs = concat(
-    [
-      for rr in try(google_cloud_run_domain_mapping.app.status[0].resource_records, []) : {
-        name = "${var.app_domain}."
-        type = rr.type
-        data = endswith(rr.rrdata, ".") || contains(["A", "AAAA"], rr.type) ? rr.rrdata : "${rr.rrdata}."
-      }
-    ],
-    [
-      for rr in try(google_cloud_run_domain_mapping.hub.status[0].resource_records, []) : {
-        name = "${var.hub_domain}."
-        type = rr.type
-        data = endswith(rr.rrdata, ".") || contains(["A", "AAAA"], rr.type) ? rr.rrdata : "${rr.rrdata}."
-      }
-    ],
-    [
-      for rr in try(google_cloud_run_domain_mapping.root.status[0].resource_records, []) : {
-        name = "${var.root_domain}."
-        type = rr.type
-        data = endswith(rr.rrdata, ".") || contains(["A", "AAAA"], rr.type) ? rr.rrdata : "${rr.rrdata}."
-      }
-    ],
-    [
-      for rr in try(google_cloud_run_domain_mapping.www.status[0].resource_records, []) : {
-        name = "www.${var.root_domain}."
-        type = rr.type
-        data = endswith(rr.rrdata, ".") || contains(["A", "AAAA"], rr.type) ? rr.rrdata : "${rr.rrdata}."
-      }
-    ],
-  )
-  mapping_groups = {
-    for key, recs in { for rr in local.mapping_rrs : "${rr.name}|${rr.type}" => rr... } : key => {
-      name    = recs[0].name
-      type    = recs[0].type
-      rrdatas = [for r in recs : r.data]
-    }
-  }
+  cloud_run_cname = "ghs.googlehosted.com."
+  cloud_run_a = [
+    "216.239.32.21",
+    "216.239.34.21",
+    "216.239.36.21",
+    "216.239.38.21",
+  ]
+  cloud_run_aaaa = [
+    "2001:4860:4802:32::15",
+    "2001:4860:4802:34::15",
+    "2001:4860:4802:36::15",
+    "2001:4860:4802:38::15",
+  ]
 }
 
-resource "google_dns_record_set" "edge" {
-  for_each     = local.mapping_groups
+resource "google_dns_record_set" "hub" {
   project      = var.project_id
   managed_zone = google_dns_managed_zone.ompctl.name
-  name         = each.value.name
-  type         = each.value.type
+  name         = "${var.hub_domain}."
+  type         = "CNAME"
   ttl          = 300
-  rrdatas      = each.value.rrdatas
+  rrdatas      = [local.cloud_run_cname]
+
+  depends_on = [google_cloud_run_domain_mapping.hub]
+}
+
+resource "google_dns_record_set" "app" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = "${var.app_domain}."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = [local.cloud_run_cname]
+
+  depends_on = [google_cloud_run_domain_mapping.app]
+}
+
+resource "google_dns_record_set" "www" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = "www.${var.root_domain}."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = [local.cloud_run_cname]
+
+  depends_on = [google_cloud_run_domain_mapping.www]
+}
+
+# An apex cannot hold a CNAME, so it takes the address records instead.
+resource "google_dns_record_set" "root_a" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = google_dns_managed_zone.ompctl.dns_name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = local.cloud_run_a
+
+  depends_on = [google_cloud_run_domain_mapping.root]
+}
+
+resource "google_dns_record_set" "root_aaaa" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = google_dns_managed_zone.ompctl.dns_name
+  type         = "AAAA"
+  ttl          = 300
+  rrdatas      = local.cloud_run_aaaa
+
+  depends_on = [google_cloud_run_domain_mapping.root]
 }
 
 resource "google_dns_record_set" "apex_txt" {
