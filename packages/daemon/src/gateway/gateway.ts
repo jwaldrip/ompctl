@@ -1922,10 +1922,7 @@ export class Gateway {
       throw new TakeoverRefusal(`no connected TUI owns session ${sessionId}`, "tui_unreachable");
     }
     if (tui.agentId) {
-      throw new TakeoverRefusal(
-        `session ${sessionId} is already managed as agent ${tui.agentId}`,
-        "already_held",
-      );
+      throw new TakeoverRefusal(`session ${sessionId} is already managed as agent ${tui.agentId}`, "already_held");
     }
     if (this.#tuiTakeovers.has(sessionId)) {
       throw new TakeoverRefusal(`session ${sessionId} takeover is already pending`, "takeover_pending");
@@ -2036,12 +2033,7 @@ export class Gateway {
       }
       this.#send(ws, {
         t: "error",
-        code:
-          err instanceof TakeoverRefusal
-            ? err.code
-            : takeover
-              ? "takeover_failed"
-              : "resume_failed",
+        code: err instanceof TakeoverRefusal ? err.code : takeover ? "takeover_failed" : "resume_failed",
         message: err instanceof Error ? err.message : "session open failed",
       });
     }

@@ -22,7 +22,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ClientFrame, DefaultPolicy, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
+import {
+  type ClientFrame,
+  DefaultPolicy,
+  SCOPE_MANAGE,
+  SCOPE_PROMPT,
+  SCOPE_READ,
+  type ServerFrame,
+  Store,
+} from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { encodeSessionDirName } from "../src/sessions/cwd-codec.ts";
