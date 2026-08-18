@@ -77,14 +77,37 @@ export interface TunnelSocketOptions {
  * Strip a credential out of a socket URL and return the hub base.
  *
  * For callers that hold the `?token=` form and must not forward it.
+ *
+ * Done with string operations rather than `URL`. This ran `URL.parse`, a static
+ * React Native does not implement, followed by `searchParams.delete` and a
+ * `search` setter it does not implement either -- so on a phone this threw
+ * `undefined is not a function` before any socket was attempted, and the
+ * Console reported `could not open socket`. Bun has all three, so the suite and
+ * every desktop client passed. See `parseEndpoint` in `@ompd/core/pairing` for
+ * the same lesson in the same shape.
+ *
+ * Other parameters are preserved: only the credential is removed, because the
+ * hub is not the party it authenticates.
  */
 export function hubSocketUrl(url: string): { base: string; token: string | null } {
-  const parsed = URL.parse(url);
-  if (parsed === null) return { base: url, token: null };
-  const token = parsed.searchParams.get("token");
-  parsed.searchParams.delete("token");
-  parsed.search = parsed.searchParams.toString();
-  return { base: parsed.toString().replace(/\?$/, ""), token };
+  const start = url.indexOf("?");
+  if (start < 0) return { base: url, token: null };
+
+  const base = url.slice(0, start);
+  let token: string | null = null;
+  const kept: string[] = [];
+  for (const pair of url.slice(start + 1).split("&")) {
+    if (pair.length === 0) continue;
+    const eq = pair.indexOf("=");
+    const key = eq < 0 ? pair : pair.slice(0, eq);
+    if (decodeURIComponent(key) === "token") {
+      const raw = eq < 0 ? "" : pair.slice(eq + 1);
+      token = decodeURIComponent(raw.replace(/\+/g, " "));
+      continue;
+    }
+    kept.push(pair);
+  }
+  return { base: kept.length === 0 ? base : `${base}?${kept.join("&")}`, token };
 }
 
 export function connectThroughHub(opts: TunnelSocketOptions): TunnelSocketLike {

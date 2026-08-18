@@ -33,6 +33,8 @@
  * to it. See `docs/hub.md`.
  */
 
+import { bytesToUtf8 } from "@noble/ciphers/utils.js";
+
 /** Scheme both endpoint forms share. */
 export const ENDPOINT_SCHEME = "ompd:";
 
@@ -357,8 +359,13 @@ function toUtf8(text: string): Uint8Array {
   return new TextEncoder().encode(text);
 }
 
+/**
+ * Hermes ships `TextEncoder` but not `TextDecoder`, so decoding a scanned
+ * pairing bundle threw on device. `@noble/ciphers` carries a portable
+ * implementation and is already in the dependency graph for the sealed channel.
+ */
 function fromUtf8(bytes: Uint8Array): string {
-  return new TextDecoder().decode(bytes);
+  return bytesToUtf8(bytes);
 }
 
 function toBase64Url(bytes: Uint8Array): string {

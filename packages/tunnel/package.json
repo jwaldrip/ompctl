@@ -8,7 +8,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@noble/curves": "2.3.0"
+    "@noble/ciphers": "2",
+    "@noble/curves": "2.3.0",
+    "@noble/hashes": "2"
   },
   "scripts": {
     "check": "bun ../../scripts/check-types.ts tsconfig.json"
