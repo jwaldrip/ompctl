@@ -895,6 +895,30 @@ export class Store {
       .run(sessionId, entry.mtimeMs, entry.sizeBytes, entry.messageCount);
   }
 
+  /**
+   * Many scan-cache rows in one transaction. A cold warm pass over an
+   * operator-scale tree writes thousands of these, and every unbatched
+   * `setSessionScanCache` call is its own implicit transaction -- under WAL
+   * with SQLite's default `synchronous=FULL`, one WAL commit (and one
+   * fsync) per row, which turned a cold pass into an I/O-bound crawl at 0%
+   * CPU. The table is a recomputable cache, so all-or-nothing per batch is
+   * exactly the durability it wants: a crash mid-pass loses the current
+   * batch at most, and the next pass re-reads those files.
+   */
+  setSessionScanCacheBatch(rows: Array<{ sessionId: string } & SessionScanCacheEntry>): void {
+    if (rows.length === 0) return;
+    const stmt = this.#db.query(
+      `INSERT INTO session_scan_cache (session_id,mtime_ms,size_bytes,message_count) VALUES (?,?,?,?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         mtime_ms=excluded.mtime_ms, size_bytes=excluded.size_bytes, message_count=excluded.message_count`,
+    );
+    this.#db.transaction(() => {
+      for (const row of rows) {
+        stmt.run(row.sessionId, row.mtimeMs, row.sizeBytes, row.messageCount);
+      }
+    })();
+  }
+
   // -- collaboration voice -------------------------------------------------
 
   /**
