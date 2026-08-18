@@ -30,6 +30,7 @@ import {
   computeBackoffDelay,
   OmpdClient,
   type Scheduler,
+  type SessionOpenedEvent,
   type SessionsEvent,
   type SocketCloseInfo,
   type SocketLike,
@@ -1198,5 +1199,76 @@ describe("sessions surface", () => {
     h.client.prompt(AGENT, "hello");
     expect(errors.length).toBe(1);
     expect(errors[0]).toContain("prompt");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Session Open Surface
+// ---------------------------------------------------------------------------
+
+describe("session open surface", () => {
+  test("takeOverSession and resumeSession each send their frame with the row's own values", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.takeOverSession("019fee60-2c7a-7000-9fd5-7439c7bf3dd2", "/work/ompd", 4242);
+    h.client.resumeSession("019feebf-6449-7000-9474-a2ae1f871930", "/work/other");
+
+    expect(socket.framesOfType("session_takeover")).toEqual([
+      { t: "session_takeover", sessionId: "019fee60-2c7a-7000-9fd5-7439c7bf3dd2", cwd: "/work/ompd", pid: 4242 },
+    ]);
+    expect(socket.framesOfType("session_resume")).toEqual([
+      { t: "session_resume", sessionId: "019feebf-6449-7000-9474-a2ae1f871930", cwd: "/work/other" },
+    ]);
+  });
+
+  test("a session_opened server frame dispatches the typed event with the daemon's agent id", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionOpenedEvent[] = [];
+    h.client.on("session_opened", event => received.push(event));
+
+    socket.deliver({ t: "session_opened", sessionId: "019fee60-2c7a-7000-9fd5-7439c7bf3dd2", agentId: AGENT });
+
+    expect(received).toEqual([{ sessionId: "019fee60-2c7a-7000-9fd5-7439c7bf3dd2", agentId: AGENT }]);
+  });
+
+  test("a reconnect re-issues neither request: the new socket carries nothing but hello", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.takeOverSession("019fee60-2c7a-7000-9fd5-7439c7bf3dd2", "/work/ompd", 4242);
+    h.client.resumeSession("019feebf-6449-7000-9474-a2ae1f871930", "/work/other");
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just the two types: a replay implemented as
+    // remembered state would show up here as any frame after the hello this
+    // socket did not ask for.
+    expect(second.sent).toEqual([]);
+    expect(second.framesOfType("session_takeover")).toEqual([]);
+    expect(second.framesOfType("session_resume")).toEqual([]);
+  });
+
+  test("losing either request to a closed socket raises a visible error, like a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.takeOverSession("019fee60-2c7a-7000-9fd5-7439c7bf3dd2", "/work/ompd", 4242);
+    h.client.resumeSession("019feebf-6449-7000-9474-a2ae1f871930", "/work/other");
+
+    expect(errors.length).toBe(2);
+    expect(errors[0]).toContain("session_takeover");
+    expect(errors[1]).toContain("session_resume");
   });
 });

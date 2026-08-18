@@ -42,6 +42,7 @@ import {
   type SessionQuery,
   type SessionSortDir,
   type SessionSortKey,
+  type SessionSummary,
   type SkillSummary,
   type Store,
   type Task,
@@ -211,6 +212,101 @@ function validateSessionQuery(value: unknown): { query: SessionQuery } | { error
   }
 
   return { query };
+}
+
+/**
+ * A refusal from `#takeOverLiveTui`'s own pre-checks, carrying the code a
+ * `session_takeover` frame must answer with. The HTTP route reports only the
+ * message, so throwing a typed error instead of a plain one changes nothing
+ * for direct callers and everything for a phone, which needs a code to route
+ * the cause to the right screen instead of parsing prose.
+ */
+class TakeoverRefusal extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
+    super(message);
+  }
+}
+
+/** What `verifySessionClaim` decided about a session-open request. */
+type SessionClaim =
+  | { verdict: "proceed"; row: SessionSummary }
+  /** Already held: the idempotent answer is the agent that holds it. */
+  | { verdict: "held"; agentId: AgentId }
+  | { verdict: "refuse"; code: string; message: string };
+
+/**
+ * Verify a `session_takeover` or `session_resume` request against the index
+ * this daemon itself would answer a `sessions` query from. The one verifier
+ * both frames call, the way `validateSessionQuery` is the one validator the
+ * HTTP route and the `sessions` frame share, so neither frame can grow a
+ * weaker door than the other.
+ *
+ * The caller's `cwd` and `pid` are echoes of an index row the client once
+ * saw, not credentials: they are compared against a freshly built row, and
+ * a mismatch refuses naming the cause rather than trusting the echo, because
+ * `session/load` resolves the session file under the directory it is handed
+ * and a recycled pid means the process the caller pointed at is not the one
+ * holding the transcript. A row already held by an agent is a "held"
+ * verdict rather than a refusal: spawning a second holder would put two
+ * writers on one session file, the exact corruption `takeOverTuiSession`'s
+ * own refusal exists to prevent, and the idempotent answer satisfies the
+ * caller's actual intent.
+ */
+function verifySessionClaim(
+  index: SessionIndex,
+  sessionId: string,
+  claimed: { cwd: string; pid?: number },
+  want: "live-tui" | "dormant",
+): SessionClaim {
+  const row = index.get(sessionId);
+  if (!row) {
+    return { verdict: "refuse", code: "unknown_session", message: `no session ${sessionId} exists on this daemon` };
+  }
+  // Checked before anything the caller said: the daemon's own roster is the
+  // more specific, independently reconciled source of truth for a session it
+  // holds, exactly as it outranks a client-presence file in the index build.
+  if (row.status === "live-ompd") {
+    return row.agentId !== undefined
+      ? { verdict: "held", agentId: row.agentId }
+      : {
+          verdict: "refuse",
+          code: "already_held",
+          message: `session ${sessionId} is held by an agent with no id in the index`,
+        };
+  }
+  if (row.status !== want) {
+    const wanted = want === "live-tui" ? "a live TUI" : "dormant";
+    return {
+      verdict: "refuse",
+      code: want === "live-tui" ? "not_live_tui" : "not_dormant",
+      message: `session ${sessionId} is ${row.status}, not ${wanted}`,
+    };
+  }
+  if (row.cwd === null) {
+    return {
+      verdict: "refuse",
+      code: "cwd_mismatch",
+      message: `session ${sessionId} has no decodable cwd to verify the request against`,
+    };
+  }
+  if (row.cwd !== claimed.cwd) {
+    return {
+      verdict: "refuse",
+      code: "cwd_mismatch",
+      message: `session ${sessionId} lives in ${row.cwd}, not ${claimed.cwd}`,
+    };
+  }
+  if (want === "live-tui" && row.pid !== claimed.pid) {
+    return {
+      verdict: "refuse",
+      code: "pid_mismatch",
+      message: `session ${sessionId} is held by pid ${row.pid}, not ${claimed.pid}`,
+    };
+  }
+  return { verdict: "proceed", row };
 }
 
 /**
@@ -1822,9 +1918,18 @@ export class Gateway {
   async #takeOverLiveTui(sessionId: string, actor: Actor): Promise<Agent> {
     const socket = [...this.#sockets].find(ws => ws.data.tui?.sessionId === sessionId);
     const tui = socket?.data.tui;
-    if (!socket || !tui) throw new Error(`no connected TUI owns session ${sessionId}`);
-    if (tui.agentId) throw new Error(`session ${sessionId} is already managed as agent ${tui.agentId}`);
-    if (this.#tuiTakeovers.has(sessionId)) throw new Error(`session ${sessionId} takeover is already pending`);
+    if (!socket || !tui) {
+      throw new TakeoverRefusal(`no connected TUI owns session ${sessionId}`, "tui_unreachable");
+    }
+    if (tui.agentId) {
+      throw new TakeoverRefusal(
+        `session ${sessionId} is already managed as agent ${tui.agentId}`,
+        "already_held",
+      );
+    }
+    if (this.#tuiTakeovers.has(sessionId)) {
+      throw new TakeoverRefusal(`session ${sessionId} takeover is already pending`, "takeover_pending");
+    }
 
     return await new Promise<Agent>((resolve, reject) => {
       this.#tuiTakeovers.set(sessionId, { socket, actor, resolve, reject });
@@ -1863,6 +1968,82 @@ export class Gateway {
       // its in-process ACP server dispose the adopted session instead of
       // stranding a headless process that the daemon never registered.
       ws.close();
+    }
+  }
+
+  /**
+   * Open one index session under the daemon for a socket client: take over
+   * the TUI holding it, or resume it from disk. The sealed-socket
+   * counterpart of `POST /v1/sessions/:id/takeover`, which a hub-relayed
+   * phone cannot reach because the relay carries frames only, never daemon
+   * HTTP paths.
+   *
+   * Reuses the same helpers the HTTP paths use rather than a parallel
+   * implementation: takeover goes through `#takeOverLiveTui`, and resume
+   * through `Supervisor.resumeAgent`, so the two doors cannot drift apart
+   * behind their different transports. The index verification happens here
+   * because only this path carries caller echoes to verify. A failure
+   * re-checks the claim before answering, because losing a race to another
+   * client's identical request is the success the caller asked for, not an
+   * error.
+   */
+  async #openSessionOverSocket(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "session_takeover" }> | Extract<ClientFrame, { t: "session_resume" }>,
+  ): Promise<void> {
+    const actor = this.#actorOf(ws);
+    const index = this.#sessionIndex;
+    if (!index) {
+      this.#send(ws, {
+        t: "error",
+        code: "sessions_unavailable",
+        message: "no session index is wired into this daemon",
+      });
+      return;
+    }
+    const takeover = frame.t === "session_takeover";
+    const claimed = { cwd: frame.cwd, ...(takeover ? { pid: frame.pid } : {}) };
+    const claim = verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+    if (claim.verdict === "refuse") {
+      this.#send(ws, { t: "error", code: claim.code, message: claim.message });
+      return;
+    }
+    if (claim.verdict === "held") {
+      this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: claim.agentId });
+      return;
+    }
+    try {
+      const agent = takeover
+        ? await this.#takeOverLiveTui(frame.sessionId, actor)
+        : await this.#sup.resumeAgent(
+            {
+              name: claim.row.title !== "" ? claim.row.title : `Session ${frame.sessionId}`,
+              cwd: frame.cwd,
+              sessionId: frame.sessionId,
+            },
+            actor,
+          );
+      this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: agent.id });
+    } catch (err) {
+      // The claim is re-verified rather than trusting the throw: a refusal
+      // naming "already held" from a path that lost a race means another
+      // caller's identical request finished in between, and that outcome is
+      // the idempotent answer, not a failure.
+      const settled = verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+      if (settled.verdict === "held") {
+        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
+        return;
+      }
+      this.#send(ws, {
+        t: "error",
+        code:
+          err instanceof TakeoverRefusal
+            ? err.code
+            : takeover
+              ? "takeover_failed"
+              : "resume_failed",
+        message: err instanceof Error ? err.message : "session open failed",
+      });
     }
   }
 
@@ -2181,6 +2362,40 @@ export class Gateway {
           return;
         }
         this.#send(ws, { t: "sessions", sessions: index.query(parsed.query) });
+        return;
+      }
+
+      case "session_takeover":
+      case "session_resume": {
+        // The same manage gate the HTTP takeover route takes: handing the
+        // daemon a session it did not spawn is driving this machine, not
+        // watching it, and a read-only phone must not be able to do it by
+        // reaching for the socket instead of the unreachable route.
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: `${frame.t} requires manage scope`,
+          });
+          return;
+        }
+        // The wire is not a place to assume anyone kept to the contract; the
+        // same shape checks `tui_register` runs on its own fields.
+        if (
+          typeof frame.sessionId !== "string" ||
+          frame.sessionId.length === 0 ||
+          typeof frame.cwd !== "string" ||
+          frame.cwd.length === 0 ||
+          (frame.t === "session_takeover" && (!Number.isSafeInteger(frame.pid) || frame.pid <= 0))
+        ) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: `${frame.t} needs a sessionId, a non-empty cwd, and a positive pid when taking over`,
+          });
+          return;
+        }
+        void this.#openSessionOverSocket(ws, frame);
         return;
       }
 
