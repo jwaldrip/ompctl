@@ -33,6 +33,59 @@ import {
   sourceEntry,
 } from "../install.ts";
 
+/**
+ * The `pi_natives` addon the compiled binary needs, placed beside it.
+ *
+ * `bun build --compile` embeds the JS bundle but not this `.node`, and the
+ * loader inside it searches three places: a versioned directory under the omp
+ * home, the binary's own directory, and a path inside the compiled filesystem
+ * that only exists in omp's own build. So a freshly compiled `ompd` finds
+ * nothing and dies at startup on the first native call -- which is every start,
+ * because the daemon loads it before it serves.
+ *
+ * Copying it next to the binary satisfies the second search path and makes the
+ * pair self-contained: the addon travels with the artifact rather than relying
+ * on a version-matched directory that happens to be populated by some other
+ * install. A mismatched one is worse than a missing one, since the loader
+ * rejects it by version sentinel and reports a resolve failure that reads like
+ * a missing file.
+ *
+ * Best effort on purpose. The probe that follows is the gate: it runs the staged
+ * binary and refuses to install one that cannot start, whatever the reason. So a
+ * platform whose addon package is not installed -- Linux CI, for one -- must not
+ * be turned into a hard failure here by a step that is only trying to help. If
+ * the addon is genuinely needed and missing, the probe says so and the installed
+ * binary is left alone.
+ */
+async function placeNativeAddon(ctx: CliContext, staging: string): Promise<void> {
+  const name = `pi_natives.${process.platform}-${process.arch}.node`;
+  const beside = join(staging, "..", name);
+
+  // Copied from the running binary's own sibling when that is the source, so a
+  // second prefix gets the same pair rather than re-resolving a package.
+  if (isCompiledRuntime()) {
+    const sibling = join(process.execPath, "..", name);
+    if (existsSync(sibling)) copyFileSync(sibling, beside);
+    return;
+  }
+
+  const resolved = await resolveAddonFromCheckout(ctx, name);
+  if (resolved !== null) copyFileSync(resolved, beside);
+}
+
+/** The addon inside the checkout this is being built from, if it is there. */
+async function resolveAddonFromCheckout(ctx: CliContext, name: string): Promise<string | null> {
+  const pkg = `@oh-my-pi/pi-natives-${process.platform}-${process.arch}`;
+  const candidates = [
+    join(ctx.cwd, "node_modules", pkg, name),
+    join(sourceEntry(), "..", "..", "..", "..", "node_modules", pkg, name),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 export async function selfInstallCommand(
   ctx: CliContext,
   cmd: Extract<Command, { kind: "self-install" }>,
@@ -72,6 +125,29 @@ export async function selfInstallCommand(
   }
 
   chmodSync(staging, 0o755);
+
+  // Verified BEFORE it is moved into place, which is the whole point of staging.
+  //
+  // This used to rename first and check afterwards. The check did fail and the
+  // command did return 1, but by then the previous binary was already gone, so
+  // a build that cannot run replaced one that could and the exit code was the
+  // only trace. On a machine whose login agent names this path, the next
+  // restart crash-loops the daemon -- reported as a failed install, delivered
+  // as a broken service.
+  //
+  // The native addon has to be beside it for this to mean anything: the loader
+  // searches the binary's own directory, so a staged binary checked without it
+  // would fail for a reason the installed one would not have had.
+  await placeNativeAddon(ctx, staging);
+
+  const staged = await ctx.exec([staging, "--version"]);
+  if (staged.code !== 0) {
+    rmSync(staging, { force: true });
+    ctx.err(`built ${BINARY_NAME} but it did not run, so ${target} was left alone:`);
+    ctx.err(`  ${staged.stderr.trim().split("\n")[0] ?? `exit ${staged.code}`}`);
+    return 1;
+  }
+
   renameSync(staging, target);
 
   const version = await ctx.exec([target, "--version"]);

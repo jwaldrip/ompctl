@@ -23,7 +23,17 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BUNDLE_PREFIX, parsePairingBundle } from "@ompd/core/pairing";
@@ -575,6 +585,47 @@ describe("missing token", () => {
     expect(h.stderr()).toContain("approve needs --scopes");
     expect(h.stderr()).toContain(USAGE.split("\n")[0] as string);
   });
+});
+
+describe("self-install", () => {
+  test("a build that cannot run leaves the installed binary alone", async () => {
+    // The invariant, learned the hard way: this used to rename the staged binary
+    // over the target and verify afterwards. The check failed and the command
+    // returned 1, but the working binary was already gone, so a launch agent
+    // naming that path crash-looped on its next restart -- reported as a failed
+    // install, delivered as a broken service.
+    const prefix = mkdtempSync(join(tmpdir(), "ompd-prefix-"));
+    scratch.push(prefix);
+    const target = join(prefix, "ompd");
+    // Carries the marker, so `self-install` treats it as its own and proceeds.
+    const previous = `#!/bin/sh\n# OMPD_MANAGED_BINARY\necho previous\n`;
+    writeFileSync(target, previous);
+
+    const h = harness({
+      // Every `--version` probe fails, standing in for a binary that cannot
+      // load its native addon.
+      onExec: command => {
+        // Stand in for the compiler: actually produce the staged file, so the
+        // run reaches the verification step this test is about.
+        const at = command.indexOf("--outfile");
+        const outfile = at >= 0 ? command[at + 1] : undefined;
+        if (outfile !== undefined) {
+          writeFileSync(outfile, "#!/bin/sh\nexit 1\n");
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        if (command.includes("--version")) return { code: 1, stdout: "", stderr: "boom" };
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    const code = await run(["self-install", "--prefix", prefix], h.ctx);
+    expect(code).toBe(1);
+    // The point of the test.
+    expect(readFileSync(target, "utf8")).toBe(previous);
+    // And no staging debris left behind for launchd to trip over.
+    expect(readdirSync(prefix).filter(f => f.startsWith(".ompd."))).toEqual([]);
+    expect(h.stderr()).toContain("left alone");
+  }, 120_000);
 });
 
 describe("approve", () => {
