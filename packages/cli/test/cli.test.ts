@@ -36,7 +36,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { BUNDLE_PREFIX, parsePairingBundle } from "@ompd/core/pairing";
 import { homeIdFor, OMPD_VERSION, type Ompd } from "@ompd/daemon";
 import { parseCommand, USAGE, UsageError } from "../src/args.ts";
 import { type CliContext, resolveBaseUrl, TOKEN_GUIDANCE } from "../src/client.ts";
@@ -700,7 +699,7 @@ describe("approve", () => {
                 note: "reachable from this Wi-Fi",
               },
               {
-                endpoint: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: "dmn_pick" },
+                endpoint: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: `dmn_${"b".repeat(64)}` },
                 reach: "anywhere",
                 note: "reachable from anywhere the hub is",
               },
@@ -712,15 +711,18 @@ describe("approve", () => {
 
     expect(await run(["approve", "123456", "--scopes", "read"], h.ctx)).toBe(0);
     const out = h.stdout();
-    const encoded = /ompd-pair-v1:([A-Za-z0-9_\-=]+)/.exec(out)?.[1];
-    expect(encoded).toBeDefined();
-    const decoded = JSON.parse(Buffer.from(encoded ?? "", "base64url").toString("utf8"));
-    expect(decoded.connection.transport).toBe("hub");
-    expect(decoded.connection.hubUrl).toBe("wss://hub.example.com");
-    expect(decoded.connection.daemonId).toBe("dmn_pick");
-    // Nothing narrower rode along in the thing a device actually saves.
-    expect(JSON.stringify(decoded.connection)).not.toContain("127.0.0.1");
-    expect(JSON.stringify(decoded.connection)).not.toContain("10.4.1.221");
+    // What the operator copies is the pair of fields, so that is what must
+    // carry the hub and nothing narrower.
+    const hubLine = out.split("\n").find(line => line.trim().startsWith("Hub ")) ?? "";
+    const tokenLine = out.split("\n").find(line => line.trim().startsWith("Token ")) ?? "";
+    expect(hubLine).toContain("hub.example.com");
+    expect(tokenLine).toContain(`${"b".repeat(64)}.tok_hub_pick`);
+    expect(`${hubLine}${tokenLine}`).not.toContain("127.0.0.1");
+    expect(`${hubLine}${tokenLine}`).not.toContain("10.4.1.221");
+    // And the one-tap link is the same credential, not a second one.
+    const link = out.split("\n").find(line => line.includes("app.ompctl.ai/pair")) ?? "";
+    expect(link).toContain(`token=${"b".repeat(64)}.tok_hub_pick`);
+    expect(link).toContain("hub=hub.example.com");
   });
 
   test("prints reachable endpoints under the token, grouped by reach", async () => {
@@ -772,7 +774,7 @@ describe("approve", () => {
     expect(h.stderr()).toContain("could not list reachable endpoints");
   });
 
-  test("prints a scannable QR bundle when the daemon returns the pairing's name", async () => {
+  test("a LAN-only daemon still prints a scannable QR, and says why there is no phone token", async () => {
     const h = harness({
       routes: {
         "POST /v1/pairings/approve": { body: { token: "tok_scan_me", name: "phone" } },
@@ -792,20 +794,13 @@ describe("approve", () => {
 
     expect(await run(["approve", "123456", "--scopes", "read,prompt"], h.ctx)).toBe(0);
     const out = h.stdout();
-    // Scannable ASCII art, not just the fallback text below it.
+    // Scannable ASCII art: a scan still carries the whole connection.
     expect(out).toContain("█");
-    const fallback = out.split("\n").find(line => line.trim().startsWith(BUNDLE_PREFIX));
-    expect(fallback).toBeDefined();
-    expect(parsePairingBundle((fallback ?? "").trim())).toEqual({
-      v: 1,
-      label: "phone",
-      connection: {
-        transport: "direct",
-        url: "ws://10.4.1.221:7777/v1/socket",
-        token: "tok_scan_me",
-        scopes: ["read", "prompt"],
-      },
-    });
+    // But there is no hub, so there is no two-field pairing to offer, and the
+    // reason is stated rather than leaving an operator to wonder.
+    expect(out).toContain("no hub route");
+    expect(out).not.toContain("app.ompctl.ai/pair");
+    expect(out.split("\n").some(line => line.trim().startsWith("Token "))).toBe(false);
   });
 
   test("skips the QR code, without failing, when the daemon omits the pairing's name", async () => {
@@ -814,7 +809,8 @@ describe("approve", () => {
     });
     expect(await run(["approve", "123456", "--scopes", "read"], h.ctx)).toBe(0);
     expect(h.stdout()).toContain("did not return the pairing's name");
-    expect(h.stdout()).not.toContain(BUNDLE_PREFIX);
+    expect(h.stdout()).not.toContain("█");
+    expect(h.stdout()).not.toContain("app.ompctl.ai/pair");
   });
 });
 
@@ -858,7 +854,8 @@ describe("invite", () => {
     expect(device.calls[0]?.authorization).toBe("Bearer tok_invited");
   });
 
-  test("prints a QR block that decodes back to the minted token", async () => {
+  test("prints a QR, the two fields, and a one-tap link that all carry the minted token", async () => {
+    const daemon = `dmn_${"c".repeat(64)}`;
     const h = harness({
       routes: {
         "POST /v1/pair": { body: { code: "112233" } },
@@ -867,7 +864,7 @@ describe("invite", () => {
           body: {
             offers: [
               {
-                endpoint: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: "dmn_9" },
+                endpoint: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: daemon },
                 reach: "anywhere",
                 note: "reachable from anywhere the hub is",
               },
@@ -880,19 +877,15 @@ describe("invite", () => {
     expect(await run(["invite", "phone", "--scopes", "read,prompt"], h.ctx)).toBe(0);
     const out = h.stdout();
     expect(out).toContain("█");
-    const fallback = out.split("\n").find(line => line.trim().startsWith(BUNDLE_PREFIX));
-    expect(fallback).toBeDefined();
-    expect(parsePairingBundle((fallback ?? "").trim())).toEqual({
-      v: 1,
-      label: "phone",
-      connection: {
-        transport: "hub",
-        hubUrl: "wss://hub.example.com",
-        daemonId: "dmn_9",
-        token: "tok_qr",
-        scopes: ["read", "prompt"],
-      },
-    });
+
+    // One credential, printed three ways: the fields, and the link. Each has to
+    // name the same daemon, or a device pairs against something else.
+    const credential = `${"c".repeat(64)}.tok_qr`;
+    expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).toContain("hub.example.com");
+    expect(out.split("\n").find(line => line.trim().startsWith("Token "))).toContain(credential);
+    expect(out).toContain(`https://app.ompctl.ai/pair?token=${credential}&hub=hub.example.com`);
+    // The daemon id is not retyped by anyone, so it belongs inside the token.
+    expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).not.toContain(daemon);
   });
 
   test("surfaces the daemon's scope_escalation refusal instead of crashing", async () => {

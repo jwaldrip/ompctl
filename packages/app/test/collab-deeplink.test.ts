@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type DeepLinkSource,
   handleCollabDeepLink,
-  listenForCollabLinks,
+  listenForDeepLinks,
   parseCollabDeepLink,
 } from "../src/platform/deeplink.ts";
 
@@ -25,7 +25,12 @@ describe("incoming collaboration deep links", () => {
   test("routes cold-start and warm links directly to the collaboration session view", async () => {
     const received: string[] = [];
     const source = new FakeDeepLinks("https://app.ompctl.ai/collab/room_0123456789");
-    const stop = listenForCollabLinks(source, roomId => received.push(roomId));
+    const stop = listenForDeepLinks(source, {
+      openCollabSession: roomId => received.push(roomId),
+      openPairing: () => {
+        throw new Error("a collab link must not route to pairing");
+      },
+    });
 
     await Promise.resolve();
     source.emit("ompctl://collab/room_abcdefghij");

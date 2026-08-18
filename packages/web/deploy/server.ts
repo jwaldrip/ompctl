@@ -55,8 +55,11 @@ function aasa(): Response {
       details: [
         {
           appIDs,
-          components: [{ "/": "/collab/*" }],
-          paths: ["/collab/*"],
+          // `/pair` carries a credential, so it is associated for the same
+          // reason the QR code exists: the alternative is a human retyping a
+          // 108-character token. `/collab/*` names a room and carries none.
+          components: [{ "/": "/collab/*" }, { "/": "/pair" }],
+          paths: ["/collab/*", "/pair"],
         },
       ],
     },

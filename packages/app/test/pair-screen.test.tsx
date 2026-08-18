@@ -183,28 +183,36 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
     h.unmount();
   });
 
-  test("a parseable endpoint with no token yet still leaves Connect disabled", () => {
+  test("the default hub with no token yet still leaves Connect disabled", () => {
     const h = mountPairScreen();
-    act(() => {
-      typeInto(h.endpointInput, "ws://10.4.1.221:7777/v1/socket");
-    });
     expect(readsDisabled(h.submit)).toBe(true);
     h.unmount();
   });
 
-  test("a pasted ompd://hub endpoint plus a token enables Connect and yields a hub connection", () => {
+  test("a bare hub host plus a token carrying the daemon enables Connect and yields a hub connection", () => {
+    const daemon = `dmn_${"a".repeat(64)}`;
     const h = mountPairScreen();
     act(() => {
-      typeInto(h.endpointInput, "ompd://hub?url=wss%3A%2F%2Fhub.example.com&daemon=dmn_1");
-      typeInto(h.tokenInput, "tok_abc");
+      typeInto(h.endpointInput, "hub.example.com");
+      typeInto(h.tokenInput, `${"a".repeat(64)}.tok_abc`);
     });
     expect(readsDisabled(h.submit)).toBe(false);
     act(() => {
       h.submit.click();
     });
     expect(h.paired).toEqual([
-      { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: "dmn_1", token: "tok_abc", scopes: [] },
+      { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: daemon, token: "tok_abc", scopes: [] },
     ]);
+    h.unmount();
+  });
+
+  test("a token that does not name a daemon leaves Connect disabled on the hub path", () => {
+    const h = mountPairScreen();
+    act(() => {
+      typeInto(h.endpointInput, "hub.example.com");
+      typeInto(h.tokenInput, "tok_abc");
+    });
+    expect(readsDisabled(h.submit)).toBe(true);
     h.unmount();
   });
 
