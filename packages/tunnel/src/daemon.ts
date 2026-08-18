@@ -464,6 +464,12 @@ export class TunnelDaemon {
     await this.#sealTo(session, JSON.stringify({ t: "ready", deviceId: admitted.deviceId } satisfies SessionReady));
     sessionReady = true;
     for (const raw of pending) await this.#sealTo(session, raw);
+    // The handshake frames count as taken in the moment the session is
+    // admitted, not only when a session frame arrives to ack on: a client
+    // that opens a session and then goes quiet leaves nothing later to carry
+    // the acknowledgement, and the hub would read two relayed, none
+    // acknowledged, and tear the session at its deadline for being idle.
+    this.#ack(session);
   }
 
   async #onSessionFrame(session: Session, payload: string): Promise<void> {
@@ -477,7 +483,7 @@ export class TunnelDaemon {
       this.#refuse(session, "relay_broken", "a relayed frame did not authenticate");
       return;
     }
-    this.#send({ t: "ack", sessionId: session.sessionId, received: channel.received });
+    this.#ack(session);
     // Straight through to whatever serves this session, which runs every check
     // it runs for a local connection. Nothing is inspected on the way.
     admitted.deliver(plaintext);
@@ -491,6 +497,24 @@ export class TunnelDaemon {
     } catch {
       this.#refuse(session, "relay_broken", "could not seal a frame");
     }
+  }
+
+  /**
+   * Report how many relay frames this side has actually taken in.
+   *
+   * The count is the session's relay sequence, not the sealed channel's
+   * receipt count. The hub bills this leg for every `data` frame it relays,
+   * and the first of those is the client's unsealed `hello`: relayed like any
+   * other frame, but never opened by the channel, because it is the frame
+   * that makes the key. Acking `channel.received` therefore reported one
+   * less than the hub had sent, for the whole life of every session, and the
+   * hub read that as a leg that had stopped acknowledging and tore the
+   * session at its ack deadline on a steady cycle. The relay counter is the
+   * number the hub actually counts, so an admitted session that never sees
+   * another frame acks current with no keepalive traffic of its own.
+   */
+  #ack(session: Session): void {
+    this.#send({ t: "ack", sessionId: session.sessionId, received: session.expected });
   }
 
   #relay(session: Session, payload: string): void {
