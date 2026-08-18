@@ -111,6 +111,18 @@ class TunnelSocket implements TunnelSocketLike {
   #expected = 0;
   /** Frames handed over before the channel was ready, in order. */
   readonly #queued: string[] = [];
+  /**
+   * Serializes inbound handling, one frame fully finished before the next starts.
+   *
+   * `#onData` routes on `#phase`, and every phase transition happens after an
+   * `await` for a decrypt. Dispatching concurrently therefore lets two frames
+   * that arrived in the same tick both read the pre-transition phase: `ready`
+   * and the gateway's `hello` both land in `confirming`, the second is judged as
+   * a failed session confirmation, and the client tears down a session the
+   * daemon had already admitted and audited `ok`. The relay sequence check does
+   * not catch it, since `#expected` advances before the await.
+   */
+  #inbound: Promise<unknown> = Promise.resolve();
 
   constructor(opts: TunnelSocketOptions) {
     this.#daemonId = opts.daemonId;
@@ -119,7 +131,11 @@ class TunnelSocket implements TunnelSocketLike {
 
     const base = opts.hubUrl.replace(/\/+$/, "");
     this.#wire = opts.transport(`${base}/v1/link/${encodeURIComponent(opts.daemonId)}`);
-    this.#wire.onmessage = data => void this.#onWire(data);
+    this.#wire.onmessage = data => {
+      // Swallow on the chain so one failed frame does not reject every later
+      // one; each handler already reports its own failure through `#fail`.
+      this.#inbound = this.#inbound.then(() => this.#onWire(data)).catch(() => {});
+    };
     this.#wire.onclose = info => this.#finish(info.code, info.reason);
     this.#wire.onerror = info => this.onerror?.(info);
     // Nothing to do on open: the hub speaks first with `linked`, and the
