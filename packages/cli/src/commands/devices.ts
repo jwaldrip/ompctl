@@ -52,8 +52,27 @@ interface EndpointsResponse {
   offers?: EndpointOffer[];
 }
 
-/** Nearest reach first, since that is the one most operators will actually pick. */
-const REACH_ORDER: readonly EndpointReach[] = ["same-machine", "same-network", "anywhere"];
+/**
+ * Widest reach first, because the device always leaves.
+ *
+ * This used to be nearest-first, on the theory that the closest endpoint is the
+ * one an operator picks. That is wrong for what this product is: a phone pairs
+ * while sitting on the same Wi-Fi as the daemon and then walks out of the
+ * building. A `same-machine` or `same-network` endpoint is a connection with an
+ * expiry date nobody is told about -- it works during pairing and dies later,
+ * away from the machine, with no way to re-pair without coming back.
+ *
+ * Nearest-first also made `bestEndpointOffer` choose loopback for the QR code,
+ * so `approve` on a loopback-bound daemon encoded `ws://127.0.0.1`, which means
+ * "this phone" on the phone that scans it. The printed note said a phone could
+ * not use it while the bundle handed one over anyway.
+ *
+ * A hub endpoint keeps working across networks and address changes, so it is
+ * what a device should be given whenever one exists. The narrower reaches are
+ * still listed, and still useful for a daemon with no hub, just no longer the
+ * default.
+ */
+const REACH_ORDER: readonly EndpointReach[] = ["anywhere", "same-network", "same-machine"];
 
 /**
  * Where a device can point, fetched fresh rather than guessed.
