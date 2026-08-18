@@ -58,7 +58,7 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build and push hub + web images
+      - name: Build and push hub + web + site images
         # `gcloud builds submit --tag ... --file ...` does not exist: `--tag`
         # mode hardcodes `docker build -t TAG .` against `./Dockerfile` in the
         # source root, with no flag to point it at a different Dockerfile
@@ -103,6 +103,7 @@ jobs:
 
           submit_and_wait packages/hub/deploy/cloudbuild.yaml "${REG}/hub:${{ github.sha }}"
           submit_and_wait packages/web/deploy/cloudbuild.yaml "${REG}/web:${{ github.sha }}"
+          submit_and_wait packages/site/deploy/cloudbuild.yaml "${REG}/site:${{ github.sha }}"
 
       - uses: hashicorp/setup-terraform@v3
 
@@ -130,6 +131,7 @@ jobs:
             -var "connector_id=${{ vars.GCP_VPC_CONNECTOR_ID }}" \
             -var "image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/hub:${{ github.sha }}" \
             -var "web_image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/web:${{ github.sha }}" \
+            -var "site_image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/site:${{ github.sha }}" \
             -var "app_domain=${{ vars.OMPCTL_APP_DOMAIN || 'app.ompctl.ai' }}" \
             -var "hub_domain=${{ vars.OMPCTL_HUB_DOMAIN || 'hub.ompctl.ai' }}" \
             -var "apple_team_id=${{ vars.OMPCTL_APPLE_TEAM_ID }}" \
