@@ -478,9 +478,7 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
 
     // And the upgraded frame still arrives with every count filled in.
     const upgraded = await socket.next(isSessionsFrame, "upgraded sessions frame");
-    expect(
-      isSessionsFrame(upgraded) && upgraded.sessions.every(s => s.messageCount === 3600),
-    ).toBe(true);
+    expect(isSessionsFrame(upgraded) && upgraded.sessions.every(s => s.messageCount === 3600)).toBe(true);
     socket.close();
   });
 });

@@ -423,9 +423,16 @@ export class SessionIndex {
    * One row by session id, or undefined. Sees archived rows too: a caller
    * verifying a session-open request against the index needs the row's true
    * status, and "archived" and "not in the catalog" are different answers.
+   *
+   * Shares the in-flight build like every other reader, so verifying a claim
+   * cannot start a second scan, and reads first-paint rows deliberately: a
+   * claim is decided by status, cwd, and pid, none of which the warm pass
+   * changes. Waiting for counts here would make opening a session pay for
+   * arithmetic it does not consult.
    */
-  get(sessionId: string): SessionSummary | undefined {
-    return this.build().find(row => row.id === sessionId);
+  async get(sessionId: string): Promise<SessionSummary | undefined> {
+    const { rows } = await this.#buildShared();
+    return rows.find(row => row.id === sessionId);
   }
 
   /** Query, filter, and sort the catalog. Archived sessions are excluded unless `includeArchived` is set. */

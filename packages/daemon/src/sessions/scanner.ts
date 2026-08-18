@@ -116,9 +116,7 @@ function extractTitle(firstLine: string | null): string {
  * that entry to "no sessions" rather than failing the whole scan -- the
  * filesystem can change under a background index build at any time.
  */
-export function* scanSessionFilesIter(
-  sessionsRoot: string | undefined = getSessionsDir(),
-): Generator<RawSessionFile> {
+export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSessionsDir()): Generator<RawSessionFile> {
   let groupDirs: string[];
   try {
     groupDirs = readdirSync(sessionsRoot, { withFileTypes: true })

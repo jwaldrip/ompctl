@@ -16,8 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "@ompd/core";
 import type { Agent, HostRef, SessionQuery, SessionSummary } from "@ompd/core/contracts";
-import { SessionIndex } from "../../src/sessions/session-index.ts";
 import { scanSessionFiles } from "../../src/sessions/scanner.ts";
+import { SessionIndex } from "../../src/sessions/session-index.ts";
 
 const scratch: string[] = [];
 const openStores: Store[] = [];
@@ -302,9 +302,15 @@ describe("SessionIndex single-flight", () => {
   test("two overlapping index requests share one build and one warm pass", async () => {
     const sessionsRoot = tempRoot("session-index-singleflight-");
     const { store, cacheWrites } = openCountingStore(join(tempRoot("session-index-db-"), "ompd.db"));
-    writeSessionFile(sessionsRoot, "-x", "2026-08-11T01-11-48-090Z", SESSION_A, [titleLine("a"), messageLine("m1", "user")]);
+    writeSessionFile(sessionsRoot, "-x", "2026-08-11T01-11-48-090Z", SESSION_A, [
+      titleLine("a"),
+      messageLine("m1", "user"),
+    ]);
     writeSessionFile(sessionsRoot, "-y", "2026-08-12T00-00-00-000Z", SESSION_B, [titleLine("b")]);
-    writeSessionFile(sessionsRoot, "-z", "2026-08-13T00-00-00-000Z", SESSION_C, [titleLine("c"), messageLine("m1", "assistant")]);
+    writeSessionFile(sessionsRoot, "-z", "2026-08-13T00-00-00-000Z", SESSION_C, [
+      titleLine("c"),
+      messageLine("m1", "assistant"),
+    ]);
 
     // The scan seam holds the first build open until the second request has
     // joined it, so the overlap is deterministic rather than a scheduling
@@ -343,7 +349,10 @@ describe("SessionIndex single-flight", () => {
   test("a reconnect replay after the warm pass settles starts no second pass", async () => {
     const sessionsRoot = tempRoot("session-index-replay-");
     const { store, cacheWrites } = openCountingStore(join(tempRoot("session-index-db-"), "ompd.db"));
-    writeSessionFile(sessionsRoot, "-x", "2026-08-11T01-11-48-090Z", SESSION_A, [titleLine("a"), messageLine("m1", "user")]);
+    writeSessionFile(sessionsRoot, "-x", "2026-08-11T01-11-48-090Z", SESSION_A, [
+      titleLine("a"),
+      messageLine("m1", "user"),
+    ]);
     writeSessionFile(sessionsRoot, "-y", "2026-08-12T00-00-00-000Z", SESSION_B, [titleLine("b")]);
 
     let scanCalls = 0;
@@ -389,10 +398,7 @@ describe("SessionIndex responsiveness", () => {
       const id = `019fee60-2c7a-7000-9fd5-${String(i).padStart(12, "0")}`;
       const dir = i < 12 ? bigDir : join(sessionsRoot, `-many-${i % 40}`);
       if (dir !== bigDir) mkdirSync(dir, { recursive: true });
-      writeFileSync(
-        join(dir, `2026-08-11T01-11-48-090Z_${id}.jsonl`),
-        `${JSON.stringify(titleLine("tiny"))}\n`,
-      );
+      writeFileSync(join(dir, `2026-08-11T01-11-48-090Z_${id}.jsonl`), `${JSON.stringify(titleLine("tiny"))}\n`);
     }
     for (let i = 0; i < 12; i++) {
       const id = `019feebf-6449-7000-9474-${String(i).padStart(12, "0")}`;
@@ -456,7 +462,10 @@ describe("SessionIndex durable count cache", () => {
       messageLine("m1", "user"),
       messageLine("m2", "assistant"),
     ]);
-    writeSessionFile(sessionsRoot, "-y", "2026-08-12T00-00-00-000Z", SESSION_B, [titleLine("b"), messageLine("m1", "user")]);
+    writeSessionFile(sessionsRoot, "-y", "2026-08-12T00-00-00-000Z", SESSION_B, [
+      titleLine("b"),
+      messageLine("m1", "user"),
+    ]);
 
     const store1 = openCountingStore(dbPath);
     const index1 = buildIndex(sessionsRoot, store1.store);
@@ -579,8 +588,16 @@ describe("SessionIndex sorting", () => {
     seedThreeSessions(sessionsRoot);
     const index = buildIndex(sessionsRoot, store);
 
-    expect((await index.query({ sort: "age", sortDir: "asc" })).map(s => s.id)).toEqual([SESSION_A, SESSION_B, SESSION_C]);
-    expect((await index.query({ sort: "age", sortDir: "desc" })).map(s => s.id)).toEqual([SESSION_C, SESSION_B, SESSION_A]);
+    expect((await index.query({ sort: "age", sortDir: "asc" })).map(s => s.id)).toEqual([
+      SESSION_A,
+      SESSION_B,
+      SESSION_C,
+    ]);
+    expect((await index.query({ sort: "age", sortDir: "desc" })).map(s => s.id)).toEqual([
+      SESSION_C,
+      SESSION_B,
+      SESSION_A,
+    ]);
   });
 
   test("sorts by lastActivity", async () => {

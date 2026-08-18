@@ -255,13 +255,13 @@ type SessionClaim =
  * own refusal exists to prevent, and the idempotent answer satisfies the
  * caller's actual intent.
  */
-function verifySessionClaim(
+async function verifySessionClaim(
   index: SessionIndex,
   sessionId: string,
   claimed: { cwd: string; pid?: number },
   want: "live-tui" | "dormant",
-): SessionClaim {
-  const row = index.get(sessionId);
+): Promise<SessionClaim> {
+  const row = await index.get(sessionId);
   if (!row) {
     return { verdict: "refuse", code: "unknown_session", message: `no session ${sessionId} exists on this daemon` };
   }
@@ -2005,7 +2005,7 @@ export class Gateway {
     }
     const takeover = frame.t === "session_takeover";
     const claimed = { cwd: frame.cwd, ...(takeover ? { pid: frame.pid } : {}) };
-    const claim = verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+    const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
     if (claim.verdict === "refuse") {
       this.#send(ws, { t: "error", code: claim.code, message: claim.message });
       return;
@@ -2031,7 +2031,7 @@ export class Gateway {
       // naming "already held" from a path that lost a race means another
       // caller's identical request finished in between, and that outcome is
       // the idempotent answer, not a failure.
-      const settled = verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+      const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
       if (settled.verdict === "held") {
         this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
         return;
@@ -2678,11 +2678,7 @@ export class Gateway {
    * reconnect replay arriving meanwhile joins the same in-flight build
    * instead of multiplying the work.
    */
-  async #serveSessionsFrame(
-    ws: GatewaySocket,
-    index: SessionIndex,
-    query: SessionQuery,
-  ): Promise<void> {
+  async #serveSessionsFrame(ws: GatewaySocket, index: SessionIndex, query: SessionQuery): Promise<void> {
     try {
       const { sessions, warmed } = await index.queryWithWarm(query);
       this.#send(ws, { t: "sessions", sessions });

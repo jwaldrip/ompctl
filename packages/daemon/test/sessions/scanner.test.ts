@@ -348,7 +348,9 @@ describe("countMessages streaming equivalence", () => {
           const jitter = Math.floor(rand() * 5) - 2;
           lines.push(paddedMessageLine(Math.max(60, multiple + jitter), rand() < 0.5 ? "user" : "assistant"));
         } else if (roll < 0.55) {
-          lines.push(JSON.stringify({ type: "message", id: "t", message: { role: "toolResult", toolCallId: "x", content: [] } }));
+          lines.push(
+            JSON.stringify({ type: "message", id: "t", message: { role: "toolResult", toolCallId: "x", content: [] } }),
+          );
         } else if (roll < 0.7) {
           lines.push(JSON.stringify({ type: "title_change", id: "c", title: "t" }));
         } else if (roll < 0.8) {
@@ -356,7 +358,13 @@ describe("countMessages streaming equivalence", () => {
         } else if (roll < 0.9) {
           lines.push("");
         } else {
-          lines.push(JSON.stringify({ type: "message", id: "u", message: { role: "user", content: [{ type: "text", text: "你好".repeat(1 + Math.floor(rand() * 400)) }] } }));
+          lines.push(
+            JSON.stringify({
+              type: "message",
+              id: "u",
+              message: { role: "user", content: [{ type: "text", text: "你好".repeat(1 + Math.floor(rand() * 400)) }] },
+            }),
+          );
         }
       }
       const content = lines.join("\n") + (rand() < 0.5 ? "\n" : "");
