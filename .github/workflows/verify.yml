@@ -42,4 +42,16 @@ jobs:
       # paste into any file would reintroduce what a history rewrite removed, and
       # the published repo is public.
       - name: Provenance sweep
+        # The term list is a roster of family, client, and vendor names, so it
+        # cannot live in this public repo; it arrives as a secret, and the script
+        # exits 2 rather than sweeping for an empty pattern if it is absent.
+        #
+        # GitHub withholds secrets from fork pull requests, so this is scoped to
+        # runs that can hold one. That is an explicit condition rather than a
+        # missing-secret skip: a guard that quietly passes when its input vanishes
+        # is worse than one that is plainly out of scope, and the push-to-main run
+        # is what protects published history either way.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          OMPCTL_PROVENANCE_TERMS: ${{ secrets.OMPCTL_PROVENANCE_TERMS }}
         run: bun run check:provenance
