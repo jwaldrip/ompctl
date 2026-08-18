@@ -298,7 +298,30 @@ resource "google_cloud_run_v2_service_iam_member" "web_public" {
   member   = "allUsers"
 }
 
+# Cloud Run refuses to create a domain mapping unless the CALLER has verified
+# ownership of the domain. That check is per-identity, not per-project: the
+# human owner of ompctl.ai is verified in Search Console, the CI deployer
+# service account is not, and ownership cannot be granted to it over any API
+# scope this stack holds (siteVerification needs a scope the deploy identity
+# is never given).
+#
+# So CI does NOT own the mappings. They are created once by the verified owner
+# and left alone; a `terraform apply` that tried to create them put all four
+# into a permanent `Ready:False, Caller is not authorized` state and had to be
+# repaired by hand. This flag exists so the mappings CAN move into Terraform
+# the moment the deployer is added as an owner of the domain, without a
+# rewrite: set it true and apply.
+#
+# The zone and its records below are unaffected: `roles/dns.admin` is a normal
+# project role, so Cloud DNS is fully Terraform-managed either way.
+variable "manage_domain_mappings" {
+  type        = bool
+  description = "Let Terraform create the Cloud Run domain mappings. Requires the deploy service account to be a verified owner of root_domain in Search Console."
+  default     = false
+}
+
 resource "google_cloud_run_domain_mapping" "app" {
+  count    = var.manage_domain_mappings ? 1 : 0
   project  = var.project_id
   location = var.region
   name     = var.app_domain
@@ -313,6 +336,7 @@ resource "google_cloud_run_domain_mapping" "app" {
 }
 
 resource "google_cloud_run_domain_mapping" "hub" {
+  count    = var.manage_domain_mappings ? 1 : 0
   project  = var.project_id
   location = var.region
   name     = var.hub_domain
@@ -327,6 +351,7 @@ resource "google_cloud_run_domain_mapping" "hub" {
 }
 
 resource "google_cloud_run_domain_mapping" "root" {
+  count    = var.manage_domain_mappings ? 1 : 0
   project  = var.project_id
   location = var.region
   name     = var.root_domain
@@ -341,6 +366,7 @@ resource "google_cloud_run_domain_mapping" "root" {
 }
 
 resource "google_cloud_run_domain_mapping" "www" {
+  count    = var.manage_domain_mappings ? 1 : 0
   project  = var.project_id
   location = var.region
   name     = "www.${var.root_domain}"
@@ -354,30 +380,10 @@ resource "google_cloud_run_domain_mapping" "www" {
   }
 }
 
-# The mappings above already exist in the project (created so cert issuance
-# could start). Import them on the first apply that manages this zone rather
-# than letting apply try to create a second mapping for the same host.
-import {
-  to = google_cloud_run_domain_mapping.app
-  id = "locations/${var.region}/namespaces/${var.project_id}/domainmappings/${var.app_domain}"
-}
-
-import {
-  to = google_cloud_run_domain_mapping.hub
-  id = "locations/${var.region}/namespaces/${var.project_id}/domainmappings/${var.hub_domain}"
-}
-
-import {
-  to = google_cloud_run_domain_mapping.root
-  id = "locations/${var.region}/namespaces/${var.project_id}/domainmappings/${var.root_domain}"
-}
-
-resource "google_project_service" "dns" {
-  project            = var.project_id
-  service            = "dns.googleapis.com"
-  disable_on_destroy = false
-}
-
+# dns.googleapis.com is NOT declared here. Enabling a service is an owner
+# action (`serviceusage.services.enable`), the deploy identity does not hold it,
+# and a `google_project_service` resource would therefore fail every apply on a
+# service that is already on. bootstrap.sh enables it once, as the owner.
 resource "google_project_iam_member" "deployer_dns" {
   project = var.project_id
   role    = "roles/dns.admin"
@@ -390,10 +396,7 @@ resource "google_dns_managed_zone" "ompctl" {
   dns_name    = "${var.root_domain}."
   description = "ompctl.ai. Squarespace holds only the NS delegation."
 
-  depends_on = [
-    google_project_service.dns,
-    google_project_iam_member.deployer_dns,
-  ]
+  depends_on = [google_project_iam_member.deployer_dns]
 }
 
 # Cloud Run's mapping targets, written out rather than read from
