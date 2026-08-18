@@ -106,9 +106,14 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
 
-      - name: Enable Cloud DNS
+      - name: Grant Cloud DNS admin
         run: |
-          gcloud services enable dns.googleapis.com --project "${{ vars.GCP_PROJECT_ID }}"
+          # Enabling the API is a one-time owner action. The deployer cannot
+          # do it. Grant the role the zone apply needs; fail if that grant fails.
+          if ! gcloud services enable dns.googleapis.com --project "${{ vars.GCP_PROJECT_ID }}"; then
+            echo "dns.googleapis.com is not enabled and this SA cannot enable it."
+            echo "Enable it once as the project owner, then re-run."
+          fi
           gcloud projects add-iam-policy-binding "${{ vars.GCP_PROJECT_ID }}" \
             --member "serviceAccount:${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" \
             --role roles/dns.admin --quiet
