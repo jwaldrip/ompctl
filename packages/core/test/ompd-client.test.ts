@@ -13,7 +13,15 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Agent, AgentId, ClientFrame, ServerFrame, WebViewAction, WebViewActionResult } from "../src/contracts.ts";
+import type {
+  Agent,
+  AgentId,
+  ClientFrame,
+  ServerFrame,
+  SessionSummary,
+  WebViewAction,
+  WebViewActionResult,
+} from "../src/contracts.ts";
 import {
   agentsEndpoint,
   type BackoffOptions,
@@ -22,6 +30,7 @@ import {
   computeBackoffDelay,
   OmpdClient,
   type Scheduler,
+  type SessionsEvent,
   type SocketCloseInfo,
   type SocketLike,
   type StatusEvent,
@@ -1075,5 +1084,119 @@ describe("webView surface", () => {
     second.deliver({ t: "hello", deviceId: "dev_test", agents: [AGENT_RECORD] });
 
     expect(second.framesOfType("webview_register")).toEqual([{ t: "webview_register", agentId: AGENT }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Sessions Surface
+// ---------------------------------------------------------------------------
+
+describe("sessions surface", () => {
+  test("listSessions sends the sessions frame, carrying the query only when one was given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.listSessions();
+    h.client.listSessions({ status: ["live-tui", "dormant"], sort: "age" });
+
+    const frames = socket.framesOfType("sessions");
+    expect(frames).toEqual([
+      { t: "sessions" },
+      { t: "sessions", query: { status: ["live-tui", "dormant"], sort: "age" } },
+    ]);
+  });
+
+  test("a sessions server frame dispatches the typed event with the daemon's rows", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionsEvent[] = [];
+    h.client.on("sessions", event => received.push(event));
+
+    const rows: SessionSummary[] = [
+      {
+        id: "019fee60-2c7a-7000-9fd5-7439c7bf3dd2",
+        cwd: null,
+        cwdScope: "unknown",
+        cwdDecodeReason: "no_match",
+        flattenedDir: "-a",
+        title: "fixture",
+        createdAt: "2026-08-10T00:00:00.000Z",
+        lastActivityAt: "2026-08-13T00:00:00.000Z",
+        messageCount: 1,
+        byteSize: 96,
+        status: "dormant",
+        archived: false,
+      },
+    ];
+    socket.deliver({ t: "sessions", sessions: rows });
+
+    expect(received).toEqual([{ sessions: rows }]);
+  });
+
+  test("a reconnect re-issues the last query exactly once, on the new socket", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.listSessions({ status: ["live-tui"] });
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    expect(second.framesOfType("sessions")).toEqual([{ t: "sessions", query: { status: ["live-tui"] } }]);
+
+    // And the replay is remembered, not consumed: a second drop and return
+    // asks again, because a phone that comes back twice must not be shown the
+    // index from before the first drop either.
+    second.drop();
+    h.clock.runNext();
+    const third = bringUp(h);
+    expect(third.framesOfType("sessions")).toEqual([{ t: "sessions", query: { status: ["live-tui"] } }]);
+  });
+
+  test("a bare listSessions with no query is still replayed after a reconnect", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.listSessions();
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    expect(second.framesOfType("sessions")).toEqual([{ t: "sessions" }]);
+  });
+
+  test("a client that never asked for sessions sends nothing about them after a reconnect", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.attach(AGENT);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    expect(second.framesOfType("sessions")).toEqual([]);
+  });
+
+  test("losing a sessions frame to a closed socket raises no error, unlike a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.listSessions();
+    expect(errors).toEqual([]);
+
+    h.client.prompt(AGENT, "hello");
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("prompt");
   });
 });

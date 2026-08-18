@@ -32,6 +32,8 @@ import type {
   CollabVoiceParticipant,
   PlanReviewChoice,
   ServerFrame,
+  SessionQuery,
+  SessionSummary,
   WebViewAction,
   WebViewActionResult,
 } from "./contracts.ts";
@@ -129,6 +131,10 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   tui_register: false,
   tui_acp: false,
   tui_acp_ready: false,
+  // Re-sent from the remembered query on the next `hello`, exactly like
+  // `attach`: the answer is a snapshot this client asked for, not an
+  // instruction that silently did not happen.
+  sessions: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -296,6 +302,16 @@ export interface CollabVoiceHistoryEvent {
   notes: CollabVoiceNoteFrame[];
 }
 
+/**
+ * The session index, answering `listSessions` or the replay of it after a
+ * reconnect. A snapshot, not a stream: each delivery replaces whatever the
+ * previous one showed, because the daemon rebuilds the index from disk on
+ * every request and nothing about an old row survives a new answer.
+ */
+export interface SessionsEvent {
+  sessions: SessionSummary[];
+}
+
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -312,6 +328,7 @@ export interface ClientEventMap {
   room_signal: RoomSignalEvent;
   collab_voice: CollabVoiceEvent;
   collab_voice_history: CollabVoiceHistoryEvent;
+  sessions: SessionsEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -381,6 +398,15 @@ export class OmpdClient {
   private readonly webviews = new Set<AgentId>();
   /** Rooms this client must rejoin after a socket reconnect. */
   private readonly rooms = new Set<string>();
+  /**
+   * The last session query asked for, replayed after a reconnect exactly like
+   * an attachment: a phone that listed sessions, dropped, and came back must
+   * hold a current index without knowing it reconnected. `askedSessions`
+   * distinguishes "never asked" from a real `listSessions()` with no query,
+   * which must still be replayed.
+   */
+  private askedSessions = false;
+  private sessionQuery: SessionQuery | undefined;
 
   private socket: SocketLike | null = null;
   /** Invalidates handlers belonging to a socket we have already abandoned. */
@@ -558,6 +584,19 @@ export class OmpdClient {
 
   decidePlan(agentId: AgentId, requestId: string, choice: PlanReviewChoice): void {
     this.send({ t: "plan_decide", agentId, requestId, choice });
+  }
+
+  /**
+   * Ask for the session index. The answer arrives as the `sessions` event,
+   * never a return value: on a phone behind a hub relay the request and the
+   * answer both ride the sealed socket, because that relay carries no daemon
+   * HTTP for a `GET /v1/sessions` to fall back on. Re-issued automatically
+   * after a reconnect, like an attachment.
+   */
+  listSessions(query?: SessionQuery): void {
+    this.askedSessions = true;
+    this.sessionQuery = query;
+    this.sendSessionsQuery();
   }
 
   // -- connection lifecycle -------------------------------------------------
@@ -768,6 +807,11 @@ export class OmpdClient {
     this.send(frame);
   }
 
+  private sendSessionsQuery(): void {
+    const query = this.sessionQuery;
+    this.send(query === undefined ? { t: "sessions" } : { t: "sessions", query });
+  }
+
   private handleRaw(data: unknown): void {
     if (typeof data !== "string") {
       this.emit("error", { message: "binary frame ignored", code: "bad_frame" });
@@ -805,10 +849,18 @@ export class OmpdClient {
         // registration for an agent this socket has not attached to yet.
         for (const agentId of this.webviews) this.send({ t: "webview_register", agentId });
         for (const roomId of this.rooms) this.send({ t: "room_join", roomId });
+        // Last, like the rooms: the index is a snapshot asked for, not state
+        // the daemon holds about this socket, so there is no ordering
+        // constraint with the replays above -- only that a client which
+        // asked before the drop is not left holding a stale list after it.
+        if (this.askedSessions) this.sendSessionsQuery();
         return;
       }
       case "agents":
         this.emit("agents", { agents: frame.agents });
+        return;
+      case "sessions":
+        this.emit("sessions", { sessions: frame.sessions });
         return;
       case "update":
         this.handleUpdate(frame.agentId, frame.seq, frame.update);
