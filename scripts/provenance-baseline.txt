@@ -1,33 +1,33 @@
 # Hits already published to jwaldrip/ompctl that cannot be removed without
 # rewriting public history. Commit ids and a path only; no terms.
 #
-# The file that leaked here was the provenance checker itself, which used to
-# hold the term list as a literal and exclude itself from its own sweep. The
-# list now arrives from a secret, so HEAD is clean; these commits are not.
-06a74a4fa5c8ee3438af6703d02cab32e936a964:scripts/check-provenance.ts
-074a8e2f046b4496029b7d449bb317f2c5851e39:scripts/check-provenance.ts
-08c3ab6f4554aeb0eccaafa7fbae7e21c3c1a2d3:scripts/check-provenance.ts
-13f44372769e244013712996393bcd4f0e179847:scripts/check-provenance.ts
-155642251f3b7c79c1ab92bf88b38fe4aef819d1:scripts/check-provenance.ts
-278880c0ecea86ad4d84038972a66355abe65361:scripts/check-provenance.ts
-2b2ab0c0acd5da47df9e24b95f78c55a893c8b0a:scripts/check-provenance.ts
-35cbf6a502b5c3d223e5361a03d6036e99066520:scripts/check-provenance.ts
-476fea251adf319ba21a2582d2cc784287da6e0a:scripts/check-provenance.ts
-48138652d39162379d7d41d12c061d1ba559f5af:scripts/check-provenance.ts
-52708130e60d2ddafc7ebeed045b1e0212a2de13:scripts/check-provenance.ts
-628e74e48827cc222390c7cb30f16629ed041a95:scripts/check-provenance.ts
-6dc1d56638befac8212562c654d23b05dae28090:scripts/check-provenance.ts
-6f4283366427e24a6e8c1848bbbc3b6f9f3a3d76:scripts/check-provenance.ts
-759967bf93cbd42bd17796c36deae0135460cc44:scripts/check-provenance.ts
-809f426792b53b69a4f8639ffcfd5a4fa4235f7d:scripts/check-provenance.ts
-96e9dd7ebd47ef98c72ad36929f5a4aeeeeb5e89:scripts/check-provenance.ts
-99a6b65c34d8e1fd3e7c0ac36e5b2d7a0ff43ffb:scripts/check-provenance.ts
-a290ea0f78e65d88a1a9977ad1b21b09c70d84bf:scripts/check-provenance.ts
-a2c993248bfa1ad548a6ab95764a8900d86a3946:scripts/check-provenance.ts
-a585daed31f67c9f62eb25146488186016022e05:scripts/check-provenance.ts
-a772499ca81b6822f4a299741a282bb5f19e322d:scripts/check-provenance.ts
-af2e0ca05183f31b1e02d003d71ef047bf4461d2:scripts/check-provenance.ts
-c0c804ae9111b12b0c6b01073abd2c979cb6a6ee:scripts/check-provenance.ts
-d34368a33b4c93a7563b12bd5f5a05996c367ed2:scripts/check-provenance.ts
-dc3ee3f45894859d704b1dd159ce7fdd7c33c37b:scripts/check-provenance.ts
-f4df37d658b52afd341514343115d14e4a9b2f91:scripts/check-provenance.ts
+# Regenerated after the history rewrite that removed one client token. Every
+# commit id changed in that rewrite, so the previous entries went stale by
+# construction; the remaining terms are still present in these commits.
+14560d71f8ef08ce18478ceb6802d75898efe511:scripts/check-provenance.ts
+24a187fe288f5ea2de0f2a3e2ee0864aa9e5a49a:scripts/check-provenance.ts
+257e83377bf56b6265da3af4a0cf65d6f0a45b10:scripts/check-provenance.ts
+274a039086a0bde8ed52ea72c6b485b6910268bb:scripts/check-provenance.ts
+3f2a4daa6727a2f354cb76235d7026111136e8d2:scripts/check-provenance.ts
+41d9b362b6621c049c8a9c2a25fed1e57b7fc98f:scripts/check-provenance.ts
+4fa742ed2921f95166a32764272ac576cb4f1067:scripts/check-provenance.ts
+5b155d3b4d3f7507ea1270f47a9755e578e530f1:scripts/check-provenance.ts
+5fd35fc75356d171c8c77269427f091783169e6f:scripts/check-provenance.ts
+6fbfd9e8f3a9891ba22d903b7c1b6ee13f01d7b3:scripts/check-provenance.ts
+70b6218f3c60acc4722b78768790f7734c697e29:scripts/check-provenance.ts
+7d2097d0cafc328a7e7c384748382486d4cf81b6:scripts/check-provenance.ts
+807eabcf8030f94f242ae73849862b06d7476a26:scripts/check-provenance.ts
+86e0d1814929f78d118a66a740227c173996a513:scripts/check-provenance.ts
+8a3c02001a43b06ab661b754771b79d27d805c86:scripts/check-provenance.ts
+8eb7146f606186712fe69b37f52fb96b0bfd0eb9:scripts/check-provenance.ts
+90a003e10657c3575c11f8a87ca2dc726b344144:scripts/check-provenance.ts
+9f321d586a6aa65fe4ad4802ce25eb34167cbd18:scripts/check-provenance.ts
+ab479f51e5ee63c854e4916954a39a70c62ff2c5:scripts/check-provenance.ts
+b2fbaf62279423524c52c0f820600eb90ce894a7:scripts/check-provenance.ts
+b5e2b291146a6e8712544711de9bef8108e19916:scripts/check-provenance.ts
+b7814c673c6917074c269724c12e34d9a961497d:scripts/check-provenance.ts
+c92a2a71c1af5c72617625c00f7202b04c8c6119:scripts/check-provenance.ts
+cab5cd4469230c17e93021a7c1c05ecf961ce347:scripts/check-provenance.ts
+e87635a01e41f2005f8586162fdb19af883809e6:scripts/check-provenance.ts
+ea606b68a15bda9288b60d1fea5ff96148477674:scripts/check-provenance.ts
+f32914ee442bbb61f0b24508e27f28d97175ff30:scripts/check-provenance.ts
