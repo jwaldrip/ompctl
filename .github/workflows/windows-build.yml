@@ -82,7 +82,7 @@ jobs:
           # looking for .NET 6 reference assemblies that do not exist (MSB3644).
           # The C++ app does not reference the managed assembly, so building
           # ompd.vcxproj builds the whole native closure and skips only that.
-          & $msbuild ompd\ompd.vcxproj /m /restore /p:Configuration=Debug /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$sdkVersion" /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false
+          & $msbuild ompd\ompd.vcxproj /m /restore "/p:SolutionDir=$PWD\" /p:Configuration=Debug /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$sdkVersion" /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
