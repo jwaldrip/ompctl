@@ -81,9 +81,22 @@ export function parseEndpoint(raw: string): Endpoint | null {
   }
 
   if (parsed.protocol === ENDPOINT_SCHEME) {
-    // `ompd://hub` parses with `hub` as the host. Checking it keeps a future
-    // `ompd://something-else` from being read as a hub endpoint.
-    if (parsed.host !== "hub") return null;
+    // The authority is read from the string rather than from `parsed.host`.
+    //
+    // React Native's `URL` is not a WHATWG implementation: its `host` getter is
+    // `/^https?:\/\/(?:[^@]+@)?([^:/?#]+)/`, hardcoded to http and https, so for
+    // any other scheme it returns "". Every `ompd://hub?...` endpoint therefore
+    // failed the check below on device while passing in Bun, which has a real
+    // URL -- so the tests, and a check run on a laptop, both said it was fine.
+    // The app's own pairing screen showed "Not a daemon endpoint" for a
+    // byte-exact endpoint, which made hub pairing impossible to enter by hand.
+    //
+    // `protocol`, `search`, and `searchParams` are derived generically in that
+    // implementation and do work, so only the authority needs doing here.
+    const authority = authorityOf(trimmed);
+    // Checking it keeps a future `ompd://something-else` from being read as a
+    // hub endpoint.
+    if (authority !== "hub") return null;
     const hubUrl = parsed.searchParams.get("url");
     const daemonId = parsed.searchParams.get("daemon");
     if (hubUrl === null || daemonId === null) return null;
@@ -125,12 +138,23 @@ export function isHubUrl(value: string): boolean {
  * address out. Checking the written authority is what keeps a typo from
  * becoming a connection somewhere nobody named.
  */
+/**
+ * The authority of a URL, read from the string.
+ *
+ * Not from `URL.host`, deliberately. React Native's `URL` is not a WHATWG
+ * implementation and its `host` getter is hardcoded to http and https, so it
+ * returns "" for every other scheme -- including the `ompd:` endpoint form and
+ * the `wss:` hub URLs this module exists to validate.
+ */
+function authorityOf(value: string): string {
+  const trimmed = value.trim();
+  const scheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.exec(trimmed);
+  if (scheme === null) return "";
+  return trimmed.slice(scheme[0].length).split(/[/?#]/, 1)[0] ?? "";
+}
+
 function namesAHost(value: string): boolean {
-  const scheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.exec(value.trim());
-  if (scheme === null) return false;
-  const afterScheme = value.trim().slice(scheme[0].length);
-  const authority = afterScheme.split(/[/?#]/, 1)[0] ?? "";
-  return authority.length > 0;
+  return authorityOf(value).length > 0;
 }
 
 /**
