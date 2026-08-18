@@ -106,6 +106,14 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
 
+      - name: Enable Cloud DNS
+        run: |
+          gcloud services enable dns.googleapis.com --project "${{ vars.GCP_PROJECT_ID }}"
+          gcloud projects add-iam-policy-binding "${{ vars.GCP_PROJECT_ID }}" \
+            --member "serviceAccount:${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" \
+            --role roles/dns.admin --quiet
+
+
       - name: Apply
         working-directory: packages/hub/deploy
         run: |
@@ -121,7 +129,7 @@ jobs:
             -var "hub_domain=${{ vars.OMPCTL_HUB_DOMAIN || 'hub.ompctl.ai' }}" \
             -var "apple_team_id=${{ vars.OMPCTL_APPLE_TEAM_ID }}" \
             -var "play_cert_sha256=${{ vars.OMPCTL_PLAY_CERT_SHA256 }}"
-          echo "::group::Squarespace DNS records to create"
-          terraform output -json squarespace_dns_records
+          echo "::group::Cloud DNS nameservers (set these at Squarespace, nothing else)"
+          terraform output -json nameservers
           terraform output -json product_identity
           echo "::endgroup::"

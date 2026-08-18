@@ -170,9 +170,17 @@ output "hub_url" {
 }
 
 
-# --- ompctl.ai edge: hub.ompctl.ai (relay) + app.ompctl.ai (web) -------------
-# Squarespace owns DNS for ompctl.ai. Terraform manages GCP only and outputs
-# the records Squarespace must create after apply.
+# --- ompctl.ai edge: hub (relay) + app (web) + apex (marketing) ---------------
+# Cloud DNS is the source of truth. Squarespace holds only the NS delegation
+# to this zone. Terraform writes the zone, the Cloud Run domain mappings, and
+# every record those mappings require. After apply, set the printed
+# `nameservers` at Squarespace and nothing else.
+
+variable "root_domain" {
+  type        = string
+  description = "Apex domain. Cloud DNS zone name and the marketing site mapping."
+  default     = "ompctl.ai"
+}
 
 variable "app_domain" {
   type        = string
@@ -184,6 +192,12 @@ variable "hub_domain" {
   type        = string
   description = "Public hub/relay host."
   default     = "hub.ompctl.ai"
+}
+
+variable "domain_verification_txt" {
+  type        = string
+  description = "Existing Search Console verification TXT, including the google-site-verification= prefix. Required so Cloud Run domain mappings keep verifying after NS moves."
+  default     = "google-site-verification=RQsotg_YAHqClM7v4W7jot1JeIQb517P0PlbNrsG188"
 }
 
 variable "web_image" {
@@ -206,7 +220,7 @@ variable "play_cert_sha256" {
   description = "Google Play app signing certificate SHA-256 for assetlinks.json (not the upload key)."
 
   validation {
-    condition = can(regex("^(?i)([0-9A-F]{2}:){31}[0-9A-F]{2}$", var.play_cert_sha256)) || can(regex("^(?i)[0-9A-F]{64}$", var.play_cert_sha256))
+    condition     = can(regex("^(?i)([0-9A-F]{2}:){31}[0-9A-F]{2}$", var.play_cert_sha256)) || can(regex("^(?i)[0-9A-F]{64}$", var.play_cert_sha256))
     error_message = "play_cert_sha256 must be the Play app signing cert SHA-256 fingerprint (with or without colons)."
   }
 }
@@ -312,29 +326,166 @@ resource "google_cloud_run_domain_mapping" "hub" {
   }
 }
 
+resource "google_cloud_run_domain_mapping" "root" {
+  project  = var.project_id
+  location = var.region
+  name     = var.root_domain
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.web.name
+  }
+}
+
+resource "google_cloud_run_domain_mapping" "www" {
+  project  = var.project_id
+  location = var.region
+  name     = "www.${var.root_domain}"
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.web.name
+  }
+}
+
+# The mappings above already exist in the project (created so cert issuance
+# could start). Import them on the first apply that manages this zone rather
+# than letting apply try to create a second mapping for the same host.
+import {
+  to = google_cloud_run_domain_mapping.app
+  id = "locations/${var.region}/namespaces/${var.project_id}/domainmappings/${var.app_domain}"
+}
+
+import {
+  to = google_cloud_run_domain_mapping.hub
+  id = "locations/${var.region}/namespaces/${var.project_id}/domainmappings/${var.hub_domain}"
+}
+
+import {
+  to = google_cloud_run_domain_mapping.root
+  id = "locations/${var.region}/namespaces/${var.project_id}/domainmappings/${var.root_domain}"
+}
+
+resource "google_project_service" "dns" {
+  project            = var.project_id
+  service            = "dns.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_iam_member" "deployer_dns" {
+  project = var.project_id
+  role    = "roles/dns.admin"
+  member  = "serviceAccount:ompctl-deployer@${var.project_id}.iam.gserviceaccount.com"
+}
+
+resource "google_dns_managed_zone" "ompctl" {
+  project     = var.project_id
+  name        = replace(var.root_domain, ".", "-")
+  dns_name    = "${var.root_domain}."
+  description = "ompctl.ai. Squarespace holds only the NS delegation."
+
+  depends_on = [
+    google_project_service.dns,
+    google_project_iam_member.deployer_dns,
+  ]
+}
+
+locals {
+  mapping_rrs = concat(
+    [
+      for rr in try(google_cloud_run_domain_mapping.app.status[0].resource_records, []) : {
+        name = "${var.app_domain}."
+        type = rr.type
+        data = endswith(rr.rrdata, ".") || contains(["A", "AAAA"], rr.type) ? rr.rrdata : "${rr.rrdata}."
+      }
+    ],
+    [
+      for rr in try(google_cloud_run_domain_mapping.hub.status[0].resource_records, []) : {
+        name = "${var.hub_domain}."
+        type = rr.type
+        data = endswith(rr.rrdata, ".") || contains(["A", "AAAA"], rr.type) ? rr.rrdata : "${rr.rrdata}."
+      }
+    ],
+    [
+      for rr in try(google_cloud_run_domain_mapping.root.status[0].resource_records, []) : {
+        name = "${var.root_domain}."
+        type = rr.type
+        data = endswith(rr.rrdata, ".") || contains(["A", "AAAA"], rr.type) ? rr.rrdata : "${rr.rrdata}."
+      }
+    ],
+    [
+      for rr in try(google_cloud_run_domain_mapping.www.status[0].resource_records, []) : {
+        name = "www.${var.root_domain}."
+        type = rr.type
+        data = endswith(rr.rrdata, ".") || contains(["A", "AAAA"], rr.type) ? rr.rrdata : "${rr.rrdata}."
+      }
+    ],
+  )
+  mapping_groups = {
+    for key, recs in { for rr in local.mapping_rrs : "${rr.name}|${rr.type}" => rr... } : key => {
+      name    = recs[0].name
+      type    = recs[0].type
+      rrdatas = [for r in recs : r.data]
+    }
+  }
+}
+
+resource "google_dns_record_set" "edge" {
+  for_each     = local.mapping_groups
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = each.value.name
+  type         = each.value.type
+  ttl          = 300
+  rrdatas      = each.value.rrdatas
+}
+
+resource "google_dns_record_set" "apex_txt" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = google_dns_managed_zone.ompctl.dns_name
+  type         = "TXT"
+  ttl          = 300
+  rrdatas = [
+    "\"${var.domain_verification_txt}\"",
+    "\"v=spf1 -all\"",
+  ]
+}
+
+resource "google_dns_record_set" "dmarc" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = "_dmarc.${var.root_domain}."
+  type         = "TXT"
+  ttl          = 300
+  rrdatas      = ["\"v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s\""]
+}
+
+resource "google_dns_record_set" "domainkey" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.ompctl.name
+  name         = "_domainkey.${var.root_domain}."
+  type         = "TXT"
+  ttl          = 300
+  rrdatas      = ["\"v=DKIM1; p=\""]
+}
+
 output "app_domain" { value = var.app_domain }
 output "hub_domain" { value = var.hub_domain }
 output "web_url" { value = google_cloud_run_v2_service.web.uri }
 
-output "squarespace_dns_records" {
-  description = "Create these at Squarespace DNS for ompctl.ai after apply."
-  value = {
-    app = [
-      for rr in try(google_cloud_run_domain_mapping.app.status[0].resource_records, []) : {
-        type   = rr.type
-        host   = var.app_domain
-        rrdata = rr.rrdata
-      }
-    ]
-    hub = [
-      for rr in try(google_cloud_run_domain_mapping.hub.status[0].resource_records, []) : {
-        type   = rr.type
-        host   = var.hub_domain
-        rrdata = rr.rrdata
-      }
-    ]
-  }
+output "nameservers" {
+  description = "Set these as the NS records at Squarespace. Nothing else lives there."
+  value       = google_dns_managed_zone.ompctl.name_servers
 }
+
+output "root_domain" { value = var.root_domain }
 
 output "product_identity" {
   value = {
@@ -342,6 +493,7 @@ output "product_identity" {
     android_package   = "ai.ompctl.app"
     macos_bundle_id   = "ai.ompctl.app"
     windows_package   = "ai.ompctl.app"
+    marketing_origin  = "https://${var.root_domain}"
     web_origin        = "https://${var.app_domain}"
     hub_origin        = "https://${var.hub_domain}"
     collab_link_base  = "https://${var.app_domain}/collab"

@@ -65,6 +65,7 @@ gcloud services enable \
   iamcredentials.googleapis.com \
   sts.googleapis.com \
   cloudresourcemanager.googleapis.com \
+  dns.googleapis.com \
   --project "$PROJECT"
 
 echo "==> deployer service account"
@@ -97,7 +98,9 @@ for ROLE in \
   roles/iam.serviceAccountUser \
   roles/resourcemanager.projectIamAdmin \
   roles/compute.networkAdmin \
-  roles/vpcaccess.admin
+  roles/vpcaccess.admin \
+  roles/dns.admin \
+  roles/serviceusage.serviceUsageAdmin
 do
   for i in $(seq 1 5); do
     gcloud projects add-iam-policy-binding "$PROJECT" \
@@ -207,6 +210,6 @@ Still required before the first "hub-deploy" run:
   1. gcloud domains verify ompctl.ai
   2. gh variable set OMPCTL_APPLE_TEAM_ID    --repo "$REPO" --body "<10-char Apple Team ID>"
   3. gh variable set OMPCTL_PLAY_CERT_SHA256 --repo "$REPO" --body "<Play app signing SHA-256>"
-  4. After the first apply, create the printed Squarespace DNS records for
-     app.ompctl.ai and hub.ompctl.ai (terraform output squarespace_dns_records).
+  4. After the first apply, set terraform output nameservers as the NS
+     records at Squarespace. Cloud DNS owns every other record.
 EOF

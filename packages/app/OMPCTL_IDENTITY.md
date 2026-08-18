@@ -1,6 +1,6 @@
 # ompctl identity
 
-Product domain: **ompctl.ai** (Squarespace).
+Product domain: **ompctl.ai**. Cloud DNS is the source of truth. Squarespace holds only the NS delegation.
 
 | Surface | Value |
 |---------|--------|
@@ -20,15 +20,13 @@ Product domain: **ompctl.ai** (Squarespace).
 
 Mapping the app host onto the hub image would break Universal Links and leave the web app undeployed.
 
-## Squarespace DNS
+## DNS
 
-Terraform does not write Squarespace. After CI `terraform apply`:
+Terraform owns the Cloud DNS zone and every record on it (hub, app, apex, www, verification, mail-policy TXT). After CI `terraform apply`:
 
-```bash
-terraform -chdir=control-plane/packages/hub/deploy output -json squarespace_dns_records
-```
+    terraform -chdir=packages/hub/deploy output -json nameservers
 
-Create the printed CNAME/A records under ompctl.ai. Apex stays on Squarespace for the marketing site.
+Set those nameservers at Squarespace. Do not create A or CNAME records there.
 
 ## GitHub Actions vars (hub-deploy environment)
 

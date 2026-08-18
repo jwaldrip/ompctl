@@ -42,3 +42,9 @@ artifacts/
 
 # Site build output. Assembled by `bun run --cwd packages/site build`.
 packages/site/dist/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
