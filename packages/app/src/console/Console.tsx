@@ -21,7 +21,7 @@ import type { Connection } from "../platform/connection.ts";
 import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
-import { browserSessionsOf, fleetClearances, sessionFor } from "./state.ts";
+import { browserSessionsOf, fleetClearances, openSessionTarget, sessionFor } from "./state.ts";
 import { useConsole } from "./useConsole.ts";
 import { useHardwareBack } from "./useHardwareBack.ts";
 export function Console({
@@ -83,8 +83,11 @@ export function Console({
           onToggleArchived={() => {
             dispatchBrowser({ t: "toggleArchived" });
           }}
-          onTakeover={session => {
-            actions.select(session.id);
+          onTakeover={row => {
+            // Rows are sessions, not agents; the pure resolver in state.ts
+            // decides which holder the tap lands on, and the action owns the
+            // two impure ways to reach it: attach, or the live-TUI takeover.
+            actions.openSession(openSessionTarget(state, row.id));
           }}
           onArchive={session => {
             dispatchBrowser({ t: "archive", id: session.id });
