@@ -72,9 +72,7 @@ describe("parseEndpoint under React Native's URL", () => {
     // Guards the test itself: if RN ever fixes `host`, this fails and says so
     // rather than leaving a test that proves nothing.
     withReactNativeUrl(() => {
-      // @ts-expect-error the stand-in is installed for this block
       expect(new URL(`ompd://hub?url=${HUB}&daemon=${DAEMON}`).host).toBe("");
-      // @ts-expect-error same
       expect(new URL("https://example.com/x").host).toBe("example.com");
     });
   });
