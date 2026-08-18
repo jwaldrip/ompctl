@@ -628,6 +628,50 @@ describe("approve", () => {
     expect(h.calls[0]?.authorization).toBeNull();
   });
 
+  test("the QR bundle carries the hub endpoint, not a loopback one, when both exist", async () => {
+    // The guarantee: a device pairs on this Wi-Fi and then leaves. A bundle
+    // pointing at loopback or a LAN address is a connection with an unannounced
+    // expiry, and a loopback one means "this phone" on the phone that scans it.
+    const h = harness({
+      routes: {
+        "POST /v1/pairings/approve": { body: { token: "tok_hub_pick", name: "ipad" } },
+        "GET /v1/endpoints": {
+          body: {
+            offers: [
+              {
+                endpoint: { transport: "direct", url: "ws://127.0.0.1:7777/v1/socket" },
+                reach: "same-machine",
+                note: "loopback: a phone cannot use this",
+              },
+              {
+                endpoint: { transport: "direct", url: "ws://10.4.1.221:7777/v1/socket" },
+                reach: "same-network",
+                note: "reachable from this Wi-Fi",
+              },
+              {
+                endpoint: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: "dmn_pick" },
+                reach: "anywhere",
+                note: "reachable from anywhere the hub is",
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(await run(["approve", "123456", "--scopes", "read"], h.ctx)).toBe(0);
+    const out = h.stdout();
+    const encoded = /ompd-pair-v1:([A-Za-z0-9_\-=]+)/.exec(out)?.[1];
+    expect(encoded).toBeDefined();
+    const decoded = JSON.parse(Buffer.from(encoded ?? "", "base64url").toString("utf8"));
+    expect(decoded.connection.transport).toBe("hub");
+    expect(decoded.connection.hubUrl).toBe("wss://hub.example.com");
+    expect(decoded.connection.daemonId).toBe("dmn_pick");
+    // Nothing narrower rode along in the thing a device actually saves.
+    expect(JSON.stringify(decoded.connection)).not.toContain("127.0.0.1");
+    expect(JSON.stringify(decoded.connection)).not.toContain("10.4.1.221");
+  });
+
   test("prints reachable endpoints under the token, grouped by reach", async () => {
     const h = harness({
       routes: {
