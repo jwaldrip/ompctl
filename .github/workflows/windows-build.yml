@@ -74,15 +74,15 @@ jobs:
           if (-not $sdkVersion) {
             throw "No Windows SDK with Windows.h is installed on this runner."
           }
-          # microsoft.windowsappsdk.base 1.8.251216001's targets error unless
-          # TargetFrameworkVersion >= 6.0 (Microsoft.WindowsAppSDK.Base.targets
-          # line 53, read from the nupkg). react-native-windows'
-          # Microsoft.ReactNative.Managed is an old-style csproj that declares
-          # none, so the check fails on an empty value. It is the only managed
-          # project in the solution and nothing else consumes this property, so
-          # a global value satisfies the check without touching any C++
-          # project's resolution.
-          & $msbuild ompd.sln /m /restore /p:Configuration=Debug /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$sdkVersion" /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false "/p:TargetFrameworkVersion=v6.0"
+          # Build the app's vcxproj, not the .sln. The solution drags in
+          # react-native-windows' Microsoft.ReactNative.Managed, an old-style
+          # csproj: microsoft.windowsappsdk.base 1.8.251216001's targets error
+          # on it because it declares no TargetFrameworkVersion (the check
+          # demands >= 6.0), and supplying one globally then sends MSBuild
+          # looking for .NET 6 reference assemblies that do not exist (MSB3644).
+          # The C++ app does not reference the managed assembly, so building
+          # ompd.vcxproj builds the whole native closure and skips only that.
+          & $msbuild ompd\ompd.vcxproj /m /restore /p:Configuration=Debug /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$sdkVersion" /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
