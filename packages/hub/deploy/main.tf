@@ -298,6 +298,63 @@ resource "google_cloud_run_v2_service_iam_member" "web_public" {
   member   = "allUsers"
 }
 
+variable "site_image" {
+  type        = string
+  description = "Container image for the ompctl marketing site (the ompctl.ai apex)."
+}
+
+resource "google_service_account" "site" {
+  project    = var.project_id
+  account_id = "ompctl-site"
+}
+
+# The apex is a separate service from the console on purpose. `ompctl-web`
+# serves the SPA and owns the Universal Link association documents; mapping the
+# apex onto it would put the marketing page and those documents behind one
+# deploy, and a bad site build would then take Universal Links down with it.
+resource "google_cloud_run_v2_service" "site" {
+  project  = var.project_id
+  location = var.region
+  name     = "ompctl-site"
+
+  ingress = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.site.email
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 5
+    }
+
+    containers {
+      image = var.site_image
+
+      resources {
+        cpu_idle = true
+        limits = {
+          cpu    = "1"
+          memory = "256Mi"
+        }
+      }
+
+      startup_probe {
+        http_get {
+          path = "/healthz"
+        }
+      }
+    }
+  }
+}
+
+resource "google_cloud_run_v2_service_iam_member" "site_public" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.site.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
 # Cloud Run refuses to create a domain mapping unless the CALLER has verified
 # ownership of the domain. That check is per-identity, not per-project: the
 # human owner of ompctl.ai is verified in Search Console, the CI deployer
@@ -361,7 +418,7 @@ resource "google_cloud_run_domain_mapping" "root" {
   }
 
   spec {
-    route_name = google_cloud_run_v2_service.web.name
+    route_name = google_cloud_run_v2_service.site.name
   }
 }
 
@@ -376,7 +433,7 @@ resource "google_cloud_run_domain_mapping" "www" {
   }
 
   spec {
-    route_name = google_cloud_run_v2_service.web.name
+    route_name = google_cloud_run_v2_service.site.name
   }
 }
 
@@ -513,6 +570,7 @@ resource "google_dns_record_set" "domainkey" {
 output "app_domain" { value = var.app_domain }
 output "hub_domain" { value = var.hub_domain }
 output "web_url" { value = google_cloud_run_v2_service.web.uri }
+output "site_url" { value = google_cloud_run_v2_service.site.uri }
 
 output "nameservers" {
   description = "Set these as the NS records at Squarespace. Nothing else lives there."
