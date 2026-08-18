@@ -85,8 +85,8 @@ export function Console({
           }}
           onTakeover={row => {
             // Rows are sessions, not agents; the pure resolver in state.ts
-            // decides which holder the tap lands on, and the action owns the
-            // two impure ways to reach it: attach, or the live-TUI takeover.
+            // decides what the tap lands on, and the action owns the impure
+            // ways to reach it: attach, or a claim the daemon verifies.
             actions.openSession(openSessionTarget(state, row.id));
           }}
           onArchive={session => {

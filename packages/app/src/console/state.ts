@@ -152,13 +152,6 @@ export type ConsoleEvent =
   /** Local: a clearance this device just settled. */
   | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
-  /**
-   * Local: the daemon adopted a live TUI into this agent at this device's
-   * request. Admitted by hand because the roster push that says the same
-   * thing only reaches sockets already attached to something, and this
-   * device's socket is attached to nothing until the adoption succeeds.
-   */
-  | { t: "agent_admitted"; agent: Agent }
   /** Daemon: an already-authorized action for this agent's registered WebView. */
   | { t: "webview_action"; agentId: AgentId; requestId: string; action: WebViewAction }
   /** Local: exactly this action was answered, or its screen went away. */
@@ -184,14 +177,6 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "sessions":
       return applySessions(state, event.event.sessions);
-
-    case "agent_admitted":
-      // A double tap can race the roster push carrying the same agent. The
-      // roster stays the authority; this only admits what the daemon itself
-      // just returned from the adoption.
-      return state.agents.some(agent => agent.id === event.agent.id)
-        ? state
-        : applyAgents(state, [...state.agents, event.agent]);
 
     case "update": {
       const { agentId, seq, update } = event.event;
@@ -463,16 +448,19 @@ export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
  *
  * Rows are sessions, not agents, so a tap has to be resolved to whichever
  * holder can serve it: a live agent from this device's roster, the agent the
- * index still names, or, for a session a TUI process at the machine holds,
- * the daemon's live-TUI takeover.
+ * index still names, the daemon's live-TUI takeover, or, for a session on
+ * disk that nothing holds, a resume claim. Both claims carry the index row's
+ * own `cwd` (and `pid`) because the daemon verifies that echo against a row
+ * it rebuilds itself, so the values must be the ones the operator tapped,
+ * never invented. A row the index does not describe, or whose directory it
+ * could not decode, has no claim this device can echo, so it resolves to the
+ * one shape that says so instead of a frame the daemon must refuse.
  */
-export interface SessionOpenTarget {
-  readonly sessionId: string;
-  /** The agent that already holds this session, when one is known. */
-  readonly agentId: AgentId | undefined;
-  /** The daemon's index reported a live TUI process holding this session. */
-  readonly liveTui: boolean;
-}
+export type SessionOpenTarget =
+  | { readonly kind: "agent"; readonly sessionId: string; readonly agentId: AgentId }
+  | { readonly kind: "live-tui"; readonly sessionId: string; readonly cwd: string; readonly pid: number }
+  | { readonly kind: "dormant"; readonly sessionId: string; readonly cwd: string }
+  | { readonly kind: "unopenable"; readonly sessionId: string };
 
 export function openSessionTarget(state: ConsoleState, rowId: string): SessionOpenTarget {
   // The roster first: it is fresher than the snapshot, and a synthesized row
@@ -480,17 +468,32 @@ export function openSessionTarget(state: ConsoleState, rowId: string): SessionOp
   // right open; it opens the transcript the operator tapped.
   const holder = state.agents.find(agent => agent.acpSessionId === rowId || agent.id === rowId);
   if (holder !== undefined) {
-    return { sessionId: rowId, agentId: holder.id, liveTui: false };
+    return { kind: "agent", sessionId: rowId, agentId: holder.id };
   }
 
   const summary = state.sessionIndex.find(row => row.id === rowId);
+  // A stale row: a newer index dropped it, and the roster never held it.
   if (summary === undefined) {
-    return { sessionId: rowId, agentId: undefined, liveTui: false };
+    return { kind: "unopenable", sessionId: rowId };
   }
   // The roster has not admitted this agent yet, but the daemon's index named
   // it as holding the session, so the id it named is the one to attach to.
   if (summary.status === "live-ompd" && summary.agentId !== undefined) {
-    return { sessionId: rowId, agentId: summary.agentId, liveTui: false };
+    return { kind: "agent", sessionId: rowId, agentId: summary.agentId };
   }
-  return { sessionId: rowId, agentId: undefined, liveTui: summary.status === "live-tui" };
+  // The daemon verifies the echoed `cwd`, and for a live TUI its `pid`,
+  // against an index row it rebuilds itself, so a claim can only carry what
+  // this row actually reported. A directory the codec could not decode, or a
+  // live-tui row with no pid, leaves nothing to echo and no claim to make.
+  if (summary.cwd === null) {
+    return { kind: "unopenable", sessionId: rowId };
+  }
+  if (summary.status === "live-tui") {
+    return summary.pid === undefined
+      ? { kind: "unopenable", sessionId: rowId }
+      : { kind: "live-tui", sessionId: rowId, cwd: summary.cwd, pid: summary.pid };
+  }
+  // Dormant and archived rows ride the same resume claim; the daemon's own
+  // verifier, not this resolver, is where an archived row is refused.
+  return { kind: "dormant", sessionId: rowId, cwd: summary.cwd };
 }

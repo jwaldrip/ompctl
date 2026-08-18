@@ -33,7 +33,7 @@ import { browserReduce, EMPTY_BROWSER } from "../src/session/browser.ts";
 // import "react-native", which would resolve before `./rnw.ts`'s
 // `mock.module` call could substitute it.
 const { FleetScreen } = await import("../src/screens/FleetScreen.tsx");
-const { takeOverLiveTui, useConsole } = await import("../src/console/useConsole.ts");
+const { useConsole } = await import("../src/console/useConsole.ts");
 
 // React 19 reads this to decide whether act() is legal outside a test
 // renderer. It is React's own contract with a test host and no shipped type
@@ -200,19 +200,26 @@ describe("a live agent is overlaid onto its indexed session", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Opening a live-tui row drives the takeover
+// Opening a row resolves to the holder, or the claim it can echo
 // ---------------------------------------------------------------------------
 
-describe("opening a live-tui row resolves to the takeover", () => {
+describe("opening a row resolves to a holder or a claim the daemon can verify", () => {
   const INDEX: SessionSummary[] = [
     summary("s-tui", { cwd: DIR_A, flattenedDir: "-alpha", status: "live-tui", pid: 4242 }),
     summary("s-ompd", { cwd: DIR_A, flattenedDir: "-alpha", status: "live-ompd", agentId: "agt_late" }),
     summary("s-dormant", { cwd: DIR_B, flattenedDir: "-beta", status: "dormant" }),
+    summary("s-opaque", {
+      cwd: null,
+      cwdScope: "unknown",
+      cwdDecodeReason: "ambiguous",
+      flattenedDir: "-opaque",
+      status: "dormant",
+    }),
   ];
 
-  test("a row only the daemon's index knows about becomes a live-tui target", () => {
+  test("a live-tui row becomes a takeover target echoing that row's own cwd and pid", () => {
     const target = openSessionTarget(drive([{ t: "sessions", event: { sessions: INDEX } }]), "s-tui");
-    expect(target).toEqual({ sessionId: "s-tui", agentId: undefined, liveTui: true });
+    expect(target).toEqual({ kind: "live-tui", sessionId: "s-tui", cwd: DIR_A, pid: 4242 });
   });
 
   test("a row the roster holds resolves to that agent, the way live-ompd opens", () => {
@@ -221,65 +228,29 @@ describe("opening a live-tui row resolves to the takeover", () => {
       { t: "agents", event: { agents: [agent("agt_here", { acpSessionId: "s-tui" })] } },
     ]);
     expect(openSessionTarget(state, "s-tui")).toEqual({
+      kind: "agent",
       sessionId: "s-tui",
       agentId: "agt_here",
-      liveTui: false,
     });
   });
 
   test("a row only the index's agentId names resolves to that agent", () => {
     const target = openSessionTarget(drive([{ t: "sessions", event: { sessions: INDEX } }]), "s-ompd");
-    expect(target).toEqual({ sessionId: "s-ompd", agentId: "agt_late", liveTui: false });
+    expect(target).toEqual({ kind: "agent", sessionId: "s-ompd", agentId: "agt_late" });
   });
 
-  test("the takeover POSTs the daemon's takeover route for that session id", async () => {
-    const adopted = agent("agt_adopted", { acpSessionId: "s-tui" });
-    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
-    const result = await takeOverLiveTui("s-tui", {
-      root: "http://127.0.0.1:7777",
-      token: "tok_1",
-      fetch: async (url, init) => {
-        calls.push({ url: String(url), init });
-        return new Response(JSON.stringify({ agent: adopted }), { status: 201 });
-      },
-    });
-    expect(calls).toEqual([
-      {
-        url: "http://127.0.0.1:7777/v1/sessions/s-tui/takeover",
-        init: { method: "POST", headers: { Authorization: "Bearer tok_1" } },
-      },
-    ]);
-    expect(result.id).toBe("agt_adopted");
+  test("a dormant row becomes a resume target echoing that row's own cwd", () => {
+    const target = openSessionTarget(drive([{ t: "sessions", event: { sessions: INDEX } }]), "s-dormant");
+    expect(target).toEqual({ kind: "dormant", sessionId: "s-dormant", cwd: DIR_B });
   });
 
-  test("a relayed connection, with no HTTP root, says so instead of guessing a route", async () => {
-    await expect(takeOverLiveTui("s-tui", { root: null, token: "tok_1" })).rejects.toThrow(
-      /relayed connection cannot reach/,
-    );
-  });
-
-  test("the daemon's refusal is the error the operator sees", async () => {
-    await expect(
-      takeOverLiveTui("s-tui", {
-        root: "http://127.0.0.1:7777",
-        token: "tok_1",
-        fetch: async () =>
-          new Response(JSON.stringify({ error: "no connected TUI owns session s-tui" }), { status: 409 }),
-      }),
-    ).rejects.toThrow("no connected TUI owns session s-tui");
-  });
-
-  test("the adopted agent is admitted and selected, so the open lands", () => {
-    const admitted = drive([
-      { t: "sessions", event: { sessions: INDEX } },
-      { t: "agent_admitted", agent: agent("agt_adopted", { acpSessionId: "s-tui" }) },
-      { t: "select", agentId: "agt_adopted" },
-    ]);
-    expect(admitted.agents.map(entry => entry.id)).toContain("agt_adopted");
-    expect(admitted.selected).toBe("agt_adopted");
-    // A second admission of the same agent changes nothing; the roster stays
-    // the authority.
-    expect(apply(admitted, { t: "agent_admitted", agent: admitted.agents[0] as Agent })).toBe(admitted);
+  test("a row the index dropped, or whose cwd it could not decode, is unopenable", () => {
+    const state = drive([{ t: "sessions", event: { sessions: INDEX } }]);
+    // A stale row a newer index dropped: no echo exists, so no claim does.
+    expect(openSessionTarget(state, "s-gone")).toEqual({ kind: "unopenable", sessionId: "s-gone" });
+    // The daemon refuses a cwd it cannot verify, so the resolver must not
+    // offer one.
+    expect(openSessionTarget(state, "s-opaque")).toEqual({ kind: "unopenable", sessionId: "s-opaque" });
   });
 });
 
@@ -295,6 +266,8 @@ describe("opening a live-tui row resolves to the takeover", () => {
 class CannedClient {
   readonly askedIndex: unknown[] = [];
   readonly attached: Array<{ agentId: AgentId; options: unknown }> = [];
+  readonly takeovers: Array<{ sessionId: string; cwd: string; pid: number }> = [];
+  readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -322,6 +295,12 @@ class CannedClient {
   }
   listSessions(query?: unknown): void {
     this.askedIndex.push(query);
+  }
+  takeOverSession(sessionId: string, cwd: string, pid: number): void {
+    this.takeovers.push({ sessionId, cwd, pid });
+  }
+  resumeSession(sessionId: string, cwd: string): void {
+    this.resumes.push({ sessionId, cwd });
   }
   prompt(): void {}
   cancel(): void {}
@@ -372,15 +351,6 @@ function mountConsole(): Mounted {
   };
 }
 
-/** Let a takeover's promise chain run to completion inside act(). */
-async function settle(): Promise<void> {
-  await act(async () => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 0);
-    await promise;
-  });
-}
-
 describe("useConsole asks for the index once and folds the answer", () => {
   test("the first established connection asks; a reconnect does not ask again", () => {
     const mounted = mountConsole();
@@ -420,11 +390,11 @@ describe("useConsole asks for the index once and folds the answer", () => {
   });
 });
 
-describe("useConsole opens a row through its holder or the takeover", () => {
+describe("useConsole opens a row through its holder or a claim on the socket", () => {
   test("a row with a holder attaches to that agent, the live-ompd open", () => {
     const mounted = mountConsole();
     try {
-      const target: SessionOpenTarget = { sessionId: "s-held", agentId: "agt_here", liveTui: false };
+      const target: SessionOpenTarget = { kind: "agent", sessionId: "s-held", agentId: "agt_here" };
       act(() => {
         mounted.actions().openSession(target);
       });
@@ -435,59 +405,60 @@ describe("useConsole opens a row through its holder or the takeover", () => {
     }
   });
 
-  test("a live-tui row takes over, admits the adopted agent, and opens it", async () => {
-    const originalFetch = globalThis.fetch;
-    const adopted = agent("agt_adopted", { acpSessionId: "s-tui" });
-    const urls: string[] = [];
-    globalThis.fetch = (async (url: string, init?: RequestInit) => {
-      urls.push(url);
-      expect(init?.method).toBe("POST");
-      return new Response(JSON.stringify({ agent: adopted }), { status: 201 });
-    }) as unknown as typeof fetch;
+  test("a live-tui row claims the takeover over the socket, echoing that row's cwd and pid", () => {
     const mounted = mountConsole();
     try {
-      const target: SessionOpenTarget = { sessionId: "s-tui", agentId: undefined, liveTui: true };
-      mounted.actions().openSession(target);
-      await settle();
-      expect(urls).toEqual(["http://127.0.0.1:7777/v1/sessions/s-tui/takeover"]);
-      expect(mounted.state().agents.map(entry => entry.id)).toContain("agt_adopted");
-      expect(mounted.state().selected).toBe("agt_adopted");
-      expect(mounted.client.attached).toEqual([{ agentId: "agt_adopted", options: { sinceSeq: 0 } }]);
-    } finally {
-      mounted.unmount();
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  test("a takeover the daemon refuses becomes a notice, not a silent tap", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ error: "no connected TUI owns session s-tui" }), {
-        status: 409,
-      })) as unknown as typeof fetch;
-    const mounted = mountConsole();
-    try {
-      const target: SessionOpenTarget = { sessionId: "s-tui", agentId: undefined, liveTui: true };
-      mounted.actions().openSession(target);
-      await settle();
-      expect(mounted.state().notice).toBe("no connected TUI owns session s-tui");
-      expect(mounted.state().selected).toBeNull();
-      expect(mounted.client.attached).toHaveLength(0);
-    } finally {
-      mounted.unmount();
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  test("a dormant row answers honestly that this build cannot resume it", () => {
-    const mounted = mountConsole();
-    try {
-      const target: SessionOpenTarget = { sessionId: "s-dormant", agentId: undefined, liveTui: false };
+      const target: SessionOpenTarget = { kind: "live-tui", sessionId: "s-tui", cwd: DIR_A, pid: 4242 };
       act(() => {
         mounted.actions().openSession(target);
       });
-      expect(mounted.state().notice).toContain("dormant");
+      expect(mounted.client.takeovers).toEqual([{ sessionId: "s-tui", cwd: DIR_A, pid: 4242 }]);
+      // Nothing selects yet: the daemon's `session_opened` reply is what
+      // opens the screen, so a tap never looks done before the daemon agrees.
+      expect(mounted.state().selected).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a dormant row claims the resume over the socket, echoing that row's cwd", () => {
+    const mounted = mountConsole();
+    try {
+      const target: SessionOpenTarget = { kind: "dormant", sessionId: "s-dormant", cwd: DIR_B };
+      act(() => {
+        mounted.actions().openSession(target);
+      });
+      expect(mounted.client.resumes).toEqual([{ sessionId: "s-dormant", cwd: DIR_B }]);
+      expect(mounted.state().selected).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("an unopenable row answers with a notice instead of a claim the daemon must refuse", () => {
+    const mounted = mountConsole();
+    try {
+      const target: SessionOpenTarget = { kind: "unopenable", sessionId: "s-gone" };
+      act(() => {
+        mounted.actions().openSession(target);
+      });
+      expect(mounted.state().notice).toContain("cannot be opened");
+      expect(mounted.client.takeovers).toHaveLength(0);
+      expect(mounted.client.resumes).toHaveLength(0);
       expect(mounted.client.attached).toHaveLength(0);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a session_opened reply selects and attaches the agent the daemon named", () => {
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.client.emit("session_opened", { sessionId: "s-tui", agentId: "agt_adopted" });
+      });
+      expect(mounted.state().selected).toBe("agt_adopted");
+      expect(mounted.client.attached).toEqual([{ agentId: "agt_adopted", options: { sinceSeq: 0 } }]);
     } finally {
       mounted.unmount();
     }
