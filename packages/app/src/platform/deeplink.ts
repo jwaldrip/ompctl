@@ -10,7 +10,9 @@
  * fragments are refused rather than becoming an accidental credential channel.
  */
 
-const COLLAB_ORIGIN = "https://app.ompctl.ai";
+import { parseDeviceCredential, parsePairTarget } from "@ompd/core/pairing";
+
+const COLLAB_HOST = "app.ompctl.ai";
 const ROOM_ID = /^[A-Za-z0-9_-]{10,64}$/;
 
 export interface CollabDeepLink {
@@ -30,21 +32,20 @@ export type OpenCollabSession = (roomId: string) => void;
  * hostname merely contains `app.ompctl.ai` must never become a navigation target.
  */
 export function parseCollabDeepLink(raw: string): CollabDeepLink | null {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
+  // Read from the string for the same reason `parsePairDeepLink` does below:
+  // React Native's `URL.hostname` is an http-only regex, so `ompctl://collab/x`
+  // reports an empty hostname there and the custom-scheme form could never
+  // match on a device. It passed every test, because Bun has a real URL.
+  const parts = partsOf(raw);
+  if (parts === null) return null;
+  if (parts.query.length > 0) return null;
 
-  if (url.search.length > 0 || url.hash.length > 0) return null;
-
-  const segments = url.pathname.split("/").filter(Boolean);
+  const segments = parts.path.split("/").filter(Boolean);
   let roomId: string;
-  if (url.protocol === "ompctl:" && url.hostname === "collab") {
+  if (parts.scheme === "ompctl:" && parts.authority === "collab") {
     if (segments.length !== 1) return null;
     roomId = segments[0] ?? "";
-  } else if (url.protocol === "https:" && url.origin === COLLAB_ORIGIN) {
+  } else if (parts.scheme === "https:" && parts.authority === COLLAB_HOST) {
     if (segments.length !== 2 || segments[0] !== "collab") return null;
     roomId = segments[1] ?? "";
   } else {
@@ -52,6 +53,79 @@ export function parseCollabDeepLink(raw: string): CollabDeepLink | null {
   }
 
   return ROOM_ID.test(roomId) ? { roomId } : null;
+}
+
+/**
+ * Pairing links have the same two ingress forms as collaboration links:
+ *
+ * - `ompctl://pair?token=<token>&hub=<host>`
+ * - `https://app.ompctl.ai/pair?token=<token>&hub=<host>`
+ *
+ * `hub` is optional and defaults to the hosted hub. Unlike a room id, a token
+ * IS a capability, which is why this is the one link form allowed to carry a
+ * query: it is the same trust as the QR code the daemon prints, delivered by a
+ * different transport, and it is the only way to hand a device its credential
+ * without a human retyping 100 characters.
+ *
+ * Neither the scheme nor the authority is read from `URL`: React Native's
+ * implementation derives `hostname` with an http-only regex, so
+ * `ompctl://pair` reports an empty hostname there and a check against it can
+ * only ever fail on device. See `parseEndpoint` in `@ompd/core/pairing`.
+ */
+export interface PairDeepLink {
+  hubUrl: string;
+  daemonId: string;
+  token: string;
+}
+
+export type OpenPairing = (link: PairDeepLink) => void;
+
+/** Scheme, authority, path, and query, read from the string. */
+function partsOf(raw: string): { scheme: string; authority: string; path: string; query: string } | null {
+  const trimmed = raw.trim();
+  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(trimmed);
+  if (match === null) return null;
+  const after = trimmed.slice(match[0].length);
+  const authority = after.split(/[/?#]/, 1)[0] ?? "";
+  const rest = after.slice(authority.length);
+  const hash = rest.indexOf("#");
+  const withoutHash = hash < 0 ? rest : rest.slice(0, hash);
+  const q = withoutHash.indexOf("?");
+  return {
+    scheme: `${(match[1] ?? "").toLowerCase()}:`,
+    authority: authority.toLowerCase(),
+    path: q < 0 ? withoutHash : withoutHash.slice(0, q),
+    query: q < 0 ? "" : withoutHash.slice(q + 1),
+  };
+}
+
+export function parsePairDeepLink(raw: string): PairDeepLink | null {
+  const parts = partsOf(raw);
+  if (parts === null) return null;
+
+  const segments = parts.path.split("/").filter(Boolean);
+  const custom = parts.scheme === "ompctl:" && parts.authority === "pair" && segments.length === 0;
+  const universal =
+    parts.scheme === "https:" && parts.authority === "app.ompctl.ai" && segments.length === 1 && segments[0] === "pair";
+  if (!custom && !universal) return null;
+
+  const params = new URLSearchParams(parts.query);
+  const credential = parseDeviceCredential(params.get("token") ?? "");
+  if (credential === null) return null;
+  const target = parsePairTarget(params.get("hub") ?? "");
+  // A link naming a daemon's own socket is not a pairing this can complete: the
+  // credential carries a daemon id, which only means something through a hub.
+  if (target === null || target.transport !== "hub") return null;
+
+  return { hubUrl: target.hubUrl, daemonId: credential.daemonId, token: credential.token };
+}
+
+/** Routes one untrusted platform URL only when it is a recognised pairing link. */
+export function handlePairDeepLink(raw: string, openPairing: OpenPairing): boolean {
+  const link = parsePairDeepLink(raw);
+  if (link === null) return false;
+  openPairing(link);
+  return true;
 }
 
 /** Routes one untrusted platform URL only when it is a recognised collab link. */
@@ -63,21 +137,31 @@ export function handleCollabDeepLink(raw: string, openCollabSession: OpenCollabS
 }
 
 /**
- * Installs the cold-start and warm-link handlers that drive the app's collab
- * session view. The returned cleanup is required when the host unmounts.
+ * Installs the cold-start and warm-link handlers for every product link form.
+ * The returned cleanup is required when the host unmounts.
  */
-export function listenForCollabLinks(source: DeepLinkSource, openCollabSession: OpenCollabSession): () => void {
+export function listenForDeepLinks(
+  source: DeepLinkSource,
+  handlers: { openCollabSession: OpenCollabSession; openPairing: OpenPairing },
+): () => void {
   let active = true;
+  const route = (url: string): void => {
+    // Pairing first: it is the only form that can act on a device that has no
+    // connection yet, and the two forms cannot both match one URL.
+    if (handlePairDeepLink(url, handlers.openPairing)) return;
+    handleCollabDeepLink(url, handlers.openCollabSession);
+  };
+
   void source.getInitialURL().then(
     url => {
-      if (active && url !== null) handleCollabDeepLink(url, openCollabSession);
+      if (active && url !== null) route(url);
     },
     () => {
       // An unavailable initial URL is equivalent to launching without a link.
     },
   );
   const subscription = source.addEventListener("url", ({ url }) => {
-    if (active) handleCollabDeepLink(url, openCollabSession);
+    if (active) route(url);
   });
 
   return () => {

@@ -12,7 +12,7 @@
  * than guessing at it.
  */
 
-import { parseEndpoint } from "@ompd/core/pairing";
+import { DEFAULT_HUB_HOST, parseDeviceCredential, parsePairTarget } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useState } from "react";
 import { Pressable, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
@@ -38,13 +38,16 @@ export function PairScreen({
   onCancel?: () => void;
   onPair: (connection: Connection) => void;
 }): JSX.Element {
-  const [raw, setRaw] = useState("");
+  const [raw, setRaw] = useState(DEFAULT_HUB_HOST);
   const [token, setToken] = useState("");
   const [scanning, setScanning] = useState(false);
   const { width } = useWindowDimensions();
   const formMaxWidth = useFormMaxWidth();
-  const endpoint = parseEndpoint(raw);
-  const ready = endpoint !== null && token.trim().length > 0;
+  const target = parsePairTarget(raw);
+  // The daemon travels inside the credential, so the token field is what
+  // decides whether this form can produce a hub connection at all.
+  const credential = parseDeviceCredential(token);
+  const ready = target !== null && (target.transport === "direct" ? token.trim().length > 0 : credential !== null);
 
   // A scanned bundle already carries a token and an endpoint together; it
   // saves through the same `onPair` the manual form uses below, so a scan
@@ -77,8 +80,8 @@ export function PairScreen({
         )}
 
         <Body color={ink.plain}>
-          On the machine running the daemon: ompd pair for a code, then ompd approve that code. It prints a token and
-          the endpoints this device can reach. Paste both here.
+          On the machine running the daemon: ompd invite for a token. Paste it below. The hub is already filled in;
+          change it only if you run your own.
         </Body>
 
         <Pressable
@@ -91,21 +94,25 @@ export function PairScreen({
           <Label color={ink.plain}>Scan a QR code instead</Label>
         </Pressable>
 
-        <Field label="Daemon endpoint" value={raw} onChange={setRaw} testID="pair-endpoint" />
+        <Field label="Hub" value={raw} onChange={setRaw} testID="pair-endpoint" />
         {raw.trim().length === 0 ? null : (
-          <Label color={endpoint === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
-            {endpoint === null
-              ? "Not a daemon endpoint"
-              : // A hub relay's base URL reads exactly like a direct socket's own
-                // address, so without naming the transport back a paste from a
-                // daemon behind NAT would look identical to one on the same
-                // machine, and only fail once a phone actually tried it.
-                endpoint.transport === "direct"
+          <Label color={target === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
+            {target === null
+              ? "Not a hub address"
+              : // A hub base and a daemon's own socket read alike, so the
+                // transport is named back: one reaches a daemon behind NAT, the
+                // other only works on this network.
+                target.transport === "direct"
                 ? "Direct socket"
-                : `Hub relay, daemon ${endpoint.daemonId}`}
+                : target.hubUrl}
           </Label>
         )}
-        <Field label="Device token" value={token} onChange={setToken} secure testID="pair-token" />
+        <Field label="Token" value={token} onChange={setToken} secure testID="pair-token" />
+        {token.trim().length === 0 || target?.transport === "direct" ? null : (
+          <Label color={credential === null ? signal.ochre : ink.muted} testID="pair-token-kind">
+            {credential === null ? "Not a device token" : `Daemon ${credential.daemonId.slice(0, 11)}...`}
+          </Label>
+        )}
 
         <Pressable
           testID="pair-submit"
@@ -113,19 +120,20 @@ export function PairScreen({
           accessibilityState={{ disabled: !ready }}
           disabled={!ready}
           onPress={() => {
-            if (endpoint === null) return;
+            if (target === null) return;
             const trimmedToken = token.trim();
-            onPair(
-              endpoint.transport === "direct"
-                ? { transport: "direct", url: endpoint.url, token: trimmedToken, scopes: [] }
-                : {
-                    transport: "hub",
-                    hubUrl: endpoint.hubUrl,
-                    daemonId: endpoint.daemonId,
-                    token: trimmedToken,
-                    scopes: [],
-                  },
-            );
+            if (target.transport === "direct") {
+              onPair({ transport: "direct", url: target.url, token: trimmedToken, scopes: [] });
+              return;
+            }
+            if (credential === null) return;
+            onPair({
+              transport: "hub",
+              hubUrl: target.hubUrl,
+              daemonId: credential.daemonId,
+              token: credential.token,
+              scopes: [],
+            });
           }}
           style={({ pressed }) => [
             styles.submit,

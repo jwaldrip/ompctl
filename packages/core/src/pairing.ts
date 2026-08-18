@@ -54,6 +54,84 @@ const SOCKET_SCHEMES: Record<string, true> = { "ws:": true, "wss:": true };
 /** Schemes a hub base may name. `ws:` is allowed for a local hub under test. */
 const HUB_SCHEMES: Record<string, true> = { "ws:": true, "wss:": true };
 
+/** The hosted hub. An operator who does not run their own never types this. */
+export const DEFAULT_HUB_HOST = "hub.ompctl.ai";
+export const DEFAULT_HUB_URL = `wss://${DEFAULT_HUB_HOST}`;
+
+/**
+ * Where a device should connect, from the one line an operator typed.
+ *
+ * The daemon's identity is deliberately NOT here: it travels inside the
+ * credential, because the daemon is the only party that knows it and the
+ * operator should not have to copy a fingerprint by hand. That leaves this
+ * field with one job, and an empty one means the hosted hub -- which is the
+ * common case, so the common case is typing nothing.
+ *
+ * A bare host is accepted because that is how a hub is written down. A
+ * websocket URL carrying a path is a direct daemon socket instead: only a
+ * daemon exposes `/v1/socket`, and a hub base never has a path, so the two are
+ * distinguishable without asking the operator which they meant.
+ */
+export type PairTarget = { transport: "hub"; hubUrl: string } | { transport: "direct"; url: string };
+
+export function parsePairTarget(raw: string): PairTarget | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { transport: "hub", hubUrl: DEFAULT_HUB_URL };
+
+  if (schemeOf(trimmed).length === 0) {
+    // A host, optionally with a port. Anything else typed without a scheme is
+    // not an address and is refused rather than guessed at.
+    if (!/^[a-zA-Z0-9.-]+(?::\d+)?$/.test(trimmed)) return null;
+    return { transport: "hub", hubUrl: `wss://${trimmed}` };
+  }
+
+  if (!isHubUrl(trimmed)) return null;
+  const authority = authorityOf(trimmed);
+  const rest = trimmed.slice(trimmed.indexOf(authority) + authority.length);
+  const path = rest.split(/[?#]/, 1)[0] ?? "";
+  if (path.length > 1) return { transport: "direct", url: trimmed };
+  return { transport: "hub", hubUrl: normalizeHubUrl(trimmed) };
+}
+
+/**
+ * The single secret a device is handed: which daemon, and the proof it may
+ * speak for this device there.
+ *
+ * One field rather than two because the daemon id is not something an operator
+ * can be expected to retype, and splitting it across the form is what made
+ * pairing by hand unusable: the endpoint grew to 110 characters and carried a
+ * 68-character fingerprint. The id is not secret, but it belongs with the
+ * thing the daemon issues, so the daemon issues both together.
+ */
+export interface DeviceCredential {
+  daemonId: string;
+  token: string;
+}
+
+/** `dmn_` + the full SHA-256 of the daemon's public key, hex. */
+const DAEMON_ID_BODY = /^[0-9a-f]{64}$/;
+const DAEMON_ID_PREFIX = "dmn_";
+const CREDENTIAL_SEPARATOR = ".";
+
+/** The credential as one pasteable string. The `dmn_` prefix is implied. */
+export function formatDeviceCredential(credential: DeviceCredential): string {
+  const body = credential.daemonId.startsWith(DAEMON_ID_PREFIX)
+    ? credential.daemonId.slice(DAEMON_ID_PREFIX.length)
+    : credential.daemonId;
+  return `${body}${CREDENTIAL_SEPARATOR}${credential.token}`;
+}
+
+/** The inverse, or null for anything that is not one. */
+export function parseDeviceCredential(raw: string): DeviceCredential | null {
+  const trimmed = raw.trim();
+  const split = trimmed.indexOf(CREDENTIAL_SEPARATOR);
+  if (split <= 0) return null;
+  const body = trimmed.slice(0, split).toLowerCase();
+  const token = trimmed.slice(split + 1);
+  if (!DAEMON_ID_BODY.test(body) || token.length === 0) return null;
+  return { daemonId: `${DAEMON_ID_PREFIX}${body}`, token };
+}
+
 export function encodeEndpoint(endpoint: Endpoint): string {
   if (endpoint.transport === "direct") return endpoint.url;
   const params = new URLSearchParams({ url: endpoint.hubUrl, daemon: endpoint.daemonId });
@@ -73,39 +151,31 @@ export function parseEndpoint(raw: string): Endpoint | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
 
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return null;
-  }
-
-  if (parsed.protocol === ENDPOINT_SCHEME) {
-    // The authority is read from the string rather than from `parsed.host`.
-    //
-    // React Native's `URL` is not a WHATWG implementation: its `host` getter is
-    // `/^https?:\/\/(?:[^@]+@)?([^:/?#]+)/`, hardcoded to http and https, so for
-    // any other scheme it returns "". Every `ompd://hub?...` endpoint therefore
-    // failed the check below on device while passing in Bun, which has a real
-    // URL -- so the tests, and a check run on a laptop, both said it was fine.
-    // The app's own pairing screen showed "Not a daemon endpoint" for a
-    // byte-exact endpoint, which made hub pairing impossible to enter by hand.
-    //
-    // `protocol`, `search`, and `searchParams` are derived generically in that
-    // implementation and do work, so only the authority needs doing here.
-    const authority = authorityOf(trimmed);
-    // Checking it keeps a future `ompd://something-else` from being read as a
-    // hub endpoint.
-    if (authority !== "hub") return null;
-    const hubUrl = parsed.searchParams.get("url");
-    const daemonId = parsed.searchParams.get("daemon");
+  // Nothing on this path may touch `URL`.
+  //
+  // React Native's `URL` is not a WHATWG implementation. Its `host` getter is
+  // `/^https?:\/\/(?:[^@]+@)?([^:/?#]+)/` and its `protocol` getter is derived
+  // the same http/https-only way, so for `ompd:` and `wss:` -- the two schemes
+  // this module exists to validate -- both come back empty. Bun has a real
+  // `URL`, so every test and every check run on a laptop passed while the
+  // shipped app rejected a byte-exact hub endpoint with "Not a daemon
+  // endpoint", which made hub pairing impossible to enter by hand. Reading the
+  // scheme, authority, and query out of the string is the same work with no
+  // dependency on whose `URL` is present.
+  if (schemeOf(trimmed) === ENDPOINT_SCHEME) {
+    // Checking the authority keeps a future `ompd://something-else` from being
+    // read as a hub endpoint.
+    if (authorityOf(trimmed) !== "hub") return null;
+    const params = queryOf(trimmed);
+    const hubUrl = params.get("url");
+    const daemonId = params.get("daemon");
     if (hubUrl === null || daemonId === null) return null;
     if (daemonId.length === 0 || !isHubUrl(hubUrl)) return null;
     // A credential must never ride along, so one that does is a refusal
     // rather than something to quietly drop: the operator pasted something
     // they believe carries their token, and silently discarding it would
     // leave them with a connection that fails to authenticate later.
-    if (parsed.searchParams.has("token")) return null;
+    if (params.has("token")) return null;
     return { transport: "hub", hubUrl: normalizeHubUrl(hubUrl), daemonId };
   }
 
@@ -115,18 +185,44 @@ export function parseEndpoint(raw: string): Endpoint | null {
 
 /** Whether `value` is a websocket endpoint a device may open directly. */
 export function isSocketUrl(value: string): boolean {
-  const parsed = safeUrl(value);
-  if (parsed === null) return false;
-  if (SOCKET_SCHEMES[parsed.protocol] !== true) return false;
-  return namesAHost(value);
+  return SOCKET_SCHEMES[schemeOf(value)] === true && namesAHost(value);
 }
 
 /** Whether `value` is a usable hub base. */
 export function isHubUrl(value: string): boolean {
-  const parsed = safeUrl(value);
-  if (parsed === null) return false;
-  if (HUB_SCHEMES[parsed.protocol] !== true) return false;
-  return namesAHost(value);
+  return HUB_SCHEMES[schemeOf(value)] === true && namesAHost(value);
+}
+
+/**
+ * The scheme of a URL, read from the string, lowercased and including the colon.
+ *
+ * Not from `URL.protocol`: see `parseEndpoint` for why that getter cannot be
+ * trusted on device for anything but http and https.
+ *
+ * `://` is required, not just the colon. A dot and a digit are both legal
+ * scheme characters, so `hub.example.com:8443` matches a colon-only pattern and
+ * a bare host with a port would be read as a scheme called `hub.example.com`.
+ * Every scheme this module handles is hierarchical, so demanding the slashes
+ * costs nothing and removes that whole class of misread.
+ */
+function schemeOf(value: string): string {
+  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(value.trim());
+  return match === null ? "" : `${(match[1] ?? "").toLowerCase()}:`;
+}
+
+/**
+ * The query of a URL as parameters, read from the string.
+ *
+ * `URLSearchParams` is safe to use here where `URL` is not: React Native ships
+ * a real one that parses a raw query string, and it is reached directly rather
+ * than through the `URL.searchParams` getter.
+ */
+function queryOf(value: string): URLSearchParams {
+  const trimmed = value.trim();
+  const start = trimmed.indexOf("?");
+  if (start < 0) return new URLSearchParams();
+  const hash = trimmed.indexOf("#", start);
+  return new URLSearchParams(hash < 0 ? trimmed.slice(start + 1) : trimmed.slice(start + 1, hash));
 }
 
 /**
@@ -171,14 +267,6 @@ export function normalizeHubUrl(value: string): string {
 /** One line naming an endpoint, for a CLI listing or a device's status row. */
 export function describeEndpoint(endpoint: Endpoint): string {
   return endpoint.transport === "direct" ? endpoint.url : `${endpoint.hubUrl} (daemon ${endpoint.daemonId})`;
-}
-
-function safeUrl(value: string): URL | null {
-  try {
-    return new URL(value.trim());
-  } catch {
-    return null;
-  }
 }
 
 /**

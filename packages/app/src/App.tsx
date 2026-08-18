@@ -14,7 +14,7 @@ import { SafeScreen } from "./design/SafeScreen.tsx";
 import { ground, ink, stroke, type } from "./design/tokens.ts";
 import type { Connection, ConnectionList } from "./platform/connection.ts";
 import { clearConnection, loadConnections, saveConnection, setActiveConnection } from "./platform/connection.ts";
-import { type DeepLinkSource, listenForCollabLinks } from "./platform/deeplink.ts";
+import { type DeepLinkSource, listenForDeepLinks } from "./platform/deeplink.ts";
 import { CollabSessionScreen } from "./screens/CollabSessionScreen.tsx";
 import { ConnectionSwitcherScreen } from "./screens/ConnectionSwitcherScreen.tsx";
 import { PairScreen } from "./screens/PairScreen.tsx";
@@ -33,8 +33,6 @@ const nativeDeepLinks: DeepLinkSource = {
 export function App(): JSX.Element {
   const [boot, setBoot] = useState<Boot>({ phase: "loading" });
   const [collabRoomId, setCollabRoomId] = useState<string | null>(null);
-
-  useEffect(() => listenForCollabLinks(nativeDeepLinks, setCollabRoomId), []);
 
   const showConnections = useCallback((connections: ConnectionList, notice?: string) => {
     const active = connections.connections.find(entry => entry.id === connections.activeId);
@@ -68,6 +66,28 @@ export function App(): JSX.Element {
       await saveConnection(connection);
       await reloadConnections();
     },
+    [reloadConnections],
+  );
+
+  // A pairing link is durable before it is visible: the credential is written
+  // to the store, then the Console opens, so a link that arrives during a cold
+  // start cannot leave a device that looks paired but has saved nothing.
+  useEffect(
+    () =>
+      listenForDeepLinks(nativeDeepLinks, {
+        openCollabSession: setCollabRoomId,
+        openPairing: link => {
+          void saveConnection({
+            transport: "hub",
+            hubUrl: link.hubUrl,
+            daemonId: link.daemonId,
+            token: link.token,
+            scopes: [],
+          })
+            .then(() => reloadConnections())
+            .catch((cause: unknown) => setBoot({ phase: "pair", notice: describe(cause) }));
+        },
+      }),
     [reloadConnections],
   );
 

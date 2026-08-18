@@ -18,6 +18,7 @@ import {
   type EndpointOffer,
   type EndpointReach,
   encodePairingBundle,
+  formatDeviceCredential,
   type PairedConnection,
   type PairingBundle,
 } from "@ompd/core/pairing";
@@ -169,9 +170,52 @@ async function printPairingQr(
   for (const line of qr.split("\n")) {
     if (line.length > 0) ctx.out(line);
   }
+
+  // Not the bundle string. That is scan-only: the app's manual form takes a hub
+  // and a token, and telling an operator to paste a 350-character bundle into
+  // the hub field is exactly how this went wrong before.
+  if (offer.endpoint.transport === "hub") {
+    const link = `https://app.ompctl.ai/pair?token=${encodeURIComponent(
+      formatDeviceCredential({ daemonId: offer.endpoint.daemonId, token: opts.token }),
+    )}&hub=${encodeURIComponent(hostOf(offer.endpoint.hubUrl))}`;
+    ctx.out("");
+    ctx.out("  can't scan it? open this on the device to pair in one tap:");
+    ctx.out(`  ${link}`);
+    ctx.out("  it carries the token, so treat it like the token: one device, then discard it.");
+  }
+}
+
+/** A hub base as the host an operator would type. */
+function hostOf(hubUrl: string): string {
+  return hubUrl.replace(/^wss?:\/\//, "").replace(/\/+$/, "");
+}
+
+/**
+ * The two values the app's pairing form asks for.
+ *
+ * The daemon id rides inside the token rather than in the address, because the
+ * daemon is the only party that knows it and no operator should be retyping a
+ * 64-character fingerprint. That leaves the hub field with one job and a
+ * default, so the common case is typing nothing there at all.
+ */
+function printPairingCredential(ctx: CliContext, opts: { offers: EndpointOffer[] | null; token: string }): void {
+  const hub = (opts.offers ?? [])
+    .map(offer => offer.endpoint)
+    .find((endpoint): endpoint is Extract<Endpoint, { transport: "hub" }> => endpoint.transport === "hub");
+  if (hub === undefined) {
+    ctx.out("");
+    ctx.out("  this daemon has no hub route, so there is no token a phone off this network");
+    ctx.out("  can use. Set the hubUrl config key and restart it.");
+    return;
+  }
   ctx.out("");
-  ctx.out("  can't scan it? paste this string into the app's manual pairing field instead:");
-  ctx.out(`  ${encoded}`);
+  ctx.out("  in the app, these are the two fields:");
+  ctx.out("");
+  ctx.out(`    Hub    ${hostOf(hub.hubUrl)}`);
+  ctx.out(`    Token  ${formatDeviceCredential({ daemonId: hub.daemonId, token: opts.token })}`);
+  ctx.out("");
+  ctx.out("  the token names the daemon and authorises this device. The hub is the app's");
+  ctx.out("  default, so it only needs typing if you run your own.");
 }
 
 export async function pairCommand(ctx: CliContext, cmd: Extract<Command, { kind: "pair" }>): Promise<number> {
@@ -236,6 +280,7 @@ export async function approveCommand(ctx: CliContext, cmd: Extract<Command, { ki
   ctx.out("  the token above is a secret; the endpoints below are not:");
   const approveOffers = await fetchEndpointOffers(ctx);
   if (approveOffers !== null) printEndpointOffers(ctx, approveOffers);
+  printPairingCredential(ctx, { offers: approveOffers, token: response.token });
 
   if (typeof response.name === "string") {
     await printPairingQr(ctx, {
@@ -299,6 +344,7 @@ export async function inviteCommand(ctx: CliContext, cmd: Extract<Command, { kin
   ctx.out("  the token above is a secret; the endpoints below are not:");
   const inviteOffers = await fetchEndpointOffers(ctx);
   if (inviteOffers !== null) printEndpointOffers(ctx, inviteOffers);
+  printPairingCredential(ctx, { offers: inviteOffers, token: approveResponse.token });
 
   // Unlike `approve`, the name here is the operator's own typed positional
   // rather than a value read back off the wire: this command chose it, so
