@@ -49,6 +49,7 @@ import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
 import {
   COUNT_CHUNK_BYTES,
   countMessagesChunks,
+  findSessionFileIter,
   MESSAGE_COUNT_SIZE_CEILING_BYTES,
   type RawSessionFile,
   scanSessionFilesIter,
@@ -85,18 +86,10 @@ export interface SessionQueryResult {
   warmed: Promise<SessionSummary[]> | null;
 }
 
-/** One build's outcome: first-paint rows, the background warm pass they started, if any, and where each row's file lives. */
+/** One build's outcome: first-paint rows plus the background warm pass they started, if any. */
 interface BuildOutcome {
   rows: SessionSummary[];
   warm: Promise<void> | null;
-  /**
-   * Session file path by id, from the same scan that produced the rows.
-   *
-   * Part of the build rather than a field on the index, so a reader that
-   * needs a path shares the one in-flight build like every other reader
-   * instead of consulting a map some earlier build left behind.
-   */
-  paths: Map<string, string>;
 }
 
 /**
@@ -274,7 +267,6 @@ export class SessionIndex {
     }
 
     const summaries: SessionSummary[] = [];
-    const paths = new Map<string, string>();
     for (const file of files) {
       const decoded = this.#decodeCwd(file.flattenedDir);
       const isArchived = archived.has(file.id);
@@ -322,10 +314,9 @@ export class SessionIndex {
         ...(pid !== undefined ? { pid } : {}),
         ...(status === "live-ompd" && agentId !== undefined ? { agentId } : {}),
       });
-      paths.set(file.id, file.path);
     }
     const warm = misses.length > 0 ? this.#startWarm(misses) : null;
-    return { rows: summaries, warm, paths };
+    return { rows: summaries, warm };
   }
 
   /**
@@ -446,18 +437,28 @@ export class SessionIndex {
   }
 
   /**
-   * The session file's own path, or undefined when the catalog holds no such
+   * The session file's own path, or undefined when this machine holds no such
    * session.
    *
-   * Shares the in-flight build exactly as `get()` does: a tail request that
-   * arrives while the index is building joins that build, and one arriving
-   * cold starts the same single shared build rather than a private scan of
-   * its own. Deliberately not on `SessionSummary`: that is a wire type, and
-   * a client has no business being handed absolute paths on this machine.
+   * Deliberately not an index build. Everything a build produces beyond the
+   * path -- decoded cwds, verified liveness, message counts, sort order -- is
+   * work a transcript read never consults, and on this machine's real tree
+   * that work costs 2.9s against the 4 to 6ms this lookup takes. A phone
+   * tapping a session and waiting three seconds for its first line of history
+   * is the difference, so the walk is targeted and cooperative: one step per
+   * group directory, with the event loop handed on between steps.
+   *
+   * Also deliberately not on `SessionSummary`: that is a wire type, and a
+   * client has no business being handed absolute paths on this machine.
    */
   async pathFor(sessionId: string): Promise<string | undefined> {
-    const { paths } = await this.#buildShared();
-    return paths.get(sessionId);
+    const steps = findSessionFileIter(sessionId, this.#sessionsRoot);
+    let step = steps.next();
+    while (!step.done) {
+      await yieldToEventLoop();
+      step = steps.next();
+    }
+    return step.value;
   }
 
   /** Query, filter, and sort the catalog. Archived sessions are excluded unless `includeArchived` is set. */
