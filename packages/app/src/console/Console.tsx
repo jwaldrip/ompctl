@@ -85,9 +85,20 @@ export function Console({
     onUnpair(`${state.unauthorized} Pair this device again to carry on.`);
   }, [state.unauthorized, onUnpair]);
 
+  // The rows change only when the three slices `browserSessionsOf` reads
+  // change, so deriving with those slices as the key keeps the array's
+  // identity across console frames that touched no session -- a selection, a
+  // terminal reply, a roster push that arrived identical. The reload below is
+  // keyed on the rows for the same reason: without that, every console frame
+  // rebuilt every row object, the browser's state changed identity, and the
+  // list's whole mounted window re-rendered on a navigation that cost the
+  // daemon nothing and should have cost the bay nothing either.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the whole `state` is read on purpose; the three slices below are the exact inputs `browserSessionsOf` consumes, and keying on `state` itself would rebuild every row on every frame.
+  const rows = useMemo(() => browserSessionsOf(state), [state.sessionIndex, state.agents, state.sessions]);
+
   useEffect(() => {
-    dispatchBrowser({ t: "load", sessions: browserSessionsOf(state) });
-  }, [state]);
+    dispatchBrowser({ t: "load", sessions: rows });
+  }, [rows]);
 
   const clearances = useMemo(() => fleetClearances(state), [state]);
 
