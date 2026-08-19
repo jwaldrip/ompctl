@@ -36,6 +36,7 @@ import type {
   ServerFrame,
   SessionQuery,
   SessionSummary,
+  TranscriptTailMessage,
   TuiActivityKind,
   TuiSteerDelivery,
   WebViewAction,
@@ -162,6 +163,11 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   fs_list: true,
   session_create: true,
   repo_clone: true,
+  // One-shot too, but a lost tail is not an instruction that silently did
+  // not happen: nothing on the machine changes, and the surface that asked
+  // asks again the next time it opens. Reporting it would put an error in
+  // front of an operator whose only remedy is the reconnect already running.
+  session_tail: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -394,6 +400,15 @@ export interface CloneProgressEvent {
 export interface CloneDoneEvent {
   cloneId: CloneId;
   path: string;
+ * A session's transcript tail, answering `sessionTail`. Oldest first, so a
+ * view appends live `tui_activity` below it without reordering. `truncated`
+ * says the tail is not the whole transcript, which is a rendering hint and
+ * nothing more.
+ */
+export interface SessionTailEvent {
+  sessionId: string;
+  messages: TranscriptTailMessage[];
+  truncated: boolean;
 }
 
 export interface ClientEventMap {
@@ -419,6 +434,7 @@ export interface ClientEventMap {
   fs_listing: FsListingEvent;
   clone_progress: CloneProgressEvent;
   clone_done: CloneDoneEvent;
+  session_tail: SessionTailEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -729,6 +745,23 @@ export class OmpdClient {
    */
   resumeSession(sessionId: string, cwd: string): void {
     this.send({ t: "session_resume", sessionId, cwd });
+  }
+
+  /**
+   * Ask for the tail of a session's transcript. The answer arrives as the
+   * `session_tail` event, or an `error` naming the cause: `unknown_session`
+   * for an id this machine holds no file for.
+   *
+   * One-shot, deliberately unlike `listSessions`: a transcript tail is a
+   * snapshot of a screen the operator is looking at, so the surface that
+   * wants one asks when it opens. Replaying it on every reconnect would
+   * re-read a file for a screen nobody may still be on, and the daemon's
+   * `tui_activity` stream already carries what changed since.
+   */
+  sessionTail(sessionId: string, limit?: number): void {
+    const frame: ClientFrame =
+      limit === undefined ? { t: "session_tail", sessionId } : { t: "session_tail", sessionId, limit };
+    this.send(frame);
   }
 
   /**
@@ -1072,6 +1105,13 @@ export class OmpdClient {
         return;
       case "clone_done":
         this.emit("clone_done", { cloneId: frame.cloneId, path: frame.path });
+        return;
+      case "session_tail":
+        this.emit("session_tail", {
+          sessionId: frame.sessionId,
+          messages: frame.messages,
+          truncated: frame.truncated,
+        });
         return;
       case "tui_activity":
         this.emit("tui_activity", {

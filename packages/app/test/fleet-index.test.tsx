@@ -281,6 +281,7 @@ class CannedClient {
   readonly attached: Array<{ agentId: AgentId; options: unknown }> = [];
   readonly sessionPrompts: Array<{ sessionId: string; text: string }> = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
+  readonly tails: Array<{ sessionId: string; limit: number | undefined }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -314,6 +315,9 @@ class CannedClient {
   }
   resumeSession(sessionId: string, cwd: string): void {
     this.resumes.push({ sessionId, cwd });
+  }
+  sessionTail(sessionId: string, limit?: number): void {
+    this.tails.push({ sessionId, limit });
   }
   prompt(): void {}
   cancel(): void {}
@@ -418,7 +422,7 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
     }
   });
 
-  test("a live-tui row opens the prompt surface; nothing crosses the wire until it is used", () => {
+  test("a live-tui row opens the prompt surface and asks for its transcript, claiming nothing", () => {
     const mounted = mountConsole();
     try {
       const target: SessionOpenTarget = { kind: "live-tui", sessionId: "s-tui" };
@@ -426,9 +430,13 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
         mounted.actions().openSession(target);
       });
       expect(mounted.state().selectedTui).toBe("s-tui");
-      // The open claims nothing: no takeover, no resume, no attach. A
-      // terminal cannot be taken over from here, and the tap must not
-      // pretend the daemon agreed to something it was never asked.
+      // The one frame the open does send: this session's own transcript tail.
+      // A terminal session has no agent row to attach to, so without it the
+      // surface opens as a composer over an empty pane.
+      expect(mounted.client.tails).toEqual([{ sessionId: "s-tui", limit: undefined }]);
+      // And it claims nothing: no takeover, no resume, no attach. A terminal
+      // cannot be taken over from here, and reading a transcript is not
+      // pretending the daemon agreed to something it was never asked.
       expect(mounted.client.sessionPrompts).toHaveLength(0);
       expect(mounted.client.resumes).toHaveLength(0);
       expect(mounted.client.attached).toHaveLength(0);

@@ -1,14 +1,22 @@
 /**
- * One live terminal session, as a prompt surface.
+ * One live terminal session: its recent turns, plus a prompt surface.
  *
- * This is deliberately not the agent log. A session running in a terminal has
- * no agent row and no transcript this device can attach to; pretending it
- * does would render an empty log beside a composer and call that a session.
- * What the terminal does offer is thinner and still useful: the daemon
- * delivers prompts to it as the operator's own turn, and reports turn
- * progress back as hints. So this screen is a composer first, plus whatever
- * hints have arrived: sent, working, the last reply, or the daemon's refusal
- * when the terminal has no bridge.
+ * A session running in a terminal has no agent row, so this device cannot
+ * `attach` to it and there is no update stream to replay. What it can have is
+ * the session's own file: the daemon reads the tail of that JSONL and serves
+ * it as `session_tail`, which is the history this screen renders. Above the
+ * composer, oldest first, so the newest turn sits closest to where the
+ * operator types. Tapping a session with a thousand messages in it used to
+ * open a composer over an empty pane, which reads as a broken session rather
+ * than as a surface that never had a transcript.
+ *
+ * Everything below the history is a hint rather than transcript, and the two
+ * must not be conflated: the daemon delivers prompts to the terminal as the
+ * operator's own turn and reports turn progress back as `tui_activity`, so
+ * sent, working, the last reply, and the daemon's refusal when the terminal
+ * has no bridge all continue below the tail as they arrive. The next open
+ * re-reads the file, at which point today's hints are simply part of the
+ * history.
  *
  * The composer here is not `Composer`, on purpose. That control turns its
  * send button into an interrupt while a turn runs, because an agent's turn
@@ -17,13 +25,15 @@
  * Send and stays enabled.
  */
 
+import type { TranscriptTailMessage } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
+import { useCallback, useRef, useState } from "react";
+import type { ListRenderItemInfo } from "react-native";
+import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { TuiSessionState } from "../console/state.ts";
-import { shortenPath } from "../design/format.ts";
+import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
@@ -33,7 +43,7 @@ import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 export interface TerminalSessionScreenProps {
   title: string;
   cwd: string;
-  /** Hints the console holds about this terminal session. */
+  /** This session's served transcript tail plus the hints the console holds about it. */
   tui: TuiSessionState;
   connection: ConnectionState;
   onBack: () => void;
@@ -57,6 +67,48 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
     props.onSubmit(trimmed);
     setText("");
   };
+
+  const log = useRef<FlatList<TranscriptTailMessage>>(null);
+  /**
+   * The tail arrives oldest first, so the newest turn is the last row, and a
+   * list left at the top would show the operator the oldest of the last
+   * thirty turns. Driven by content size rather than by mount, because rows
+   * measure after layout and a scroll issued before that lands nowhere.
+   */
+  const showNewest = useCallback((): void => {
+    try {
+      log.current?.scrollToEnd({ animated: false });
+    } catch {
+      // A host with no real scroller has nothing to scroll. The tail is
+      // already correct without the courtesy, so a missing scroller must not
+      // take the screen down with it.
+    }
+  }, []);
+
+  const renderTurn = useCallback(({ item, index }: ListRenderItemInfo<TranscriptTailMessage>): JSX.Element => {
+    const mine = item.role === "user";
+    // Gutter attribution rather than alternating bubbles, the same call
+    // `Transcript` made: there are only ever two speakers and bubbles halve
+    // the usable width on a phone.
+    return (
+      <View
+        style={styles.turn}
+        testID={`terminal-turn-${index}`}
+        // A nested Body is often invisible to an accessibility query even
+        // when it is on screen, so the row carries the words itself.
+        accessible
+        accessibilityLabel={`${mine ? "you" : "agent"}: ${item.text}`}
+      >
+        <View style={[styles.gutter, { borderLeftColor: mine ? ink.faint : signal.sage }]}>
+          <Kicker color={mine ? ink.muted : signal.sage}>{mine ? "you" : "agent"}</Kicker>
+          {item.at === "" ? null : <Kicker color={ink.faint}>{elapsed(item.at)}</Kicker>}
+        </View>
+        <Body color={ink.bright} style={styles.prose}>
+          {item.text}
+        </Body>
+      </View>
+    );
+  }, []);
 
   return (
     <SafeScreen edges={{ top: true, bottom: false, left: true, right: true }} testID="terminal-session">
@@ -91,7 +143,30 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </Kicker>
       </View>
 
-      <View style={styles.hints}>
+      {tui.history.length === 0 ? null : (
+        <FlatList
+          ref={log}
+          testID="terminal-log"
+          style={styles.log}
+          contentContainerStyle={styles.logContent}
+          data={tui.history as TranscriptTailMessage[]}
+          // Turns carry no id of their own: the daemon serves words, not
+          // rows. Position plus timestamp is stable within one served tail,
+          // and a new tail replaces the list wholesale anyway.
+          keyExtractor={(message, index) => `${index}:${message.at}`}
+          renderItem={renderTurn}
+          ListHeaderComponent={
+            tui.historyTruncated ? (
+              <Kicker color={ink.faint} testID="terminal-log-truncated">
+                Older turns are not shown
+              </Kicker>
+            ) : null
+          }
+          onContentSizeChange={showNewest}
+        />
+      )}
+
+      <View style={[styles.hints, tui.history.length === 0 && styles.hintsFill]}>
         {tui.refusal === null ? null : (
           <View testID="terminal-refusal" style={styles.refusal}>
             <View style={styles.refusalHead}>
@@ -122,7 +197,17 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           </View>
         )}
 
-        {tui.refusal !== null || tui.sent !== null || tui.reply !== null || tui.busy ? null : (
+        {/*
+          The explainer exists for a surface with nothing on it: served
+          history, a hint, or a turn in flight all mean the operator can see
+          what this screen is, and repeating the introduction underneath a
+          transcript is noise.
+        */}
+        {tui.history.length > 0 ||
+        tui.refusal !== null ||
+        tui.sent !== null ||
+        tui.reply !== null ||
+        tui.busy ? null : (
           <Body color={ink.muted} testID="terminal-explainer">
             This session is live in a terminal on the machine. What is sent from here is delivered to it as your own
             turn, and its progress is reported back here as it happens.
@@ -196,7 +281,23 @@ const styles = StyleSheet.create({
   ident: { flex: 1, gap: space.tight },
   meta: { flexDirection: "row", alignItems: "center", gap: space.tight },
   origin: { flexShrink: 1 },
-  hints: { flex: 1, gap: space.step, padding: space.step },
+  log: { flex: 1, backgroundColor: ground.base },
+  logContent: { padding: space.step, gap: space.step },
+  turn: { flexDirection: "row", gap: space.step },
+  gutter: {
+    width: 68,
+    borderLeftWidth: stroke.heavy,
+    paddingLeft: space.snug,
+    gap: space.tight,
+    alignItems: "flex-start",
+  },
+  prose: { flex: 1 },
+  // The hints sit under the history, so they claim only what they need. With
+  // no history there is nothing above them, and filling the pane is what puts
+  // the explainer where the transcript would have been rather than crushing
+  // it against the composer.
+  hints: { gap: space.step, padding: space.step },
+  hintsFill: { flex: 1 },
   refusal: { gap: space.snug, borderWidth: stroke.hair, borderColor: signal.oxide, padding: space.step },
   refusalHead: { flexDirection: "row", alignItems: "center", gap: space.tight },
   composer: {

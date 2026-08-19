@@ -85,10 +85,18 @@ export interface SessionQueryResult {
   warmed: Promise<SessionSummary[]> | null;
 }
 
-/** One build's outcome: first-paint rows plus the background warm pass they started, if any. */
+/** One build's outcome: first-paint rows, the background warm pass they started, if any, and where each row's file lives. */
 interface BuildOutcome {
   rows: SessionSummary[];
   warm: Promise<void> | null;
+  /**
+   * Session file path by id, from the same scan that produced the rows.
+   *
+   * Part of the build rather than a field on the index, so a reader that
+   * needs a path shares the one in-flight build like every other reader
+   * instead of consulting a map some earlier build left behind.
+   */
+  paths: Map<string, string>;
 }
 
 /**
@@ -266,6 +274,7 @@ export class SessionIndex {
     }
 
     const summaries: SessionSummary[] = [];
+    const paths = new Map<string, string>();
     for (const file of files) {
       const decoded = this.#decodeCwd(file.flattenedDir);
       const isArchived = archived.has(file.id);
@@ -313,9 +322,10 @@ export class SessionIndex {
         ...(pid !== undefined ? { pid } : {}),
         ...(status === "live-ompd" && agentId !== undefined ? { agentId } : {}),
       });
+      paths.set(file.id, file.path);
     }
     const warm = misses.length > 0 ? this.#startWarm(misses) : null;
-    return { rows: summaries, warm };
+    return { rows: summaries, warm, paths };
   }
 
   /**
@@ -433,6 +443,21 @@ export class SessionIndex {
   async get(sessionId: string): Promise<SessionSummary | undefined> {
     const { rows } = await this.#buildShared();
     return rows.find(row => row.id === sessionId);
+  }
+
+  /**
+   * The session file's own path, or undefined when the catalog holds no such
+   * session.
+   *
+   * Shares the in-flight build exactly as `get()` does: a tail request that
+   * arrives while the index is building joins that build, and one arriving
+   * cold starts the same single shared build rather than a private scan of
+   * its own. Deliberately not on `SessionSummary`: that is a wire type, and
+   * a client has no business being handed absolute paths on this machine.
+   */
+  async pathFor(sessionId: string): Promise<string | undefined> {
+    const { paths } = await this.#buildShared();
+    return paths.get(sessionId);
   }
 
   /** Query, filter, and sort the catalog. Archived sessions are excluded unless `includeArchived` is set. */
