@@ -1,38 +1,81 @@
 /**
- * The position: the bay, a log, and the wiring between the socket and both.
+ * The position: the socket, the surfaces it feeds, and the navigator that
+ * presents them.
  *
- * All of the decisions live in `state.ts`. This places them.
+ * All of the decisions live in `state.ts`. This places them, and hands each
+ * surface to `AppNavigator` as a function of the model instead of switching
+ * screens by hand. That swap is the point of this file's shape: the hand-rolled
+ * switch it replaces gave the app no header, no back gesture, and nowhere to
+ * put a control that belongs to the shell rather than to a screen.
  *
  * The browser reducer is separate from the console reducer on purpose: the
  * console reducer answers to the socket and must stay byte-identical to what
  * a live daemon produces; the browser reducer answers to gestures (sort,
  * collapse, archive) that have nothing to do with the wire. `browserSessionsOf`
  * is the seam between them, and it is a temporary one -- see its doc comment.
+ *
+ * Every callback the list receives holds its identity across a socket frame,
+ * `dispatchBrowser` by construction and `onOpen` through a ref. That is not
+ * ceremony: the rows are memoised, and a handler rebuilt on each frame would
+ * re-render the whole mounted window on every frame of every live turn, which
+ * is the same cost as never having windowed the list.
  */
 
+import type { AgentId } from "@ompd/core/contracts";
+import { SCOPE_APPROVE } from "@ompd/core/contracts";
+import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import { AgentHub } from "../components/AgentHub.tsx";
 import { Toast } from "../components/Toast.tsx";
 import { useSplitLayout } from "../design/layout.ts";
-import { ground, stroke } from "../design/tokens.ts";
-import type { Connection } from "../platform/connection.ts";
+import { SafeScreen } from "../design/SafeScreen.tsx";
+import { Body } from "../design/text.tsx";
+import { ground, ink, space, stroke } from "../design/tokens.ts";
+import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
+import { AppNavigator } from "../nav/AppNavigator.tsx";
+import type { Connection, ConnectionList } from "../platform/connection.ts";
+import { ConnectionSwitcherScreen } from "../screens/ConnectionSwitcherScreen.tsx";
 import { FleetScreen } from "../screens/FleetScreen.tsx";
+import { InviteScreen } from "../screens/InviteScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
+import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
+import type { ConsoleState } from "./state.ts";
 import { browserSessionsOf, fleetClearances, openSessionTarget, sessionFor, tuiSessionFor } from "./state.ts";
-import { useConsole } from "./useConsole.ts";
-import { useHardwareBack } from "./useHardwareBack.ts";
+import { createOmpdClient, useConsole } from "./useConsole.ts";
+
+export interface ConsoleProps {
+  connection: Connection;
+  /** The shell header's subject: which daemon this device is attached to. */
+  daemonLabel: string;
+  /** The saved daemons, for the connections route the menu reaches. */
+  connections: ConnectionList;
+  onAddConnection: () => void;
+  onSelectConnection: (id: string) => void;
+  onUnpair: (notice?: string) => void;
+  /**
+   * The socket, so a canned one can drive the whole shell. The same seam
+   * `useConsole` exposes, forwarded rather than reinvented: the shell's own
+   * behaviour (which route the model opens, what the header carries, whether a
+   * screen clears the insets) is only assertable against a client whose frames
+   * a test chooses.
+   */
+  createClient?: (connection: Connection) => OmpdClient;
+}
+
 export function Console({
   connection,
+  daemonLabel,
+  connections,
+  onAddConnection,
+  onSelectConnection,
   onUnpair,
-}: {
-  connection: Connection;
-  onUnpair: (notice?: string) => void;
-}): JSX.Element {
-  const [state, actions] = useConsole(connection);
+  createClient = createOmpdClient,
+}: ConsoleProps): JSX.Element {
+  const [state, actions] = useConsole(connection, createClient);
   const split = useSplitLayout();
   const [browser, dispatchBrowser] = useReducer(browserReduce, EMPTY_BROWSER);
 
@@ -46,7 +89,6 @@ export function Console({
   }, [state]);
 
   const clearances = useMemo(() => fleetClearances(state), [state]);
-  const agent = state.agents.find(candidate => candidate.id === state.selected) ?? null;
 
   // Wide enough for both and nothing open is a hole rather than a choice, so
   // the top strip is taken once. Only once: an operator who backed out of a
@@ -61,49 +103,50 @@ export function Console({
     actions.select(top.id);
   }, [split, state.selected, state.agents, actions]);
 
-  // Android hardware back is the system way back to the bay on a phone. On a
-  // split layout the bay is already on screen, so claiming back would steal the
-  // OS gesture for no gain.
-  useHardwareBack(!split && (state.selected !== null || state.selectedTui !== null), actions.back);
+  // Read rather than depended on, so the row handlers below keep one identity
+  // for the life of the console.
+  const latest = useRef({ state, actions });
+  latest.current = { state, actions };
 
-  const bay = (
-    <View style={split ? styles.splitBay : styles.bay}>
-      <AgentHub agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)} />
-      <View style={styles.fleet}>
-        <FleetScreen
-          browser={browser}
-          onSort={field => {
-            dispatchBrowser({ t: "sort", field });
-          }}
-          onToggleGroup={cwd => {
-            dispatchBrowser({ t: "toggleGroup", cwd });
-          }}
-          onToggleGrouped={() => {
-            dispatchBrowser({ t: "toggleGrouped" });
-          }}
-          onToggleArchived={() => {
-            dispatchBrowser({ t: "toggleArchived" });
-          }}
-          onOpen={row => {
-            // Rows are sessions, not agents; the pure resolver in state.ts
-            // decides what the tap lands on, and the action owns the impure
-            // ways to reach it: attach, a claim the daemon verifies, or the
-            // terminal prompt surface.
-            actions.openSession(openSessionTarget(state, row.id));
-          }}
-          onArchive={session => {
-            dispatchBrowser({ t: "archive", id: session.id });
-          }}
-          onUnarchive={session => {
-            dispatchBrowser({ t: "unarchive", id: session.id });
-          }}
-        />
-      </View>
-    </View>
-  );
+  const onSort = useCallback((field: SortField) => {
+    dispatchBrowser({ t: "sort", field });
+  }, []);
+  const onToggleGroup = useCallback((cwd: string) => {
+    dispatchBrowser({ t: "toggleGroup", cwd });
+  }, []);
+  const onToggleGrouped = useCallback(() => {
+    dispatchBrowser({ t: "toggleGrouped" });
+  }, []);
+  const onToggleArchived = useCallback(() => {
+    dispatchBrowser({ t: "toggleArchived" });
+  }, []);
+  const onArchive = useCallback((session: BrowserSession) => {
+    dispatchBrowser({ t: "archive", id: session.id });
+  }, []);
+  const onUnarchive = useCallback((session: BrowserSession) => {
+    dispatchBrowser({ t: "unarchive", id: session.id });
+  }, []);
+  // Rows are sessions, not agents: the pure resolver in state.ts decides what
+  // the tap lands on, and the action owns the impure ways to reach it -- attach,
+  // a claim the daemon verifies, or the terminal prompt surface.
+  const onOpen = useCallback((session: BrowserSession) => {
+    const current = latest.current;
+    current.actions.openSession(openSessionTarget(current.state, session.id));
+  }, []);
 
-  const log =
-    agent === null ? null : (
+  const log = (agentId: AgentId): JSX.Element => {
+    const agent = state.agents.find(candidate => candidate.id === agentId);
+    // The route can outlive its agent by one frame: a roster refresh that drops
+    // an agent clears the selection, and the pop happens in the same commit's
+    // effect. Saying so is better than an empty log pretending to be a session.
+    if (agent === undefined) {
+      return (
+        <SafeScreen style={styles.gone} testID="session-gone">
+          <Body color={ink.muted}>That session closed.</Body>
+        </SafeScreen>
+      );
+    }
+    return (
       // Keyed, so selecting a different agent builds a new screen rather than
       // re-rendering one with a different target. Registration follows that
       // screen, and its sandbox belongs to that one agent. Keeping a screen
@@ -145,50 +188,103 @@ export function Console({
         }}
       />
     );
+  };
 
-  // A terminal session's prompt surface is a third detail pane, not a
-  // variant of the log: there is no transcript to attach to. Keyed like the
-  // log so switching rows builds a fresh composer instead of carrying one
-  // row's draft into another's.
-  const selectedTui = state.selectedTui;
-  const tuiRow = selectedTui === null ? undefined : state.sessionIndex.find(row => row.id === selectedTui);
-  const tui =
-    selectedTui === null ? null : (
+  // A terminal session's prompt surface is not a variant of the log: there is
+  // no transcript to attach to. Keyed like the log so switching rows builds a
+  // fresh composer instead of carrying one row's draft into another's.
+  const terminal = (sessionId: string): JSX.Element => {
+    const row = state.sessionIndex.find(candidate => candidate.id === sessionId);
+    return (
       <TerminalSessionScreen
-        key={selectedTui}
-        title={tuiRow?.title ?? "Terminal session"}
-        cwd={tuiRow?.cwd ?? tuiRow?.flattenedDir ?? ""}
-        tui={tuiSessionFor(state, selectedTui)}
+        key={sessionId}
+        title={row?.title ?? "Terminal session"}
+        cwd={row?.cwd ?? row?.flattenedDir ?? ""}
+        tui={tuiSessionFor(state, sessionId)}
         connection={state.connection}
         onBack={actions.back}
         onSubmit={text => {
-          actions.promptTui(selectedTui, text);
+          actions.promptTui(sessionId, text);
         }}
       />
     );
+  };
 
-  const detail = log ?? tui;
+  const surfaces: ShellSurfaces = {
+    daemonLabel,
+    canInvite: connection.scopes.includes(SCOPE_APPROVE),
+    fleet: () => (
+      // One inset owner per route: the shell pads the screen's edges, so the
+      // agent hub sits inside the safe area with the list rather than under the
+      // status bar while the list pads itself in the middle of the screen.
+      <SafeScreen testID="fleet-surface">
+        <View style={split ? styles.splitLayout : styles.singleLayout}>
+          <View style={split ? styles.splitBay : styles.bay}>
+            <AgentHub agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)} />
+            <FleetScreen
+              browser={browser}
+              onSort={onSort}
+              onToggleGroup={onToggleGroup}
+              onToggleGrouped={onToggleGrouped}
+              onToggleArchived={onToggleArchived}
+              onOpen={onOpen}
+              onArchive={onArchive}
+              onUnarchive={onUnarchive}
+            />
+          </View>
+          {split ? <View style={styles.splitDetail}>{splitDetail(state, log, terminal)}</View> : null}
+        </View>
+      </SafeScreen>
+    ),
+    session: log,
+    terminal,
+    connections: (back, invite) => (
+      <ConnectionSwitcherScreen
+        connections={connections}
+        onAdd={onAddConnection}
+        onBack={back}
+        onInvite={invite}
+        onSelect={onSelectConnection}
+      />
+    ),
+    invite: done => <InviteScreen connection={connection} onDone={done} />,
+  };
+
+  // The stack presents an open session only where the list cannot hold it: on a
+  // tablet the detail pane is beside the list, and pushing a route over the list
+  // it is meant to sit next to would be the phone layout with extra steps.
+  const selection = split ? null : selectionOf(state);
 
   return (
     <View style={styles.position} testID="console">
-      {split ? (
-        <View style={styles.split}>
-          <View style={styles.bay}>{bay}</View>
-          <View style={styles.log}>{detail}</View>
-        </View>
-      ) : (
-        (detail ?? bay)
-      )}
+      <AppNavigator surfaces={surfaces} selection={selection} onLeaveSelection={actions.back} />
       {state.notice === null ? null : <Toast message={state.notice} onDismiss={actions.dismiss} />}
     </View>
   );
 }
 
+function selectionOf(state: ConsoleState): ShellSelection | null {
+  if (state.selected !== null) return { kind: "session", agentId: state.selected };
+  if (state.selectedTui !== null) return { kind: "terminal", sessionId: state.selectedTui };
+  return null;
+}
+
+function splitDetail(
+  state: ConsoleState,
+  log: (agentId: AgentId) => JSX.Element,
+  terminal: (sessionId: string) => JSX.Element,
+): JSX.Element | null {
+  if (state.selected !== null) return log(state.selected);
+  if (state.selectedTui !== null) return terminal(state.selectedTui);
+  return null;
+}
+
 const styles = StyleSheet.create({
   position: { flex: 1, backgroundColor: ground.base },
-  split: { flex: 1, flexDirection: "row" },
+  singleLayout: { flex: 1 },
+  splitLayout: { flex: 1, flexDirection: "row" },
   bay: { flex: 1 },
   splitBay: { width: 340, borderRightWidth: stroke.heavy, borderRightColor: ground.edge },
-  fleet: { flex: 1 },
-  log: { flex: 1 },
+  splitDetail: { flex: 1 },
+  gone: { alignItems: "center", justifyContent: "center", padding: space.gulf },
 });

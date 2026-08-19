@@ -22,25 +22,25 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
-// Deliberately extensionless, unlike this file's other imports: that is what
-// lets `ScanScreen.web.tsx` win in the browser via `resolve.extensions`, the
-// same mechanism `platform/secrets` already relies on. Naming `./ScanScreen.tsx`
-// here would pin every platform to the native screen, whose vision-camera
-// import fails the web build outright.
-import { ScanScreen } from "./ScanScreen";
 
 export function PairScreen({
   notice,
   onCancel,
   onPair,
+  onScan,
 }: {
   notice?: string;
   onCancel?: () => void;
   onPair: (connection: Connection) => void;
+  /**
+   * Opens the camera. A route rather than a boolean here: the scan surface has
+   * a back gesture, a place in the navigation state, and a way to be reached
+   * from anywhere, none of which a flag inside this form could give it.
+   */
+  onScan: () => void;
 }): JSX.Element {
   const [raw, setRaw] = useState(DEFAULT_HUB_HOST);
   const [token, setToken] = useState("");
-  const [scanning, setScanning] = useState(false);
   const { width } = useWindowDimensions();
   const formMaxWidth = useFormMaxWidth();
   const target = parsePairTarget(raw);
@@ -48,21 +48,6 @@ export function PairScreen({
   // decides whether this form can produce a hub connection at all.
   const credential = parseDeviceCredential(token);
   const ready = target !== null && (target.transport === "direct" ? token.trim().length > 0 : credential !== null);
-
-  // A scanned bundle already carries a token and an endpoint together; it
-  // saves through the same `onPair` the manual form uses below, so a scan
-  // and a paste are indistinguishable to everything downstream of this screen.
-  if (scanning) {
-    return (
-      <ScanScreen
-        onCancel={() => setScanning(false)}
-        onScanned={connection => {
-          setScanning(false);
-          onPair(connection);
-        }}
-      />
-    );
-  }
 
   return (
     <SafeScreen style={styles.screen} testID="pair">
@@ -84,12 +69,7 @@ export function PairScreen({
           change it only if you run your own.
         </Body>
 
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => setScanning(true)}
-          style={styles.scanEntry}
-          testID="pair-scan-entry"
-        >
+        <Pressable accessibilityRole="button" onPress={onScan} style={styles.scanEntry} testID="pair-scan-entry">
           <Glyph color={ink.plain} name="qrcode" size={14} />
           <Label color={ink.plain}>Scan a QR code instead</Label>
         </Pressable>

@@ -15,19 +15,22 @@
  * groups are collapsed) and every gesture becomes a callback. That is what
  * lets a canned `BrowserState` produce byte-identical markup to a live one,
  * the same discipline `console/state.ts` applies to the socket.
+ *
+ * It is a block, not a shell: the route around it owns the system insets, so
+ * the agent hub above it sits inside the safe area too rather than under the
+ * status bar while this list pads itself in the middle of the screen.
  */
 
 import type { JSX } from "react";
-import { useMemo } from "react";
-import { FlatList, Pressable, SectionList, StyleSheet, View } from "react-native";
+import { useCallback, useMemo } from "react";
+import { FlatList, Pressable, type PressableStateCallbackType, SectionList, StyleSheet, View } from "react-native";
 import { GroupHeader } from "../components/GroupHeader.tsx";
 import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
 import { Glyph } from "../design/icons.tsx";
-import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
-import type { BrowserSession, BrowserState, SortField } from "../session/browser.ts";
+import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
 import { browserView } from "../session/browser.ts";
 
 export interface FleetScreenProps {
@@ -43,6 +46,32 @@ export interface FleetScreenProps {
   now?: number;
 }
 
+/**
+ * The first batch, and the ceiling on every batch after it.
+ *
+ * A 390x844 phone shows eight or nine of these rows, so twelve is a screenful
+ * plus a look-ahead. This screen used to ask for the entire visible set on the
+ * first pass, on the argument that a directory listing should never hide a row
+ * from a search or a screen reader sweep. A real device settled it: 534
+ * sessions across 93 groups made reaching this screen slow and scrolling it
+ * worse, because every one of those rows mounted before the first frame and
+ * re-rendered on every socket frame after it. A windowed list is what a phone
+ * can actually draw; the header count still reports the whole corpus, so
+ * nothing about the list's completeness is hidden.
+ */
+const FIRST_WINDOW = 12;
+
+/** Viewports of cells kept mounted around the visible one. RN's default is 21. */
+const WINDOW_SIZE = 5;
+
+/** How long the virtualizer coalesces cell work. One frame at 60Hz is 16ms. */
+const BATCH_PERIOD_MS = 50;
+
+/** Stable and hoisted: a fresh element here would remount the empty state per render. */
+const EMPTY = <Empty />;
+
+const keyOf = (session: BrowserSession): string => session.id;
+
 export function FleetScreen({
   browser,
   onSort,
@@ -55,20 +84,56 @@ export function FleetScreen({
   now,
 }: FleetScreenProps): JSX.Element {
   const view = useMemo(() => browserView(browser), [browser]);
-  // Virtualization's default `initialNumToRender` (10) is tuned for a feed a
-  // person scrolls; a fleet browser is closer to a directory listing, and the
-  // contract's own machine has 305 sessions across 93 groups. Rendering the
-  // whole visible set eagerly is cheap at that scale and means a session is
-  // never invisible to a search, a screen reader sweep, or a static render
-  // that never fires the scroll/layout events which would otherwise grow the
-  // window. React Native's virtualizer measures this in an estimated cell
-  // count rather than a literal 1:1 slot count, so the multiplier here is an
-  // empirically-checked safety margin, not the raw section+row total.
-  const rows = view.visibleCount + view.groups.length;
-  const initialNumToRender = rows * 2 + 50;
+
+  // The sections array, both row renderers, and the section header renderer
+  // are memoised because each is a prop the virtualizer compares. A new
+  // identity per render re-renders the whole mounted window on every socket
+  // frame, which on a phone is indistinguishable from never having windowed
+  // the list at all.
+  const sections = useMemo(
+    () =>
+      view.groups.map(group => ({
+        cwd: group.cwd,
+        group,
+        data: browser.collapsedGroups.has(group.cwd) ? [] : group.sessions,
+      })),
+    [view.groups, browser.collapsedGroups],
+  );
+
+  const renderGrouped = useCallback(
+    ({ item }: { item: BrowserSession }) => (
+      <SessionRow
+        session={item}
+        showCwd={false}
+        onOpen={onOpen}
+        onArchive={onArchive}
+        onUnarchive={onUnarchive}
+        now={now}
+      />
+    ),
+    [onOpen, onArchive, onUnarchive, now],
+  );
+
+  const renderFlat = useCallback(
+    ({ item }: { item: BrowserSession }) => (
+      <SessionRow session={item} showCwd onOpen={onOpen} onArchive={onArchive} onUnarchive={onUnarchive} now={now} />
+    ),
+    [onOpen, onArchive, onUnarchive, now],
+  );
+
+  const renderSectionHeader = useCallback(
+    ({ section }: { section: { cwd: string; group: SessionGroup } }) => (
+      <GroupHeader
+        group={section.group}
+        collapsed={browser.collapsedGroups.has(section.cwd)}
+        onToggle={onToggleGroup}
+      />
+    ),
+    [browser.collapsedGroups, onToggleGroup],
+  );
 
   return (
-    <SafeScreen testID="fleet">
+    <View style={styles.screen} testID="fleet">
       <View style={styles.head}>
         <Glyph name="bay" size={16} color={ink.plain} />
         <Display heading testID="fleet-title">
@@ -83,7 +148,7 @@ export function FleetScreen({
           accessibilityState={{ selected: browser.grouped }}
           accessibilityLabel={browser.grouped ? "Grouped by directory" : "Flat list"}
           onPress={onToggleGrouped}
-          style={({ pressed }) => [styles.toggle, pressed && { backgroundColor: ground.active }]}
+          style={toggleStyle}
         >
           <Glyph name="folder" size={12} color={browser.grouped ? signal.amber : ink.faint} />
         </Pressable>
@@ -97,7 +162,7 @@ export function FleetScreen({
               : `Show ${view.hiddenArchived} archived ${view.hiddenArchived === 1 ? "session" : "sessions"}`
           }
           onPress={onToggleArchived}
-          style={({ pressed }) => [styles.toggle, pressed && { backgroundColor: ground.active }]}
+          style={toggleStyle}
         >
           <Glyph name="archive" size={12} color={browser.showArchived ? signal.amber : ink.faint} />
           {!browser.showArchived && view.hiddenArchived > 0 ? (
@@ -113,53 +178,31 @@ export function FleetScreen({
       {browser.grouped ? (
         <SectionList
           testID="fleet-list"
-          sections={view.groups.map(group => ({
-            cwd: group.cwd,
-            group,
-            data: browser.collapsedGroups.has(group.cwd) ? [] : group.sessions,
-          }))}
-          keyExtractor={(session: BrowserSession) => session.id}
-          renderSectionHeader={({ section }) => (
-            <GroupHeader
-              group={section.group}
-              collapsed={browser.collapsedGroups.has(section.cwd)}
-              onToggle={onToggleGroup}
-            />
-          )}
-          renderItem={({ item }: { item: BrowserSession }) => (
-            <SessionRow
-              session={item}
-              showCwd={false}
-              onOpen={onOpen}
-              onArchive={onArchive}
-              onUnarchive={onUnarchive}
-              now={now}
-            />
-          )}
+          sections={sections}
+          keyExtractor={keyOf}
+          renderSectionHeader={renderSectionHeader}
+          renderItem={renderGrouped}
           stickySectionHeadersEnabled
-          initialNumToRender={initialNumToRender}
-          ListEmptyComponent={<Empty />}
+          initialNumToRender={FIRST_WINDOW}
+          maxToRenderPerBatch={FIRST_WINDOW}
+          windowSize={WINDOW_SIZE}
+          updateCellsBatchingPeriod={BATCH_PERIOD_MS}
+          ListEmptyComponent={EMPTY}
         />
       ) : (
         <FlatList
           testID="fleet-list"
           data={view.flatSessions as BrowserSession[]}
-          keyExtractor={session => session.id}
-          renderItem={({ item }) => (
-            <SessionRow
-              session={item}
-              showCwd
-              onOpen={onOpen}
-              onArchive={onArchive}
-              onUnarchive={onUnarchive}
-              now={now}
-            />
-          )}
-          initialNumToRender={initialNumToRender}
-          ListEmptyComponent={<Empty />}
+          keyExtractor={keyOf}
+          renderItem={renderFlat}
+          initialNumToRender={FIRST_WINDOW}
+          maxToRenderPerBatch={FIRST_WINDOW}
+          windowSize={WINDOW_SIZE}
+          updateCellsBatchingPeriod={BATCH_PERIOD_MS}
+          ListEmptyComponent={EMPTY}
         />
       )}
-    </SafeScreen>
+    </View>
   );
 }
 
@@ -173,7 +216,10 @@ function Empty(): JSX.Element {
   );
 }
 
+const toggleStyle = ({ pressed }: PressableStateCallbackType) => [styles.toggle, pressed && styles.togglePressed];
+
 const styles = StyleSheet.create({
+  screen: { flex: 1 },
   head: {
     flexDirection: "row",
     alignItems: "center",
@@ -192,5 +238,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginLeft: space.tight,
   },
+  togglePressed: { backgroundColor: ground.active },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },
 });

@@ -10,10 +10,14 @@
  * markup. `render()` below concatenates both, so a width or height audit of
  * "the rendered tree" covers what a real page would actually ship.
  *
- * The corpus is 42 sessions across 12 directories: big enough that a bug only
- * visible past a few dozen rows (a group whose header count is wrong once
- * it has 5 members, a collapse that drops the wrong section) cannot hide
- * behind a three-row fixture.
+ * Two corpora, because the list is windowed. 42 sessions across 12 directories
+ * for everything the header and the toolbar report, which is computed from the
+ * whole corpus whether or not a row is mounted; and 6 sessions across 3
+ * directories for the assertions about a specific row or group, which have to
+ * be inside the mounted window to be assertable at all. `fleet-scale.test.tsx`
+ * owns the window's own bound. A test that needs a particular row on screen
+ * and asks for it out of 42 is not testing the row, it is testing where the
+ * virtualizer happened to stop.
  */
 
 import "./rnw.ts";
@@ -33,8 +37,18 @@ const { StyleSheet } = await import("react-native");
 const NOW = Date.parse("2026-03-01T00:00:00.000Z");
 const CORPUS = makeSessionCorpus(12);
 
+/**
+ * Small enough that every row and every group header is inside the first
+ * window: 3 directories, 6 sessions, one of them archived.
+ */
+const WINDOWED = makeSessionCorpus(3);
+
 function browserState(overrides: Partial<BrowserState> = {}): BrowserState {
   return { ...EMPTY_BROWSER, sessions: CORPUS, ...overrides };
+}
+
+function windowedState(overrides: Partial<BrowserState> = {}): BrowserState {
+  return { ...EMPTY_BROWSER, sessions: WINDOWED, ...overrides };
 }
 
 const NOOP_SESSION = (_session: BrowserSession) => {};
@@ -104,9 +118,11 @@ describe("RNW style rule scoping", () => {
 describe("the session browser renders a realistic corpus", () => {
   const html = render(browserState());
 
-  test("every group's directory name and count are on screen", () => {
-    for (let d = 0; d < 12; d++) {
-      expect(html).toContain(`repo-${d}`);
+  test("every group in the mounted window carries its directory name and count", () => {
+    const windowed = render(windowedState());
+    for (let d = 0; d < 3; d++) {
+      expect(windowed).toContain(`repo-${d}`);
+      expect(windowed).toContain(`data-testid="group-count-/Users/op/dev/src/github.com/op/repo-${d}"`);
     }
   });
 
@@ -141,9 +157,9 @@ describe("the session browser renders a realistic corpus", () => {
 });
 
 describe("open and archive are visually distinct actions", () => {
-  const live = CORPUS.find(s => s.status === "live-tui") as BrowserSession;
-  const dormant = CORPUS.find(s => s.status === "dormant") as BrowserSession;
-  const html = render(browserState());
+  const live = WINDOWED.find(s => s.status === "live-tui") as BrowserSession;
+  const dormant = WINDOWED.find(s => s.status === "dormant") as BrowserSession;
+  const html = render(windowedState());
 
   test("a dormant row's open action reads Resume, not Archive or Delete", () => {
     expect(html).toContain(`data-testid="session-open-action-${dormant.id}"`);
@@ -174,9 +190,9 @@ describe("open and archive are visually distinct actions", () => {
   });
 
   test("an archived row's primary action reads Restore, not Resume or Attach", () => {
-    const archived = CORPUS.find(s => s.status === "archived") as BrowserSession;
+    const archived = WINDOWED.find(s => s.status === "archived") as BrowserSession;
     // Archived is hidden by default; show it to reach the row at all.
-    const withArchived = render({ ...browserState(), showArchived: true });
+    const withArchived = render(windowedState({ showArchived: true }));
     expect(withArchived).toContain(`data-testid="session-unarchive-${archived.id}"`);
     expect(withArchived).toContain(`Restore ${archived.title}`);
   });
@@ -185,10 +201,7 @@ describe("open and archive are visually distinct actions", () => {
 describe("collapsed group status precedence, rendered", () => {
   test("a collapsed group still shows its count and worst-status colour", () => {
     const dir = "/Users/op/dev/src/github.com/op/repo-0"; // 1 session, live-tui (d=0,i=0 -> statuses[0])
-    const collapsed: BrowserState = {
-      ...browserState(),
-      collapsedGroups: new Set([dir]),
-    };
+    const collapsed: BrowserState = windowedState({ collapsedGroups: new Set([dir]) });
     const html = render(collapsed);
     expect(html).toContain(`data-testid="group-header-${dir}"`);
     expect(html).toContain(`data-testid="group-count-${dir}"`);
@@ -199,13 +212,14 @@ describe("collapsed group status precedence, rendered", () => {
   });
 
   test("collapsing a group removes its rows from the list but not its header", () => {
-    const dir = "/Users/op/dev/src/github.com/op/repo-3"; // 4 sessions
+    const dir = "/Users/op/dev/src/github.com/op/repo-2"; // 3 sessions
     // Show archived too, so every session in the group is accounted for
     // regardless of status; the point here is collapse, not visibility.
-    const group = CORPUS.filter(s => s.cwd === dir);
-    const expanded = render({ ...browserState(), showArchived: true });
-    const collapsed = render({ ...browserState(), showArchived: true, collapsedGroups: new Set([dir]) });
+    const group = WINDOWED.filter(s => s.cwd === dir);
+    const expanded = render(windowedState({ showArchived: true }));
+    const collapsed = render(windowedState({ showArchived: true, collapsedGroups: new Set([dir]) }));
 
+    expect(group.length).toBeGreaterThan(1);
     for (const session of group) {
       expect(expanded).toContain(`data-testid="session-row-${session.id}"`);
       expect(collapsed).not.toContain(`data-testid="session-row-${session.id}"`);
@@ -217,11 +231,10 @@ describe("collapsed group status precedence, rendered", () => {
 
 describe("grouping toggle", () => {
   test("turning grouping off renders a flat list with cwd shown per row", () => {
-    const html = render({ ...browserState(), grouped: false });
+    const html = render(windowedState({ grouped: false }));
     expect(html).not.toContain('data-testid="group-header-');
-    // A sample of ids from different directories should all be present.
-    const sample = [CORPUS[0], CORPUS[CORPUS.length - 1]] as BrowserSession[];
-    for (const session of sample) {
+    // Every row of the small corpus, from three different directories.
+    for (const session of WINDOWED.filter(s => s.status !== "archived")) {
       expect(html).toContain(`data-testid="session-row-${session.id}"`);
     }
   });
