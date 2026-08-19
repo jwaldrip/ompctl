@@ -28,10 +28,12 @@ import {
   faCheck,
   faChevronDown,
   faChevronLeft,
+  faChevronUp,
   faCircleNodes,
   faCircleQuestion,
   faCircleStop,
   faClockRotateLeft,
+  faCodeBranch,
   faCoins,
   faDiagramProject,
   faFileLines,
@@ -40,6 +42,7 @@ import {
   faGlobe,
   faHand,
   faLayerGroup,
+  faLink,
   faListCheck,
   faMagnifyingGlass,
   faPaperPlane,
@@ -104,6 +107,12 @@ export type GlyphName =
   | "marketplace"
   | "warning"
   | "qrcode"
+  /** A symlink in a directory listing: an entry that is a pointer, not a place. */
+  | "symlink"
+  /** A directory that is the top of a git working tree. */
+  | "repo"
+  /** Walk up to the containing directory. */
+  | "up"
   | "browser"
   | "unknown";
 
@@ -168,6 +177,15 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // A QR code is the one glyph in this set that names itself: the shape it
   // draws IS the thing it means, for the two screens that show or read one.
   qrcode: faQrcode,
+  // A symlink is a pointer rather than a place, and the chain link says so
+  // without borrowing the signal-strength glyph `link` already spends.
+  symlink: faLink,
+  // A git working tree, marked with the shape git itself uses for a branch:
+  // it is the one thing an operator is scanning a directory listing for.
+  repo: faCodeBranch,
+  // Walking up a directory is the same gesture as going back, drawn upward
+  // because it moves through a hierarchy rather than through history.
+  up: faChevronUp,
   // The agent's own sandboxed WebView, which is a window it drives rather
   // than the globe `fetch` uses for an HTTP call with no page behind it.
   browser: faWindowMaximize,
