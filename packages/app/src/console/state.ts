@@ -19,6 +19,7 @@ import type {
   ApprovalChoice,
   PlanReviewChoice,
   SessionSummary,
+  TranscriptTailMessage,
   WebViewAction,
 } from "@ompd/core/contracts";
 import { SCOPE_APPROVE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
@@ -29,6 +30,7 @@ import type {
   ConnectionState,
   PlanReviewEvent,
   SayEvent,
+  SessionTailEvent,
   StatusEvent,
   TuiActivityEvent,
   UnauthorizedEvent,
@@ -125,13 +127,15 @@ export interface ConsoleState {
   readonly unauthorized: string | null;
 }
 /**
- * Hints this device holds about one live terminal session, keyed by session
- * id because a terminal session has no agent row.
+ * What this device holds about one live terminal session, keyed by session id
+ * because a terminal session has no agent row.
  *
- * Everything here is a hint, never a transcript: `tui_activity` frames are the
- * terminal's own progress reporting, and the wire contract says so. `reply`
- * holds only the last text, `sent` only the prompt this device most recently
- * sent, and nothing accumulates.
+ * Two different things live here, and the distinction is load-bearing.
+ * `history` is transcript: the turns the daemon read out of the session's own
+ * file when this surface opened, oldest first. Everything else is a hint,
+ * because `tui_activity` frames are the terminal's own progress reporting and
+ * the wire contract says so: `reply` holds only the last text, `sent` only
+ * the prompt this device most recently sent, and neither accumulates.
  */
 export interface TuiSessionState {
   /**
@@ -146,9 +150,27 @@ export interface TuiSessionState {
   readonly reply: string | null;
   /** Why the daemon refused the last prompt, once it has. */
   readonly refusal: string | null;
+  /**
+   * The transcript tail the daemon served for this session, oldest first.
+   *
+   * Replaced wholesale by each `session_tail` frame rather than merged: the
+   * daemon reads the file's end every time it is asked, so the newest answer
+   * is the truth and a merge would only invent an ordering neither side
+   * agreed on.
+   */
+  readonly history: readonly TranscriptTailMessage[];
+  /** True when older turns exist above the tail the daemon served. */
+  readonly historyTruncated: boolean;
 }
 
-const EMPTY_TUI_SESSION: TuiSessionState = { sent: null, busy: false, reply: null, refusal: null };
+const EMPTY_TUI_SESSION: TuiSessionState = {
+  sent: null,
+  busy: false,
+  reply: null,
+  refusal: null,
+  history: [],
+  historyTruncated: false,
+};
 
 /**
  * What the operator can actually do about a `tui_unreachable` refusal. The
@@ -196,6 +218,8 @@ export type ConsoleEvent =
   | { t: "unauthorized"; event: UnauthorizedEvent }
   /** Daemon: turn progress from a live terminal session this device can prompt. */
   | { t: "tui_activity"; event: TuiActivityEvent }
+  /** Daemon: the tail of a terminal session's transcript, answering this device's ask. */
+  | { t: "session_tail"; event: SessionTailEvent }
   /** Local: the operator opened a terminal session's prompt surface, or went back to the bay. */
   | { t: "tui_select"; sessionId: string | null }
   /** Local: echo of a prompt this device just sent to a terminal session. */
@@ -313,6 +337,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "tui_activity":
       return applyTuiActivity(state, event.event);
+
+    case "session_tail":
+      return withTuiSession(state, event.event.sessionId, tui => ({
+        ...tui,
+        history: event.event.messages,
+        historyTruncated: event.event.truncated,
+      }));
 
     case "prompt":
       return withSession(state, event.agentId, session => appendPrompt(session, event.text));

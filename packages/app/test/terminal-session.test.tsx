@@ -234,3 +234,139 @@ describe("an unreachable terminal is told how to fix itself", () => {
     expect(html).toContain("again");
   });
 });
+
+// ---------------------------------------------------------------------------
+// The history: the served transcript tail
+// ---------------------------------------------------------------------------
+
+describe("a terminal session renders the transcript the daemon served", () => {
+  /** One `session_tail` frame, as the daemon sends it: oldest first. */
+  const served = (truncated: boolean): ConsoleEvent => ({
+    t: "session_tail",
+    event: {
+      sessionId: SESSION,
+      messages: [
+        { role: "user", text: "run the deploy checks", at: "2026-08-13T00:00:01.000Z" },
+        { role: "assistant", text: "all four suites are green", at: "2026-08-13T00:00:02.000Z" },
+      ],
+      truncated,
+    },
+  });
+
+  test("the served turns are rendered in order, newest last, above the composer", () => {
+    const html = renderScreen(drive([{ t: "tui_select", sessionId: SESSION }, served(false)]));
+
+    expect(html).toContain('data-testid="terminal-log"');
+    expect(html).toContain("run the deploy checks");
+    expect(html).toContain("all four suites are green");
+    // Order is the contract: oldest first means the newest turn sits closest
+    // to the composer, so a reversed list would read as a session running
+    // backwards.
+    expect(html.indexOf("run the deploy checks")).toBeLessThan(html.indexOf("all four suites are green"));
+    // And the composer is below the log, not above it.
+    expect(html.indexOf("all four suites are green")).toBeLessThan(
+      html.indexOf('data-testid="terminal-composer-input"'),
+    );
+    // Speaker attribution comes from the served role, not from guesswork.
+    expect(html).toContain('data-testid="terminal-turn-0"');
+    expect(html).toContain('data-testid="terminal-turn-1"');
+    // With history on screen the explainer is gone: it explains an empty
+    // surface, and this one is not empty.
+    expect(html).not.toContain('data-testid="terminal-explainer"');
+  });
+
+  test("a truncated tail says older turns are not shown; a complete one does not", () => {
+    expect(renderScreen(drive([served(true)]))).toContain('data-testid="terminal-log-truncated"');
+    expect(renderScreen(drive([served(false)]))).not.toContain('data-testid="terminal-log-truncated"');
+  });
+
+  test("an empty tail renders the explainer rather than a blank pane", () => {
+    // The honest answer for a session whose file holds no turns yet: the
+    // daemon answered, and the answer was nothing, so the surface must still
+    // say what it is.
+    const html = renderScreen(
+      drive([{ t: "session_tail", event: { sessionId: SESSION, messages: [], truncated: false } }]),
+    );
+
+    expect(html).not.toContain('data-testid="terminal-log"');
+    expect(html).toContain('data-testid="terminal-explainer"');
+    expect(html).toContain("live in a terminal");
+  });
+
+  test("a live reply appends below the served history rather than replacing it", () => {
+    const html = renderScreen(
+      drive([
+        served(false),
+        { t: "tui_prompt", sessionId: SESSION, text: "and the migration?" },
+        { t: "tui_activity", event: { sessionId: SESSION, kind: "assistant_text", text: "migration applied" } },
+      ]),
+    );
+
+    // The history is still there, and the live hints are below it: a phone
+    // that lost the served turns the moment the terminal said something would
+    // be back to a one-line screen.
+    expect(html).toContain("run the deploy checks");
+    expect(html).toContain('data-testid="terminal-reply"');
+    expect(html).toContain("migration applied");
+    expect(html.indexOf("all four suites are green")).toBeLessThan(html.indexOf("migration applied"));
+  });
+
+  test("a tail for another session does not appear on this one", () => {
+    // Frames are keyed by session id, and this screen shows exactly one
+    // session. Folding a sibling's transcript into whichever surface happens
+    // to be open would put another project's words on the operator's screen.
+    const html = renderScreen(
+      drive([
+        { t: "tui_select", sessionId: SESSION },
+        {
+          t: "session_tail",
+          event: {
+            sessionId: "s-other",
+            messages: [{ role: "user", text: "belongs to another session", at: "" }],
+            truncated: false,
+          },
+        },
+      ]),
+    );
+
+    expect(html).not.toContain("belongs to another session");
+    expect(html).toContain('data-testid="terminal-explainer"');
+  });
+
+  test("mounted, the rows carry the words as their accessibility labels", () => {
+    // Mounted rather than rendered to markup, because the list scrolls itself
+    // to the newest turn on content-size change and that path only runs in a
+    // real mount. A row whose words are only in a nested Text is invisible to
+    // an accessibility query even when it is on screen, which is how a device
+    // UI test ends up unable to read a transcript that is plainly there.
+    const state = drive([served(false)]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(
+        <TerminalSessionScreen
+          title="session s-tui"
+          cwd="/alpha"
+          tui={tuiSessionFor(state, SESSION)}
+          connection="connected"
+          onBack={() => {}}
+          onSubmit={() => {}}
+        />,
+      );
+    });
+
+    const rows = [...host.querySelectorAll('[data-testid^="terminal-turn-"]')];
+    expect(rows).toHaveLength(2);
+    expect(rows.map(row => row.getAttribute("aria-label"))).toEqual([
+      "you: run the deploy checks",
+      "agent: all four suites are green",
+    ]);
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+});

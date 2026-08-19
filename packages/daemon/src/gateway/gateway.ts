@@ -56,6 +56,7 @@ import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/r
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
+import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import {
   createAgentId,
   type PendingApproval,
@@ -2798,6 +2799,43 @@ export class Gateway {
         return;
       }
 
+      case "session_tail": {
+        // Read scope, matching `attach`: this is a transcript, and a
+        // read-only device is already entitled to read one. Nothing about the
+        // session changes, so there is no manage gate to pass and nothing to
+        // audit that `sessions` does not already leave unaudited.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "session tail requires read scope" });
+          return;
+        }
+        if (
+          typeof frame.sessionId !== "string" ||
+          frame.sessionId.length === 0 ||
+          (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0))
+        ) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "session tail needs a sessionId and a positive integer limit when given",
+          });
+          return;
+        }
+        const tailIndex = this.#sessionIndex;
+        if (!tailIndex) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        // Detached like the index reply, and for the same reason: resolving
+        // the file and reading its tail are async, and every socket must keep
+        // being served while one client's transcript is read.
+        void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit);
+        return;
+      }
+
       case "session_takeover":
       case "session_resume": {
         // The same manage gate the HTTP takeover route takes: handing the
@@ -3245,6 +3283,53 @@ export class Gateway {
         t: "error",
         code: "sessions_failed",
         message: err instanceof Error ? err.message : "session index failed",
+      });
+    }
+  }
+
+  /**
+   * One socket `session_tail` request: the session's file located through the
+   * index (which refuses an id the catalog does not hold, so a client cannot
+   * name an arbitrary path), then its last turns read from the end.
+   *
+   * The limit is clamped here as well as in the reader, because the gateway
+   * is the door: a client asking for a million turns gets the ceiling, not a
+   * refusal, since the honest answer to "show me more" is as much as a frame
+   * can carry.
+   */
+  async #serveSessionTailFrame(
+    ws: GatewaySocket,
+    index: SessionIndex,
+    sessionId: string,
+    limit: number | undefined,
+  ): Promise<void> {
+    try {
+      const path = await index.pathFor(sessionId);
+      if (path === undefined) {
+        this.#send(ws, {
+          t: "error",
+          code: "unknown_session",
+          message: `no session ${sessionId} on this machine`,
+        });
+        return;
+      }
+      const tail = await readSessionTail(path, {
+        ...(limit === undefined ? {} : { limit: Math.min(limit, TAIL_MAX_MESSAGES) }),
+      });
+      this.#send(ws, {
+        t: "session_tail",
+        sessionId,
+        messages: tail.messages,
+        truncated: tail.truncated,
+      });
+    } catch (err) {
+      // Detached from `#handle`, so its last-line-of-defence try/catch no
+      // longer covers this: an answer that cannot be produced must still cost
+      // the asking socket exactly one error frame, never a dropped one.
+      this.#send(ws, {
+        t: "error",
+        code: "session_tail_failed",
+        message: err instanceof Error ? err.message : "session tail failed",
       });
     }
   }

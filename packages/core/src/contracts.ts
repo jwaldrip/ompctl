@@ -484,6 +484,25 @@ export type TuiSteerDelivery = "steer" | "followUp";
 /** What a live terminal session reports back as a turn progresses. */
 export type TuiActivityKind = "assistant_text" | "turn_start" | "turn_end";
 
+/**
+ * One turn of a session's transcript, as a tail reader recovered it from the
+ * session file.
+ *
+ * Text, never blocks. A message's content in a session file is an array of
+ * blocks (or, for some typed user turns, a bare string), and only a `text`
+ * block is words: a `toolCall` is the agent reaching for a tool and a
+ * `thinking` block is not what it said. So the daemon flattens a turn to the
+ * words it actually spoke and drops a turn that spoke none, rather than
+ * shipping a block union a client would have to re-learn this lesson to
+ * render. `at` is the line's own ISO timestamp, or "" for a file that carried
+ * none.
+ */
+export interface TranscriptTailMessage {
+  role: "user" | "assistant";
+  text: string;
+  at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Client wire protocol
 // ---------------------------------------------------------------------------
@@ -556,6 +575,20 @@ export type ClientFrame =
    */
   | { t: "device_invite"; name: string; scopes: string[] }
   | RemoteStartClientFrame
+  /**
+   * The tail of a session's transcript, read straight from its file.
+   *
+   * Read scope, not manage: this is reading a transcript, which a read-only
+   * device is already entitled to for its own agents, and it changes nothing
+   * about the session. `limit` asks for at most that many of the most recent
+   * turns; the daemon defaults it and caps it, so a client cannot ask for a
+   * whole 10MB transcript in one frame.
+   *
+   * A live terminal session has no agent row, so `attach` and its `update`
+   * stream cannot reach it. Without this frame, tapping a session with a
+   * thousand messages in it shows a composer and nothing else.
+   */
+  | { t: "session_tail"; sessionId: string; limit?: number }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -628,6 +661,14 @@ export type ServerFrame =
    */
   | { t: "device_invited"; token: string; name: string; scopes: string[] }
   | RemoteStartServerFrame
+  /**
+   * The transcript tail answering a `session_tail` frame, sent only to the
+   * socket that asked. Oldest first, so a client appends live activity below
+   * it without reordering. `truncated` says the tail is not the whole
+   * transcript: either an older turn exists past the ones returned, or the
+   * reader stopped at its byte budget with unread bytes behind it.
+   */
+  | { t: "session_tail"; sessionId: string; messages: TranscriptTailMessage[]; truncated: boolean }
   | { t: "pong" };
 
 // ---------------------------------------------------------------------------

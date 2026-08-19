@@ -31,6 +31,8 @@ import {
   type CredentialVerdict,
   computeBackoffDelay,
   type DeviceInvitedEvent,
+  type SessionTailEvent,
+  type TranscriptTailMessage,
   type FsListingEvent,
   OmpdClient,
   type Scheduler,
@@ -1444,5 +1446,79 @@ describe("browse, start and clone surface", () => {
     expect(errors[0]).toContain("fs_list");
     expect(errors[1]).toContain("session_create");
     expect(errors[2]).toContain("repo_clone");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Session Tail Surface
+// ---------------------------------------------------------------------------
+
+describe("session tail surface", () => {
+  const SESSION = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
+
+  test("sessionTail sends the frame, carrying a limit only when one was given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.sessionTail(SESSION);
+    h.client.sessionTail(SESSION, 5);
+
+    expect(socket.framesOfType("session_tail")).toEqual([
+      { t: "session_tail", sessionId: SESSION },
+      { t: "session_tail", sessionId: SESSION, limit: 5 },
+    ]);
+  });
+
+  test("a session_tail server frame dispatches the typed event with the daemon's turns", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionTailEvent[] = [];
+    h.client.on("session_tail", event => received.push(event));
+
+    const messages: TranscriptTailMessage[] = [
+      { role: "user", text: "status of the deploy?", at: "2026-08-13T00:00:01.000Z" },
+      { role: "assistant", text: "all green", at: "2026-08-13T00:00:02.000Z" },
+    ];
+    socket.deliver({ t: "session_tail", sessionId: SESSION, messages, truncated: true });
+
+    expect(received).toEqual([{ sessionId: SESSION, messages, truncated: true }]);
+  });
+
+  test("a reconnect does not re-issue the request: a tail belongs to a screen, not to the socket", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.sessionTail(SESSION);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just this type: a replay implemented as
+    // remembered state would show up here as any frame after the hello this
+    // socket never asked for.
+    expect(second.sent).toEqual([]);
+    expect(second.framesOfType("session_tail")).toEqual([]);
+  });
+
+  test("losing a tail request to a closed socket raises no error, unlike a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in. Nothing on the machine
+    // changes because a tail was lost, and the surface asks again when it
+    // opens, so an error here would name a failure with no remedy.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.sessionTail(SESSION);
+    expect(errors).toEqual([]);
+
+    h.client.prompt(AGENT, "hello");
+    expect(errors.length).toBe(1);
   });
 });
