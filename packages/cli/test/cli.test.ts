@@ -1157,6 +1157,24 @@ describe("install and uninstall", () => {
     expect(h.commands).toEqual([["launchctl", "load", path]]);
   });
 
+  test("the launch agent asks for interactive scheduling, never Background", async () => {
+    const h = harness();
+    installBinary(h.home);
+
+    expect(await run(["install"], h.ctx)).toBe(0);
+    const plist = readFileSync(plistPath(h.ctx), "utf8");
+
+    // Background is not a milder version of this. It carries IOPOL_THROTTLE,
+    // and a throttled daemon reads disk behind everything else on the machine:
+    // a cold session-index request that answers in about 1.4 seconds in the
+    // foreground did not answer inside 60 seconds under Background, at 0
+    // percent CPU. Every request this daemon serves has an operator waiting on
+    // the other end of it, so the scheduling class has to say so.
+    expect(plist).toContain("<key>ProcessType</key>");
+    expect(plist).toContain("<string>Interactive</string>");
+    expect(plist).not.toContain("<string>Background</string>");
+  });
+
   test("the working directory outlives the checkout too", async () => {
     const h = harness();
     installBinary(h.home);
