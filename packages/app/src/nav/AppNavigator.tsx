@@ -67,8 +67,16 @@ export interface ShellSurfaces {
    */
   canInvite: boolean;
   fleet: () => JSX.Element;
-  session: (agentId: AgentId) => JSX.Element;
-  terminal: (sessionId: string) => JSX.Element;
+  /**
+   * The two detail surfaces take the way back rather than closing themselves.
+   * There is one way out of a pushed route and it is the stack: the screen's own
+   * control, the swipe, and Android back then all pop, and the listener below
+   * tells the model once. A screen that cleared the model directly instead would
+   * leave the swipe and the hardware button on a different path from its own
+   * button, which is how one of the three ends up not working.
+   */
+  session: (agentId: AgentId, back: () => void) => JSX.Element;
+  terminal: (sessionId: string, back: () => void) => JSX.Element;
   connections: (back: () => void, invite: () => void) => JSX.Element;
   invite: (done: () => void) => JSX.Element;
 }
@@ -189,12 +197,12 @@ function FleetRoute(): JSX.Element {
   return useSurfaces().fleet();
 }
 
-function SessionRoute({ route }: NativeStackScreenProps<ShellParamList, "session">): JSX.Element {
-  return useSurfaces().session(route.params.agentId);
+function SessionRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "session">): JSX.Element {
+  return useSurfaces().session(route.params.agentId, () => navigation.goBack());
 }
 
-function TerminalRoute({ route }: NativeStackScreenProps<ShellParamList, "terminal">): JSX.Element {
-  return useSurfaces().terminal(route.params.sessionId);
+function TerminalRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "terminal">): JSX.Element {
+  return useSurfaces().terminal(route.params.sessionId, () => navigation.goBack());
 }
 
 function ConnectionsRoute({ navigation }: NativeStackScreenProps<ShellParamList, "connections">): JSX.Element {

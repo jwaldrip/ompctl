@@ -134,7 +134,7 @@ export function Console({
     current.actions.openSession(openSessionTarget(current.state, session.id));
   }, []);
 
-  const log = (agentId: AgentId): JSX.Element => {
+  const log = (agentId: AgentId, back: () => void): JSX.Element => {
     const agent = state.agents.find(candidate => candidate.id === agentId);
     // The route can outlive its agent by one frame: a roster refresh that drops
     // an agent clears the selection, and the pop happens in the same commit's
@@ -163,7 +163,7 @@ export function Console({
         refusal={state.refusal}
         spoken={state.spoken.get(agent.id)?.text ?? null}
         fleetClearances={clearances}
-        onBack={actions.back}
+        onBack={back}
         onSubmit={text => {
           actions.prompt(agent.id, text);
         }}
@@ -193,7 +193,7 @@ export function Console({
   // A terminal session's prompt surface is not a variant of the log: there is
   // no transcript to attach to. Keyed like the log so switching rows builds a
   // fresh composer instead of carrying one row's draft into another's.
-  const terminal = (sessionId: string): JSX.Element => {
+  const terminal = (sessionId: string, back: () => void): JSX.Element => {
     const row = state.sessionIndex.find(candidate => candidate.id === sessionId);
     return (
       <TerminalSessionScreen
@@ -202,7 +202,7 @@ export function Console({
         cwd={row?.cwd ?? row?.flattenedDir ?? ""}
         tui={tuiSessionFor(state, sessionId)}
         connection={state.connection}
-        onBack={actions.back}
+        onBack={back}
         onSubmit={text => {
           actions.promptTui(sessionId, text);
         }}
@@ -232,7 +232,7 @@ export function Console({
               onUnarchive={onUnarchive}
             />
           </View>
-          {split ? <View style={styles.splitDetail}>{splitDetail(state, log, terminal)}</View> : null}
+          {split ? <View style={styles.splitDetail}>{splitDetail(state, log, terminal, actions.back)}</View> : null}
         </View>
       </SafeScreen>
     ),
@@ -269,13 +269,18 @@ function selectionOf(state: ConsoleState): ShellSelection | null {
   return null;
 }
 
+/**
+ * The detail pane on a tablet, where there is no pushed route to pop: the model
+ * is the way back, because the list it would return to never left the screen.
+ */
 function splitDetail(
   state: ConsoleState,
-  log: (agentId: AgentId) => JSX.Element,
-  terminal: (sessionId: string) => JSX.Element,
+  log: (agentId: AgentId, back: () => void) => JSX.Element,
+  terminal: (sessionId: string, back: () => void) => JSX.Element,
+  back: () => void,
 ): JSX.Element | null {
-  if (state.selected !== null) return log(state.selected);
-  if (state.selectedTui !== null) return terminal(state.selectedTui);
+  if (state.selected !== null) return log(state.selected, back);
+  if (state.selectedTui !== null) return terminal(state.selectedTui, back);
   return null;
 }
 
