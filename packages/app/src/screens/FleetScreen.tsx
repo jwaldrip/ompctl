@@ -43,6 +43,24 @@ export interface FleetScreenProps {
   now?: number;
 }
 
+/**
+ * Whether this row's open lands on the agent transcript (SessionScreen,
+ * composer and all) rather than the terminal prompt surface. Mirrors the
+ * ladder in `console/state.ts`: `live-ompd` attaches to its agent and
+ * `dormant` rides the resume claim, both of which end on SessionScreen,
+ * while `live-tui` is routed to TerminalSessionScreen, a screen with no
+ * composer to drive. That distinction matters here because the status sort
+ * puts live-tui rows FIRST (`STATUS_SEVERITY` ranks it 0 and `DEFAULT_SORT`
+ * is status ascending), so the naive first row is exactly the row the path
+ * scenario cannot use: it would open a terminal and then fail hunting for a
+ * composer that screen never has. Archived rows are excluded too: they ride
+ * the same resume claim, but the daemon's verifier refuses them, so their
+ * open never reaches a transcript either.
+ */
+function opensAgentTranscript(session: BrowserSession): boolean {
+  return session.status === "live-ompd" || session.status === "dormant";
+}
+
 export function FleetScreen({
   browser,
   onSort,
@@ -55,6 +73,27 @@ export function FleetScreen({
   now,
 }: FleetScreenProps): JSX.Element {
   const view = useMemo(() => browserView(browser), [browser]);
+  // Hoisted so the path marker below and the list read one traversal: the
+  // rendered order is sections in order, collapsed groups contributing no
+  // rows. Computing it a second, slightly different way is how a marker ends
+  // up on a row a person cannot actually see.
+  const sections = useMemo(
+    () =>
+      view.groups.map(group => ({
+        cwd: group.cwd,
+        group,
+        data: browser.collapsedGroups.has(group.cwd) ? [] : group.sessions,
+      })),
+    [view, browser.collapsedGroups],
+  );
+
+  // The one row the committed path scenario opens by name, in the order the
+  // active list actually draws. Undefined when no visible row opens a
+  // transcript, and then no row carries the marker: the scenario failing to
+  // find it is the honest result, not a bug to paper over.
+  const rendered = browser.grouped ? sections.flatMap(section => section.data) : view.flatSessions;
+  const firstPathId = rendered.find(opensAgentTranscript)?.id;
+
   // Virtualization's default `initialNumToRender` (10) is tuned for a feed a
   // person scrolls; a fleet browser is closer to a directory listing, and the
   // contract's own machine has 305 sessions across 93 groups. Rendering the
@@ -70,13 +109,15 @@ export function FleetScreen({
   return (
     <SafeScreen testID="fleet">
       <View style={styles.head}>
-        <Glyph name="bay" size={16} color={ink.plain} />
-        <Display heading testID="fleet-title">
-          Sessions
-        </Display>
-        <Kicker color={ink.muted} testID="fleet-count">
-          {`${view.visibleCount} ${view.visibleCount === 1 ? "session" : "sessions"}`}
-        </Kicker>
+        <View style={styles.lead}>
+          <Glyph name="bay" size={16} color={ink.plain} />
+          <Display heading testID="fleet-title">
+            Sessions
+          </Display>
+          <Kicker color={ink.muted} testID="fleet-count">
+            {`${view.visibleCount} ${view.visibleCount === 1 ? "session" : "sessions"}`}
+          </Kicker>
+        </View>
         <Pressable
           testID="grouped-toggle"
           accessibilityRole="button"
@@ -113,11 +154,7 @@ export function FleetScreen({
       {browser.grouped ? (
         <SectionList
           testID="fleet-list"
-          sections={view.groups.map(group => ({
-            cwd: group.cwd,
-            group,
-            data: browser.collapsedGroups.has(group.cwd) ? [] : group.sessions,
-          }))}
+          sections={sections}
           keyExtractor={(session: BrowserSession) => session.id}
           renderSectionHeader={({ section }) => (
             <GroupHeader
@@ -130,6 +167,7 @@ export function FleetScreen({
             <SessionRow
               session={item}
               showCwd={false}
+              firstPathOpen={item.id === firstPathId}
               onOpen={onOpen}
               onArchive={onArchive}
               onUnarchive={onUnarchive}
@@ -149,6 +187,7 @@ export function FleetScreen({
             <SessionRow
               session={item}
               showCwd
+              firstPathOpen={item.id === firstPathId}
               onOpen={onOpen}
               onArchive={onArchive}
               onUnarchive={onUnarchive}
@@ -183,6 +222,17 @@ const styles = StyleSheet.create({
     borderBottomWidth: stroke.heavy,
     borderBottomColor: ground.edge,
   },
+  // The title block absorbs the header's slack, so the two controls after it
+  // sit at the trailing content edge, flush with the action columns of the
+  // rows below. With this group owning the slack, the head's gap is the only
+  // spacing mechanism left in the strip, which is why `toggle` adds no margin
+  // of its own.
+  lead: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+  },
   toggle: {
     flexDirection: "row",
     alignItems: "center",
@@ -190,7 +240,6 @@ const styles = StyleSheet.create({
     width: TOUCH_TARGET,
     height: TOUCH_TARGET,
     justifyContent: "center",
-    marginLeft: space.tight,
   },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },
 });

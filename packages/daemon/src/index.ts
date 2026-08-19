@@ -16,6 +16,7 @@ export * from "./provisioner/index.ts";
 export type { CommandResult, CommandRunner } from "./provisioner/types.ts";
 export * from "./routines/index.ts";
 export * from "./supervisor.ts";
+export * from "./tunnel/sole-daemon.ts";
 export type {
   CommandResult as VoiceCommandResult,
   CommandRunner as VoiceCommandRunner,

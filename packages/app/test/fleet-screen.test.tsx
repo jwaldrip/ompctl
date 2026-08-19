@@ -269,3 +269,73 @@ describe("renders at a 390px phone width without a fixed width past it", () => {
     expect(html).toContain("text-overflow:ellipsis");
   });
 });
+
+// ---------------------------------------------------------------------------
+// The header's controls belong at the screen's trailing content edge
+// ---------------------------------------------------------------------------
+
+/**
+ * `render()` concatenates markup and the atomic CSS it uses, so a test can
+ * read a specific element's classes out of the markup and then check what
+ * those classes declare, the same discipline the 390px suite above applies to
+ * widths. Returns the full opening tag so attribute order never matters.
+ */
+function openingTagAt(markup: string, index: number): string {
+  const start = markup.lastIndexOf("<div", index);
+  return start === -1 ? "" : markup.slice(start, markup.indexOf(">", start) + 1);
+}
+
+/**
+ * RNW writes an element's atomic classes as one space-separated attribute;
+ * this is the extraction the two tests below share, kept as a named step
+ * because the empty-class fallback is easy to get wrong inline.
+ */
+function classListOf(tag: string): string[] {
+  return (tag.match(/class="([^"]*)"/)?.[1] ?? "").split(/\s+/).filter(name => name.length > 0);
+}
+
+/**
+ * The subset of the sheet whose selector addresses one of these classes,
+ * joined for regex matching. Scopes every assertion to the element under
+ * test, so a margin or flex elsewhere in the tree cannot satisfy it.
+ */
+function rulesDeclaring(css: string, classes: readonly string[]): string {
+  return css
+    .split("\n")
+    .filter(rule => classes.some(name => hasClassSelector(rule, name)))
+    .join("\n");
+}
+
+describe("the header's controls sit at the trailing content edge", () => {
+  const page = render(browserState());
+  const sheetStart = page.indexOf("\n<style>");
+  const markup = page.slice(0, sheetStart);
+  const css = page.slice(sheetStart);
+
+  test("the title group flexes to absorb the slack, not a spacer's worth of it", () => {
+    // The wrapper View around the title is the last div opened before the
+    // title's own tag; it must be the element carrying flex, or the toggles
+    // after it drift back toward the count the way the phone screenshot
+    // showed.
+    const leadTag = openingTagAt(markup, markup.indexOf('data-testid="fleet-title"'));
+    const leadClasses = classListOf(leadTag);
+    expect(leadClasses.length).toBeGreaterThan(0);
+    // RNW compiles `flex: 1` differently across versions: the grow/shrink/
+    // basis shorthand, atomized longhand, or the bare `flex:1` this repo's
+    // RNW actually emits. The pin is the contract, this group takes the
+    // remaining width, not one compiler's spelling of it.
+    expect(rulesDeclaring(css, leadClasses)).toMatch(/flex:\s*1\s+1\s+0%|flex-grow:\s*1|flex:\s*1\s*;/);
+  });
+
+  test("the toggles add no margin of their own; the head's gap spaces the strip", () => {
+    // Both toggles share `styles.toggle`, so whichever rule set each carries,
+    // none of it may declare a margin: a leftover marginLeft here would fight
+    // the right alignment the title group's flex just bought.
+    for (const id of ["grouped-toggle", "archived-toggle"]) {
+      const tag = markup.match(new RegExp(`<[^>]*data-testid="${id}"[^>]*>`))?.[0] ?? "";
+      const classes = classListOf(tag);
+      expect(classes.length).toBeGreaterThan(0);
+      expect(rulesDeclaring(css, classes)).not.toMatch(/margin-left/);
+    }
+  });
+});

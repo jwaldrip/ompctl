@@ -22,7 +22,7 @@ import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
-import { browserSessionsOf, fleetClearances, openSessionTarget, sessionFor, tuiSessionFor } from "./state.ts";
+import { agentFor, browserSessionsOf, fleetClearances, openSessionTarget, sessionFor, tuiSessionFor } from "./state.ts";
 import { useConsole } from "./useConsole.ts";
 import { useHardwareBack } from "./useHardwareBack.ts";
 export function Console({
@@ -46,7 +46,10 @@ export function Console({
   }, [state]);
 
   const clearances = useMemo(() => fleetClearances(state), [state]);
-  const agent = state.agents.find(candidate => candidate.id === state.selected) ?? null;
+  // `agentFor`, not a raw roster lookup: a resumed session starts streaming
+  // before any roster frame lists its agent, and the log it is streaming must
+  // be on screen rather than waiting for an unrelated roster change.
+  const agent = state.selected === null ? null : agentFor(state, state.selected);
 
   // Wide enough for both and nothing open is a hole rather than a choice, so
   // the top strip is taken once. Only once: an operator who backed out of a
@@ -179,7 +182,16 @@ export function Console({
       ) : (
         (detail ?? bay)
       )}
-      {state.notice === null ? null : <Toast message={state.notice} onDismiss={actions.dismiss} />}
+      {state.notice === null ? null : (
+        // A link notice is the connection's own claim, and it reports under
+        // its own testID so a check can demand the screen carry no
+        // connectivity notice once the link is demonstrably healthy.
+        <Toast
+          message={state.notice}
+          onDismiss={actions.dismiss}
+          testID={state.noticeAboutLink ? "toast-link" : "toast"}
+        />
+      )}
     </View>
   );
 }

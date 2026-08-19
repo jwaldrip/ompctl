@@ -75,10 +75,14 @@ function EntryRow({
       return (
         <View
           style={styles.row}
-          testID={`entry-user-${entry.id}`}
-          // XCUITest finds rows by identifier and reads the prompt from the
-          // accessibility label. Without this, a nested Body Text is often
-          // invisible to the query tree even though it is on screen.
+          // Constant, like the assistant row below: both e2e drivers match
+          // testIDs exactly, so a check enumerates the rows carrying this id
+          // and matches the accessibility label, whose speaker prefix keeps
+          // the sent-message assertion on the operator. List identity already
+          // comes from keyExtractor. This is also the pair a round-trip check
+          // asserts together: the sent prompt beside the reply that answered
+          // it, which is what proves history landed rather than a lone tail.
+          testID="entry-user"
           accessible
           accessibilityLabel={`you: ${entry.text}`}
         >
@@ -93,7 +97,12 @@ function EntryRow({
       return (
         <View
           style={styles.row}
-          testID={`entry-assistant-${entry.id}`}
+          // Constant, not per-entry: a feature file cannot interpolate an
+          // entry id and both e2e drivers match testIDs exactly, so the path
+          // scenario enumerates the rows carrying this id and matches the
+          // label, whose speaker prefix keeps the reply assertion on the
+          // agent. List identity already comes from keyExtractor above.
+          testID="entry-assistant"
           accessible
           accessibilityLabel={`${entry.thought ? "thinking" : "agent"}: ${entry.text}`}
         >

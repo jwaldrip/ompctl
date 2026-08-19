@@ -52,7 +52,7 @@ describe("composer submit", () => {
       root.render(<Transcript entries={session.entries} canApprove onDecide={() => {}} spoken={null} />);
     });
 
-    const row = host.querySelector('[data-testid="entry-user-prompt-0"]');
+    const row = host.querySelector('[data-testid="entry-user"]');
     expect(row).not.toBeNull();
     const label = row?.getAttribute("aria-label") ?? row?.getAttribute("accessibilityLabel") ?? row?.textContent ?? "";
     expect(label).toContain("pineapple-nonce-xyz");

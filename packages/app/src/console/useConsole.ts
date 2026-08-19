@@ -84,14 +84,13 @@ export function useConsole(
   const client = clientRef.current;
 
   /**
-   * Which agents this device has already asked for a full transcript.
-   *
-   * A ref rather than a read of the reducer's state: `attach` is called from
-   * the action, which cannot see the state it is about to produce, and asking
-   * for a full backfill twice replays a log that is already on screen. Per
-   * hook instance, so unpairing and pairing again starts clean.
+   * The latest reducer state, read by actions that must decide against what
+   * is on screen now rather than what they are about to produce. Kept in a
+   * ref and assigned during render so an event handler between commits still
+   * sees the newest state.
    */
-  const backfilled = useRef(new Set<AgentId>());
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   /**
    * Whether this pairing has already asked for the machine's session index.
@@ -126,21 +125,23 @@ export function useConsole(
   );
 
   /**
-   * Select and attach in one step, the way every open lands: a strip this
-   * device has never seen asks for the whole transcript, because a console
-   * opened mid-session should show the session. After that the client's own
-   * watermark resumes, so revisiting a strip never replays a log that is
-   * already on screen.
+   * Select and attach in one step, the way every open lands. The attach shape
+   * is derived from state, not from a memo of past attaches: a session this
+   * device holds no watermark for asks for the whole history with
+   * `sinceSeq: 0`, because a console opened mid-session should show the
+   * session, while a watermark in state means the log is already on screen
+   * and the client resumes from its own watermark. Deriving it is the repair
+   * for the session the roster once tore down: the watermark went with it, so
+   * the next open replays the full transcript instead of silently tailing
+   * only the replies that arrive after it.
    */
   const selectAgent = useCallback(
     (agentId: AgentId): void => {
       dispatch({ t: "select", agentId });
-      client.attach(agentId, backfilled.current.has(agentId) ? {} : { sinceSeq: 0 });
-      backfilled.current.add(agentId);
+      client.attach(agentId, stateRef.current.watermarks.has(agentId) ? {} : { sinceSeq: 0 });
     },
     [client],
   );
-
   useEffect(() => {
     const offs = [
       client.on("status", event => {

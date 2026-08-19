@@ -31,6 +31,8 @@ interface DetoxGlobals {
     clearText(): Promise<void>;
     typeText(text: string): Promise<void>;
     getAttributes(): Promise<{ text?: string; label?: string }>;
+    scroll(pixels: number, direction: "up" | "down" | "left" | "right"): Promise<void>;
+    atIndex(index: number): { getAttributes(): Promise<{ text?: string; label?: string }> };
   };
   by: { id(id: string): unknown };
   waitFor(element: unknown): { toExist(): { withTimeout(ms: number): Promise<void> } };
@@ -139,6 +141,34 @@ export class DetoxClient implements E2EClient {
     const g = globals();
     const attrs = await g.element(g.by.id(testId)).getAttributes();
     return (attrs.text ?? attrs.label ?? "").trim();
+  }
+
+  async scrollToEnd(testId: string): Promise<void> {
+    await this.waitFor(testId);
+    const g = globals();
+    // One deliberately oversized distance rather than a measured one: both
+    // platforms clamp a scroll at the content edge, so this is how a driver
+    // says "the end" without learning the content height, which neither
+    // platform exposes portably.
+    await g.element(g.by.id(testId)).scroll(100_000, "down");
+  }
+
+  async labelsOf(testId: string): Promise<string[]> {
+    const g = globals();
+    const labels: string[] = [];
+    // Detox has no way to enumerate or count matches. Probing successive
+    // indexes is the honest equivalent: the first index that fails to resolve
+    // is the end of the matches, and only mounted rows resolve at all, which
+    // is why a caller hunting the end of a long list scrolls there first.
+    for (let index = 0; index < 1000; index += 1) {
+      try {
+        const attrs = await g.element(g.by.id(testId)).atIndex(index).getAttributes();
+        labels.push(attrs.text ?? attrs.label ?? "");
+      } catch {
+        return labels;
+      }
+    }
+    return labels;
   }
 
   /**

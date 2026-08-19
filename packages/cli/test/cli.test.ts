@@ -224,7 +224,7 @@ describe("finding the daemon", () => {
 });
 
 describe("start", () => {
-  test("a second start finds the published daemon and does not launch another", async () => {
+  test("a second start refuses beside the published daemon instead of reporting success", async () => {
     const h = harness({ env: { OMPD_URL: undefined } });
     h.setRoutes({
       "GET /v1/health": { body: { ok: true, version: "0.1.0", homeId: homeIdFor(h.home) } },
@@ -234,22 +234,30 @@ describe("start", () => {
 
     // `--port 0` is the case that has no predictable address, so the published
     // endpoint is the only thing that can answer "is one already running".
-    expect(await run(["start", "--port", "0"], h.ctx)).toBe(0);
-    expect(h.stdout()).toContain("already listening at http://127.0.0.1:54366");
+    // The exit is non-zero on purpose: an exit-0 "already listening" reads as
+    // success, and success is what sends a human off to hand-start another
+    // daemon beside the one that is already serving.
+    expect(await run(["start", "--port", "0"], h.ctx)).toBe(1);
+    expect(h.stderr()).toContain("already running at http://127.0.0.1:54366");
+    // Ownership and the way to stop it, or the message does not do its job.
+    expect(h.stderr()).toContain("the LaunchAgent ai.ompctl already owns this daemon");
+    expect(h.stderr()).toContain("launchctl bootout gui/$(id -u)/ai.ompctl");
+    expect(h.stdout()).not.toContain("already listening");
     // Still there. Deleting it would strand the live daemon, which every
     // other command finds through this file.
     expect(readFileSync(endpoint, "utf8").trim()).toBe("http://127.0.0.1:54366");
   });
 
-  test("a start on the configured port finds a daemon that published nothing", async () => {
+  test("a start on the configured port refuses beside a daemon that published nothing", async () => {
     const h = harness({ env: { OMPD_URL: undefined } });
     h.setRoutes({
       "GET /v1/health": { body: { ok: true, version: "0.1.0", homeId: homeIdFor(h.home) } },
     });
     writeFileSync(join(h.home, "config.json"), JSON.stringify({ port: 7777 }));
 
-    expect(await run(["start"], h.ctx)).toBe(0);
-    expect(h.stdout()).toContain("already listening at http://127.0.0.1:7777");
+    expect(await run(["start"], h.ctx)).toBe(1);
+    expect(h.stderr()).toContain("already running at http://127.0.0.1:7777");
+    expect(h.stderr()).toContain("launchctl bootout gui/$(id -u)/ai.ompctl");
   });
 
   test("a foreign daemon on the port is refused, not adopted", async () => {

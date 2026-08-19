@@ -123,11 +123,11 @@ final class PairingUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 10), "agent composer did not appear")
 
         let userRows = app.otherElements.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "entry-user-")
+            NSPredicate(format: "identifier BEGINSWITH %@", "entry-user")
         )
         let userCountBeforePrompt = userRows.count
         let assistantRows = app.otherElements.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "entry-assistant-")
+            NSPredicate(format: "identifier BEGINSWITH %@", "entry-assistant")
         )
         let assistantCountBeforePrompt = assistantRows.count
 
@@ -146,13 +146,13 @@ final class PairingUITests: XCTestCase {
         }
 
         // Optimistic user entries carry accessibilityLabel = prompt text and
-        // testID entry-user-*. Either surface is enough; both must exist once
+        // testID entry-user. Either surface is enough; both must exist once
         // Send lands so a dropped onPress cannot hide behind a descendant scan.
         let promptByLabel = app.otherElements
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-user-", nonce))
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-user", nonce))
             .firstMatch
         let promptByAny = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-user-", nonce))
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-user", nonce))
             .firstMatch
         let promptSubmitted = promptByLabel.waitForExistence(timeout: 15)
             || promptByAny.waitForExistence(timeout: 5)
@@ -164,10 +164,10 @@ final class PairingUITests: XCTestCase {
         }
 
         let assistantByLabel = app.otherElements
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-assistant-", nonce))
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-assistant", nonce))
             .firstMatch
         let assistantByAny = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-assistant-", nonce))
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-assistant", nonce))
             .firstMatch
         XCTAssertTrue(
             assistantByLabel.waitForExistence(timeout: 90) || assistantByAny.waitForExistence(timeout: 5),

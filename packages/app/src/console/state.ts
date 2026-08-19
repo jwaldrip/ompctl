@@ -82,6 +82,23 @@ export interface PendingWebViewAction {
  */
 const SCOPE_CODES: Record<string, true> = { forbidden: true, scope: true, unauthorized: true };
 
+/**
+ * Error codes the client itself emits when the link, not the daemon's
+ * judgement, broke: the socket errored, never opened, went silent past the
+ * pong deadline, or swallowed a send. A notice carrying one of these is a
+ * claim about the connection, and a connection that has demonstrably
+ * re-established itself has disproved the claim, so recovery clears what a
+ * tap otherwise would. The daemon's own codes stay out, because a reconnect
+ * says nothing about them: "prompt rejected" is still true after one.
+ */
+const LINK_CODES: Record<string, true> = {
+  socket: true,
+  socket_open: true,
+  timeout: true,
+  offline: true,
+  send: true,
+};
+
 export interface ConsoleState {
   readonly agents: readonly Agent[];
   readonly sessions: ReadonlyMap<AgentId, SessionState>;
@@ -97,6 +114,17 @@ export interface ConsoleState {
   readonly sessionIndex: readonly SessionSummary[];
   /** Highest `seq` seen per agent, for the readout and for `say` de-duplication. */
   readonly watermarks: ReadonlyMap<AgentId, number>;
+  /**
+   * Consecutive roster snapshots that lacked an agent while its session lived.
+   *
+   * The roster arrives as snapshots over a relay that guarantees no ordering
+   * against `session_opened` or update frames, so one snapshot missing an
+   * agent proves nothing: it is routinely older than the resume that just
+   * created the agent. Deletion waits for corroborated absence, and any
+   * update or selection resets the streak, because both are newer evidence
+   * the agent exists than any snapshot in flight.
+   */
+  readonly rosterMisses: ReadonlyMap<AgentId, number>;
   /** Latest spoken summary per agent. Text only; this build has no voice. */
   readonly spoken: ReadonlyMap<AgentId, { seq: number; text: string }>;
   readonly connection: ConnectionState;
@@ -119,8 +147,19 @@ export interface ConsoleState {
   readonly canApprove: boolean;
   /** Why approval is refused, once the daemon has actually refused it. */
   readonly refusal: string | undefined;
-  /** Transient message for the operator. Cleared by `dismiss`. */
+  /**
+   * Transient message for the operator. Cleared by `dismiss`, or by recovery
+   * when the notice is about the link rather than an operator action.
+   */
   readonly notice: string | null;
+  /**
+   * Whether `notice` describes the link. A link notice is a claim about the
+   * connection, so a connection reaching `connected` again retires it: a
+   * healed link must not keep wearing an error, and a broken one never
+   * reaches `connected` to clear it. Every other notice stays put through a
+   * reconnect, which says nothing about a clearance or a refusal.
+   */
+  readonly noticeAboutLink: boolean;
   /** Set once the daemon has confirmed the token is dead. Terminal. */
   readonly unauthorized: string | null;
 }
@@ -166,6 +205,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     sessions: new Map(),
     sessionIndex: [],
     watermarks: new Map(),
+    rosterMisses: new Map(),
     spoken: new Map(),
     connection: "connecting",
     attempt: 0,
@@ -179,6 +219,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     canApprove: scopes.length === 0 || scopes.includes(SCOPE_APPROVE),
     refusal: undefined,
     notice: null,
+    noticeAboutLink: false,
     unauthorized: null,
   };
 }
@@ -219,13 +260,23 @@ export type ConsoleEvent =
  */
 export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
   switch (event.t) {
-    case "status":
-      return {
+    case "status": {
+      const next = {
         ...state,
         connection: event.event.state,
         attempt: event.event.attempt,
         delayMs: event.event.delayMs,
       };
+      // `connected` is the client reporting a completed handshake, the same
+      // proof the status readout trusts, so it also retires a link notice:
+      // the condition the notice described is over. No timer does this and
+      // nothing else may, because a link that never recovers never sees this
+      // state, so its notice stays on screen exactly as long as the break does.
+      if (event.event.state === "connected" && state.noticeAboutLink) {
+        return { ...next, notice: null, noticeAboutLink: false };
+      }
+      return next;
+    }
 
     case "agents":
       return applyAgents(state, event.event.agents);
@@ -237,15 +288,18 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       const { agentId, seq, update } = event.event;
       const watermarks = new Map(state.watermarks);
       watermarks.set(agentId, seq);
-      return { ...withSession(state, agentId, session => reduce(session, update)), watermarks };
+      // An update frame is newer evidence that the agent exists than any
+      // roster snapshot in flight over the relay, so a session still receiving
+      // updates can never be reaped by a stale roster.
+      const rosterMisses = clearMiss(state.rosterMisses, agentId);
+      return { ...withSession(state, agentId, session => reduce(session, update)), watermarks, rosterMisses };
     }
-
     case "approval": {
       const { agentId, requestId, tool, title, input } = event.event;
       const next = withSession(state, agentId, session => appendApproval(session, { requestId, tool, title, input }));
       if (agentId === state.selected) return next;
       const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
-      return { ...next, notice: `${name} needs a clearance.` };
+      return { ...next, notice: `${name} needs a clearance.`, noticeAboutLink: false };
     }
 
     case "plan_review": {
@@ -253,7 +307,7 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       const next = withSession(state, agentId, session => setPlanReview(session, { requestId, message, choices }));
       if (agentId === state.selected) return next;
       const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
-      return { ...next, notice: `${name} needs a plan review.` };
+      return { ...next, notice: `${name} needs a plan review.`, noticeAboutLink: false };
     }
 
     case "error": {
@@ -276,9 +330,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
           canApprove: false,
           refusal: `${message}. Sign this from a device holding the approve scope.`,
           notice: message,
+          noticeAboutLink: false,
         };
       }
-      return { ...state, notice: message };
+      // The client's own transport codes describe the link; the daemon's
+      // describe a request. Only the first kind may be cleared by recovery.
+      const aboutLink = code !== undefined && LINK_CODES[code] === true;
+      return { ...state, notice: message, noticeAboutLink: aboutLink };
     }
 
     case "say":
@@ -296,8 +354,17 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
           ? state
           : { ...state, selected: null, selectedTui: null };
       }
-      if (state.selected === event.agentId && state.selectedTui === null) return state;
-      return { ...state, selected: event.agentId, selectedTui: null };
+      // Selecting an agent rides the daemon's `session_opened` answer or a
+      // roster row, and both are newer than a snapshot still in flight over
+      // the relay, so the choice also retires any pending absence streak: a
+      // resume the daemon just confirmed must not be undone by a roster
+      // photograph taken before the resumed agent was registered. A double
+      // tap answers twice, so the re-select retires the streak too.
+      const rosterMisses = clearMiss(state.rosterMisses, event.agentId);
+      if (state.selected === event.agentId && state.selectedTui === null) {
+        return rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses };
+      }
+      return { ...state, selected: event.agentId, selectedTui: null, rosterMisses };
     }
 
     case "tui_select": {
@@ -337,7 +404,7 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     }
 
     case "dismiss":
-      return state.notice === null ? state : { ...state, notice: null };
+      return state.notice === null ? state : { ...state, notice: null, noticeAboutLink: false };
 
     default:
       return state;
@@ -345,10 +412,24 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 }
 
 /**
- * The roster is the authority on which agents exist. An agent that has left it
- * is never coming back on that id, so its transcript goes with it: keeping one
- * would grow without bound across a long-running session and show a log for
- * something that no longer exists.
+ * The roster is the authority on which agents exist, but a snapshot is a
+ * photograph, not a verdict. Frames cross the hub relay with no ordering
+ * guarantee against each other, so the snapshot that lands after a resume was
+ * routinely taken before the resumed agent was registered, and the daemon's
+ * roster pushes only reach sockets that already hold an attachment, which a
+ * phone opening its first session is not. Deleting a session on one absence
+ * would tear down the very session the operator just opened, which is the
+ * dead end a dormant tap used to land on.
+ *
+ * So an absent agent is deleted only on corroborated absence: a second
+ * consecutive snapshot without it, or a single one after the previous roster
+ * showed it stopped or failed. A terminal agent is never coming back on that
+ * id, and the daemon keeps terminal agents listed while their transcript is
+ * retained, so its disappearance from a later snapshot is the reap. Updates
+ * and selections reset the streak elsewhere in this file, which is what makes
+ * the tolerance safe in both directions: an agent still streaming can never
+ * be reaped by a stale roster, and an agent that has really gone silent is
+ * cleaned up once two snapshots agree it is gone.
  */
 function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleState {
   const before = new Map(state.agents.map(agent => [agent.id, agent]));
@@ -367,16 +448,29 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
   const watermarks = new Map(state.watermarks);
   const spoken = new Map(state.spoken);
   const pendingWebViewActions = new Map(state.pendingWebViewActions);
+  const rosterMisses = new Map(state.rosterMisses);
+  let lost = false;
   for (const agentId of [...sessions.keys()]) {
-    if (live.has(agentId)) continue;
-    sessions.delete(agentId);
-    watermarks.delete(agentId);
-    spoken.delete(agentId);
-    pendingWebViewActions.delete(agentId);
+    if (live.has(agentId)) {
+      rosterMisses.delete(agentId);
+      continue;
+    }
+    const misses = (rosterMisses.get(agentId) ?? 0) + 1;
+    const previous = before.get(agentId);
+    const wasTerminal = previous !== undefined && TERMINAL_AGENT_STATES.includes(previous.state);
+    if (misses >= 2 || wasTerminal) {
+      sessions.delete(agentId);
+      watermarks.delete(agentId);
+      spoken.delete(agentId);
+      pendingWebViewActions.delete(agentId);
+      rosterMisses.delete(agentId);
+      if (state.selected === agentId) lost = true;
+      continue;
+    }
+    rosterMisses.set(agentId, misses);
   }
 
-  const selected = state.selected !== null && live.has(state.selected) ? state.selected : null;
-  const lost = state.selected !== null && selected === null;
+  const selected = lost ? null : state.selected;
 
   return {
     ...state,
@@ -385,8 +479,10 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
     watermarks,
     spoken,
     pendingWebViewActions,
+    rosterMisses,
     selected,
     notice: lost ? "That agent is gone." : state.notice,
+    noticeAboutLink: lost ? false : state.noticeAboutLink,
   };
 }
 
@@ -405,12 +501,24 @@ function applySessions(state: ConsoleState, sessions: readonly SessionSummary[])
  * from, so a replay after a reconnect cannot make the app repeat a summary it
  * has already shown, and a stale frame cannot overwrite a newer one.
  */
+
 function applySay(state: ConsoleState, event: SayEvent): ConsoleState {
   const previous = state.spoken.get(event.agentId);
   if (previous !== undefined && event.seq <= previous.seq) return state;
   const spoken = new Map(state.spoken);
   spoken.set(event.agentId, { seq: event.seq, text: event.text });
   return { ...state, spoken };
+}
+
+/**
+ * Drops one agent's absence streak. Allocates only when there is a streak to
+ * drop, so the per-update reset costs nothing on the common path.
+ */
+function clearMiss(misses: ReadonlyMap<AgentId, number>, agentId: AgentId): ReadonlyMap<AgentId, number> {
+  if (!misses.has(agentId)) return misses;
+  const next = new Map(misses);
+  next.delete(agentId);
+  return next;
 }
 
 function withSession(
@@ -465,6 +573,41 @@ function withTuiSession(
 
 export function sessionFor(state: ConsoleState, agentId: AgentId): SessionState {
   return state.sessions.get(agentId) ?? EMPTY_SESSION;
+}
+
+/**
+ * The agent a screen should render for an id: the roster's entry when it has
+ * one, and otherwise a stand-in for an agent the daemon has vouched for but
+ * the roster has not listed yet.
+ *
+ * That gap is the dormant open. The daemon answers a resume with
+ * `session_opened` and streams the replay, but its roster pushes only reach
+ * sockets that already held an attachment, so the first socket to open a
+ * session learns the new agent only from the next unrelated roster change or
+ * a reconnect. Rendering nothing until then reads as a tap that did nothing;
+ * rendering the stand-in reads as the session, which is what the updates
+ * arriving into `sessions` already prove it is. The stand-in is built only
+ * from what the session itself reported (title, cwd, updatedAt) plus an
+ * honest idle state, never an invented name, and the first roster frame that
+ * lists the agent replaces it whole.
+ */
+export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
+  const roster = state.agents.find(agent => agent.id === agentId);
+  if (roster !== undefined) return roster;
+  const session = state.sessions.get(agentId);
+  if (session === undefined) return null;
+  return {
+    id: agentId,
+    name: session.info.title ?? "Session",
+    state: "idle",
+    // Inert: nothing renders host data on a session screen, and the roster
+    // entry replaces this whole object on arrival.
+    host: { kind: "local", id: "0", spec: { kind: "local" } },
+    cwd: session.info.cwd ?? "",
+    createdAt: "",
+    lastActiveAt: session.info.updatedAt ?? "",
+    labels: {},
+  };
 }
 
 /** Hints about one terminal session. A row never prompted is not missing, it is blank. */

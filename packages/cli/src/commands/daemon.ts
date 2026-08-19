@@ -10,7 +10,15 @@
 import { existsSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describeEndpoint, type EndpointOffer } from "@ompd/core/pairing";
-import { endpointPath, ensureHome, homeIdFor, loadConfig, Ompd, type OmpdOptions } from "@ompd/daemon";
+import {
+  alreadyRunningLines,
+  endpointPath,
+  ensureHome,
+  homeIdFor,
+  loadConfig,
+  Ompd,
+  type OmpdOptions,
+} from "@ompd/daemon";
 import type { Command } from "../args.ts";
 import { api, type CliContext, readEndpoint, resolveBaseUrl, resolveToken, TOKEN_GUIDANCE } from "../client.ts";
 import { duration } from "../format.ts";
@@ -189,8 +197,14 @@ async function backgroundStart(
   if (published !== null) {
     const live = await probe(ctx, published);
     if (live.kind === "ours") {
-      ctx.out(`ompd is already listening at ${published}`);
-      return 0;
+      // The daemon is up and owned. Reporting this as success is what sent a
+      // human to hand-start another one beside it: two daemons on one
+      // identity evict each other at the hub forever, which is the loop that
+      // made a paired phone see no sessions. So it is a refusal that names
+      // the owner and the way to stop it, printed to stderr with a non-zero
+      // exit, not a reassurance.
+      for (const line of alreadyRunningLines(published)) ctx.err(line);
+      return 1;
     }
     if (live.kind === "foreign") {
       // Our endpoint file, someone else's daemon. Almost always a stale file
@@ -210,8 +224,10 @@ async function backgroundStart(
     const base = `http://${wanted.host}:${wanted.port}`;
     const live = await probe(ctx, base);
     if (live.kind === "ours") {
-      ctx.out(`ompd is already listening at ${base}`);
-      return 0;
+      // Same finding as the published endpoint above, reached when the
+      // running daemon never wrote (or lost) its endpoint file.
+      for (const line of alreadyRunningLines(base)) ctx.err(line);
+      return 1;
     }
     if (live.kind === "foreign") {
       // The defect this replaced: any healthy listener counted as ours, so a

@@ -49,3 +49,27 @@ Feature: What a paired device can do with its sessions
     Then I can see "fleet"
     And I cannot see "connection-switcher"
     And I capture "11-back-to-sessions"
+
+  # The path's sentence, end to end. Every scenario above stays on the fleet,
+  # so none of them can see the failure Jason actually reported: sessions
+  # listed, and no way to drive one. This one opens the first agent session,
+  # sends a real prompt through the hub, and waits for the agent to echo a
+  # per-run nonce, which no earlier turn and no earlier run of this suite can
+  # satisfy. The prompt forbids tools on purpose: the pairing behind the
+  # Background carries prompt but not approve, so a tool-using turn would
+  # stall on a clearance this device cannot grant and the echo would never
+  # come. The report step prints the one bracketed marker the path check is
+  # allowed to regex out of suite output; the canonical line remains the
+  # check script's to print.
+  @path
+  Scenario: A session opens and answers a prompt sent from this device
+    Then I report the sessions listed in "fleet-count"
+    When I select "session-open-first"
+    Then I can see "session"
+    And I can see "composer-input"
+    And I can see "transcript"
+    When I fill in "composer-input" with "Do not use tools. Do not make a todo list. Reply with exactly this token and nothing else: <nonce>"
+    And I dismiss the keyboard
+    And I select "composer-send"
+    Then the agent replies in "transcript" echoing "<nonce>"
+    And I capture "12-round-trip"

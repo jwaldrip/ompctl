@@ -47,6 +47,23 @@ export interface E2EClient {
   /** The element's rendered text, for assertions about content. */
   textOf(testId: string): Promise<string>;
 
+  /**
+   * Scroll a scrollable list to its end and let the new layout settle.
+   *
+   * A virtualized list only mounts rows near the viewport, so the tail of a
+   * long transcript does not exist as an element until something scrolls to
+   * it. Anything asserting about a list's newest rows has to scroll first, or
+   * it is testing the render window rather than the data.
+   */
+  scrollToEnd(testId: string): Promise<void>;
+
+  /**
+   * The rendered text or accessibility label of every element matching the
+   * testID, in document order. Only mounted elements are listed, so a caller
+   * searching a long list for a row scrolls that list to its end first.
+   */
+  labelsOf(testId: string): Promise<string[]>;
+
   /** Put the on-screen keyboard away so it stops covering the next target. */
   dismissKeyboard(): Promise<void>;
 

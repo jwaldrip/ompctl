@@ -137,4 +137,53 @@ describe("SafeScreen", () => {
     });
     host.remove();
   });
+
+  test("a closed session still offers the way back", () => {
+    // `stopped` is the contract's clean-exit state: the transcript is kept
+    // but no further work can proceed. A person landing here is done with
+    // this session, so the back control is the one thing the screen must not
+    // lose; the screen renders one path, and this pins that no conditional
+    // grows around its header later.
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(
+        <SessionScreen
+          agent={{
+            id: "agt_test",
+            name: "probe",
+            state: "stopped",
+            host: { kind: "local", id: "1", spec: { kind: "local" } },
+            cwd: "/tmp",
+            createdAt: new Date(0).toISOString(),
+            lastActiveAt: new Date(0).toISOString(),
+            labels: {},
+          }}
+          session={EMPTY_SESSION}
+          connection="connected"
+          attempt={0}
+          spoken={null}
+          fleetClearances={0}
+          canApprove
+          onBack={() => {}}
+          onSubmit={() => {}}
+          onCancel={() => {}}
+          onDecide={() => {}}
+          onDecidePlan={() => {}}
+        />,
+      );
+    });
+
+    const back = host.querySelector('[data-testid="session-back"]');
+    expect(back).not.toBeNull();
+    const label = host.querySelector('[data-testid="session-back-label"]');
+    expect(label?.textContent).toBe("Sessions");
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
 });
