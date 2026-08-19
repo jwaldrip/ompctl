@@ -1,18 +1,17 @@
 /**
  * One session, as a row in the browser.
  *
- * Takeover and archive are the two actions, and they must not read as the same
- * kind of thing. Takeover is the primary tap target, spans the row, and reads
- * as an affirmative "go here." Archive sits in a fixed corner, is quieter than
+ * Open and archive are the two actions, and they must not read as the same
+ * kind of thing. Open is the primary tap target, spans the row, and reads as
+ * an affirmative "go here." Archive sits in a fixed corner, is quieter than
  * the row it sits in, and its glyph is a box, not a blade: nothing about it
  * should make a person hesitate the way a delete control would.
  *
- * `dormant` and `live-tui` both take you into the session, but they are not
- * the same verb: a dormant session is resumed, a live-tui session is attached
- * to. The label and glyph say which, so the affordance never pretends they are
- * interchangeable. `live-ompd` sessions are already held by an ompd agent and
- * open the same way a live-tui one does, from this device's point of view:
- * attaching to something already running.
+ * `dormant`, `live-tui`, and `live-ompd` all take you into the session, but
+ * they are not the same verb: a dormant session is resumed, a live-ompd one
+ * is attached to, and a live terminal session is prompted, because that is
+ * all a terminal can accept from here. The label and glyph say which, so the
+ * affordance never pretends they are interchangeable.
  */
 
 import type { JSX } from "react";
@@ -29,21 +28,21 @@ export interface SessionRowProps {
   session: BrowserSession;
   /** Whether the row shows its cwd. Off inside a group, where the header already says it. */
   showCwd?: boolean;
-  onTakeover: (session: BrowserSession) => void;
+  onOpen: (session: BrowserSession) => void;
   onArchive: (session: BrowserSession) => void;
   onUnarchive: (session: BrowserSession) => void;
   now?: number;
 }
 
-const TAKEOVER_GLYPH: Record<SessionStatus, GlyphName> = {
-  "live-tui": "attach",
+const OPEN_GLYPH: Record<SessionStatus, GlyphName> = {
+  "live-tui": "send",
   "live-ompd": "attach",
   dormant: "resume",
   archived: "restore",
 };
 
-const TAKEOVER_LABEL: Record<SessionStatus, string> = {
-  "live-tui": "Attach",
+const OPEN_LABEL: Record<SessionStatus, string> = {
+  "live-tui": "Prompt",
   "live-ompd": "Attach",
   dormant: "Resume",
   archived: "Restore",
@@ -52,7 +51,7 @@ const TAKEOVER_LABEL: Record<SessionStatus, string> = {
 export function SessionRow({
   session,
   showCwd = false,
-  onTakeover,
+  onOpen,
   onArchive,
   onUnarchive,
   now,
@@ -67,9 +66,9 @@ export function SessionRow({
       <Pressable
         testID={`session-open-${session.id}`}
         accessibilityRole="button"
-        accessibilityLabel={`${TAKEOVER_LABEL[session.status]} ${session.title}, ${STATUS_LABELS[session.status]}`}
+        accessibilityLabel={`${OPEN_LABEL[session.status]} ${session.title}, ${STATUS_LABELS[session.status]}`}
         onPress={() => {
-          onTakeover(session);
+          onOpen(session);
         }}
         style={({ pressed }) => [styles.body, pressed && { backgroundColor: ground.active }]}
       >
@@ -105,19 +104,19 @@ export function SessionRow({
 
       <View style={styles.actions}>
         <Pressable
-          testID={`session-takeover-${session.id}`}
+          testID={`session-open-action-${session.id}`}
           accessibilityRole="button"
-          accessibilityLabel={`${TAKEOVER_LABEL[session.status]} ${session.title}`}
+          accessibilityLabel={`${OPEN_LABEL[session.status]} ${session.title}`}
           onPress={() => {
-            onTakeover(session);
+            onOpen(session);
           }}
           style={({ pressed }) => [
-            styles.takeoverAction,
+            styles.openAction,
             { backgroundColor: signalWash[SESSION_STATUS_SIGNALS[session.status]] },
             pressed && styles.actionPressed,
           ]}
         >
-          <Glyph name={TAKEOVER_GLYPH[session.status]} size={13} color={tone} />
+          <Glyph name={OPEN_GLYPH[session.status]} size={13} color={tone} />
         </Pressable>
 
         <Pressable
@@ -176,7 +175,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: stroke.hair,
     borderLeftColor: ground.line,
   },
-  takeoverAction: {
+  openAction: {
     width: TOUCH_TARGET,
     alignItems: "center",
     justifyContent: "center",

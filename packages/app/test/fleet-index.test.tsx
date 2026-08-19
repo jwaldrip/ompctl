@@ -1,7 +1,7 @@
 /**
  * The Fleet index wiring: canned `sessions` frames becoming rendered rows,
  * the live roster overlaid onto them, and a live-tui row's open landing on
- * the takeover path.
+ * the prompt surface that steers the terminal instead of claiming it.
  *
  * The exact bug this file pins: a daemon with hundreds of sessions and a
  * phone showing "No sessions.", because Fleet rows were derived from the
@@ -23,7 +23,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ConsoleEvent, ConsoleState, SessionOpenTarget } from "../src/console/state.ts";
-import { apply, browserSessionsOf, emptyConsole, openSessionTarget } from "../src/console/state.ts";
+import { apply, browserSessionsOf, emptyConsole, openSessionTarget, tuiSessionFor } from "../src/console/state.ts";
 import type { ConsoleActions } from "../src/console/useConsole.ts";
 import type { Connection } from "../src/platform/connection.ts";
 import type { BrowserState } from "../src/session/browser.ts";
@@ -93,7 +93,7 @@ function renderFleet(browser: BrowserState): string {
       onToggleGroup={() => {}}
       onToggleGrouped={() => {}}
       onToggleArchived={() => {}}
-      onTakeover={() => {}}
+      onOpen={() => {}}
       onArchive={() => {}}
       onUnarchive={() => {}}
       now={NOW}
@@ -139,7 +139,7 @@ describe("an index with zero agents renders the fleet", () => {
   test("each row keeps the status the daemon's index reported", () => {
     // live-tui from the index survives into the row, including its label.
     expect(html).toContain('data-testid="session-status-s-a2"');
-    expect(html).toContain("Attach session s-a2");
+    expect(html).toContain("Prompt session s-a2");
   });
 });
 
@@ -203,7 +203,7 @@ describe("a live agent is overlaid onto its indexed session", () => {
 // Opening a row resolves to the holder, or the claim it can echo
 // ---------------------------------------------------------------------------
 
-describe("opening a row resolves to a holder or a claim the daemon can verify", () => {
+describe("opening a row resolves to a holder, a claim, or the terminal prompt surface", () => {
   const INDEX: SessionSummary[] = [
     summary("s-tui", { cwd: DIR_A, flattenedDir: "-alpha", status: "live-tui", pid: 4242 }),
     summary("s-ompd", { cwd: DIR_A, flattenedDir: "-alpha", status: "live-ompd", agentId: "agt_late" }),
@@ -217,9 +217,22 @@ describe("opening a row resolves to a holder or a claim the daemon can verify", 
     }),
   ];
 
-  test("a live-tui row becomes a takeover target echoing that row's own cwd and pid", () => {
+  test("a live-tui row becomes a prompt target: the session id, and nothing to echo", () => {
     const target = openSessionTarget(drive([{ t: "sessions", event: { sessions: INDEX } }]), "s-tui");
-    expect(target).toEqual({ kind: "live-tui", sessionId: "s-tui", cwd: DIR_A, pid: 4242 });
+    expect(target).toEqual({ kind: "live-tui", sessionId: "s-tui" });
+  });
+
+  test("a live-tui row with no pid or decodable cwd is still promptable", () => {
+    // Prompting routes by session id and verifies nothing, so the echoes a
+    // takeover needed are not prerequisites here. The daemon refuses an
+    // unreachable terminal in words; the resolver must not refuse it first.
+    const index = [
+      summary("s-tui-nopid", { status: "live-tui" }),
+      summary("s-tui-opaque", { cwd: null, cwdScope: "unknown", flattenedDir: "-opaque", status: "live-tui" }),
+    ];
+    const state = drive([{ t: "sessions", event: { sessions: index } }]);
+    expect(openSessionTarget(state, "s-tui-nopid")).toEqual({ kind: "live-tui", sessionId: "s-tui-nopid" });
+    expect(openSessionTarget(state, "s-tui-opaque")).toEqual({ kind: "live-tui", sessionId: "s-tui-opaque" });
   });
 
   test("a row the roster holds resolves to that agent, the way live-ompd opens", () => {
@@ -266,7 +279,7 @@ describe("opening a row resolves to a holder or a claim the daemon can verify", 
 class CannedClient {
   readonly askedIndex: unknown[] = [];
   readonly attached: Array<{ agentId: AgentId; options: unknown }> = [];
-  readonly takeovers: Array<{ sessionId: string; cwd: string; pid: number }> = [];
+  readonly sessionPrompts: Array<{ sessionId: string; text: string }> = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
@@ -296,8 +309,8 @@ class CannedClient {
   listSessions(query?: unknown): void {
     this.askedIndex.push(query);
   }
-  takeOverSession(sessionId: string, cwd: string, pid: number): void {
-    this.takeovers.push({ sessionId, cwd, pid });
+  sessionPrompt(sessionId: string, text: string): void {
+    this.sessionPrompts.push({ sessionId, text });
   }
   resumeSession(sessionId: string, cwd: string): void {
     this.resumes.push({ sessionId, cwd });
@@ -405,17 +418,41 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
     }
   });
 
-  test("a live-tui row claims the takeover over the socket, echoing that row's cwd and pid", () => {
+  test("a live-tui row opens the prompt surface; nothing crosses the wire until it is used", () => {
     const mounted = mountConsole();
     try {
-      const target: SessionOpenTarget = { kind: "live-tui", sessionId: "s-tui", cwd: DIR_A, pid: 4242 };
+      const target: SessionOpenTarget = { kind: "live-tui", sessionId: "s-tui" };
       act(() => {
         mounted.actions().openSession(target);
       });
-      expect(mounted.client.takeovers).toEqual([{ sessionId: "s-tui", cwd: DIR_A, pid: 4242 }]);
-      // Nothing selects yet: the daemon's `session_opened` reply is what
-      // opens the screen, so a tap never looks done before the daemon agrees.
+      expect(mounted.state().selectedTui).toBe("s-tui");
+      // The open claims nothing: no takeover, no resume, no attach. A
+      // terminal cannot be taken over from here, and the tap must not
+      // pretend the daemon agreed to something it was never asked.
+      expect(mounted.client.sessionPrompts).toHaveLength(0);
+      expect(mounted.client.resumes).toHaveLength(0);
+      expect(mounted.client.attached).toHaveLength(0);
       expect(mounted.state().selected).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("prompting the open terminal sends sessionPrompt with that row's id and the text", () => {
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
+      });
+      act(() => {
+        mounted.actions().promptTui("s-tui", "Reply with exactly: phone-turn-ok");
+      });
+      expect(mounted.client.sessionPrompts).toEqual([
+        { sessionId: "s-tui", text: "Reply with exactly: phone-turn-ok" },
+      ]);
+      // The sent echo is on state immediately: the daemon does not echo
+      // prompts, so without it a successful send still looks dropped.
+      expect(tuiSessionFor(mounted.state(), "s-tui").sent).toBe("Reply with exactly: phone-turn-ok");
     } finally {
       mounted.unmount();
     }
@@ -443,7 +480,7 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
         mounted.actions().openSession(target);
       });
       expect(mounted.state().notice).toContain("cannot be opened");
-      expect(mounted.client.takeovers).toHaveLength(0);
+      expect(mounted.client.sessionPrompts).toHaveLength(0);
       expect(mounted.client.resumes).toHaveLength(0);
       expect(mounted.client.attached).toHaveLength(0);
     } finally {
@@ -462,5 +499,100 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
     } finally {
       mounted.unmount();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The terminal lifecycle: prompt, hints, and the refusal that names a remedy
+// ---------------------------------------------------------------------------
+
+describe("a prompted terminal reports progress as hints, never a transcript", () => {
+  test("a turn folds to busy, then a reply, then done", () => {
+    const started = drive([
+      { t: "tui_prompt", sessionId: "s-tui", text: "status of the deploy?" },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
+    ]);
+    // turn_start retires the sent echo and marks the turn busy: the
+    // terminal took the prompt.
+    expect(tuiSessionFor(started, "s-tui").sent).toBeNull();
+    expect(tuiSessionFor(started, "s-tui").busy).toBe(true);
+
+    const state = drive([
+      { t: "tui_prompt", sessionId: "s-tui", text: "status of the deploy?" },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "assistant_text", text: "green" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_end" } },
+    ]);
+    expect(tuiSessionFor(state, "s-tui").busy).toBe(false);
+    // The reply is the last text reported, not an appended transcript row.
+    expect(tuiSessionFor(state, "s-tui").reply).toBe("green");
+  });
+
+  test("a second assistant_text replaces the first, and a hint never accumulates", () => {
+    const state = drive([
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "assistant_text", text: "almost" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "assistant_text", text: "done" } },
+    ]);
+    expect(tuiSessionFor(state, "s-tui").reply).toBe("done");
+  });
+
+  test("an unreachable refusal lands on the open terminal, naming cause and remedy", () => {
+    const state = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "tui_prompt", sessionId: "s-tui", text: "hello?" },
+      { t: "error", event: { message: "no connected TUI owns session s-tui", code: "tui_unreachable" } },
+    ]);
+    const tui = tuiSessionFor(state, "s-tui");
+    expect(tui.sent).toBeNull();
+    // Words the operator can act on: the cause (no bridge) and the remedy
+    // (restart that terminal), not the daemon's raw code or phrasing.
+    expect(tui.refusal).toContain("bridge");
+    expect(tui.refusal).toContain("Restart");
+    expect(tui.refusal).not.toContain("no connected TUI owns");
+    // The refusal is held on the screen's state, not burned into the toast.
+    expect(state.notice).toBeNull();
+  });
+
+  test("a refusal with no terminal open falls back to the daemon's own message", () => {
+    const state = drive([
+      { t: "error", event: { message: "no connected TUI owns session s-tui", code: "tui_unreachable" } },
+    ]);
+    expect(state.notice).toBe("no connected TUI owns session s-tui");
+    expect(tuiSessionFor(state, "s-tui").refusal).toBeNull();
+  });
+
+  test("activity after a refusal clears it: the bridge came back", () => {
+    const state = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "error", event: { message: "no connected TUI owns session s-tui", code: "tui_unreachable" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
+    ]);
+    expect(tuiSessionFor(state, "s-tui").refusal).toBeNull();
+    expect(tuiSessionFor(state, "s-tui").busy).toBe(true);
+  });
+
+  test("opening a terminal closes the agent strip, and an agent landing closes the terminal", () => {
+    const both = drive([
+      { t: "select", agentId: "agt_open" },
+      { t: "tui_select", sessionId: "s-tui" },
+    ]);
+    expect(both.selected).toBeNull();
+    expect(both.selectedTui).toBe("s-tui");
+
+    const adopted = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "select", agentId: "agt_adopted" },
+    ]);
+    expect(adopted.selectedTui).toBeNull();
+    expect(adopted.selected).toBe("agt_adopted");
+  });
+
+  test("back clears the terminal surface", () => {
+    const state = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "select", agentId: null },
+    ]);
+    expect(state.selectedTui).toBeNull();
   });
 });

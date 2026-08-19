@@ -85,7 +85,7 @@ function render(browser: BrowserState): string {
       onToggleGroup={NOOP_CWD}
       onToggleGrouped={NOOP}
       onToggleArchived={NOOP}
-      onTakeover={NOOP_SESSION}
+      onOpen={NOOP_SESSION}
       onArchive={NOOP_SESSION}
       onUnarchive={NOOP_SESSION}
       now={NOW}
@@ -140,27 +140,27 @@ describe("the session browser renders a realistic corpus", () => {
   });
 });
 
-describe("takeover and archive are visually distinct actions", () => {
+describe("open and archive are visually distinct actions", () => {
   const live = CORPUS.find(s => s.status === "live-tui") as BrowserSession;
   const dormant = CORPUS.find(s => s.status === "dormant") as BrowserSession;
   const html = render(browserState());
 
-  test("a dormant row's takeover action reads Resume, not Archive or Delete", () => {
-    expect(html).toContain(`data-testid="session-takeover-${dormant.id}"`);
+  test("a dormant row's open action reads Resume, not Archive or Delete", () => {
+    expect(html).toContain(`data-testid="session-open-action-${dormant.id}"`);
     expect(html).toContain(`Resume ${dormant.title}`);
   });
 
-  test("a live-tui row's takeover action reads Attach, distinct from a dormant Resume", () => {
-    expect(html).toContain(`data-testid="session-takeover-${live.id}"`);
-    expect(html).toContain(`Attach ${live.title}`);
+  test("a live-tui row's open action reads Prompt, distinct from a dormant Resume", () => {
+    expect(html).toContain(`data-testid="session-open-action-${live.id}"`);
+    expect(html).toContain(`Prompt ${live.title}`);
   });
 
-  test("archive is a separate control from takeover, with its own testID and label", () => {
+  test("archive is a separate control from open, with its own testID and label", () => {
     expect(html).toContain(`data-testid="session-archive-${dormant.id}"`);
     expect(html).toContain(`Archive ${dormant.title}`);
     // The two actions are not the same pressable: distinct testIDs prove it.
     expect(html).not.toContain(
-      `data-testid="session-archive-${dormant.id}"data-testid="session-takeover-${dormant.id}"`,
+      `data-testid="session-archive-${dormant.id}"data-testid="session-open-action-${dormant.id}"`,
     );
   });
 

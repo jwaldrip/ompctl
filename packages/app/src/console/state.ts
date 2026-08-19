@@ -30,6 +30,7 @@ import type {
   PlanReviewEvent,
   SayEvent,
   StatusEvent,
+  TuiActivityEvent,
   UnauthorizedEvent,
   UpdateEvent,
 } from "@ompd/core/ompd-client";
@@ -102,6 +103,17 @@ export interface ConsoleState {
   readonly attempt: number;
   readonly delayMs: number | undefined;
   readonly selected: AgentId | null;
+  /**
+   * The live terminal session whose prompt surface is open, or null.
+   *
+   * Held beside `selected` rather than inside it because the two detail panes
+   * answer different shapes: an agent has a transcript this device attaches
+   * to, a terminal session has only the hints below. Exactly one of the two
+   * is ever non-null; the reducer enforces the exclusivity.
+   */
+  readonly selectedTui: string | null;
+  /** Hints about terminal sessions this device has prompted. Keyed by session id. */
+  readonly tuiSessions: ReadonlyMap<string, TuiSessionState>;
   /** At most one browser action per agent. Completion is correlated by request id. */
   readonly pendingWebViewActions: ReadonlyMap<AgentId, PendingWebViewAction>;
   readonly canApprove: boolean;
@@ -112,6 +124,41 @@ export interface ConsoleState {
   /** Set once the daemon has confirmed the token is dead. Terminal. */
   readonly unauthorized: string | null;
 }
+/**
+ * Hints this device holds about one live terminal session, keyed by session
+ * id because a terminal session has no agent row.
+ *
+ * Everything here is a hint, never a transcript: `tui_activity` frames are the
+ * terminal's own progress reporting, and the wire contract says so. `reply`
+ * holds only the last text, `sent` only the prompt this device most recently
+ * sent, and nothing accumulates.
+ */
+export interface TuiSessionState {
+  /**
+   * The last prompt this device sent, kept until the terminal reports taking
+   * the turn. The composer clears on send and there is no transcript to land
+   * in, so without this echo the operator's own words vanish on submit.
+   */
+  readonly sent: string | null;
+  /** True between the terminal's own `turn_start` and `turn_end`. */
+  readonly busy: boolean;
+  /** The last `assistant_text` the terminal reported, verbatim. */
+  readonly reply: string | null;
+  /** Why the daemon refused the last prompt, once it has. */
+  readonly refusal: string | null;
+}
+
+const EMPTY_TUI_SESSION: TuiSessionState = { sent: null, busy: false, reply: null, refusal: null };
+
+/**
+ * What the operator can actually do about a `tui_unreachable` refusal. The
+ * daemon's own message names the session it could not reach; this names the
+ * causes that produce the state and the one remedy that fixes both, because a
+ * bare code tells the operator their tap failed without saying why or what to
+ * do about it.
+ */
+const TUI_UNREACHABLE_GUIDANCE =
+  "This session is live in a terminal the daemon cannot reach: it was probably started before `ompd install`, or it is running under a different profile, so it never picked up the bridge. Restart it in its terminal so it picks the bridge up, then prompt it again.";
 
 export function emptyConsole(scopes: readonly string[]): ConsoleState {
   return {
@@ -124,6 +171,8 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     attempt: 0,
     delayMs: undefined,
     selected: null,
+    selectedTui: null,
+    tuiSessions: new Map(),
     pendingWebViewActions: new Map(),
     // A pairing that did not declare its scopes stays optimistic; the daemon's
     // first refusal is what downgrades it.
@@ -145,6 +194,12 @@ export type ConsoleEvent =
   | { t: "error"; event: ClientErrorEvent }
   | { t: "say"; event: SayEvent }
   | { t: "unauthorized"; event: UnauthorizedEvent }
+  /** Daemon: turn progress from a live terminal session this device can prompt. */
+  | { t: "tui_activity"; event: TuiActivityEvent }
+  /** Local: the operator opened a terminal session's prompt surface, or went back to the bay. */
+  | { t: "tui_select"; sessionId: string | null }
+  /** Local: echo of a prompt this device just sent to a terminal session. */
+  | { t: "tui_prompt"; sessionId: string; text: string }
   /** Local: the operator opened a strip, or went back to the bay. */
   | { t: "select"; agentId: AgentId | null }
   /** Local: echo of a prompt this device just sent. */
@@ -203,6 +258,18 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "error": {
       const { code, message } = event.event;
+      // The wire error carries no session id; it goes to the socket that
+      // asked, which is this one, while the surface it was asked from is the
+      // open terminal screen. Only that screen can correlate the refusal, so
+      // one that lands after the operator backed out falls through to the
+      // notice below: there is no surface left to hold the guidance.
+      if (code === "tui_unreachable" && state.selectedTui !== null) {
+        return withTuiSession(state, state.selectedTui, tui => ({
+          ...tui,
+          sent: null,
+          refusal: TUI_UNREACHABLE_GUIDANCE,
+        }));
+      }
       if (code !== undefined && SCOPE_CODES[code]) {
         return {
           ...state,
@@ -221,10 +288,31 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       return { ...state, unauthorized: event.event.reason, connection: "offline" };
 
     case "select": {
-      if (state.selected === event.agentId) return state;
-      if (event.agentId === null) return { ...state, selected: null };
-      return { ...state, selected: event.agentId };
+      // Back goes to the bay from either detail pane, and an agent landing
+      // (a resume claim answered) replaces an open terminal surface: the two
+      // panes are exclusive by construction, not by caller discipline.
+      if (event.agentId === null) {
+        return state.selected === null && state.selectedTui === null
+          ? state
+          : { ...state, selected: null, selectedTui: null };
+      }
+      if (state.selected === event.agentId && state.selectedTui === null) return state;
+      return { ...state, selected: event.agentId, selectedTui: null };
     }
+
+    case "tui_select": {
+      if (event.sessionId === null) {
+        return state.selectedTui === null ? state : { ...state, selectedTui: null };
+      }
+      if (state.selectedTui === event.sessionId && state.selected === null) return state;
+      return { ...state, selectedTui: event.sessionId, selected: null };
+    }
+
+    case "tui_prompt":
+      return withTuiSession(state, event.sessionId, tui => ({ ...tui, sent: event.text, refusal: null }));
+
+    case "tui_activity":
+      return applyTuiActivity(state, event.event);
 
     case "prompt":
       return withSession(state, event.agentId, session => appendPrompt(session, event.text));
@@ -338,12 +426,50 @@ function withSession(
   return { ...state, sessions };
 }
 
+/**
+ * Terminal turn progress, folded as hints about one row. A `turn_start`
+ * retires the sent echo (the terminal took the turn) and proves the bridge is
+ * back, so it also clears a refusal that a previous prompt earned;
+ * `assistant_text` replaces the last reply rather than appending, because the
+ * event is a hint, never a transcript; `turn_end` clears the busy mark.
+ */
+function applyTuiActivity(state: ConsoleState, event: TuiActivityEvent): ConsoleState {
+  return withTuiSession(state, event.sessionId, tui => {
+    switch (event.kind) {
+      case "turn_start":
+        return { ...tui, sent: null, busy: true, refusal: null };
+      case "assistant_text":
+        return event.text === undefined ? tui : { ...tui, reply: event.text };
+      case "turn_end":
+        return { ...tui, busy: false };
+    }
+  });
+}
+
+function withTuiSession(
+  state: ConsoleState,
+  sessionId: string,
+  change: (tui: TuiSessionState) => TuiSessionState,
+): ConsoleState {
+  const before = state.tuiSessions.get(sessionId) ?? EMPTY_TUI_SESSION;
+  const after = change(before);
+  if (after === before) return state;
+  const tuiSessions = new Map(state.tuiSessions);
+  tuiSessions.set(sessionId, after);
+  return { ...state, tuiSessions };
+}
+
 // ---------------------------------------------------------------------------
 // Selectors
 // ---------------------------------------------------------------------------
 
 export function sessionFor(state: ConsoleState, agentId: AgentId): SessionState {
   return state.sessions.get(agentId) ?? EMPTY_SESSION;
+}
+
+/** Hints about one terminal session. A row never prompted is not missing, it is blank. */
+export function tuiSessionFor(state: ConsoleState, sessionId: string): TuiSessionState {
+  return state.tuiSessions.get(sessionId) ?? EMPTY_TUI_SESSION;
 }
 
 /** What a strip shows. Derived rather than stored, so it cannot go stale. */
@@ -448,17 +574,19 @@ export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
  *
  * Rows are sessions, not agents, so a tap has to be resolved to whichever
  * holder can serve it: a live agent from this device's roster, the agent the
- * index still names, the daemon's live-TUI takeover, or, for a session on
- * disk that nothing holds, a resume claim. Both claims carry the index row's
- * own `cwd` (and `pid`) because the daemon verifies that echo against a row
- * it rebuilds itself, so the values must be the ones the operator tapped,
- * never invented. A row the index does not describe, or whose directory it
- * could not decode, has no claim this device can echo, so it resolves to the
- * one shape that says so instead of a frame the daemon must refuse.
+ * index still names, the live-TUI prompt surface, or, for a session on disk
+ * that nothing holds, a resume claim. The resume claim carries the index
+ * row's own `cwd` because the daemon verifies that echo against a row it
+ * rebuilds itself, so the value must be the one the operator tapped, never
+ * invented. A live-TUI open verifies nothing and echoes nothing: prompting
+ * routes by session id alone, so the target is the id and nothing else. A row
+ * the index does not describe, or a dormant row whose directory it could not
+ * decode, has no claim this device can echo, so it resolves to the one shape
+ * that says so instead of a frame the daemon must refuse.
  */
 export type SessionOpenTarget =
   | { readonly kind: "agent"; readonly sessionId: string; readonly agentId: AgentId }
-  | { readonly kind: "live-tui"; readonly sessionId: string; readonly cwd: string; readonly pid: number }
+  | { readonly kind: "live-tui"; readonly sessionId: string }
   | { readonly kind: "dormant"; readonly sessionId: string; readonly cwd: string }
   | { readonly kind: "unopenable"; readonly sessionId: string };
 
@@ -481,17 +609,21 @@ export function openSessionTarget(state: ConsoleState, rowId: string): SessionOp
   if (summary.status === "live-ompd" && summary.agentId !== undefined) {
     return { kind: "agent", sessionId: rowId, agentId: summary.agentId };
   }
-  // The daemon verifies the echoed `cwd`, and for a live TUI its `pid`,
-  // against an index row it rebuilds itself, so a claim can only carry what
-  // this row actually reported. A directory the codec could not decode, or a
-  // live-tui row with no pid, leaves nothing to echo and no claim to make.
+  // A live terminal session is prompted, never taken over: the terminal
+  // cannot hand its renderer to this device, so the open is a local prompt
+  // surface and the daemon's answer to whatever is sent from it is the only
+  // claim that ever crosses the wire. Nothing is echoed, so an undecodable
+  // directory or a missing pid costs nothing here; the screen falls back to
+  // the flattened name the index always carries.
+  if (summary.status === "live-tui") {
+    return { kind: "live-tui", sessionId: rowId };
+  }
+  // The daemon verifies the echoed `cwd` against an index row it rebuilds
+  // itself, so a claim can only carry what this row actually reported. A
+  // directory the codec could not decode leaves nothing to echo and no claim
+  // to make.
   if (summary.cwd === null) {
     return { kind: "unopenable", sessionId: rowId };
-  }
-  if (summary.status === "live-tui") {
-    return summary.pid === undefined
-      ? { kind: "unopenable", sessionId: rowId }
-      : { kind: "live-tui", sessionId: rowId, cwd: summary.cwd, pid: summary.pid };
   }
   // Dormant and archived rows ride the same resume claim; the daemon's own
   // verifier, not this resolver, is where an archived row is refused.
