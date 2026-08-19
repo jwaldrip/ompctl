@@ -175,9 +175,15 @@ async function printPairingQr(
   // and a token, and telling an operator to paste a 350-character bundle into
   // the hub field is exactly how this went wrong before.
   if (offer.endpoint.transport === "hub") {
+    // The scopes ride the link so the app's first paint after a one-tap
+    // pairing is right rather than merely becoming right a second later
+    // when hello answers. They are a hint the daemon overrules, not a
+    // secret: the token beside them is the sensitive part, and its
+    // handling is unchanged.
+    const granted = opts.scopes.length === 0 ? "" : `&scopes=${encodeURIComponent(opts.scopes.join(","))}`;
     const link = `https://app.ompctl.ai/pair?token=${encodeURIComponent(
       formatDeviceCredential({ daemonId: offer.endpoint.daemonId, token: opts.token }),
-    )}&hub=${encodeURIComponent(hostOf(offer.endpoint.hubUrl))}`;
+    )}&hub=${encodeURIComponent(hostOf(offer.endpoint.hubUrl))}${granted}`;
     ctx.out("");
     ctx.out("  can't scan it? open this on the device to pair in one tap:");
     ctx.out(`  ${link}`);

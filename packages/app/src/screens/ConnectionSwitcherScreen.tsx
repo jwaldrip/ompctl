@@ -1,6 +1,5 @@
 /** Choose the daemon this device's Console is currently attached to. */
 
-import { SCOPE_APPROVE } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeScreen } from "../design/SafeScreen.tsx";
@@ -9,12 +8,22 @@ import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../desig
 import type { ConnectionList, SavedConnection } from "../platform/connection.ts";
 
 export function ConnectionSwitcherScreen({
+  canInvite,
   connections,
   onAdd,
   onBack,
   onInvite,
   onSelect,
 }: {
+  /**
+   * Whether the active pairing may mint a credential, decided by the
+   * console from the daemon's hello rather than read here off the stored
+   * connection: the store holds a hint minted at pairing time, and a
+   * rotated or narrowed grant makes it stale while the daemon's answer
+   * never is. Same rule as the menu entry: absent rather than
+   * visible-but-refused when this device does not hold approve.
+   */
+  canInvite: boolean;
   connections: ConnectionList;
   onAdd: () => void;
   onBack: () => void;
@@ -26,13 +35,6 @@ export function ConnectionSwitcherScreen({
   onInvite: () => void;
   onSelect: (id: string) => void;
 }): JSX.Element {
-  const active = connections.connections.find(entry => entry.id === connections.activeId);
-  // Inviting spends this device's own `approve` scope, so the entry point
-  // stays gone rather than visible-but-refused when the active pairing
-  // doesn't hold it -- the daemon would refuse the mint anyway, and a
-  // control that always fails is worse than no control.
-  const canInvite = active?.connection.scopes.includes(SCOPE_APPROVE);
-
   return (
     <SafeScreen style={styles.screen} testID="connection-switcher">
       <View style={styles.heading}>

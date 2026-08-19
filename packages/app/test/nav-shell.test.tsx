@@ -399,6 +399,65 @@ describe("the menu carries what is not a session", () => {
     host.remove();
   });
 
+  test("the daemon's hello answer, not the stored hint, decides the invite entry", () => {
+    const mount = (
+      connection: Connection,
+    ): { client: CannedClient; el: (testID: string) => HTMLElement | null; unmount: () => void } => {
+      const client = new CannedClient();
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      act(() => {
+        root.render(
+          <Console
+            connection={connection}
+            daemonLabel="Studio Mac"
+            connections={CONNECTIONS}
+            onAddConnection={() => {}}
+            onSelectConnection={() => {}}
+            onUnpair={() => {}}
+            createClient={() => client as unknown as OmpdClient}
+          />,
+        );
+      });
+      return {
+        client,
+        el: (testID: string) => host.querySelector(`[data-testid="${testID}"]`),
+        unmount: () => {
+          act(() => {
+            root.unmount();
+          });
+          host.remove();
+        },
+      };
+    };
+
+    // A narrowed grant: the stored connection still claims approve, and the
+    // menu must believe the daemon instead.
+    const narrowed = mount(CONNECTION);
+    act(() => {
+      narrowed.client.emit("agents", { agents: [], deviceId: "dev_phone", scopes: ["read", "prompt"] });
+    });
+    act(() => {
+      (narrowed.el("open-menu") as HTMLElement).click();
+    });
+    expect(narrowed.el("menu-connections")).not.toBeNull();
+    expect(narrowed.el("menu-invite")).toBeNull();
+    narrowed.unmount();
+
+    // A widened grant: the stored connection claims nothing, and the hello
+    // that reports approve surfaces the entry.
+    const widened = mount({ ...CONNECTION, scopes: ["read"] });
+    act(() => {
+      widened.client.emit("agents", { agents: [], deviceId: "dev_phone", scopes: ["read", "approve", "manage"] });
+    });
+    act(() => {
+      (widened.el("open-menu") as HTMLElement).click();
+    });
+    expect(widened.el("menu-invite")).not.toBeNull();
+    widened.unmount();
+  });
+
   test("the header names the daemon this device is attached to", () => {
     const shell = mountShell();
     try {

@@ -235,6 +235,13 @@ export interface AgentsEvent {
   agents: Agent[];
   /** Present only on the initial `hello` of a connection. */
   deviceId?: string;
+  /**
+   * The scopes the daemon says this device holds, carried the same way as
+   * `deviceId`: present only on the initial `hello`, and only when the
+   * daemon reports them. Undefined is an older daemon, never an empty
+   * grant, so a reader must treat it as unknown rather than none.
+   */
+  scopes?: string[];
 }
 
 export interface UpdateEvent {
@@ -1067,9 +1074,9 @@ export class OmpdClient {
         this.attempt = 0;
         this.authenticated = true;
         this.setStatus("connected", { reason: "hello" });
-        this.emit("agents", { agents: frame.agents, deviceId: frame.deviceId });
         // The whole point of the watermark. Every agent this client cares about
         // is reattached from exactly where its stream stopped.
+        this.emit("agents", { agents: frame.agents, deviceId: frame.deviceId, scopes: frame.scopes });
         for (const agentId of this.attached) this.sendAttach(agentId);
         // After the attachments, never before: the daemon refuses a
         // registration for an agent this socket has not attached to yet.
