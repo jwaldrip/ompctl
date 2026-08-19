@@ -545,6 +545,16 @@ export type ClientFrame =
    * prevent.
    */
   | { t: "session_resume"; sessionId: string; cwd: string }
+  /**
+   * Mint a new device's credential over this socket, in one authenticated
+   * request. The two HTTP steps this replaces -- an unauthenticated
+   * `POST /v1/pair` that records an intent, then an approve-scoped
+   * `POST /v1/pairings/approve` that spends it -- are internal detail to a
+   * caller that is already authenticated, and a hub relay carries frames
+   * only, never daemon HTTP, so neither step can ride one. Requires
+   * `approve`, and may not grant a scope the asking device does not hold.
+   */
+  | { t: "device_invite"; name: string; scopes: string[] }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -609,6 +619,13 @@ export type ServerFrame =
    * Sent only to the socket that asked.
    */
   | { t: "session_opened"; sessionId: string; agentId: AgentId }
+  /**
+   * The answer to a `device_invite`: the one-time view of a credential just
+   * minted, sent only to the socket that asked. Never broadcast, never
+   * replayed after a reconnect -- a credential delivered twice is a second
+   * credential in the wild that no operator asked for and no screen showed.
+   */
+  | { t: "device_invited"; token: string; name: string; scopes: string[] }
   | { t: "pong" };
 
 // ---------------------------------------------------------------------------

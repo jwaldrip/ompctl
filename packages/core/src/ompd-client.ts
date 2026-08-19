@@ -149,6 +149,11 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // rather than watch a session that will never open.
   session_takeover: true,
   session_resume: true,
+  // Same failure class as the one-shot session frames, with more at stake:
+  // an invite that never left is a credential the operator believes they
+  // handed over and did not, and the new device's user is left scanning a
+  // code that was never minted.
+  device_invite: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -338,6 +343,17 @@ export interface SessionOpenedEvent {
 }
 
 /**
+ * A credential minted by this device's own `inviteDevice`, answering exactly
+ * the socket that asked. The token is the one-time view: nothing downstream
+ * of this event retains it unless the operator chooses to show or spend it.
+ */
+export interface DeviceInvitedEvent {
+  token: string;
+  name: string;
+  scopes: string[];
+}
+
+/**
  * Turn progress from a live terminal session, forwarded by the daemon because
  * this client asked for the session index. Not resumable and not sequenced:
  * a `turn_start` missed during a drop is superseded by whatever the index and
@@ -369,6 +385,7 @@ export interface ClientEventMap {
   collab_voice_history: CollabVoiceHistoryEvent;
   sessions: SessionsEvent;
   session_opened: SessionOpenedEvent;
+  device_invited: DeviceInvitedEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -658,6 +675,22 @@ export class OmpdClient {
   }
 
   /**
+   * Mint a credential for one new device over this socket -- the sealed road
+   * a hub-relayed phone must take, because the relay carries frames only and
+   * the two HTTP pairing routes do not exist behind it. The answer arrives
+   * as the `device_invited` event, or an `error` naming the refusal.
+   *
+   * One-shot, like `takeOverSession`, for a reason that admits no replay at
+   * all: a credential minted twice is two credentials. Resending after a
+   * reconnect would mint a second token nobody has been shown, which is not
+   * recovery, it is the leak one-shot semantics exist to prevent. If the
+   * first attempt never landed, the operator presses Generate again.
+   */
+  inviteDevice(name: string, scopes: string[]): void {
+    this.send({ t: "device_invite", name, scopes: [...scopes] });
+  }
+
+  /**
    * Ask the daemon to resume a dormant session. The same one-shot contract
    * as `takeOverSession`, and the same echo-and-verify rule for `cwd`.
    */
@@ -943,6 +976,9 @@ export class OmpdClient {
         return;
       case "session_opened":
         this.emit("session_opened", { sessionId: frame.sessionId, agentId: frame.agentId });
+        return;
+      case "device_invited":
+        this.emit("device_invited", { token: frame.token, name: frame.name, scopes: frame.scopes });
         return;
       case "tui_activity":
         this.emit("tui_activity", {

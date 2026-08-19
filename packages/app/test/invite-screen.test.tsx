@@ -1,13 +1,22 @@
 /**
- * `InviteScreen`'s two-request mint: the scope it requests for a new device
- * defaults to exactly the scopes this device already holds, and a widened
- * request the daemon refuses (`scope_escalation`) surfaces as a plain
- * message rather than an unhandled rejection or a crash.
+ * `InviteScreen`'s socket mint: the frame it sends, the QR it renders from
+ * the answer, and the refusal it surfaces. The connection under test is a
+ * hub one on purpose -- that is the transport which used to fail closed
+ * with "no reachable HTTP endpoint", and the reason the mint moved onto the
+ * sealed socket in the first place.
+ *
+ * The screen is driven through a real `OmpdClient` over a canned socket, the
+ * same division the console tests use: only the wire is fake, so the frame
+ * construction, the event dispatch, and the one-shot semantics are all the
+ * production client's.
  */
 
 import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
+import type { ClientFrame, ServerFrame } from "@ompd/core/contracts";
+import { OmpdClient, type SocketCloseInfo, type SocketLike } from "@ompd/core/ompd-client";
+import { parsePairingBundle } from "@ompd/core/pairing";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Connection } from "../src/platform/connection.ts";
@@ -16,61 +25,79 @@ import type { Connection } from "../src/platform/connection.ts";
 // loads its screen: bun evaluates a file's whole static import graph before
 // its body runs, so a static import here would pull the real `react-native`
 // in before `./rnw.ts` could substitute it.
-const { InviteScreen } = await import("../src/screens/InviteScreen.tsx");
+const { InviteScreen, bundleForInvite } = await import("../src/screens/InviteScreen.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-const ORIGINAL_FETCH = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = ORIGINAL_FETCH;
-});
-
-const CONNECTION: Connection = {
-  transport: "direct",
-  url: "ws://127.0.0.1:7777/v1/socket",
+/** The transport that used to fail closed: a relay with no daemon HTTP behind it. */
+const HUB_CONNECTION: Connection = {
+  transport: "hub",
+  hubUrl: "wss://hub.ompctl.ai/relay",
+  daemonId: "dae_0123456789abcdef",
   token: "tok_owner",
   scopes: ["read", "approve"],
 };
 
-interface FetchCall {
-  url: string;
-  init?: RequestInit;
+class FakeSocket implements SocketLike {
+  readyState = 0;
+  readonly sent: ClientFrame[] = [];
+  closedWith: SocketCloseInfo | null = null;
+
+  onopen: (() => void) | null = null;
+  onclose: ((info: SocketCloseInfo) => void) | null = null;
+  onerror: ((error: unknown) => void) | null = null;
+  onmessage: ((message: { data: unknown }) => void) | null = null;
+
+  send(data: string): void {
+    if (this.readyState !== 1) throw new Error("send on a socket that is not open");
+    this.sent.push(JSON.parse(data) as ClientFrame);
+  }
+
+  close(code?: number, reason?: string): void {
+    if (this.closedWith !== null) return;
+    this.closedWith = { code, reason };
+    this.readyState = 3;
+    this.onclose?.({ code, reason });
+  }
+
+  /** The relay accepted the sealed channel. */
+  accept(): void {
+    this.readyState = 1;
+    this.onopen?.();
+  }
+
+  /** Deliver a daemon frame to the client. */
+  deliver(frame: ServerFrame): void {
+    this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+
+  framesOfType(t: ClientFrame["t"]): ClientFrame[] {
+    return this.sent.filter(frame => frame.t === t);
+  }
 }
 
 /**
- * A sequenced fetch double: each call to `/v1/pair` or `/v1/pairings/approve`
- * consumes the next queued response for that route, so a test can make the
- * device's *second* mint (after the operator widens the scope selection)
- * behave differently from its first without a real daemon.
+ * A real client on a canned wire. The scheduler never fires, so the ping
+ * loop and any reconnect backoff hold no real timers, and the credential
+ * probe answers "unknown" rather than reaching for the network.
  */
-function stubFetch(routes: {
-  pair?: Array<{ status?: number; body: unknown }>;
-  approve?: Array<{ status?: number; body: unknown }>;
-}): FetchCall[] {
-  const calls: FetchCall[] = [];
-  let pairIndex = 0;
-  let approveIndex = 0;
-  globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    calls.push({ url, init });
-    if (url.endsWith("/v1/pair")) {
-      const entry = routes.pair?.[pairIndex] ?? { body: { code: "000000" } };
-      pairIndex += 1;
-      return new Response(JSON.stringify(entry.body), { status: entry.status ?? 200 });
-    }
-    if (url.endsWith("/v1/pairings/approve")) {
-      const entry = routes.approve?.[approveIndex] ?? { body: { token: "tok_default", name: "device" } };
-      approveIndex += 1;
-      return new Response(JSON.stringify(entry.body), { status: entry.status ?? 200 });
-    }
-    throw new Error(`unexpected fetch: ${url}`);
-  }) as unknown as typeof fetch;
-  return calls;
+function cannedClient(): { client: OmpdClient; socket: FakeSocket } {
+  const socket = new FakeSocket();
+  const client = new OmpdClient({
+    url: "wss://hub.ompctl.ai/relay",
+    token: "tok_owner",
+    createSocket: () => socket,
+    schedule: () => () => {},
+    isOnline: () => true,
+    probeCredential: () => Promise.resolve("unknown"),
+  });
+  return { client, socket };
 }
 
-/** Drains the microtask queue a mint's fetch/json/setState chain runs on, inside `act` so React commits the result. This is a test seam, not app behavior: nothing in `InviteScreen` itself waits on a timer. */
+/** The mint happens on mount once the socket says hello; a second settle lets the ready state commit. */
 async function settle(): Promise<void> {
   await act(async () => {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -83,56 +110,113 @@ function el(host: HTMLElement, testID: string): HTMLElement | null {
   return host.querySelector(`[data-testid="${testID}"]`);
 }
 
-describe("InviteScreen: minting a second device's credential", () => {
-  test("defaults the requested scopes to this device's own scopes and reaches the ready state", async () => {
-    const calls = stubFetch({
-      pair: [{ body: { code: "424242" } }],
-      approve: [{ body: { token: "tok_new", name: "New device" } }],
-    });
+const ORIGINAL_FETCH = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = ORIGINAL_FETCH;
+});
 
+/** Refuses any HTTP the screen might attempt: the mint has no business on the wire-less path. */
+function forbidFetch(): void {
+  globalThis.fetch = (async () => {
+    throw new Error("InviteScreen must not make HTTP requests");
+  }) as unknown as typeof fetch;
+}
+
+describe("InviteScreen: minting a second device's credential over the socket", () => {
+  test("a hub connection mints on connect, asks for this device's own scopes, and renders the QR", async () => {
+    forbidFetch();
+    const { client, socket } = cannedClient();
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => {
-      root.render(<InviteScreen connection={CONNECTION} onDone={() => {}} />);
+      root.render(<InviteScreen connection={HUB_CONNECTION} onDone={() => {}} createClient={() => client} />);
+    });
+
+    // The screen cannot mint before the socket is up: the relay accepts the
+    // sealed channel, the daemon says hello, and only then does the ask leave.
+    expect(socket.framesOfType("device_invite")).toEqual([]);
+    act(() => {
+      socket.accept();
+      socket.deliver({ t: "hello", deviceId: "dev_owner", agents: [] });
     });
     await settle();
 
-    expect(calls).toHaveLength(2);
-    expect(calls[0]?.url).toBe("http://127.0.0.1:7777/v1/pair");
-    const approveCall = calls[1];
-    expect(approveCall?.url).toBe("http://127.0.0.1:7777/v1/pairings/approve");
-    expect(JSON.parse(String(approveCall?.init?.body))).toEqual({ code: "424242", scopes: ["read", "approve"] });
-    expect((approveCall?.init?.headers as Record<string, string> | undefined)?.Authorization).toBe("Bearer tok_owner");
+    expect(socket.framesOfType("device_invite")).toEqual([
+      { t: "device_invite", name: "New device", scopes: ["read", "approve"] },
+    ]);
+
+    act(() => {
+      socket.deliver({ t: "device_invited", token: "tok_new", name: "Kitchen iPad", scopes: ["read"] });
+    });
+    await settle();
 
     expect(el(host, "invite-qr")).not.toBeNull();
     expect(el(host, "invite-error")).toBeNull();
+    expect(host.textContent).toContain("Kitchen iPad");
 
+    // The screen tore its own socket down when it went away, the same
+    // lifecycle rule the Console's connection follows.
     act(() => {
       root.unmount();
     });
+    expect(socket.closedWith?.code).toBe(1000);
     host.remove();
   });
 
-  test("a widened scope selection the daemon refuses surfaces scope_escalation without crashing", async () => {
-    const calls = stubFetch({
-      pair: [{ body: { code: "111111" } }, { body: { code: "222222" } }],
-      approve: [
-        { body: { token: "tok_first", name: "New device" } },
-        { status: 403, body: { error: "scope_escalation", missing: ["manage"] } },
-      ],
+  test("the QR payload is the hub connection carrying the returned token", () => {
+    const encoded = bundleForInvite(HUB_CONNECTION, "tok_new", ["read"], "Kitchen iPad");
+    const bundle = parsePairingBundle(encoded);
+    expect(bundle).not.toBeNull();
+    expect(bundle?.label).toBe("Kitchen iPad");
+    expect(bundle?.connection).toEqual({
+      transport: "hub",
+      hubUrl: "wss://hub.ompctl.ai/relay",
+      daemonId: "dae_0123456789abcdef",
+      token: "tok_new",
+      scopes: ["read"],
     });
 
+    const direct = bundleForInvite(
+      { transport: "direct", url: "ws://192.168.1.10:7777/v1/socket", token: "tok_owner", scopes: ["approve"] },
+      "tok_lan",
+      ["read", "prompt"],
+      "Desk tablet",
+    );
+    expect(parsePairingBundle(direct)?.connection).toEqual({
+      transport: "direct",
+      url: "ws://192.168.1.10:7777/v1/socket",
+      token: "tok_lan",
+      scopes: ["read", "prompt"],
+    });
+  });
+
+  test("a widened scope selection the daemon refuses surfaces as a readable message", async () => {
+    forbidFetch();
+    const { client, socket } = cannedClient();
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => {
-      root.render(<InviteScreen connection={CONNECTION} onDone={() => {}} />);
+      root.render(<InviteScreen connection={HUB_CONNECTION} onDone={() => {}} createClient={() => client} />);
+    });
+    act(() => {
+      socket.accept();
+      socket.deliver({ t: "hello", deviceId: "dev_owner", agents: [] });
+    });
+    await settle();
+
+    // The first mint succeeds, so a QR is on screen before the operator asks
+    // again. That is what makes the refusal below the interesting case: a
+    // screen that stopped listening to errors once it had a code would leave
+    // the second ask spinning forever.
+    act(() => {
+      socket.deliver({ t: "device_invited", token: "tok_first", name: "New device", scopes: ["read", "approve"] });
     });
     await settle();
     expect(el(host, "invite-qr")).not.toBeNull();
 
-    // Widen past this device's own scopes -- `manage` isn't in `CONNECTION.scopes`.
+    // Widen past this device's own scopes -- `manage` is not in HUB_CONNECTION.scopes.
     act(() => {
       el(host, "invite-scope-manage")?.click();
     });
@@ -141,14 +225,25 @@ describe("InviteScreen: minting a second device's credential", () => {
     });
     await settle();
 
-    expect(calls).toHaveLength(4);
-    expect(JSON.parse(String(calls[3]?.init?.body))).toEqual({ code: "222222", scopes: ["read", "approve", "manage"] });
+    const invites = socket.framesOfType("device_invite");
+    expect(invites).toHaveLength(2);
+    expect(invites[1]).toEqual({ t: "device_invite", name: "New device", scopes: ["read", "approve", "manage"] });
+
+    act(() => {
+      socket.deliver({
+        t: "error",
+        code: "unauthorized",
+        message: "this device cannot grant manage: it does not hold that scope itself",
+      });
+    });
+    await settle();
 
     const error = el(host, "invite-error");
     expect(error).not.toBeNull();
     expect(error?.textContent).toContain("manage");
     // Refused, not crashed: the screen is still mounted and interactive.
     expect(el(host, "invite-generate")).not.toBeNull();
+    expect(el(host, "invite-qr")).toBeNull();
 
     act(() => {
       root.unmount();

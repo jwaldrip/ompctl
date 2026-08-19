@@ -28,6 +28,7 @@ import {
   type ClientErrorEvent,
   type CredentialVerdict,
   computeBackoffDelay,
+  type DeviceInvitedEvent,
   OmpdClient,
   type Scheduler,
   type SessionOpenedEvent,
@@ -1270,5 +1271,65 @@ describe("session open surface", () => {
     expect(errors.length).toBe(2);
     expect(errors[0]).toContain("session_takeover");
     expect(errors[1]).toContain("session_resume");
+  });
+});
+
+describe("device invite surface", () => {
+  test("inviteDevice sends the frame with the name and the scopes as given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.inviteDevice("Kitchen iPad", ["read", "approve"]);
+
+    expect(socket.framesOfType("device_invite")).toEqual([
+      { t: "device_invite", name: "Kitchen iPad", scopes: ["read", "approve"] },
+    ]);
+  });
+
+  test("a device_invited frame dispatches the typed event with the minted token", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: DeviceInvitedEvent[] = [];
+    h.client.on("device_invited", event => received.push(event));
+
+    socket.deliver({ t: "device_invited", token: "tok_new", name: "Kitchen iPad", scopes: ["read"] });
+
+    expect(received).toEqual([{ token: "tok_new", name: "Kitchen iPad", scopes: ["read"] }]);
+  });
+
+  test("a reconnect does not re-issue the invite: the new socket carries nothing but hello", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.inviteDevice("Kitchen iPad", ["read"]);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just the one type: a replay implemented as
+    // remembered state would show up here as any frame after the hello this
+    // socket did not ask for -- and a resent invite is a second credential
+    // minted by nobody, which is the exact leak one-shot semantics prevent.
+    expect(second.sent).toEqual([]);
+    expect(second.framesOfType("device_invite")).toEqual([]);
+  });
+
+  test("losing an invite to a closed socket raises a visible error, like a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.inviteDevice("Kitchen iPad", ["read"]);
+
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("device_invite");
   });
 });
