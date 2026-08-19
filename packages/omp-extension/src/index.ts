@@ -23,11 +23,15 @@
  * missing daemon can never become a retry storm, and the operator token is
  * read from disk, held in memory, and never logged, interpolated, or echoed.
  *
- * Self-contained on purpose: the only import is a type, which the runtime
- * erases, so the installed copy under `~/.omp` needs nothing but node
- * builtins and the globals every omp host already provides.
+ * Self-contained on purpose: the only runtime imports are node builtins, so
+ * the installed copy under `~/.omp` needs nothing but what every omp host
+ * already provides.
+ *
+ * One developer escape hatch: set OMPD_BRIDGE_DEBUG to a file path and the
+ * bridge appends one JSON line per lifecycle fact it observes (see
+ * `bridgeTrace`). Off by default, silent in the session either way.
  */
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -87,6 +91,12 @@ export interface BridgeDeps {
   readSocketUrl(): string | null;
   createSocket(url: string): BridgeSocket;
   random(): number;
+  /**
+   * Developer diagnostic, absent in production. Off by default and free when
+   * off: see `bridgeTrace`. Injected by tests as a recorder; never a place to
+   * send the token or the socket URL, which this module never traces.
+   */
+  trace?(kind: string, data: Record<string, unknown>): void;
 }
 
 /** Reconnect cadence. The ceiling is the "bounded" in bounded backoff. */
@@ -101,6 +111,38 @@ export function bridgeBackoffDelayMs(attempt: number, random: () => number): num
   const raw = Math.min(BRIDGE_BACKOFF_MS.max, BRIDGE_BACKOFF_MS.base * BRIDGE_BACKOFF_MS.factor ** exponent);
   const spread = raw * 0.3 * random();
   return Math.max(0, Math.round(raw - spread));
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+/**
+ * The production trace sink, and the whole of the bridge's observability.
+ *
+ * Why it exists: a bridge defect that presents as silence. Every layer here
+ * swallows by design (the bridge to protect the session it guests in, omp's
+ * runner to protect the process), so a handler that throws and an event that
+ * never fired were indistinguishable, and exactly that ambiguity let a
+ * ctx-identity defect reach a merge while its unit tests stayed green.
+ *
+ * A developer chasing a dead bridge runs omp with
+ * `OMPD_BRIDGE_DEBUG=/tmp/ompd-bridge.jsonl` and reads one JSON object per
+ * line: `registered`, `activity`, `retry_scheduled`, `stopped`,
+ * `guard_reject` (the fingerprint of this defect class: a registered session
+ * declining its own events), and `handler_error`. Off unless the variable
+ * names a file, one env read when off, and its own throws are contained so a
+ * read-only disk cannot cost the session anything. The token and the socket
+ * URL it carries are never traced.
+ */
+export function bridgeTrace(env: NodeJS.ProcessEnv, kind: string, data: Record<string, unknown>): void {
+  const target = env.OMPD_BRIDGE_DEBUG;
+  if (target === undefined || target === "") return;
+  try {
+    appendFileSync(target, `${JSON.stringify({ ts: new Date().toISOString(), kind, ...data })}\n`);
+  } catch {
+    /* a diagnostic that broke the session would be worse than none */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -153,9 +195,23 @@ export class Bridge {
     return this.#registered;
   }
 
-  /** Whether an event context belongs to the session this bridge serves. */
+  /**
+   * Whether an event context belongs to the session this bridge serves.
+   *
+   * Identity cannot live on the ctx object: omp builds a fresh context per
+   * emitted event and hands the handler a prototype wrapper of even that
+   * (observed against a real 17.3.7 session: ctx identity fails on every
+   * event after the session_start that built this bridge). The reference that
+   * IS stable across one runner's events is `sessionManager`, copied by the
+   * runner into every context it mints and delegated through the wrapper, so
+   * identity is decided there. It still separates sessions: another runner in
+   * this process (a subagent, a startup flush from some other session) has
+   * its own session manager, while a `/resume` keeps the same one and only
+   * changes the id it answers with, which is precisely the session_switch
+   * case this bridge reconnects on.
+   */
   ownsContext(ctx: BridgeContext): boolean {
-    return ctx === this.#ctx;
+    return ctx.sessionManager === this.#ctx.sessionManager;
   }
 
   /** Close and re-register, for a switch to a different session id. */
@@ -205,6 +261,7 @@ export class Bridge {
           title: this.#ctx.sessionManager.getSessionName(),
           pid: process.pid,
         });
+        this.#deps.trace?.("registered", { sessionId });
       } catch {
         /* an unsent registration leaves an idle socket; its close drives the retry */
       }
@@ -232,7 +289,9 @@ export class Bridge {
   stop(): void {
     this.#stopped = true;
     this.#clearTimer();
+    const was = this.#registered;
     this.#closeSocket();
+    this.#deps.trace?.("stopped", { sessionId: was });
   }
 
   reportTurnStart(): void {
@@ -285,6 +344,7 @@ export class Bridge {
         : { t: "tui_activity", sessionId: this.#registered, kind, text };
     try {
       socket.send(JSON.stringify(frame));
+      this.#deps.trace?.("activity", { activityKind: kind, sessionId: this.#registered, textBytes: text?.length ?? 0 });
     } catch {
       /* a dropped hint about a row is worth less than the reconnect already under way */
     }
@@ -301,6 +361,7 @@ export class Bridge {
     if (this.#timer !== null) return;
     const delayMs = bridgeBackoffDelayMs(this.#attempt, this.#deps.random);
     this.#attempt += 1;
+    this.#deps.trace?.("retry_scheduled", { attempt: this.#attempt, delayMs });
     try {
       this.#timer = this.#ctx.setTimeout(() => {
         this.#timer = null;
@@ -370,42 +431,91 @@ export class Bridge {
  * that hosts subagent sessions alongside the interactive one must not have a
  * subagent's lifecycle steal or stop the interactive session's bridge.
  */
+/**
+ * What a wiring handler reads from ctx: the bridge's slice, plus the mode
+ * field the session_start guard keys on. Structural, like BridgeContext, so
+ * omp's wider ExtensionContext satisfies it and tests fake exactly this.
+ */
+type WiringContext = BridgeContext & { readonly mode: string };
+
 export function wireOmpdBridge(pi: ExtensionAPI, deps: BridgeDeps = defaultDeps()): void {
   const bridges = new WeakMap<ExtensionAPI, Bridge>();
-  const forContext = (ctx: BridgeContext): Bridge | null => {
+  // The `guard_reject` trace fires only when a registered bridge declined an
+  // event, which is the fingerprint of a routing defect: a session the daemon
+  // knows about, going quiet for reasons no unit test with one shared ctx
+  // object can reproduce. Events with no bridge at all (a print run) are the
+  // norm, not a defect, and stay untraced.
+  const forContext = (ctx: BridgeContext, event: string): Bridge | null => {
     const bridge = bridges.get(pi);
-    return bridge?.ownsContext(ctx) === true ? bridge : null;
+    if (bridge === undefined) return null;
+    if (bridge.ownsContext(ctx)) return bridge;
+    deps.trace?.("guard_reject", { event, registered: bridge.sessionId });
+    return null;
   };
+  // One wrapper for every binding, because a throw must never reach omp's
+  // session: the runner would contain it, but into a channel this bridge
+  // never sees, which is how a broken handler reads as a missing event.
+  const contained =
+    (event: string, run: (payload: unknown, ctx: WiringContext) => void) =>
+    (payload: unknown, ctx: WiringContext): void => {
+      try {
+        run(payload, ctx);
+      } catch (error) {
+        try {
+          deps.trace?.("handler_error", { event, error: error instanceof Error ? error.message : String(error) });
+        } catch {
+          /* a broken diagnostic must not compound a contained error */
+        }
+      }
+    };
 
-  pi.on("session_start", (_event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    if (bridges.has(pi)) return;
-    const bridge = new Bridge(pi, ctx, deps);
-    bridges.set(pi, bridge);
-    bridge.connect();
-  });
-  pi.on("session_switch", (_event, ctx) => {
-    const bridge = forContext(ctx);
-    if (bridge !== null) bridge.reconnect();
-  });
-  pi.on("turn_start", (_event, ctx) => {
-    forContext(ctx)?.reportTurnStart();
-  });
-  pi.on("message_end", (event, ctx) => {
-    const bridge = forContext(ctx);
-    if (bridge === null) return;
-    const text = assistantText(event.message);
-    if (text !== undefined) bridge.reportAssistantText(text);
-  });
-  pi.on("turn_end", (_event, ctx) => {
-    forContext(ctx)?.reportTurnEnd();
-  });
-  pi.on("session_shutdown", (_event, ctx) => {
-    const bridge = forContext(ctx);
-    if (bridge === null) return;
-    bridges.delete(pi);
-    bridge.stop();
-  });
+  pi.on(
+    "session_start",
+    contained("session_start", (_event, ctx) => {
+      if (ctx.mode !== "tui") return;
+      if (bridges.has(pi)) return;
+      const bridge = new Bridge(pi, ctx, deps);
+      bridges.set(pi, bridge);
+      bridge.connect();
+    }),
+  );
+  pi.on(
+    "session_switch",
+    contained("session_switch", (_event, ctx) => {
+      const bridge = forContext(ctx, "session_switch");
+      if (bridge !== null) bridge.reconnect();
+    }),
+  );
+  pi.on(
+    "turn_start",
+    contained("turn_start", (_event, ctx) => {
+      forContext(ctx, "turn_start")?.reportTurnStart();
+    }),
+  );
+  pi.on(
+    "message_end",
+    contained("message_end", (event, ctx) => {
+      const bridge = forContext(ctx, "message_end");
+      if (bridge === null) return;
+      const text = assistantText((event as { message?: unknown }).message);
+      if (text !== undefined) bridge.reportAssistantText(text);
+    }),
+  );
+  pi.on(
+    "turn_end",
+    contained("turn_end", (_event, ctx) => {
+      forContext(ctx, "turn_end")?.reportTurnEnd();
+    }),
+  );
+  pi.on(
+    "session_shutdown",
+    contained("session_shutdown", (_event, ctx) => {
+      const bridge = forContext(ctx, "session_shutdown");
+      if (bridge === null) return;
+      bridges.delete(pi);
+      bridge.stop();
+    }),
+  );
 }
 
 /**
@@ -468,6 +578,7 @@ function defaultDeps(): BridgeDeps {
     readSocketUrl: () => readSocketUrlFromFiles(process.env, homedir()),
     createSocket: createHostSocket,
     random: () => Math.random(),
+    trace: (kind, data) => bridgeTrace(process.env, kind, data),
   };
 }
 
