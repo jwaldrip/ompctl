@@ -95,8 +95,17 @@ ${argXml}
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <!-- Interactive, not Background. launchd's Background process type carries
+       IOPOL_THROTTLE, and a throttled daemon is not a slow daemon, it is an
+       unresponsive one: the same binary that answers a cold session-index
+       request in 1.4 seconds in the foreground took over 60 seconds under
+       Background on this author's machine, with the process sitting at 0
+       percent CPU the whole time because every read was deprioritised behind
+       whatever else the disk was doing. Everything this daemon does is on
+       behalf of an operator waiting at a phone or a terminal, so it is
+       interactive work by definition. -->
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>StandardOutPath</key>
   <string>${escapeXml(join(ctx.home, "ompd.log"))}</string>
   <key>StandardErrorPath</key>

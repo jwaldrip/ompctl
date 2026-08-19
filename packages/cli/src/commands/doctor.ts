@@ -293,6 +293,23 @@ function loginAgentCheck(ctx: CliContext): Check {
       advice: ["run: ompd install (rewrites it)"],
     };
   }
+  // An install from before the scheduling class was corrected still carries
+  // Background, and the symptom is not subtle: IOPOL_THROTTLE makes every
+  // request that touches disk wait behind the rest of the machine, so the
+  // daemon reads as hung rather than slow while sitting at 0 percent CPU.
+  // Nothing rewrites a plist on its own, so this has to be said out loud.
+  if (contents.includes("<string>Background</string>")) {
+    return {
+      label: "login agent",
+      severity: "warn",
+      detail: `${path} runs the daemon as a throttled Background job`,
+      advice: [
+        "disk reads are deprioritised, so listing sessions can look like a hang",
+        "run: ompd install (rewrites it as Interactive)",
+      ],
+    };
+  }
+
   if (!existsSync(program)) {
     return {
       label: "login agent",
