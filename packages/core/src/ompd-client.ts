@@ -400,6 +400,9 @@ export interface CloneProgressEvent {
 export interface CloneDoneEvent {
   cloneId: CloneId;
   path: string;
+}
+
+/**
  * A session's transcript tail, answering `sessionTail`. Oldest first, so a
  * view appends live `tui_activity` below it without reordering. `truncated`
  * says the tail is not the whole transcript, which is a rendering hint and

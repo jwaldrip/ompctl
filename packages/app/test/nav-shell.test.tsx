@@ -61,6 +61,7 @@ const CONNECTIONS: ConnectionList = {
  */
 class CannedClient {
   readonly prompts: Array<{ sessionId: string; text: string }> = [];
+  readonly tails: Array<{ sessionId: string; limit?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -83,6 +84,15 @@ class CannedClient {
   reconnectNow(): void {}
   attach(): void {}
   listSessions(): void {}
+  /**
+   * Recorded rather than ignored: opening a terminal route asks for the
+   * session's transcript tail, so a double that lacked this method turned a
+   * navigation test into a TypeError about the client instead of a failure
+   * about the stack.
+   */
+  sessionTail(sessionId: string, limit?: number): void {
+    this.tails.push({ sessionId, limit });
+  }
   sessionPrompt(sessionId: string, text: string): void {
     this.prompts.push({ sessionId, text });
   }
