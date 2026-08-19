@@ -16,18 +16,23 @@
  * context, driven by hand, so the delays are values under assertion rather
  * than waits.
  */
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
+
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import {
   assistantText,
-  BRIDGE_BACKOFF_MS,
+  bridgeBackoffDelayMs,
+  bridgeTrace,
   Bridge,
   type BridgeContext,
   type BridgeDeps,
   type BridgePi,
   type BridgeSocket,
-  bridgeBackoffDelayMs,
+  BRIDGE_BACKOFF_MS,
   wireOmpdBridge,
 } from "../src/index.ts";
 
@@ -411,7 +416,12 @@ describe("activity", () => {
       }),
     ).toBe("first\nsecond");
     expect(assistantText({ role: "user", content: [{ type: "text", text: "a prompt" }] })).toBeUndefined();
-    expect(assistantText({ role: "assistant", content: [{ type: "toolCall", name: "bash" }] })).toBeUndefined();
+    // A block that is not prose but happens to carry a text property (a
+    // thinking block's echo, a tool call's serialized arguments) is not the
+    // assistant's answer; only type "text" blocks are.
+    expect(
+      assistantText({ role: "assistant", content: [{ type: "thinking", thinking: "hidden", text: "stray" }] }),
+    ).toBeUndefined();
     expect(assistantText({ role: "assistant", content: [{ type: "text", text: "" }] })).toBeUndefined();
     expect(assistantText(null)).toBeUndefined();
     expect(assistantText("a string")).toBeUndefined();
@@ -452,25 +462,45 @@ describe("shutdown", () => {
 /**
  * The event wiring, driven through a recorded `pi`.
  *
- * This is the half that pins the event NAMES. Everything above tests a bridge
- * someone already called; these tests fail if `session_start`, `turn_start`,
- * `message_end`, `turn_end`, `session_switch`, or `session_shutdown` is
- * renamed or dropped, which is the only way to catch binding to an event omp
- * does not emit.
+ * The fake is shaped like the real host, verified against a live omp 17.3.7
+ * session: ONE sessionManager per session runner, and a FRESH context object
+ * for every emitted event (the runner builds a new ctx per emit and hands the
+ * handler a prototype wrapper of even that; ctx identity NEVER repeats,
+ * sessionManager identity always does). The bridge's event routing is only
+ * correct if it survives exactly this shape, which is what cost a merge when
+ * these tests minted one shared ctx instead.
  */
 describe("wiring", () => {
+  interface TraceEntry {
+    kind: string;
+    data: Record<string, unknown>;
+  }
+
   interface Wired {
     handlers: Map<string, (event: unknown, ctx: unknown) => void>;
     sockets: FakeSocket[];
     sent: Array<{ message: string; options?: { deliverAs?: string } }>;
-    ctx(overrides?: { mode?: string; sessionId?: string }): unknown;
+    trace: TraceEntry[];
+    /** A fresh ctx, as omp mints per event. */
+    ctx(overrides?: { mode?: string }): unknown;
+    /** A ctx whose sessionManager belongs to another runner in this process. */
+    foreignCtx(): unknown;
     fire(event: string, payload: unknown, ctx: unknown): void;
+    setSessionId(id: string): void;
   }
 
   function wired(url: string | null = URL): Wired {
     const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
     const sockets: FakeSocket[] = [];
     const sent: Wired["sent"] = [];
+    const trace: TraceEntry[] = [];
+    let sessionId = SESSION;
+    // The one reference omp keeps stable across a session runner's events.
+    const sessionManager = {
+      getSessionId: () => sessionId,
+      getSessionName: () => "steering the terminal" as string | undefined,
+    };
+    const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
     const pi = {
       sendUserMessage: (message: string, options?: { deliverAs?: string }) => {
         sent.push({ message, options });
@@ -487,30 +517,50 @@ describe("wiring", () => {
         return socket;
       },
       random: () => 0,
+      trace: (kind, data) => {
+        trace.push({ kind, data });
+      },
     };
     // The real `ExtensionAPI` is far wider than the bridge touches, and a
     // faithful fake of it would test the fake. This is the same seam the
     // daemon's own tests use for upstream types.
     wireOmpdBridge(pi as unknown as ExtensionAPI, deps);
 
+    const mintCtx = (manager: unknown, mode: string) => ({
+      mode,
+      cwd: "/work/ompd",
+      sessionManager: manager,
+      setTimeout: (fn: () => void, ms: number) => {
+        const scheduled = { fn, ms, cleared: false };
+        timers.push(scheduled);
+        return scheduled;
+      },
+      clearTimer: (timer: unknown) => {
+        (timer as { cleared: boolean }).cleared = true;
+      },
+    });
+
     return {
       handlers,
       sockets,
       sent,
-      ctx: (overrides = {}) => ({
-        mode: overrides.mode ?? "tui",
-        cwd: "/work/ompd",
-        sessionManager: {
-          getSessionId: () => overrides.sessionId ?? SESSION,
-          getSessionName: () => "steering the terminal",
-        },
-        setTimeout: (fn: () => void, ms: number) => ({ fn, ms }),
-        clearTimer: () => {},
-      }),
+      trace,
+      ctx: (overrides = {}) => mintCtx(sessionManager, overrides.mode ?? "tui"),
+      foreignCtx: () =>
+        mintCtx(
+          {
+            getSessionId: () => NEXT_SESSION,
+            getSessionName: () => undefined,
+          },
+          "tui",
+        ),
       fire: (event, payload, ctx) => {
         const handler = handlers.get(event);
         if (handler === undefined) throw new Error(`nothing is bound to ${event}`);
         handler(payload, ctx);
+      },
+      setSessionId: id => {
+        sessionId = id;
       },
     };
   }
@@ -536,17 +586,19 @@ describe("wiring", () => {
     expect(w.sockets).toEqual([]);
   });
 
-  test("turn boundaries and assistant text flow back as activity", () => {
+  test("turn boundaries and assistant text flow back as activity, one fresh ctx per event", () => {
     const w = wired();
-    const ctx = w.ctx();
-    w.fire("session_start", { type: "session_start" }, ctx);
+    // Every event gets its own ctx object, exactly as the real host mints
+    // them; a bridge that keyed on ctx identity goes silent after
+    // registration, which is the defect this test exists to pin.
+    w.fire("session_start", { type: "session_start" }, w.ctx());
     w.sockets[0]?.accept();
 
-    w.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, ctx);
+    w.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, w.ctx());
     w.fire(
       "message_end",
       { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "found it" }] } },
-      ctx,
+      w.ctx(),
     );
     // A user message is not activity: echoing the operator's own words back to
     // the phone that sent them is noise, and for a locally typed prompt it is
@@ -554,9 +606,9 @@ describe("wiring", () => {
     w.fire(
       "message_end",
       { type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
-      ctx,
+      w.ctx(),
     );
-    w.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] } }, ctx);
+    w.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] } }, w.ctx());
 
     expect(w.sockets[0]?.sent.slice(1)).toEqual([
       { t: "tui_activity", sessionId: SESSION, kind: "turn_start" },
@@ -565,58 +617,100 @@ describe("wiring", () => {
     ]);
   });
 
+  test("the finalized assistant message shape omp delivers is the one extracted", () => {
+    // Verbatim from a live 17.3.7 session's message_end for the answer
+    // "diag-ok": role assistant, content blocks of { type, text }. The
+    // toolCall-only assistant messages (the model's tool turns) must yield
+    // nothing, exactly as observed.
+    const w = wired();
+    w.fire("session_start", { type: "session_start" }, w.ctx());
+    w.sockets[0]?.accept();
+    w.fire(
+      "message_end",
+      { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "diag-ok" }] } },
+      w.ctx(),
+    );
+    w.fire(
+      "message_end",
+      { type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "todo" }] } },
+      w.ctx(),
+    );
+    w.fire(
+      "message_end",
+      { type: "message_end", message: { role: "custom", content: "string not blocks" } },
+      w.ctx(),
+    );
+
+    expect(w.sockets[0]?.sent.slice(1)).toEqual([
+      { t: "tui_activity", sessionId: SESSION, kind: "assistant_text", text: "diag-ok" },
+    ]);
+  });
+
   test("a steer arriving on the socket reaches the session", () => {
     const w = wired();
-    const ctx = w.ctx();
-    w.fire("session_start", { type: "session_start" }, ctx);
+    w.fire("session_start", { type: "session_start" }, w.ctx());
     w.sockets[0]?.accept();
     w.sockets[0]?.deliver({ t: "tui_steer", sessionId: SESSION, text: "from the phone" });
 
     expect(w.sent).toEqual([{ message: "from the phone", options: undefined }]);
   });
 
-  test("events from another session in this process are ignored", () => {
+  test("events from another session runner in this process are ignored, and the rejection is traced", () => {
     const w = wired();
     w.fire("session_start", { type: "session_start" }, w.ctx());
     w.sockets[0]?.accept();
 
-    // A subagent session's own context, with its own id. Its turns are not the
+    // A subagent or startup-flush runner: its own sessionManager object and
+    // id (both observed in one live process). Its turns are not the
     // interactive session's turns, and its shutdown is not the terminal's.
-    const other = w.ctx({ sessionId: NEXT_SESSION });
+    const other = w.foreignCtx();
     w.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, other);
     w.fire("session_shutdown", { type: "session_shutdown" }, other);
 
     expect(w.sockets[0]?.sent).toHaveLength(1);
     expect(w.sockets[0]?.closedWith).toBeNull();
+    // The diagnostic contract: a registered bridge declining an event is
+    // exactly the fingerprint that would expose a routing defect live.
+    expect(w.trace).toContainEqual({
+      kind: "guard_reject",
+      data: { event: "turn_start", registered: SESSION },
+    });
+    expect(w.trace).toContainEqual({
+      kind: "guard_reject",
+      data: { event: "session_shutdown", registered: SESSION },
+    });
+  });
+
+  test("a shutdown from another runner arriving before session_start connects nothing", () => {
+    // Observed in a live process: the first event this extension saw was a
+    // session_shutdown for a different session. It must be a no-op.
+    const w = wired();
+    expect(() => w.fire("session_shutdown", { type: "session_shutdown" }, w.foreignCtx())).not.toThrow();
+    w.fire("session_start", { type: "session_start" }, w.ctx());
+    w.sockets[0]?.accept();
+    expect(w.sockets[0]?.sent[0]).toMatchObject({ t: "tui_register", sessionId: SESSION });
+    expect(w.trace).toEqual([{ kind: "registered", data: { sessionId: SESSION } }]);
   });
 
   test("session_shutdown closes the socket", () => {
     const w = wired();
-    const ctx = w.ctx();
-    w.fire("session_start", { type: "session_start" }, ctx);
+    w.fire("session_start", { type: "session_start" }, w.ctx());
     w.sockets[0]?.accept();
-    w.fire("session_shutdown", { type: "session_shutdown" }, ctx);
+    w.fire("session_shutdown", { type: "session_shutdown" }, w.ctx());
 
     expect(w.sockets[0]?.closedWith).toEqual({ code: 1000, reason: "ompd bridge stopped" });
+    expect(w.trace).toContainEqual({ kind: "stopped", data: { sessionId: SESSION } });
   });
 
   test("session_switch re-registers the id the session moved to", () => {
     const w = wired();
-    let sessionId = SESSION;
-    const ctx = {
-      mode: "tui",
-      cwd: "/work/ompd",
-      sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined },
-      setTimeout: (fn: () => void, ms: number) => ({ fn, ms }),
-      clearTimer: () => {},
-    };
-    w.fire("session_start", { type: "session_start" }, ctx);
+    w.fire("session_start", { type: "session_start" }, w.ctx());
     w.sockets[0]?.accept();
 
-    // Interactive omp reuses one session manager across a resume, so the id
-    // changes underneath the same context object.
-    sessionId = NEXT_SESSION;
-    w.fire("session_switch", { type: "session_switch", reason: "resume" }, ctx);
+    // Interactive omp reuses ONE session manager across a resume, so the id
+    // changes underneath fresh ctx objects that keep carrying that manager.
+    w.setSessionId(NEXT_SESSION);
+    w.fire("session_switch", { type: "session_switch", reason: "resume" }, w.ctx());
     w.sockets[1]?.accept();
 
     expect(w.sockets[1]?.sent[0]).toMatchObject({ t: "tui_register", sessionId: NEXT_SESSION });
@@ -624,11 +718,59 @@ describe("wiring", () => {
 
   test("no daemon means the session never sees a socket or a throw", () => {
     const w = wired(null);
-    const ctx = w.ctx();
-    expect(() => w.fire("session_start", { type: "session_start" }, ctx)).not.toThrow();
+    expect(() => w.fire("session_start", { type: "session_start" }, w.ctx())).not.toThrow();
     expect(w.sockets).toEqual([]);
     // And the session keeps working: activity events on a bridge that never
-    // connected are inert rather than fatal.
-    expect(() => w.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, ctx)).not.toThrow();
+    // connected are inert rather than fatal, and untraceable events from an
+    // unregistered session are the norm (a print run), not a defect.
+    expect(() => w.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, w.ctx())).not.toThrow();
+    expect(w.trace).toEqual([]);
+  });
+
+  test("a throwing handler is contained and recorded, not silent", () => {
+    const w = wired();
+    w.fire("session_start", { type: "session_start" }, w.ctx());
+    w.sockets[0]?.accept();
+
+    // A payload whose message accessor throws: hostile or merely broken, the
+    // handler must not hand the throw to omp's session, and the trace must
+    // say it happened, which is the visibility this defect class lacked.
+    const hostile: Record<string, unknown> = Object.create({
+      get message(): unknown {
+        throw new Error("payload exploded");
+      },
+    });
+    hostile.type = "message_end";
+
+    expect(() => w.fire("message_end", hostile, w.ctx())).not.toThrow();
+    expect(w.trace).toContainEqual({
+      kind: "handler_error",
+      data: { event: "message_end", error: "payload exploded" },
+    });
+    // The bridge itself is unharmed: the next turn still reports.
+    w.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 0 }, w.ctx());
+    expect(w.sockets[0]?.sent.slice(1)).toEqual([
+      { t: "tui_activity", sessionId: SESSION, kind: "turn_start" },
+    ]);
+  });
+});
+
+describe("diagnostics", () => {
+  test("bridgeTrace writes one JSON line per fact, only when the env names a file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompd-bridge-trace-"));
+    const file = join(dir, "bridge.jsonl");
+
+    bridgeTrace({ OMPD_BRIDGE_DEBUG: file }, "registered", { sessionId: SESSION });
+    // No variable: the common case, and it must cost nothing observable.
+    bridgeTrace({}, "registered", { sessionId: SESSION });
+    // An unwritable target must be swallowed, never surfaced to the session.
+    bridgeTrace({ OMPD_BRIDGE_DEBUG: join(dir, "no", "such", "dir", "b.jsonl") }, "registered", {});
+
+    const lines = readFileSync(file, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    const entry = JSON.parse(lines[0] ?? "") as Record<string, unknown>;
+    expect(entry.kind).toBe("registered");
+    expect(entry.sessionId).toBe(SESSION);
+    expect(typeof entry.ts).toBe("string");
   });
 });
