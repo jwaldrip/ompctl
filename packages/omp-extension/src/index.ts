@@ -438,7 +438,7 @@ export class Bridge {
  */
 type WiringContext = BridgeContext & { readonly mode: string };
 
- export function wireOmpdBridge(pi: ExtensionAPI, deps: BridgeDeps = defaultDeps()): void {
+export function wireOmpdBridge(pi: ExtensionAPI, deps: BridgeDeps = defaultDeps()): void {
   const bridges = new WeakMap<ExtensionAPI, Bridge>();
   // The `guard_reject` trace fires only when a registered bridge declined an
   // event, which is the fingerprint of a routing defect: a session the daemon

@@ -16,23 +16,23 @@
  * context, driven by hand, so the delays are values under assertion rather
  * than waits.
  */
+
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, test } from "bun:test";
-
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import {
   assistantText,
-  bridgeBackoffDelayMs,
-  bridgeTrace,
+  BRIDGE_BACKOFF_MS,
   Bridge,
   type BridgeContext,
   type BridgeDeps,
   type BridgePi,
   type BridgeSocket,
-  BRIDGE_BACKOFF_MS,
+  bridgeBackoffDelayMs,
+  bridgeTrace,
   wireOmpdBridge,
 } from "../src/index.ts";
 
@@ -635,11 +635,7 @@ describe("wiring", () => {
       { type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "todo" }] } },
       w.ctx(),
     );
-    w.fire(
-      "message_end",
-      { type: "message_end", message: { role: "custom", content: "string not blocks" } },
-      w.ctx(),
-    );
+    w.fire("message_end", { type: "message_end", message: { role: "custom", content: "string not blocks" } }, w.ctx());
 
     expect(w.sockets[0]?.sent.slice(1)).toEqual([
       { t: "tui_activity", sessionId: SESSION, kind: "assistant_text", text: "diag-ok" },
@@ -749,9 +745,7 @@ describe("wiring", () => {
     });
     // The bridge itself is unharmed: the next turn still reports.
     w.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 0 }, w.ctx());
-    expect(w.sockets[0]?.sent.slice(1)).toEqual([
-      { t: "tui_activity", sessionId: SESSION, kind: "turn_start" },
-    ]);
+    expect(w.sockets[0]?.sent.slice(1)).toEqual([{ t: "tui_activity", sessionId: SESSION, kind: "turn_start" }]);
   });
 });
 
