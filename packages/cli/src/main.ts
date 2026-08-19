@@ -32,9 +32,20 @@ import { selfInstallCommand } from "./commands/self-install.ts";
 import { installCommand, uninstallCommand } from "./commands/service.ts";
 import { syncConfigCommand } from "./commands/sync.ts";
 import { tuiCommand } from "./commands/tui.ts";
+import { isHostedWorkerSelector, runHostedWorker } from "./worker-host.ts";
 
 export async function run(argv: string[], ctx: CliContext = defaultContext()): Promise<number> {
   try {
+    // A hidden __omp_worker_* selector means OMP's speech clients inside a
+    // compiled daemon re-executed this binary to host a speech worker out of
+    // process. Checked before parsing because these selectors are not
+    // commands. The speech runtimes themselves stay out of every normal
+    // invocation: worker-host.ts imports them dynamically, only on this path.
+    // See worker-host.ts for which selectors are hosted and why the rest are
+    // not.
+    if (isHostedWorkerSelector(argv[0])) {
+      return await runHostedWorker(argv[0]);
+    }
     const command = parseCommand(argv);
 
     switch (command.kind) {
