@@ -592,7 +592,15 @@ export type ClientFrame =
   | { t: "ping" };
 
 export type ServerFrame =
-  | { t: "hello"; deviceId: string; agents: Agent[] }
+  /**
+   * The daemon's own record of what this socket's device may do, read from
+   * the same place every authorization decision on that socket reads. A
+   * client must prefer this over anything it was told at pairing time: a
+   * stored hint can be stale (a rotated or narrowed grant) while the
+   * daemon's answer never is. Optional only because an older daemon does
+   * not report it, and absence means "unknown", never "no scopes".
+   */
+  | { t: "hello"; deviceId: string; agents: Agent[]; scopes?: string[] }
   | { t: "agents"; agents: Agent[] }
   | { t: "update"; agentId: AgentId; seq: number; update: unknown }
   | { t: "approval"; agentId: AgentId; requestId: string; title: string; tool: string; input: unknown }

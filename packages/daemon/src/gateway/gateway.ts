@@ -2388,6 +2388,12 @@ export class Gateway {
     this.#send(ws, {
       t: "hello",
       deviceId: ws.data.deviceId,
+      // The daemon's own record of what this device may do, read from the
+      // same scope set every authorization decision on this socket reads
+      // rather than from anything the client claimed at pairing time. A
+      // stored hint goes stale the moment a grant is narrowed or rotated;
+      // this answer cannot be, because it is the thing being enforced.
+      scopes: [...ws.data.scopes],
       agents: ws.data.scopes.has(SCOPE_READ) ? this.#sup.listAgents() : [],
     });
   }

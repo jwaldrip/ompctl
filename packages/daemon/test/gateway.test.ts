@@ -1055,6 +1055,25 @@ describe("hostile frames", () => {
     expect(hello.agents).toEqual([]);
   });
 
+  test("hello reports each socket's own granted scopes, exactly as paired", async () => {
+    const h = await harness();
+
+    // Two devices, different grants, one daemon: each hello must speak for
+    // its own socket's record rather than for whatever a client claimed at
+    // pairing time, because the client decides what to show from this
+    // answer and never gets to decide what it may do.
+    const phone = await openSocket(h.port, await h.pair("phone", [SCOPE_READ, SCOPE_PROMPT]));
+    const phoneHello = await phone.next(f => f.t === "hello", "phone hello");
+    if (phoneHello.t !== "hello") throw new Error("expected a hello frame");
+
+    const tablet = await openSocket(h.port, await h.pair("tablet", [SCOPE_READ, SCOPE_APPROVE, SCOPE_MANAGE]));
+    const tabletHello = await tablet.next(f => f.t === "hello", "tablet hello");
+    if (tabletHello.t !== "hello") throw new Error("expected a hello frame");
+
+    expect(phoneHello.scopes).toEqual(["read", "prompt"]);
+    expect(tabletHello.scopes).toEqual(["read", "approve", "manage"]);
+  });
+
   test("a flood is rate limited and the socket survives it", async () => {
     const h = await harness();
     const sock = await openSocket(h.port, await h.pair("phone", [SCOPE_READ]));

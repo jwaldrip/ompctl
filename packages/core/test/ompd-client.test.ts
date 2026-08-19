@@ -24,6 +24,7 @@ import type {
   WebViewActionResult,
 } from "../src/contracts.ts";
 import {
+  type AgentsEvent,
   agentsEndpoint,
   type BackoffOptions,
   type ClientErrorEvent,
@@ -699,6 +700,39 @@ describe("frame handling", () => {
     expect(() => socket.deliver({ t: "speech", agentId: AGENT, pcm: "AAAA" })).not.toThrow();
     expect(h.errors).toEqual([]);
     expect(socket.closedWith).toBeNull();
+  });
+
+  test("hello's scopes reach the agents event, and only hello speaks for them", () => {
+    const h = harness();
+    const seen: AgentsEvent[] = [];
+    h.client.on("agents", event => seen.push(event));
+    h.client.start();
+
+    h.latest().accept();
+    h.latest().deliver({ t: "hello", deviceId: "dev_test", agents: [], scopes: ["read", "approve"] });
+
+    expect(seen).toEqual([{ agents: [], deviceId: "dev_test", scopes: ["read", "approve"] }]);
+
+    // A roster refresh carries no scopes: reading the grant off anything
+    // but hello would let a refresh erase what the daemon just answered.
+    h.latest().deliver({ t: "agents", agents: [AGENT_RECORD] });
+    expect(seen.at(-1)).toEqual({ agents: [AGENT_RECORD] });
+  });
+
+  test("a hello without scopes leaves the field undefined, never empty", () => {
+    const h = harness();
+    const seen: AgentsEvent[] = [];
+    h.client.on("agents", event => seen.push(event));
+    h.client.start();
+
+    h.latest().accept();
+    // An older daemon, which does not report scopes. The reader must see
+    // "unknown", not "no scopes", or every gated control would hide against
+    // a working daemon.
+    h.latest().deliver({ t: "hello", deviceId: "dev_test", agents: [] });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.scopes).toBeUndefined();
   });
 
   test("a listener that throws cannot take the connection down", () => {
