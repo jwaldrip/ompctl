@@ -467,6 +467,23 @@ export type CollabServerFrame =
   /** Finished notes replay with their durable audio payload; app-side de-duplication prevents re-speaking live notes. */
   | { t: "collab_voice_history"; roomId: string; notes: CollabVoiceNoteFrame[] };
 
+/**
+ * How a steered turn lands in the live session. These are omp's own
+ * `sendUserMessage` modes, verbatim and exhaustively: an omitted or `steer`
+ * delivery takes the turn when the session is idle and interrupts it when one
+ * is streaming, and `followUp` waits for the running turn to finish.
+ *
+ * There is deliberately no `nextTurn` here, though `pi.sendMessage` has one.
+ * The prompt flow a steer goes through has no such mode, so offering it on the
+ * wire would mean either refusing it at the extension after the daemon had
+ * accepted it, or silently downgrading someone's stated intent. The daemon
+ * refuses it as a `bad_frame` instead, at the only place that can say so.
+ */
+export type TuiSteerDelivery = "steer" | "followUp";
+
+/** What a live terminal session reports back as a turn progresses. */
+export type TuiActivityKind = "assistant_text" | "turn_start" | "turn_end";
+
 // ---------------------------------------------------------------------------
 // Client wire protocol
 // ---------------------------------------------------------------------------
@@ -493,6 +510,14 @@ export type ClientFrame =
   | { t: "tui_acp"; sessionId: string; raw: string }
   /** The TUI has stopped rendering and its in-process ACP server is ready. */
   | { t: "tui_acp_ready"; sessionId: string }
+  /**
+   * Prompt a session a registered live TUI owns, without the takeover dance:
+   * the daemon routes the text to that TUI as a `tui_steer`. `deliverAs`
+   * defaults to `steer` server-side, matching omp's own `sendMessage` default.
+   */
+  | { t: "session_prompt"; sessionId: string; text: string; deliverAs?: TuiSteerDelivery }
+  /** A registered live TUI reporting turn progress back to the daemon. */
+  | { t: "tui_activity"; sessionId: string; kind: TuiActivityKind; text?: string }
   /**
    * Ask for the session index over this socket. A hub-relayed phone cannot
    * reach the daemon's HTTP surface at all -- the relay carries sealed
@@ -557,6 +582,18 @@ export type ServerFrame =
   /** ACP JSON-RPC carried over the registered TUI's single control socket. */
   | { t: "tui_acp"; sessionId: string; raw: string }
   /**
+   * Deliver a message into a session a registered live TUI owns. The daemon
+   * sends this only in answer to a prompt-scoped `session_prompt`, and only to
+   * the socket that registered the session.
+   */
+  | { t: "tui_steer"; sessionId: string; text: string; deliverAs: TuiSteerDelivery }
+  /**
+   * Turn progress from a registered live TUI, forwarded by the daemon to
+   * clients that asked for the session index. Keyed by session id, not agent
+   * id: a live terminal session has no agent row.
+   */
+  | { t: "tui_activity"; sessionId: string; kind: TuiActivityKind; text?: string }
+  /**
    * The session index answering a `sessions` client frame, sent only to the
    * socket that asked. Carried on the sealed socket for the same reason the
    * request is: this is the one copy of the index a relayed phone can ever
@@ -582,6 +619,17 @@ export type AuditAction =
   | "agent.create"
   | "agent.stop"
   | "agent.prompt"
+  /**
+   * A device took a turn in a session a live TUI owns, or was refused.
+   *
+   * Its own action rather than `agent.prompt` because it cannot borrow that
+   * shape: `agent.prompt` names an `agentId` this daemon spawned and holds a
+   * row for, while this names a session id owned by a foreign OMP process the
+   * daemon only has a socket to. The detail carries the session, the delivery
+   * mode, and the refusal reason, and never the prompt text: the text is the
+   * operator's content, and an audit log is not a transcript.
+   */
+  | "session.prompt"
   | "approval.decide"
   | "device.pair"
   | "device.revoke"

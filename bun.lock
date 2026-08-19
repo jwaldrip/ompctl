@@ -105,6 +105,13 @@
         "@ompd/tunnel": "workspace:*",
       },
     },
+    "packages/omp-extension": {
+      "name": "@ompd/omp-extension",
+      "version": "0.1.0",
+      "dependencies": {
+        "@oh-my-pi/pi-coding-agent": "catalog:",
+      },
+    },
     "packages/site": {
       "name": "@ompd/site",
       "devDependencies": {
@@ -601,6 +608,8 @@
     "@ompd/e2e": ["@ompd/e2e@workspace:packages/e2e"],
 
     "@ompd/hub": ["@ompd/hub@workspace:packages/hub"],
+
+    "@ompd/omp-extension": ["@ompd/omp-extension@workspace:packages/omp-extension"],
 
     "@ompd/site": ["@ompd/site@workspace:packages/site"],
 
