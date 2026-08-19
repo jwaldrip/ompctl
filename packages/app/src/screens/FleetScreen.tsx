@@ -36,7 +36,7 @@ export interface FleetScreenProps {
   onToggleGroup: (cwd: string) => void;
   onToggleGrouped: () => void;
   onToggleArchived: () => void;
-  onTakeover: (session: BrowserSession) => void;
+  onOpen: (session: BrowserSession) => void;
   onArchive: (session: BrowserSession) => void;
   onUnarchive: (session: BrowserSession) => void;
   /** Injected so a test can pin the row clocks instead of racing the wall. */
@@ -49,7 +49,7 @@ export function FleetScreen({
   onToggleGroup,
   onToggleGrouped,
   onToggleArchived,
-  onTakeover,
+  onOpen,
   onArchive,
   onUnarchive,
   now,
@@ -130,7 +130,7 @@ export function FleetScreen({
             <SessionRow
               session={item}
               showCwd={false}
-              onTakeover={onTakeover}
+              onOpen={onOpen}
               onArchive={onArchive}
               onUnarchive={onUnarchive}
               now={now}
@@ -149,7 +149,7 @@ export function FleetScreen({
             <SessionRow
               session={item}
               showCwd
-              onTakeover={onTakeover}
+              onOpen={onOpen}
               onArchive={onArchive}
               onUnarchive={onUnarchive}
               now={now}

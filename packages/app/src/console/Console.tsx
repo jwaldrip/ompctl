@@ -20,8 +20,9 @@ import { ground, stroke } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
 import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
+import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
-import { browserSessionsOf, fleetClearances, openSessionTarget, sessionFor } from "./state.ts";
+import { browserSessionsOf, fleetClearances, openSessionTarget, sessionFor, tuiSessionFor } from "./state.ts";
 import { useConsole } from "./useConsole.ts";
 import { useHardwareBack } from "./useHardwareBack.ts";
 export function Console({
@@ -63,7 +64,7 @@ export function Console({
   // Android hardware back is the system way back to the bay on a phone. On a
   // split layout the bay is already on screen, so claiming back would steal the
   // OS gesture for no gain.
-  useHardwareBack(!split && state.selected !== null, actions.back);
+  useHardwareBack(!split && (state.selected !== null || state.selectedTui !== null), actions.back);
 
   const bay = (
     <View style={split ? styles.splitBay : styles.bay}>
@@ -83,10 +84,11 @@ export function Console({
           onToggleArchived={() => {
             dispatchBrowser({ t: "toggleArchived" });
           }}
-          onTakeover={row => {
+          onOpen={row => {
             // Rows are sessions, not agents; the pure resolver in state.ts
             // decides what the tap lands on, and the action owns the impure
-            // ways to reach it: attach, or a claim the daemon verifies.
+            // ways to reach it: attach, a claim the daemon verifies, or the
+            // terminal prompt surface.
             actions.openSession(openSessionTarget(state, row.id));
           }}
           onArchive={session => {
@@ -144,15 +146,38 @@ export function Console({
       />
     );
 
+  // A terminal session's prompt surface is a third detail pane, not a
+  // variant of the log: there is no transcript to attach to. Keyed like the
+  // log so switching rows builds a fresh composer instead of carrying one
+  // row's draft into another's.
+  const selectedTui = state.selectedTui;
+  const tuiRow = selectedTui === null ? undefined : state.sessionIndex.find(row => row.id === selectedTui);
+  const tui =
+    selectedTui === null ? null : (
+      <TerminalSessionScreen
+        key={selectedTui}
+        title={tuiRow?.title ?? "Terminal session"}
+        cwd={tuiRow?.cwd ?? tuiRow?.flattenedDir ?? ""}
+        tui={tuiSessionFor(state, selectedTui)}
+        connection={state.connection}
+        onBack={actions.back}
+        onSubmit={text => {
+          actions.promptTui(selectedTui, text);
+        }}
+      />
+    );
+
+  const detail = log ?? tui;
+
   return (
     <View style={styles.position} testID="console">
       {split ? (
         <View style={styles.split}>
           <View style={styles.bay}>{bay}</View>
-          <View style={styles.log}>{log}</View>
+          <View style={styles.log}>{detail}</View>
         </View>
       ) : (
-        (log ?? bay)
+        (detail ?? bay)
       )}
       {state.notice === null ? null : <Toast message={state.notice} onDismiss={actions.dismiss} />}
     </View>

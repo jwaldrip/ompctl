@@ -35,11 +35,16 @@ export interface ConsoleActions {
   dismiss: () => void;
   /**
    * Open one browser row. A row whose session an agent already holds opens
-   * that agent the way `select` does; every other row sends the daemon a
-   * claim over the socket, and the `session_opened` reply -- not this call --
-   * is what opens the agent the daemon named.
+   * that agent's log; a live terminal session opens its prompt surface; the
+   * rest claim through the daemon.
    */
   openSession: (target: SessionOpenTarget) => void;
+  /**
+   * Send one prompt to a live terminal session. The daemon routes it to the
+   * terminal that owns the session; progress arrives as `tui_activity`, and a
+   * terminal with no bridge answers `tui_unreachable` instead.
+   */
+  promptTui: (sessionId: string, text: string) => void;
   /** Register this selected screen as the agent's live WebView target. */
   mountWebView: (agentId: AgentId) => void;
   /** Withdraw the selected screen's target. Safe to call after a failed mount. */
@@ -151,7 +156,7 @@ export function useConsole(
         dispatch({ t: "agents", event });
       }),
       client.on("session_opened", event => {
-        // The only answer a takeover or resume claim gets: the agent that now
+        // The only answer a resume claim gets: the agent that now
         // holds the session, or the one that already did. Selecting it is
         // what makes the tap land, and selecting is also attaching, so this
         // socket starts receiving the roster pushes that carry the agent the
@@ -176,6 +181,9 @@ export function useConsole(
       }),
       client.on("say", event => {
         dispatch({ t: "say", event });
+      }),
+      client.on("tui_activity", event => {
+        dispatch({ t: "tui_activity", event });
       }),
       client.on("unauthorized", event => {
         dispatch({ t: "unauthorized", event });
@@ -245,20 +253,23 @@ export function useConsole(
         dispatch({ t: "dismiss" });
       },
       openSession(target) {
-        // Both claims ride the sealed socket rather than the daemon's HTTP
-        // routes, because a hub relay carries one websocket and no HTTP: the
-        // earlier HTTP takeover could only ever work for a device on the same
-        // network as the daemon. The daemon answers `session_opened` with the
-        // agent that now holds the session, and a session already held
-        // answers with the one holding it, so a double tap cannot make a
-        // second holder. Selecting waits for that answer; the reply, not this
-        // dispatch, is what opens the screen.
+        // The resume claim rides the sealed socket rather than the daemon's
+        // HTTP routes, because a hub relay carries one websocket and no HTTP.
+        // The daemon answers `session_opened` with the agent that now holds
+        // the session, and a session already held answers with the one
+        // holding it, so a double tap cannot make a second holder. Selecting
+        // waits for that answer; the reply, not this dispatch, is what opens
+        // the screen.
+        //
+        // A live terminal session never claims anything: the terminal cannot
+        // hand its renderer over, so the open is the local prompt surface and
+        // nothing crosses the wire until the operator sends from it.
         switch (target.kind) {
           case "agent":
             selectAgent(target.agentId);
             return;
           case "live-tui":
-            client.takeOverSession(target.sessionId, target.cwd, target.pid);
+            dispatch({ t: "tui_select", sessionId: target.sessionId });
             return;
           case "dormant":
             client.resumeSession(target.sessionId, target.cwd);
@@ -273,6 +284,10 @@ export function useConsole(
               event: { message: "That session has no record the daemon can verify, so it cannot be opened from here." },
             });
         }
+      },
+      promptTui(sessionId, text) {
+        client.sessionPrompt(sessionId, text);
+        dispatch({ t: "tui_prompt", sessionId, text });
       },
       mountWebView(agentId) {
         if (mountedWebViews.current.has(agentId)) return;
