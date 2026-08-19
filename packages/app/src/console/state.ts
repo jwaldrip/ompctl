@@ -105,7 +105,7 @@ export interface ConsoleState {
   readonly selected: AgentId | null;
   /**
    * The live terminal session whose prompt surface is open, or null.
- *
+   *
    * Held beside `selected` rather than inside it because the two detail panes
    * answer different shapes: an agent has a transcript this device attaches
    * to, a terminal session has only the hints below. Exactly one of the two

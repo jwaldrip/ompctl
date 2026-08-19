@@ -528,7 +528,6 @@ describe("a prompted terminal reports progress as hints, never a transcript", ()
     expect(tuiSessionFor(state, "s-tui").reply).toBe("green");
   });
 
-
   test("a second assistant_text replaces the first, and a hint never accumulates", () => {
     const state = drive([
       { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
@@ -574,7 +573,10 @@ describe("a prompted terminal reports progress as hints, never a transcript", ()
   });
 
   test("opening a terminal closes the agent strip, and an agent landing closes the terminal", () => {
-    const both = drive([{ t: "select", agentId: "agt_open" }, { t: "tui_select", sessionId: "s-tui" }]);
+    const both = drive([
+      { t: "select", agentId: "agt_open" },
+      { t: "tui_select", sessionId: "s-tui" },
+    ]);
     expect(both.selected).toBeNull();
     expect(both.selectedTui).toBe("s-tui");
 
@@ -587,7 +589,10 @@ describe("a prompted terminal reports progress as hints, never a transcript", ()
   });
 
   test("back clears the terminal surface", () => {
-    const state = drive([{ t: "tui_select", sessionId: "s-tui" }, { t: "select", agentId: null }]);
+    const state = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "select", agentId: null },
+    ]);
     expect(state.selectedTui).toBeNull();
   });
 });

@@ -17,11 +17,11 @@
  * Send and stays enabled.
  */
 
+import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useState } from "react";
 import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { TuiSessionState } from "../console/state.ts";
 import { shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
