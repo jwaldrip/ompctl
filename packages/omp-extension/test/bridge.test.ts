@@ -86,7 +86,7 @@ interface Fixture {
   ctx: BridgeContext;
   sockets: FakeSocket[];
   timers: Scheduled[];
-  sent: Array<{ message: string; options: { deliverAs: string; triggerTurn: boolean } }>;
+  sent: Array<{ message: string; options?: { deliverAs?: string } }>;
   /** Run the pending retry, as omp's managed timer would. */
   fireTimer(): void;
   /** Change what `getSessionId` answers, as `/resume` does. */
@@ -102,7 +102,7 @@ function fixture(opts: { url?: string | null; urls?: Array<string | null>; throw
   let urlCursor = 0;
 
   const pi: BridgePi = {
-    sendMessage: (message, options) => {
+    sendUserMessage: (message, options) => {
       sent.push({ message, options });
     },
   };
@@ -280,32 +280,43 @@ describe("reconnect", () => {
 });
 
 describe("steering", () => {
-  test("a tui_steer becomes a sendMessage that triggers a turn", () => {
+  test("a steer becomes a user prompt with no options, which is what takes the turn when idle", () => {
     const f = fixture();
     f.bridge.connect();
     f.sockets[0]?.accept();
     f.sockets[0]?.deliver({ t: "tui_steer", sessionId: SESSION, text: "run the failing test" });
 
-    expect(f.sent).toEqual([{ message: "run the failing test", options: { deliverAs: "steer", triggerTurn: true } }]);
+    // No options, deliberately. `sendUserMessage(text)` prompts when the
+    // session is idle and steers when one is streaming; passing
+    // `deliverAs: "steer"` explicitly only queues, so a phone prompt to an idle
+    // terminal would sit there and do nothing.
+    expect(f.sent).toEqual([{ message: "run the failing test", options: undefined }]);
   });
 
-  test("the requested delivery mode is honoured", () => {
+  test("followUp waits for the running turn", () => {
     const f = fixture();
     f.bridge.connect();
     f.sockets[0]?.accept();
     f.sockets[0]?.deliver({ t: "tui_steer", sessionId: SESSION, text: "later", deliverAs: "followUp" });
-    f.sockets[0]?.deliver({ t: "tui_steer", sessionId: SESSION, text: "next", deliverAs: "nextTurn" });
 
-    expect(f.sent.map(call => call.options.deliverAs)).toEqual(["followUp", "nextTurn"]);
+    expect(f.sent).toEqual([{ message: "later", options: { deliverAs: "followUp" } }]);
   });
 
-  test("an unknown delivery mode falls back to a steer rather than being dropped", () => {
+  test("a delivery mode the prompt flow does not have falls back to the default prompt, not to nothing", () => {
     const f = fixture();
     f.bridge.connect();
     f.sockets[0]?.accept();
-    f.sockets[0]?.deliver({ t: "tui_steer", sessionId: SESSION, text: "go", deliverAs: "telepathy" });
+    // The daemon refuses `nextTurn` as a `bad_frame`, so it cannot arrive here
+    // from a current daemon. An older or hostile one is exactly what this
+    // covers: a mode the prompt flow cannot honour must still deliver the
+    // operator's words rather than swallow them.
+    f.sockets[0]?.deliver({ t: "tui_steer", sessionId: SESSION, text: "go", deliverAs: "nextTurn" });
+    f.sockets[0]?.deliver({ t: "tui_steer", sessionId: SESSION, text: "again", deliverAs: "telepathy" });
 
-    expect(f.sent).toEqual([{ message: "go", options: { deliverAs: "steer", triggerTurn: true } }]);
+    expect(f.sent).toEqual([
+      { message: "go", options: undefined },
+      { message: "again", options: undefined },
+    ]);
   });
 
   test("a steer for another session, garbage, and an empty text are all ignored", () => {
@@ -326,7 +337,7 @@ describe("steering", () => {
   test("a sendMessage that throws is contained inside the message handler", () => {
     const sockets: FakeSocket[] = [];
     const pi: BridgePi = {
-      sendMessage: () => {
+      sendUserMessage: () => {
         throw new Error("the session refused the steer");
       },
     };
@@ -451,7 +462,7 @@ describe("wiring", () => {
   interface Wired {
     handlers: Map<string, (event: unknown, ctx: unknown) => void>;
     sockets: FakeSocket[];
-    sent: Array<{ message: string; options: { deliverAs: string; triggerTurn: boolean } }>;
+    sent: Array<{ message: string; options?: { deliverAs?: string } }>;
     ctx(overrides?: { mode?: string; sessionId?: string }): unknown;
     fire(event: string, payload: unknown, ctx: unknown): void;
   }
@@ -461,7 +472,7 @@ describe("wiring", () => {
     const sockets: FakeSocket[] = [];
     const sent: Wired["sent"] = [];
     const pi = {
-      sendMessage: (message: string, options: { deliverAs: string; triggerTurn: boolean }) => {
+      sendUserMessage: (message: string, options?: { deliverAs?: string }) => {
         sent.push({ message, options });
       },
       on: (event: string, handler: (payload: unknown, ctx: unknown) => void) => {
@@ -561,7 +572,7 @@ describe("wiring", () => {
     w.sockets[0]?.accept();
     w.sockets[0]?.deliver({ t: "tui_steer", sessionId: SESSION, text: "from the phone" });
 
-    expect(w.sent).toEqual([{ message: "from the phone", options: { deliverAs: "steer", triggerTurn: true } }]);
+    expect(w.sent).toEqual([{ message: "from the phone", options: undefined }]);
   });
 
   test("events from another session in this process are ignored", () => {

@@ -57,6 +57,7 @@ interface SocketClient {
 
 interface Harness {
   port: number;
+  store: Store;
   pair(name: string, scopes: string[]): Promise<string>;
 }
 
@@ -92,6 +93,7 @@ async function harness(): Promise<Harness> {
 
   return {
     port,
+    store,
     pair: async (name, scopes) => {
       const res = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
         method: "POST",
@@ -276,6 +278,74 @@ describe("session_prompt", () => {
     expect(error).toMatchObject({ t: "error", code: "bad_frame" });
     await barrier(tui, "nothing pushed for an empty prompt");
     expect(tui.frames.filter(f => f.t === "tui_steer")).toEqual([]);
+  });
+
+  test("nextTurn is refused rather than downgraded, because the prompt flow has no such mode", async () => {
+    const h = await harness();
+    const operator = await h.pair("terminal", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT]);
+    const phone = await h.pair("phone", [SCOPE_READ, SCOPE_PROMPT]);
+    const tui = await registerTui(h.port, operator, SESSION);
+
+    const app = await openSocket(h.port, phone);
+    // `pi.sendUserMessage` takes `steer` or `followUp` only. Accepting this and
+    // quietly steering instead would deliver something the client did not ask
+    // for, at a moment it did not choose.
+    // Not expressible through `ClientFrame` any more, which is the point: the
+    // wire type says exactly what the prompt flow can honour, and this is what
+    // an older or hostile client puts on it anyway.
+    app.send({
+      t: "session_prompt",
+      sessionId: SESSION,
+      text: "eventually",
+      deliverAs: "nextTurn",
+    } as unknown as ClientFrame);
+
+    const error = await app.next(f => f.t === "error", "refusal for an unsupported delivery mode");
+    expect(error).toMatchObject({ t: "error", code: "bad_frame" });
+    await barrier(tui, "nothing steered for an unsupported delivery mode");
+    expect(tui.frames.filter(f => f.t === "tui_steer")).toEqual([]);
+  });
+
+  test("an accepted prompt is audited with the session and the delivery, and never the text", async () => {
+    const h = await harness();
+    const operator = await h.pair("terminal", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT]);
+    const phone = await h.pair("phone", [SCOPE_READ, SCOPE_PROMPT]);
+    const tui = await registerTui(h.port, operator, SESSION);
+
+    const app = await openSocket(h.port, phone);
+    app.send({ t: "session_prompt", sessionId: SESSION, text: "rotate the key", deliverAs: "followUp" });
+    await tui.next(f => f.t === "tui_steer", "the steer that produces the record");
+
+    const records = h.store.listAudit(20).filter(entry => entry.action === "session.prompt");
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      action: "session.prompt",
+      outcome: "ok",
+      detail: { sessionId: SESSION, deliverAs: "followUp" },
+    });
+    // The audit log is not a transcript. The operator's words are theirs.
+    expect(JSON.stringify(records[0]?.detail)).not.toContain("rotate the key");
+  });
+
+  test("both refusals are audited, so the interesting attempts are not the unrecorded ones", async () => {
+    const h = await harness();
+    const operator = await h.pair("terminal", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT]);
+    const reader = await h.pair("read-only-phone", [SCOPE_READ]);
+    const phone = await h.pair("phone", [SCOPE_READ, SCOPE_PROMPT]);
+    await registerTui(h.port, operator, SESSION);
+
+    const denied = await openSocket(h.port, reader);
+    denied.send({ t: "session_prompt", sessionId: SESSION, text: "not allowed" });
+    await denied.next(f => f.t === "error", "the scope refusal");
+
+    const unreachable = await openSocket(h.port, phone);
+    unreachable.send({ t: "session_prompt", sessionId: OTHER_SESSION, text: "nobody owns this" });
+    await unreachable.next(f => f.t === "error", "the unreachable refusal");
+
+    const records = h.store.listAudit(20).filter(entry => entry.action === "session.prompt");
+    expect(records.map(entry => entry.outcome)).toEqual(["denied", "denied"]);
+    expect(records.map(entry => entry.detail.reason).sort()).toEqual(["tui_unreachable", "unauthorized"]);
+    expect(JSON.stringify(records)).not.toContain("not allowed");
   });
 });
 

@@ -426,9 +426,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Whether a client-supplied `deliverAs` is one omp's `sendMessage` accepts. */
+/**
+ * Whether a client-supplied `deliverAs` is one omp's prompt flow accepts.
+ *
+ * `nextTurn` is deliberately absent: `pi.sendUserMessage` has no such mode, so
+ * accepting it here would mean the extension either refused it later, where no
+ * client is listening, or downgraded it to a steer, delivering the operator's
+ * words at a moment they did not choose.
+ */
 function isTuiSteerDelivery(value: unknown): value is TuiSteerDelivery {
-  return value === "steer" || value === "followUp" || value === "nextTurn";
+  return value === "steer" || value === "followUp";
 }
 
 /** Whether a TUI-supplied activity kind is one the daemon forwards. */
@@ -2255,7 +2262,24 @@ export class Gateway {
       }
 
       case "session_prompt": {
+        // Audited at every exit, including both refusals, because this is a
+        // device reaching into a terminal someone else is sitting at and
+        // taking a turn in it. A record only on success would leave the two
+        // interesting cases -- a device without the scope, and a session
+        // nothing owns -- as the only privileged attempts this daemon keeps
+        // no trace of. `detail` never carries the text: that is the
+        // operator's content, and an audit log is not a transcript.
+        const audit = (outcome: "ok" | "denied", detail: Record<string, unknown>): void => {
+          this.#store.audit({
+            action: "session.prompt",
+            actorDeviceId: ws.data.deviceId,
+            outcome,
+            detail,
+          });
+        };
+
         if (!ws.data.scopes.has(SCOPE_PROMPT)) {
+          audit("denied", { reason: "unauthorized", sessionId: frame.sessionId });
           this.#send(ws, {
             t: "error",
             code: "unauthorized",
@@ -2270,9 +2294,13 @@ export class Gateway {
           frame.text.length === 0 ||
           (frame.deliverAs !== undefined && !isTuiSteerDelivery(frame.deliverAs))
         ) {
+          // `nextTurn` lands here: `pi.sendUserMessage` has no such mode, and
+          // refusing it is the honest answer, not downgrading it to a steer.
+          audit("denied", { reason: "bad_frame" });
           this.#send(ws, { t: "error", code: "bad_frame", message: "invalid session prompt" });
           return;
         }
+        const deliverAs: TuiSteerDelivery = frame.deliverAs ?? "steer";
         // Routing trusts the same registry the takeover route trusts: the one
         // socket whose `tui` registration names this session, never a claim
         // about a session file. An absent registration is exactly the
@@ -2280,6 +2308,7 @@ export class Gateway {
         // vocabulary for takeover and for steering alike.
         const owner = [...this.#sockets].find(socket => socket.data.tui?.sessionId === frame.sessionId);
         if (owner === undefined) {
+          audit("denied", { reason: "tui_unreachable", sessionId: frame.sessionId, deliverAs });
           this.#send(ws, {
             t: "error",
             code: "tui_unreachable",
@@ -2287,12 +2316,8 @@ export class Gateway {
           });
           return;
         }
-        this.#send(owner, {
-          t: "tui_steer",
-          sessionId: frame.sessionId,
-          text: frame.text,
-          deliverAs: frame.deliverAs ?? "steer",
-        });
+        audit("ok", { sessionId: frame.sessionId, deliverAs });
+        this.#send(owner, { t: "tui_steer", sessionId: frame.sessionId, text: frame.text, deliverAs });
         return;
       }
 

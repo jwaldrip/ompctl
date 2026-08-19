@@ -5,7 +5,7 @@
  * `extensions/ompd-bridge/index.ts`, so omp discovers and runs it in every
  * session with no per-session step. Once running it does one thing: it tells
  * the daemon "a live TUI owns this session" (`tui_register`) and then serves
- * two directions -- `tui_steer` frames become `pi.sendMessage` calls, so a
+ * two directions -- `tui_steer` frames become `pi.sendUserMessage` calls, so a
  * phone can prompt the terminal session that is already open, and turn
  * progress flows back as `tui_activity`, so that phone can see the turn it
  * started actually happening.
@@ -63,10 +63,20 @@ export interface BridgeContext {
   clearTimer(timer: unknown): void;
 }
 
-/** The slice of `ExtensionAPI` the bridge drives a session through. */
+/**
+ * The slice of `ExtensionAPI` the bridge drives a session through.
+ *
+ * `sendUserMessage`, not `sendMessage`: a phone driving this terminal is the
+ * operator driving it, so the words have to land as their own turn in the
+ * transcript rather than as an injected custom message. That also decides the
+ * option shape -- the prompt flow takes `steer` or `followUp` and has no
+ * `nextTurn`, and it takes no `triggerTurn`, because taking the turn when the
+ * session is idle is what the prompt flow already does.
+ */
 export interface BridgePi {
-  sendMessage(message: string, options: { deliverAs: "steer" | "followUp" | "nextTurn"; triggerTurn: boolean }): void;
+  sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
 }
+
 export interface BridgeDeps {
   /**
    * The daemon's published address and the operator token, or null when
@@ -253,8 +263,17 @@ export class Bridge {
     // the wrong conversation.
     if (frame.t !== "tui_steer" || frame.sessionId !== this.#registered) return;
     if (typeof frame.text !== "string" || frame.text.length === 0) return;
-    const deliverAs = frame.deliverAs === "followUp" || frame.deliverAs === "nextTurn" ? frame.deliverAs : "steer";
-    this.#pi.sendMessage(frame.text, { deliverAs, triggerTurn: true });
+    // `followUp` waits for the running turn. Everything else is the default
+    // prompt call with NO options, and that distinction is load-bearing:
+    // omitting `deliverAs` takes the turn when the session is idle and steers
+    // when one is streaming, while passing `deliverAs: "steer"` explicitly
+    // only queues, in either state. Passing it would mean a phone prompt to an
+    // idle terminal sat in a queue and visibly did nothing.
+    if (frame.deliverAs === "followUp") {
+      this.#pi.sendUserMessage(frame.text, { deliverAs: "followUp" });
+      return;
+    }
+    this.#pi.sendUserMessage(frame.text);
   }
 
   #activity(kind: "assistant_text" | "turn_start" | "turn_end", text?: string): void {
