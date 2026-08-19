@@ -571,6 +571,20 @@ export function fleetClearances(state: ConsoleState): number {
 }
 
 /**
+ * The two slices a fleet row is made of.
+ *
+ * Narrower than `ConsoleState` on purpose, and the narrowing is the whole
+ * point: a row must never be a function of the transcript slice. `sessions`
+ * changes identity on every chunk of every live turn, so a rows derivation
+ * that reads it has to be re-run per chunk, which rebuilds every row on the
+ * machine -- hundreds of them -- to answer a question none of them asked.
+ * That cost lands on the thread the pop animation needs, and it is what made
+ * leaving a live session take seconds. Keeping it out of the type is what
+ * stops it growing back.
+ */
+export type FleetRowSources = Pick<ConsoleState, "sessionIndex" | "agents">;
+
+/**
  * Adapts the daemon's session index into browser rows, with this device's
  * live roster overlaid.
  *
@@ -580,7 +594,7 @@ export function fleetClearances(state: ConsoleState): number {
  * onto its row, since the roster is fresher than the last snapshot; every
  * other row keeps exactly the status the daemon reported.
  */
-export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
+export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
   const holding = new Map<string, Agent>();
   for (const agent of state.agents) {
     if (agent.acpSessionId === undefined) continue;
@@ -621,7 +635,6 @@ export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
   for (const agent of state.agents) {
     if (agent.parentAgentId !== undefined) continue;
     if (agent.acpSessionId !== undefined && indexed.has(agent.acpSessionId)) continue;
-    const session = state.sessions.get(agent.id) ?? EMPTY_SESSION;
     rows.push({
       id: agent.acpSessionId ?? agent.id,
       title: agent.name,
@@ -629,7 +642,13 @@ export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
       status: TERMINAL_AGENT_STATES.includes(agent.state) ? "dormant" : "live-ompd",
       createdAt: agent.createdAt,
       lastActiveAt: agent.lastActiveAt,
-      messageCount: session.entries.length,
+      // Counting the transcript this device happens to hold would be the
+      // wrong number anyway: it counts entries received here, so it reads
+      // zero for any session this device never opened and never matches the
+      // daemon's own count for one it did. The index is what counts messages,
+      // and it has not seen this session yet, so this says so the same way
+      // `sizeBytes` below does.
+      messageCount: 0,
       // Not knowable before the index sees the session file.
       sizeBytes: 0,
     });

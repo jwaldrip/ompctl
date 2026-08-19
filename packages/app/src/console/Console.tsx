@@ -91,16 +91,17 @@ export function Console({
     onUnpair(`${state.unauthorized} Pair this device again to carry on.`);
   }, [state.unauthorized, onUnpair]);
 
-  // The rows change only when the three slices `browserSessionsOf` reads
-  // change, so deriving with those slices as the key keeps the array's
-  // identity across console frames that touched no session -- a selection, a
-  // terminal reply, a roster push that arrived identical. The reload below is
-  // keyed on the rows for the same reason: without that, every console frame
-  // rebuilt every row object, the browser's state changed identity, and the
-  // list's whole mounted window re-rendered on a navigation that cost the
-  // daemon nothing and should have cost the bay nothing either.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the whole `state` is read on purpose; the three slices below are the exact inputs `browserSessionsOf` consumes, and keying on `state` itself would rebuild every row on every frame.
-  const rows = useMemo(() => browserSessionsOf(state), [state.sessionIndex, state.agents, state.sessions]);
+  // The index and the roster are the whole of a row -- `FleetRowSources` says
+  // so in the type -- so keying on those two slices keeps the array's identity
+  // across every console frame that touched neither: a selection, a terminal
+  // reply, and, the case that made leaving a live session take seconds, every
+  // chunk of every streaming turn. The reload below is keyed on the rows for
+  // the same reason: without both, a live turn rebuilt every row object on the
+  // machine per chunk, the browser's state changed identity, and the list
+  // re-sorted, re-grouped, and re-rendered its whole mounted window behind a
+  // screen nobody could see it through, on the thread the pop animation needs.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `state` is passed whole and read narrowly; the parameter type admits only the two slices below, so this key is exhaustive and keying on `state` itself would rebuild every row on every frame.
+  const rows = useMemo(() => browserSessionsOf(state), [state.sessionIndex, state.agents]);
 
   useEffect(() => {
     dispatchBrowser({ t: "load", sessions: rows });
