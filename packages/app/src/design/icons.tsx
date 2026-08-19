@@ -21,6 +21,7 @@
 import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import {
   faArrowRightToBracket,
+  faBars,
   faBoxArchive,
   faBrain,
   faBuilding,
@@ -86,6 +87,7 @@ export type GlyphName =
   | "activity"
   | "commands"
   | "chevron"
+  | "menu"
   | "link"
   | "bay"
   | "archive"
@@ -135,6 +137,9 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // the same at this size.
   commands: faSlash,
   chevron: faChevronDown,
+  // The shell's own control, not a screen's: three rules is what every
+  // platform's overflow affordance draws, so it needs no label to be read.
+  menu: faBars,
   // Pro's `fa-signal-bars` is the link strength meter; free's signal is it.
   link: faSignal,
   bay: faLayerGroup,

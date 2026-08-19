@@ -61,21 +61,28 @@ function createsCycle(node: AgentHubNode, parent: AgentHubNode, byId: ReadonlyMa
   return false;
 }
 
-export function AgentHub({ agents, now = Date.now(), testID = "agent-hub" }: AgentHubProps): JSX.Element {
+/**
+ * Renders nothing when no subagent exists.
+ *
+ * A padded block headed AGENT HUB, reading "No subagents.", sat above the
+ * sessions list on the operator's phone for the whole of a session with no
+ * fan-out, which is most of them. It cost a heading, a count, a line of prose
+ * and two rules of vertical space to say that nothing is happening, directly
+ * above the list that is the point of the screen. Absence is the correct way
+ * to render absence: when a subagent appears the block appears with it.
+ */
+export function AgentHub({ agents, now = Date.now(), testID = "agent-hub" }: AgentHubProps): JSX.Element | null {
   const tree = agentHubTree(agents);
+  if (tree.length === 0) return null;
   return (
     <View style={styles.hub} testID={testID} accessibilityLabel="Agent hierarchy">
       <View style={styles.heading}>
         <Kicker color={ink.muted}>AGENT HUB</Kicker>
         <Label color={ink.plain}>{`${agents.length} ${agents.length === 1 ? "agent" : "agents"}`}</Label>
       </View>
-      {tree.length === 0 ? (
-        <Body color={ink.muted} testID="agent-hub-empty">
-          No subagents.
-        </Body>
-      ) : (
-        tree.map(node => <AgentHubBranch key={node.agent.id} node={node} depth={0} now={now} />)
-      )}
+      {tree.map(node => (
+        <AgentHubBranch key={node.agent.id} node={node} depth={0} now={now} />
+      ))}
     </View>
   );
 }

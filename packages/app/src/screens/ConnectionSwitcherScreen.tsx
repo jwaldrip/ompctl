@@ -2,36 +2,36 @@
 
 import { SCOPE_APPROVE } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { ConnectionList, SavedConnection } from "../platform/connection.ts";
-import { InviteScreen } from "./InviteScreen.tsx";
 
 export function ConnectionSwitcherScreen({
   connections,
   onAdd,
   onBack,
+  onInvite,
   onSelect,
 }: {
   connections: ConnectionList;
   onAdd: () => void;
   onBack: () => void;
+  /**
+   * Opens the invite surface. A route rather than a screen this one swaps
+   * itself out for: the same destination is in the shell's menu, and one
+   * destination reached two different ways is two navigation models.
+   */
+  onInvite: () => void;
   onSelect: (id: string) => void;
 }): JSX.Element {
-  const [inviting, setInviting] = useState(false);
   const active = connections.connections.find(entry => entry.id === connections.activeId);
   // Inviting spends this device's own `approve` scope, so the entry point
   // stays gone rather than visible-but-refused when the active pairing
   // doesn't hold it -- the daemon would refuse the mint anyway, and a
   // control that always fails is worse than no control.
   const canInvite = active?.connection.scopes.includes(SCOPE_APPROVE);
-
-  if (inviting && active !== undefined) {
-    return <InviteScreen connection={active.connection} onDone={() => setInviting(false)} />;
-  }
 
   return (
     <SafeScreen style={styles.screen} testID="connection-switcher">
@@ -40,12 +40,7 @@ export function ConnectionSwitcherScreen({
         <Display>Connections</Display>
         <Body>Choose where this device opens its console. Each pairing keeps its own credential.</Body>
         {!canInvite ? null : (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => setInviting(true)}
-            style={styles.invite}
-            testID="invite-device"
-          >
+          <Pressable accessibilityRole="button" onPress={onInvite} style={styles.invite} testID="invite-device">
             <Text style={styles.inviteText}>+ Invite device</Text>
           </Pressable>
         )}

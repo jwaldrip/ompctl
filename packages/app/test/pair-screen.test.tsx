@@ -100,7 +100,7 @@ function mountPairScreen(): Harness {
   const paired: Connection[] = [];
 
   act(() => {
-    root.render(<PairScreen onPair={connection => paired.push(connection)} />);
+    root.render(<PairScreen onPair={connection => paired.push(connection)} onScan={() => {}} />);
   });
 
   const endpointInput = host.querySelector('[data-testid="pair-endpoint"]');
