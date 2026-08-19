@@ -46,6 +46,8 @@ import {
   type SkillSummary,
   type Store,
   type Task,
+  type TuiActivityKind,
+  type TuiSteerDelivery,
   type WebViewAction,
   type WebViewActionResult,
 } from "@ompd/core";
@@ -323,6 +325,14 @@ const RATE_PER_SECOND = 10;
 /** ACP owns streaming backpressure; only cap an individual tunneled JSON-RPC frame. */
 const MAX_TUI_ACP_FRAME_BYTES = 32 * 1024 * 1024;
 
+/**
+ * Cap on the text of one `tui_activity` frame. Activity is a hint about a row
+ * a phone is watching, not a transcript transport; a bridge that tried to ship
+ * a whole answer through it would be using the wrong frame, and this cap is
+ * what makes that misuse cost one refused frame instead of a flooded client.
+ */
+const MAX_TUI_ACTIVITY_TEXT_BYTES = 64 * 1024;
+
 /** The only scopes a device row may carry. Anything else is a typo, not a grant. */
 const KNOWN_SCOPES: readonly string[] = [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE];
 
@@ -414,6 +424,16 @@ const FORBIDDEN_SYNC_KEY = /(token|credential|bearer|authorization|process|pid|h
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Whether a client-supplied `deliverAs` is one omp's `sendMessage` accepts. */
+function isTuiSteerDelivery(value: unknown): value is TuiSteerDelivery {
+  return value === "steer" || value === "followUp" || value === "nextTurn";
+}
+
+/** Whether a TUI-supplied activity kind is one the daemon forwards. */
+function isTuiActivityKind(value: unknown): value is TuiActivityKind {
+  return value === "assistant_text" || value === "turn_start" || value === "turn_end";
 }
 
 function hasForbiddenSyncField(value: unknown): boolean {
@@ -712,6 +732,17 @@ interface SocketState {
   collab: CollabConnection | null;
   /** Present only on the one socket serving a normal live TUI. */
   tui: LiveTuiSocket | null;
+  /**
+   * True once this socket asked for the session index with a `sessions`
+   * frame. That ask is the opt-in for live `tui_activity`: a phone that
+   * listed sessions is watching those rows and is pushed a terminal turn as
+   * it happens, while a socket that never asked is pushed nothing. Connection
+   * scoped on purpose: the client replays its query after a reconnect (the
+   * same machinery that replays attachments), so the replay re-arms this, and
+   * a socket that goes away stops watching by virtue of no longer being in
+   * `#sockets`.
+   */
+  watchingSessions: boolean;
 }
 
 /**
@@ -1003,6 +1034,7 @@ export class Gateway {
       deviceId: actor.deviceId,
       scopes: new Set(actor.scopes),
       attached: new Set(),
+      watchingSessions: false,
       delivered: new Map(),
       approvals: new Map(),
       planReviews: new Map(),
@@ -2222,6 +2254,81 @@ export class Gateway {
         return;
       }
 
+      case "session_prompt": {
+        if (!ws.data.scopes.has(SCOPE_PROMPT)) {
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "session prompt requires prompt scope",
+          });
+          return;
+        }
+        if (
+          typeof frame.sessionId !== "string" ||
+          frame.sessionId.length === 0 ||
+          typeof frame.text !== "string" ||
+          frame.text.length === 0 ||
+          (frame.deliverAs !== undefined && !isTuiSteerDelivery(frame.deliverAs))
+        ) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "invalid session prompt" });
+          return;
+        }
+        // Routing trusts the same registry the takeover route trusts: the one
+        // socket whose `tui` registration names this session, never a claim
+        // about a session file. An absent registration is exactly the
+        // condition `tui_unreachable` already names, so a client meets one
+        // vocabulary for takeover and for steering alike.
+        const owner = [...this.#sockets].find(socket => socket.data.tui?.sessionId === frame.sessionId);
+        if (owner === undefined) {
+          this.#send(ws, {
+            t: "error",
+            code: "tui_unreachable",
+            message: `no connected TUI owns session ${frame.sessionId}`,
+          });
+          return;
+        }
+        this.#send(owner, {
+          t: "tui_steer",
+          sessionId: frame.sessionId,
+          text: frame.text,
+          deliverAs: frame.deliverAs ?? "steer",
+        });
+        return;
+      }
+
+      case "tui_activity": {
+        const tui = ws.data.tui;
+        if (!tui || frame.sessionId !== tui.sessionId) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "activity frame has no registered TUI" });
+          return;
+        }
+        if (
+          !isTuiActivityKind(frame.kind) ||
+          (frame.text !== undefined && typeof frame.text !== "string") ||
+          (frame.text !== undefined && Buffer.byteLength(frame.text, "utf8") > MAX_TUI_ACTIVITY_TEXT_BYTES)
+        ) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "invalid TUI activity" });
+          return;
+        }
+        // Delivered to watchers only, gate by gate: asked for the index,
+        // still holds read, not revoked. Iterating `#sockets` is itself half
+        // the guarantee, because revocation closes a socket and `#close`
+        // removes it from this set; the `revoked` re-check covers the window
+        // between the flag flipping and the close landing. Nothing here is
+        // addressed, so no watcher list can go stale behind a dead socket.
+        const activity: ServerFrame =
+          frame.text === undefined
+            ? { t: "tui_activity", sessionId: frame.sessionId, kind: frame.kind }
+            : { t: "tui_activity", sessionId: frame.sessionId, kind: frame.kind, text: frame.text };
+        for (const watcher of this.#sockets) {
+          if (!watcher.data.watchingSessions) continue;
+          if (!watcher.data.scopes.has(SCOPE_READ)) continue;
+          if (watcher.data.revoked) continue;
+          this.#send(watcher, activity);
+        }
+        return;
+      }
+
       case "ping":
         this.#send(ws, { t: "pong" });
         return;
@@ -2358,6 +2465,11 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "bad_query", message: parsed.error });
           return;
         }
+        // A query that reached this point is a socket watching the index, so
+        // it is also opting into live activity about the rows it asked about.
+        // Armed after validation, not before: a query the daemon refused must
+        // not buy a subscription.
+        ws.data.watchingSessions = true;
         // Deliberately detached, following the prompt case: the index build
         // is cooperative but its reply is still an async answer, and this
         // socket (and every other) must keep being served while it is

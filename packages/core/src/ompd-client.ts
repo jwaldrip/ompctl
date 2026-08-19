@@ -34,6 +34,8 @@ import type {
   ServerFrame,
   SessionQuery,
   SessionSummary,
+  TuiActivityKind,
+  TuiSteerDelivery,
   WebViewAction,
   WebViewActionResult,
 } from "./contracts.ts";
@@ -131,6 +133,12 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   tui_register: false,
   tui_acp: false,
   tui_acp_ready: false,
+  // Same reasoning as `prompt`: a steered session prompt that never left is
+  // an instruction that silently did not happen.
+  session_prompt: true,
+  // Emitted by the terminal bridge, never by this client. Losing one here is
+  // not a user instruction.
+  tui_activity: false,
   // Re-sent from the remembered query on the next `hello`, exactly like
   // `attach`: the answer is a snapshot this client asked for, not an
   // instruction that silently did not happen.
@@ -329,6 +337,19 @@ export interface SessionOpenedEvent {
   agentId: AgentId;
 }
 
+/**
+ * Turn progress from a live terminal session, forwarded by the daemon because
+ * this client asked for the session index. Not resumable and not sequenced:
+ * a `turn_start` missed during a drop is superseded by whatever the index and
+ * the next activity frame say when the socket comes back, so the client treats
+ * these as hints about a row it is watching, never as a transcript.
+ */
+export interface TuiActivityEvent {
+  sessionId: string;
+  kind: TuiActivityKind;
+  text?: string;
+}
+
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -343,6 +364,7 @@ export interface ClientEventMap {
   webview_action: WebViewActionEvent;
   room_participants: RoomParticipantsEvent;
   room_signal: RoomSignalEvent;
+  tui_activity: TuiActivityEvent;
   collab_voice: CollabVoiceEvent;
   collab_voice_history: CollabVoiceHistoryEvent;
   sessions: SessionsEvent;
@@ -643,6 +665,19 @@ export class OmpdClient {
     this.send({ t: "session_resume", sessionId, cwd });
   }
 
+  /**
+   * Prompt a session a registered live TUI owns. The daemon answers with a
+   * `tui_unreachable` error when no connected TUI holds that session, so a
+   * dormant row in the index is an explicit refusal, never a silent drop.
+   */
+  sessionPrompt(sessionId: string, text: string, deliverAs?: TuiSteerDelivery): void {
+    const frame: ClientFrame =
+      deliverAs === undefined
+        ? { t: "session_prompt", sessionId, text }
+        : { t: "session_prompt", sessionId, text, deliverAs };
+    this.send(frame);
+  }
+
   // -- connection lifecycle -------------------------------------------------
 
   private openSocket(reason: string): void {
@@ -908,6 +943,13 @@ export class OmpdClient {
         return;
       case "session_opened":
         this.emit("session_opened", { sessionId: frame.sessionId, agentId: frame.agentId });
+        return;
+      case "tui_activity":
+        this.emit("tui_activity", {
+          sessionId: frame.sessionId,
+          kind: frame.kind,
+          text: frame.text,
+        });
         return;
       case "update":
         this.handleUpdate(frame.agentId, frame.seq, frame.update);

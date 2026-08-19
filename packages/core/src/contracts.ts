@@ -467,6 +467,16 @@ export type CollabServerFrame =
   /** Finished notes replay with their durable audio payload; app-side de-duplication prevents re-speaking live notes. */
   | { t: "collab_voice_history"; roomId: string; notes: CollabVoiceNoteFrame[] };
 
+/**
+ * How a steered turn should land in the live session. The names are omp's own
+ * `sendMessage` vocabulary, verbatim, so a client composing a `session_prompt`
+ * and an extension receiving a `tui_steer` share one mental model.
+ */
+export type TuiSteerDelivery = "steer" | "followUp" | "nextTurn";
+
+/** What a live terminal session reports back as a turn progresses. */
+export type TuiActivityKind = "assistant_text" | "turn_start" | "turn_end";
+
 // ---------------------------------------------------------------------------
 // Client wire protocol
 // ---------------------------------------------------------------------------
@@ -493,6 +503,14 @@ export type ClientFrame =
   | { t: "tui_acp"; sessionId: string; raw: string }
   /** The TUI has stopped rendering and its in-process ACP server is ready. */
   | { t: "tui_acp_ready"; sessionId: string }
+  /**
+   * Prompt a session a registered live TUI owns, without the takeover dance:
+   * the daemon routes the text to that TUI as a `tui_steer`. `deliverAs`
+   * defaults to `steer` server-side, matching omp's own `sendMessage` default.
+   */
+  | { t: "session_prompt"; sessionId: string; text: string; deliverAs?: TuiSteerDelivery }
+  /** A registered live TUI reporting turn progress back to the daemon. */
+  | { t: "tui_activity"; sessionId: string; kind: TuiActivityKind; text?: string }
   /**
    * Ask for the session index over this socket. A hub-relayed phone cannot
    * reach the daemon's HTTP surface at all -- the relay carries sealed
@@ -556,6 +574,18 @@ export type ServerFrame =
   | { t: "tui_takeover"; sessionId: string }
   /** ACP JSON-RPC carried over the registered TUI's single control socket. */
   | { t: "tui_acp"; sessionId: string; raw: string }
+  /**
+   * Deliver a message into a session a registered live TUI owns. The daemon
+   * sends this only in answer to a prompt-scoped `session_prompt`, and only to
+   * the socket that registered the session.
+   */
+  | { t: "tui_steer"; sessionId: string; text: string; deliverAs: TuiSteerDelivery }
+  /**
+   * Turn progress from a registered live TUI, forwarded by the daemon to
+   * clients that asked for the session index. Keyed by session id, not agent
+   * id: a live terminal session has no agent row.
+   */
+  | { t: "tui_activity"; sessionId: string; kind: TuiActivityKind; text?: string }
   /**
    * The session index answering a `sessions` client frame, sent only to the
    * socket that asked. Carried on the sealed socket for the same reason the

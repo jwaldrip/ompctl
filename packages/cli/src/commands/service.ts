@@ -22,6 +22,7 @@ import { dirname, join } from "node:path";
 import type { Command } from "../args.ts";
 import type { CliContext } from "../client.ts";
 import { defaultPrefix, type ProgramResolution, resolveProgram } from "../install.ts";
+import { foreignExtensionMessage, installBridgeExtension, removeBridgeExtension } from "../omp-extension.ts";
 
 export const LAUNCHD_LABEL = "ai.ompctl";
 
@@ -190,6 +191,24 @@ export async function installCommand(ctx: CliContext, cmd: Extract<Command, { ki
   }
   ctx.out(`  logs    ${join(ctx.home, "ompd.log")}`);
   ctx.out("  it starts at login and restarts on failure; `ompd status` to check");
+
+  // The bridge is installed here rather than under its own verb because a
+  // separate step is exactly what this exists to remove: a live terminal
+  // session should be drivable from the phone because ompd is installed, not
+  // because someone also remembered to install an extension.
+  const bridge = installBridgeExtension(ctx.env);
+  if (bridge.kind === "foreign") {
+    ctx.out("");
+    for (const line of foreignExtensionMessage(bridge.path)) ctx.err(line);
+    // The launch agent is in place and working; the bridge is not. A zero
+    // here would report a complete install that is missing half its point.
+    return 1;
+  }
+  ctx.out(`  omp     ${bridge.kind === "installed" ? "installed" : "reinstalled"} ${bridge.path}`);
+  ctx.out(
+    "          live terminal sessions now appear on paired devices and can be prompted from them;" +
+      " already-running omp sessions pick this up when they next start",
+  );
   return 0;
 }
 
@@ -197,21 +216,31 @@ export async function uninstallCommand(ctx: CliContext): Promise<number> {
   const path = plistPath(ctx);
   const existing = inspectPlist(path);
 
-  if (existing === null) {
-    ctx.out(`nothing to uninstall: ${path} does not exist`);
-    return 0;
-  }
-  if (!existing.ours) {
+  if (existing !== null && !existing.ours) {
     for (const line of foreignPlistMessage(path)) ctx.err(line);
     return 1;
   }
 
-  // A plist that is present but never loaded makes unload fail, which is not
-  // a failure of uninstalling.
-  await ctx.exec(["launchctl", "unload", path]);
-  rmSync(path);
+  if (existing !== null) {
+    // A plist that is present but never loaded makes unload fail, which is not
+    // a failure of uninstalling.
+    await ctx.exec(["launchctl", "unload", path]);
+    rmSync(path);
+    ctx.out(`uninstalled ${path}`);
+  } else {
+    ctx.out(`nothing to uninstall: ${path} does not exist`);
+  }
 
-  ctx.out(`uninstalled ${path}`);
+  // Attempted whether or not there was a plist. The two artifacts are written
+  // by one command but they are removable independently, and an operator who
+  // deleted the plist by hand still wants the extension gone when they ask for
+  // an uninstall.
+  const bridge = removeBridgeExtension(ctx.env);
+  if (bridge.kind === "foreign") {
+    for (const line of foreignExtensionMessage(bridge.path)) ctx.err(line);
+    return 1;
+  }
+  if (bridge.kind === "removed") ctx.out(`  removed ${bridge.path}`);
   ctx.out("  the daemon's state under ~/.ompd is left alone");
   return 0;
 }
