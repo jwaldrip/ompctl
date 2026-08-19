@@ -39,6 +39,7 @@ import type { Connection, ConnectionList } from "../platform/connection.ts";
 import { ConnectionSwitcherScreen } from "../screens/ConnectionSwitcherScreen.tsx";
 import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { InviteScreen } from "../screens/InviteScreen.tsx";
+import { RemoteStartScreen } from "../screens/RemoteStartScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
@@ -248,6 +249,22 @@ export function Console({
       />
     ),
     invite: done => <InviteScreen connection={connection} onDone={done} />,
+    // This screen owns its own socket rather than borrowing the console's, so
+    // browsing and cloning cannot compete with the list for the connection the
+    // operator is watching. The cost is that the console does not hear its
+    // `session_opened`, which is exactly what `onOpened` is for: pop back to the
+    // list and select the agent the daemon just made, so starting a session from
+    // the menu lands on that session rather than back where it began.
+    newSession: done => (
+      <RemoteStartScreen
+        connection={connection}
+        onBack={done}
+        onOpened={agentId => {
+          done();
+          actions.select(agentId);
+        }}
+      />
+    ),
   };
 
   // The stack presents an open session only where the list cannot hold it: on a

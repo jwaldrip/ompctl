@@ -48,6 +48,7 @@ export type ShellParamList = {
   menu: undefined;
   connections: undefined;
   invite: undefined;
+  newSession: undefined;
 };
 
 /** Which detail surface the console model says is open. */
@@ -79,6 +80,12 @@ export interface ShellSurfaces {
   terminal: (sessionId: string, back: () => void) => JSX.Element;
   connections: (back: () => void, invite: () => void) => JSX.Element;
   invite: (done: () => void) => JSX.Element;
+  /**
+   * Browse the daemon's machine and start a session, or clone a repo, where the
+   * operator chooses. `done` is the way back, on the same one-way-out rule the
+   * detail routes follow.
+   */
+  newSession: (done: () => void) => JSX.Element;
 }
 
 export interface AppNavigatorProps {
@@ -182,6 +189,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
           <Stack.Screen name="menu" component={MenuRoute} options={{ title: "Menu", presentation: "modal" }} />
           <Stack.Screen name="connections" component={ConnectionsRoute} options={CONNECTIONS_OPTIONS} />
           <Stack.Screen name="invite" component={InviteRoute} options={INVITE_OPTIONS} />
+          <Stack.Screen name="newSession" component={NewSessionRoute} options={NEW_SESSION_OPTIONS} />
         </Stack.Navigator>
       </NavigationContainer>
     </SurfaceContext.Provider>
@@ -192,6 +200,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
 // affordance and the title, not a second heading.
 const CONNECTIONS_OPTIONS = { title: "Connections" } as const;
 const INVITE_OPTIONS = { title: "Invite a device" } as const;
+const NEW_SESSION_OPTIONS = { title: "New session" } as const;
 
 function FleetRoute(): JSX.Element {
   return useSurfaces().fleet();
@@ -214,6 +223,10 @@ function ConnectionsRoute({ navigation }: NativeStackScreenProps<ShellParamList,
 
 function InviteRoute({ navigation }: NativeStackScreenProps<ShellParamList, "invite">): JSX.Element {
   return useSurfaces().invite(() => navigation.goBack());
+}
+
+function NewSessionRoute({ navigation }: NativeStackScreenProps<ShellParamList, "newSession">): JSX.Element {
+  return useSurfaces().newSession(() => navigation.goBack());
 }
 
 type MenuNavigation = NativeStackNavigationProp<ShellParamList, "menu">;
@@ -261,6 +274,16 @@ const MENU_ITEMS: readonly MenuItem[] = [
     go: navigation => {
       navigation.goBack();
       navigation.navigate("invite");
+    },
+  },
+  {
+    title: "New session",
+    detail: "Browse this machine and start an agent, or clone a repo first",
+    glyph: "bay",
+    testID: "menu-new-session",
+    go: navigation => {
+      navigation.goBack();
+      navigation.navigate("newSession");
     },
   },
 ];
