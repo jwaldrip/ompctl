@@ -33,8 +33,6 @@
  * to it. See `docs/hub.md`.
  */
 
-import { bytesToUtf8 } from "@noble/ciphers/utils.js";
-
 /** Scheme both endpoint forms share. */
 export const ENDPOINT_SCHEME = "ompd:";
 
@@ -360,12 +358,86 @@ function toUtf8(text: string): Uint8Array {
 }
 
 /**
- * Hermes ships `TextEncoder` but not `TextDecoder`, so decoding a scanned
- * pairing bundle threw on device. `@noble/ciphers` carries a portable
- * implementation and is already in the dependency graph for the sealed channel.
+ * Decode UTF-8 without `TextDecoder`.
+ *
+ * Byte-for-byte the same implementation as `@ompd/tunnel`'s `fromUtf8`, kept as
+ * a copy rather than a shared import because neither package depends on the
+ * other and this is a leaf byte utility, not a contract. The tests in both
+ * packages run the same vector table, including with `TextDecoder` and
+ * `TextEncoder` deleted, so a change to one that the other does not get is a
+ * test failure rather than a phone that dies at the handshake.
+ *
+ * The previous version called `@noble/ciphers`'s `bytesToUtf8`, which is
+ * literally `new TextDecoder().decode(bytes)`: portable-looking, and the reason
+ * a scanned pairing bundle threw on device while every test passed under Bun.
  */
 function fromUtf8(bytes: Uint8Array): string {
-  return bytesToUtf8(bytes);
+  let out = "";
+  const units: number[] = [];
+  for (let i = 0; i < bytes.length; ) {
+    const lead = bytes[i] ?? 0;
+    let cp: number;
+    let width: number;
+    if (lead < 0x80) {
+      cp = lead;
+      width = 1;
+    } else if ((lead & 0xe0) === 0xc0) {
+      cp = lead & 0x1f;
+      width = 2;
+    } else if ((lead & 0xf0) === 0xe0) {
+      cp = lead & 0x0f;
+      width = 3;
+    } else if ((lead & 0xf8) === 0xf0) {
+      cp = lead & 0x07;
+      width = 4;
+    } else {
+      // A continuation byte or an invalid lead: one replacement, one byte.
+      cp = 0xfffd;
+      width = 1;
+    }
+    if (width > 1) {
+      if (i + width > bytes.length) {
+        cp = 0xfffd;
+        width = bytes.length - i;
+      } else {
+        let valid = true;
+        let acc = cp;
+        for (let k = 1; k < width; k += 1) {
+          const cont = bytes[i + k] ?? 0;
+          if ((cont & 0xc0) !== 0x80) {
+            valid = false;
+            break;
+          }
+          acc = (acc << 6) | (cont & 0x3f);
+        }
+        if (valid) {
+          // Overlongs, UTF-16 surrogates encoded as UTF-8, and anything above
+          // the Unicode range are all ill-formed, and a decoder that passed
+          // them through would let two different byte strings claim one text.
+          const overlong =
+            (width === 2 && acc < 0x80) || (width === 3 && acc < 0x800) || (width === 4 && acc < 0x10000);
+          cp = overlong || (acc >= 0xd800 && acc <= 0xdfff) || acc > 0x10ffff ? 0xfffd : acc;
+        } else {
+          cp = 0xfffd;
+          width = 1;
+        }
+      }
+    }
+    i += width;
+    if (cp > 0xffff) {
+      const astral = cp - 0x10000;
+      units.push(0xd800 + (astral >> 10), 0xdc00 + (astral & 0x3ff));
+    } else {
+      units.push(cp);
+    }
+    // Batched so a large frame is not quadratic in string concatenation, and
+    // small enough that the spread never approaches an argument limit.
+    if (units.length >= 4096) {
+      out += String.fromCharCode(...units);
+      units.length = 0;
+    }
+  }
+  return units.length > 0 ? out + String.fromCharCode(...units) : out;
 }
 
 function toBase64Url(bytes: Uint8Array): string {
