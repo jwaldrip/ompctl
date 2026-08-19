@@ -164,7 +164,6 @@ describe("ConnectionSwitcherScreen", () => {
     expect(invited).toBe(1);
     expect(host.querySelector('[data-testid="invite"]')).toBeNull();
 
-
     act(() => {
       root.unmount();
     });
