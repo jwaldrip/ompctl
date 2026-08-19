@@ -60,6 +60,7 @@ describe("ConnectionSwitcherScreen", () => {
             adding = true;
           }}
           onBack={() => {}}
+          onInvite={() => {}}
           onSelect={id => selected.push(id)}
         />,
       );
@@ -78,6 +79,7 @@ describe("ConnectionSwitcherScreen", () => {
             cancelled = true;
           }}
           onPair={() => {}}
+          onScan={() => {}}
         />,
       );
     });
@@ -99,7 +101,13 @@ describe("ConnectionSwitcherScreen", () => {
 
     act(() => {
       root.render(
-        <ConnectionSwitcherScreen connections={connections} onAdd={() => {}} onBack={() => {}} onSelect={() => {}} />,
+        <ConnectionSwitcherScreen
+          connections={connections}
+          onAdd={() => {}}
+          onBack={() => {}}
+          onInvite={() => {}}
+          onSelect={() => {}}
+        />,
       );
     });
     expect(host.querySelector('[data-testid="invite-device"]')).toBeNull();
@@ -110,7 +118,7 @@ describe("ConnectionSwitcherScreen", () => {
     host.remove();
   });
 
-  test("holding approve on the active connection surfaces an invite entry point that opens InviteScreen", async () => {
+  test("holding approve on the active connection surfaces an invite entry point that asks for the invite route", () => {
     const approving: ConnectionList = {
       activeId: "local",
       connections: [
@@ -129,41 +137,33 @@ describe("ConnectionSwitcherScreen", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
-
-    // InviteScreen mints over a socket on mount; this test is only about the
-    // switcher's gating and screen swap, so the transport is stubbed out
-    // rather than dialing whatever happens to be listening on 7777.
-    const originalWebSocket = globalThis.WebSocket;
-    globalThis.WebSocket = class {
-      readyState = 0;
-      onopen: (() => void) | null = null;
-      onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
-      onerror: ((event: unknown) => void) | null = null;
-      onmessage: ((event: { data: unknown }) => void) | null = null;
-      send(): void {}
-      close(): void {}
-    } as unknown as typeof WebSocket;
+    let invited = 0;
 
     act(() => {
       root.render(
-        <ConnectionSwitcherScreen connections={approving} onAdd={() => {}} onBack={() => {}} onSelect={() => {}} />,
+        <ConnectionSwitcherScreen
+          connections={approving}
+          onAdd={() => {}}
+          onBack={() => {}}
+          onInvite={() => {
+            invited += 1;
+          }}
+          onSelect={() => {}}
+        />,
       );
     });
     expect(button(host, "invite-device")).not.toBeNull();
 
+    // The entry point asks for a route rather than swapping this screen for the
+    // invite screen itself: the shell's menu reaches the same destination, and
+    // one destination with two ways of being presented is two navigation
+    // models. `nav-shell.test.tsx` proves the route it asks for renders.
     act(() => {
       button(host, "invite-device").click();
     });
-    expect(host.querySelector('[data-testid="invite"]')).not.toBeNull();
+    expect(invited).toBe(1);
+    expect(host.querySelector('[data-testid="invite"]')).toBeNull();
 
-    // Let InviteScreen's mount effects settle before tearing down, so no
-    // subscription is still in flight against an unmounted tree.
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    globalThis.WebSocket = originalWebSocket;
     act(() => {
       root.unmount();
     });

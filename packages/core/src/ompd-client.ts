@@ -24,16 +24,19 @@ import type {
   ApprovalChoice,
   ApprovalScope,
   ClientFrame,
+  CloneId,
   CollabSignalFrame,
   CollabSignalInput,
   CollabVoiceFrame,
   CollabVoiceNoteFrame,
   CollabVoiceNoteInput,
   CollabVoiceParticipant,
+  FsListing,
   PlanReviewChoice,
   ServerFrame,
   SessionQuery,
   SessionSummary,
+  TranscriptTailMessage,
   TuiActivityKind,
   TuiSteerDelivery,
   WebViewAction,
@@ -154,6 +157,17 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // handed over and did not, and the new device's user is left scanning a
   // code that was never minted.
   device_invite: true,
+  // Gestures, every one of them, and none is replayed: a tap on a directory
+  // that silently went nowhere leaves an operator watching a spinner, and a
+  // start or a clone that never left is an action they will believe happened.
+  fs_list: true,
+  session_create: true,
+  repo_clone: true,
+  // One-shot too, but a lost tail is not an instruction that silently did
+  // not happen: nothing on the machine changes, and the surface that asked
+  // asks again the next time it opens. Reporting it would put an error in
+  // front of an operator whose only remedy is the reconnect already running.
+  session_tail: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -366,6 +380,40 @@ export interface TuiActivityEvent {
   text?: string;
 }
 
+/**
+ * One directory, as the daemon reads it right now.
+ *
+ * A snapshot answering a gesture, never state this client maintains: the
+ * operator tapped a folder and this is what was in it. `bounded` says the
+ * daemon returned a page rather than the whole directory, and a view that
+ * dropped that would be showing a truncated listing as a complete one.
+ */
+export interface FsListingEvent extends FsListing {}
+
+/** One line of a clone's progress, correlated by `cloneId`. */
+export interface CloneProgressEvent {
+  cloneId: CloneId;
+  line: string;
+}
+
+/** A clone finished and `path` now exists. Failures arrive as `error`, like every other refusal. */
+export interface CloneDoneEvent {
+  cloneId: CloneId;
+  path: string;
+}
+
+/**
+ * A session's transcript tail, answering `sessionTail`. Oldest first, so a
+ * view appends live `tui_activity` below it without reordering. `truncated`
+ * says the tail is not the whole transcript, which is a rendering hint and
+ * nothing more.
+ */
+export interface SessionTailEvent {
+  sessionId: string;
+  messages: TranscriptTailMessage[];
+  truncated: boolean;
+}
+
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -386,6 +434,10 @@ export interface ClientEventMap {
   sessions: SessionsEvent;
   session_opened: SessionOpenedEvent;
   device_invited: DeviceInvitedEvent;
+  fs_listing: FsListingEvent;
+  clone_progress: CloneProgressEvent;
+  clone_done: CloneDoneEvent;
+  session_tail: SessionTailEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -699,6 +751,23 @@ export class OmpdClient {
   }
 
   /**
+   * Ask for the tail of a session's transcript. The answer arrives as the
+   * `session_tail` event, or an `error` naming the cause: `unknown_session`
+   * for an id this machine holds no file for.
+   *
+   * One-shot, deliberately unlike `listSessions`: a transcript tail is a
+   * snapshot of a screen the operator is looking at, so the surface that
+   * wants one asks when it opens. Replaying it on every reconnect would
+   * re-read a file for a screen nobody may still be on, and the daemon's
+   * `tui_activity` stream already carries what changed since.
+   */
+  sessionTail(sessionId: string, limit?: number): void {
+    const frame: ClientFrame =
+      limit === undefined ? { t: "session_tail", sessionId } : { t: "session_tail", sessionId, limit };
+    this.send(frame);
+  }
+
+  /**
    * Prompt a session a registered live TUI owns. The daemon answers with a
    * `tui_unreachable` error when no connected TUI holds that session, so a
    * dormant row in the index is an explicit refusal, never a silent drop.
@@ -708,6 +777,51 @@ export class OmpdClient {
       deliverAs === undefined
         ? { t: "session_prompt", sessionId, text }
         : { t: "session_prompt", sessionId, text, deliverAs };
+    this.send(frame);
+  }
+
+  /**
+   * Ask what is in one directory on the daemon's machine, or -- with no path
+   * -- for the roots it will answer about at all. The answer arrives as the
+   * `fs_listing` event.
+   *
+   * Never replayed after a reconnect, unlike `listSessions`. A listing is the
+   * answer to a tap, not state this client holds: the directory on screen
+   * does not go stale the way a live session index does, and a view that
+   * wants a fresh one after a drop asks for it, which is the only honest way
+   * to refresh something an operator may meanwhile have navigated away from.
+   */
+  listDirectory(path?: string): void {
+    const frame: ClientFrame = path === undefined ? { t: "fs_list" } : { t: "fs_list", path };
+    this.send(frame);
+  }
+
+  /**
+   * Start a new session at `cwd`. The answer is the same `session_opened`
+   * event a takeover or resume produces, so nothing downstream needs a second
+   * case to open what this created.
+   *
+   * One-shot, for the reason `takeOverSession` is: replaying it after a
+   * reconnect would start a second session at that directory, and the
+   * operator would have asked for one.
+   */
+  createSession(cwd: string, name?: string): void {
+    const frame: ClientFrame = name === undefined ? { t: "session_create", cwd } : { t: "session_create", cwd, name };
+    this.send(frame);
+  }
+
+  /**
+   * Clone `url` into a new directory under `parent`. Progress arrives as
+   * `clone_progress` events and completion as `clone_done`; a refusal, a bad
+   * url, or a failing git arrives as `error`.
+   *
+   * One-shot for the strongest version of the usual reason: a replayed clone
+   * would meet its own half-finished directory and be refused, and the
+   * operator would be reading a failure for work that actually succeeded.
+   */
+  cloneRepo(url: string, parent: string, name?: string): void {
+    const frame: ClientFrame =
+      name === undefined ? { t: "repo_clone", url, parent } : { t: "repo_clone", url, parent, name };
     this.send(frame);
   }
 
@@ -983,6 +1097,28 @@ export class OmpdClient {
         return;
       case "device_invited":
         this.emit("device_invited", { token: frame.token, name: frame.name, scopes: frame.scopes });
+        return;
+      case "fs_listing":
+        this.emit("fs_listing", {
+          path: frame.path,
+          parent: frame.parent,
+          roots: frame.roots,
+          entries: frame.entries,
+          bounded: frame.bounded,
+        });
+        return;
+      case "clone_progress":
+        this.emit("clone_progress", { cloneId: frame.cloneId, line: frame.line });
+        return;
+      case "clone_done":
+        this.emit("clone_done", { cloneId: frame.cloneId, path: frame.path });
+        return;
+      case "session_tail":
+        this.emit("session_tail", {
+          sessionId: frame.sessionId,
+          messages: frame.messages,
+          truncated: frame.truncated,
+        });
         return;
       case "tui_activity":
         this.emit("tui_activity", {

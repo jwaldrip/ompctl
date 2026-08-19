@@ -15,7 +15,8 @@
  */
 
 import type { JSX } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { memo, useCallback } from "react";
+import { Pressable, type PressableStateCallbackType, StyleSheet, View } from "react-native";
 import { shortenPath } from "../design/format.ts";
 import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
@@ -57,7 +58,19 @@ const OPEN_LABEL: Record<SessionStatus, string> = {
   archived: "Restore",
 };
 
-export function SessionRow({
+/**
+ * Memoised, and every closure it hands a `Pressable` is either hoisted to the
+ * module or `useCallback`-stable.
+ *
+ * A row is the unit a list of 534 of them re-renders, so identity is not a
+ * micro-optimisation here: the parent re-renders on every socket frame, and
+ * without `memo` each frame walks every mounted row's subtree. `memo` only
+ * earns that if the props hold still, which is why the three handlers are
+ * required to be stable identities (see `FleetScreen`) and why the pressed
+ * styles below are module constants rather than arrow functions built per
+ * render.
+ */
+export const SessionRow = memo(function SessionRow({
   session,
   showCwd = false,
   onOpen,
@@ -69,6 +82,25 @@ export function SessionRow({
   const tone = signal[SESSION_STATUS_SIGNALS[session.status]];
   const archived = session.status === "archived";
 
+  const open = useCallback(() => {
+    onOpen(session);
+  }, [onOpen, session]);
+  const archiveOrRestore = useCallback(() => {
+    if (session.status === "archived") {
+      onUnarchive(session);
+    } else {
+      onArchive(session);
+    }
+  }, [onArchive, onUnarchive, session]);
+  const openActionStyle = useCallback(
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.openAction,
+      { backgroundColor: signalWash[SESSION_STATUS_SIGNALS[session.status]] },
+      pressed && styles.actionPressed,
+    ],
+    [session.status],
+  );
+
   return (
     <View testID={`session-row-${session.id}`} style={styles.row}>
       <View style={[styles.bar, { backgroundColor: tone }]} />
@@ -77,10 +109,8 @@ export function SessionRow({
         testID={`session-open-${session.id}`}
         accessibilityRole="button"
         accessibilityLabel={`${OPEN_LABEL[session.status]} ${session.title}, ${STATUS_LABELS[session.status]}`}
-        onPress={() => {
-          onOpen(session);
-        }}
-        style={({ pressed }) => [styles.body, pressed && { backgroundColor: ground.active }]}
+        onPress={open}
+        style={bodyStyle}
       >
         <View style={styles.headline}>
           <Title numberOfLines={1} style={styles.title}>
@@ -117,14 +147,8 @@ export function SessionRow({
           testID={firstPathOpen ? "session-open-first" : `session-open-action-${session.id}`}
           accessibilityRole="button"
           accessibilityLabel={`${OPEN_LABEL[session.status]} ${session.title}`}
-          onPress={() => {
-            onOpen(session);
-          }}
-          style={({ pressed }) => [
-            styles.openAction,
-            { backgroundColor: signalWash[SESSION_STATUS_SIGNALS[session.status]] },
-            pressed && styles.actionPressed,
-          ]}
+          onPress={open}
+          style={openActionStyle}
         >
           <Glyph name={OPEN_GLYPH[session.status]} size={13} color={tone} />
         </Pressable>
@@ -133,21 +157,15 @@ export function SessionRow({
           testID={archived ? `session-unarchive-${session.id}` : `session-archive-${session.id}`}
           accessibilityRole="button"
           accessibilityLabel={archived ? `Unarchive ${session.title}` : `Archive ${session.title}`}
-          onPress={() => {
-            if (archived) {
-              onUnarchive(session);
-            } else {
-              onArchive(session);
-            }
-          }}
-          style={({ pressed }) => [styles.archiveAction, pressed && styles.actionPressed]}
+          onPress={archiveOrRestore}
+          style={archiveActionStyle}
         >
           <Glyph name={archived ? "restore" : "archive"} size={13} color={ink.faint} />
         </Pressable>
       </View>
     </View>
   );
-}
+});
 
 function Reading({ value, label, testID }: { value: string; label: string; testID: string }): JSX.Element {
   return (
@@ -199,3 +217,12 @@ const styles = StyleSheet.create({
   },
   actionPressed: { backgroundColor: ground.active },
 });
+
+// One closure each for the whole app rather than two per row per render. The
+// third pressed style is per-row on purpose: its fill is the session's own
+// status wash, so it cannot be hoisted without passing the status back in.
+const bodyStyle = ({ pressed }: PressableStateCallbackType) => [styles.body, pressed && styles.actionPressed];
+const archiveActionStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.archiveAction,
+  pressed && styles.actionPressed,
+];

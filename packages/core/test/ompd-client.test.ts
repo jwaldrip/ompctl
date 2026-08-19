@@ -19,6 +19,7 @@ import type {
   ClientFrame,
   ServerFrame,
   SessionSummary,
+  TranscriptTailMessage,
   WebViewAction,
   WebViewActionResult,
 } from "../src/contracts.ts";
@@ -26,13 +27,17 @@ import {
   agentsEndpoint,
   type BackoffOptions,
   type ClientErrorEvent,
+  type CloneDoneEvent,
+  type CloneProgressEvent,
   type CredentialVerdict,
   computeBackoffDelay,
   type DeviceInvitedEvent,
+  type FsListingEvent,
   OmpdClient,
   type Scheduler,
   type SessionOpenedEvent,
   type SessionsEvent,
+  type SessionTailEvent,
   type SocketCloseInfo,
   type SocketLike,
   type StatusEvent,
@@ -1331,5 +1336,189 @@ describe("device invite surface", () => {
 
     expect(errors.length).toBe(1);
     expect(errors[0]).toContain("device_invite");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Browse, Start, and Clone
+// ---------------------------------------------------------------------------
+
+describe("browse, start and clone surface", () => {
+  test("each request goes out as its own frame, carrying an optional field only when given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.listDirectory();
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.createSession("/Users/op/dev/beta", "deploy checks");
+    h.client.cloneRepo("git@github.com:jwaldrip/ompctl.git", "/Users/op/dev");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev", "second-copy");
+
+    expect(socket.framesOfType("fs_list")).toEqual([{ t: "fs_list" }, { t: "fs_list", path: "/Users/op/dev" }]);
+    expect(socket.framesOfType("session_create")).toEqual([
+      { t: "session_create", cwd: "/Users/op/dev/alpha" },
+      { t: "session_create", cwd: "/Users/op/dev/beta", name: "deploy checks" },
+    ]);
+    expect(socket.framesOfType("repo_clone")).toEqual([
+      { t: "repo_clone", url: "git@github.com:jwaldrip/ompctl.git", parent: "/Users/op/dev" },
+      { t: "repo_clone", url: "https://github.com/jwaldrip/ompctl.git", parent: "/Users/op/dev", name: "second-copy" },
+    ]);
+  });
+
+  test("an fs_listing frame dispatches the typed event with the daemon's page", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: FsListingEvent[] = [];
+    h.client.on("fs_listing", event => received.push(event));
+
+    const listing = {
+      path: "/Users/op/dev",
+      parent: "/Users/op",
+      roots: ["/Users/op"],
+      entries: [
+        { name: "ompctl", kind: "dir" as const, gitRepo: true },
+        { name: "notes.md", kind: "file" as const },
+      ],
+      bounded: true,
+    };
+    socket.deliver({ t: "fs_listing", ...listing });
+
+    expect(received).toEqual([listing]);
+  });
+
+  test("clone progress and completion each dispatch their own event, correlated by clone id", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const progress: CloneProgressEvent[] = [];
+    const done: CloneDoneEvent[] = [];
+    h.client.on("clone_progress", event => progress.push(event));
+    h.client.on("clone_done", event => done.push(event));
+
+    socket.deliver({ t: "clone_progress", cloneId: "cln_0123456789abcdef", line: "Receiving objects:  47%" });
+    socket.deliver({ t: "clone_progress", cloneId: "cln_0123456789abcdef", line: "Resolving deltas: 100%" });
+    socket.deliver({ t: "clone_done", cloneId: "cln_0123456789abcdef", path: "/Users/op/dev/ompctl" });
+
+    expect(progress).toEqual([
+      { cloneId: "cln_0123456789abcdef", line: "Receiving objects:  47%" },
+      { cloneId: "cln_0123456789abcdef", line: "Resolving deltas: 100%" },
+    ]);
+    expect(done).toEqual([{ cloneId: "cln_0123456789abcdef", path: "/Users/op/dev/ompctl" }]);
+  });
+
+  test("a reconnect replays none of the three: the new socket carries nothing but hello", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev");
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just the three types: a replay implemented as
+    // remembered state would show up here as any frame this socket did not
+    // ask for. A replayed `session_create` would start a second session the
+    // operator never asked for, and a replayed clone would meet its own
+    // half-finished directory.
+    expect(second.sent).toEqual([]);
+  });
+
+  test("losing any of the three to a closed socket raises a visible error, like a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    expect(h.latest().readyState).not.toBe(1);
+
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev");
+
+    expect(errors.length).toBe(3);
+    expect(errors[0]).toContain("fs_list");
+    expect(errors[1]).toContain("session_create");
+    expect(errors[2]).toContain("repo_clone");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Session Tail Surface
+// ---------------------------------------------------------------------------
+
+describe("session tail surface", () => {
+  const SESSION = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
+
+  test("sessionTail sends the frame, carrying a limit only when one was given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.sessionTail(SESSION);
+    h.client.sessionTail(SESSION, 5);
+
+    expect(socket.framesOfType("session_tail")).toEqual([
+      { t: "session_tail", sessionId: SESSION },
+      { t: "session_tail", sessionId: SESSION, limit: 5 },
+    ]);
+  });
+
+  test("a session_tail server frame dispatches the typed event with the daemon's turns", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionTailEvent[] = [];
+    h.client.on("session_tail", event => received.push(event));
+
+    const messages: TranscriptTailMessage[] = [
+      { role: "user", text: "status of the deploy?", at: "2026-08-13T00:00:01.000Z" },
+      { role: "assistant", text: "all green", at: "2026-08-13T00:00:02.000Z" },
+    ];
+    socket.deliver({ t: "session_tail", sessionId: SESSION, messages, truncated: true });
+
+    expect(received).toEqual([{ sessionId: SESSION, messages, truncated: true }]);
+  });
+
+  test("a reconnect does not re-issue the request: a tail belongs to a screen, not to the socket", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.sessionTail(SESSION);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just this type: a replay implemented as
+    // remembered state would show up here as any frame after the hello this
+    // socket never asked for.
+    expect(second.sent).toEqual([]);
+    expect(second.framesOfType("session_tail")).toEqual([]);
+  });
+
+  test("losing a tail request to a closed socket raises no error, unlike a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in. Nothing on the machine
+    // changes because a tail was lost, and the surface asks again when it
+    // opens, so an error here would name a failure with no remedy.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.sessionTail(SESSION);
+    expect(errors).toEqual([]);
+
+    h.client.prompt(AGENT, "hello");
+    expect(errors.length).toBe(1);
   });
 });

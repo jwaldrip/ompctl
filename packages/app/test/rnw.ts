@@ -28,7 +28,7 @@
 import { mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { ReactNode } from "react";
-import { createElement } from "react";
+import { createContext, createElement } from "react";
 
 // One registration for the whole suite. Individual tests used to register and
 // unregister themselves, which is how a second file in the same process died
@@ -219,11 +219,63 @@ mock.module("react-native-view-shot", () => ({
   captureRef: () => Promise.reject(new Error("captureRef is unavailable under bun test")),
 }));
 
-// Zero insets under bun test: there is no system chrome in happy-dom, and the
-// real package reaches into native modules bun cannot load. Screens still
-// mount their SafeScreen shell so a missing provider would fail the same way
-// it would on device.
+/** The insets a test says this device has. Zero is a device with no system chrome. */
+export interface CannedInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * Canned insets, zero by default.
+ *
+ * happy-dom has no system chrome and the real package reaches into native
+ * modules bun cannot load, so a test that cares about the notch or the home
+ * indicator sets them with `setSafeAreaInsets` before it renders. Screens still
+ * mount their real `SafeScreen` shell, so a missing provider fails here the
+ * same way it would on device.
+ *
+ * One object, mutated in place, because a React context's default value is
+ * fixed when the context is created: handing out a new object would leave every
+ * consumer reading the first one. `SafeAreaInsetsContext` carries the same
+ * object because React Navigation asks through the context rather than the
+ * hook, and a null context there makes it wrap each navigator in a second
+ * provider, which is not the shape the app ships (`App.tsx` provides once, at
+ * the root).
+ */
+const insets: CannedInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+const frame = { x: 0, y: 0, width: 390, height: 844 };
+
+/** Report a notch and a home indicator for the next render. */
+export function setSafeAreaInsets(next: CannedInsets): void {
+  Object.assign(insets, next);
+}
+
+/** Back to a device with no system chrome, which is what every other test assumes. */
+export function resetSafeAreaInsets(): void {
+  Object.assign(insets, { top: 0, right: 0, bottom: 0, left: 0 });
+}
+
 mock.module("react-native-safe-area-context", () => ({
   SafeAreaProvider: ({ children }: { children?: ReactNode }) => children ?? null,
-  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+  SafeAreaView: ({ children }: { children?: ReactNode }) => children ?? null,
+  SafeAreaInsetsContext: createContext(insets),
+  SafeAreaFrameContext: createContext(frame),
+  initialWindowMetrics: { frame, insets },
+  useSafeAreaInsets: () => insets,
+  useSafeAreaFrame: () => frame,
+}));
+
+// `react-native-screens` is the native half of the native stack: its default
+// build reaches for codegen'd native components bun cannot instantiate. React
+// Navigation's own web build of the stack view does not import it at all, which
+// is what runs here, so the stub exists only for the few modules that reach for
+// a name at import time.
+mock.module("react-native-screens", () => ({
+  enableScreens: () => {},
+  enableFreeze: () => {},
+  screensEnabled: () => false,
+  isSearchBarAvailableForCurrentPlatform: false,
+  compatibilityFlags: {},
 }));

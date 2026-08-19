@@ -8,7 +8,8 @@
  */
 
 import type { JSX } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { memo, useCallback } from "react";
+import { Pressable, type PressableStateCallbackType, StyleSheet, View } from "react-native";
 import { shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { Data, Label } from "../design/text.tsx";
@@ -22,8 +23,12 @@ export interface GroupHeaderProps {
   onToggle: (cwd: string) => void;
 }
 
-export function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps): JSX.Element {
+/** Memoised for the same reason `SessionRow` is: 93 of these scroll past one list. */
+export const GroupHeader = memo(function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps): JSX.Element {
   const tone = signal[SESSION_STATUS_SIGNALS[group.worstStatus]];
+  const toggle = useCallback(() => {
+    onToggle(group.cwd);
+  }, [onToggle, group.cwd]);
 
   return (
     <Pressable
@@ -31,10 +36,8 @@ export function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps): J
       accessibilityRole="button"
       accessibilityState={{ expanded: !collapsed }}
       accessibilityLabel={`${shortenPath(group.cwd, 4)}, ${group.totalCount} sessions, ${STATUS_LABELS[group.worstStatus]}`}
-      onPress={() => {
-        onToggle(group.cwd);
-      }}
-      style={({ pressed }) => [styles.header, pressed && { backgroundColor: ground.active }]}
+      onPress={toggle}
+      style={headerStyle}
     >
       <View style={[styles.dot, { backgroundColor: tone }]} />
       <Glyph name="folder" size={13} color={ink.muted} />
@@ -49,7 +52,9 @@ export function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps): J
       </View>
     </Pressable>
   );
-}
+});
+
+const headerStyle = ({ pressed }: PressableStateCallbackType) => [styles.header, pressed && styles.headerPressed];
 
 const styles = StyleSheet.create({
   header: {
@@ -63,6 +68,7 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.hair,
     borderColor: ground.edge,
   },
+  headerPressed: { backgroundColor: ground.active },
   dot: { width: 6, height: 6 },
   path: { flex: 1 },
   chevron: { paddingLeft: space.tight, transform: [{ rotate: "0deg" }] },

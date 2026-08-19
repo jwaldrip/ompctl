@@ -171,6 +171,64 @@ export function scanSessionFiles(sessionsRoot?: string): RawSessionFile[] {
 }
 
 /**
+ * The path of one session's file, by id, or undefined when this machine holds
+ * none.
+ *
+ * A targeted walk rather than a scan, because resolving one id through the
+ * assembled index costs the whole tree: measured on this machine's real
+ * sessions (538 files across 181 group directories), a `SessionIndex` build
+ * took 2.9s while this walk takes 4 to 6ms, because it opens nothing, stats
+ * nothing, reads no titles, and verifies no liveness. A phone tapping a
+ * session and waiting three seconds for its transcript is the difference.
+ *
+ * One `yield` per group directory, matching this module's other cooperative
+ * form, so even a tree with thousands of groups stays interruptible. The path
+ * is always `sessionsRoot` plus entries this function itself enumerated, and
+ * the filename must match the same naming scheme the scan trusts, so an id
+ * arriving from a client cannot steer the result outside the configured root.
+ */
+export function* findSessionFileIter(
+  sessionId: string,
+  sessionsRoot: string | undefined = getSessionsDir(),
+): Generator<void, string | undefined> {
+  const suffix = `_${sessionId}.jsonl`;
+  let groupDirs: string[];
+  try {
+    groupDirs = readdirSync(sessionsRoot, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name);
+  } catch {
+    return undefined; // No root, no sessions: the same degradation the scan makes.
+  }
+  for (const flattenedDir of groupDirs) {
+    let fileNames: string[];
+    try {
+      fileNames = readdirSync(join(sessionsRoot, flattenedDir), { withFileTypes: true })
+        .filter(entry => entry.isFile())
+        .map(entry => entry.name);
+    } catch {
+      yield; // Vanished mid-walk; still a step's worth of work done.
+      continue;
+    }
+    for (const fileName of fileNames) {
+      if (!fileName.endsWith(suffix)) continue;
+      if (!SESSION_FILE_RE.test(fileName)) continue; // Not this naming scheme; never a session this daemon serves.
+      return join(sessionsRoot, flattenedDir, fileName);
+    }
+    yield; // One cooperative step per group directory.
+  }
+  return undefined;
+}
+
+/** The lookup in one synchronous call, for callers that cannot yield. */
+export function findSessionFile(sessionId: string, sessionsRoot?: string): string | undefined {
+  const steps = findSessionFileIter(sessionId, sessionsRoot);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+/**
  * Read buffer size for streamed counting. Measured here on a 97.6MB fixture
  * of realistic message lines: 16KiB chunks counted 0.64MB/ms, 64KiB 0.75,
  * 256KiB 0.77, 1MiB 0.78 -- a whole-file readFileSync+split manages 1.63
@@ -181,26 +239,49 @@ export function scanSessionFiles(sessionsRoot?: string): RawSessionFile[] {
 export const COUNT_CHUNK_BYTES = 64 * 1024;
 
 /**
- * Whether one complete line counts as a conversation turn: `type:
- * "message"` whose `message.role` is "user" or "assistant". Tool results,
- * thinking deltas, and bookkeeping events (`model_change`, `title_change`,
- * `custom`, `credential_pin`, ...) are excluded so the count reflects turns
- * a person would recognize as the conversation, not every JSONL line the
- * session ever wrote.
+ * One conversation turn, as a session file line carried it: `type:
+ * "message"` whose `message.role` is "user" or "assistant". `content` is
+ * handed on untouched because the two readers want different things from it
+ * -- counting wants only that the turn exists, while the tail reader wants
+ * the words -- and flattening it here would make every count pay for text
+ * extraction across 150MB of transcripts.
  */
-function countsAsTurn(text: string): boolean {
-  if (text === "") return false; // Empty line, the old split-and-skip rule.
-  let parsed: { type?: unknown; message?: { role?: unknown } };
+export interface SessionTurnLine {
+  role: "user" | "assistant";
+  /** Exactly what the line's `message.content` was: a block array, or a bare string for some typed user turns. */
+  content: unknown;
+  /** The line's own ISO timestamp, or "" when it carried none. */
+  at: string;
+}
+
+/**
+ * The one place a session file line becomes a turn, shared by the counter
+ * here and by `readSessionTail`.
+ *
+ * Tool results, thinking deltas, and bookkeeping events (`model_change`,
+ * `title_change`, `custom`, `credential_pin`, ...) are not turns, so the
+ * count reflects the conversation a person would recognize rather than every
+ * JSONL line the session ever wrote -- and, for the same reason, the tail
+ * never renders a tool result as if the operator or the agent had said it.
+ * A second parser beside this one is how the two would drift into disagreeing
+ * about what a message is.
+ */
+export function parseTurnLine(text: string): SessionTurnLine | null {
+  if (text === "") return null; // Empty line, the old split-and-skip rule.
+  let parsed: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown } };
   try {
     parsed = JSON.parse(text);
   } catch {
-    return false; // Malformed line: skipped, never fatal.
+    return null; // Malformed line: skipped, never fatal.
   }
-  if (parsed.type === "message") {
-    const role = parsed.message?.role;
-    return role === "user" || role === "assistant";
-  }
-  return false;
+  if (parsed.type !== "message") return null;
+  const role = parsed.message?.role;
+  if (role !== "user" && role !== "assistant") return null;
+  return {
+    role,
+    content: parsed.message?.content,
+    at: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
+  };
 }
 
 /**
@@ -256,7 +337,7 @@ export function* countMessagesChunks(fd: number): Generator<void, number> {
           ? Buffer.concat([...carry, chunk.subarray(lineStart, i)]).toString("utf8")
           : chunk.toString("utf8", lineStart, i);
       carry = [];
-      if (countsAsTurn(text)) count++;
+      if (parseTurnLine(text) !== null) count++;
       lineStart = i + 1;
     }
     if (lineStart < bytesRead) {
@@ -266,7 +347,7 @@ export function* countMessagesChunks(fd: number): Generator<void, number> {
   }
   // The trailing line after the last newline, if any: the old whole-file
   // split counted it too, so it is counted here as well.
-  if (carry.length > 0 && countsAsTurn(Buffer.concat(carry).toString("utf8"))) count++;
+  if (carry.length > 0 && parseTurnLine(Buffer.concat(carry).toString("utf8")) !== null) count++;
   return count;
 }
 

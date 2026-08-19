@@ -696,6 +696,69 @@ describe("SessionIndex.grouped", () => {
   });
 });
 
+describe("SessionIndex.pathFor", () => {
+  test("finds a session's file in any group without building the index", async () => {
+    // The `scan` seam throws, so a build is not merely unnecessary here: it is
+    // impossible. A tail that resolved its file through a build would cost the
+    // whole tree, measured at 2.9s against 4 to 6ms on this machine's real
+    // sessions, which is the difference between a tap that feels instant and
+    // one that does not.
+    const sessionsRoot = tempRoot("session-index-pathfor-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const wanted = writeSessionFile(sessionsRoot, "-b", "2026-08-11T00-00-00-000Z", SESSION_B, [titleLine("b")]);
+
+    const index = new SessionIndex({
+      store,
+      sessionsRoot,
+      runDaemonsRoot: tempRoot("session-index-empty-run-"),
+      scan: () => {
+        throw new Error("pathFor must not scan the tree");
+      },
+    });
+
+    expect(await index.pathFor(SESSION_B)).toBe(wanted);
+  });
+
+  test("an id this machine holds no file for is undefined, not a guessed path", async () => {
+    const sessionsRoot = tempRoot("session-index-pathfor-miss-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+
+    expect(await index.pathFor(SESSION_C)).toBeUndefined();
+    // A partial id must not match by suffix either: the file's name ends with
+    // the whole id, and a client that could name a fragment could walk into a
+    // session it was never shown.
+    expect(await index.pathFor(SESSION_A.slice(8))).toBeUndefined();
+    expect(await index.pathFor("")).toBeUndefined();
+  });
+
+  test("a file that does not follow the naming scheme is not a session, however it is named", async () => {
+    // The scan skips these rather than guessing at an id, so the lookup must
+    // skip them too: one convention, one answer.
+    const sessionsRoot = tempRoot("session-index-pathfor-shape-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const groupDir = join(sessionsRoot, "-a");
+    mkdirSync(groupDir, { recursive: true });
+    writeFileSync(join(groupDir, `backup_${SESSION_A}.jsonl`), "{}\n");
+    const index = buildIndex(sessionsRoot, store);
+
+    expect(await index.pathFor(SESSION_A)).toBeUndefined();
+  });
+
+  test("a sessions root that is not there answers undefined rather than throwing", async () => {
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const index = new SessionIndex({
+      store,
+      sessionsRoot: join(tempRoot("session-index-pathfor-gone-"), "never-created"),
+      runDaemonsRoot: tempRoot("session-index-empty-run-"),
+    });
+
+    expect(await index.pathFor(SESSION_A)).toBeUndefined();
+  });
+});
+
 afterEach(() => {
   for (const store of openStores.splice(0)) {
     try {

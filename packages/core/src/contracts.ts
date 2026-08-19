@@ -484,6 +484,25 @@ export type TuiSteerDelivery = "steer" | "followUp";
 /** What a live terminal session reports back as a turn progresses. */
 export type TuiActivityKind = "assistant_text" | "turn_start" | "turn_end";
 
+/**
+ * One turn of a session's transcript, as a tail reader recovered it from the
+ * session file.
+ *
+ * Text, never blocks. A message's content in a session file is an array of
+ * blocks (or, for some typed user turns, a bare string), and only a `text`
+ * block is words: a `toolCall` is the agent reaching for a tool and a
+ * `thinking` block is not what it said. So the daemon flattens a turn to the
+ * words it actually spoke and drops a turn that spoke none, rather than
+ * shipping a block union a client would have to re-learn this lesson to
+ * render. `at` is the line's own ISO timestamp, or "" for a file that carried
+ * none.
+ */
+export interface TranscriptTailMessage {
+  role: "user" | "assistant";
+  text: string;
+  at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Client wire protocol
 // ---------------------------------------------------------------------------
@@ -555,6 +574,21 @@ export type ClientFrame =
    * `approve`, and may not grant a scope the asking device does not hold.
    */
   | { t: "device_invite"; name: string; scopes: string[] }
+  | RemoteStartClientFrame
+  /**
+   * The tail of a session's transcript, read straight from its file.
+   *
+   * Read scope, not manage: this is reading a transcript, which a read-only
+   * device is already entitled to for its own agents, and it changes nothing
+   * about the session. `limit` asks for at most that many of the most recent
+   * turns; the daemon defaults it and caps it, so a client cannot ask for a
+   * whole 10MB transcript in one frame.
+   *
+   * A live terminal session has no agent row, so `attach` and its `update`
+   * stream cannot reach it. Without this frame, tapping a session with a
+   * thousand messages in it shows a composer and nothing else.
+   */
+  | { t: "session_tail"; sessionId: string; limit?: number }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -626,6 +660,15 @@ export type ServerFrame =
    * credential in the wild that no operator asked for and no screen showed.
    */
   | { t: "device_invited"; token: string; name: string; scopes: string[] }
+  | RemoteStartServerFrame
+  /**
+   * The transcript tail answering a `session_tail` frame, sent only to the
+   * socket that asked. Oldest first, so a client appends live activity below
+   * it without reordering. `truncated` says the tail is not the whole
+   * transcript: either an older turn exists past the ones returned, or the
+   * reader stopped at its byte budget with unread bytes behind it.
+   */
+  | { t: "session_tail"; sessionId: string; messages: TranscriptTailMessage[]; truncated: boolean }
   | { t: "pong" };
 
 // ---------------------------------------------------------------------------
@@ -660,7 +703,22 @@ export type AuditAction =
   | "proposal.promote"
   | "proposal.reject"
   | "host.provision"
-  | "host.destroy";
+  | "host.destroy"
+  /**
+   * A device asked what is in one of the operator's directories, or was
+   * refused. Recorded on every exit, refusals included: reading someone's
+   * filesystem from a phone is a privileged act, and a log that kept only
+   * the successes would omit exactly the attempts worth reviewing.
+   */
+  | "fs.list"
+  /** A device started a session at a directory it chose, or was refused. */
+  | "session.create"
+  /**
+   * A device cloned a repository onto this machine, or was refused. `detail`
+   * carries the url and the destination; a url carrying a credential is
+   * refused before this record is written, so one can never be logged.
+   */
+  | "repo.clone";
 
 export interface AuditEntry {
   id: number;
@@ -942,3 +1000,98 @@ export interface SessionGroup {
   cwd: string | null;
   sessions: SessionSummary[];
 }
+
+// ---------------------------------------------------------------------------
+// Browsing the machine, and starting work on it
+//
+// A phone can already watch every session on the machine and take a turn in
+// one. What it could not do is decide where the next piece of work happens:
+// that meant sitting at the laptop. These three frames close that, and they
+// are deliberately the most privileged thing a device can ask for over the
+// socket, because between them they read the operator's directories and then
+// run code in one. Every one of them requires SCOPE_MANAGE and is audited,
+// including its refusals -- browsing is not watching.
+//
+// Every path in this section is absolute and belongs to the daemon's machine.
+// The daemon holds a configured set of roots and answers about nothing
+// outside them: a path that resolves out, by traversal or through a symlink,
+// is refused rather than listed. See @ompd/daemon's `filesystem/` for the
+// enforcement.
+// ---------------------------------------------------------------------------
+
+/**
+ * What a directory entry is, as its dirent reported it. `link` is a symlink
+ * the daemon deliberately did not follow: resolving it is the listing's job
+ * only when the operator opens it, and only if it lands inside the roots.
+ */
+export type FsEntryKind = "dir" | "file" | "link";
+
+export interface FsEntry {
+  /**
+   * The entry's own name within `FsListing.path`. In the roots listing -- the
+   * answer to an `fs_list` with no path -- there is no containing directory,
+   * so each entry names an absolute root instead.
+   */
+  name: string;
+  kind: FsEntryKind;
+  /**
+   * True when this directory is the top of a git working tree, checked out or
+   * linked. Present only on directories, and the one marking worth a stat: it
+   * is what the operator is actually looking for when choosing where an agent
+   * should act.
+   */
+  gitRepo?: boolean;
+}
+
+/**
+ * One page of a directory, as `fs_listing` carries it.
+ *
+ * `bounded` is not decoration. A phone asking about a directory with fifty
+ * thousand entries must get an answer rather than a stall, so the daemon
+ * returns a page and says so; a client that hid that would be showing a
+ * truncated directory as if it were the whole one.
+ */
+export interface FsListing {
+  /** The directory listed, absolute. Empty in the roots listing, which has no directory of its own. */
+  path: string;
+  /** The parent to walk up to, or null at a root: there is nothing above a root a device may see. */
+  parent: string | null;
+  /** Every configured root, so a client can offer them without a second request. */
+  roots: string[];
+  entries: FsEntry[];
+  /** True when the directory holds more entries than this page carries. */
+  bounded: boolean;
+}
+
+/** Opaque id correlating one clone's progress frames with its completion. */
+export type CloneId = string;
+
+export type RemoteStartClientFrame =
+  /**
+   * Ask for one directory's entries. Omit `path` for the roots listing, which
+   * is where a client with nothing selected starts.
+   */
+  | { t: "fs_list"; path?: string }
+  /**
+   * Start a new session at `cwd`, through the same supervisor path
+   * `POST /v1/agents` takes. Answered by `session_opened`, so a client's
+   * existing open handling needs no second case. `name` defaults to the
+   * directory's own name, which is what an operator would have typed.
+   */
+  | { t: "session_create"; cwd: string; name?: string }
+  /**
+   * Clone `url` into a new directory under `parent`. `name` defaults to the
+   * repository's own name. A url carrying a credential is refused rather than
+   * run, because the alternative is a secret in an audit record.
+   */
+  | { t: "repo_clone"; url: string; parent: string; name?: string };
+
+export type RemoteStartServerFrame =
+  | ({ t: "fs_listing" } & FsListing)
+  /**
+   * One line of a clone's progress, as git wrote it. Capped in count and in
+   * length: this is a progress hint for a phone, not a transcript.
+   */
+  | { t: "clone_progress"; cloneId: CloneId; line: string }
+  /** The clone finished and `path` now exists. The terminal frame; failures use `error`. */
+  | { t: "clone_done"; cloneId: CloneId; path: string };

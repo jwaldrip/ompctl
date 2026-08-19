@@ -49,6 +49,7 @@ import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
 import {
   COUNT_CHUNK_BYTES,
   countMessagesChunks,
+  findSessionFileIter,
   MESSAGE_COUNT_SIZE_CEILING_BYTES,
   type RawSessionFile,
   scanSessionFilesIter,
@@ -433,6 +434,31 @@ export class SessionIndex {
   async get(sessionId: string): Promise<SessionSummary | undefined> {
     const { rows } = await this.#buildShared();
     return rows.find(row => row.id === sessionId);
+  }
+
+  /**
+   * The session file's own path, or undefined when this machine holds no such
+   * session.
+   *
+   * Deliberately not an index build. Everything a build produces beyond the
+   * path -- decoded cwds, verified liveness, message counts, sort order -- is
+   * work a transcript read never consults, and on this machine's real tree
+   * that work costs 2.9s against the 4 to 6ms this lookup takes. A phone
+   * tapping a session and waiting three seconds for its first line of history
+   * is the difference, so the walk is targeted and cooperative: one step per
+   * group directory, with the event loop handed on between steps.
+   *
+   * Also deliberately not on `SessionSummary`: that is a wire type, and a
+   * client has no business being handed absolute paths on this machine.
+   */
+  async pathFor(sessionId: string): Promise<string | undefined> {
+    const steps = findSessionFileIter(sessionId, this.#sessionsRoot);
+    let step = steps.next();
+    while (!step.done) {
+      await yieldToEventLoop();
+      step = steps.next();
+    }
+    return step.value;
   }
 
   /** Query, filter, and sort the catalog. Archived sessions are excluded unless `includeArchived` is set. */

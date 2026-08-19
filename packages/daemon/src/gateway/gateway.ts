@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { extname, join, resolve, sep } from "node:path";
+import { basename, extname, join, resolve, sep } from "node:path";
 import {
   type Actor,
   type Agent,
@@ -53,8 +53,10 @@ import {
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
+import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
+import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import {
   createAgentId,
   type PendingApproval,
@@ -332,6 +334,16 @@ const MAX_TUI_ACP_FRAME_BYTES = 32 * 1024 * 1024;
  * what makes that misuse cost one refused frame instead of a flooded client.
  */
 const MAX_TUI_ACTIVITY_TEXT_BYTES = 64 * 1024;
+
+/**
+ * Clones one socket may have running at once.
+ *
+ * A clone is the one frame here that spends minutes of disk and network on a
+ * single tap, and a phone in a pocket can send a lot of taps. The rate limiter
+ * bounds frames per second, which is the wrong unit for work that outlives the
+ * frame that started it; this bounds the work.
+ */
+const MAX_CLONES_PER_SOCKET = 3;
 
 /** The only scopes a device row may carry. Anything else is a typo, not a grant. */
 const KNOWN_SCOPES: readonly string[] = [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE];
@@ -698,6 +710,14 @@ export interface GatewayOptions {
    * Returning false means the request is stale, unknown, or belongs elsewhere.
    */
   onWebViewResult?: (agentId: AgentId, requestId: string, result: WebViewActionResult) => boolean;
+  /**
+   * Browsing this machine, starting a session at a chosen directory, and
+   * cloning into one. Absent, `fs_list`, `session_create` and `repo_clone`
+   * report the feature off rather than answering: an unconfigured daemon
+   * browses nothing, and "no roots configured" must never read as "the whole
+   * filesystem".
+   */
+  filesystem?: FilesystemSurface;
 }
 
 interface LiveTuiSocket {
@@ -831,6 +851,16 @@ export class Gateway {
   #tasks: TaskCatalog | undefined;
   #sessionIndex: SessionIndex | undefined;
   #endpoints: (() => EndpointOffer[]) | undefined;
+  #filesystem: FilesystemSurface | undefined;
+  /**
+   * Clones in flight, per socket.
+   *
+   * Held here rather than on `SocketState` because the only two things that
+   * ever consult it are the frame that starts a clone and the close that has
+   * to stop one: an operator who walked into a lift must not leave `git`
+   * running against a directory nobody is waiting for any more.
+   */
+  #clones = new Map<GatewaySocket, Set<CloneRun>>();
   #onWebViewResult: GatewayOptions["onWebViewResult"];
   #onWebViewUnavailable: GatewayOptions["onWebViewUnavailable"];
   #staticRoot: string | undefined;
@@ -872,6 +902,7 @@ export class Gateway {
     this.#tasks = opts.tasks;
     this.#sessionIndex = opts.sessionIndex;
     this.#endpoints = opts.endpoints;
+    this.#filesystem = opts.filesystem;
     this.#onWebViewResult = opts.onWebViewResult;
     this.#onWebViewUnavailable = opts.onWebViewUnavailable;
     // Resolved once so the traversal check below compares two absolute paths.
@@ -2102,6 +2133,249 @@ export class Gateway {
     }
   }
 
+  // -- browsing this machine, and starting work on it ------------------------
+
+  /**
+   * The gate the three filesystem frames share: manage scope, and a daemon
+   * that actually has roots configured. Audits the refusal it returns, so
+   * every one of these attempts leaves a record whichever door closed.
+   *
+   * Returns false when the caller must stop. One helper rather than three
+   * copies, because two of these frames run code on the operator's machine
+   * and a scope check that drifted between them would be the whole bug.
+   */
+  #authorizeFilesystem(
+    ws: GatewaySocket,
+    action: "fs.list" | "session.create" | "repo.clone",
+    frameType: string,
+    detail: Record<string, unknown>,
+  ): boolean {
+    if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+      this.#store.audit({
+        action,
+        actorDeviceId: ws.data.deviceId,
+        outcome: "denied",
+        detail: { ...detail, reason: "unauthorized" },
+      });
+      this.#send(ws, { t: "error", code: "unauthorized", message: `${frameType} requires manage scope` });
+      return false;
+    }
+    if (this.#filesystem === undefined) {
+      this.#store.audit({
+        action,
+        actorDeviceId: ws.data.deviceId,
+        outcome: "denied",
+        detail: { ...detail, reason: "filesystem_unavailable" },
+      });
+      this.#send(ws, {
+        t: "error",
+        code: "filesystem_unavailable",
+        message: "no browsable directories are wired into this daemon",
+      });
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Turn an `FsRefusal` into the error frame that names why, and audit the
+   * refusal under the action that produced it. Anything that is not an
+   * `FsRefusal` is a bug in this daemon rather than a decision about the
+   * request, and reports as one without leaking its internals to the client.
+   */
+  #refuseFilesystem(
+    ws: GatewaySocket,
+    action: "fs.list" | "session.create" | "repo.clone",
+    err: unknown,
+    detail: Record<string, unknown>,
+    fallbackCode: string,
+  ): void {
+    const refusal = err instanceof FsRefusal;
+    const code = refusal ? err.code : fallbackCode;
+    this.#store.audit({
+      action,
+      actorDeviceId: ws.data.deviceId,
+      outcome: refusal ? "denied" : "error",
+      detail: { ...detail, reason: code },
+    });
+    this.#send(ws, {
+      t: "error",
+      code,
+      message: err instanceof Error ? err.message : `${action} failed`,
+    });
+  }
+
+  async #serveFsListing(ws: GatewaySocket, path: string | undefined): Promise<void> {
+    const filesystem = this.#filesystem;
+    if (filesystem === undefined) return;
+    try {
+      const listing = await filesystem.list(path);
+      this.#store.audit({
+        action: "fs.list",
+        actorDeviceId: ws.data.deviceId,
+        outcome: "ok",
+        // The resolved path, not the requested one: that is what was actually
+        // read, and the two differ exactly when a symlink or a `..` was involved.
+        detail: { path: listing.path, entries: listing.entries.length, bounded: listing.bounded },
+      });
+      this.#send(ws, { t: "fs_listing", ...listing });
+    } catch (err) {
+      this.#refuseFilesystem(ws, "fs.list", err, { path }, "fs_list_failed");
+    }
+  }
+
+  /**
+   * Start a session at a directory the operator picked on a phone.
+   *
+   * Goes through `Supervisor.createAgent`, the same call `POST /v1/agents`
+   * makes, so policy, host selection and the audit record are the ones every
+   * other creation path already gets. The answer is the existing
+   * `session_opened` frame, which is why a client needs no new case to open
+   * what this made.
+   */
+  async #createSessionOverSocket(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "session_create" }>,
+  ): Promise<void> {
+    const filesystem = this.#filesystem;
+    if (filesystem === undefined) return;
+    // A replica queues writes for the daemon that owns the session, and a
+    // queued intent has no session id to answer with. Worse, the cwd this
+    // frame carries was browsed on this replica's disk and means nothing on
+    // the delegate's. Refusing is the honest answer; `POST /v1/agents` is
+    // still there for a caller that genuinely wants a queued creation.
+    if (this.#federation?.replica === true) {
+      this.#refuseFilesystem(
+        ws,
+        "session.create",
+        new FsRefusal("bad_path", "this daemon is a replica; a session must be created where its directory is"),
+        { cwd: frame.cwd },
+        "session_create_failed",
+      );
+      return;
+    }
+    let cwd: string;
+    try {
+      cwd = await filesystem.directory(frame.cwd);
+    } catch (err) {
+      this.#refuseFilesystem(ws, "session.create", err, { cwd: frame.cwd }, "session_create_failed");
+      return;
+    }
+    const requested = frame.name?.trim();
+    // The directory's own name is what an operator would have typed, and a
+    // session called `alpha` is findable in a list where `Session 3` is not.
+    const name = requested === undefined || requested.length === 0 ? basename(cwd) : requested;
+    try {
+      const agent = await this.#sup.createAgent({ name, cwd }, this.#actorOf(ws));
+      const sessionId = agent.acpSessionId;
+      if (sessionId === undefined) {
+        // `createAgent` sets this before returning, so reaching here means the
+        // supervisor changed under us. Reported rather than papered over with
+        // an invented id a client would then try to open.
+        this.#refuseFilesystem(
+          ws,
+          "session.create",
+          new Error(`agent ${agent.id} started without a session`),
+          { cwd, agentId: agent.id },
+          "session_create_failed",
+        );
+        return;
+      }
+      this.#store.audit({
+        action: "session.create",
+        agentId: agent.id,
+        actorDeviceId: ws.data.deviceId,
+        outcome: "ok",
+        detail: { cwd, name },
+      });
+      this.#send(ws, { t: "session_opened", sessionId, agentId: agent.id });
+    } catch (err) {
+      this.#refuseFilesystem(
+        ws,
+        "session.create",
+        err,
+        { cwd },
+        err instanceof UnauthorizedError ? "unauthorized" : "session_create_failed",
+      );
+    }
+  }
+
+  /**
+   * Clone a repository onto this machine for a device that is not at the
+   * keyboard.
+   *
+   * Registered against the socket before it is awaited, so a socket that goes
+   * away takes the clone with it: an operator who walked out of range must not
+   * leave `git` writing into a directory nobody is waiting for. The audit
+   * record is written when git is actually started, with the validated url --
+   * `validateCloneUrl` has by then refused every form that could carry a
+   * credential, which is what makes the url safe to record at all.
+   */
+  async #startCloneOverSocket(ws: GatewaySocket, frame: Extract<ClientFrame, { t: "repo_clone" }>): Promise<void> {
+    const filesystem = this.#filesystem;
+    if (filesystem === undefined) return;
+    const running = this.#clones.get(ws);
+    if (running !== undefined && running.size >= MAX_CLONES_PER_SOCKET) {
+      this.#refuseFilesystem(
+        ws,
+        "repo.clone",
+        new FsRefusal("clone_busy", `this device already has ${running.size} clones running`),
+        { parent: frame.parent },
+        "clone_failed",
+      );
+      return;
+    }
+
+    let run: CloneRun;
+    try {
+      run = await filesystem.clone(
+        {
+          url: frame.url,
+          parent: frame.parent,
+          ...(frame.name === undefined ? {} : { name: frame.name }),
+        },
+        // Bound to the socket, not to a subscription: progress belongs to the
+        // device that asked, and a clone is nobody else's business.
+        line => this.#send(ws, { t: "clone_progress", cloneId: run.cloneId, line }),
+      );
+    } catch (err) {
+      this.#refuseFilesystem(ws, "repo.clone", err, { parent: frame.parent }, "clone_failed");
+      return;
+    }
+
+    const tracked = running ?? new Set<CloneRun>();
+    tracked.add(run);
+    this.#clones.set(ws, tracked);
+    this.#store.audit({
+      action: "repo.clone",
+      actorDeviceId: ws.data.deviceId,
+      outcome: "ok",
+      detail: { url: run.url, path: run.path, cloneId: run.cloneId },
+    });
+
+    try {
+      await run.finished;
+      this.#send(ws, { t: "clone_done", cloneId: run.cloneId, path: run.path });
+    } catch (err) {
+      this.#refuseFilesystem(ws, "repo.clone", err, { url: run.url, path: run.path }, "clone_failed");
+    } finally {
+      tracked.delete(run);
+      if (tracked.size === 0) this.#clones.delete(ws);
+    }
+  }
+
+  /**
+   * Stop every clone this socket started. Called from `#close`, because a
+   * clone outlives the frame that asked for it and nothing else would ever
+   * stop one whose operator has gone.
+   */
+  #cancelClones(ws: GatewaySocket): void {
+    const running = this.#clones.get(ws);
+    if (running === undefined) return;
+    this.#clones.delete(ws);
+    for (const run of running) run.cancel();
+  }
+
   // -- websocket -------------------------------------------------------------
 
   #open(ws: GatewaySocket): void {
@@ -2125,6 +2399,7 @@ export class Gateway {
       ws.data.collab = null;
     }
     this.#unregisterWebViews(ws);
+    this.#cancelClones(ws);
     for (const [sessionId, pending] of this.#tuiTakeovers) {
       if (pending.socket !== ws) continue;
       this.#tuiTakeovers.delete(sessionId);
@@ -2524,6 +2799,43 @@ export class Gateway {
         return;
       }
 
+      case "session_tail": {
+        // Read scope, matching `attach`: this is a transcript, and a
+        // read-only device is already entitled to read one. Nothing about the
+        // session changes, so there is no manage gate to pass and nothing to
+        // audit that `sessions` does not already leave unaudited.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "session tail requires read scope" });
+          return;
+        }
+        if (
+          typeof frame.sessionId !== "string" ||
+          frame.sessionId.length === 0 ||
+          (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0))
+        ) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "session tail needs a sessionId and a positive integer limit when given",
+          });
+          return;
+        }
+        const tailIndex = this.#sessionIndex;
+        if (!tailIndex) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        // Detached like the index reply, and for the same reason: resolving
+        // the file and reading its tail are async, and every socket must keep
+        // being served while one client's transcript is read.
+        void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit);
+        return;
+      }
+
       case "session_takeover":
       case "session_resume": {
         // The same manage gate the HTTP takeover route takes: handing the
@@ -2555,6 +2867,82 @@ export class Gateway {
           return;
         }
         void this.#openSessionOverSocket(ws, frame);
+        return;
+      }
+
+      case "fs_list": {
+        // Audited at every exit, refusals included, for the reason
+        // `session_prompt` is: this is a device reading the operator's own
+        // directories from somewhere else, and a log that kept only the
+        // answers would omit exactly the attempts worth reviewing. `manage`
+        // rather than `read`, because a browse is the first half of choosing
+        // where code runs, and the second half is one frame away.
+        if (!this.#authorizeFilesystem(ws, "fs.list", "fs_list", { path: frame.path })) return;
+        if (frame.path !== undefined && (typeof frame.path !== "string" || frame.path.length === 0)) {
+          this.#store.audit({
+            action: "fs.list",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, { t: "error", code: "bad_frame", message: "fs_list needs a non-empty path, or none at all" });
+          return;
+        }
+        // Detached like the session index: a directory read is an async
+        // answer, and this socket has to keep being served while it is
+        // produced.
+        void this.#serveFsListing(ws, frame.path);
+        return;
+      }
+
+      case "session_create": {
+        if (!this.#authorizeFilesystem(ws, "session.create", "session_create", { cwd: frame.cwd })) return;
+        if (
+          typeof frame.cwd !== "string" ||
+          frame.cwd.length === 0 ||
+          (frame.name !== undefined && typeof frame.name !== "string")
+        ) {
+          this.#store.audit({
+            action: "session.create",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, { t: "error", code: "bad_frame", message: "session_create needs a non-empty cwd" });
+          return;
+        }
+        void this.#createSessionOverSocket(ws, frame);
+        return;
+      }
+
+      case "repo_clone": {
+        if (
+          !this.#authorizeFilesystem(ws, "repo.clone", "repo_clone", {
+            // Deliberately not the url. A url is only safe to record once
+            // `validateCloneUrl` has refused the credential-carrying forms,
+            // and that has not run yet at this exit.
+            parent: frame.parent,
+          })
+        ) {
+          return;
+        }
+        if (
+          typeof frame.url !== "string" ||
+          frame.url.length === 0 ||
+          typeof frame.parent !== "string" ||
+          frame.parent.length === 0 ||
+          (frame.name !== undefined && typeof frame.name !== "string")
+        ) {
+          this.#store.audit({
+            action: "repo.clone",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame", parent: frame.parent },
+          });
+          this.#send(ws, { t: "error", code: "bad_frame", message: "repo_clone needs a url and a parent directory" });
+          return;
+        }
+        void this.#startCloneOverSocket(ws, frame);
         return;
       }
 
@@ -2895,6 +3283,53 @@ export class Gateway {
         t: "error",
         code: "sessions_failed",
         message: err instanceof Error ? err.message : "session index failed",
+      });
+    }
+  }
+
+  /**
+   * One socket `session_tail` request: the session's file located through the
+   * index (which refuses an id the catalog does not hold, so a client cannot
+   * name an arbitrary path), then its last turns read from the end.
+   *
+   * The limit is clamped here as well as in the reader, because the gateway
+   * is the door: a client asking for a million turns gets the ceiling, not a
+   * refusal, since the honest answer to "show me more" is as much as a frame
+   * can carry.
+   */
+  async #serveSessionTailFrame(
+    ws: GatewaySocket,
+    index: SessionIndex,
+    sessionId: string,
+    limit: number | undefined,
+  ): Promise<void> {
+    try {
+      const path = await index.pathFor(sessionId);
+      if (path === undefined) {
+        this.#send(ws, {
+          t: "error",
+          code: "unknown_session",
+          message: `no session ${sessionId} on this machine`,
+        });
+        return;
+      }
+      const tail = await readSessionTail(path, {
+        ...(limit === undefined ? {} : { limit: Math.min(limit, TAIL_MAX_MESSAGES) }),
+      });
+      this.#send(ws, {
+        t: "session_tail",
+        sessionId,
+        messages: tail.messages,
+        truncated: tail.truncated,
+      });
+    } catch (err) {
+      // Detached from `#handle`, so its last-line-of-defence try/catch no
+      // longer covers this: an answer that cannot be produced must still cost
+      // the asking socket exactly one error frame, never a dropped one.
+      this.#send(ws, {
+        t: "error",
+        code: "session_tail_failed",
+        message: err instanceof Error ? err.message : "session tail failed",
       });
     }
   }

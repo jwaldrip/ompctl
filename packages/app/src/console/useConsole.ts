@@ -186,6 +186,9 @@ export function useConsole(
       client.on("tui_activity", event => {
         dispatch({ t: "tui_activity", event });
       }),
+      client.on("session_tail", event => {
+        dispatch({ t: "session_tail", event });
+      }),
       client.on("unauthorized", event => {
         dispatch({ t: "unauthorized", event });
       }),
@@ -271,6 +274,14 @@ export function useConsole(
             return;
           case "live-tui":
             dispatch({ t: "tui_select", sessionId: target.sessionId });
+            // The one thing that does cross the wire on open: the session's
+            // own transcript tail. A terminal session has no agent row, so
+            // `attach` and its update stream cannot reach it, and without this
+            // a session with a thousand messages in it opens as a composer
+            // over an empty pane. Asked per open rather than held across
+            // reconnects, because the daemon reads the file's end each time
+            // and the answer is only wanted while this surface is on screen.
+            client.sessionTail(target.sessionId);
             return;
           case "dormant":
             client.resumeSession(target.sessionId, target.cwd);

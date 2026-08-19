@@ -30,7 +30,7 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { joinAssistantText, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 import {
   type Actor,
@@ -54,6 +54,7 @@ import { endpointPath } from "./endpoint.ts";
 import { reachableEndpoints } from "./endpoints.ts";
 import { EvolutionEngine, ProposalStore } from "./evolution/index.ts";
 import { HttpIntentPeer, type IntentPeer, QueuedIntentDrainer } from "./federation/queued-intents.ts";
+import { Filesystem } from "./filesystem/index.ts";
 import { Gateway, GatewayEvents, type VoiceHandler } from "./gateway/index.ts";
 import { homeIdFor } from "./home-id.ts";
 import { HostRegistry } from "./hosts.ts";
@@ -175,6 +176,22 @@ export interface OmpdConfig {
    * Delegate poll cadence in milliseconds. 0 means the drainer default.
    */
   intentPollIntervalMs: number;
+  /**
+   * Directories a paired device may browse, start a session in, and clone
+   * into.
+   *
+   * Empty means the operator's home directory, which is the honest default:
+   * this exists so someone standing up with a phone can pick where the next
+   * piece of work happens, and everything they would pick lives under home.
+   * Narrow it to the directories that actually hold work, or widen it
+   * deliberately -- but note what widening means, because a device that can
+   * name a directory can start a session in it, and a session runs code.
+   *
+   * A path outside every entry here is refused rather than listed, and
+   * resolution happens before that check, so `..` and a symlink pointing out
+   * are the same refusal. See `filesystem/roots.ts`.
+   */
+  fsRoots: string[];
 }
 
 export const DEFAULT_CONFIG: OmpdConfig = {
@@ -189,6 +206,7 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   intentPeerUrl: "",
   intentPeerToken: "",
   intentPollIntervalMs: 0,
+  fsRoots: [],
 };
 
 export interface OmpdOptions {
@@ -346,6 +364,16 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
       `${path}: intentPollIntervalMs must be a non-negative integer, got ${String(merged.intentPollIntervalMs)}`,
     );
   }
+  if (!Array.isArray(merged.fsRoots) || merged.fsRoots.some(root => typeof root !== "string")) {
+    throw new Error(`${path}: fsRoots must be an array of absolute paths`);
+  }
+  for (const root of merged.fsRoots) {
+    if (!isAbsolute(root)) throw new Error(`${path}: fsRoots entries must be absolute paths, got ${root}`);
+  }
+  // Resolved here rather than at the browse boundary, so `ompd config` and the
+  // logs show the operator which directories are actually exposed instead of
+  // an empty list that silently means something.
+  if (merged.fsRoots.length === 0) merged.fsRoots = [homedir()];
 
   return merged;
 }
@@ -566,6 +594,10 @@ export class Ompd {
       sessions: this.#hosts,
       sessionIndex: this.#sessionIndex,
       endpoints: () => this.#reachableEndpoints(),
+      // Read from the config the daemon booted with, so widening or narrowing
+      // what a phone may browse is a config edit and a restart, never
+      // something a device can talk this daemon into at runtime.
+      filesystem: new Filesystem({ roots: this.#config.fsRoots }),
       onWebViewResult: (agentId, requestId, result) => this.#webViewBridge.resolveResult(agentId, requestId, result),
       onWebViewUnavailable: agentId => this.#webViewBridge.cancelAgent(agentId, NO_TARGET),
       staticRoot: opts.staticRoot ?? defaultStaticRoot(),
