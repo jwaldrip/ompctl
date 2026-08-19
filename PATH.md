@@ -76,6 +76,23 @@ Two ways to unblock, and the choice is Jason's because one of them changes his m
 
 Until one of those happens, the honest status of this path is red, and the wire is not closed.
 
+### Proven on 2026-08-19: the transport half
+
+With the Pixel's Wi-Fi off, `wifi_on=0`, no `wlan0` IPv4 address at all, and the default network reporting `Transports: CELLULAR` on 5G, the app listed **545 sessions** from this laptop's daemon. The count had been 541 an hour earlier, so it was live data rather than a cache, and the top row was a `LIVE (TUI)` session last active 9 seconds prior. The new-session screen also rendered the daemon's own root, `/Users/jwaldrip`.
+
+There is no route from that device to this laptop except `hub.ompctl.ai`, so the relay leg of the sentence is no longer an assumption.
+
+### Proven on 2026-08-19: the whole sentence
+
+Same device, same conditions, Wi-Fi still off and 5G in the status bar. The phone listed 546 sessions, opened a live TUI session in one of the operator's private repositories, and a prompt typed on the phone reached that terminal and came back as a reply.
+
+So: a real phone, off the home network, listed this laptop's live sessions, opened one, sent it a message, and received the agent's reply. That is the sentence at the top of this file.
+
+Two things this run also settled, and neither is cosmetic:
+
+- The persistent `websocket error` toast was on screen the entire time, while 546 sessions loaded and a round trip completed. In the final frame it is physically covering the reply it was reporting a failure to receive. That is the notice outliving its condition, exactly as diagnosed, and the fix for it is in this branch.
+- Tapping a row by screen coordinate is unreliable here. The list is live and status-sorted, so it re-sorted between a screenshot and a tap and opened a different project's session. The `session-open-first` marker exists for this reason, and any check that taps by coordinate instead of by testID is measuring luck.
+
 ## Queue
 
 Everything Jason has asked for, in exactly one state. Parked is not dropped.
@@ -99,6 +116,7 @@ Everything Jason has asked for, in exactly one state. Parked is not dropped.
 - Render diffs in a readable form
 - View images and other attachments
 - Trigger multiple actions per webhook event, for example text back and another app invoked from one event
+- Let a terminal session and ompd share one session without either overwriting the other, by hosting OMP collab at the daemon instead of shipping `tui_activity` hints. Retires the `live-tui` carve-out in the fleet.
 
 **done**
 - Hub deployed and healthy at `hub.ompctl.ai`, DNS delegated to Google Cloud
