@@ -118,6 +118,16 @@ export interface ConsoleState {
   readonly tuiSessions: ReadonlyMap<string, TuiSessionState>;
   /** At most one browser action per agent. Completion is correlated by request id. */
   readonly pendingWebViewActions: ReadonlyMap<AgentId, PendingWebViewAction>;
+  /**
+   * The scopes the daemon's hello says this device holds, once it has said.
+   * The authority behind `canApprove` and `canInvite`: a stored pairing
+   * hint goes stale the moment a grant is rotated or narrowed, while this
+   * answer is the record the daemon enforces against. Undefined until a
+   * daemon that reports scopes has answered, and an older daemon never
+   * does, so absence must read as "unknown" rather than "none" or every
+   * gated control would hide against a working daemon.
+   */
+  readonly grantedScopes: readonly string[] | undefined;
   readonly canApprove: boolean;
   /** Why approval is refused, once the daemon has actually refused it. */
   readonly refusal: string | undefined;
@@ -199,6 +209,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     // A pairing that did not declare its scopes stays optimistic; the daemon's
     // first refusal is what downgrades it.
     canApprove: scopes.length === 0 || scopes.includes(SCOPE_APPROVE),
+    grantedScopes: undefined,
     refusal: undefined,
     notice: null,
     unauthorized: null,
@@ -251,9 +262,22 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
         delayMs: event.event.delayMs,
       };
 
-    case "agents":
-      return applyAgents(state, event.event.agents);
-
+    case "agents": {
+      const next = applyAgents(state, event.event.agents);
+      // Hello's scopes are the daemon's own record, and they win in both
+      // directions: a grant widened since pairing surfaces its controls, and
+      // one narrowed or rotated takes them away, which is the direction that
+      // protects the operator from a stale hint. An older daemon reports no
+      // scopes at all, and that absence is "unknown", not "none": the stored
+      // pairing keeps holding the controls until a refusal or a newer daemon
+      // says otherwise.
+      if (event.event.scopes === undefined) return next;
+      return {
+        ...next,
+        grantedScopes: event.event.scopes,
+        canApprove: event.event.scopes.includes(SCOPE_APPROVE),
+      };
+    }
     case "sessions":
       return applySessions(state, event.event.sessions);
 
@@ -496,6 +520,19 @@ function withTuiSession(
 
 export function sessionFor(state: ConsoleState, agentId: AgentId): SessionState {
   return state.sessions.get(agentId) ?? EMPTY_SESSION;
+}
+
+/**
+ * Whether this device may invite another one. The daemon's hello is the
+ * authority once it has answered; the stored pairing's scopes stand in only
+ * until then, optimistic when the pairing declared none (a one-tap link
+ * printed before it carried scopes), so the menu is right on first paint and
+ * correct afterwards. A narrowed grant takes the entry point away, which is
+ * the point: the daemon would refuse the mint anyway.
+ */
+export function canInvite(state: ConsoleState, storedScopes: readonly string[]): boolean {
+  if (state.grantedScopes !== undefined) return state.grantedScopes.includes(SCOPE_APPROVE);
+  return storedScopes.length === 0 || storedScopes.includes(SCOPE_APPROVE);
 }
 
 /** Hints about one terminal session. A row never prompted is not missing, it is blank. */

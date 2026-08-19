@@ -58,14 +58,20 @@ export function parseCollabDeepLink(raw: string): CollabDeepLink | null {
 /**
  * Pairing links have the same two ingress forms as collaboration links:
  *
- * - `ompctl://pair?token=<token>&hub=<host>`
- * - `https://app.ompctl.ai/pair?token=<token>&hub=<host>`
+ * - `ompctl://pair?token=<token>&hub=<host>&scopes=<a,b>`
+ * - `https://app.ompctl.ai/pair?token=<token>&hub=<host>&scopes=<a,b>`
  *
- * `hub` is optional and defaults to the hosted hub. Unlike a room id, a token
- * IS a capability, which is why this is the one link form allowed to carry a
- * query: it is the same trust as the QR code the daemon prints, delivered by a
- * different transport, and it is the only way to hand a device its credential
- * without a human retyping 100 characters.
+ * `hub` is optional and defaults to the hosted hub. `scopes` is optional
+ * too: it is the grant the link's token was minted with, carried so the
+ * app's first paint is right rather than optimistic. A link without them
+ * keeps today's behaviour (an empty list, which the console reads as "not
+ * declared"), so links printed before the parameter existed still pair.
+ *
+ * Unlike a room id, a token IS a capability, which is why this is the one
+ * link form allowed to carry a query: it is the same trust as the QR code
+ * the daemon prints, delivered by a different transport, and it is the only
+ * way to hand a device its credential without a human retyping 100
+ * characters.
  *
  * Neither the scheme nor the authority is read from `URL`: React Native's
  * implementation derives `hostname` with an http-only regex, so
@@ -76,6 +82,8 @@ export interface PairDeepLink {
   hubUrl: string;
   daemonId: string;
   token: string;
+  /** The granted scopes, when the link carries them. Empty means undeclared. */
+  scopes: string[];
 }
 
 export type OpenPairing = (link: PairDeepLink) => void;
@@ -117,7 +125,15 @@ export function parsePairDeepLink(raw: string): PairDeepLink | null {
   // credential carries a daemon id, which only means something through a hub.
   if (target === null || target.transport !== "hub") return null;
 
-  return { hubUrl: target.hubUrl, daemonId: credential.daemonId, token: credential.token };
+  // Comma-separated, and only ever a hint: the daemon reports the real grant
+  // on hello and the console prefers that answer. Absent stays an empty list
+  // so a link printed before scopes were carried pairs exactly as it did.
+  const scopes = (params.get("scopes") ?? "")
+    .split(",")
+    .map(scope => scope.trim())
+    .filter(scope => scope.length > 0);
+
+  return { hubUrl: target.hubUrl, daemonId: credential.daemonId, token: credential.token, scopes };
 }
 
 /** Routes one untrusted platform URL only when it is a recognised pairing link. */

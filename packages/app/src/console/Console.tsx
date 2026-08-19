@@ -22,7 +22,6 @@
  */
 
 import type { AgentId } from "@ompd/core/contracts";
-import { SCOPE_APPROVE } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
@@ -45,7 +44,14 @@ import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
 import type { ConsoleState } from "./state.ts";
-import { browserSessionsOf, fleetClearances, openSessionTarget, sessionFor, tuiSessionFor } from "./state.ts";
+import {
+  browserSessionsOf,
+  canInvite,
+  fleetClearances,
+  openSessionTarget,
+  sessionFor,
+  tuiSessionFor,
+} from "./state.ts";
 import { createOmpdClient, useConsole } from "./useConsole.ts";
 
 export interface ConsoleProps {
@@ -213,7 +219,7 @@ export function Console({
 
   const surfaces: ShellSurfaces = {
     daemonLabel,
-    canInvite: connection.scopes.includes(SCOPE_APPROVE),
+    canInvite: canInvite(state, connection.scopes),
     fleet: () => (
       // One inset owner per route: the shell pads the screen's edges, so the
       // agent hub sits inside the safe area with the list rather than under the
@@ -241,6 +247,7 @@ export function Console({
     terminal,
     connections: (back, invite) => (
       <ConnectionSwitcherScreen
+        canInvite={canInvite(state, connection.scopes)}
         connections={connections}
         onAdd={onAddConnection}
         onBack={back}
