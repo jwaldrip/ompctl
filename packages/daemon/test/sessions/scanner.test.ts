@@ -16,7 +16,13 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COUNT_CHUNK_BYTES, countMessages, scanSessionFiles } from "../../src/sessions/scanner.ts";
+import {
+  COUNT_CHUNK_BYTES,
+  countMessages,
+  findSessionFile,
+  findSessionFileIter,
+  scanSessionFiles,
+} from "../../src/sessions/scanner.ts";
 
 const scratch: string[] = [];
 
@@ -402,6 +408,57 @@ describe("countMessages streaming equivalence", () => {
 
     expect(count).toBe(expected);
     expect(growth).toBeLessThan(30 * 1024 * 1024);
+  });
+});
+
+describe("findSessionFile", () => {
+  test("finds one id's file across many group directories, and misses honestly", () => {
+    const root = tempRoot("scanner-find-");
+    writeSessionFile(join(root, "-a"), "2026-08-10T00-00-00-000Z", SESSION_ID_A, [{ type: "title", v: 1, title: "a" }]);
+    const wanted = writeSessionFile(join(root, "-b"), "2026-08-11T00-00-00-000Z", SESSION_ID_B, [
+      { type: "title", v: 1, title: "b" },
+    ]);
+
+    expect(findSessionFile(SESSION_ID_B, root)).toBe(wanted);
+    expect(findSessionFile("019ff8ca-b4ca-7000-a133-beedf9dfab06", root)).toBeUndefined();
+    // The id must be the whole one: a fragment that happens to end a real
+    // filename must not resolve, or a client could reach a session it was
+    // never shown.
+    expect(findSessionFile(SESSION_ID_B.slice(6), root)).toBeUndefined();
+  });
+
+  test("a filename outside the naming scheme is not a session, and a missing root is not a throw", () => {
+    const root = tempRoot("scanner-find-shape-");
+    const groupDir = join(root, "-a");
+    mkdirSync(groupDir, { recursive: true });
+    // Ends with the id, but the scan would skip it rather than guess at an id,
+    // so the lookup must skip it too: one convention, one answer.
+    writeFileSync(join(groupDir, `copy_${SESSION_ID_A}.jsonl`), "{}\n");
+    writeFileSync(join(groupDir, `2026-08-10T00-00-00-000Z_${SESSION_ID_A}.txt`), "{}\n");
+
+    expect(findSessionFile(SESSION_ID_A, root)).toBeUndefined();
+    expect(findSessionFile(SESSION_ID_A, join(root, "not-a-directory"))).toBeUndefined();
+  });
+
+  test("the walk steps once per group directory, so a large tree stays interruptible", () => {
+    const root = tempRoot("scanner-find-steps-");
+    for (let i = 0; i < 12; i++) {
+      writeSessionFile(join(root, `-g${i}`), "2026-08-10T00-00-00-000Z", SESSION_ID_A.replace(/dd2$/, `d${i}0`), [
+        { type: "title", v: 1, title: `g${i}` },
+      ]);
+    }
+
+    // A miss walks every group, which is the worst case and the one worth
+    // bounding: one step per directory, never one long synchronous burst.
+    const steps = findSessionFileIter("019ff8ca-b4ca-7000-a133-beedf9dfab06", root);
+    let taken = 0;
+    let step = steps.next();
+    while (!step.done) {
+      taken += 1;
+      step = steps.next();
+    }
+    expect(step.value).toBeUndefined();
+    expect(taken).toBe(12);
   });
 });
 
