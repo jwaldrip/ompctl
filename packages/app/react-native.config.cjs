@@ -17,5 +17,17 @@ module.exports = {
     macos: {},
     windows: {},
   },
+  dependencies: {
+    // 4.24 is the last screens release RN 0.81's Android/iOS codegen
+    // accepts. Its Windows project pulls a Windows App SDK that this
+    // 0.81 tree cannot link. Main never autolinked screens on Windows
+    // either: 4.27 shipped no project the generator picked up. Keep
+    // that exclusion explicit so a pin change cannot silently add it.
+    "react-native-screens": {
+      platforms: {
+        windows: null,
+      },
+    },
+  },
   assets: ["./src/design/fonts"],
 };
