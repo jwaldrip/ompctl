@@ -130,13 +130,19 @@ describe("ConnectionSwitcherScreen", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
 
-    // InviteScreen mints on mount; this test is only about the switcher's
-    // gating and screen swap, so the mint itself is stubbed out rather than
-    // reaching a real daemon.
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
-      throw new Error("network unavailable in test");
-    }) as unknown as typeof fetch;
+    // InviteScreen mints over a socket on mount; this test is only about the
+    // switcher's gating and screen swap, so the transport is stubbed out
+    // rather than dialing whatever happens to be listening on 7777.
+    const originalWebSocket = globalThis.WebSocket;
+    globalThis.WebSocket = class {
+      readyState = 0;
+      onopen: (() => void) | null = null;
+      onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      send(): void {}
+      close(): void {}
+    } as unknown as typeof WebSocket;
 
     act(() => {
       root.render(
@@ -150,14 +156,14 @@ describe("ConnectionSwitcherScreen", () => {
     });
     expect(host.querySelector('[data-testid="invite"]')).not.toBeNull();
 
-    // Let InviteScreen's stubbed mint reject and settle before tearing down,
-    // so no promise is still in flight against an unmounted tree.
+    // Let InviteScreen's mount effects settle before tearing down, so no
+    // subscription is still in flight against an unmounted tree.
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
     act(() => {
       root.unmount();
     });

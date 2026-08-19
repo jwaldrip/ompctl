@@ -8,24 +8,26 @@
  * carrying a bearer token must never become a URL; this screen is the other
  * half of that contract, the one that mints the bundle in the first place.
  *
- * The two-request shape mirrors the CLI's `pair` then `approve`: `POST
- * /v1/pair` is unauthenticated and only records an intent, so it grants
- * nothing by itself. `POST /v1/pairings/approve` is the deliberate act that
- * spends this device's own scopes, which is why the scope picker below
- * starts at this device's own scopes rather than at every scope that
- * exists -- widening past them is still possible, because the operator may
- * legitimately want a narrower or, having thought about it, a broader grant,
- * but the daemon is the one that enforces the ceiling, not this screen.
+ * The mint rides the socket this connection already holds, for every
+ * transport. A hub relay carries one sealed websocket and no daemon HTTP, so
+ * the two-request HTTP flow (`POST /v1/pair`, then `POST /v1/pairings/approve`)
+ * could only ever work from the daemon's own network; one `device_invite`
+ * frame replaces both steps and works from anywhere the app is already
+ * connected. The daemon, not this screen, enforces the ceiling: the picker
+ * starts at this device's own scopes, widening past them is still possible
+ * because the operator may legitimately want a different grant, and a
+ * widened ask comes back as a readable refusal rather than a quieter grant.
  */
 
 import { SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ } from "@ompd/core/contracts";
+import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { PairedConnection } from "@ompd/core/pairing";
 import { encodePairingBundle } from "@ompd/core/pairing";
 import type { JSX } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
-import { restRoot } from "../cowork/useCowork.ts";
+import { createOmpdClient } from "../console/useConsole.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
@@ -40,85 +42,92 @@ type Status =
   | { kind: "ready"; encoded: string; label: string }
   | { kind: "error"; message: string };
 
-interface PairResponse {
-  code: string;
+/** The QR payload for a mint: the connection this device already holds, carrying the fresh token. */
+export function bundleForInvite(
+  connection: Connection,
+  token: string,
+  scopes: readonly string[],
+  label: string,
+): string {
+  const paired: PairedConnection =
+    connection.transport === "direct"
+      ? { transport: "direct", url: connection.url, token, scopes: [...scopes] }
+      : { transport: "hub", hubUrl: connection.hubUrl, daemonId: connection.daemonId, token, scopes: [...scopes] };
+  return encodePairingBundle({ v: 1, label, connection: paired });
 }
 
-interface ApproveResponse {
-  token: string;
-  name: string;
-}
-
-export function InviteScreen({ connection, onDone }: { connection: Connection; onDone: () => void }): JSX.Element {
+export function InviteScreen({
+  connection,
+  onDone,
+  createClient = createOmpdClient,
+}: {
+  connection: Connection;
+  onDone: () => void;
+  /** Seam for tests: builds the socket client the mint rides. */
+  createClient?: (connection: Connection) => OmpdClient;
+}): JSX.Element {
   const [name, setName] = useState("New device");
   const [scopes, setScopes] = useState<Set<string>>(() => new Set(connection.scopes));
   const [status, setStatus] = useState<Status>({ kind: "pending" });
 
-  // A hub connection is a relay for the socket protocol only; there is no
-  // HTTP surface behind it to hang `/v1/pair` on, the same gap `useCowork`'s
-  // `authFetch` already fails closed on rather than guessing at a root.
-  const root = connection.transport === "direct" ? restRoot(connection.url) : null;
+  // One client for this screen's lifetime. A client per render would be a
+  // reconnect loop wearing a daemon's face; this is the same rule
+  // `useConsole` applies to the Console's own socket.
+  const clientRef = useRef<OmpdClient | null>(null);
+  if (clientRef.current === null) clientRef.current = createClient(connection);
+  const client = clientRef.current;
 
-  const mint = useCallback(async () => {
-    if (root === null) {
-      setStatus({ kind: "error", message: "This connection has no reachable HTTP endpoint to invite a device from." });
-      return;
-    }
-    setStatus({ kind: "minting" });
-    try {
-      const pairRes = await fetch(`${root}/v1/pair`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // A throwaway provenance string, the same convention `ompd pair`'s CLI
-        // counterpart uses -- not real cryptography; see `platform/connection.ts`
-        // for why a saved connection's token is what actually carries authority.
-        body: JSON.stringify({
-          name,
-          publicKey: `app:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
-        }),
-      });
-      if (!pairRes.ok) throw new Error(`could not start pairing: ${pairRes.status}`);
-      const { code } = (await pairRes.json()) as PairResponse;
+  // The ask travels by reference, not closure: the socket comes up after
+  // mount, by which time the operator may have edited the name or toggled a
+  // scope, and the frame must carry what the fields hold at that moment.
+  const askRef = useRef({ name: "New device", scopes: new Set(connection.scopes) });
+  askRef.current = { name, scopes };
 
-      const approveRes = await fetch(`${root}/v1/pairings/approve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${connection.token}` },
-        body: JSON.stringify({ code, scopes: [...scopes] }),
-      });
-      if (!approveRes.ok) {
-        const body: unknown = await approveRes.json().catch(() => null);
-        const errorCode = typeof body === "object" && body !== null ? Reflect.get(body, "error") : undefined;
-        if (approveRes.status === 403 && errorCode === "scope_escalation") {
-          const missing = typeof body === "object" && body !== null ? Reflect.get(body, "missing") : undefined;
-          const missingList = Array.isArray(missing) ? missing.join(", ") : "one or more scopes";
-          setStatus({
-            kind: "error",
-            message: `This device cannot grant ${missingList}: it doesn't hold that scope itself.`,
-          });
-          return;
-        }
-        throw new Error(`could not approve pairing: ${approveRes.status}`);
-      }
-      const { token, name: grantedName } = (await approveRes.json()) as ApproveResponse;
+  // Whether the mount-time mint has been sent. The answer settles only once
+  // per press of Generate; a reconnect must not mint again on its own,
+  // because a credential minted twice is two credentials.
+  const askedRef = useRef(false);
+  // Whether a QR is currently on screen. A link error after a successful
+  // mint does not un-mint it: the token exists and the code is good, and
+  // tearing it down over a ping timeout would tell the operator to redo an
+  // act that already succeeded. Cleared the moment they ask again, because
+  // then they are waiting on an answer and a swallowed refusal is a spinner
+  // that never resolves.
+  const settledRef = useRef(false);
 
-      const paired: PairedConnection =
-        connection.transport === "direct"
-          ? { transport: "direct", url: connection.url, token, scopes: [...scopes] }
-          : { transport: "hub", hubUrl: connection.hubUrl, daemonId: connection.daemonId, token, scopes: [...scopes] };
-      const encoded = encodePairingBundle({ v: 1, label: grantedName, connection: paired });
-      setStatus({ kind: "ready", encoded, label: grantedName });
-    } catch (cause) {
-      setStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
-    }
-  }, [connection, name, root, scopes]);
-
-  // Minted once on mount with this device's own scopes; re-minting is an
-  // explicit re-press of "Generate", not a reaction to every keystroke in
-  // the name field or every scope toggle.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see comment above
   useEffect(() => {
-    void mint();
-  }, []);
+    const offs = [
+      client.on("status", event => {
+        if (event.state !== "connected" || askedRef.current) return;
+        askedRef.current = true;
+        setStatus({ kind: "minting" });
+        client.inviteDevice(askRef.current.name, [...askRef.current.scopes]);
+      }),
+      client.on("device_invited", event => {
+        settledRef.current = true;
+        setStatus({
+          kind: "ready",
+          encoded: bundleForInvite(connection, event.token, event.scopes, event.name),
+          label: event.name,
+        });
+      }),
+      client.on("error", event => {
+        if (settledRef.current) return;
+        setStatus({ kind: "error", message: event.message });
+      }),
+    ];
+    client.start();
+    return () => {
+      for (const off of offs) off();
+      client.close();
+    };
+  }, [client, connection]);
+
+  const generate = useCallback(() => {
+    settledRef.current = false;
+    setStatus({ kind: "minting" });
+    client.inviteDevice(name, [...scopes]);
+  }, [client, name, scopes]);
 
   const toggleScope = useCallback((scope: string) => {
     setScopes(current => {
@@ -174,12 +183,7 @@ export function InviteScreen({ connection, onDone }: { connection: Connection; o
         </View>
       </View>
 
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => void mint()}
-        style={styles.generate}
-        testID="invite-generate"
-      >
+      <Pressable accessibilityRole="button" onPress={generate} style={styles.generate} testID="invite-generate">
         <Label color={signal.sage}>Generate</Label>
       </Pressable>
 

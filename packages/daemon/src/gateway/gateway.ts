@@ -337,6 +337,29 @@ const MAX_TUI_ACTIVITY_TEXT_BYTES = 64 * 1024;
 const KNOWN_SCOPES: readonly string[] = [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE];
 
 /**
+ * The scope ceiling every path that grants a device enforces, HTTP route and
+ * socket frame alike: each requested scope must be a name this daemon knows,
+ * and a device may never mint one more powerful than itself. Shared rather
+ * than copied, because a hub-relayed phone reaches the frame while a direct
+ * caller reaches the route, and a door that differs between the two is a
+ * privilege escalation waiting to be found. Refused rather than clamped, and
+ * nothing is consumed on refusal, so the right approver can still try again.
+ */
+function narrowGrantedScopes(
+  requested: readonly unknown[],
+  held: ReadonlySet<string>,
+): { granted: string[] } | { error: "unknown_scope" } | { error: "scope_escalation"; missing: string[] } {
+  const scopes: string[] = [];
+  for (const scope of requested) {
+    if (typeof scope !== "string" || !KNOWN_SCOPES.includes(scope)) return { error: "unknown_scope" };
+    scopes.push(scope);
+  }
+  const missing = scopes.filter(scope => !held.has(scope));
+  if (missing.length > 0) return { error: "scope_escalation", missing };
+  return { granted: scopes };
+}
+
+/**
  * The slice of the voice bridge the gateway needs.
  *
  * Declared structurally so the gateway never imports the voice package: the
@@ -1500,26 +1523,22 @@ export class Gateway {
       }
 
       // Narrowed element by element rather than asserted wholesale: this array
-      // came off the wire and decides what a new device is allowed to do.
-      const requested: string[] = [];
-      for (const scope of body.scopes) {
-        if (typeof scope !== "string" || !KNOWN_SCOPES.includes(scope)) {
+      // came off the wire and decides what a new device is allowed to do. The
+      // same ceiling the socket frame runs, from the one shared helper.
+      const ceiling = narrowGrantedScopes(body.scopes, scopes);
+      if ("error" in ceiling) {
+        if (ceiling.error === "unknown_scope") {
           return Response.json({ error: "unknown_scope", known: KNOWN_SCOPES }, { status: 400 });
         }
-        requested.push(scope);
-      }
-
-      // A device may never mint one more powerful than itself. Refused rather
-      // than quietly clamped: an operator who asked for `manage` and got a
-      // device without it would debug the wrong thing for a long time. The
-      // code is not spent, so the right approver can still use it.
-      const missing = requested.filter(scope => !scopes.has(scope));
-      if (missing.length > 0) {
-        return Response.json({ error: "scope_escalation", missing }, { status: 403 });
+        // A device may never mint one more powerful than itself. Refused
+        // rather than quietly clamped: an operator who asked for `manage` and
+        // got a device without it would debug the wrong thing for a long time.
+        // The code is not spent, so the right approver can still use it.
+        return Response.json({ error: "scope_escalation", missing: ceiling.missing }, { status: 403 });
       }
 
       try {
-        const { token, name } = this.#auth.approvePairing(body.code, requested);
+        const { token, name } = this.#auth.approvePairing(body.code, ceiling.granted);
         return Response.json({ token, name });
       } catch (err) {
         if (err instanceof PairingError) {
@@ -2613,6 +2632,52 @@ export class Gateway {
             message: "plan decision refused: unknown request or missing approve scope",
           });
         }
+        return;
+      }
+
+      case "device_invite": {
+        // The sealed-socket counterpart of the two HTTP pairing routes: a
+        // hub relay carries frames only, never daemon HTTP paths, so from
+        // anywhere but the daemon's own network this frame is the only road
+        // to inviting a device that exists at all. The same approve gate
+        // and the same ceiling the route runs, because a weaker door on the
+        // socket would be a stronger door in disguise.
+        if (!ws.data.scopes.has(SCOPE_APPROVE)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "device invite requires approve scope" });
+          return;
+        }
+        // The wire is not a place to assume anyone kept to the contract; the
+        // same shape discipline every other frame runs on its own fields.
+        if (typeof frame.name !== "string" || !Array.isArray(frame.scopes)) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "device invite needs a name and a scopes array",
+          });
+          return;
+        }
+        const ceiling = narrowGrantedScopes(frame.scopes, ws.data.scopes);
+        if ("error" in ceiling) {
+          if (ceiling.error === "unknown_scope") {
+            this.#send(ws, {
+              t: "error",
+              code: "bad_frame",
+              message: `device invite scopes must be among ${KNOWN_SCOPES.join(", ")}`,
+            });
+            return;
+          }
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: `this device cannot grant ${ceiling.missing.join(", ")}: it does not hold that scope itself`,
+          });
+          return;
+        }
+        const { token, name } = this.#auth.inviteDevice(ws.data.deviceId, frame.name, ceiling.granted);
+        // The asking socket only, ever: the token is the one-time view of a
+        // credential, and a broadcast or a replay would be a second
+        // credential in the wild minted by nobody.
+        this.#send(ws, { t: "device_invited", token, name, scopes: ceiling.granted });
         return;
       }
 
