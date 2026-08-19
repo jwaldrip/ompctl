@@ -555,6 +555,7 @@ export type ClientFrame =
    * `approve`, and may not grant a scope the asking device does not hold.
    */
   | { t: "device_invite"; name: string; scopes: string[] }
+  | RemoteStartClientFrame
   | { t: "ping" };
 
 export type ServerFrame =
@@ -626,6 +627,7 @@ export type ServerFrame =
    * credential in the wild that no operator asked for and no screen showed.
    */
   | { t: "device_invited"; token: string; name: string; scopes: string[] }
+  | RemoteStartServerFrame
   | { t: "pong" };
 
 // ---------------------------------------------------------------------------
@@ -660,7 +662,22 @@ export type AuditAction =
   | "proposal.promote"
   | "proposal.reject"
   | "host.provision"
-  | "host.destroy";
+  | "host.destroy"
+  /**
+   * A device asked what is in one of the operator's directories, or was
+   * refused. Recorded on every exit, refusals included: reading someone's
+   * filesystem from a phone is a privileged act, and a log that kept only
+   * the successes would omit exactly the attempts worth reviewing.
+   */
+  | "fs.list"
+  /** A device started a session at a directory it chose, or was refused. */
+  | "session.create"
+  /**
+   * A device cloned a repository onto this machine, or was refused. `detail`
+   * carries the url and the destination; a url carrying a credential is
+   * refused before this record is written, so one can never be logged.
+   */
+  | "repo.clone";
 
 export interface AuditEntry {
   id: number;
@@ -942,3 +959,98 @@ export interface SessionGroup {
   cwd: string | null;
   sessions: SessionSummary[];
 }
+
+// ---------------------------------------------------------------------------
+// Browsing the machine, and starting work on it
+//
+// A phone can already watch every session on the machine and take a turn in
+// one. What it could not do is decide where the next piece of work happens:
+// that meant sitting at the laptop. These three frames close that, and they
+// are deliberately the most privileged thing a device can ask for over the
+// socket, because between them they read the operator's directories and then
+// run code in one. Every one of them requires SCOPE_MANAGE and is audited,
+// including its refusals -- browsing is not watching.
+//
+// Every path in this section is absolute and belongs to the daemon's machine.
+// The daemon holds a configured set of roots and answers about nothing
+// outside them: a path that resolves out, by traversal or through a symlink,
+// is refused rather than listed. See @ompd/daemon's `filesystem/` for the
+// enforcement.
+// ---------------------------------------------------------------------------
+
+/**
+ * What a directory entry is, as its dirent reported it. `link` is a symlink
+ * the daemon deliberately did not follow: resolving it is the listing's job
+ * only when the operator opens it, and only if it lands inside the roots.
+ */
+export type FsEntryKind = "dir" | "file" | "link";
+
+export interface FsEntry {
+  /**
+   * The entry's own name within `FsListing.path`. In the roots listing -- the
+   * answer to an `fs_list` with no path -- there is no containing directory,
+   * so each entry names an absolute root instead.
+   */
+  name: string;
+  kind: FsEntryKind;
+  /**
+   * True when this directory is the top of a git working tree, checked out or
+   * linked. Present only on directories, and the one marking worth a stat: it
+   * is what the operator is actually looking for when choosing where an agent
+   * should act.
+   */
+  gitRepo?: boolean;
+}
+
+/**
+ * One page of a directory, as `fs_listing` carries it.
+ *
+ * `bounded` is not decoration. A phone asking about a directory with fifty
+ * thousand entries must get an answer rather than a stall, so the daemon
+ * returns a page and says so; a client that hid that would be showing a
+ * truncated directory as if it were the whole one.
+ */
+export interface FsListing {
+  /** The directory listed, absolute. Empty in the roots listing, which has no directory of its own. */
+  path: string;
+  /** The parent to walk up to, or null at a root: there is nothing above a root a device may see. */
+  parent: string | null;
+  /** Every configured root, so a client can offer them without a second request. */
+  roots: string[];
+  entries: FsEntry[];
+  /** True when the directory holds more entries than this page carries. */
+  bounded: boolean;
+}
+
+/** Opaque id correlating one clone's progress frames with its completion. */
+export type CloneId = string;
+
+export type RemoteStartClientFrame =
+  /**
+   * Ask for one directory's entries. Omit `path` for the roots listing, which
+   * is where a client with nothing selected starts.
+   */
+  | { t: "fs_list"; path?: string }
+  /**
+   * Start a new session at `cwd`, through the same supervisor path
+   * `POST /v1/agents` takes. Answered by `session_opened`, so a client's
+   * existing open handling needs no second case. `name` defaults to the
+   * directory's own name, which is what an operator would have typed.
+   */
+  | { t: "session_create"; cwd: string; name?: string }
+  /**
+   * Clone `url` into a new directory under `parent`. `name` defaults to the
+   * repository's own name. A url carrying a credential is refused rather than
+   * run, because the alternative is a secret in an audit record.
+   */
+  | { t: "repo_clone"; url: string; parent: string; name?: string };
+
+export type RemoteStartServerFrame =
+  | ({ t: "fs_listing" } & FsListing)
+  /**
+   * One line of a clone's progress, as git wrote it. Capped in count and in
+   * length: this is a progress hint for a phone, not a transcript.
+   */
+  | { t: "clone_progress"; cloneId: CloneId; line: string }
+  /** The clone finished and `path` now exists. The terminal frame; failures use `error`. */
+  | { t: "clone_done"; cloneId: CloneId; path: string };

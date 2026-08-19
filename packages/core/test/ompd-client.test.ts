@@ -29,6 +29,9 @@ import {
   type CredentialVerdict,
   computeBackoffDelay,
   type DeviceInvitedEvent,
+  type FsListingEvent,
+  type CloneProgressEvent,
+  type CloneDoneEvent,
   OmpdClient,
   type Scheduler,
   type SessionOpenedEvent,
@@ -1331,5 +1334,115 @@ describe("device invite surface", () => {
 
     expect(errors.length).toBe(1);
     expect(errors[0]).toContain("device_invite");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Browse, Start, and Clone
+// ---------------------------------------------------------------------------
+
+describe("browse, start and clone surface", () => {
+  test("each request goes out as its own frame, carrying an optional field only when given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.listDirectory();
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.createSession("/Users/op/dev/beta", "deploy checks");
+    h.client.cloneRepo("git@github.com:jwaldrip/ompctl.git", "/Users/op/dev");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev", "second-copy");
+
+    expect(socket.framesOfType("fs_list")).toEqual([{ t: "fs_list" }, { t: "fs_list", path: "/Users/op/dev" }]);
+    expect(socket.framesOfType("session_create")).toEqual([
+      { t: "session_create", cwd: "/Users/op/dev/alpha" },
+      { t: "session_create", cwd: "/Users/op/dev/beta", name: "deploy checks" },
+    ]);
+    expect(socket.framesOfType("repo_clone")).toEqual([
+      { t: "repo_clone", url: "git@github.com:jwaldrip/ompctl.git", parent: "/Users/op/dev" },
+      { t: "repo_clone", url: "https://github.com/jwaldrip/ompctl.git", parent: "/Users/op/dev", name: "second-copy" },
+    ]);
+  });
+
+  test("an fs_listing frame dispatches the typed event with the daemon's page", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: FsListingEvent[] = [];
+    h.client.on("fs_listing", event => received.push(event));
+
+    const listing = {
+      path: "/Users/op/dev",
+      parent: "/Users/op",
+      roots: ["/Users/op"],
+      entries: [
+        { name: "ompctl", kind: "dir" as const, gitRepo: true },
+        { name: "notes.md", kind: "file" as const },
+      ],
+      bounded: true,
+    };
+    socket.deliver({ t: "fs_listing", ...listing });
+
+    expect(received).toEqual([listing]);
+  });
+
+  test("clone progress and completion each dispatch their own event, correlated by clone id", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const progress: CloneProgressEvent[] = [];
+    const done: CloneDoneEvent[] = [];
+    h.client.on("clone_progress", event => progress.push(event));
+    h.client.on("clone_done", event => done.push(event));
+
+    socket.deliver({ t: "clone_progress", cloneId: "cln_0123456789abcdef", line: "Receiving objects:  47%" });
+    socket.deliver({ t: "clone_progress", cloneId: "cln_0123456789abcdef", line: "Resolving deltas: 100%" });
+    socket.deliver({ t: "clone_done", cloneId: "cln_0123456789abcdef", path: "/Users/op/dev/ompctl" });
+
+    expect(progress).toEqual([
+      { cloneId: "cln_0123456789abcdef", line: "Receiving objects:  47%" },
+      { cloneId: "cln_0123456789abcdef", line: "Resolving deltas: 100%" },
+    ]);
+    expect(done).toEqual([{ cloneId: "cln_0123456789abcdef", path: "/Users/op/dev/ompctl" }]);
+  });
+
+  test("a reconnect replays none of the three: the new socket carries nothing but hello", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev");
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just the three types: a replay implemented as
+    // remembered state would show up here as any frame this socket did not
+    // ask for. A replayed `session_create` would start a second session the
+    // operator never asked for, and a replayed clone would meet its own
+    // half-finished directory.
+    expect(second.sent).toEqual([]);
+  });
+
+  test("losing any of the three to a closed socket raises a visible error, like a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    expect(h.latest().readyState).not.toBe(1);
+
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev");
+
+    expect(errors.length).toBe(3);
+    expect(errors[0]).toContain("fs_list");
+    expect(errors[1]).toContain("session_create");
+    expect(errors[2]).toContain("repo_clone");
   });
 });

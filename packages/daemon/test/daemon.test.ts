@@ -20,8 +20,17 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "@ompd/core";
 import { NO_TARGET } from "../src/browser/bridge.ts";
@@ -64,7 +73,7 @@ afterEach(async () => {
 });
 
 describe("config", () => {
-  test("defaults to loopback, 7777, standard policy, awake while working, no hub", () => {
+  test("defaults to loopback, 7777, standard policy, awake while working, no hub, home browsable", () => {
     expect(loadConfig(tempDir("ompd-cfg-"))).toEqual({
       host: "127.0.0.1",
       port: 7777,
@@ -79,6 +88,10 @@ describe("config", () => {
       intentPeerUrl: "",
       intentPeerToken: "",
       intentPollIntervalMs: 0,
+      // Resolved from empty to the operator's home directory by `loadConfig`
+      // itself, so what a phone may browse is visible in the loaded config
+      // rather than being an empty list that silently means something else.
+      fsRoots: [homedir()],
     });
   });
 
@@ -1559,5 +1572,34 @@ describe("voice wiring", () => {
     // Null, not an empty string: the caller has to tell "nothing to say" from
     // "say nothing", or a phone announces an empty utterance.
     expect(daemon.spokenReply(agent.id, 0)).toBeNull();
+  });
+});
+
+describe("filesystem composition", () => {
+  test("browses exactly the configured roots, and refuses a path outside them", async () => {
+    const home = tempDir("ompd-fs-");
+    const root = realpathSync(tempDir("ompd-fs-root-"));
+    const outside = realpathSync(tempDir("ompd-fs-outside-"));
+    mkdirSync(join(root, "alpha"));
+    // The composition is the point of this test: a `Filesystem` built from
+    // `fsRoots` and handed to the gateway. Constructing a gateway by hand, as
+    // the frame suites do, cannot tell a wired daemon from an unwired one.
+    const daemon = build(home, { overrides: { port: 0, fsRoots: [root] } });
+    const info = await daemon.start();
+    const socket = await socketFor(info.port, await tokenOf(home));
+
+    socket.send({ t: "fs_list" });
+    const roots = await socket.next(frame => frame.t === "fs_listing");
+    expect(roots).toMatchObject({ path: "", roots: [root] });
+
+    socket.send({ t: "fs_list", path: root });
+    const listing = await socket.next(frame => frame.t === "fs_listing" && frame.path === root);
+    expect(listing).toMatchObject({ entries: [{ name: "alpha", kind: "dir" }] });
+
+    socket.send({ t: "fs_list", path: outside });
+    const refusal = await socket.next(frame => frame.t === "error");
+    expect(refusal).toMatchObject({ code: "out_of_roots" });
+
+    socket.close();
   });
 });
