@@ -13,7 +13,7 @@ import "./rnw.ts";
 import { describe, expect, test } from "bun:test";
 import type { ClientFrame, ServerFrame } from "@ompd/core/contracts";
 import { OmpdClient, type SocketCloseInfo, type SocketLike } from "@ompd/core/ompd-client";
-import { act } from "react";
+import { act, type JSX } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import type { RemoteStartState } from "../src/remote/model.ts";
@@ -74,6 +74,11 @@ interface Harness {
   socket: FakeSocket;
   /** Deliver a server frame inside `act`, so React has rendered before assertions. */
   deliver(frame: ServerFrame): void;
+  /**
+   * Bring the link up on a harness mounted with `link: "connecting"`: accept
+   * the socket and say `hello`, exactly as a daemon would.
+   */
+  connect(): void;
   press(testID: string): void;
   typeInto(testID: string, value: string): void;
   query(testID: string): HTMLElement | null;
@@ -84,8 +89,8 @@ interface Harness {
 const ROOT = "/Users/op";
 const DEV = "/Users/op/dev";
 
-/** A real client on a fake socket, already accepted and greeted. */
-function connectedClient(): { client: OmpdClient; socket: FakeSocket } {
+/** A real client on a fake socket. `accept()`ed and greeted unless told to stay down. */
+function makeClient(link: "connected" | "connecting" = "connected"): { client: OmpdClient; socket: FakeSocket } {
   let socket: FakeSocket | undefined;
   const client = new OmpdClient({
     url: "ws://127.0.0.1:7777/v1/socket",
@@ -102,16 +107,18 @@ function connectedClient(): { client: OmpdClient; socket: FakeSocket } {
   client.start();
   const live = socket;
   if (live === undefined) throw new Error("the client never built a socket");
-  live.accept();
-  live.deliver({ t: "hello", deviceId: "dev_test", agents: [] });
+  if (link === "connected") {
+    live.accept();
+    live.deliver({ t: "hello", deviceId: "dev_test", agents: [] });
+  }
   return { client, socket: live };
 }
 
-function mount(options: { onOpened?: (agentId: string) => void } = {}): Harness {
+function mount(options: { onOpened?: (agentId: string) => void; link?: "connected" | "connecting" } = {}): Harness {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  const { client, socket: live } = connectedClient();
+  const { client, socket: live } = makeClient(options.link ?? "connected");
 
   act(() => {
     root.render(
@@ -123,6 +130,11 @@ function mount(options: { onOpened?: (agentId: string) => void } = {}): Harness 
     );
   });
 
+  return bindHarness(host, root, live);
+}
+
+/** Everything a test drives a mounted screen with, independent of how it mounted. */
+function bindHarness(host: HTMLElement, root: Root, live: FakeSocket): Harness {
   const query = (testID: string): HTMLElement | null => {
     const element = host.querySelector(`[data-testid="${testID}"]`);
     return element instanceof HTMLElement ? element : null;
@@ -140,6 +152,12 @@ function mount(options: { onOpened?: (agentId: string) => void } = {}): Harness 
     deliver: frame => {
       act(() => {
         live.deliver(frame);
+      });
+    },
+    connect: () => {
+      act(() => {
+        live.accept();
+        live.deliver({ t: "hello", deviceId: "dev_test", agents: [] });
       });
     },
     press: testID => {
@@ -177,6 +195,37 @@ function mount(options: { onOpened?: (agentId: string) => void } = {}): Harness 
   };
 }
 
+/**
+ * The screen mounted the way the console actually mounts it: behind a parent
+ * that re-renders on every daemon event it hears, handing the screen a fresh
+ * element with a brand-new `onOpened` closure each time. A subscription that
+ * keyed on that closure's identity would re-ask the listing on every parent
+ * render, which is the loop the device audit showed as paired `fs.list` rows.
+ */
+function mountUnderNavigator(): Harness & { parentRerender: () => void } {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  const { client, socket: live } = makeClient();
+
+  function Host(): JSX.Element {
+    return <RemoteStartScreen client={client} onBack={() => {}} onOpened={() => {}} />;
+  }
+
+  act(() => {
+    root.render(<Host />);
+  });
+
+  return {
+    ...bindHarness(host, root, live),
+    parentRerender: () => {
+      act(() => {
+        root.render(<Host />);
+      });
+    },
+  };
+}
+
 interface Probe {
   socket: FakeSocket;
   state: () => RemoteStartState;
@@ -198,7 +247,7 @@ function mountProbe(): Probe {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  const { client, socket } = connectedClient();
+  const { client, socket } = makeClient();
   let latest: [RemoteStartState, RemoteStartActions] | null = null;
 
   function Held(): null {
@@ -249,6 +298,16 @@ const DEV_LISTING: ServerFrame = {
     { name: "pointer", kind: "link" },
     { name: "notes.md", kind: "file" },
   ],
+  bounded: false,
+};
+
+/** The roots view: one configured root, the shape the device was stuck on. */
+const ROOTS_LISTING: ServerFrame = {
+  t: "fs_listing",
+  path: "",
+  parent: null,
+  roots: [ROOT],
+  entries: [{ name: ROOT, kind: "dir" }],
   bounded: false,
 };
 
@@ -351,21 +410,32 @@ describe("starting a session from the browser", () => {
     h.unmount();
   });
 
-  test("draws the start control disabled at the roots view, where there is no directory to start in", () => {
+  test("answers a start at the roots view with the reason, not silence", () => {
     const h = mount();
-    h.deliver({
-      t: "fs_listing",
-      path: "",
-      parent: null,
-      roots: [ROOT],
-      entries: [{ name: ROOT, kind: "dir" }],
-      bounded: false,
-    });
+    h.deliver(ROOTS_LISTING);
 
     h.press("browse-start-here");
 
-    expect(h.query("browse-start-here")?.hasAttribute("disabled")).toBe(true);
+    // The device showed this exact tap landing nowhere: a disabled control
+    // swallowed it, no frame left, nothing said. The hook's own refusal is
+    // the answer now, on screen, with nothing sent.
     expect(h.socket.framesOfType("session_create")).toEqual([]);
+    expect(h.text("browse-notice")).toContain("Open a directory first");
+    h.unmount();
+  });
+
+  test("a refused session_create puts the daemon's reason on screen and stays put", () => {
+    const opened: string[] = [];
+    const h = mount({ onOpened: agentId => opened.push(agentId) });
+    h.deliver(DEV_LISTING);
+
+    h.press("browse-start-here");
+    h.deliver({ t: "error", code: "scope", message: "this device may read files but not manage sessions" });
+
+    // The refusal is the daemon's own words, and navigation waits for an
+    // answer that never came: nothing opens, the operator reads why.
+    expect(h.text("browse-notice")).toContain("this device may read files but not manage sessions");
+    expect(opened).toEqual([]);
     h.unmount();
   });
 });
@@ -413,6 +483,20 @@ describe("cloning from the browser", () => {
     h.unmount();
   });
 
+  test("answers a clone typed at the roots view with the reason, not silence", () => {
+    const h = mount();
+    h.deliver(ROOTS_LISTING);
+
+    h.typeInto("browse-clone-url", "git@github.com:jwaldrip/ompctl.git");
+    h.press("browse-clone-here");
+
+    // The url is real, so the control is pressable; the daemon never hears a
+    // clone with nowhere to land, and the operator hears why instead.
+    expect(h.socket.framesOfType("repo_clone")).toEqual([]);
+    expect(h.text("browse-notice")).toContain("a clone has to land somewhere");
+    h.unmount();
+  });
+
   test("sends nothing when the url field is empty", () => {
     const h = mount();
     h.deliver(DEV_LISTING);
@@ -426,14 +510,66 @@ describe("cloning from the browser", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The link the screen rides
+//
+// The device audit showed `fs.list` leaving in duplicate pairs every few
+// seconds while the screen sat frozen at the roots. Both came from the same
+// place: the subscription re-fired on every parent re-render, re-asking the
+// roots and clobbering whatever the operator had opened. These hold the line
+// the fix drew: one ask per directory change, none per render.
+// ---------------------------------------------------------------------------
+
+describe("the link the screen rides", () => {
+  test("a directory change asks exactly once, and parent re-renders ask not at all", () => {
+    const h = mountUnderNavigator();
+    h.deliver(ROOTS_LISTING);
+    expect(h.socket.framesOfType("fs_list")).toEqual([{ t: "fs_list" }]);
+
+    h.press(`browse-entry-${ROOT}`);
+    expect(h.socket.framesOfType("fs_list")).toEqual([{ t: "fs_list" }, { t: "fs_list", path: ROOT }]);
+
+    // Three console-shaped re-renders, each handing the screen a fresh
+    // `onOpened` closure. The directory in view did not change, so not one
+    // more frame may leave; under the old subscription each of these reset
+    // the screen to the roots and cost the socket a redundant ask.
+    h.parentRerender();
+    h.parentRerender();
+    h.parentRerender();
+    expect(h.socket.framesOfType("fs_list")).toEqual([{ t: "fs_list" }, { t: "fs_list", path: ROOT }]);
+
+    // The subscription the re-renders did not disturb still delivers: the
+    // answer to the one ask lands, and the entries render.
+    h.deliver(DEV_LISTING);
+    expect(h.text("browse-path")).toBe(DEV);
+    expect(h.query("browse-entry-ompctl")).not.toBeNull();
+
+    h.unmount();
+  });
+
+  test("a socket still opening carries the first ask on its hello, not into the void", () => {
+    const h = mount({ link: "connecting" });
+
+    // Mounting on a link that is still coming up sends nothing and reports
+    // nothing: the old eager ask was dropped by the half-open socket and
+    // came back as an error notice about a frame that never mattered.
+    expect(h.socket.framesOfType("fs_list")).toEqual([]);
+    expect(h.query("browse-notice")).toBeNull();
+
+    h.connect();
+    expect(h.socket.framesOfType("fs_list")).toEqual([{ t: "fs_list" }]);
+
+    h.unmount();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The hook's own guards
 //
-// The screen draws both actions disabled with no directory chosen, which is
-// what an operator meets -- and which also means a test that clicks them
-// cannot observe the hook's own refusal behind that control. These drive the
-// hook directly, because the guard is what protects every other caller: a
-// navigator's menu item, or any future surface that reaches for these actions
-// without a disabled button in front of them.
+// The screen now lets a start or a pressed clone reach the hook from anywhere,
+// so its refusals are visible through the screen itself. These still drive the
+// hook directly, because the guard is what protects every caller that has no
+// screen in front of it: a navigator's menu item, or a future surface that
+// reaches for these actions without a button at all.
 // ---------------------------------------------------------------------------
 
 describe("the remote-start actions", () => {
