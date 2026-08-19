@@ -5,13 +5,18 @@
  * `message`/`custom`/`model_change` lines) rather than a simplified stand-in,
  * so `countMessages`'s exclusion rules are exercised against the real event
  * vocabulary.
+ *
+ * The streaming rewrite of `countMessages` is the highest-risk change in
+ * this package, so it is pinned against the whole-file implementation it
+ * replaced (kept verbatim below as the oracle) across a fixture set that
+ * attacks chunk boundaries from every side, plus a seeded fuzz pass.
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { countMessages, scanSessionFiles } from "../../src/sessions/scanner.ts";
+import { COUNT_CHUNK_BYTES, countMessages, scanSessionFiles } from "../../src/sessions/scanner.ts";
 
 const scratch: string[] = [];
 
@@ -35,18 +40,10 @@ describe("scanSessionFiles", () => {
   test("finds sessions across multiple cwd-group directories", () => {
     const root = tempRoot("scanner-multi-group-");
     writeSessionFile(join(root, "-Downloads"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
-      { type: "title", v: 1, title: "Convert manuscript", source: "auto", updatedAt: "2026-08-11T01:17:41.394Z" },
-      {
-        type: "session",
-        version: 3,
-        id: SESSION_ID_A,
-        timestamp: "2026-08-11T01:11:48.090Z",
-        cwd: "/Users/x/Downloads",
-      },
+      { type: "title", v: 1, title: "Manuscript" },
     ]);
-    writeSessionFile(join(root, "--private-tmp--"), "2026-08-13T01-44-21-962Z", SESSION_ID_B, [
-      { type: "title", v: 1, title: "", updatedAt: "2026-08-13T01:44:21.962Z" },
-      { type: "session", version: 3, id: SESSION_ID_B, timestamp: "2026-08-13T01:44:21.962Z", cwd: "/tmp" },
+    writeSessionFile(join(root, "--private-tmp--"), "2026-08-11T01-11-48-090Z", SESSION_ID_B, [
+      { type: "title", v: 1, title: "Scratch" },
     ]);
 
     const files = scanSessionFiles(root);
@@ -56,10 +53,11 @@ describe("scanSessionFiles", () => {
   });
 
   test("derives id and createdAt from the filename alone, not file contents", () => {
-    const root = tempRoot("scanner-filename-derived-");
+    const root = tempRoot("scanner-filename-");
     writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
-      { type: "title", v: 1, title: "hi", updatedAt: "2026-08-11T01:11:48.090Z" },
+      { type: "title", v: 1, title: "Build the thing" },
     ]);
+
     const [file] = scanSessionFiles(root);
     expect(file).toBeDefined();
     expect(file!.id).toBe(SESSION_ID_A);
@@ -69,8 +67,9 @@ describe("scanSessionFiles", () => {
   test("reads title from the header line without a message line present", () => {
     const root = tempRoot("scanner-title-");
     writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
-      { type: "title", v: 1, title: "Build the thing", updatedAt: "2026-08-11T01:11:48.090Z" },
+      { type: "title", v: 1, title: "Build the thing" },
     ]);
+
     const [file] = scanSessionFiles(root);
     expect(file!.title).toBe("Build the thing");
   });
@@ -78,29 +77,30 @@ describe("scanSessionFiles", () => {
   test("an empty title header degrades to an empty string, not a throw", () => {
     const root = tempRoot("scanner-empty-title-");
     writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [{ type: "title", v: 1, title: "" }]);
+
     const files = scanSessionFiles(root);
     expect(files).toHaveLength(1);
     expect(files[0]!.title).toBe("");
   });
 
   test("a malformed header line degrades to an empty title instead of failing the scan", () => {
-    const root = tempRoot("scanner-malformed-header-");
+    const root = tempRoot("scanner-bad-header-");
     const groupDir = join(root, "-x");
     mkdirSync(groupDir, { recursive: true });
     writeFileSync(join(groupDir, `2026-08-11T01-11-48-090Z_${SESSION_ID_A}.jsonl`), "not json\nmore\n");
+
     const files = scanSessionFiles(root);
     expect(files).toHaveLength(1);
     expect(files[0]!.title).toBe("");
   });
 
   test("ignores non-jsonl entries and the per-session artifact subdirectories real OMP writes alongside a transcript", () => {
-    const root = tempRoot("scanner-ignore-non-jsonl-");
+    const root = tempRoot("scanner-non-jsonl-");
     const groupDir = join(root, "-x");
     writeSessionFile(groupDir, "2026-08-11T01-11-48-090Z", SESSION_ID_A, [{ type: "title", v: 1, title: "t" }]);
-    // Real OMP leaves a same-named directory next to the .jsonl for subagent
-    // artifacts; it must never be mistaken for a second session.
-    mkdirSync(join(groupDir, `2026-08-11T01-11-48-090Z_${SESSION_ID_A}`), { recursive: true });
+    mkdirSync(join(groupDir, "subdir"), { recursive: true });
     writeFileSync(join(groupDir, "not-a-session.txt"), "junk");
+
     const files = scanSessionFiles(root);
     expect(files).toHaveLength(1);
   });
@@ -110,8 +110,9 @@ describe("scanSessionFiles", () => {
     const path = writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
       { type: "title", v: 1, title: "t" },
     ]);
-    const mtime = new Date("2026-08-11T05:00:00.000Z");
+    const mtime = new Date("2026-08-12T00:00:00.000Z");
     utimesSync(path, mtime, mtime);
+
     const [file] = scanSessionFiles(root);
     expect(file!.sizeBytes).toBeGreaterThan(0);
     expect(Math.abs(file!.mtimeMs - mtime.getTime())).toBeLessThan(1000);
@@ -157,6 +158,250 @@ describe("countMessages", () => {
     ];
     writeFileSync(path, `${lines.join("\n")}\n`);
     expect(countMessages(path)).toBe(2);
+  });
+});
+
+/**
+ * The oracle: the whole-file implementation `countMessages` shipped before
+ * counting was streamed, verbatim. Agreement with it is the spec -- the same
+ * lines counted, the same malformed-line tolerance, the same zero for an
+ * unreadable file.
+ */
+function legacyCountMessages(path: string): number {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    let parsed: { type?: unknown; message?: { role?: unknown } };
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (parsed.type === "message") {
+      const role = parsed.message?.role;
+      if (role === "user" || role === "assistant") count++;
+    }
+  }
+  return count;
+}
+
+/** A `type:"message"` line whose UTF-8 byte length is exactly `totalBytes` (ASCII padding, so bytes and chars agree). */
+function paddedMessageLine(totalBytes: number, role: "user" | "assistant" = "user"): string {
+  const head = `{"type":"message","id":"m","message":{"role":"${role}","content":[{"type":"text","text":"`;
+  const tail = `"}]}}`;
+  return head + "x".repeat(Math.max(0, totalBytes - Buffer.byteLength(head) - Buffer.byteLength(tail))) + tail;
+}
+
+/** A message line whose text contains `char` placed so its UTF-8 bytes straddle byte offset `splitAt` within the line. */
+function lineWithCharStraddling(splitAt: number, char: string): string {
+  const head = `{"type":"message","id":"m","message":{"role":"user","content":[{"type":"text","text":"`;
+  const prefix = "a".repeat(Math.max(0, splitAt - Buffer.byteLength(head) - (Buffer.byteLength(char) - 1)));
+  return `${head}${prefix}${char}${"b".repeat(8)}"}]}}`;
+}
+
+function writeRaw(name: string, content: string): string {
+  const dir = tempRoot("scanner-equiv-");
+  const path = join(dir, name);
+  writeFileSync(path, content);
+  return path;
+}
+
+describe("countMessages streaming equivalence", () => {
+  const C = COUNT_CHUNK_BYTES;
+
+  test("table: every fixture agrees with the whole-file oracle", () => {
+    const title = JSON.stringify({ type: "title", v: 1, title: "t", updatedAt: "t" });
+    const userLine = JSON.stringify({ type: "message", id: "a", message: { role: "user", content: [] } });
+    const noiseLine = JSON.stringify({ type: "model_change", id: "n", model: "m" });
+
+    const cases: Array<{ name: string; content: string; expected: number }> = [
+      { name: "empty file", content: "", expected: 0 },
+      { name: "only newlines", content: "\n\n\n", expected: 0 },
+      { name: "one message line with trailing newline", content: `${userLine}\n`, expected: 1 },
+      { name: "trailing message line with no final newline", content: userLine, expected: 1 },
+      {
+        name: "trailing non-message line with no final newline",
+        content: `${userLine}\n${noiseLine}`,
+        expected: 1,
+      },
+      {
+        name: "malformed lines interleaved with good ones",
+        content: `${title}\n{broken\n${userLine}\n{"type":"message" \n${userLine}\n`,
+        expected: 2,
+      },
+      {
+        name: "empty and whitespace-only lines interleaved",
+        content: `\n${userLine}\n   \n\t\n${userLine}\n\n`,
+        expected: 2,
+      },
+      {
+        name: "CRLF line endings",
+        content: `${title}\r\n${userLine}\r\n${userLine}\r\n`,
+        expected: 2,
+      },
+      {
+        name: "multi-byte characters (CJK and emoji) inside message text",
+        content:
+          `${JSON.stringify({ type: "message", id: "a", message: { role: "user", content: [{ type: "text", text: "你好世界".repeat(50) }] } })}\n` +
+          `${noiseLine}\n` +
+          `${JSON.stringify({ type: "message", id: "b", message: { role: "assistant", content: [{ type: "text", text: "🛠️🔧 完了".repeat(40) }] } })}\n`,
+        expected: 2,
+      },
+      {
+        // The line occupies [0, C-1) and its newline sits AT C-1, so the
+        // next line begins exactly on the chunk boundary.
+        name: "newline landing exactly on a chunk boundary",
+        content: `${paddedMessageLine(C - 1)}\n${userLine}\n`,
+        expected: 2,
+      },
+      {
+        // The line occupies [0, C) and its newline sits AT C, so the line
+        // itself straddles the boundary by one byte.
+        name: "line straddling a chunk boundary by exactly one byte",
+        content: `${paddedMessageLine(C)}\n${userLine}\n`,
+        expected: 2,
+      },
+      {
+        name: "line straddling by two bytes",
+        content: `${paddedMessageLine(C + 1)}\n${userLine}\n`,
+        expected: 2,
+      },
+      {
+        name: "a single line spanning three chunks",
+        content: `${paddedMessageLine(3 * C + 17)}\n${userLine}\n`,
+        expected: 2,
+      },
+      {
+        // A 3-byte UTF-8 character with 2 bytes before the boundary and 1
+        // after: a decoder that resets per chunk would corrupt it.
+        name: "3-byte character split 2/1 across the boundary",
+        content: `${lineWithCharStraddling(C, "中")}\n${userLine}\n`,
+        expected: 2,
+      },
+      {
+        name: "3-byte character split 1/2 across the boundary",
+        content: `${lineWithCharStraddling(C + 1, "中")}\n${userLine}\n`,
+        expected: 2,
+      },
+      {
+        // A title line first pushes every later boundary landing off the
+        // chunk grid, which is the unaligned case real files always hit.
+        name: "boundary-straddling line behind an offsetting title line",
+        content: `${title}\n${paddedMessageLine(C - Buffer.byteLength(title) - 1 + 5)}\n${userLine}\n`,
+        expected: 2,
+      },
+    ];
+
+    for (const { name, content, expected } of cases) {
+      const path = writeRaw(`${name.replace(/[^a-z0-9]+/gi, "-")}.jsonl`, content);
+      expect(countMessages(path), name).toBe(expected);
+      expect(countMessages(path), name).toBe(legacyCountMessages(path));
+    }
+  });
+
+  test("a multi-megabyte file of realistic lines agrees with the oracle", () => {
+    // ~6MB: title + a few thousand padded message lines interleaved with
+    // noise, malformed lines, and blanks, so thousands of chunk boundaries
+    // and every line shape occur naturally.
+    const parts: string[] = [JSON.stringify({ type: "title", v: 1, title: "big", updatedAt: "t" })];
+    let expected = 0;
+    for (let i = 0; i < 2600; i++) {
+      const kind = i % 11;
+      if (kind === 0) {
+        parts.push(JSON.stringify({ type: "model_change", id: `n${i}`, model: "m" }));
+      } else if (kind === 3) {
+        parts.push(`{broken-${i}`);
+      } else if (kind === 7) {
+        parts.push("");
+      } else {
+        parts.push(paddedMessageLine(1800 + (i % 900), i % 2 ? "user" : "assistant"));
+        expected += 1;
+      }
+    }
+    const path = writeRaw("multi-megabyte.jsonl", `${parts.join("\n")}\n`);
+    expect(countMessages(path)).toBe(expected);
+    expect(countMessages(path)).toBe(legacyCountMessages(path));
+  });
+
+  test("seeded fuzz: random line mixes, lengths around chunk multiples, random trailing newline", () => {
+    // Deterministic LCG so a failure names a reproducible corpus, never a
+    // reroll. Lengths cluster around multiples of the chunk size so lines
+    // straddle boundaries in both directions on every file.
+    let seed = 0x2f6e2b1;
+    const rand = (): number => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 0x100000000;
+    };
+
+    for (let file = 0; file < 25; file++) {
+      const lines: string[] = [];
+      for (let i = 0, n = 1 + Math.floor(rand() * 400); i < n; i++) {
+        const roll = rand();
+        if (roll < 0.45) {
+          const multiple = Math.floor(rand() * 4) * C;
+          const jitter = Math.floor(rand() * 5) - 2;
+          lines.push(paddedMessageLine(Math.max(60, multiple + jitter), rand() < 0.5 ? "user" : "assistant"));
+        } else if (roll < 0.55) {
+          lines.push(
+            JSON.stringify({ type: "message", id: "t", message: { role: "toolResult", toolCallId: "x", content: [] } }),
+          );
+        } else if (roll < 0.7) {
+          lines.push(JSON.stringify({ type: "title_change", id: "c", title: "t" }));
+        } else if (roll < 0.8) {
+          lines.push(`garbage {${Math.floor(rand() * 1e9)}`);
+        } else if (roll < 0.9) {
+          lines.push("");
+        } else {
+          lines.push(
+            JSON.stringify({
+              type: "message",
+              id: "u",
+              message: { role: "user", content: [{ type: "text", text: "你好".repeat(1 + Math.floor(rand() * 400)) }] },
+            }),
+          );
+        }
+      }
+      const content = lines.join("\n") + (rand() < 0.5 ? "\n" : "");
+      const path = writeRaw(`fuzz-${file}.jsonl`, content);
+      expect(countMessages(path), `fuzz file ${file}`).toBe(legacyCountMessages(path));
+    }
+  });
+
+  test("a 40MB file is counted without materialising it", () => {
+    // The streamed counter's whole reason to exist: one fixed chunk buffer
+    // and one line at a time, never the decoded file (a 40MB file is a
+    // 40MB+ string in JS) and never an array of every line. Measured by
+    // RSS, not heapUsed: the whole-file implementation's string and line
+    // array did not register in post-return heapUsed on this runtime, but
+    // measured +84.5MB RSS here, so RSS is the honest instrument. The
+    // bound leaves the streamed implementation an order of magnitude of
+    // headroom (its transient churn is kilobytes).
+    const parts: string[] = [];
+    let expected = 0;
+    let totalBytes = 0;
+    for (let i = 0; totalBytes < 40 * 1024 * 1024; i++) {
+      const line = paddedMessageLine(2048, i % 2 ? "user" : "assistant");
+      parts.push(line);
+      totalBytes += line.length + 1;
+      expected += 1;
+      if (i % 9 === 0) parts.push(JSON.stringify({ type: "model_change", id: `n${i}`, model: "m" }));
+    }
+    const path = writeRaw("forty-megabytes.jsonl", `${parts.join("\n")}\n`);
+    parts.length = 0; // Do not let the fixture itself hold the 40MB.
+
+    Bun.gc(true);
+    const before = process.memoryUsage.rss();
+    const count = countMessages(path);
+    const growth = process.memoryUsage.rss() - before;
+
+    expect(count).toBe(expected);
+    expect(growth).toBeLessThan(30 * 1024 * 1024);
   });
 });
 

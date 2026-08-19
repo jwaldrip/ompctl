@@ -255,13 +255,13 @@ type SessionClaim =
  * own refusal exists to prevent, and the idempotent answer satisfies the
  * caller's actual intent.
  */
-function verifySessionClaim(
+async function verifySessionClaim(
   index: SessionIndex,
   sessionId: string,
   claimed: { cwd: string; pid?: number },
   want: "live-tui" | "dormant",
-): SessionClaim {
-  const row = index.get(sessionId);
+): Promise<SessionClaim> {
+  const row = await index.get(sessionId);
   if (!row) {
     return { verdict: "refuse", code: "unknown_session", message: `no session ${sessionId} exists on this daemon` };
   }
@@ -1780,7 +1780,12 @@ export class Gateway {
       if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
       const parsed = parseSessionQuery(url);
       if ("error" in parsed) return Response.json({ error: parsed.error }, { status: 400 });
-      return Response.json({ sessions: index.query(parsed.query) });
+      // The build is cooperative but still async: awaiting here (rather
+      // than blocking the loop inside a synchronous build) is what keeps
+      // this route and every other one -- health included -- live while a
+      // cold index is being assembled. Counts are first paint: cached where
+      // known, null where the background warm pass has not reached them.
+      return Response.json({ sessions: await index.query(parsed.query) });
     }
 
     if (path === "/v1/sessions/grouped" && req.method === "GET") {
@@ -1789,7 +1794,7 @@ export class Gateway {
       if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
       const parsed = parseSessionQuery(url);
       if ("error" in parsed) return Response.json({ error: parsed.error }, { status: 400 });
-      return Response.json({ groups: index.grouped(parsed.query) });
+      return Response.json({ groups: await index.grouped(parsed.query) });
     }
 
     const sessionTakeoverRoute = /^\/v1\/sessions\/([^/]+)\/takeover$/.exec(path);
@@ -2000,7 +2005,7 @@ export class Gateway {
     }
     const takeover = frame.t === "session_takeover";
     const claimed = { cwd: frame.cwd, ...(takeover ? { pid: frame.pid } : {}) };
-    const claim = verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+    const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
     if (claim.verdict === "refuse") {
       this.#send(ws, { t: "error", code: claim.code, message: claim.message });
       return;
@@ -2026,7 +2031,7 @@ export class Gateway {
       // naming "already held" from a path that lost a race means another
       // caller's identical request finished in between, and that outcome is
       // the idempotent answer, not a failure.
-      const settled = verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+      const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
       if (settled.verdict === "held") {
         this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
         return;
@@ -2353,7 +2358,13 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "bad_query", message: parsed.error });
           return;
         }
-        this.#send(ws, { t: "sessions", sessions: index.query(parsed.query) });
+        // Deliberately detached, following the prompt case: the index build
+        // is cooperative but its reply is still an async answer, and this
+        // socket (and every other) must keep being served while it is
+        // produced. The client replaces the index wholesale on each frame,
+        // so the first-paint frame followed by one upgraded frame once cold
+        // counts land is the intended first-paint path, not a duplicate.
+        void this.#serveSessionsFrame(ws, index, parsed.query);
         return;
       }
 
@@ -2654,6 +2665,36 @@ export class Gateway {
       message: review.message,
       choices: review.choices,
     });
+  }
+
+  /**
+   * One socket `sessions` request: a first-paint frame the moment the
+   * shared build resolves -- every row, counts from cache where known and
+   * null where not -- then, when the background warm pass fills those
+   * counts in, exactly one upgraded frame with the same query re-run. The
+   * client replaces the index wholesale per frame, so a null count shown
+   * briefly is honest and a fabricated 0 never appears. A warm pass that
+   * finishes after the socket closes lands in `#send`'s quiet catch; a
+   * reconnect replay arriving meanwhile joins the same in-flight build
+   * instead of multiplying the work.
+   */
+  async #serveSessionsFrame(ws: GatewaySocket, index: SessionIndex, query: SessionQuery): Promise<void> {
+    try {
+      const { sessions, warmed } = await index.queryWithWarm(query);
+      this.#send(ws, { t: "sessions", sessions });
+      if (warmed === null) return;
+      const upgraded = await warmed;
+      this.#send(ws, { t: "sessions", sessions: upgraded });
+    } catch (err) {
+      // Detached from `#handle`, so its last-line-of-defence try/catch no
+      // longer covers this; an answer that cannot be produced must still
+      // cost the asking socket exactly one error frame, not a dropped one.
+      this.#send(ws, {
+        t: "error",
+        code: "sessions_failed",
+        message: err instanceof Error ? err.message : "session index failed",
+      });
+    }
   }
 
   #send(ws: GatewaySocket, frame: ServerFrame): void {

@@ -10,9 +10,29 @@
  * thing cached across calls is the expensive part -- message counts, keyed
  * by mtime+size in the store -- which invalidates itself the instant a file
  * actually changes.
+ *
+ * The build never blocks the event loop for long and never blocks first
+ * paint on a count:
+ * - `build()` is async and cooperative: it yields while scanning (every
+ *   `SCAN_YIELD_EVERY_FILES` files) and the background warm pass yields
+ *   inside long counts (every `COUNT_YIELD_INTERVAL_BYTES` bytes) and
+ *   between files, so HTTP routes, websocket pings, and relay acks keep
+ *   being served mid-build. A hub client's reconnect replay used to restart
+ *   a multi-minute synchronous scan and starve even `/v1/health`; that
+ *   failure mode is the reason this file is async at all.
+ * - First paint serves every row immediately, with counts from the durable
+ *   cache where they exist and `null` where they do not -- never a
+ *   fabricated 0. Missing counts are warmed in the background, and
+ *   `queryWithWarm` hands the caller a promise of upgraded rows for the one
+ *   upgraded frame a socket client expects once they land.
+ * - Single-flight: concurrent index requests (several clients, or one
+ *   client's reconnect replay firing `listSessions` again) share one
+ *   in-flight build and one in-flight warm pass. A reconnect loop cannot
+ *   multiply the work it is reconnecting because of.
  */
 
-import type { Store } from "@ompd/core";
+import { closeSync, openSync } from "node:fs";
+import type { SessionScanCacheEntry, Store } from "@ompd/core";
 import type {
   AgentId,
   SessionCwdScope,
@@ -26,7 +46,13 @@ import type {
 import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import { type DecodedCwd, decodeSessionDirName } from "./cwd-codec.ts";
 import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
-import { countMessages, MESSAGE_COUNT_SIZE_CEILING_BYTES, type RawSessionFile, scanSessionFiles } from "./scanner.ts";
+import {
+  COUNT_CHUNK_BYTES,
+  countMessagesChunks,
+  MESSAGE_COUNT_SIZE_CEILING_BYTES,
+  type RawSessionFile,
+  scanSessionFilesIter,
+} from "./scanner.ts";
 
 export interface SessionIndexOptions {
   store: Store;
@@ -34,6 +60,71 @@ export interface SessionIndexOptions {
   runDaemonsRoot?: string;
   homeDir?: string;
   tmpDir?: string;
+  /**
+   * Test seam over the filesystem scan, so a test can count scans (the
+   * single-flight contract) and hold one open long enough for a second
+   * request to join it, instead of racing real mtimes.
+   */
+  scan?: (sessionsRoot?: string) => AsyncIterable<RawSessionFile> | Iterable<RawSessionFile>;
+}
+
+/** `queryWithWarm`'s answer: first paint now, upgraded rows when they exist. */
+export interface SessionQueryResult {
+  /**
+   * Every row immediately: counts from the durable cache where they exist,
+   * `null` where not yet counted (or over the size ceiling, where never).
+   */
+  sessions: SessionSummary[];
+  /**
+   * Resolves with the same query re-run once the warm pass has filled in
+   * every count first paint reported as unknown, or null when nothing
+   * needed warming. It is a fresh query, not a patched-up copy of the first
+   * frame: statuses, ordering, and any session files that appeared meanwhile
+   * reflect the moment the warm pass finished.
+   */
+  warmed: Promise<SessionSummary[]> | null;
+}
+
+/** One build's outcome: first-paint rows plus the background warm pass they started, if any. */
+interface BuildOutcome {
+  rows: SessionSummary[];
+  warm: Promise<void> | null;
+}
+
+/**
+ * Yield scan cadence, in files. Measured here: a scan-shaped pass (readdir
+ * + stat + bounded title read) over 1200 files cost 16ms warm, 0.013ms per
+ * file; the real-tree figure in scanner.ts's header is ~0.25ms per file
+ * cold. Eight files is therefore a 0.1ms slice warm and a ~2ms slice cold
+ * -- small enough that a health route or a websocket ping never waits on
+ * the scan, at a `setImmediate` cost measured in well under a microsecond.
+ */
+const SCAN_YIELD_EVERY_FILES = 8;
+
+/**
+ * Yield cadence inside one file's count, in bytes. Measured here: streamed
+ * counting runs 0.746MB/ms, so 2MiB of work is a ~2.8ms slice between
+ * yields. Long enough that yielding costs nothing measurable against the
+ * count itself, short enough that a ping or relay ack waits at most a few
+ * milliseconds even inside a 50MB transcript.
+ */
+const COUNT_YIELD_INTERVAL_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Cache-write batch size, in files. One transaction per batch instead of
+ * one per row: an unbatched row was its own implicit transaction -- one WAL
+ * commit and one fsync at SQLite's default synchronous=FULL -- and a cold
+ * pass over an operator-scale tree (~1900 files observed in the field) paid
+ * that once per file, interleaved with the reads, presenting as an
+ * I/O-bound wedge at 0% CPU. 128 keeps the in-flight batch tiny and bounds
+ * a crash's lost work to files whose counts are a recomputable cache
+ * anyway.
+ */
+const WARM_CACHE_BATCH_ROWS = 128;
+
+/** Hand the event loop to whatever else is waiting: I/O callbacks, timers, sockets. Microtasks do not qualify -- they run before the loop moves on. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>(resolve => setImmediate(resolve));
 }
 
 const STATUS_RANK: Record<SessionLiveStatus, number> = {
@@ -49,8 +140,21 @@ export class SessionIndex {
   #runDaemonsRoot: string | undefined;
   #homeDir: string | undefined;
   #tmpDir: string | undefined;
+  #scan: NonNullable<SessionIndexOptions["scan"]>;
   /** Decoded cwd, keyed by flattened dir name: many sessions share one directory, so this decodes each name once per build instead of once per session. */
   #cwdCache = new Map<string, DecodedCwd>();
+  /**
+   * The in-flight build. Concurrent requests share it rather than each
+   * paying their own scan -- one phone's refresh racing another's reconnect
+   * replay must not produce two full filesystem walks.
+   */
+  #buildInFlight: Promise<BuildOutcome> | null = null;
+  /**
+   * The in-flight background warm pass. One at a time, shared by every
+   * build that observed the same cold counts; a pass that would duplicate
+   * it returns the existing promise instead.
+   */
+  #warmInFlight: Promise<void> | null = null;
 
   constructor(opts: SessionIndexOptions) {
     this.#store = opts.store;
@@ -58,6 +162,7 @@ export class SessionIndex {
     this.#runDaemonsRoot = opts.runDaemonsRoot;
     this.#homeDir = opts.homeDir;
     this.#tmpDir = opts.tmpDir;
+    this.#scan = opts.scan ?? scanSessionFilesIter;
   }
 
   #decodeCwd(flattenedDir: string): DecodedCwd {
@@ -68,30 +173,59 @@ export class SessionIndex {
     return decoded;
   }
 
-  /** The message count for one file: a cache hit when mtime+size still match, a fresh count (cached for next time) when they do not, or null without ever reading the file when it exceeds the size ceiling. */
-  #messageCountFor(file: RawSessionFile): number | null {
+  /**
+   * First-paint message count for one file: the durable cache's number when
+   * mtime+size still match, and null otherwise -- over the size ceiling
+   * forever, under it until the warm pass fills the row in. Never a fresh
+   * read here: the request path must not pay for a count, and never a
+   * fabricated 0 for an unknown one.
+   */
+  #firstPaintCountFor(file: RawSessionFile, misses: RawSessionFile[]): number | null {
     if (file.sizeBytes > MESSAGE_COUNT_SIZE_CEILING_BYTES) return null;
     const cached = this.#store.getSessionScanCache(file.id);
     if (cached && cached.mtimeMs === file.mtimeMs && cached.sizeBytes === file.sizeBytes) {
       return cached.messageCount;
     }
-    const count = countMessages(file.path);
-    this.#store.setSessionScanCache(file.id, {
-      mtimeMs: file.mtimeMs,
-      sizeBytes: file.sizeBytes,
-      messageCount: count,
-    });
-    return count;
+    misses.push(file);
+    return null;
+  }
+
+  /**
+   * The one shared build entry point. An in-flight build is returned to
+   * every concurrent caller; only the first caller's scan runs.
+   */
+  #buildShared(): Promise<BuildOutcome> {
+    if (this.#buildInFlight) return this.#buildInFlight;
+    const outcome = this.#buildNow();
+    this.#buildInFlight = outcome;
+    void outcome
+      .catch(() => {})
+      .then(() => {
+        if (this.#buildInFlight === outcome) this.#buildInFlight = null;
+      });
+    return outcome;
   }
 
   /**
    * Build the full catalog fresh from disk, the client presence registry,
    * and ompd's own agent roster. Callers query/group/sort the returned array;
-   * nothing about the assembled view itself is cached.
+   * nothing about the assembled view itself is cached. Counts are first
+   * paint (cache hit or null); the background warm pass for the misses is
+   * started here and handed back so callers that can push an upgraded frame
+   * can await it.
    */
-  build(): SessionSummary[] {
+  async #buildNow(): Promise<BuildOutcome> {
     this.#cwdCache.clear();
-    const files = scanSessionFiles(this.#sessionsRoot);
+    const files: RawSessionFile[] = [];
+    let sinceYield = 0;
+    for await (const file of this.#scan(this.#sessionsRoot)) {
+      files.push(file);
+      if (++sinceYield >= SCAN_YIELD_EVERY_FILES) {
+        sinceYield = 0;
+        await yieldToEventLoop();
+      }
+    }
+    const misses: RawSessionFile[] = [];
     const archived = this.#store.listArchivedSessionIds();
     const liveClients = listLiveClientPresences(this.#runDaemonsRoot ?? runDaemonsRoot());
     const liveClientBySessionId = new Map<string, (typeof liveClients)[number]>();
@@ -172,7 +306,7 @@ export class SessionIndex {
         title: file.title,
         createdAt: file.createdAt,
         lastActivityAt: new Date(file.mtimeMs).toISOString(),
-        messageCount: this.#messageCountFor(file),
+        messageCount: this.#firstPaintCountFor(file, misses),
         byteSize: file.sizeBytes,
         status,
         archived: isArchived,
@@ -180,31 +314,131 @@ export class SessionIndex {
         ...(status === "live-ompd" && agentId !== undefined ? { agentId } : {}),
       });
     }
-    return summaries;
+    const warm = misses.length > 0 ? this.#startWarm(misses) : null;
+    return { rows: summaries, warm };
+  }
+
+  /**
+   * Start (or join) the single background warm pass counting what first
+   * paint could not. Detached by design: callers that want the upgraded
+   * rows hold the returned promise; the daemon keeps serving everything
+   * else while it runs.
+   */
+  #startWarm(files: RawSessionFile[]): Promise<void> {
+    if (this.#warmInFlight) return this.#warmInFlight;
+    const pass = this.#runWarm(files)
+      .catch(() => {
+        // Detached work: an unexpected failure here must not become an
+        // unhandled rejection. Per-file failures already degrade to a count
+        // of 0 inside the counter; reaching this handler means a bug, and
+        // the next build's warm pass retries whatever was left cold.
+      })
+      .finally(() => {
+        if (this.#warmInFlight === pass) this.#warmInFlight = null;
+      });
+    this.#warmInFlight = pass;
+    return pass;
+  }
+
+  /**
+   * Count the cold files and cache the results in batched transactions.
+   *
+   * Resumability: a row enters the batch only after its file was counted
+   * end to end, and the batch commits all-or-nothing, so a partially
+   * written chunk can never leave a row claiming a count for content it
+   * did not read. A daemon restart mid-pass therefore loses at most the
+   * current batch -- every flushed batch is durable -- and the next pass
+   * picks up exactly where the cache leaves off, because the per-file
+   * re-check below skips every row already written.
+   */
+  async #runWarm(files: RawSessionFile[]): Promise<void> {
+    const batch: Array<{ sessionId: string } & SessionScanCacheEntry> = [];
+    for (const file of files) {
+      // Re-check the cache per file: a prior pass (or a build racing one)
+      // may have counted this exact file between the snapshot and now, and
+      // re-reading it would be the duplicated work the single-flight exists
+      // to prevent.
+      const cached = this.#store.getSessionScanCache(file.id);
+      if (cached && cached.mtimeMs === file.mtimeMs && cached.sizeBytes === file.sizeBytes) {
+        continue;
+      }
+      const count = await this.#countFileCooperatively(file.path);
+      batch.push({ sessionId: file.id, mtimeMs: file.mtimeMs, sizeBytes: file.sizeBytes, messageCount: count });
+      await yieldToEventLoop(); // Between files, so a corpus of tiny files cannot chain into one long sync run either.
+      if (batch.length >= WARM_CACHE_BATCH_ROWS) {
+        this.#store.setSessionScanCacheBatch(batch);
+        batch.length = 0;
+        await yieldToEventLoop(); // After a commit too: the flush is real I/O.
+      }
+    }
+    if (batch.length > 0) this.#store.setSessionScanCacheBatch(batch);
+  }
+
+  /** The same streamed counting as `countMessages`, driven with periodic event-loop yields. */
+  async #countFileCooperatively(path: string): Promise<number> {
+    let fd: number;
+    try {
+      fd = openSync(path, "r");
+    } catch {
+      return 0;
+    }
+    try {
+      const steps = countMessagesChunks(fd);
+      let sinceYield = 0;
+      let step = steps.next();
+      while (!step.done) {
+        sinceYield += COUNT_CHUNK_BYTES;
+        if (sinceYield >= COUNT_YIELD_INTERVAL_BYTES) {
+          sinceYield = 0;
+          await yieldToEventLoop();
+        }
+        step = steps.next();
+      }
+      return step.value;
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  /** The first-paint rows of one shared build, without a query applied. */
+  async build(): Promise<SessionSummary[]> {
+    return (await this.#buildShared()).rows;
+  }
+
+  /**
+   * Query, filter, and sort the catalog, plus the handle a socket caller
+   * needs to push one upgraded frame once cold counts land. The HTTP route
+   * uses plain `query()`; this is the socket's path because only a socket
+   * can answer one request with a second frame.
+   */
+  async queryWithWarm(q: SessionQuery = {}): Promise<SessionQueryResult> {
+    const { rows, warm } = await this.#buildShared();
+    return {
+      sessions: applyQuery(rows, q),
+      warmed: warm === null ? null : warm.then(() => this.query(q)),
+    };
   }
 
   /**
    * One row by session id, or undefined. Sees archived rows too: a caller
    * verifying a session-open request against the index needs the row's true
    * status, and "archived" and "not in the catalog" are different answers.
+   *
+   * Shares the in-flight build like every other reader, so verifying a claim
+   * cannot start a second scan, and reads first-paint rows deliberately: a
+   * claim is decided by status, cwd, and pid, none of which the warm pass
+   * changes. Waiting for counts here would make opening a session pay for
+   * arithmetic it does not consult.
    */
-  get(sessionId: string): SessionSummary | undefined {
-    return this.build().find(row => row.id === sessionId);
+  async get(sessionId: string): Promise<SessionSummary | undefined> {
+    const { rows } = await this.#buildShared();
+    return rows.find(row => row.id === sessionId);
   }
 
   /** Query, filter, and sort the catalog. Archived sessions are excluded unless `includeArchived` is set. */
-  query(q: SessionQuery = {}): SessionSummary[] {
-    let rows = this.build();
-    if (!q.includeArchived) rows = rows.filter(r => !r.archived);
-    if (q.status && q.status.length > 0) {
-      const wanted = q.status;
-      rows = rows.filter(r => wanted.includes(r.status));
-    }
-    if (q.cwd !== undefined) {
-      const wantedCwd = q.cwd;
-      rows = rows.filter(r => r.cwd === wantedCwd || r.flattenedDir === wantedCwd);
-    }
-    return sortSessions(rows, q.sort ?? "lastActivity", q.sortDir ?? "desc");
+  async query(q: SessionQuery = {}): Promise<SessionSummary[]> {
+    const { rows } = await this.#buildShared();
+    return applyQuery(rows, q);
   }
 
   /**
@@ -213,8 +447,8 @@ export class SessionIndex {
    * caller asked for, so the busiest project surfaces first even when
    * sessions inside each group are sorted by, say, size.
    */
-  grouped(q: SessionQuery = {}): SessionGroup[] {
-    const rows = this.query(q);
+  async grouped(q: SessionQuery = {}): Promise<SessionGroup[]> {
+    const rows = await this.query(q);
     const groups = new Map<string, SessionGroup>();
     for (const row of rows) {
       const key = row.cwd ?? row.flattenedDir;
@@ -241,6 +475,20 @@ export class SessionIndex {
   unarchive(sessionId: string): void {
     this.#store.unarchiveSession(sessionId);
   }
+}
+
+function applyQuery(rows: SessionSummary[], q: SessionQuery): SessionSummary[] {
+  let out = rows;
+  if (!q.includeArchived) out = out.filter(r => !r.archived);
+  if (q.status && q.status.length > 0) {
+    const wanted = q.status;
+    out = out.filter(r => wanted.includes(r.status));
+  }
+  if (q.cwd !== undefined) {
+    const wantedCwd = q.cwd;
+    out = out.filter(r => r.cwd === wantedCwd || r.flattenedDir === wantedCwd);
+  }
+  return sortSessions(out, q.sort ?? "lastActivity", q.sortDir ?? "desc");
 }
 
 function latestActivity(sessions: SessionSummary[]): string {
