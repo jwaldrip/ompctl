@@ -22,7 +22,6 @@
  */
 
 import type { AgentId } from "@ompd/core/contracts";
-import { SCOPE_APPROVE } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
@@ -45,7 +44,15 @@ import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
 import type { ConsoleState } from "./state.ts";
-import { agentFor, browserSessionsOf, fleetClearances, openSessionTarget, sessionFor, tuiSessionFor } from "./state.ts";
+import {
+  agentFor,
+  browserSessionsOf,
+  canInvite,
+  fleetClearances,
+  openSessionTarget,
+  sessionFor,
+  tuiSessionFor,
+} from "./state.ts";
 import { createOmpdClient, useConsole } from "./useConsole.ts";
 
 export interface ConsoleProps {
@@ -84,9 +91,21 @@ export function Console({
     onUnpair(`${state.unauthorized} Pair this device again to carry on.`);
   }, [state.unauthorized, onUnpair]);
 
+  // The index and the roster are the whole of a row -- `FleetRowSources` says
+  // so in the type -- so keying on those two slices keeps the array's identity
+  // across every console frame that touched neither: a selection, a terminal
+  // reply, and, the case that made leaving a live session take seconds, every
+  // chunk of every streaming turn. The reload below is keyed on the rows for
+  // the same reason: without both, a live turn rebuilt every row object on the
+  // machine per chunk, the browser's state changed identity, and the list
+  // re-sorted, re-grouped, and re-rendered its whole mounted window behind a
+  // screen nobody could see it through, on the thread the pop animation needs.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `state` is passed whole and read narrowly; the parameter type admits only the two slices below, so this key is exhaustive and keying on `state` itself would rebuild every row on every frame.
+  const rows = useMemo(() => browserSessionsOf(state), [state.sessionIndex, state.agents]);
+
   useEffect(() => {
-    dispatchBrowser({ t: "load", sessions: browserSessionsOf(state) });
-  }, [state]);
+    dispatchBrowser({ t: "load", sessions: rows });
+  }, [rows]);
 
   const clearances = useMemo(() => fleetClearances(state), [state]);
 
@@ -217,7 +236,7 @@ export function Console({
 
   const surfaces: ShellSurfaces = {
     daemonLabel,
-    canInvite: connection.scopes.includes(SCOPE_APPROVE),
+    canInvite: canInvite(state, connection.scopes),
     fleet: () => (
       // One inset owner per route: the shell pads the screen's edges, so the
       // agent hub sits inside the safe area with the list rather than under the
@@ -245,6 +264,7 @@ export function Console({
     terminal,
     connections: (back, invite) => (
       <ConnectionSwitcherScreen
+        canInvite={canInvite(state, connection.scopes)}
         connections={connections}
         onAdd={onAddConnection}
         onBack={back}

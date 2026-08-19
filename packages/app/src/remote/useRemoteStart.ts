@@ -13,6 +13,7 @@ import type {
   ClientErrorEvent,
   CloneDoneEvent,
   CloneProgressEvent,
+  ConnectionState,
   FsListingEvent,
   SessionOpenedEvent,
   StatusEvent,
@@ -52,6 +53,8 @@ export interface RemoteStartActions {
  * a real `OmpdClient` satisfies this without a cast.
  */
 export interface RemoteStartClient extends RemoteStartPort {
+  /** Read once at mount to decide whether the first listing can be asked for now. */
+  readonly connectionState: ConnectionState;
   on(name: "fs_listing", listener: (event: FsListingEvent) => void): () => void;
   on(name: "clone_progress", listener: (event: CloneProgressEvent) => void): () => void;
   on(name: "clone_done", listener: (event: CloneDoneEvent) => void): () => void;
@@ -81,15 +84,19 @@ export function useRemoteStart(
    */
   const showing = useRef<string>("");
   /**
-   * Whether the link has dropped since the last answer.
+   * The latest `onOpened`, held behind a ref on purpose.
    *
-   * The client deliberately never replays these frames, so a screen open
-   * across a drop has to ask again itself -- otherwise the operator taps a
-   * directory mid-reconnect and watches a spinner nothing will answer. Gated
-   * on an actual drop so the first `connected` does not duplicate the ask the
-   * mount below already made.
+   * The console hands this screen a brand-new closure on every one of its own
+   * re-renders, and a re-render is not a reason to resubscribe or re-ask: an
+   * effect that keyed on the callback's identity would re-fire on every daemon
+   * event the console hears, resetting the view to the roots each time. The
+   * ref keeps the subscription keyed on the client alone while the listener
+   * still calls whichever callback is current.
    */
-  const dropped = useRef(false);
+  const opened = useRef(onOpened);
+  useEffect(() => {
+    opened.current = onOpened;
+  });
   /**
    * Whether a session started from this screen is still awaiting its answer.
    *
@@ -126,26 +133,27 @@ export function useRemoteStart(
         if (!awaitingSession.current) return;
         awaitingSession.current = false;
         dispatch({ t: "session_started", agentId: event.agentId });
-        onOpened?.(event.agentId);
+        opened.current?.(event.agentId);
       }),
       client.on("status", event => {
-        if (event.state !== "connected") {
-          dropped.current = true;
-          return;
-        }
-        if (!dropped.current) return;
-        dropped.current = false;
-        ask(showing.current);
+        // Every `connected` is a link that has just become usable, and the
+        // client deliberately never replays `fs` frames across one: the first
+        // answers for a socket that was still opening when this screen mounted,
+        // and the rest restore what a drop took away. Anything short of
+        // `connected` is waited out, not recorded, because only a link that
+        // came back can be asked to answer.
+        if (event.state === "connected") ask(showing.current);
       }),
     ];
-    // The roots are where a screen with nothing chosen starts, and asking on
-    // mount rather than waiting for a status event is what makes that true on
-    // a socket that was already connected long before this screen opened.
-    ask("");
+    // The roots are where a screen with nothing chosen starts. Asked for here
+    // only when the link is already up -- a socket that is still connecting
+    // would drop the frame and report the loss, so on that link the first
+    // `connected` above carries the ask instead. Exactly one of the two fires.
+    if (client.connectionState === "connected") ask("");
     return () => {
       for (const off of offs) off();
     };
-  }, [client, ask, onOpened]);
+  }, [client, ask]);
 
   const actions = useMemo<RemoteStartActions>(
     () => ({

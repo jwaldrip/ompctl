@@ -891,7 +891,9 @@ describe("invite", () => {
     const credential = `${"c".repeat(64)}.tok_qr`;
     expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).toContain("hub.example.com");
     expect(out.split("\n").find(line => line.trim().startsWith("Token "))).toContain(credential);
-    expect(out).toContain(`https://app.ompctl.ai/pair?token=${credential}&hub=hub.example.com`);
+    // The link carries the granted scopes beside the token, so a one-tap
+    // pairing paints its console correctly before hello ever answers.
+    expect(out).toContain(`https://app.ompctl.ai/pair?token=${credential}&hub=hub.example.com&scopes=read%2Cprompt`);
     // The daemon id is not retyped by anyone, so it belongs inside the token.
     expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).not.toContain(daemon);
   });

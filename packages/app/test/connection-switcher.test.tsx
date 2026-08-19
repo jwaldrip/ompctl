@@ -55,6 +55,7 @@ describe("ConnectionSwitcherScreen", () => {
     act(() => {
       root.render(
         <ConnectionSwitcherScreen
+          canInvite={false}
           connections={connections}
           onAdd={() => {
             adding = true;
@@ -94,7 +95,7 @@ describe("ConnectionSwitcherScreen", () => {
     host.remove();
   });
 
-  test("the invite entry point is absent when the active connection's scopes exclude approve", () => {
+  test("the invite entry point is absent when the console says this device cannot mint a credential", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
@@ -102,6 +103,7 @@ describe("ConnectionSwitcherScreen", () => {
     act(() => {
       root.render(
         <ConnectionSwitcherScreen
+          canInvite={false}
           connections={connections}
           onAdd={() => {}}
           onBack={() => {}}
@@ -118,7 +120,7 @@ describe("ConnectionSwitcherScreen", () => {
     host.remove();
   });
 
-  test("holding approve on the active connection surfaces an invite entry point that asks for the invite route", () => {
+  test("a console that says this device can invite surfaces an entry point that asks for the invite route", () => {
     const approving: ConnectionList = {
       activeId: "local",
       connections: [
@@ -142,6 +144,7 @@ describe("ConnectionSwitcherScreen", () => {
     act(() => {
       root.render(
         <ConnectionSwitcherScreen
+          canInvite
           connections={approving}
           onAdd={() => {}}
           onBack={() => {}}

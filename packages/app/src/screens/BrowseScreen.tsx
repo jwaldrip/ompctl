@@ -124,21 +124,22 @@ export function BrowseScreen({
       </ScrollView>
 
       <View style={styles.actions}>
+        {/* Never disabled, including at the roots view: a control that
+            swallows the tap leaves an operator staring at a button that
+            neither acted nor explained, which on a phone reads as broken. The
+            hook answers a start with nowhere to start by saying so. */}
         <Pressable
           accessibilityRole="button"
-          accessibilityState={{ disabled: atRoots }}
-          disabled={atRoots}
           // Wrapped rather than passed through: `onPress` hands its handler a
           // gesture event, and a handler whose first parameter is an optional
           // name would take that event as the name.
           onPress={() => onStartHere()}
-          style={[styles.start, atRoots && styles.disabled]}
+          style={styles.start}
           testID="browse-start-here"
         >
           <Glyph name="newTask" color={ink.inverse} size={13} />
           <Text style={styles.startText}>Start a session here</Text>
         </Pressable>
-
         <View style={styles.cloneRow}>
           <TextInput
             accessibilityLabel="Repository url to clone"
@@ -153,8 +154,12 @@ export function BrowseScreen({
           />
           <Pressable
             accessibilityRole="button"
-            accessibilityState={{ disabled: atRoots || url.trim().length === 0 }}
-            disabled={atRoots || url.trim().length === 0}
+            accessibilityState={{ disabled: url.trim().length === 0 }}
+            // Disabled only while the field is empty, which the field's own
+            // placeholder already says. At the roots view it stays pressable
+            // with a url in it, so the tap is answered with why it cannot
+            // land rather than silently ignored.
+            disabled={url.trim().length === 0}
             onPress={() => {
               onCloneHere(url.trim());
               // Cleared on send, like the composer: the field is a draft, and a
@@ -162,7 +167,7 @@ export function BrowseScreen({
               // that has not started yet.
               setUrl("");
             }}
-            style={[styles.clone, (atRoots || url.trim().length === 0) && styles.disabled]}
+            style={[styles.clone, url.trim().length === 0 && styles.disabled]}
             testID="browse-clone-here"
           >
             <Glyph name="repo" color={ink.bright} size={13} />

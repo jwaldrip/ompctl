@@ -89,7 +89,10 @@ export function App(): JSX.Element {
             hubUrl: link.hubUrl,
             daemonId: link.daemonId,
             token: link.token,
-            scopes: [],
+            // The grant the link was minted with, when it carried one. A
+            // hint for the first paint only: hello reports the daemon's own
+            // record and the console prefers that.
+            scopes: link.scopes,
           })
             .then(() => reloadConnections())
             .catch((cause: unknown) => setBoot({ phase: "pair", notice: describe(cause) }));

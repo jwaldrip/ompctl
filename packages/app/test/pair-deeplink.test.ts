@@ -64,7 +64,7 @@ afterEach(() => {
 
 describe("parsePairDeepLink", () => {
   test("accepts the custom-scheme and universal-link forms", () => {
-    const expected = { hubUrl: "wss://hub.example.com", daemonId: DAEMON, token: "tok_abc" };
+    const expected = { hubUrl: "wss://hub.example.com", daemonId: DAEMON, token: "tok_abc", scopes: [] };
     expect(parsePairDeepLink(`ompctl://pair?token=${TOKEN}&hub=hub.example.com`)).toEqual(expected);
     expect(parsePairDeepLink(`https://app.ompctl.ai/pair?token=${TOKEN}&hub=hub.example.com`)).toEqual(expected);
   });
@@ -75,6 +75,7 @@ describe("parsePairDeepLink", () => {
         hubUrl: "wss://hub.ompctl.ai",
         daemonId: DAEMON,
         token: "tok_abc",
+        scopes: [],
       });
       expect(parsePairDeepLink(`https://app.ompctl.ai/pair?token=${TOKEN}`)).not.toBeNull();
       // The collab form shares the same string parsing, and was broken the same way.
@@ -84,6 +85,23 @@ describe("parsePairDeepLink", () => {
 
   test("an omitted hub means the hosted hub", () => {
     expect(parsePairDeepLink(`ompctl://pair?token=${TOKEN}`)?.hubUrl).toBe("wss://hub.ompctl.ai");
+  });
+
+  test("carries the granted scopes, and a link without them still parses", () => {
+    expect(parsePairDeepLink(`ompctl://pair?token=${TOKEN}&hub=hub.example.com&scopes=read,prompt`)).toEqual({
+      hubUrl: "wss://hub.example.com",
+      daemonId: DAEMON,
+      token: "tok_abc",
+      scopes: ["read", "prompt"],
+    });
+    // The encoded comma, exactly as the CLI prints the parameter.
+    expect(
+      parsePairDeepLink(`https://app.ompctl.ai/pair?token=${TOKEN}&scopes=read%2Cprompt%2Capprove`)?.scopes,
+    ).toEqual(["read", "prompt", "approve"]);
+    // An older link carries no scopes and parses exactly as it always did.
+    expect(parsePairDeepLink(`ompctl://pair?token=${TOKEN}&hub=hub.example.com`)?.scopes).toEqual([]);
+    // An empty parameter is an empty list, not a parse failure.
+    expect(parsePairDeepLink(`ompctl://pair?token=${TOKEN}&scopes=`)?.scopes).toEqual([]);
   });
 
   test("refuses a lookalike origin, a missing token, and a token naming no daemon", () => {

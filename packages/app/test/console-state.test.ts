@@ -16,6 +16,7 @@ import {
   allStats,
   apply,
   browserSessionsOf,
+  canInvite,
   emptyConsole,
   fleetClearances,
   sessionFor,
@@ -318,6 +319,54 @@ describe("scope", () => {
     const state = apply(emptyConsole([]), { t: "error", event: { message: "prompt rejected" } });
     expect(state.canApprove).toBe(true);
     expect(state.notice).toBe("prompt rejected");
+  });
+});
+
+describe("granted scopes", () => {
+  test("hello's answer overrules the stored pairing in both directions", () => {
+    // A one-tap link once carried no scopes, so the stored hint can be
+    // wrong either way. The daemon's hello is what the daemon enforces,
+    // so it is what the console believes.
+    const widened = apply(emptyConsole(["read", "prompt"]), {
+      t: "agents",
+      event: { agents: [], deviceId: "dev_phone", scopes: ["read", "prompt", "approve"] },
+    });
+    expect(widened.grantedScopes).toEqual(["read", "prompt", "approve"]);
+    expect(widened.canApprove).toBe(true);
+    expect(canInvite(widened, ["read", "prompt"])).toBe(true);
+
+    // The narrowing direction is the one that protects the operator from
+    // a stale hint: a rotated grant takes the controls away even though
+    // the stored connection still claims them.
+    const narrowed = apply(emptyConsole(["read", "prompt", "approve"]), {
+      t: "agents",
+      event: { agents: [], deviceId: "dev_phone", scopes: ["read", "prompt"] },
+    });
+    expect(narrowed.grantedScopes).toEqual(["read", "prompt"]);
+    expect(narrowed.canApprove).toBe(false);
+    expect(canInvite(narrowed, ["read", "prompt", "approve"])).toBe(false);
+  });
+
+  test("a daemon that reports no scopes leaves the stored hint holding the controls", () => {
+    // An older daemon never says; absence is unknown, not an empty grant,
+    // or every gated control would hide against a working daemon.
+    const state = apply(emptyConsole(["read", "approve"]), {
+      t: "agents",
+      event: { agents: [], deviceId: "dev_phone" },
+    });
+    expect(state.grantedScopes).toBeUndefined();
+    expect(state.canApprove).toBe(true);
+    expect(canInvite(state, ["read", "approve"])).toBe(true);
+
+    const bare = apply(emptyConsole([]), { t: "agents", event: { agents: [], deviceId: "dev_phone" } });
+    expect(canInvite(bare, [])).toBe(true);
+  });
+
+  test("the stored value decides before hello arrives", () => {
+    expect(canInvite(emptyConsole(["read", "approve"]), ["read", "approve"])).toBe(true);
+    expect(canInvite(emptyConsole(["read", "prompt"]), ["read", "prompt"])).toBe(false);
+    // A pairing that declared nothing stays optimistic, exactly as canApprove does.
+    expect(canInvite(emptyConsole([]), [])).toBe(true);
   });
 });
 

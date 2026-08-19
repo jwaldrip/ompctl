@@ -146,6 +146,16 @@ export interface ConsoleState {
   readonly tuiSessions: ReadonlyMap<string, TuiSessionState>;
   /** At most one browser action per agent. Completion is correlated by request id. */
   readonly pendingWebViewActions: ReadonlyMap<AgentId, PendingWebViewAction>;
+  /**
+   * The scopes the daemon's hello says this device holds, once it has said.
+   * The authority behind `canApprove` and `canInvite`: a stored pairing
+   * hint goes stale the moment a grant is rotated or narrowed, while this
+   * answer is the record the daemon enforces against. Undefined until a
+   * daemon that reports scopes has answered, and an older daemon never
+   * does, so absence must read as "unknown" rather than "none" or every
+   * gated control would hide against a working daemon.
+   */
+  readonly grantedScopes: readonly string[] | undefined;
   readonly canApprove: boolean;
   /** Why approval is refused, once the daemon has actually refused it. */
   readonly refusal: string | undefined;
@@ -239,6 +249,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     // A pairing that did not declare its scopes stays optimistic; the daemon's
     // first refusal is what downgrades it.
     canApprove: scopes.length === 0 || scopes.includes(SCOPE_APPROVE),
+    grantedScopes: undefined,
     refusal: undefined,
     notice: null,
     noticeAboutLink: false,
@@ -302,9 +313,22 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       return next;
     }
 
-    case "agents":
-      return applyAgents(state, event.event.agents);
-
+    case "agents": {
+      const next = applyAgents(state, event.event.agents);
+      // Hello's scopes are the daemon's own record, and they win in both
+      // directions: a grant widened since pairing surfaces its controls, and
+      // one narrowed or rotated takes them away, which is the direction that
+      // protects the operator from a stale hint. An older daemon reports no
+      // scopes at all, and that absence is "unknown", not "none": the stored
+      // pairing keeps holding the controls until a refusal or a newer daemon
+      // says otherwise.
+      if (event.event.scopes === undefined) return next;
+      return {
+        ...next,
+        grantedScopes: event.event.scopes,
+        canApprove: event.event.scopes.includes(SCOPE_APPROVE),
+      };
+    }
     case "sessions":
       return applySessions(state, event.event.sessions);
 
@@ -641,6 +665,19 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   };
 }
 
+/**
+ * Whether this device may invite another one. The daemon's hello is the
+ * authority once it has answered; the stored pairing's scopes stand in only
+ * until then, optimistic when the pairing declared none (a one-tap link
+ * printed before it carried scopes), so the menu is right on first paint and
+ * correct afterwards. A narrowed grant takes the entry point away, which is
+ * the point: the daemon would refuse the mint anyway.
+ */
+export function canInvite(state: ConsoleState, storedScopes: readonly string[]): boolean {
+  if (state.grantedScopes !== undefined) return state.grantedScopes.includes(SCOPE_APPROVE);
+  return storedScopes.length === 0 || storedScopes.includes(SCOPE_APPROVE);
+}
+
 /** Hints about one terminal session. A row never prompted is not missing, it is blank. */
 export function tuiSessionFor(state: ConsoleState, sessionId: string): TuiSessionState {
   return state.tuiSessions.get(sessionId) ?? EMPTY_TUI_SESSION;
@@ -677,6 +714,20 @@ export function fleetClearances(state: ConsoleState): number {
 }
 
 /**
+ * The two slices a fleet row is made of.
+ *
+ * Narrower than `ConsoleState` on purpose, and the narrowing is the whole
+ * point: a row must never be a function of the transcript slice. `sessions`
+ * changes identity on every chunk of every live turn, so a rows derivation
+ * that reads it has to be re-run per chunk, which rebuilds every row on the
+ * machine -- hundreds of them -- to answer a question none of them asked.
+ * That cost lands on the thread the pop animation needs, and it is what made
+ * leaving a live session take seconds. Keeping it out of the type is what
+ * stops it growing back.
+ */
+export type FleetRowSources = Pick<ConsoleState, "sessionIndex" | "agents">;
+
+/**
  * Adapts the daemon's session index into browser rows, with this device's
  * live roster overlaid.
  *
@@ -686,7 +737,7 @@ export function fleetClearances(state: ConsoleState): number {
  * onto its row, since the roster is fresher than the last snapshot; every
  * other row keeps exactly the status the daemon reported.
  */
-export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
+export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
   const holding = new Map<string, Agent>();
   for (const agent of state.agents) {
     if (agent.acpSessionId === undefined) continue;
@@ -727,7 +778,6 @@ export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
   for (const agent of state.agents) {
     if (agent.parentAgentId !== undefined) continue;
     if (agent.acpSessionId !== undefined && indexed.has(agent.acpSessionId)) continue;
-    const session = state.sessions.get(agent.id) ?? EMPTY_SESSION;
     rows.push({
       id: agent.acpSessionId ?? agent.id,
       title: agent.name,
@@ -735,7 +785,13 @@ export function browserSessionsOf(state: ConsoleState): BrowserSession[] {
       status: TERMINAL_AGENT_STATES.includes(agent.state) ? "dormant" : "live-ompd",
       createdAt: agent.createdAt,
       lastActiveAt: agent.lastActiveAt,
-      messageCount: session.entries.length,
+      // Counting the transcript this device happens to hold would be the
+      // wrong number anyway: it counts entries received here, so it reads
+      // zero for any session this device never opened and never matches the
+      // daemon's own count for one it did. The index is what counts messages,
+      // and it has not seen this session yet, so this says so the same way
+      // `sizeBytes` below does.
+      messageCount: 0,
       // Not knowable before the index sees the session file.
       sizeBytes: 0,
     });
