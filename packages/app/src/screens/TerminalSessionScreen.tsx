@@ -81,8 +81,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   const [text, setText] = useState("");
   const trimmed = text.trim();
   const connected = connection === "connected";
-  const composerEnabled =
-    connected && liveTerminal && promptAccess !== "missing" && tui.refusalKind !== "scope";
+  const composerEnabled = connected && liveTerminal && promptAccess !== "missing" && tui.refusalKind !== "scope";
   const canSend = composerEnabled && trimmed.length > 0;
   const placeholder = !connected
     ? "No link"

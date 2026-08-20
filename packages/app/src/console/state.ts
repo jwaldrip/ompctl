@@ -391,8 +391,7 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     case "error": {
       const { code, message } = event.event;
       const selectedTui = state.selectedTui;
-      const promptPending =
-        selectedTui !== null && (state.tuiSessions.get(selectedTui)?.sent ?? null) !== null;
+      const promptPending = selectedTui !== null && (state.tuiSessions.get(selectedTui)?.sent ?? null) !== null;
       // Prompt errors carry no session id, but a local prompt echo means this
       // open terminal screen has exactly one request awaiting an answer. A
       // refusal after the operator left has no honest screen correlation and

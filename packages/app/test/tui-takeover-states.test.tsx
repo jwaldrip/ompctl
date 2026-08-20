@@ -1,8 +1,8 @@
 import "./rnw.ts";
 
+import { describe, expect, test } from "bun:test";
 import type { SessionLiveStatus } from "@ompd/core/contracts";
 import { SCOPE_PROMPT, SCOPE_READ } from "@ompd/core/contracts";
-import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
