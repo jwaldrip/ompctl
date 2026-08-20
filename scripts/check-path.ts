@@ -153,7 +153,9 @@ const WIFI_RESTORE_WAIT_MS = 20_000;
 
 const failures: string[] = [];
 function check(label: string, ok: boolean, detail = ""): void {
-  console.log(`  ${ok ? "ok" : "FAIL"} ${label}${detail ? ` (${detail})` : ""}`);
+  // Detail is the reason a check FAILED, so printing it beside `ok` would put
+  // a failure sentence on a passing line and teach the reader to distrust both.
+  console.log(`  ${ok ? "ok" : "FAIL"} ${label}${!ok && detail ? ` (${detail})` : ""}`);
   if (!ok) failures.push(label);
 }
 
@@ -863,18 +865,81 @@ function stageApkArtifacts(): boolean {
 // --- phase 5: the real-device round trip --------------------------------------
 
 /**
+ * The node binary to run Detox under. `process.execPath` is bun when this
+ * script runs, and PATH's `node` is bun's alias inside a bun script, so the
+ * runtime is resolved through a login shell, which sees mise and the real
+ * install. Named loudly when absent: Detox cannot run under bun.
+ */
+function nodeRuntime(): string {
+  const found = spawnSync("/bin/sh", ["-lc", "command -v node"], { encoding: "utf8", timeout: 15_000 });
+  const path = (found.stdout ?? "").trim();
+  check(
+    "a real node runtime is available for Detox",
+    path !== "" && !path.endsWith("/bun"),
+    "Detox cannot run under bun: install node, for example mise use node@22",
+  );
+  return path;
+}
+
+/**
+ * Clear what a crashed previous run leaves behind. Detox's cleanup dies under
+ * bun, orphaning the `am instrument` process that owns the session id, and the
+ * next run then refuses with "the tester is already connected". Reaping is
+ * silent when there is nothing to reap, which is the normal case.
+ */
+function reapOrphanedSuite(): void {
+  spawnSync("/usr/bin/pkill", ["-f", "detoxSessionId ompctl-e2e"], { timeout: 15_000 });
+  spawnSync("/bin/sh", ["-lc", "rm -rf /tmp/detox.primary-*"], { timeout: 15_000 });
+  adb(["shell", "am", "force-stop", `${PACKAGE}.test`]);
+}
+
+/**
+ * Refuse to start while another project's suite owns this phone. One device
+ * serves several repos on this bench, and a foreign `am instrument` makes our
+ * instrumentation miss its "ready" handshake: Detox then waits its full
+ * timeout and the run reads as a product failure. It is not one, and only this
+ * check can tell the difference, so the conflict is named with its owner.
+ * Foreign runs are reported, never killed: that is somebody else's work.
+ */
+function assertDeviceIsFree(): boolean {
+  const instrumenting = spawnSync("/bin/sh", ["-lc", `pgrep -fl 'am instrument' | grep -v ${PACKAGE} || true`], {
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  const foreign = (instrumenting.stdout ?? "")
+    .split("\n")
+    .map(line => /detoxSessionId (\S+)/.exec(line)?.[1] ?? (line.trim() === "" ? "" : "unnamed session"))
+    .filter(id => id !== "");
+  check(
+    "no other project's suite owns this device",
+    foreign.length === 0,
+    `another Detox run holds ${SERIAL} (${foreign.join(", ")}); wait for it rather than killing it`,
+  );
+  return foreign.length === 0;
+}
+
+/**
  * Run the e2e suite against the attached hardware. Output streams through
  * live (a silent multi-minute gap helps nobody) while being captured for the
  * parse, because the canonical strings are printed by THIS script only.
  */
 function runSuite(endpoint: string, credential: string): Promise<{ code: number; out: string; timedOut: boolean }> {
   return new Promise(resolve => {
-    const child = spawn("bun", ["run", "test:android:device"], {
+    // Spawned as node directly, never through `bun run`: inside a bun script
+    // `node` is aliased back to bun, and bun's child_process.kill throws on a
+    // private field, which is what breaks Detox's cleanup and leaves an
+    // orphaned `am instrument` behind to refuse the next run with "the tester
+    // is already connected". Detox supports node, so the gate hands it node.
+    const child = spawn(nodeRuntime(), [join(repo, "node_modules", ".bin", "cucumber-js")], {
       cwd: APP_DIR,
       env: {
         ...process.env,
         DETOX_ADB_NAME: SERIAL,
         E2E_TAGS: "@path",
+        // Carried here because spawning cucumber directly replaces the
+        // package script that used to set them.
+        E2E_CLIENT: "android",
+        DETOX_CONFIGURATION: "android.attached.debug",
         // The resolved SDK root and adb for Detox (see androidSdkEnv): the
         // bench SDK is not on ANDROID_HOME, and an unset or garbage root is
         // how the suite died on `/platform-tools/adb`.
@@ -920,6 +985,13 @@ async function phaseRoundTrip(): Promise<void> {
   // and there is nothing to run the suite with.
   const handoff = await mintRunPairing();
   if (handoff === null) return;
+  // A crashed earlier run owns the session id until its orphan is reaped, and
+  // Detox answers the next run with "the tester is already connected" rather
+  // than a scenario result, which reads as a product failure and is not one.
+  reapOrphanedSuite();
+  // Named before the suite starts, because a contended device fails as a
+  // two minute silence that looks exactly like a broken app.
+  if (!assertDeviceIsFree()) return;
   const run = await runSuite(handoff.endpoint, handoff.credential);
   // PATH.md miss 3: a device pointed at a wrong hub cannot list sessions, the
   // scenario fails on device, and this exit code is where the check sees it.
