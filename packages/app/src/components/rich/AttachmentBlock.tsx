@@ -15,9 +15,9 @@
 import type { JSX } from "react";
 import { useCallback, useState } from "react";
 import { Image, Modal, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
-import { Glyph } from "../design/icons.tsx";
-import { Body, Data, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { Glyph } from "../../design/icons.tsx";
+import { Body, Data, Kicker, Label } from "../../design/text.tsx";
+import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../../design/tokens.ts";
 import type { AttachmentRef } from "./blocks.ts";
 
 /**
@@ -72,12 +72,12 @@ function resolveMime(ref: AttachmentRef): string | null {
   const given = ref.mime?.trim();
   if (given !== undefined && given.length > 0) return given.toLowerCase();
   const declared = /^data:([^;,]+)/.exec(ref.uri);
-  if (declared !== null) return declared[1].toLowerCase();
+  if (declared !== null) return (declared[1] ?? "").toLowerCase();
   return imageMimeForExtension(ref.name) ?? imageMimeForExtension(ref.uri);
 }
 
 function imageMimeForExtension(value: string): string | null {
-  const lastSegment = value.split(/[?#]/)[0].split("/").pop() ?? "";
+  const lastSegment = (value.split(/[?#]/)[0] ?? "").split("/").pop() ?? "";
   const dot = lastSegment.lastIndexOf(".");
   if (dot < 0) return null;
   const mime = (IMAGE_MIME_BY_EXTENSION as Record<string, string>)[lastSegment.slice(dot + 1).toLowerCase()];
@@ -272,4 +272,3 @@ const styles = StyleSheet.create({
   fullBackdrop: { flex: 1, backgroundColor: ground.base, padding: space.loose, gap: space.snug },
   fullImage: { flex: 1, width: "100%" },
 });
-

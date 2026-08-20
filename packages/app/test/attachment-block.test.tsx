@@ -5,6 +5,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 
 import type { AttachmentRef } from "../src/components/rich/blocks.ts";
+
 // Dynamic on purpose: ./rnw.ts must finish registering its react-native mock
 // before the component module is evaluated, and every render test here leans
 // on that same ordering.
