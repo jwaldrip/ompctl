@@ -25,6 +25,7 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { agentSignal, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { SessionState } from "../session/model.ts";
+import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
 
 export interface SessionScreenProps {
   agent: Agent;
@@ -36,6 +37,8 @@ export interface SessionScreenProps {
   refusal?: string;
   /** The daemon's prose for the last settled turn, if it sent one. */
   spoken: string | null;
+  /** Device speech implementation. Omitted in production so the native module is discovered once. */
+  narrationSpeech?: NarrationSpeech;
   /** Pending clearances across the fleet, so the readout is not agent-local. */
   fleetClearances: number;
   onBack: () => void;
@@ -61,6 +64,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   const tone = signal[agentSignal(agent.state)];
   const busy = agent.state === "busy";
   const insets = useSafeAreaInsets();
+  const narration = useNarration(session.entries, props.narrationSpeech);
 
   const [browserOpen, setBrowserOpen] = useState(false);
   // The keyboard's measured height, paid as padding below the composer.
@@ -208,6 +212,42 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         )}
       </View>
 
+      <View
+        testID="session-narration"
+        style={[styles.narration, narration.enabled && { backgroundColor: ground.active }]}
+      >
+        <Pressable
+          testID="session-narration-toggle"
+          accessibilityRole="switch"
+          accessibilityLabel={
+            !narration.available
+              ? "Narration unavailable"
+              : narration.enabled
+                ? "Turn narration off"
+                : "Turn narration on"
+          }
+          accessibilityState={{ checked: narration.enabled, disabled: !narration.available }}
+          disabled={!narration.available}
+          onPress={narration.toggle}
+          style={({ pressed }) => [styles.narrationToggle, pressed && { backgroundColor: ground.active }]}
+        >
+          <Glyph name="narration" size={14} color={narration.enabled ? signal.sage : ink.muted} />
+          <Label color={narration.enabled ? ink.bright : ink.muted} testID="session-narration-status">
+            {!narration.available ? "Narration unavailable" : narration.enabled ? "Narration on" : "Narration off"}
+          </Label>
+        </Pressable>
+        <Label
+          color={narration.reason === null ? ink.faint : signal.slate}
+          style={styles.narrationReason}
+          testID="session-narration-reason"
+        >
+          {narration.reason ??
+            (narration.enabled
+              ? "Reading new agent prose as it arrives."
+              : "Read new agent prose aloud as it arrives.")}
+        </Label>
+      </View>
+
       {/*
         The keyboard takes its space from the transcript, never from the
         composer. This was a KeyboardAvoidingView and it did nothing on an
@@ -296,6 +336,24 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.tight,
   },
+  narration: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.step,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    backgroundColor: ground.surface,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+  },
+  narrationToggle: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.snug,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
+  narrationReason: { flex: 1 },
   ident: { flex: 1, gap: space.hair },
   meta: { flexDirection: "row", alignItems: "center", gap: space.snug },
   origin: { flexShrink: 1 },
