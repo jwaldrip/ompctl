@@ -178,6 +178,26 @@ function adb(args: string[], timeoutMs = 15_000): { out: string; code: number } 
   return { out: `${r.stdout ?? ""}${r.stderr ?? ""}`.replace(/\r/g, ""), code: r.status ?? 1 };
 }
 
+/**
+ * `pm path` for a package, retried, because a transient adb failure and an
+ * absent package are different facts that look identical in one call's empty
+ * output. The bench proved it: another repo's suite churned the adb server,
+ * this probe came back empty, and the run reported Jason's app as uninstalled
+ * while it was installed and running. A probe that cannot fail honestly is
+ * worse than no probe, so a failed call is named as a failed call.
+ */
+function packagePath(attempts = 3): { path: string; probed: boolean } {
+  for (let i = 0; i < attempts; i += 1) {
+    const pm = adb(["shell", "pm", "path", PACKAGE]);
+    const line = pm.out.split("\n").find(l => l.startsWith("package:"));
+    if (line !== undefined) return { path: line.trim().replace(/^package:/, ""), probed: true };
+    // An answered query saying nothing is a real absence; a failed call is not.
+    if (pm.code === 0 && !/error|daemon|device/i.test(pm.out)) return { path: "", probed: true };
+    spawnSync("/bin/sleep", ["2"]);
+  }
+  return { path: "", probed: false };
+}
+
 /** Poll until a condition accepts the value, then return the last value seen either way. */
 function poll<T>(read: () => T, done: (v: T) => boolean, ms: number): T {
   const deadline = Date.now() + ms;
@@ -419,9 +439,13 @@ function phaseDevice(): boolean {
 
   // PATH.md miss 5: an uninstalled app must fail loudly, not pass quietly, so
   // presence is asserted before anything tries to read a version from it.
-  const pm = adb(["shell", "pm", "path", PACKAGE]);
-  const present = pm.code === 0 && pm.out.includes("package:");
-  check(`${PACKAGE} installed`, present, present ? "" : "pm path found nothing");
+  const pm = packagePath();
+  const present = pm.path !== "";
+  check(
+    `${PACKAGE} installed`,
+    present,
+    pm.probed ? "pm answered, and the package is not on this device" : "could not ask the device: adb never answered",
+  );
 
   if (present) {
     const dump = adb(["shell", "dumpsys", "package", PACKAGE]).out;
@@ -842,7 +866,7 @@ function stageApkArtifacts(): boolean {
   const stagedSha = createHash("sha256").update(readFileSync(DETOX_APP_APK)).digest("hex");
   // pm lists base.apk first, splits and features after; only base carries
   // the whole app, so only base is the parity target.
-  const baseApk = (adb(["shell", "pm", "path", PACKAGE]).out.split("\n")[0] ?? "").trim().replace(/^package:/, "");
+  const baseApk = packagePath().path;
   const installedSha =
     baseApk === "" ? "" : (adb(["shell", "sha256sum", baseApk], 30_000).out.trim().split(/\s+/)[0] ?? "");
   const lastUpdate =
@@ -852,12 +876,17 @@ function stageApkArtifacts(): boolean {
 
   console.log(`staged apk sha256 ${stagedSha} (${source})`);
   console.log(`installed apk sha256 ${installedSha || "unreadable"}, lastUpdateTime ${lastUpdate}`);
+  // A mismatch stays a failure, and the gate never installs to clear it: a
+  // check that mutates the thing it measures cannot be trusted about it, and
+  // this is Jason's own phone, whose pairing an install can cost him. This
+  // bench's device is shared with other repos' sessions, so lastUpdateTime is
+  // printed above to show WHEN the build changed under the run.
   check(
     "staged APK matches the installed build",
     installedSha !== "" && stagedSha === installedSha,
     installedSha === ""
       ? "could not hash the installed base.apk"
-      : "byte-level mismatch: artifact and phone carry different builds",
+      : "byte-level mismatch: the phone carries a different build, possibly installed by another session mid-run",
   );
   return installedSha !== "" && stagedSha === installedSha;
 }
