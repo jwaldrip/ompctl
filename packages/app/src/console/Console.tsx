@@ -127,6 +127,7 @@ export function Console({
   // selection swaps the detail beside it on a tablet, and returning to a
   // session must not resurrect a config screen left over from the last one.
   const [configPane, setConfigPane] = useState<AgentId | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the dependency is the signal, not a used value; the pane resets when the selection changes
   useEffect(() => {
     setConfigPane(null);
   }, [state.selected]);

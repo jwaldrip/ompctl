@@ -228,7 +228,8 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
 
   const load = useCallback((): void => {
     if (root === null || !canRead) return;
-    const seq = (loadSeq.current += 1);
+    loadSeq.current += 1;
+    const seq = loadSeq.current;
     setPhase({ kind: "loading" });
     void (async () => {
       try {
@@ -267,7 +268,8 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
       // a POST that cannot change anything but can still fail.
       if (mode === undefined || mode.currentValue === value) return;
 
-      const seq = (postSeq.current += 1);
+      postSeq.current += 1;
+      const seq = postSeq.current;
       setPending(value);
       setLastAttempt({ value, name });
       setPostRefusal(null);
