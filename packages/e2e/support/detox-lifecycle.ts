@@ -44,8 +44,6 @@ function adb(): string {
  */
 async function internals(): Promise<{
   init(options: { argv: Record<string, unknown> }): Promise<void>;
-  installWorker(): Promise<void>;
-  uninstallWorker(): Promise<void>;
   cleanup(): Promise<void>;
   onTestStart(t: { title: string; fullName: string; status: string }): Promise<void>;
   onTestDone(t: { title: string; fullName: string; status: string }): Promise<void>;
@@ -107,8 +105,10 @@ BeforeAll({ timeout: 600_000 }, async () => {
   // Before init, so the app finds the server the moment it first launches.
   const serial = process.env.DETOX_ADB_NAME;
   if (process.env.E2E_CLIENT === "android" && serial !== undefined) setupAdbReverse(serial);
+  // init installs a worker unless workerId is null. Installing another worker
+  // creates a second tester for the same session even though Detox stores only
+  // one, which breaks ownership of the app launch and ready handshake.
   await detox.init({ argv: { configuration: configuration(), loglevel: process.env.DETOX_LOGLEVEL ?? "warn" } });
-  await detox.installWorker();
 });
 
 // Detox needs the test boundaries to attribute artifacts and to reset per-test
@@ -137,6 +137,6 @@ After(async function (message: ITestCaseHookParameter) {
 AfterAll({ timeout: 120_000 }, async () => {
   if (!NATIVE) return;
   const detox = await internals();
-  await detox.uninstallWorker();
+  // cleanup uninstalls the worker before closing the session server.
   await detox.cleanup();
 });

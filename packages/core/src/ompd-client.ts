@@ -20,6 +20,7 @@
 
 import type {
   Agent,
+  AgentConfigOption,
   AgentId,
   ApprovalChoice,
   ApprovalScope,
@@ -174,10 +175,21 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // A snapshot ask, same class as `session_tail`: nothing on the machine
   // changes, and the surface that asked asks again the next time it opens.
   settings_read: false,
+  agent_config_read: false,
   // A lost write is an instruction that silently did not happen: the
   // operator believes the machine now runs under a different policy and it
   // does not, which is the same failure class as a lost `decide`.
   settings_write: true,
+  // A lost write is an instruction that silently did not happen: the
+  // operator believes the agent now runs under a different mode and it does
+  // not, so the next turn runs with permissions they think they changed.
+  // Same failure class as a lost `decide`.
+  agent_config_write: true,
+  // A snapshot ask, same class as `settings_read`; the three that follow are
+  // instructions that silently did not happen. A lost write leaves an
+  // operator believing a routine is armed, a lost run leaves them waiting on
+  // work that never started, and a lost rotate leaves a secret they think
+  // they replaced still live at the webhook.
   routines_read: false,
   routine_write: true,
   routine_run: true,
@@ -444,18 +456,39 @@ export interface SettingsEvent {
   settings: SyncSettings;
 }
 
+/**
+ * Every routine the daemon holds plus the runs recorded against them,
+ * answering `readRoutines`. A snapshot ask, so a surface renders the schedule
+ * and its history together rather than stitching two frames.
+ */
 export interface RoutinesEvent {
   routines: RemoteRoutine[];
   runs: Run[];
 }
 
+/** One routine run recorded, carrying every action's outcome. */
 export interface RoutineRanEvent {
   run: Run;
 }
 
+/**
+ * A routine's webhook secret, freshly minted by `rotateRoutineSecret`. Shown
+ * once: the daemon keeps only what it needs to verify a caller.
+ */
 export interface RoutineSecretEvent {
   routineId: string;
   secret: string;
+}
+
+/**
+ * One agent's session config as the daemon holds it now, answering
+ * `readAgentConfig` or `writeAgentConfig`. Confirmation rather than echo:
+ * after a write it carries what the daemon read back from the session, so a
+ * surface renders the mode the agent actually runs under.
+ */
+export interface AgentConfigEvent {
+  agentId: AgentId;
+  configOptions: AgentConfigOption[];
 }
 
 export interface ClientEventMap {
@@ -486,6 +519,7 @@ export interface ClientEventMap {
   routine_ran: RoutineRanEvent;
   routine_secret: RoutineSecretEvent;
   session_tail: SessionTailEvent;
+  agent_config: AgentConfigEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -862,6 +896,34 @@ export class OmpdClient {
   }
 
   /**
+   * Ask what config options one agent's session holds, the mode among them.
+   * The answer arrives as the `agent_config` event, or an `error` naming the
+   * refusal: `unknown_agent` for an id this daemon holds no row for,
+   * `no_session` for an agent with no live session behind it.
+   *
+   * One-shot, like `sessionTail` and for the same reason: a snapshot of a
+   * screen the operator is looking at, asked when that screen opens, never
+   * replayed onto a screen nobody may still be on.
+   */
+  readAgentConfig(agentId: AgentId): void {
+    this.send({ t: "agent_config_read", agentId });
+  }
+
+  /**
+   * Move one agent's session onto `modeId`. The answer arrives as the
+   * `agent_config` event carrying what the daemon read back from the session,
+   * so a surface renders the confirmed mode rather than its own request; a
+   * scope, shape, or unknown-mode refusal arrives as an `error` naming it.
+   *
+   * One-shot, like the other instructions: not replayed after a reconnect,
+   * because an operator who retaps is informed and one whose mode change is
+   * silently replayed later is not.
+   */
+  writeAgentConfig(agentId: AgentId, modeId: string): void {
+    this.send({ t: "agent_config_write", agentId, modeId });
+  }
+
+  /**
    * Prompt a session a registered live TUI owns. The daemon answers with a
    * `tui_unreachable` error when no connected TUI holds that session, so a
    * dormant row in the index is an explicit refusal, never a silent drop.
@@ -1227,6 +1289,12 @@ export class OmpdClient {
         return;
       case "routine_secret":
         this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });
+        return;
+      case "agent_config":
+        this.emit("agent_config", {
+          agentId: frame.agentId,
+          configOptions: frame.configOptions,
+        });
         return;
       case "tui_activity":
         this.emit("tui_activity", {

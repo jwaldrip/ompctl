@@ -9,7 +9,7 @@
 import type { Agent, ApprovalChoice, ApprovalScope, PlanReviewChoice, WebViewActionResult } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
+import { Keyboard, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { webViewCapability } from "../browser";
 import { Composer } from "../components/Composer.tsx";
@@ -61,6 +61,23 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   const insets = useSafeAreaInsets();
 
   const [browserOpen, setBrowserOpen] = useState(false);
+  // The keyboard's measured height, paid as padding below the composer.
+  //
+  // KeyboardAvoidingView was here and did nothing on an iPad: the composer's
+  // frame was identical with the keyboard up and down, so the send control sat
+  // behind the keyboard and neither a person nor an automated run could reach
+  // it. Measuring what the platform reports and paying it ourselves is the
+  // pattern that actually holds, and it is one mechanism rather than two, so
+  // nothing double counts. Web reports no keyboard, which is correct there.
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  useEffect(() => {
+    const shown = Keyboard.addListener("keyboardDidShow", event => setKeyboardInset(event.endCoordinates.height));
+    const hidden = Keyboard.addListener("keyboardDidHide", () => setKeyboardInset(0));
+    return () => {
+      shown.remove();
+      hidden.remove();
+    };
+  }, []);
   const driver = useRef<WebViewTarget | null>(null);
   const executedRequestId = useRef<string | null>(null);
 
@@ -176,44 +193,52 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         )}
       </View>
 
-      <PlanCard
-        canApprove={props.canApprove}
-        onRespond={props.onDecidePlan}
-        plan={session.plan}
-        refusal={props.refusal}
-        review={session.planReview}
-      />
+      {/*
+        The keyboard takes its space from the transcript, never from the
+        composer. This was a KeyboardAvoidingView and it did nothing on an
+        iPad: the send control's frame was identical with the keyboard up and
+        down, so the text was visible and the button was not.
+      */}
+      <View style={styles.body}>
+        <PlanCard
+          canApprove={props.canApprove}
+          onRespond={props.onDecidePlan}
+          plan={session.plan}
+          refusal={props.refusal}
+          review={session.planReview}
+        />
 
-      <Transcript
-        entries={session.entries}
-        canApprove={props.canApprove}
-        refusal={props.refusal}
-        onDecide={props.onDecide}
-        spoken={props.spoken}
-      />
+        <Transcript
+          entries={session.entries}
+          canApprove={props.canApprove}
+          refusal={props.refusal}
+          onDecide={props.onDecide}
+          spoken={props.spoken}
+        />
 
-      {webViewCapability === null || !browserOpen ? null : (
-        <View style={styles.browser} testID="session-browser">
-          <webViewCapability.Driver ref={driver} style={styles.driver} />
-        </View>
-      )}
+        {webViewCapability === null || !browserOpen ? null : (
+          <View style={styles.browser} testID="session-browser">
+            <webViewCapability.Driver ref={driver} style={styles.driver} />
+          </View>
+        )}
 
-      <StatusReadout
-        state={connection}
-        attempt={props.attempt}
-        delayMs={props.delayMs}
-        usage={session.usage}
-        clearances={props.fleetClearances}
-      />
+        <StatusReadout
+          state={connection}
+          attempt={props.attempt}
+          delayMs={props.delayMs}
+          usage={session.usage}
+          clearances={props.fleetClearances}
+        />
 
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
         {/*
-          Home-indicator inset lives on a child, not on KeyboardAvoidingView.
-          KAV's padding behavior owns paddingBottom for the keyboard; putting
-          the system inset on the same style loses it the moment the keyboard
-          moves.
+          Below the composer sits either the keyboard or the home indicator,
+          never both: while the keyboard is up it covers that inset entirely,
+          so paying both would leave a gap the height of the indicator.
         */}
-        <View style={{ paddingBottom: insets.bottom }} testID="session-composer-safe">
+        <View
+          style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : insets.bottom }}
+          testID="session-composer-safe"
+        >
           <Composer
             enabled={connection === "connected"}
             busy={busy}
@@ -221,12 +246,15 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             onCancel={props.onCancel}
           />
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </SafeScreen>
   );
 }
 
 const styles = StyleSheet.create({
+  // Owns the space between the header and the bottom of the screen, so the
+  // keyboard's inset lands here rather than on top of the composer.
+  body: { flex: 1 },
   head: {
     flexDirection: "row",
     alignItems: "center",
