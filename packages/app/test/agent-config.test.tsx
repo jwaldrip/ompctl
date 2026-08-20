@@ -12,6 +12,8 @@
  */
 
 import "./rnw.ts";
+
+import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Connection } from "../src/platform/connection.ts";
@@ -254,7 +256,10 @@ describe("changing the mode", () => {
       if (call.method === "POST" && refuse) {
         return Response.json({ error: "forbidden" }, { status: 403 });
       }
-      return Response.json(config("plan"));
+      // The read answers the session as it stands, default mode; only a
+      // POST the daemon accepts answers plan. A GET already sitting on
+      // "plan" would leave nothing to change and the refusal untestable.
+      return Response.json(config(call.method === "POST" ? "plan" : "default"));
     });
     const m = mountConfig(DIRECT);
     await settle();
