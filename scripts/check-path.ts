@@ -840,19 +840,22 @@ function stageApkArtifacts(): boolean {
   const stagedSha = createHash("sha256").update(readFileSync(DETOX_APP_APK)).digest("hex");
   // pm lists base.apk first, splits and features after; only base carries
   // the whole app, so only base is the parity target.
-  const baseApk = (adb(["shell", "pm", "path", PACKAGE]).out.split("\n")[0] ?? "")
-    .trim()
-    .replace(/^package:/, "");
+  const baseApk = (adb(["shell", "pm", "path", PACKAGE]).out.split("\n")[0] ?? "").trim().replace(/^package:/, "");
   const installedSha =
     baseApk === "" ? "" : (adb(["shell", "sha256sum", baseApk], 30_000).out.trim().split(/\s+/)[0] ?? "");
-  const lastUpdate = adb(["shell", "dumpsys", "package", PACKAGE]).out.match(/lastUpdateTime=(.+)/)?.[1]?.trim() ?? "unknown";
+  const lastUpdate =
+    adb(["shell", "dumpsys", "package", PACKAGE])
+      .out.match(/lastUpdateTime=(.+)/)?.[1]
+      ?.trim() ?? "unknown";
 
   console.log(`staged apk sha256 ${stagedSha} (${source})`);
   console.log(`installed apk sha256 ${installedSha || "unreadable"}, lastUpdateTime ${lastUpdate}`);
   check(
     "staged APK matches the installed build",
     installedSha !== "" && stagedSha === installedSha,
-    installedSha === "" ? "could not hash the installed base.apk" : "byte-level mismatch: artifact and phone carry different builds",
+    installedSha === ""
+      ? "could not hash the installed base.apk"
+      : "byte-level mismatch: artifact and phone carry different builds",
   );
   return installedSha !== "" && stagedSha === installedSha;
 }
