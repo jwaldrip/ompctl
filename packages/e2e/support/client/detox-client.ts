@@ -197,7 +197,16 @@ export class DetoxClient implements E2EClient {
     // platforms clamp a scroll at the content edge, so this is how a driver
     // says "the end" without learning the content height, which neither
     // platform exposes portably.
-    await g.element(g.by.id(testId)).scroll(100_000, "down");
+    //
+    // A list whose content is shorter than its viewport cannot scroll at all,
+    // and iOS reports that refusal as an error. Being already at the end is
+    // exactly what this method wanted, so it is not a failure: a young session
+    // with three entries is the normal case, not a broken one.
+    try {
+      await g.element(g.by.id(testId)).scroll(100_000, "down");
+    } catch (cause) {
+      if (!/Unable to scroll/i.test(cause instanceof Error ? cause.message : String(cause))) throw cause;
+    }
   }
 
   async labelsOf(testId: string): Promise<string[]> {

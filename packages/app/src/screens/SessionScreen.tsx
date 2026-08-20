@@ -9,7 +9,7 @@
 import type { Agent, ApprovalChoice, ApprovalScope, PlanReviewChoice, WebViewActionResult } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
+import { Keyboard, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { webViewCapability } from "../browser";
 import { Composer } from "../components/Composer.tsx";
@@ -61,6 +61,23 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   const insets = useSafeAreaInsets();
 
   const [browserOpen, setBrowserOpen] = useState(false);
+  // The keyboard's measured height, paid as padding below the composer.
+  //
+  // KeyboardAvoidingView was here and did nothing on an iPad: the composer's
+  // frame was identical with the keyboard up and down, so the send control sat
+  // behind the keyboard and neither a person nor an automated run could reach
+  // it. Measuring what the platform reports and paying it ourselves is the
+  // pattern that actually holds, and it is one mechanism rather than two, so
+  // nothing double counts. Web reports no keyboard, which is correct there.
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  useEffect(() => {
+    const shown = Keyboard.addListener("keyboardDidShow", event => setKeyboardInset(event.endCoordinates.height));
+    const hidden = Keyboard.addListener("keyboardDidHide", () => setKeyboardInset(0));
+    return () => {
+      shown.remove();
+      hidden.remove();
+    };
+  }, []);
   const driver = useRef<WebViewTarget | null>(null);
   const executedRequestId = useRef<string | null>(null);
 
@@ -177,18 +194,12 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
       </View>
 
       {/*
-        The keyboard has to take its space from the transcript, not from the
-        composer. Wrapping only the composer left it correct on a phone and
-        wrong on an iPad, where the keyboard is tall enough to cover the send
-        control: the text was visible, the button was not, and neither a person
-        nor an automated run could send. Owning the whole body means the
-        transcript shrinks and the composer stays on screen.
+        The keyboard takes its space from the transcript, never from the
+        composer. This was a KeyboardAvoidingView and it did nothing on an
+        iPad: the send control's frame was identical with the keyboard up and
+        down, so the text was visible and the button was not.
       */}
-      <KeyboardAvoidingView
-        style={styles.body}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={0}
-      >
+      <View style={styles.body}>
         <PlanCard
           canApprove={props.canApprove}
           onRespond={props.onDecidePlan}
@@ -220,12 +231,14 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         />
 
         {/*
-          Home-indicator inset lives on a child, not on KeyboardAvoidingView.
-          KAV's padding behavior owns paddingBottom for the keyboard; putting
-          the system inset on the same style loses it the moment the keyboard
-          moves.
+          Below the composer sits either the keyboard or the home indicator,
+          never both: while the keyboard is up it covers that inset entirely,
+          so paying both would leave a gap the height of the indicator.
         */}
-        <View style={{ paddingBottom: insets.bottom }} testID="session-composer-safe">
+        <View
+          style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : insets.bottom }}
+          testID="session-composer-safe"
+        >
           <Composer
             enabled={connection === "connected"}
             busy={busy}
@@ -233,7 +246,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             onCancel={props.onCancel}
           />
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </SafeScreen>
   );
 }

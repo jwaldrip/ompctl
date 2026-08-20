@@ -259,7 +259,13 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
     const extended: Entry =
       current.kind === "user"
         ? { ...current, text: current.text + text }
-        : { ...(current as AssistantEntry), text: (current as AssistantEntry).text + text };
+        : {
+            ...(current as AssistantEntry),
+            // A chunk that names its message adopts the row it is continuing,
+            // so the next chunk carrying that id finds it by id.
+            id: messageId ?? current.id,
+            text: (current as AssistantEntry).text + text,
+          };
     return { ...state, entries: replaceAt(state.entries, index, extended) };
   }
 
@@ -300,6 +306,12 @@ function findChunkTarget(
     if (entry.thought !== (channel === "thought")) continue;
     if (messageId !== null) {
       if (entry.id === messageId) return index;
+      // The wire may name a message only after its first chunk. A still open
+      // row that was never given an id is that same message, so the named
+      // chunk continues it instead of starting a second row: a reply split
+      // across two rows means no row holds the whole reply, which is how a
+      // token echoed back whole read as two half tokens on a real device.
+      if (entry.streaming && new RegExp(`^${channel}-\\d+$`).test(entry.id)) return index;
       continue;
     }
     if (entry.streaming) return index;

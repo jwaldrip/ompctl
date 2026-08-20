@@ -66,6 +66,19 @@ describe("a captured turn", () => {
     expect(assistants[0]?.text.length).toBeGreaterThan(40);
   });
 
+  test("a chunk that names its message continues the row it started", () => {
+    // Observed on a real iPad: the reply arrived as one text block from the
+    // daemon, and the transcript showed it as two rows, so no row held the
+    // whole token and a round trip that had actually succeeded read as failed.
+    const state = reduceAll(EMPTY_SESSION, [
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ompctl-path-" } },
+      { sessionUpdate: "agent_message_chunk", messageId: "m_named", content: { type: "text", text: "abc123" } },
+    ]);
+    const assistants = state.entries.filter((entry): entry is AssistantEntry => entry.kind === "assistant");
+    expect(assistants.length).toBe(1);
+    expect(assistants[0]?.text).toBe("ompctl-path-abc123");
+  });
+
   test("a settled turn leaves nothing streaming", () => {
     const state = endTurn(reduceAll(EMPTY_SESSION, STREAM));
     const streaming = state.entries.filter(entry => entry.kind === "assistant" && entry.streaming);
