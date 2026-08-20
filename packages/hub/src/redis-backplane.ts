@@ -37,9 +37,41 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0`;
 
+/**
+ * How often this instance proves to itself that it can still receive.
+ *
+ * A subscription is per-connection state, and `RedisClient` replaces its socket
+ * on its own. Nothing re-issues the `SUBSCRIBE` when it does, so the loss is
+ * invisible from the publishing side: `PUBLISH` to a channel with no subscriber
+ * succeeds and reports zero, and this process has no reason to look at that
+ * number. Meanwhile the commands connection stays useful, because it renews a
+ * lease every few seconds and reconnects on demand.
+ *
+ * The result is a relay that answers `linked` to every device, because that
+ * needs only the registry and the lease, and then routes nothing at all. So the
+ * receive path is checked rather than assumed, by sending a message to this
+ * instance's own channel and requiring it to arrive.
+ *
+ * It doubles as the only traffic the subscriber connection ever carries between
+ * sessions, which is what made it the connection an idle reaper collects and
+ * the commands connection one it leaves alone.
+ */
+const PROBE_INTERVAL_MS = 5_000;
+
+/**
+ * How long the receive path may stay unproven before it is declared lost.
+ *
+ * Two missed probes rather than one: a single publish can lose a race with a
+ * reconnect that is already healing itself, and replacing a working connection
+ * costs every session on it.
+ */
+const PROBE_DEADLINE_MS = 12_000;
+
 export interface RedisBackplaneOptions {
   url: string;
   instanceId: string;
+  /** Test seam, matching `HubOptions`, so a deadline can be reached on demand. */
+  now?: () => number;
 }
 
 /**
@@ -57,15 +89,35 @@ function isRedisConnectionClosedError(err: unknown): boolean {
 export class RedisBackplane implements Backplane {
   readonly instanceId: string;
   readonly #commands: RedisClient;
-  readonly #subscriber: RedisClient;
+  readonly #url: string;
+  readonly #channel: string;
+  /**
+   * Replaced rather than repaired when the receive path is lost.
+   *
+   * Re-issuing `SUBSCRIBE` on the existing client would depend on what state
+   * that client is in after it swapped its own socket, which is exactly the
+   * thing that cannot be established from out here. A new client has one
+   * knowable state.
+   */
+  #subscriber: RedisClient;
   #onEnvelope: EnvelopeHandler | undefined;
   #onDisrupted: DisruptionHandler | undefined;
   #closing = false;
+  /** When something last arrived on this instance's channel. */
+  #heardAtMs: number;
+  #probe: ReturnType<typeof setInterval> | undefined;
+  /** Set while a replacement is in flight, so probes do not stack up on it. */
+  #healing = false;
+  readonly #now: () => number;
 
   private constructor(opts: RedisBackplaneOptions, commands: RedisClient, subscriber: RedisClient) {
     this.instanceId = opts.instanceId;
     this.#commands = commands;
     this.#subscriber = subscriber;
+    this.#url = opts.url;
+    this.#channel = CHANNEL_PREFIX + opts.instanceId;
+    this.#now = opts.now ?? Date.now;
+    this.#heardAtMs = this.#now();
   }
 
   static async connect(opts: RedisBackplaneOptions): Promise<RedisBackplane> {
@@ -74,18 +126,7 @@ export class RedisBackplane implements Backplane {
     await commands.connect();
     await subscriber.connect();
     const backplane = new RedisBackplane(opts, commands, subscriber);
-
-    await subscriber.subscribe(CHANNEL_PREFIX + opts.instanceId, message => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(message);
-      } catch {
-        return;
-      }
-      if (parsed !== null && typeof parsed === "object" && "k" in parsed) {
-        backplane.#onEnvelope?.(parsed as RelayEnvelope);
-      }
-    });
+    await backplane.#listen(subscriber);
 
     // Only the subscriber's silent death represents a routing hole (see
     // below): the commands client carries no standing state to lose, so its
@@ -97,17 +138,92 @@ export class RedisBackplane implements Backplane {
     // somewhere instead of nowhere.
     commands.onclose = () => {};
 
-    // The window this closes: the process is alive and holding both websockets
-    // while its subscriber connection is not. Envelopes addressed here vanish
-    // with nothing to notice, so both legs of every cross-instance session
-    // would sit there looking connected. Reporting it is what turns a silent
-    // hole into a teardown and a resume.
-    subscriber.onclose = error => {
-      if (backplane.#closing) return;
-      backplane.#onDisrupted?.(`backplane subscriber closed: ${error instanceof Error ? error.message : error}`);
-    };
-
+    backplane.#probe = setInterval(() => void backplane.#checkReceivePath(), PROBE_INTERVAL_MS);
+    // Nothing here should keep a process alive on its own account.
+    backplane.#probe.unref?.();
     return backplane;
+  }
+
+  /**
+   * Attach a client to this instance's channel.
+   *
+   * `onclose` is registered here rather than once at connect, because the
+   * client it belongs to is replaced. It is still worth having: when it does
+   * fire it is the earliest possible notice, and the probe below is what covers
+   * the case observed in practice, where the socket is replaced underneath and
+   * no close is ever reported.
+   */
+  async #listen(client: RedisClient): Promise<void> {
+    client.onclose = error => {
+      if (this.#closing) return;
+      this.#onDisrupted?.(`backplane subscriber closed: ${error instanceof Error ? error.message : error}`);
+    };
+    await client.subscribe(this.#channel, message => {
+      // Every arrival counts, probe or envelope: what is being established is
+      // that this channel still reaches this process, and a real envelope
+      // proves it at least as well as a probe does.
+      this.#heardAtMs = this.#now();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(message);
+      } catch {
+        return;
+      }
+      // A probe carries no `k`, so it is already not an envelope and needs no
+      // case of its own downstream.
+      if (parsed !== null && typeof parsed === "object" && "k" in parsed) {
+        this.#onEnvelope?.(parsed as RelayEnvelope);
+      }
+    });
+  }
+
+  /**
+   * Send this instance one message and require it to come back.
+   *
+   * The publish is what keeps the connection from being idle; the arrival is
+   * what proves the subscription is still there. Failing that, the connection
+   * is replaced and the loss is reported, because sessions relying on the path
+   * that just went missing have to be torn down rather than left looking
+   * connected.
+   */
+  async #checkReceivePath(): Promise<void> {
+    if (this.#closing || this.#healing) return;
+    try {
+      await this.#commands.publish(this.#channel, JSON.stringify({ probe: this.instanceId }));
+    } catch {
+      // The commands client is down too. It reconnects on its own, and the
+      // deadline below is what decides whether that was enough.
+    }
+    if (this.#now() - this.#heardAtMs <= PROBE_DEADLINE_MS) return;
+
+    this.#healing = true;
+    const stale = this.#subscriber;
+    try {
+      const replacement = new RedisClient(this.#url);
+      await replacement.connect();
+      await this.#listen(replacement);
+      this.#subscriber = replacement;
+      // Treat the new connection as current, so one slow replacement does not
+      // immediately trip the deadline again and replace it a second time.
+      this.#heardAtMs = this.#now();
+      // Silence the old client's close, which is now expected rather than news.
+      stale.onclose = () => {};
+      try {
+        stale.close();
+      } catch {
+        // Already gone, which is the state this was trying to reach.
+      }
+      this.#onDisrupted?.("backplane subscriber stopped receiving; resubscribed on a new connection");
+    } catch (cause) {
+      // Still unroutable. Report it every cycle rather than once: the hub's
+      // response is to tear down sessions it can no longer serve, and any
+      // session opened since the last report needs the same answer.
+      this.#onDisrupted?.(
+        `backplane subscriber stopped receiving and could not be replaced: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    } finally {
+      this.#healing = false;
+    }
   }
 
   /**
@@ -167,12 +283,14 @@ export class RedisBackplane implements Backplane {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    clearInterval(this.#probe);
+    this.#probe = undefined;
     // Unsubscribe before closing. `close()` aborts whatever the client still
     // has in flight, and an active subscription is exactly that: the abort
     // surfaces as an unhandled rejection rather than an exception this could
     // catch, so the subscription has to be wound down first.
     try {
-      await this.#subscriber.unsubscribe(CHANNEL_PREFIX + this.instanceId);
+      await this.#subscriber.unsubscribe(this.#channel);
     } catch {
       // Already gone, which is the state this was trying to reach.
     }
