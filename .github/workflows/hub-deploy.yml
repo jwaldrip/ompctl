@@ -74,30 +74,102 @@ jobs:
         # deliberately does not hold. The build itself does not need it.
         run: |
           REG="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd"
+          CONSOLE="https://console.cloud.google.com/cloud-build/builds"
 
+          # Submitting a build and learning its outcome are two different
+          # operations, and this function keeps their failures apart on purpose.
+          #
+          # Run 32383715488 conflated them and lost the deploy to it. The poll
+          # read the status straight into an assignment, `status="$(gcloud builds
+          # describe ...)"`. One describe of the still-running site build
+          # answered FAILED_PRECONDITION, and because this step runs under
+          # `bash -e` a failed command substitution in an assignment aborts the
+          # whole script. Nothing was wrong with that build: the same id had
+          # already polled clean four times over the preceding 54s, the same call
+          # had just succeeded for hub and web, and the site image had built and
+          # pushed from byte-identical source in two earlier runs. The deploy died
+          # of a failed question, not a failed build, and it died mute: the abort
+          # happened inside the assignment, so the function never reached a line
+          # that could name the build, and terraform never ran at all.
+          #
+          # Hence the split below. A query that fails is retried and is not
+          # allowed to imply anything about the build. A build is failed only when
+          # Cloud Build actually reports it terminal and not SUCCESS. And every
+          # exit path prints the build id and its console URL, because the one
+          # thing the old loop never told anyone was where to go and look.
           submit_and_wait() {
             local config="$1" tag="$2"
-            local id
-            id="$(gcloud builds submit \
+            local id status err attempt unreadable=0
+
+            # Guarded rather than a bare assignment for the same `bash -e` reason,
+            # and because gcloud's own error does not say which of the three
+            # configs was in flight when it fired.
+            if ! id="$(gcloud builds submit \
               --project "${{ vars.GCP_PROJECT_ID }}" \
               --config "$config" \
               --substitutions "_IMAGE_TAG=${tag}" \
               --async \
               --format='value(id)' \
-              .)"
+              .)"; then
+              echo "::error::submitting $config for $tag failed"
+              return 1
+            fi
+            # An empty id would send every describe below to look up nothing, and
+            # `value(status)` of nothing reads exactly like a build too young to
+            # have a status yet: the poll would spin the full window and then
+            # blame a build that was never created.
+            if [ -z "$id" ]; then
+              echo "::error::submitting $config for $tag returned no build id"
+              return 1
+            fi
             echo "submitted build $id for $tag"
-            for i in $(seq 1 60); do
-              status="$(gcloud builds describe "$id" --project "${{ vars.GCP_PROJECT_ID }}" --format='value(status)')"
-              case "$status" in
-                SUCCESS) echo "build $id succeeded"; return 0 ;;
-                WORKING|QUEUED|PENDING) sleep 10 ;;
-                *)
-                  echo "::error::build $id ended in status $status"
+
+            err="$(mktemp)"
+            for attempt in $(seq 1 60); do
+              # The describe sits in an `if` condition, which is the one place
+              # `bash -e` tolerates a non-zero exit, and its stderr goes to a file
+              # so the actual reason survives long enough to be printed.
+              if status="$(gcloud builds describe "$id" \
+                --project "${{ vars.GCP_PROJECT_ID }}" \
+                --format='value(status)' 2>"$err")"; then
+                unreadable=0
+                case "$status" in
+                  SUCCESS) echo "build $id succeeded"; rm -f "$err"; return 0 ;;
+                  WORKING|QUEUED|PENDING) sleep 10 ;;
+                  *)
+                    # Cloud Build's own verdict, so this one is terminal. Ask again
+                    # for the fields that say which step died: statusDetail and
+                    # failureInfo are what a human needs and what the old loop
+                    # dropped on the floor.
+                    echo "::error::build $id for $tag ended in status ${status:-<none>}"
+                    gcloud builds describe "$id" --project "${{ vars.GCP_PROJECT_ID }}" \
+                      --format='value(statusDetail,failureInfo.type,failureInfo.detail)' || true
+                    echo "logs: $CONSOLE/$id?project=${{ vars.GCP_PROJECT_ID }}"
+                    rm -f "$err"
+                    return 1
+                    ;;
+                esac
+              else
+                # The question failed, which says nothing about the answer.
+                # Whatever precondition Cloud Build objected to was not a stable
+                # property of this build, because describe had already answered
+                # for this same id, so the right move is to ask again rather than
+                # to report a red build nobody has evidence for. Bounded: a
+                # backend that will not answer at all still has to end the step.
+                unreadable=$((unreadable + 1))
+                echo "cannot read build $id (attempt $attempt, $unreadable consecutive): $(tr '\n' ' ' < "$err")"
+                if [ "$unreadable" -ge 6 ]; then
+                  echo "::error::Cloud Build would not report on $id for $tag after $unreadable consecutive failed queries"
+                  echo "the build itself may well have succeeded; check $CONSOLE/$id?project=${{ vars.GCP_PROJECT_ID }}"
+                  rm -f "$err"
                   return 1
-                  ;;
-              esac
+                fi
+                sleep 10
+              fi
             done
-            echo "::error::build $id did not finish within the poll window"
+            echo "::error::build $id for $tag did not finish within the poll window"
+            echo "logs: $CONSOLE/$id?project=${{ vars.GCP_PROJECT_ID }}"
+            rm -f "$err"
             return 1
           }
 
