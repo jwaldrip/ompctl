@@ -1,9 +1,9 @@
 /**
  * Scheduled and triggered agent runs.
  *
- * A routine is a prompt plus a trigger. Firing one means standing up a fresh
- * agent, prompting it, and tearing it down again, recording the whole thing as
- * `Run`. Four properties are load bearing:
+ * A routine is an ordered list of agent actions plus a trigger. Firing one
+ * stands up a fresh agent for each action, prompts it, and tears it down,
+ * recording one event with every action's outcome. Four properties are load bearing:
  *
  * - **A run never leaks an agent.** Teardown is in a `finally`, and if the
  *   supervisor cannot stop the agent the record is forced terminal anyway.
