@@ -52,6 +52,13 @@ export function Transcript({ entries, canApprove, refusal, onDecide, spoken }: T
       data={entries as Entry[]}
       keyExtractor={entry => `${entry.kind}:${entry.id}`}
       renderItem={renderItem}
+      // The keyboard must never be the reason a control is unreachable. Dragging
+      // the transcript puts it away, a tap on a row still reaches the row rather
+      // than being eaten as a dismiss, and iOS keeps the last entries visible by
+      // insetting content for the keyboard instead of hiding them behind it.
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      automaticallyAdjustKeyboardInsets
       ListFooterComponent={
         spoken === null || spoken === undefined || spoken.length === 0 ? null : <Spoken text={spoken} />
       }
