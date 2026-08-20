@@ -63,6 +63,7 @@ describe("ConnectionSwitcherScreen", () => {
           onBack={() => {}}
           onInvite={() => {}}
           onSelect={id => selected.push(id)}
+          onSettings={() => {}}
         />,
       );
     });
@@ -109,6 +110,7 @@ describe("ConnectionSwitcherScreen", () => {
           onBack={() => {}}
           onInvite={() => {}}
           onSelect={() => {}}
+          onSettings={() => {}}
         />,
       );
     });
@@ -152,6 +154,7 @@ describe("ConnectionSwitcherScreen", () => {
             invited += 1;
           }}
           onSelect={() => {}}
+          onSettings={() => {}}
         />,
       );
     });
