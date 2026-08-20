@@ -47,6 +47,23 @@ export interface FleetScreenProps {
 }
 
 /**
+ * Whether this row's open lands on the agent transcript (SessionScreen,
+ * composer and all) rather than the terminal prompt surface. Mirrors the
+ * ladder in `console/state.ts`: `live-ompd` attaches to its agent and
+ * `dormant` rides the resume claim, both of which end on SessionScreen,
+ * while `live-tui` is routed to TerminalSessionScreen, a screen with no
+ * composer to drive. That distinction matters here because the status sort
+ * puts live-tui rows FIRST (`STATUS_SEVERITY` ranks it 0 and `DEFAULT_SORT`
+ * is status ascending), so the naive first row is exactly the row the path
+ * scenario cannot use: it would open a terminal and then fail hunting for a
+ * composer that screen never has. Archived rows are excluded too: they ride
+ * the same resume claim, but the daemon's verifier refuses them, so their
+ * open never reaches a transcript either.
+ */
+function opensAgentTranscript(session: BrowserSession): boolean {
+  return session.status === "live-ompd" || session.status === "dormant";
+}
+/**
  * The first batch, and the ceiling on every batch after it.
  *
  * A 390x844 phone shows eight or nine of these rows, so twelve is a screenful
@@ -84,12 +101,12 @@ export function FleetScreen({
   now,
 }: FleetScreenProps): JSX.Element {
   const view = useMemo(() => browserView(browser), [browser]);
-
   // The sections array, both row renderers, and the section header renderer
   // are memoised because each is a prop the virtualizer compares. A new
   // identity per render re-renders the whole mounted window on every socket
   // frame, which on a phone is indistinguishable from never having windowed
-  // the list at all.
+  // the list at all. The path marker below reads the same memoised traversal
+  // the list draws, so it can never land on a row a person cannot see.
   const sections = useMemo(
     () =>
       view.groups.map(group => ({
@@ -100,25 +117,41 @@ export function FleetScreen({
     [view.groups, browser.collapsedGroups],
   );
 
+  // The one row the committed path scenario opens by name, in the order the
+  // active list actually draws. Undefined when no visible row opens a
+  // transcript, and then no row carries the marker: the scenario failing to
+  // find it is the honest result, not a bug to paper over.
+  const rendered = browser.grouped ? sections.flatMap(section => section.data) : view.flatSessions;
+  const firstPathId = rendered.find(opensAgentTranscript)?.id;
+
   const renderGrouped = useCallback(
     ({ item }: { item: BrowserSession }) => (
       <SessionRow
         session={item}
         showCwd={false}
+        firstPathOpen={item.id === firstPathId}
         onOpen={onOpen}
         onArchive={onArchive}
         onUnarchive={onUnarchive}
         now={now}
       />
     ),
-    [onOpen, onArchive, onUnarchive, now],
+    [firstPathId, onOpen, onArchive, onUnarchive, now],
   );
 
   const renderFlat = useCallback(
     ({ item }: { item: BrowserSession }) => (
-      <SessionRow session={item} showCwd onOpen={onOpen} onArchive={onArchive} onUnarchive={onUnarchive} now={now} />
+      <SessionRow
+        session={item}
+        showCwd
+        firstPathOpen={item.id === firstPathId}
+        onOpen={onOpen}
+        onArchive={onArchive}
+        onUnarchive={onUnarchive}
+        now={now}
+      />
     ),
-    [onOpen, onArchive, onUnarchive, now],
+    [firstPathId, onOpen, onArchive, onUnarchive, now],
   );
 
   const renderSectionHeader = useCallback(
@@ -135,13 +168,15 @@ export function FleetScreen({
   return (
     <View style={styles.screen} testID="fleet">
       <View style={styles.head}>
-        <Glyph name="bay" size={16} color={ink.plain} />
-        <Display heading testID="fleet-title">
-          Sessions
-        </Display>
-        <Kicker color={ink.muted} testID="fleet-count">
-          {`${view.visibleCount} ${view.visibleCount === 1 ? "session" : "sessions"}`}
-        </Kicker>
+        <View style={styles.lead}>
+          <Glyph name="bay" size={16} color={ink.plain} />
+          <Display heading testID="fleet-title">
+            Sessions
+          </Display>
+          <Kicker color={ink.muted} testID="fleet-count">
+            {`${view.visibleCount} ${view.visibleCount === 1 ? "session" : "sessions"}`}
+          </Kicker>
+        </View>
         <Pressable
           testID="grouped-toggle"
           accessibilityRole="button"
@@ -229,6 +264,17 @@ const styles = StyleSheet.create({
     borderBottomWidth: stroke.heavy,
     borderBottomColor: ground.edge,
   },
+  // The title block absorbs the header's slack, so the two controls after it
+  // sit at the trailing content edge, flush with the action columns of the
+  // rows below. With this group owning the slack, the head's gap is the only
+  // spacing mechanism left in the strip, which is why `toggle` adds no margin
+  // of its own.
+  lead: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+  },
   toggle: {
     flexDirection: "row",
     alignItems: "center",
@@ -236,7 +282,6 @@ const styles = StyleSheet.create({
     width: TOUCH_TARGET,
     height: TOUCH_TARGET,
     justifyContent: "center",
-    marginLeft: space.tight,
   },
   togglePressed: { backgroundColor: ground.active },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },

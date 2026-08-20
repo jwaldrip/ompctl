@@ -45,6 +45,7 @@ import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
 import type { ConsoleState } from "./state.ts";
 import {
+  agentFor,
   browserSessionsOf,
   canInvite,
   fleetClearances,
@@ -72,7 +73,6 @@ export interface ConsoleProps {
    */
   createClient?: (connection: Connection) => OmpdClient;
 }
-
 export function Console({
   connection,
   daemonLabel,
@@ -154,11 +154,16 @@ export function Console({
   }, []);
 
   const log = (agentId: AgentId, back: () => void): JSX.Element => {
-    const agent = state.agents.find(candidate => candidate.id === agentId);
+    // `agentFor`, not a raw roster lookup: a resumed session starts streaming
+    // before any roster frame lists its agent, and the log it is streaming must
+    // be on screen rather than waiting for an unrelated roster change. The
+    // stand-in it builds is what keeps "That session closed." for genuinely
+    // deleted agents instead of every interleaving the relay can produce.
+    const agent = agentFor(state, agentId);
     // The route can outlive its agent by one frame: a roster refresh that drops
     // an agent clears the selection, and the pop happens in the same commit's
     // effect. Saying so is better than an empty log pretending to be a session.
-    if (agent === undefined) {
+    if (agent === null) {
       return (
         <SafeScreen style={styles.gone} testID="session-gone">
           <Body color={ink.muted}>That session closed.</Body>
@@ -294,7 +299,16 @@ export function Console({
   return (
     <View style={styles.position} testID="console">
       <AppNavigator surfaces={surfaces} selection={selection} onLeaveSelection={actions.back} />
-      {state.notice === null ? null : <Toast message={state.notice} onDismiss={actions.dismiss} />}
+      {state.notice === null ? null : (
+        // A link notice is the connection's own claim, and it reports under
+        // its own testID so a check can demand the screen carry no
+        // connectivity notice once the link is demonstrably healthy.
+        <Toast
+          message={state.notice}
+          onDismiss={actions.dismiss}
+          testID={state.noticeAboutLink ? "toast-link" : "toast"}
+        />
+      )}
     </View>
   );
 }

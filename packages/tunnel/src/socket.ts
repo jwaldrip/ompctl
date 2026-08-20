@@ -352,6 +352,12 @@ class TunnelSocket implements TunnelSocketLike {
   }
 
   #fail(message: string, code = 4500): void {
+    // Inbound handling is serialized, so frames already queued behind the one
+    // that failed still route here after the tunnel has closed, and each would
+    // re-fire `onerror` on a socket the client is already recovering. The first
+    // failure reported the problem and started the close; a later one has
+    // nothing new to say.
+    if (this.#phase === "closed") return;
     this.onerror?.({ message });
     this.#finish(code, message);
     this.#wire.close(code, "tunnel failed");

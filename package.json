@@ -26,6 +26,7 @@
     "check:evolution": "bun run scripts/check-evolution-lifecycle.ts",
     "check:lan": "bun run scripts/check-lan-roundtrip.ts",
     "check:hub": "bun run scripts/check-hub-roundtrip.ts",
+    "check:path": "bun run scripts/check-path.ts",
     "check:hermes": "bun run scripts/check-hermes-surface.ts",
     "check:provenance": "bun run scripts/check-provenance.ts",
     "check:endpoints": "bun run scripts/check-endpoints.ts",

@@ -33,6 +33,15 @@ export interface SessionRowProps {
   onArchive: (session: BrowserSession) => void;
   onUnarchive: (session: BrowserSession) => void;
   now?: number;
+  /**
+   * True only on the single row the committed path scenario opens by name.
+   * That row's corner open action carries the constant `session-open-first`
+   * instead of its interpolated id, because a feature file cannot interpolate
+   * a session id and both e2e drivers match testIDs exactly. The spanning
+   * open control keeps `session-open-<id>`, so nothing that already addresses
+   * a row by id moves.
+   */
+  firstPathOpen?: boolean;
 }
 
 const OPEN_GLYPH: Record<SessionStatus, GlyphName> = {
@@ -68,6 +77,7 @@ export const SessionRow = memo(function SessionRow({
   onArchive,
   onUnarchive,
   now,
+  firstPathOpen = false,
 }: SessionRowProps): JSX.Element {
   const tone = signal[SESSION_STATUS_SIGNALS[session.status]];
   const archived = session.status === "archived";
@@ -134,7 +144,7 @@ export const SessionRow = memo(function SessionRow({
 
       <View style={styles.actions}>
         <Pressable
-          testID={`session-open-action-${session.id}`}
+          testID={firstPathOpen ? "session-open-first" : `session-open-action-${session.id}`}
           accessibilityRole="button"
           accessibilityLabel={`${OPEN_LABEL[session.status]} ${session.title}`}
           onPress={open}

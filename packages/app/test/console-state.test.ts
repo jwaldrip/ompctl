@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import type { Agent } from "@ompd/core/contracts";
 import type { ConsoleEvent, ConsoleState } from "../src/console/state.ts";
 import {
+  agentFor,
   allStats,
   apply,
   browserSessionsOf,
@@ -179,11 +180,28 @@ describe("browser actions", () => {
 });
 
 describe("the roster is the authority", () => {
-  test("an agent that leaves takes its transcript with it", () => {
+  test("one snapshot without the open agent keeps the session it just opened", () => {
     const state = drive([
       { t: "agents", event: { agents: [agent("a1"), agent("a2")] } },
       { t: "select", agentId: "a2" },
       ...turn("a2"),
+      // A snapshot taken before the resume registered the agent can land
+      // after the open, because the relay guarantees no frame order.
+      { t: "agents", event: { agents: [agent("a1")] } },
+    ]);
+
+    expect(state.sessions.has("a2")).toBe(true);
+    expect(state.watermarks.has("a2")).toBe(true);
+    expect(state.selected).toBe("a2");
+    expect(state.notice).toBeNull();
+  });
+
+  test("a second agreeing snapshot takes the transcript with it", () => {
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1"), agent("a2")] } },
+      { t: "select", agentId: "a2" },
+      ...turn("a2"),
+      { t: "agents", event: { agents: [agent("a1")] } },
       { t: "agents", event: { agents: [agent("a1")] } },
     ]);
 
@@ -191,6 +209,75 @@ describe("the roster is the authority", () => {
     expect(state.watermarks.has("a2")).toBe(false);
     expect(state.selected).toBeNull();
     expect(state.notice).toBe("That agent is gone.");
+  });
+
+  test("a terminal agent is reaped by the first snapshot without it", () => {
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1"), agent("a2", { state: "stopped" })] } },
+      { t: "select", agentId: "a2" },
+      ...turn("a2"),
+      { t: "agents", event: { agents: [agent("a1")] } },
+    ]);
+
+    expect(state.sessions.has("a2")).toBe(false);
+    expect(state.selected).toBeNull();
+  });
+
+  test("an update retires the absence streak, so a streaming agent survives stale rosters", () => {
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1"), agent("a2")] } },
+      ...turn("a2"),
+      { t: "agents", event: { agents: [agent("a1")] } },
+      {
+        t: "update",
+        event: {
+          agentId: "a2",
+          seq: 999,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "still here" },
+            messageId: "late",
+          },
+        },
+      },
+      { t: "agents", event: { agents: [agent("a1")] } },
+    ]);
+
+    expect(state.sessions.has("a2")).toBe(true);
+  });
+
+  test("a re-select retires the absence streak, so a double-tap resume cannot be reaped", () => {
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1"), agent("a2")] } },
+      { t: "select", agentId: "a2" },
+      ...turn("a2"),
+      { t: "agents", event: { agents: [agent("a1")] } },
+      // The second answer a double tap earns: same agent, selected again.
+      { t: "select", agentId: "a2" },
+      { t: "agents", event: { agents: [agent("a1")] } },
+    ]);
+
+    expect(state.sessions.has("a2")).toBe(true);
+    expect(state.selected).toBe("a2");
+  });
+
+  test("an agent the roster never listed still opens once its replay starts", () => {
+    // The daemon answers a resume with `session_opened` and streams the
+    // replay, but its roster pushes only reach sockets that already held an
+    // attachment, so the resumed agent may be absent from every roster frame
+    // this device has seen.
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1")] } },
+      { t: "select", agentId: "a2" },
+      ...turn("a2"),
+    ]);
+
+    expect(state.selected).toBe("a2");
+    const resolved = agentFor(state, "a2");
+    expect(resolved).not.toBeNull();
+    expect(resolved?.id).toBe("a2");
+    // The roster entry still wins whenever the roster does list the agent.
+    expect(agentFor(state, "a1")?.name).toBe("agent a1");
   });
 
   test("a turn that stopped leaves nothing streaming", () => {

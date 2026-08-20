@@ -861,11 +861,15 @@ export class OmpdClient {
       if (generation !== this.generation) return;
       this.handleRaw(message.data);
     };
-    socket.onerror = () => {
+    socket.onerror = info => {
       if (generation !== this.generation) return;
-      // A socket error is always followed by a close; let close drive recovery
-      // so the two paths cannot both schedule a reconnect.
-      this.emit("error", { message: "websocket error", code: "socket" });
+      // The report and the recovery are split on purpose: this says the link
+      // is failing right now, and the close that follows drives the reconnect
+      // so the two paths cannot both schedule one. Downstream, the notice this
+      // becomes carries the tunnel's own reason when it has one, and it is
+      // retired only by a later status of `connected`: a link that heals
+      // leaves no stale error behind, and one that does not stays on screen.
+      this.emit("error", { message: errorReason(info), code: "socket" });
     };
     socket.onclose = info => {
       if (generation !== this.generation) return;
@@ -1350,6 +1354,21 @@ export function agentsEndpoint(socketUrl: string): string | null {
   if (scheme === undefined || authority === undefined || authority.length === 0) return null;
   const secure = scheme === "wss" || scheme === "https";
   return `${secure ? "https" : "http"}://${authority}/v1/agents`;
+}
+
+/**
+ * What an `onerror` actually carries. The tunnel reports its failures as
+ * `{ message }` with a reason worth reading (a relay sequence gap, a refused
+ * handshake); a bare platform websocket reports an `Event` with nothing on
+ * it. Both must fit one notice, so the reason is the tunnel's message when
+ * there is one and the transport's name otherwise.
+ */
+function errorReason(info: unknown): string {
+  if (typeof info === "object" && info !== null && "message" in info) {
+    const message = (info as { message?: unknown }).message;
+    if (typeof message === "string" && message.length > 0) return message;
+  }
+  return "websocket error";
 }
 
 function describe(cause: unknown): string {

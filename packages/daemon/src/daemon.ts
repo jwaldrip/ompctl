@@ -50,6 +50,7 @@ import type { TunnelDaemon } from "@ompd/tunnel";
 import { type AwakeProcess, SleepGuard } from "./awake.ts";
 import { NO_TARGET, type WebViewApprovalGate, WebViewBridge, type WebViewDispatch } from "./browser/bridge.ts";
 import { mcpServerDescriptor, startWebViewMcpServer, type WebViewMcpServer } from "./browser/mcp-server.ts";
+import { endpointPath } from "./endpoint.ts";
 import { reachableEndpoints } from "./endpoints.ts";
 import { EvolutionEngine, ProposalStore } from "./evolution/index.ts";
 import { HttpIntentPeer, type IntentPeer, QueuedIntentDrainer } from "./federation/queued-intents.ts";
@@ -63,6 +64,7 @@ import { SessionIndex } from "./sessions/session-index.ts";
 import { Supervisor } from "./supervisor.ts";
 import { createTunnelDialer } from "./tunnel/dial.ts";
 import { identityPath, loadIdentity } from "./tunnel/identity.ts";
+import { assertSoleDaemon } from "./tunnel/sole-daemon.ts";
 import {
   type SttEngine,
   selectSttEngine,
@@ -392,17 +394,9 @@ export function ensureHome(home: string): string {
   return home;
 }
 
-/**
- * Where the daemon records the address it is actually serving.
- *
- * Runtime state, not configuration: written at `listen` and removed at `stop`,
- * the way a pid file is. It exists because a daemon started with `--port 0`,
- * or with a `--port` that never reached the config file, is otherwise
- * unfindable by the next command someone types.
- */
-export function endpointPath(home: string): string {
-  return join(home, "endpoint");
-}
+// In `endpoint.ts` and re-exported, so the tunnel's pre-start guard can read
+// the published address without importing the composition root.
+export { endpointPath };
 
 export class Ompd {
   #home: string;
@@ -852,6 +846,14 @@ export class Ompd {
   }
 
   async #start(): Promise<OmpdStartInfo> {
+    // Before anything binds or dials: refuse to be a second daemon on a home
+    // that already has one. Two processes on one identity evict each other at
+    // the hub forever, which is how a paired phone came to see no sessions,
+    // and `--foreground` (how launchd runs it, and how a hand start bypasses
+    // the CLI's own checks) otherwise reaches this method with no guard at
+    // all. Throws before any state is opened or written.
+    await assertSoleDaemon({ home: this.#home, host: this.#config.host, port: this.#config.port });
+
     if (this.#voiceEnabled && (this.#stt === undefined || this.#tts === undefined)) {
       // Probed once here rather than per socket: selection shells out to find
       // the speech binaries, and doing that on every connection would put a

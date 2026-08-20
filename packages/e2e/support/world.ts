@@ -13,6 +13,15 @@ import type { E2EClient } from "./client/client-factory.ts";
 
 export class OmpctlWorld extends World {
   client: E2EClient | null = null;
+  /**
+   * The unique token this scenario asked the agent to echo. Generated once and
+   * then pinned, so the prompt step and the reply assertion see the same
+   * string. A committed constant would let a second run against the same
+   * long-lived session satisfy itself with the previous run's reply, which is
+   * exactly the false green the round-trip scenario exists to prevent.
+   */
+  private nonce: string | null = null;
+
 
   constructor(options: IWorldOptions) {
     super(options);
@@ -32,7 +41,11 @@ export class OmpctlWorld extends World {
    * unsubstituted `<endpoint>` in a failure message points straight at the cause.
    */
   resolve(value: string): string {
-    return value.replace(/<(endpoint|token)>/g, (whole, name: string) => {
+    return value.replace(/<(endpoint|token|nonce)>/g, (whole, name: string) => {
+      if (name === "nonce") {
+        this.nonce ??= `ompctl-path-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        return this.nonce;
+      }
       const env = name === "endpoint" ? process.env.OMPD_E2E_ENDPOINT : process.env.OMPD_E2E_TOKEN;
       if (env === undefined || env.trim().length === 0) {
         throw new Error(

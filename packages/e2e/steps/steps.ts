@@ -52,6 +52,55 @@ Then("{string} contains {string}", async function (this: OmpctlWorld, testId: st
   );
 });
 
+/**
+ * The one place a feature file talks to the world outside the app. The path
+ * check owns every canonical line, so this prints a bracketed marker it can
+ * regex out of suite output, never the canonical string itself: restating
+ * `sessions listed: 3` as `sessions listed: 3` is the check script's job, not
+ * this suite's. Parsing the count from the fleet's own readout keeps the
+ * number honest: it is what the device showed, not what the daemon promised,
+ * and a fleet that rendered nothing has no digits to parse and fails here
+ * rather than reporting zero.
+ */
+Then("I report the sessions listed in {string}", async function (this: OmpctlWorld, testId: string) {
+  const text = await this.app.textOf(testId);
+  const count = Number.parseInt(text.replace(/[^0-9]/g, ""), 10);
+  assert.ok(Number.isFinite(count) && count >= 1, `${testId} read "${text}", which reports no sessions`);
+  this.attach(`sessions listed: ${count}`, "text/plain");
+  console.log(`[path] sessions listed: ${count}`);
+});
+
+/**
+ * The reply half of the round trip. A fixed sleep would pass on a dead socket
+ * that merely outlasts it, and a bare existence check would pass on a reply
+ * left over from before the prompt. So this waits for the one thing neither
+ * can fake: the agent echoing the per-scenario nonce that no earlier turn
+ * contains. The speaker's row id `entry-assistant` is fixed here on purpose:
+ * the step is about the agent, and which rows speak for the agent is the
+ * app's contract, not the scenario's to choose. Each poll scrolls the list to
+ * its end first, because a virtualized list leaves the newest rows unmounted
+ * until something scrolls to them, and the echo is always the newest row.
+ */
+Then("the agent replies in {string} echoing {string}", async function (
+  this: OmpctlWorld,
+  listId: string,
+  needle: string,
+) {
+  const expected = this.resolve(needle);
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    await this.app.scrollToEnd(listId);
+    const labels = await this.app.labelsOf("entry-assistant");
+    if (labels.some(label => label.toLowerCase().includes(expected.toLowerCase()))) {
+      return;
+    }
+    const { promise: tick, resolve: ticked } = Promise.withResolvers<void>();
+    setTimeout(ticked, 500);
+    await tick;
+  }
+  assert.fail(`no agent row in ${listId} echoed "${expected}" within 90s`);
+});
+
 Given("I capture {string}", async function (this: OmpctlWorld, name: string) {
   const path = await this.app.screenshot(name);
   this.attach(`captured ${path}`, "text/plain");

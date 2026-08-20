@@ -204,6 +204,13 @@ describe("a prompted terminal renders its hints", () => {
     expect(html).toContain('data-testid="terminal-explainer"');
     expect(html).toContain("live in a terminal");
   });
+
+  test("a never-prompted terminal still carries the way back to the fleet", () => {
+    // On a phone this screen replaces the fleet, and its emptiest state is
+    // exactly when a person decides they tapped the wrong row: without the
+    // back control the hardware key is the only way out.
+    expect(renderScreen(emptyConsole([]))).toContain('data-testid="terminal-back"');
+  });
 });
 
 describe("an unreachable terminal is told how to fix itself", () => {

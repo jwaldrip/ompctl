@@ -12,10 +12,19 @@ import { Pressable, StyleSheet } from "react-native";
 import { Label } from "../design/text.tsx";
 import { ground, ink, space } from "../design/tokens.ts";
 
-export function Toast({ message, onDismiss }: { message: string; onDismiss: () => void }): JSX.Element {
+export function Toast({
+  message,
+  onDismiss,
+  testID = "toast",
+}: {
+  message: string;
+  onDismiss: () => void;
+  /** A notice about the link reports as `toast-link` so a check can tell it from an action notice. */
+  testID?: string;
+}): JSX.Element {
   return (
     <Pressable
-      testID="toast"
+      testID={testID}
       accessibilityRole="button"
       accessibilityLabel={`${message}. Dismiss.`}
       accessibilityLiveRegion="polite"
