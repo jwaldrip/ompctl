@@ -98,9 +98,24 @@ resource "google_cloud_run_v2_service" "hub" {
   template {
     service_account = google_service_account.hub.email
 
+    # One instance, deliberately, because this relay is stateful.
+    #
+    # A daemon's tunnel is registered with the single instance that accepted
+    # its socket, and `sessionAffinity` is off. Fan out to ten and a phone can
+    # be routed to an instance holding no tunnel for the daemon it is asking
+    # about, which answers `daemon_offline` for a daemon that is plainly
+    # connected. It is also a second, independent source of the
+    # `4409 replaced by a newer connection` churn in a daemon's log: every
+    # instance replacement re-registers the tunnel, and the observed log
+    # carries four distinct hub instance ids.
+    #
+    # This is a single-operator relay, so one instance is not a bottleneck, it
+    # is what makes routing deterministic. Raising this ceiling again requires
+    # either session affinity that pins BOTH legs of a pair, or a shared
+    # backplane so any instance can reach any daemon. Neither exists yet.
     scaling {
       min_instance_count = 1
-      max_instance_count = 10
+      max_instance_count = 1
     }
 
     vpc_access {

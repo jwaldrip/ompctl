@@ -19,10 +19,11 @@ import { useCallback } from "react";
 import type { ListRenderItemInfo } from "react-native";
 import { FlatList, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
-import { Body, Code, Kicker, Label } from "../design/text.tsx";
+import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import type { Entry } from "../session/model.ts";
 import { ApprovalCard } from "./ApprovalCard.tsx";
+import { RichText } from "./rich/RichText.tsx";
 import { ToolCard } from "./ToolCard.tsx";
 
 export interface TranscriptProps {
@@ -89,7 +90,7 @@ function EntryRow({
           <View style={[styles.gutter, { borderLeftColor: ink.faint }]}>
             <Kicker color={ink.muted}>you</Kicker>
           </View>
-          <Body style={styles.prose}>{entry.text}</Body>
+          <RichText text={entry.text} />
         </View>
       );
 
@@ -110,9 +111,7 @@ function EntryRow({
             <Kicker color={entry.thought ? signal.violet : signal.sage}>{entry.thought ? "thinking" : "agent"}</Kicker>
             {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
           </View>
-          <Body color={entry.thought ? ink.plain : ink.bright} style={styles.prose}>
-            {entry.text}
-          </Body>
+          <RichText muted={entry.thought} text={entry.text} />
         </View>
       );
 
