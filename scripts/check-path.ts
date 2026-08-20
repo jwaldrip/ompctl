@@ -50,6 +50,18 @@
  * space fails the run outright: the phone has no route there, so such a run
  * could not prove the off-LAN sentence even if everything inside it passed.
  *
+ * Detox drives the phone through Espresso and therefore demands both an app
+ * APK and an instrumentation APK at the exact paths .detoxrc names, even when
+ * the device already carries the same build installed. A workstation without
+ * a gradle SDK cannot build them, so they can be staged from CI's
+ * `android-apks` artifact (OMPCTL_APK_DIR); when staged, the app APK is
+ * hashed and compared byte-for-byte with the base.apk the device actually
+ * serves, because versionName is stuck at 0.1.0/1 and cannot tell builds
+ * apart. A mismatch is PATH.md's "flashing a newer build than installed"
+ * defect, and the suite is not run against it. The suite env is also handed
+ * a resolved Android SDK root: the bench SDK lives under homebrew and is not
+ * on ANDROID_HOME, which is how Detox died resolving `/platform-tools/adb`.
+ *
  * The identity file's private half is read to derive the daemon id and never
  * printed; only the derived id appears, abbreviated as PATH.md spells it.
  *
@@ -62,13 +74,14 @@
  *   OMPCTL_HUB_ORIGIN             hub origin, default https://hub.ompctl.ai
  *   OMPCTL_DAEMON_PORT            daemon health port, default 7777
  *   OMPCTL_STABILITY_WINDOW_SECS  quiet-log window, default 60
+ *   OMPCTL_APK_DIR                dir holding CI's android-apks artifact pair
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { formatDeviceCredential } from "../packages/core/src/pairing.ts";
 // The daemon's own derivations, not reimplementations: a fingerprint copied
 // into this script would drift from the one the daemon actually uses, and the
@@ -102,6 +115,29 @@ const OPERATOR_TOKEN_PATH = join(OMPD_HOME, "token");
  * pasted credential.
  */
 const HUB_SOCKET_URL = HUB_ORIGIN.replace(/^http/, "ws");
+
+/**
+ * The exact binary paths the `android.debug` app in packages/e2e/.detoxrc.js
+ * names, resolved from the repo root. Duplicated here because .detoxrc keeps
+ * them relative to itself; if that file moves them, this must follow, and a
+ * staged file nobody reads fails the parity check below rather than passing
+ * quietly.
+ */
+const DETOX_APP_APK = join(repo, "packages/app/android/app/build/outputs/apk/debug/app-debug.apk");
+const DETOX_TEST_APK = join(
+  repo,
+  "packages/app/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+);
+/**
+ * Where a downloaded `android-apks` CI artifact may live, in lookup order:
+ * the caller's explicit dir first, then two obvious resting places. Empty
+ * entries (OMPCTL_APK_DIR unset) drop out.
+ */
+const APK_ARTIFACT_CANDIDATES = [
+  process.env.OMPCTL_APK_DIR ?? "",
+  join(repo, "dist", "android-apks"),
+  join(homedir(), "Downloads", "android-apks"),
+].filter(dir => dir !== "");
 
 /**
  * The device-run budget has to cover a Detox boot, the app launching by its
@@ -161,6 +197,44 @@ function sleepSync(ms: number): void {
     // poll deadline still bounds the loop either way.
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   }
+}
+
+/**
+ * The Android SDK env Detox needs, resolved for a machine whose SDK is not
+ * on ANDROID_HOME. Verified against the installed detox (20.51.4): its
+ * `getAdbPath` reads `$ANDROID_SDK_ROOT || $ANDROID_HOME` and then looks for
+ * `platform-tools/adb` inside that root, nothing else, and it never reads
+ * DETOX_ADB_PATH. The failed bench run (`/bin/sh: /platform-tools/adb: No
+ * such file or directory`) is that join against a garbage root, so a root is
+ * only trusted when its platform-tools/adb actually exists. DETOX_ADB_PATH is
+ * exported as well for detox versions that do honor it.
+ *
+ * The bench SDK lives under homebrew (`android-commandlinetools`), which is
+ * the second candidate. The last resort synthesizes the one directory detox
+ * looks in, with the PATH adb behind a `platform-tools/adb` symlink; detox's
+ * aapt-based APK validation only warns on failure (AndroidDriver catches it),
+ * so adb is the piece that must resolve.
+ */
+function androidSdkEnv(): Record<string, string> {
+  const which = spawnSync("which", ["adb"], { encoding: "utf8" });
+  const adbBin = (which.stdout ?? "").trim();
+  const candidates = [
+    process.env.ANDROID_SDK_ROOT ?? "",
+    process.env.ANDROID_HOME ?? "",
+    "/opt/homebrew/share/android-commandlinetools",
+    join(homedir(), "Library", "Android", "sdk"),
+  ].filter(root => root !== "" && existsSync(join(root, "platform-tools", "adb")));
+  const root = candidates[0] ?? "";
+  if (root !== "") {
+    return { DETOX_ADB_PATH: adbBin, ANDROID_SDK_ROOT: root, ANDROID_HOME: root };
+  }
+  if (adbBin === "") return {};
+  const shimRoot = join(tmpdir(), "ompctl-detox-sdk");
+  mkdirSync(join(shimRoot, "platform-tools"), { recursive: true });
+  const link = join(shimRoot, "platform-tools", "adb");
+  rmSync(link, { force: true });
+  symlinkSync(adbBin, link);
+  return { DETOX_ADB_PATH: adbBin, ANDROID_SDK_ROOT: shimRoot, ANDROID_HOME: shimRoot };
 }
 
 // --- Wi-Fi restoration, armed before anything is disabled -------------------
@@ -475,10 +549,10 @@ async function phaseHubRegistration(): Promise<void> {
   let registrationIdx = -1;
   let registeredInstance = "";
   for (let i = log.length - 1; i >= 0; i -= 1) {
-    const m = log[i].match(/tunnel registered with hub instance (inst_\w+)/);
+    const m = log[i]?.match(/tunnel registered with hub instance (inst_\w+)/);
     if (m) {
       registrationIdx = i;
-      registeredInstance = m[1];
+      registeredInstance = m[1] ?? "";
       break;
     }
   }
@@ -494,7 +568,7 @@ async function phaseHubRegistration(): Promise<void> {
   // what the phone will be routed through.
   let lastTunnelIdx = -1;
   for (let i = log.length - 1; i >= 0; i -= 1) {
-    if (/tunnel (registered|closed|error)/.test(log[i])) {
+    if (/tunnel (registered|closed|error)/.test(log[i] ?? "")) {
       lastTunnelIdx = i;
       break;
     }
@@ -695,6 +769,94 @@ async function mintRunPairing(): Promise<{ endpoint: string; credential: string 
   };
 }
 
+// --- phase 4.5: the binaries Detox demands -------------------------------------
+
+/**
+ * Detox refuses to start without both APKs at the exact paths .detoxrc
+ * names, even when the device already carries the same build installed, and
+ * a workstation without a gradle SDK cannot build them. CI's `android-apks`
+ * artifact (app-mobile-test.yml) publishes exactly the pair, so this stages
+ * those files into the tree Detox reads: CI artifacts staged for Detox, not
+ * a local build, and the log says which.
+ *
+ * Parity with the installed build is asserted at the byte level: the staged
+ * app APK's sha256 against the base.apk the device's pm actually serves.
+ * versionName is stuck at 0.1.0/1 and cannot tell builds apart, so a hash is
+ * the only comparison that means anything. A mismatch is PATH.md's "flashing
+ * a newer build than the one on the device" defect, so the suite must not
+ * run against it; the same hash pair also names in the log exactly which
+ * build proved the path.
+ *
+ * Returns whether the suite may run: binaries present, staged if needed, and
+ * byte-identical to the install. When nothing is available, the failure
+ * names the manual step instead of degrading.
+ */
+function stageApkArtifacts(): boolean {
+  let appSrc = "";
+  let testSrc = "";
+  let source = "";
+
+  if (existsSync(DETOX_APP_APK) && existsSync(DETOX_TEST_APK)) {
+    appSrc = DETOX_APP_APK;
+    testSrc = DETOX_TEST_APK;
+    source = "local build";
+  } else {
+    // `gh run download -n android-apks` keeps the artifact's internal layout
+    // (debug/, androidTest/debug/); a hand-assembled dir may hold both APKs
+    // flat at its root. Either shape is accepted, explicit dir first.
+    for (const dir of APK_ARTIFACT_CANDIDATES) {
+      const layouts: Array<[string, string]> = [
+        [join(dir, "app-debug.apk"), join(dir, "app-debug-androidTest.apk")],
+        [join(dir, "debug", "app-debug.apk"), join(dir, "androidTest", "debug", "app-debug-androidTest.apk")],
+      ];
+      const found = layouts.find(([app, test]) => existsSync(app) && existsSync(test));
+      if (found) {
+        appSrc = found[0];
+        testSrc = found[1];
+        source = `artifact ${dir}`;
+        break;
+      }
+    }
+  }
+
+  if (appSrc === "") {
+    check(
+      "app binaries available for Detox",
+      false,
+      "manual step: `gh run download -n android-apks -D <dir>` from a green run of this commit, then OMPCTL_APK_DIR=<dir> bun run check:path; or build locally with ./gradlew :app:assembleDebug :app:assembleAndroidTest",
+    );
+    return false;
+  }
+
+  if (source.startsWith("artifact")) {
+    // Materialized at the exact paths .detoxrc names above; a copy, so the
+    // caller's artifact dir stays untouched and repeatable.
+    mkdirSync(dirname(DETOX_APP_APK), { recursive: true });
+    mkdirSync(dirname(DETOX_TEST_APK), { recursive: true });
+    copyFileSync(appSrc, DETOX_APP_APK);
+    copyFileSync(testSrc, DETOX_TEST_APK);
+  }
+
+  const stagedSha = createHash("sha256").update(readFileSync(DETOX_APP_APK)).digest("hex");
+  // pm lists base.apk first, splits and features after; only base carries
+  // the whole app, so only base is the parity target.
+  const baseApk = (adb(["shell", "pm", "path", PACKAGE]).out.split("\n")[0] ?? "")
+    .trim()
+    .replace(/^package:/, "");
+  const installedSha =
+    baseApk === "" ? "" : (adb(["shell", "sha256sum", baseApk], 30_000).out.trim().split(/\s+/)[0] ?? "");
+  const lastUpdate = adb(["shell", "dumpsys", "package", PACKAGE]).out.match(/lastUpdateTime=(.+)/)?.[1]?.trim() ?? "unknown";
+
+  console.log(`staged apk sha256 ${stagedSha} (${source})`);
+  console.log(`installed apk sha256 ${installedSha || "unreadable"}, lastUpdateTime ${lastUpdate}`);
+  check(
+    "staged APK matches the installed build",
+    installedSha !== "" && stagedSha === installedSha,
+    installedSha === "" ? "could not hash the installed base.apk" : "byte-level mismatch: artifact and phone carry different builds",
+  );
+  return installedSha !== "" && stagedSha === installedSha;
+}
+
 // --- phase 5: the real-device round trip --------------------------------------
 
 /**
@@ -710,6 +872,10 @@ function runSuite(endpoint: string, credential: string): Promise<{ code: number;
         ...process.env,
         DETOX_ADB_NAME: SERIAL,
         E2E_TAGS: "@path",
+        // The resolved SDK root and adb for Detox (see androidSdkEnv): the
+        // bench SDK is not on ANDROID_HOME, and an unset or garbage root is
+        // how the suite died on `/platform-tools/adb`.
+        ...androidSdkEnv(),
         // This run's own minted pairing, deliberately overriding anything
         // exported into the environment: a stale hand-exported credential
         // would widen scopes behind the check's back and dodge the revoke.
@@ -760,7 +926,7 @@ async function phaseRoundTrip(): Promise<void> {
   // rows on device (and only after asserting n >= 1 itself). The last match
   // wins if a future scenario ever emits more than one.
   const counts = [...run.out.matchAll(/\[path\] sessions listed: (\d+)/g)].map(m => Number(m[1]));
-  const listed = counts.length > 0 ? counts[counts.length - 1] : 0;
+  const listed = counts.length > 0 ? (counts[counts.length - 1] ?? 0) : 0;
   check(
     "session count parsed from the run",
     listed >= 1,
@@ -799,25 +965,31 @@ if (DRY_RUN) {
   check("operator credential present for pairing", tokenPresent, OPERATOR_TOKEN_PATH);
   await phaseHubRegistration();
 } else if (daemonPremise && devicePremise) {
-  // The radio is only touched when the rest is worth a device run: a broken
-  // daemon leg or a missing app is already red, and no device result can turn
-  // it green, so the phone's Wi-Fi stays alone.
-  const originalOn = wifiOn();
-  armWifiRestore(originalOn);
-  try {
-    const cellularOk = await phaseCellular(originalOn);
+  // Binaries before radio: Detox refuses to start without both APKs, so when
+  // they cannot be staged there is no device run to dress the radio for, and
+  // the phone's Wi-Fi stays alone. A staged build that mismatches the install
+  // is PATH.md's stale-flash defect and earns no device run either.
+  const staged = stageApkArtifacts();
+  if (!staged) {
     await phaseHubRegistration();
-    // A round trip carried over Wi-Fi proves nothing (the daemon is on that
-    // same LAN), so with the transport unproven the suite is skipped: red is
-    // already on the record, and a device run cannot add information to it.
-    if (cellularOk) await phaseRoundTrip();
-  } finally {
-    restoreVerified?.();
-    // The phone's radio first (a stranded phone outranks a stray device
-    // row), then the run's own credential: a pairing that survived its run
-    // is a failure of the run, not a note for later.
-    const revoked = await revokeMintedPairing();
-    check("run's pairing revoked", revoked, revoked ? "" : "the daemon still holds this run's device row");
+  } else {
+    const originalOn = wifiOn();
+    armWifiRestore(originalOn);
+    try {
+      const cellularOk = await phaseCellular(originalOn);
+      await phaseHubRegistration();
+      // A round trip carried over Wi-Fi proves nothing (the daemon is on that
+      // same LAN), so with the transport unproven the suite is skipped: red is
+      // already on the record, and a device run cannot add information to it.
+      if (cellularOk) await phaseRoundTrip();
+    } finally {
+      restoreVerified?.();
+      // The phone's radio first (a stranded phone outranks a stray device
+      // row), then the run's own credential: a pairing that survived its run
+      // is a failure of the run, not a note for later.
+      const revoked = await revokeMintedPairing();
+      check("run's pairing revoked", revoked, revoked ? "" : "the daemon still holds this run's device row");
+    }
   }
 } else {
   // Still diagnose the hub leg: the report should say which link was broken,
