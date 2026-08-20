@@ -48,7 +48,6 @@ import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
 import type { RemoteStartClient } from "../remote/useRemoteStart.ts";
-import type { FolderPickerScreenProps } from "./FolderPickerScreen.tsx";
 import { FolderPickerScreen } from "./FolderPickerScreen.tsx";
 
 export type CoworkView = "tasks" | "skills" | "connectors" | "plugins";
@@ -116,21 +115,19 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
   // the list it covers. Rendered after every hook above so the early return
   // cannot change how many of them run.
   if (props.connection !== undefined && picking) {
-    // Built as a whole member of the picker's props union rather than
-    // spread inline: the union says which socket the picker rides, and a
-    // named const keeps that choice one readable line instead of a ternary
-    // buried in JSX.
-    const pickerProps: FolderPickerScreenProps =
-      props.client === undefined ? { connection: props.connection } : { client: props.client };
-    return (
-      <FolderPickerScreen
-        {...pickerProps}
-        onPick={path => {
-          folderActions.bind(path);
-          setPicking(false);
-        }}
-        onBack={() => setPicking(false)}
-      />
+    // Rendered per branch rather than built as one spread object: the
+    // picker's props are a discriminated union (own a socket via a
+    // connection, or share the caller's client), and each branch names its
+    // member directly instead of assembling a shape the union then rejects.
+    const pick = (path: string): void => {
+      folderActions.bind(path);
+      setPicking(false);
+    };
+    const back = (): void => setPicking(false);
+    return props.client === undefined ? (
+      <FolderPickerScreen connection={props.connection} onPick={pick} onBack={back} />
+    ) : (
+      <FolderPickerScreen client={props.client} onPick={pick} onBack={back} />
     );
   }
 

@@ -210,10 +210,19 @@ let answer: Response = new Response(JSON.stringify({ agent: { id: "agt_test" } }
 beforeEach(() => {
   posted = [];
   answer = new Response(JSON.stringify({ agent: { id: "agt_test" } }), { status: 201 });
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    posted.push({ url: String(input), init: init ?? {} });
-    return answer;
-  }) as typeof fetch;
+  // Contextually typed as `typeof fetch` by the annotation rather than cast
+  // to it: the parameters then follow whatever fetch's real type is here
+  // (Bun's, not lib.dom's), with no hand-restated signature to drift. Bun's
+  // fetch carries a required `preconnect` member, so the fake is a whole
+  // fetch-shaped object: the capturing function plus a no-op preconnect.
+  const capture: typeof fetch = Object.assign(
+    async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      posted.push({ url: String(input), init: init ?? {} });
+      return answer;
+    },
+    { preconnect: () => {} },
+  );
+  globalThis.fetch = capture;
 });
 
 afterEach(() => {
@@ -489,9 +498,15 @@ describe("starting the container", () => {
   });
 
   test("a dead link is named and marked worth retrying", async () => {
-    globalThis.fetch = (async () => {
-      throw new Error("connection refused");
-    }) as typeof fetch;
+    // Annotated like the capture stub above: the throw is the whole function,
+    // and the no-op preconnect is what makes it a whole `typeof fetch`.
+    const deadLink: typeof fetch = Object.assign(
+      async () => {
+        throw new Error("connection refused");
+      },
+      { preconnect: () => {} },
+    );
+    globalThis.fetch = deadLink;
     const h = mount();
     browseToDev(h);
     h.press("folder-picker-confirm");
