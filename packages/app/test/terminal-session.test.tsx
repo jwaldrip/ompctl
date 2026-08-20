@@ -2,10 +2,10 @@
  * The terminal prompt surface: canned `tui_activity` and refusal frames
  * becoming the hints and the message one live terminal session shows.
  *
- * The screen under test is the one a `live-tui` fleet row opens. It has no
- * transcript to render, so every test here drives the real console reducer
- * with the frames the daemon would send and hands the resulting hints to the
- * real screen: a pass means those frames would paint that screen on a device.
+ * The screen under test is the one a `live-tui` fleet row opens. Every test
+ * drives the real console reducer with the transcript tail, activity, and
+ * refusal frames the daemon sends, then hands the resulting state to the real
+ * screen: a pass means those frames would paint that screen on a device.
  * The composer is exercised mounted, the way `composer-submit.test.tsx`
  * exercises the agent one, because typing is the only control here.
  */
@@ -42,6 +42,8 @@ function renderScreen(state: ConsoleState): string {
     <TerminalSessionScreen
       title="session s-tui"
       cwd="/Users/op/dev/src/github.com/op/alpha"
+      status="live-tui"
+      promptAccess="granted"
       tui={tuiSessionFor(state, SESSION)}
       connection="connected"
       onBack={() => {}}
@@ -81,6 +83,8 @@ describe("the terminal composer", () => {
         <TerminalSessionScreen
           title="session s-tui"
           cwd="/alpha"
+          status="live-tui"
+          promptAccess="granted"
           tui={tuiSessionFor(emptyConsole([]), SESSION)}
           connection="connected"
           onBack={() => {}}
@@ -132,6 +136,8 @@ describe("the terminal composer", () => {
         <TerminalSessionScreen
           title="session s-tui"
           cwd="/alpha"
+          status="live-tui"
+          promptAccess="granted"
           tui={tuiSessionFor(state, SESSION)}
           connection="connected"
           onBack={() => {}}
@@ -223,9 +229,9 @@ describe("an unreachable terminal is told how to fix itself", () => {
 
   test("a tui_unreachable refusal renders guidance naming the remedy, not the raw code", () => {
     const html = renderScreen(drive(refused()));
-    expect(html).toContain('data-testid="terminal-refusal"');
-    expect(html).toContain("Restart it in its terminal");
-    expect(html).toContain("bridge");
+    expect(html).toContain('data-testid="terminal-owner-gone"');
+    expect(html).toContain("Return to that terminal");
+    expect(html).toContain("still open");
     // The daemon's phrasing names a session id, which is not a remedy; the
     // raw message must not be what the operator reads.
     expect(html).not.toContain("no connected TUI owns");
@@ -233,11 +239,11 @@ describe("an unreachable terminal is told how to fix itself", () => {
   });
 
   test("a prompt after a refusal clears it and sends again", () => {
-    expect(renderScreen(drive(refused()))).toContain('data-testid="terminal-refusal"');
+    expect(renderScreen(drive(refused()))).toContain('data-testid="terminal-owner-gone"');
 
     const retried = drive([...refused(), { t: "tui_prompt", sessionId: SESSION, text: "again" }]);
     const html = renderScreen(retried);
-    expect(html).not.toContain('data-testid="terminal-refusal"');
+    expect(html).not.toContain('data-testid="terminal-owner-gone"');
     expect(html).toContain("again");
   });
 });
@@ -356,6 +362,8 @@ describe("a terminal session renders the transcript the daemon served", () => {
         <TerminalSessionScreen
           title="session s-tui"
           cwd="/alpha"
+          status="live-tui"
+          promptAccess="granted"
           tui={tuiSessionFor(state, SESSION)}
           connection="connected"
           onBack={() => {}}

@@ -34,6 +34,8 @@ import type {
   CollabVoiceParticipant,
   FsListing,
   PlanReviewChoice,
+  RemoteRoutine,
+  Run,
   ServerFrame,
   SessionQuery,
   SessionSummary,
@@ -183,6 +185,15 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // not, so the next turn runs with permissions they think they changed.
   // Same failure class as a lost `decide`.
   agent_config_write: true,
+  // A snapshot ask, same class as `settings_read`; the three that follow are
+  // instructions that silently did not happen. A lost write leaves an
+  // operator believing a routine is armed, a lost run leaves them waiting on
+  // work that never started, and a lost rotate leaves a secret they think
+  // they replaced still live at the webhook.
+  routines_read: false,
+  routine_write: true,
+  routine_run: true,
+  routine_secret_rotate: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -446,6 +457,30 @@ export interface SettingsEvent {
 }
 
 /**
+ * Every routine the daemon holds plus the runs recorded against them,
+ * answering `readRoutines`. A snapshot ask, so a surface renders the schedule
+ * and its history together rather than stitching two frames.
+ */
+export interface RoutinesEvent {
+  routines: RemoteRoutine[];
+  runs: Run[];
+}
+
+/** One routine run recorded, carrying every action's outcome. */
+export interface RoutineRanEvent {
+  run: Run;
+}
+
+/**
+ * A routine's webhook secret, freshly minted by `rotateRoutineSecret`. Shown
+ * once: the daemon keeps only what it needs to verify a caller.
+ */
+export interface RoutineSecretEvent {
+  routineId: string;
+  secret: string;
+}
+
+/**
  * One agent's session config as the daemon holds it now, answering
  * `readAgentConfig` or `writeAgentConfig`. Confirmation rather than echo:
  * after a write it carries what the daemon read back from the session, so a
@@ -480,6 +515,9 @@ export interface ClientEventMap {
   clone_progress: CloneProgressEvent;
   clone_done: CloneDoneEvent;
   settings: SettingsEvent;
+  routines: RoutinesEvent;
+  routine_ran: RoutineRanEvent;
+  routine_secret: RoutineSecretEvent;
   session_tail: SessionTailEvent;
   agent_config: AgentConfigEvent;
 }
@@ -835,6 +873,26 @@ export class OmpdClient {
    */
   writeSettings(settings: SyncSettings): void {
     this.send({ t: "settings_write", policyMode: settings.policyMode, keepAwake: settings.keepAwake });
+  }
+
+  /** Read routines and their recent per-action outcomes over the sealed socket. */
+  readRoutines(): void {
+    this.send({ t: "routines_read" });
+  }
+
+  /** Replace one routine definition. The daemon supplies local execution hosts. */
+  writeRoutine(routine: RemoteRoutine): void {
+    this.send({ t: "routine_write", routine });
+  }
+
+  /** Run one routine now. The completed per-action outcomes arrive as `routine_ran`. */
+  runRoutine(routineId: string): void {
+    this.send({ t: "routine_run", routineId });
+  }
+
+  /** Rotate a webhook secret. The plaintext arrives once as `routine_secret`. */
+  rotateRoutineSecret(routineId: string): void {
+    this.send({ t: "routine_secret_rotate", routineId });
   }
 
   /**
@@ -1222,6 +1280,15 @@ export class OmpdClient {
         this.emit("settings", {
           settings: { policyMode: frame.policyMode, keepAwake: frame.keepAwake },
         });
+        return;
+      case "routines":
+        this.emit("routines", { routines: frame.routines, runs: frame.runs });
+        return;
+      case "routine_ran":
+        this.emit("routine_ran", { run: frame.run });
+        return;
+      case "routine_secret":
+        this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });
         return;
       case "agent_config":
         this.emit("agent_config", {

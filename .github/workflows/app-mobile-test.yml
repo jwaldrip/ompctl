@@ -152,6 +152,9 @@ jobs:
           cd android
           ls -l app/build/outputs/apk/debug/app-debug.apk
           ls -l app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          # PATH launches without Metro, so the published app must contain the
+          # bundle rather than only carrying native debug code.
+          unzip -Z1 app/build/outputs/apk/debug/app-debug.apk assets/index.android.bundle
           echo "commit=${{ github.sha }}"
       - uses: actions/upload-artifact@v4
         with:

@@ -277,6 +277,15 @@ describe("lifecycle", () => {
       routineId: "rtn_nightly",
       state: "running",
       startedAt: "2026-01-01T00:00:00.000Z",
+      actions: [
+        {
+          actionId: "act_nightly",
+          actionName: "Nightly",
+          index: 0,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
     });
     expect(daemon.store.hasActiveRun("rtn_nightly")).toBe(true);
 

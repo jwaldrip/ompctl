@@ -49,7 +49,10 @@ export type ShellParamList = {
   connections: undefined;
   invite: undefined;
   newSession: undefined;
+  cowork: undefined;
+  agentConfig: { agentId: AgentId };
   settings: undefined;
+  routines: undefined;
 };
 
 /** Which detail surface the console model says is open. */
@@ -76,8 +79,11 @@ export interface ShellSurfaces {
    * tells the model once. A screen that cleared the model directly instead would
    * leave the swipe and the hardware button on a different path from its own
    * button, which is how one of the three ends up not working.
+   *
+   * The log also takes the way into its agent's config, supplied here so the
+   * session screen never needs to know a navigator exists.
    */
-  session: (agentId: AgentId, back: () => void) => JSX.Element;
+  session: (agentId: AgentId, back: () => void, openConfig: () => void) => JSX.Element;
   terminal: (sessionId: string, back: () => void) => JSX.Element;
   connections: (back: () => void, invite: () => void, settings: () => void) => JSX.Element;
   invite: (done: () => void) => JSX.Element;
@@ -87,12 +93,27 @@ export interface ShellSurfaces {
    * phone the same as a direct one.
    */
   settings: (back: () => void) => JSX.Element;
+  /** Configure ordered routine actions and inspect their individual outcomes. */
+  routines: (back: () => void) => JSX.Element;
   /**
    * Browse the daemon's machine and start a session, or clone a repo, where
    * the operator chooses. `done` is the way back, on the same one-way-out
    * rule the detail routes follow.
    */
   newSession: (done: () => void) => JSX.Element;
+  /**
+   * The daemon's tasks, skills, and connectors. Registered beside `newSession`
+   * because it is the same class of act, starting work on the daemon rather
+   * than reading a session already running, and it takes `done` for the same
+   * one-way-out reason.
+   */
+  cowork: (done: () => void) => JSX.Element;
+  /**
+   * One agent's mode and model, pushed from its open session. The agent id
+   * comes from the route, which got it from that session, so this surface can
+   * never describe a session other than the one it was opened from.
+   */
+  agentConfig: (agentId: AgentId, back: () => void) => JSX.Element;
 }
 
 export interface AppNavigatorProps {
@@ -193,11 +214,14 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
           />
           <Stack.Screen name="session" component={SessionRoute} options={OWN_CHROME} />
           <Stack.Screen name="terminal" component={TerminalRoute} options={OWN_CHROME} />
+          <Stack.Screen name="agentConfig" component={AgentConfigRoute} options={OWN_CHROME} />
           <Stack.Screen name="menu" component={MenuRoute} options={{ title: "Menu", presentation: "modal" }} />
           <Stack.Screen name="connections" component={ConnectionsRoute} options={CONNECTIONS_OPTIONS} />
           <Stack.Screen name="invite" component={InviteRoute} options={INVITE_OPTIONS} />
           <Stack.Screen name="newSession" component={NewSessionRoute} options={NEW_SESSION_OPTIONS} />
+          <Stack.Screen name="cowork" component={CoworkRoute} options={COWORK_OPTIONS} />
           <Stack.Screen name="settings" component={SettingsRoute} options={SETTINGS_OPTIONS} />
+          <Stack.Screen name="routines" component={RoutinesRoute} options={ROUTINES_OPTIONS} />
         </Stack.Navigator>
       </NavigationContainer>
     </SurfaceContext.Provider>
@@ -209,18 +233,30 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
 const CONNECTIONS_OPTIONS = { title: "Connections" } as const;
 const INVITE_OPTIONS = { title: "Invite a device" } as const;
 const NEW_SESSION_OPTIONS = { title: "New session" } as const;
+const COWORK_OPTIONS = { title: "Cowork" } as const;
 const SETTINGS_OPTIONS = { title: "Daemon settings" } as const;
+const ROUTINES_OPTIONS = { title: "Routines" } as const;
 
 function FleetRoute(): JSX.Element {
   return useSurfaces().fleet();
 }
 
 function SessionRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "session">): JSX.Element {
-  return useSurfaces().session(route.params.agentId, () => navigation.goBack());
+  // The config entry rides the session it configures, carrying the same agent
+  // id this route holds, so what it opens can never be another session.
+  return useSurfaces().session(
+    route.params.agentId,
+    () => navigation.goBack(),
+    () => navigation.navigate("agentConfig", { agentId: route.params.agentId }),
+  );
 }
 
 function TerminalRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "terminal">): JSX.Element {
   return useSurfaces().terminal(route.params.sessionId, () => navigation.goBack());
+}
+
+function AgentConfigRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "agentConfig">): JSX.Element {
+  return useSurfaces().agentConfig(route.params.agentId, () => navigation.goBack());
 }
 
 function ConnectionsRoute({ navigation }: NativeStackScreenProps<ShellParamList, "connections">): JSX.Element {
@@ -239,8 +275,16 @@ function SettingsRoute({ navigation }: NativeStackScreenProps<ShellParamList, "s
   return useSurfaces().settings(() => navigation.goBack());
 }
 
+function RoutinesRoute({ navigation }: NativeStackScreenProps<ShellParamList, "routines">): JSX.Element {
+  return useSurfaces().routines(() => navigation.goBack());
+}
+
 function NewSessionRoute({ navigation }: NativeStackScreenProps<ShellParamList, "newSession">): JSX.Element {
   return useSurfaces().newSession(() => navigation.goBack());
+}
+
+function CoworkRoute({ navigation }: NativeStackScreenProps<ShellParamList, "cowork">): JSX.Element {
+  return useSurfaces().cowork(() => navigation.goBack());
 }
 
 type MenuNavigation = NativeStackNavigationProp<ShellParamList, "menu">;
@@ -298,6 +342,30 @@ const MENU_ITEMS: readonly MenuItem[] = [
     go: navigation => {
       navigation.goBack();
       navigation.navigate("newSession");
+    },
+  },
+  {
+    title: "Cowork",
+    // Named for what the surface holds rather than for the word "cowork",
+    // which says nothing to an operator who has not read the code.
+    detail: "Tasks, skills, and connectors on this daemon",
+    // The same glyph the surface's own Tasks destination wears, because tasks
+    // are what it opens on. `bay` is spent on New session above.
+    glyph: "tasks",
+    testID: "open-cowork",
+    go: navigation => {
+      navigation.goBack();
+      navigation.navigate("cowork");
+    },
+  },
+  {
+    title: "Routines",
+    detail: "Fan one trigger out to several ordered actions",
+    glyph: "tasks",
+    testID: "menu-routines",
+    go: navigation => {
+      navigation.goBack();
+      navigation.navigate("routines");
     },
   },
 ];
