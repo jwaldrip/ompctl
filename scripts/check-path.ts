@@ -959,12 +959,13 @@ function runSuite(endpoint: string, credential: string): Promise<{ code: number;
     // private field, which is what breaks Detox's cleanup and leaves an
     // orphaned `am instrument` behind to refuse the next run with "the tester
     // is already connected". Detox supports node, so the gate hands it node.
-    const child = spawn(nodeRuntime(), [join(repo, "node_modules", ".bin", "cucumber-js")], {
+    // Selection travels on Cucumber's own argv, not through an optional
+    // cucumber.js env bridge: the gate therefore owns its @path filter.
+    const child = spawn(nodeRuntime(), [join(repo, "node_modules", ".bin", "cucumber-js"), "--tags", "@path"], {
       cwd: APP_DIR,
       env: {
         ...process.env,
         DETOX_ADB_NAME: SERIAL,
-        E2E_TAGS: "@path",
         // Carried here because spawning cucumber directly replaces the
         // package script that used to set them.
         E2E_CLIENT: "android",
