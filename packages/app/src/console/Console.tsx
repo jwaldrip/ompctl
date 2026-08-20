@@ -24,18 +24,22 @@
 import type { AgentId } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { AgentHub } from "../components/AgentHub.tsx";
 import { Toast } from "../components/Toast.tsx";
+import { skillInvocation } from "../cowork/catalog.ts";
+import type { NewTaskInput } from "../cowork/tasks.ts";
+import { useCowork } from "../cowork/useCowork.ts";
 import { useSplitLayout } from "../design/layout.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body } from "../design/text.tsx";
-import { ground, ink, space, stroke } from "../design/tokens.ts";
+import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
 import { AppNavigator } from "../nav/AppNavigator.tsx";
 import type { Connection, ConnectionList } from "../platform/connection.ts";
 import { ConnectionSwitcherScreen } from "../screens/ConnectionSwitcherScreen.tsx";
+import { CoworkScreen } from "../screens/CoworkScreen.tsx";
 import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { InviteScreen } from "../screens/InviteScreen.tsx";
 import { RemoteStartScreen } from "../screens/RemoteStartScreen.tsx";
@@ -289,6 +293,38 @@ export function Console({
         }}
       />
     ),
+    // Two things this route can honestly be, decided by the pairing rather than
+    // by a fetch that failed. Cowork reads the daemon's own HTTP routes, and a
+    // hub relay carries one sealed websocket and no HTTP at all, which is why
+    // `cowork/useCowork.ts` has no root to hang a request off a hub connection
+    // and fails every one closed. Left to that, the screen would render four
+    // empty catalogues and read as a daemon with nothing on it, so the limit is
+    // named here instead. The branch sits above `CoworkSurface` so a hub pairing
+    // never starts a poll it cannot answer.
+    cowork: done =>
+      connection.transport === "direct" ? (
+        <CoworkSurface
+          connection={connection}
+          target={coworkTarget(state)}
+          // The same pop-then-select `newSession` does: a task names the agent
+          // running it, and opening it from here has to land on that session's
+          // log rather than leaving the operator on the surface they tapped in.
+          // A stale id lands on the log route's own "That session closed."
+          onOpenSession={agentId => {
+            done();
+            actions.select(agentId);
+          }}
+        />
+      ) : (
+        <SafeScreen style={styles.limit} testID="cowork-unreachable">
+          <Body color={signal.ochre}>Cowork is unreachable from this pairing.</Body>
+          <Body color={ink.muted}>
+            Tasks, skills, and connectors are read over the daemon's own HTTP routes. This device is paired through the
+            hub, which relays one sealed socket and no HTTP, so there is nothing behind it to ask. Attach on the
+            daemon's own network to use this surface.
+          </Body>
+        </SafeScreen>
+      ),
   };
 
   // The stack presents an open session only where the list cannot hold it: on a
@@ -334,6 +370,95 @@ function splitDetail(
   return null;
 }
 
+/**
+ * Which session a task with no session of its own targets, and the directory
+ * the skill and connector catalogues are read for.
+ *
+ * `useCowork` refuses to pick either itself, and is right to: `POST /v1/tasks`
+ * needs an existing `agentId`, and which agent is "the current one" is the
+ * console's own fleet state rather than anything Cowork knows. So the console
+ * answers from what it already holds: the open session first, because that is
+ * the one the operator is looking at, else the first top-level agent.
+ *
+ * Neither existing is an answer as well. An empty cwd asks the daemon for the
+ * catalogue with no workspace to scope it to, which is the truth about a device
+ * holding no session, and `startTask` refuses in words rather than posting work
+ * against an agent nobody chose.
+ */
+function coworkTarget(state: ConsoleState): { cwd: string; agentId: AgentId | null } {
+  const open = state.selected === null ? null : agentFor(state, state.selected);
+  const agent = open ?? state.agents.find(candidate => candidate.parentAgentId === undefined) ?? null;
+  if (agent === null) return { cwd: "", agentId: null };
+  return { cwd: agent.cwd, agentId: agent.id };
+}
+
+/**
+ * The Cowork route's own data edge.
+ *
+ * A component rather than one of the closures above, because `useCowork` is a
+ * hook and a surface is a plain function: the poll needs something React can
+ * mount and unmount with the route. `RemoteStartScreen` draws the same line for
+ * the socket it owns; this is the REST side of it.
+ *
+ * Mounted only for a direct pairing, decided by the caller, which is also what
+ * keeps this from having to render two different hook orders.
+ *
+ * `CoworkScreen` takes data and gives back intent: it holds no fetch, no error
+ * state, and no inset of its own. So this owns all three. The notice matters
+ * most: a refused or failed load with nothing said would leave four empty
+ * catalogues on screen, which reads as a daemon with no skills installed rather
+ * than as a question that never got an answer.
+ */
+function CoworkSurface({
+  connection,
+  target,
+  onOpenSession,
+}: {
+  connection: Connection;
+  target: { cwd: string; agentId: AgentId | null };
+  onOpenSession: (agentId: AgentId) => void;
+}): JSX.Element {
+  const [state, actions] = useCowork(connection, target.cwd, target.agentId);
+  // Held here rather than in the hook: a rejected action is this screen's to
+  // report, and `useCowork`'s own `error` belongs to the load it names.
+  const [refusal, setRefusal] = useState<string | null>(null);
+
+  const start = (input: NewTaskInput): void => {
+    setRefusal(null);
+    void actions.startTask(input).catch((cause: unknown) => {
+      setRefusal(cause instanceof Error ? cause.message : String(cause));
+    });
+  };
+
+  const notice = refusal ?? state.error;
+
+  return (
+    // One inset owner per route, the same rule the fleet surface follows: the
+    // header takes the top edge and this takes the bottom, so the bottom tab
+    // bar sits above the home indicator rather than under it.
+    <SafeScreen testID="cowork-surface">
+      {notice === null ? null : (
+        <View style={styles.coworkNotice} testID="cowork-notice">
+          <Body color={signal.ochre}>{notice}</Body>
+        </View>
+      )}
+      <CoworkScreen
+        tasks={state.tasks}
+        skills={state.skills}
+        connectors={state.connectors}
+        onStartTask={start}
+        // Invoking a skill is starting a task that runs it: the same act the
+        // composer performs, with the invocation text `catalog.ts` already
+        // defines rather than a second spelling of it here.
+        onInvokeSkill={skill => {
+          start({ title: skill.name, prompt: skillInvocation(skill), skillName: skill.name });
+        }}
+        onOpenSession={onOpenSession}
+      />
+    </SafeScreen>
+  );
+}
+
 const styles = StyleSheet.create({
   position: { flex: 1, backgroundColor: ground.base },
   singleLayout: { flex: 1 },
@@ -342,4 +467,6 @@ const styles = StyleSheet.create({
   splitBay: { width: 340, borderRightWidth: stroke.heavy, borderRightColor: ground.edge },
   splitDetail: { flex: 1 },
   gone: { alignItems: "center", justifyContent: "center", padding: space.gulf },
+  limit: { gap: space.step, justifyContent: "center", padding: space.gulf },
+  coworkNotice: { padding: space.step, backgroundColor: ground.surface },
 });

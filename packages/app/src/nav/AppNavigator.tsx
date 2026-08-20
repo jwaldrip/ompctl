@@ -49,6 +49,7 @@ export type ShellParamList = {
   connections: undefined;
   invite: undefined;
   newSession: undefined;
+  cowork: undefined;
 };
 
 /** Which detail surface the console model says is open. */
@@ -86,6 +87,13 @@ export interface ShellSurfaces {
    * detail routes follow.
    */
   newSession: (done: () => void) => JSX.Element;
+  /**
+   * The daemon's tasks, skills, and connectors. Registered beside `newSession`
+   * because it is the same class of act, starting work on the daemon rather
+   * than reading a session already running, and it takes `done` for the same
+   * one-way-out reason.
+   */
+  cowork: (done: () => void) => JSX.Element;
 }
 
 export interface AppNavigatorProps {
@@ -190,6 +198,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
           <Stack.Screen name="connections" component={ConnectionsRoute} options={CONNECTIONS_OPTIONS} />
           <Stack.Screen name="invite" component={InviteRoute} options={INVITE_OPTIONS} />
           <Stack.Screen name="newSession" component={NewSessionRoute} options={NEW_SESSION_OPTIONS} />
+          <Stack.Screen name="cowork" component={CoworkRoute} options={COWORK_OPTIONS} />
         </Stack.Navigator>
       </NavigationContainer>
     </SurfaceContext.Provider>
@@ -201,6 +210,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
 const CONNECTIONS_OPTIONS = { title: "Connections" } as const;
 const INVITE_OPTIONS = { title: "Invite a device" } as const;
 const NEW_SESSION_OPTIONS = { title: "New session" } as const;
+const COWORK_OPTIONS = { title: "Cowork" } as const;
 
 function FleetRoute(): JSX.Element {
   return useSurfaces().fleet();
@@ -227,6 +237,10 @@ function InviteRoute({ navigation }: NativeStackScreenProps<ShellParamList, "inv
 
 function NewSessionRoute({ navigation }: NativeStackScreenProps<ShellParamList, "newSession">): JSX.Element {
   return useSurfaces().newSession(() => navigation.goBack());
+}
+
+function CoworkRoute({ navigation }: NativeStackScreenProps<ShellParamList, "cowork">): JSX.Element {
+  return useSurfaces().cowork(() => navigation.goBack());
 }
 
 type MenuNavigation = NativeStackNavigationProp<ShellParamList, "menu">;
@@ -284,6 +298,20 @@ const MENU_ITEMS: readonly MenuItem[] = [
     go: navigation => {
       navigation.goBack();
       navigation.navigate("newSession");
+    },
+  },
+  {
+    title: "Cowork",
+    // Named for what the surface holds rather than for the word "cowork",
+    // which says nothing to an operator who has not read the code.
+    detail: "Tasks, skills, and connectors on this daemon",
+    // The same glyph the surface's own Tasks destination wears, because tasks
+    // are what it opens on. `bay` is spent on New session above.
+    glyph: "tasks",
+    testID: "open-cowork",
+    go: navigation => {
+      navigation.goBack();
+      navigation.navigate("cowork");
     },
   },
 ];
