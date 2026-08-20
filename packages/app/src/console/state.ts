@@ -644,15 +644,18 @@ function withSession(
 
 /**
  * Terminal turn progress, folded as hints about one row. A `turn_start`
- * retires the sent echo and proves the bridge is back, so it also clears a
- * previous refusal. A turn this phone started remains awaiting until its end.
- * If no readable assistant text arrived by then, the screen names the missing
- * readback instead of leaving an empty pane that looks stalled.
+ * retires the sent echo and proves the bridge owner is back, so it clears an
+ * owner refusal but never a scope refusal. A turn this phone started remains
+ * awaiting until its end. If no readable assistant text arrived by then, the
+ * screen names the missing readback instead of looking stalled.
  */
 function applyTuiActivity(state: ConsoleState, event: TuiActivityEvent): ConsoleState {
   return withTuiSession(state, event.sessionId, tui => {
     switch (event.kind) {
       case "turn_start":
+        // Activity proves an owner is back, but it says nothing about this
+        // device's scope. Only an owner refusal may recover from activity.
+        if (tui.refusalKind === "scope") return { ...tui, sent: null, busy: true };
         return {
           ...tui,
           sent: null,

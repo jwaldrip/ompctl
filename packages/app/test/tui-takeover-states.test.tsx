@@ -194,6 +194,7 @@ describe("terminal takeover states", () => {
       { t: "tui_select", sessionId: SESSION },
       { t: "tui_prompt", sessionId: SESSION, text: "run tests" },
       { t: "error", event: { code: "unauthorized", message: "session prompt requires prompt scope" } },
+      { t: "tui_activity", event: { sessionId: SESSION, kind: "turn_start" } },
     ]);
     const submitted: string[] = [];
     const { host, root } = mountScreen({
