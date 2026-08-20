@@ -775,14 +775,25 @@ export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
   // made is a regression on what the roster alone already listed. Those rows
   // are synthesized from the roster until the next index replaces them;
   // subagents stay in Agent Hub, where their hierarchy is legible.
+  // A row's id is a session identity, so it may appear once. Two roster agents
+  // can name the same acpSessionId before the index has seen it: a resumed
+  // session whose previous holder is still listed. Emitting both produced two
+  // children with one key, and React's warning banner then covered the
+  // composer on a real screen. A live holder wins over a terminal one, since
+  // the live process is the truth about what holds the session now.
+  const synthesized = new Map<string, BrowserSession>();
   for (const agent of state.agents) {
     if (agent.parentAgentId !== undefined) continue;
     if (agent.acpSessionId !== undefined && indexed.has(agent.acpSessionId)) continue;
-    rows.push({
-      id: agent.acpSessionId ?? agent.id,
+    const id = agent.acpSessionId ?? agent.id;
+    const terminal = TERMINAL_AGENT_STATES.includes(agent.state);
+    const held = synthesized.get(id);
+    if (held !== undefined && (terminal || held.status === "live-ompd")) continue;
+    synthesized.set(id, {
+      id,
       title: agent.name,
       cwd: agent.cwd,
-      status: TERMINAL_AGENT_STATES.includes(agent.state) ? "dormant" : "live-ompd",
+      status: terminal ? "dormant" : "live-ompd",
       createdAt: agent.createdAt,
       lastActiveAt: agent.lastActiveAt,
       // Counting the transcript this device happens to hold would be the
@@ -796,6 +807,7 @@ export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
       sizeBytes: 0,
     });
   }
+  rows.push(...synthesized.values());
   return rows;
 }
 
