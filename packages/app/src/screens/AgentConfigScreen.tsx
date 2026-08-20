@@ -72,8 +72,7 @@ function groupByCategory(options: readonly ConfigOption[]): Array<{ category: st
       existing.options.push(option);
     }
   }
-  const rank = (category: string): number =>
-    category === "model" ? 0 : category === SETTABLE_OPTION_ID ? 1 : 2;
+  const rank = (category: string): number => (category === "model" ? 0 : category === SETTABLE_OPTION_ID ? 1 : 2);
   return groups.toSorted((a, b) => rank(a.category) - rank(b.category));
 }
 
@@ -176,10 +175,7 @@ function describeCause(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-type Phase =
-  | { kind: "loading" }
-  | { kind: "refused"; reason: string }
-  | { kind: "ready"; options: ConfigOption[] };
+type Phase = { kind: "loading" } | { kind: "refused"; reason: string } | { kind: "ready"; options: ConfigOption[] };
 
 export interface AgentConfigScreenProps {
   agentId: AgentId;
@@ -200,8 +196,7 @@ export interface AgentConfigScreenProps {
 export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
   const { agentId, connection } = props;
 
-  const effectiveScopes =
-    props.grantedScopes ?? (connection.scopes.length === 0 ? undefined : connection.scopes);
+  const effectiveScopes = props.grantedScopes ?? (connection.scopes.length === 0 ? undefined : connection.scopes);
   const canRead = effectiveScopes === undefined ? true : effectiveScopes.includes(SCOPE_READ);
   const canSet = effectiveScopes === undefined ? true : effectiveScopes.includes(SCOPE_PROMPT);
 
@@ -294,7 +289,9 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
           if (seq !== postSeq.current) return;
           setPending(null);
           if (options === null) {
-            setPostRefusal("The daemon changed the mode but its answer was not a config this screen can read. Reload it.");
+            setPostRefusal(
+              "The daemon changed the mode but its answer was not a config this screen can read. Reload it.",
+            );
             return;
           }
           setPhase({ kind: "ready", options });
@@ -416,8 +413,7 @@ function ConfigOptionBlock({
   onChoose: (value: string, name: string) => void;
 }): JSX.Element {
   const settable = option.id === SETTABLE_OPTION_ID;
-  const current =
-    option.options.find(choice => choice.value === option.currentValue) ?? null;
+  const current = option.options.find(choice => choice.value === option.currentValue) ?? null;
 
   let reason: string | null = null;
   if (!settable) {
@@ -453,9 +449,7 @@ function ConfigOptionBlock({
           >
             <View style={styles.choiceText}>
               <Label color={enabled ? ink.plain : ink.muted}>{choice.name}</Label>
-              {choice.description === undefined ? null : (
-                <Label color={ink.faint}>{choice.description}</Label>
-              )}
+              {choice.description === undefined ? null : <Label color={ink.faint}>{choice.description}</Label>}
             </View>
             {active ? (
               <View style={styles.marker}>

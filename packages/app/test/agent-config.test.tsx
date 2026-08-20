@@ -93,8 +93,7 @@ interface Recorded {
 function serve(reply: (call: Recorded) => Response | Promise<Response>): Recorded[] {
   const calls: Recorded[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url =
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const headers = new Headers(init?.headers);
     const call: Recorded = {
       method: init?.method ?? "GET",
@@ -201,9 +200,7 @@ describe("the options a session offers", () => {
     // The model is the headline: it must sit above the mode, not after it.
     const model = m.el("agent-config-group-model");
     const mode = m.el("agent-config-group-mode");
-    expect(
-      (model?.compareDocumentPosition(mode as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect((model?.compareDocumentPosition(mode as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     expect(currentRow(m, "mode")).toBe("agent-config-choice-mode-default");
     expect(currentRow(m, "model")).toBe("agent-config-choice-model-anthropic/claude-opus-5");
