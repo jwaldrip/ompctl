@@ -259,7 +259,13 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
     const extended: Entry =
       current.kind === "user"
         ? { ...current, text: current.text + text }
-        : { ...(current as AssistantEntry), text: (current as AssistantEntry).text + text };
+        : {
+            ...(current as AssistantEntry),
+            // A chunk that names its message adopts the row it is continuing,
+            // so the next chunk carrying that id finds it by id.
+            id: messageId ?? current.id,
+            text: (current as AssistantEntry).text + text,
+          };
     return { ...state, entries: replaceAt(state.entries, index, extended) };
   }
 
@@ -298,10 +304,18 @@ function findChunkTarget(
     }
     if (entry.kind !== "assistant") continue;
     if (entry.thought !== (channel === "thought")) continue;
-    if (messageId !== null) {
-      if (entry.id === messageId) return index;
-      continue;
-    }
+    // An id locates a message that has already settled, which is how an agent
+    // resumes one after a tool call.
+    if (messageId !== null && entry.id === messageId) return index;
+    // Otherwise the open row of this channel owns the chunk, whatever id the
+    // chunk carries. Captured from this daemon for one reply: chunk ids were
+    // `c7be8049` then `febf0117` then `febf0117`, for the single text
+    // "probe-2fb0f8743329". Keying rows on that id split one reply into
+    // "prob" and "e-2fb0f8743329", so no row held the whole reply, and a
+    // token echoed back whole read as two half tokens on a real device. A row
+    // ends at a tool call, an approval, or the end of a turn, each of which
+    // closes the stream deliberately, never at an id the wire changed
+    // mid-sentence.
     if (entry.streaming) return index;
   }
   return -1;

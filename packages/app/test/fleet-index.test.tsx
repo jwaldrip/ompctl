@@ -197,6 +197,28 @@ describe("a live agent is overlaid onto its indexed session", () => {
     ]);
     expect(browserSessionsOf(stopped).find(row => row.id === "s-held")).toMatchObject({ status: "dormant" });
   });
+
+  test("two agents naming one unindexed session produce a single live row", () => {
+    // A resumed session whose previous holder is still on the roster. Both
+    // named the same acpSessionId, and the index had not seen it yet, so the
+    // fleet emitted two children with one key: React's warning banner then
+    // covered the composer on a real screen.
+    const contested = drive([
+      { t: "sessions", event: { sessions: INDEX } },
+      {
+        t: "agents",
+        event: {
+          agents: [
+            agent("agt_previous", { name: "previous holder", acpSessionId: "s-resumed", state: "stopped" }),
+            agent("agt_current", { name: "current holder", acpSessionId: "s-resumed" }),
+          ],
+        },
+      },
+    ]);
+    const resumed = browserSessionsOf(contested).filter(row => row.id === "s-resumed");
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]).toMatchObject({ title: "current holder", status: "live-ompd" });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -23,12 +23,19 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 /** The slice of Detox's globals this driver uses, named so the client stays typed. */
 interface DetoxGlobals {
   device: {
-    launchApp(options: { newInstance: boolean; permissions?: Record<string, string> }): Promise<void>;
+    clearKeychain(): Promise<void>;
+    launchApp(options: {
+      newInstance: boolean;
+      delete?: boolean;
+      permissions?: Record<string, string>;
+      launchArgs?: Record<string, string>;
+    }): Promise<void>;
     takeScreenshot(name: string): Promise<string>;
   };
   element(matcher: unknown): {
-    tap(): Promise<void>;
+    tap(point?: { x: number; y: number }): Promise<void>;
     clearText(): Promise<void>;
+    replaceText(text: string): Promise<void>;
     typeText(text: string): Promise<void>;
     getAttributes(): Promise<{ text?: string; label?: string }>;
     scroll(pixels: number, direction: "up" | "down" | "left" | "right"): Promise<void>;
@@ -96,7 +103,21 @@ export class DetoxClient implements E2EClient {
 
   async launch(): Promise<void> {
     this.resetPersistedState();
-    await globals().device.launchApp({ newInstance: true, permissions: { camera: "NO" } });
+    // A pairing lives in both AsyncStorage and the keychain. Android's pm clear
+    // drops both; an iOS Simulator uninstall does not clear the keychain, so
+    // Detox must clear it explicitly before reinstalling the app. Without both
+    // halves, a prior pairing bypasses the form and the next run measures old
+    // state instead of the scenario.
+    if (this.kind === "ios") await globals().device.clearKeychain();
+    await globals().device.launchApp({
+      newInstance: true,
+      delete: this.kind === "ios",
+      permissions: { camera: "NO" },
+      // Only the iOS simulator needs this. The password-manager sheet lives
+      // outside the app and Detox cannot reach it on iOS 26; the launch flag
+      // prevents creating that sheet without weakening human launches.
+      launchArgs: this.kind === "ios" ? { OMPCTL_E2E_PLAINTEXT_TOKEN: "YES" } : undefined,
+    });
   }
 
   /**
@@ -124,16 +145,42 @@ export class DetoxClient implements E2EClient {
   async tap(testId: string): Promise<void> {
     await this.waitFor(testId);
     const g = globals();
-    await g.element(g.by.id(testId)).tap();
+    try {
+      await g.element(g.by.id(testId)).tap();
+    } catch (cause) {
+      // Dismissing the keyboard moves the composer while it animates, and a
+      // tap landing mid-animation fails Detox's visibility probe on a control
+      // a person could plainly press. One settle and one retry: a control that
+      // is genuinely unreachable still fails, with its original reason.
+      if (this.kind !== "ios") throw cause;
+      await new Promise(resolve => setTimeout(resolve, 750));
+      await g.element(g.by.id(testId)).tap();
+    }
   }
 
   async fill(testId: string, value: string): Promise<void> {
     await this.waitFor(testId);
     const g = globals();
     const field = g.element(g.by.id(testId));
-    await field.tap();
-    await field.clearText();
-    await field.typeText(value);
+    // replaceText updates iOS through Detox without invoking the keyboard's
+    // password heuristic. typeText on a secure token field opens the system
+    // "Save Password?" sheet outside the app, which Detox correctly cannot tap
+    // and which makes an otherwise unattended run require a person. Android
+    // keeps typeText because it is the path that reaches its native field
+    // reliably, and its state reset never opens this iOS-only sheet.
+    if (this.kind === "ios") {
+      // Detox's own activation point for a text field sits near its top-left
+      // corner, and its visibility probe there fails against this composer's
+      // hairline border, so the run stalls on a field a person can plainly
+      // type into. An explicit interior point is the same gesture without the
+      // corner: it still requires the field to be on screen and hittable.
+      await field.tap({ x: 40, y: 20 });
+      await field.replaceText(value);
+    } else {
+      await field.tap();
+      await field.clearText();
+      await field.typeText(value);
+    }
   }
 
   async textOf(testId: string): Promise<string> {
@@ -150,7 +197,16 @@ export class DetoxClient implements E2EClient {
     // platforms clamp a scroll at the content edge, so this is how a driver
     // says "the end" without learning the content height, which neither
     // platform exposes portably.
-    await g.element(g.by.id(testId)).scroll(100_000, "down");
+    //
+    // A list whose content is shorter than its viewport cannot scroll at all,
+    // and iOS reports that refusal as an error. Being already at the end is
+    // exactly what this method wanted, so it is not a failure: a young session
+    // with three entries is the normal case, not a broken one.
+    try {
+      await g.element(g.by.id(testId)).scroll(100_000, "down");
+    } catch (cause) {
+      if (!/Unable to scroll/i.test(cause instanceof Error ? cause.message : String(cause))) throw cause;
+    }
   }
 
   async labelsOf(testId: string): Promise<string[]> {
@@ -172,11 +228,28 @@ export class DetoxClient implements E2EClient {
   }
 
   /**
-   * Typing a newline is what the platform treats as "done editing"; Detox has no
-   * keyboard-dismiss primitive. The app's fields commit on change rather than on
-   * blur, so nothing here needs to happen for a value to be read back.
+   * Put the keyboard away by tapping the screen's scroll surface, which is what
+   * a person does: React Native's lists dismiss the keyboard on a tap that is
+   * not on an input. This was a no-op while the phone's keyboard left the send
+   * control reachable; an iPad's keyboard covers it, so the scenario stalled on
+   * a control the operator can see and press.
+   *
+   * Android needs nothing here: its own back gesture is not in play and the
+   * composer stays reachable. A screen with no scroll surface is not an error;
+   * there is simply nothing to tap.
    */
-  async dismissKeyboard(): Promise<void> {}
+  async dismissKeyboard(): Promise<void> {
+    if (this.kind !== "ios") return;
+    const g = globals();
+    for (const surface of ["transcript", "fleet-list", "fleet"]) {
+      try {
+        await g.element(g.by.id(surface)).tap({ x: 20, y: 20 });
+        return;
+      } catch {
+        // Try the next surface: which one exists depends on the screen.
+      }
+    }
+  }
 
   async screenshot(name: string): Promise<string> {
     mkdirSync(this.artifacts, { recursive: true });
