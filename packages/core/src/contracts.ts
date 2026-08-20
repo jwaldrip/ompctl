@@ -507,6 +507,20 @@ export interface TranscriptTailMessage {
 // Client wire protocol
 // ---------------------------------------------------------------------------
 
+/** The three policy postures a daemon can hold. See `PolicyConfig.mode` for what each does. */
+export type PolicyMode = "strict" | "standard" | "trusted";
+
+/**
+ * The two persisted settings a paired device may read and, holding `manage`,
+ * change: the posture every agent on the machine runs under, and whether the
+ * daemon keeps its host awake while it works. Binding, hub, binary, and
+ * credential settings deliberately have no place here.
+ */
+export interface SyncSettings {
+  policyMode: PolicyMode;
+  keepAwake: boolean;
+}
+
 export type ClientFrame =
   | { t: "attach"; agentId: AgentId; sinceSeq?: number }
   | { t: "detach"; agentId: AgentId }
@@ -589,6 +603,21 @@ export type ClientFrame =
    * thousand messages in it shows a composer and nothing else.
    */
   | { t: "session_tail"; sessionId: string; limit?: number }
+  /**
+   * Ask what the daemon's two persisted settings hold right now. The hub
+   * relay carries one sealed websocket and proxies no daemon HTTP, so a phone
+   * reads these through this frame rather than `GET /v1/sync-settings`.
+   * Answered by `settings`, to the asking socket only.
+   */
+  | { t: "settings_read" }
+  /**
+   * Change both persisted settings in one frame. One-shot like the other
+   * instructions: never replayed after a reconnect, so the operator retaps
+   * rather than wonders. Answered by `settings` carrying what the daemon
+   * reads back after applying, so a client renders confirmed state, never
+   * its own request.
+   */
+  | ({ t: "settings_write" } & SyncSettings)
   | { t: "ping" };
 
 export type ServerFrame =
@@ -677,6 +706,13 @@ export type ServerFrame =
    * reader stopped at its byte budget with unread bytes behind it.
    */
   | { t: "session_tail"; sessionId: string; messages: TranscriptTailMessage[]; truncated: boolean }
+  /**
+   * The daemon's settings as it holds them now, answering `settings_read` or
+   * `settings_write` and sent only to the socket that asked. Read back after
+   * any apply, so it is the daemon's confirmation rather than an echo of the
+   * request.
+   */
+  | ({ t: "settings" } & SyncSettings)
   | { t: "pong" };
 
 // ---------------------------------------------------------------------------

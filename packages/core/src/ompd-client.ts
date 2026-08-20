@@ -36,6 +36,7 @@ import type {
   ServerFrame,
   SessionQuery,
   SessionSummary,
+  SyncSettings,
   TranscriptTailMessage,
   TuiActivityKind,
   TuiSteerDelivery,
@@ -168,6 +169,13 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // asks again the next time it opens. Reporting it would put an error in
   // front of an operator whose only remedy is the reconnect already running.
   session_tail: false,
+  // A snapshot ask, same class as `session_tail`: nothing on the machine
+  // changes, and the surface that asked asks again the next time it opens.
+  settings_read: false,
+  // A lost write is an instruction that silently did not happen: the
+  // operator believes the machine now runs under a different policy and it
+  // does not, which is the same failure class as a lost `decide`.
+  settings_write: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -421,6 +429,15 @@ export interface SessionTailEvent {
   truncated: boolean;
 }
 
+/**
+ * The daemon's settings as it holds them now, answering `readSettings` or
+ * `writeSettings`. Confirmation rather than echo: after a write it carries
+ * what the daemon read back from the store that persists.
+ */
+export interface SettingsEvent {
+  settings: SyncSettings;
+}
+
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -443,7 +460,7 @@ export interface ClientEventMap {
   device_invited: DeviceInvitedEvent;
   fs_listing: FsListingEvent;
   clone_progress: CloneProgressEvent;
-  clone_done: CloneDoneEvent;
+  settings: SettingsEvent;
   session_tail: SessionTailEvent;
 }
 
@@ -772,6 +789,32 @@ export class OmpdClient {
     const frame: ClientFrame =
       limit === undefined ? { t: "session_tail", sessionId } : { t: "session_tail", sessionId, limit };
     this.send(frame);
+  }
+
+  /**
+   * Ask what the daemon's two persisted settings hold. The answer arrives as
+   * the `settings` event, or an `error` naming the refusal.
+   *
+   * One-shot, like `sessionTail` and for the same reason: a snapshot of a
+   * screen the operator is looking at, asked when that screen opens, never
+   * replayed onto a screen nobody may still be on.
+   */
+  readSettings(): void {
+    this.send({ t: "settings_read" });
+  }
+
+  /**
+   * Change both persisted settings. The answer arrives as the `settings`
+   * event carrying what the daemon read back after applying, so a surface
+   * renders the confirmed state rather than its own request; a scope or
+   * validation refusal arrives as an `error` naming it.
+   *
+   * One-shot, like the other instructions: not replayed after a reconnect,
+   * because an operator who retaps is informed and one who waits on a
+   * replayed policy change is not.
+   */
+  writeSettings(settings: SyncSettings): void {
+    this.send({ t: "settings_write", policyMode: settings.policyMode, keepAwake: settings.keepAwake });
   }
 
   /**
@@ -1125,6 +1168,11 @@ export class OmpdClient {
           sessionId: frame.sessionId,
           messages: frame.messages,
           truncated: frame.truncated,
+        });
+        return;
+      case "settings":
+        this.emit("settings", {
+          settings: { policyMode: frame.policyMode, keepAwake: frame.keepAwake },
         });
         return;
       case "tui_activity":
