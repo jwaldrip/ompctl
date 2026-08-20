@@ -115,9 +115,9 @@ module.exports = {
   },
   behavior: {
     init: {
-      // `installWorker()` registers `device`, `element`, `by`, and `waitFor` on
-      // globalThis, and that is the only API surface available when Detox is
-      // driven programmatically rather than through its Jest integration.
+      // Programmatic `init()` installs one worker and publishes `device`,
+      // `element`, `by`, and `waitFor` on globalThis. A second explicit worker
+      // would compete for the same single-tester session.
       exposeGlobals: true,
       // The Cucumber Before hook launches the app once per scenario itself.
       launchApp: false,

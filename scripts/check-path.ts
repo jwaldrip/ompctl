@@ -36,15 +36,15 @@
  *    round trip would prove nothing even if it passed.
  * 5. App uninstalled: `pm path` finds nothing and the run fails loudly.
  *
- * Wi-Fi is the one piece of Jason's phone state this script mutates, so
- * restoration is guaranteed by construction: the whole cellular phase runs
- * inside a try/finally, and SIGINT/SIGTERM handlers fire the same restore, so
- * a Ctrl-C mid-run cannot leave the phone without Wi-Fi.
+ * Wi-Fi and stay-on-while-plugged-in are the two pieces of Jason's phone
+ * state this script mutates. Both are restored by the cellular phase's
+ * try/finally, and SIGINT/SIGTERM handlers fire the same restorations, so a
+ * Ctrl-C mid-run cannot leave either state changed.
  *
  * The run mints its own single-use pairing rather than asking the operator
  * for one: a throwaway keypair approved by the local operator credential
  * with exactly read and prompt, handed to the suite only through process
- * env, and revoked on the same guarantee as the Wi-Fi restore (success,
+ * env, and revoked on the same guarantee as the device restores (success,
  * failure, and signal; the revoke is idempotent). The device dials the hub
  * relay for this daemon, and an endpoint naming loopback or private LAN
  * space fails the run outright: the phone has no route there, so such a run
@@ -77,7 +77,7 @@
  *   OMPCTL_APK_DIR                dir holding CI's android-apks artifact pair
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -239,11 +239,13 @@ function androidSdkEnv(): Record<string, string> {
   return { DETOX_ADB_PATH: adbBin, ANDROID_SDK_ROOT: shimRoot, ANDROID_HOME: shimRoot };
 }
 
-// --- Wi-Fi restoration, armed before anything is disabled -------------------
+// --- device state restoration, armed before mutation ------------------------
 
-let e2eChild: ReturnType<typeof spawn> | undefined;
+let e2eChild: ChildProcess | undefined;
 let pendingRestore: (() => void) | undefined;
 let restoreVerified: (() => void) | undefined;
+let pendingPowerRestore: (() => void) | undefined;
+let powerRestoreVerified: (() => void) | undefined;
 
 function armWifiRestore(originalOn: boolean): void {
   // Found off, left off: that IS the original state, so there is nothing to
@@ -269,10 +271,53 @@ function armWifiRestore(originalOn: boolean): void {
   };
 }
 
-// Ctrl-C must not be able to strand the phone with Wi-Fi off, nor leave this
-// run's minted pairing alive on the daemon: an unhandled signal terminates
-// without unwinding any finally, so both fire here too. The restore is
-// synchronous; the revoke is a bounded fetch whose settle the exit follows.
+/**
+ * Keep the display awake only for the hardware proof, then restore the exact
+ * setting found on the phone. The Pixel can report Detox ready and immediately
+ * time out its display before the first Espresso action, leaving no resumed
+ * activity even though the app launched correctly.
+ */
+function armPowerRestore(): boolean {
+  const original = adb(["shell", "settings", "get", "global", "stay_on_while_plugged_in"]).out.trim();
+  const readable = original === "null" || /^\d+$/.test(original);
+  check("stay-awake setting readable", readable, original || "empty response");
+  if (!readable) return false;
+
+  let fired = false;
+  const fire = (): void => {
+    if (fired) return;
+    fired = true;
+    const args =
+      original === "null"
+        ? ["shell", "settings", "delete", "global", "stay_on_while_plugged_in"]
+        : ["shell", "settings", "put", "global", "stay_on_while_plugged_in", original];
+    adb(args);
+  };
+  pendingPowerRestore = fire;
+  powerRestoreVerified = (): void => {
+    fire();
+    const restored = adb(["shell", "settings", "get", "global", "stay_on_while_plugged_in"]).out.trim();
+    check("stay-awake setting restored", restored === original, `expected ${original}, found ${restored}`);
+  };
+
+  // This Pixel reports the bench cable as AC power, so the all-source form is
+  // required. A stored USB bit can look armed while PowerManager stays false.
+  const stayOn = adb(["shell", "svc", "power", "stayon", "true"]);
+  const wake = adb(["shell", "input", "keyevent", "KEYCODE_WAKEUP"]);
+  const power = adb(["shell", "dumpsys", "power"]).out;
+  const armed =
+    stayOn.code === 0 &&
+    wake.code === 0 &&
+    power.includes("mStayOn=true") &&
+    power.includes("mWakefulness=Awake");
+  check("device stays awake while powered", armed, "PowerManager did not report awake with stay-on enabled");
+  return armed;
+}
+
+// Ctrl-C must not strand the phone with Wi-Fi off or altered power settings,
+// nor leave this run's minted pairing alive on the daemon. An unhandled signal
+// terminates without unwinding any finally, so both restorations fire here too.
+// They are synchronous; the revoke is a bounded fetch whose settle the exit follows.
 for (const [sig, code] of [
   ["SIGINT", 130],
   ["SIGTERM", 143],
@@ -280,6 +325,7 @@ for (const [sig, code] of [
   process.on(sig, () => {
     e2eChild?.kill("SIGTERM");
     pendingRestore?.();
+    pendingPowerRestore?.();
     void revokeMintedPairing().finally(() => process.exit(code));
   });
 }
@@ -1050,15 +1096,17 @@ if (DRY_RUN) {
   } else {
     const originalOn = wifiOn();
     armWifiRestore(originalOn);
+    const powerArmed = armPowerRestore();
     try {
       const cellularOk = await phaseCellular(originalOn);
       await phaseHubRegistration();
       // A round trip carried over Wi-Fi proves nothing (the daemon is on that
       // same LAN), so with the transport unproven the suite is skipped: red is
       // already on the record, and a device run cannot add information to it.
-      if (cellularOk) await phaseRoundTrip();
+      if (cellularOk && powerArmed) await phaseRoundTrip();
     } finally {
       restoreVerified?.();
+      powerRestoreVerified?.();
       // The phone's radio first (a stranded phone outranks a stray device
       // row), then the run's own credential: a pairing that survived its run
       // is a failure of the run, not a note for later.
