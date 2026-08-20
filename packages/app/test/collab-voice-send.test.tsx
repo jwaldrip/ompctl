@@ -219,11 +219,19 @@ function mountRoom(options: { recorder?: FakeRecorder; scopes?: string[] } = {})
   };
 }
 
-/** Let the microtasks a hold runs through (start, stop, then setPhase) commit. */
-async function settle(): Promise<void> {
+/**
+ * RNW activates a press 50ms after it begins (DEFAULT_PRESS_DELAY_MS in its
+ * PressResponder): onPressIn is a delayed timer, not a synchronous effect of
+ * mousedown. A hold that means to be held therefore waits out that delay
+ * before it is released, exactly as a finger does; onPressOut is immediate.
+ */
+const PRESS_IN_SETTLE_MS = 80;
+
+/** Let the hold's microtasks commit, optionally after real milliseconds. */
+async function settle(ms: number = 0): Promise<void> {
   await act(async () => {
     const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 0);
+    setTimeout(resolve, ms);
     await promise;
   });
 }
@@ -231,7 +239,7 @@ async function settle(): Promise<void> {
 /** Hold, release, and hand back the one note frame the control sent, if any. */
 async function holdAndSend(room: Room): Promise<Extract<ClientFrame, { t: "collab_voice_note" }>> {
   room.pointerDown("collab-record-hold");
-  await settle();
+  await settle(PRESS_IN_SETTLE_MS);
   room.pointerUp();
   await settle();
   room.press("collab-record-send");
@@ -323,6 +331,8 @@ describe("hold, review, send", () => {
     const room = mountRoom();
 
     room.pointerDown("collab-record-hold");
+    // The press only becomes active once RNW's press-in delay elapses.
+    await settle(PRESS_IN_SETTLE_MS);
     expect(room.recorder.starts).toBe(1);
     expect(room.query("collab-record-elapsed")).not.toBeNull();
 
@@ -352,7 +362,7 @@ describe("hold, review, send", () => {
     const room = mountRoom();
 
     room.pointerDown("collab-record-hold");
-    await settle();
+    await settle(PRESS_IN_SETTLE_MS);
     room.pointerUp();
     await settle();
     room.press("collab-record-discard");
@@ -396,7 +406,7 @@ describe("hold, review, send", () => {
     const room = mountRoom();
 
     room.pointerDown("collab-record-hold");
-    await settle();
+    await settle(PRESS_IN_SETTLE_MS);
     room.unmount();
 
     expect(room.recorder.cancels).toBe(1);
@@ -410,7 +420,7 @@ describe("hold, review, send", () => {
     const room = mountRoom({ recorder });
 
     room.pointerDown("collab-record-hold");
-    await settle();
+    await settle(PRESS_IN_SETTLE_MS);
     room.pointerUp();
     await settle();
 
