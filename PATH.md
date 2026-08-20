@@ -27,6 +27,14 @@ One correction to an earlier draft of this file, recorded rather than quietly dr
 
 So the anti-stale intent is preserved by a parity assertion instead of a ban. The instrumented build used for the round trip must be built from the same commit, and the check asserts its version and build match the release install it is replacing. A run that flashes a newer build than the one on the device fails, which is the defect the ban was aimed at. A run that flashes the same build to gain instrumentation is not that defect.
 
+### One manual precondition on iOS devices
+
+The token field is masked, and iOS AutoFill offers to save a masked field as a password. That system sheet sits above the app, outside the element tree, so no automation can dismiss it: Detox stalls on a screen it cannot see, and a person mid-pairing gets interrupted.
+
+There is no app-side opt-out. `autoComplete`, `textContentType` including `oneTimeCode`, and `passwordRules` were each measured against this flow and the sheet still appeared, so weakening the field is not the answer and the field stays masked. The switch that governs it belongs to the device: **Settings > General > AutoFill & Passwords > AutoFill Passwords and Passkeys, off.**
+
+On a simulator the suite does this itself, writing `AutoFillPasswords` in the `com.apple.WebUI` domain, which is the same key that switch writes. That domain was read off a preference diff taken either side of toggling the real switch, so it is observed rather than guessed. Detox cannot drive physical iOS at all, so on a real iPhone or iPad the switch is a one time manual step per device. It belongs to the device rather than the app, so reinstalling the app does not clear it.
+
 ## Transport
 
 **Hub relayed, over cellular, with the device's Wi-Fi off for the duration of the run.**
