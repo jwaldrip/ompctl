@@ -374,7 +374,7 @@ describe("SessionIndex single-flight", () => {
     // listSessions: a fresh build is fine (the view is rebuilt per call by
     // design), but the counting must not start over.
     const scansBeforeReplay = scanCalls;
-    const replay = await index.queryWithWarm();
+    await index.queryWithWarm();
     // The replay builds once (the view is rebuilt per call by design), and
     // only once -- and it warms nothing: `warmed` is null and no cache row
     // is written a second time.

@@ -33,27 +33,38 @@ import { parseRich } from "./parse.ts";
 
 /** Flat inline runs. Nesting a `Text` per span lets RN inherit the block's size and colour. */
 function Spans({ spans }: { spans: readonly RichSpan[] }): JSX.Element {
+  // Content-derived keys: the span's kind and text plus an occurrence count,
+  // because inline runs genuinely repeat ("a *b* a *b*") and the raw text
+  // alone would collide where the array index is banned for the usual reason.
+  const seen = new Map<string, number>();
+  const keyed = spans.map(span => {
+    const base = `${span.kind}:${span.text}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return { span, key: `${n}:${base}` };
+  });
+
   return (
     <>
-      {spans.map((span, index) => {
+      {keyed.map(({ span, key }) => {
         switch (span.kind) {
           case "text":
-            return <Text key={index}>{span.text}</Text>;
+            return <Text key={key}>{span.text}</Text>;
           case "strong":
             return (
-              <Text key={index} style={styles.strong}>
+              <Text key={key} style={styles.strong}>
                 {span.text}
               </Text>
             );
           case "em":
             return (
-              <Text key={index} style={styles.em}>
+              <Text key={key} style={styles.em}>
                 {span.text}
               </Text>
             );
           case "code":
             return (
-              <Text key={index} style={styles.codeSpan}>
+              <Text key={key} style={styles.codeSpan}>
                 {span.text}
               </Text>
             );
@@ -62,10 +73,15 @@ function Spans({ spans }: { spans: readonly RichSpan[] }): JSX.Element {
             // seventh "link blue" would be the first overlap. Underline is the
             // affordance; the transcript shows text, it does not navigate.
             return (
-              <Text key={index} style={styles.link}>
+              <Text key={key} style={styles.link}>
                 {span.text}
               </Text>
             );
+          default:
+            // Exhaustive today, so the narrow is `never`. A future span kind
+            // renders nothing rather than vanishing the whole run: one
+            // unknown span must not blank its siblings.
+            return null;
         }
       })}
     </>
@@ -99,7 +115,7 @@ function BlockView({ block, muted }: { block: RichBlock; muted: boolean }): Reac
       return (
         <View style={styles.list}>
           {block.items.map((item, index) => (
-            <View key={index} style={styles.listRow}>
+            <View key={`li:${spansText(item).slice(0, 64)}`} style={styles.listRow}>
               {/* Fixed marker column so a wrapped item hangs past its number, not under it. */}
               <Label color={ink.muted} style={styles.listMarker}>
                 {block.ordered ? `${index + 1}.` : "\u2022"}
@@ -147,11 +163,26 @@ function RichTextBase({ text, muted = false }: { text: string; muted?: boolean }
   const blocks = parseRich(text);
   return (
     <View style={styles.stack}>
-      {blocks.map((block, index) => (
-        <BlockView key={index} block={block} muted={muted} />
+      {blocks.map(block => (
+        <BlockView key={blockKeyOf(block)} block={block} muted={muted} />
       ))}
     </View>
   );
+}
+
+/** A block's identity is its rendered text, which is stable for stable input. */
+function blockKeyOf(block: RichBlock): string {
+  if (block.kind === "rule") return "rule";
+  if (block.kind === "attachment") return `att:${block.ref.uri}`;
+  if (block.kind === "code") return `code:${block.text.slice(0, 64)}`;
+  if (block.kind === "list") return `list:${block.items.length}:${block.ordered}`;
+  if (block.kind === "heading") return `h${block.level}:${spansText(block.spans).slice(0, 64)}`;
+  return spansText(block.spans).slice(0, 64);
+}
+
+/** Joins a span run to its plain text. Three key derivations share it. */
+function spansText(spans: readonly RichSpan[]): string {
+  return spans.map(span => span.text).join("");
 }
 
 /**

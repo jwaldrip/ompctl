@@ -171,14 +171,30 @@ export function DiffBlock({ text }: { text: string }): JSX.Element {
   if (lines.length > 1 && lines[lines.length - 1] === "") {
     lines.pop();
   }
+  const keys = contentKeys(lines);
 
   return (
     <View style={styles.block} testID="diff-block">
       {lines.map((raw, at) => (
-        <Row key={at} line={classifyLine(raw)} first={at === 0} />
+        <Row key={keys[at] ?? String(at)} line={classifyLine(raw)} first={at === 0} />
       ))}
     </View>
   );
+}
+
+/**
+ * Content-derived keys, unique across repeated lines. Diffs genuinely repeat
+ * a line, so the raw text alone collides and the array index alone is banned
+ * for the usual reason, so the key is the text plus its occurrence number.
+ * Deterministic, so re-renders reuse rows exactly.
+ */
+function contentKeys(lines: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  return lines.map(raw => {
+    const n = seen.get(raw) ?? 0;
+    seen.set(raw, n + 1);
+    return `${n}:${raw}`;
+  });
 }
 
 function Row({ line, first }: { line: DiffLine; first: boolean }): JSX.Element {
