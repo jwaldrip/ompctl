@@ -549,6 +549,29 @@ function parseSyncDocument(value: unknown): SyncDocument | null {
   }
   return value as unknown as SyncDocument;
 }
+
+const SYNC_SETTINGS_KEYS: Record<string, true> = {
+  policyMode: true,
+  keepAwake: true,
+};
+
+/**
+ * The exact body `/v1/sync-settings` accepts. Unknown fields are refused
+ * rather than dropped: this surface moves two settings and nothing else, so a
+ * body carrying more is aimed at the wrong endpoint, and silently accepting
+ * the recognizable parts would let that mistake pass as a success.
+ */
+function parseSyncSettings(value: unknown): SyncSettings | null {
+  if (!isRecord(value)) return null;
+  if (Object.keys(value).some(key => SYNC_SETTINGS_KEYS[key] !== true)) return null;
+  if (
+    (value.policyMode !== "strict" && value.policyMode !== "standard" && value.policyMode !== "trusted") ||
+    typeof value.keepAwake !== "boolean"
+  ) {
+    return null;
+  }
+  return { policyMode: value.policyMode, keepAwake: value.keepAwake };
+}
 /**
  * The slice of task lifecycle the gateway needs. `create` and `cancel` take
  * the resolved `Actor` and are expected to authorize it themselves -- see
@@ -1673,6 +1696,50 @@ export class Gateway {
       const secret = randomBytes(32).toString("base64url");
       this.#store.upsertWebhookSecret(routine.trigger.secretRef, createHash("sha256").update(secret).digest("hex"));
       return Response.json({ secret }, { status: 201 });
+    }
+
+    if (path === "/v1/sync-settings" && (req.method === "GET" || req.method === "POST")) {
+      // Reading the daemon's policy is watching; changing it moves the bar
+      // every other scope is measured against, which is `manage`'s job alone.
+      // Export/import stay at `manage` for both verbs because a sync document
+      // is a full state copy; these two settings are safe to watch with `read`
+      // so a watch-only pairing can still see what governs it.
+      const needed = req.method === "GET" ? SCOPE_READ : SCOPE_MANAGE;
+      if (!scopes.has(needed)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const config = this.#syncConfig;
+      if (!config) return Response.json({ error: "sync_unavailable" }, { status: 503 });
+
+      if (req.method === "GET") {
+        try {
+          return Response.json(config.read());
+        } catch (err) {
+          return Response.json(
+            { error: err instanceof Error ? err.message : "settings read failed" },
+            { status: 502 },
+          );
+        }
+      }
+
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const settings = parseSyncSettings(body);
+      if (settings === null) return Response.json({ error: "invalid_settings" }, { status: 400 });
+      try {
+        // Confirmed, not echoed: the response is what the daemon reads back
+        // after applying, so a client renders the state that now persists
+        // rather than the state it asked for.
+        config.apply(settings);
+        return Response.json(config.read());
+      } catch (err) {
+        return Response.json(
+          { error: err instanceof Error ? err.message : "settings apply failed" },
+          { status: 502 },
+        );
+      }
     }
 
     if (path === "/v1/sync/export" && req.method === "GET") {
