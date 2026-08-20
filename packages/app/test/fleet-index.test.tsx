@@ -553,10 +553,11 @@ describe("a prompted terminal reports progress as hints, never a transcript", ()
     ]);
     const tui = tuiSessionFor(state, "s-tui");
     expect(tui.sent).toBeNull();
-    // Words the operator can act on: the cause (no bridge) and the remedy
-    // (restart that terminal), not the daemon's raw code or phrasing.
-    expect(tui.refusal).toContain("bridge");
-    expect(tui.refusal).toContain("Restart");
+    // Words the operator can act on: the owner went away and recovery starts
+    // at that terminal, not the daemon's raw code or phrasing.
+    expect(tui.refusalKind).toBe("owner-gone");
+    expect(tui.refusal).toContain("no longer reachable");
+    expect(tui.refusal).toContain("Return to that terminal");
     expect(tui.refusal).not.toContain("no connected TUI owns");
     // The refusal is held on the screen's state, not burned into the toast.
     expect(state.notice).toBeNull();

@@ -22,7 +22,7 @@ import type {
   TranscriptTailMessage,
   WebViewAction,
 } from "@ompd/core/contracts";
-import { SCOPE_APPROVE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
+import { SCOPE_APPROVE, SCOPE_PROMPT, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import type {
   AgentsEvent,
   ApprovalEvent,
@@ -175,6 +175,18 @@ export interface ConsoleState {
   /** Set once the daemon has confirmed the token is dead. Terminal. */
   readonly unauthorized: string | null;
 }
+
+/**
+ * What this device knows about its right to steer a terminal session.
+ *
+ * `unknown` preserves compatibility with a pairing or daemon that never
+ * reported scopes. Only `missing` is a refusal, because absence of evidence
+ * from an older peer must not silently remove a control that may still work.
+ */
+export type TuiPromptAccess = "granted" | "unknown" | "missing";
+
+/** The two prompt refusals this screen can repair differently. */
+export type TuiPromptRefusalKind = "owner-gone" | "scope";
 /**
  * What this device holds about one live terminal session, keyed by session id
  * because a terminal session has no agent row.
@@ -189,16 +201,29 @@ export interface ConsoleState {
 export interface TuiSessionState {
   /**
    * The last prompt this device sent, kept until the terminal reports taking
-   * the turn. The composer clears on send and there is no transcript to land
-   * in, so without this echo the operator's own words vanish on submit.
+   * the turn. Live activity is not appended to the served history, so without
+   * this echo the operator's own words vanish on submit.
    */
   readonly sent: string | null;
   /** True between the terminal's own `turn_start` and `turn_end`. */
   readonly busy: boolean;
+  /**
+   * True after this phone steers and until that terminal turn settles.
+   * Terminal activity that started elsewhere leaves it false, so an empty
+   * terminal-only turn does not become a false refusal on this device.
+   */
+  readonly awaitingReply: boolean;
   /** The last `assistant_text` the terminal reported, verbatim. */
   readonly reply: string | null;
+  /**
+   * The steered turn ended without readable assistant text. The full terminal
+   * transcript remains authoritative; this names that boundary on the phone.
+   */
+  readonly replyUnavailable: boolean;
   /** Why the daemon refused the last prompt, once it has. */
   readonly refusal: string | null;
+  /** Stable refusal vocabulary for the screen heading and recovery copy. */
+  readonly refusalKind: TuiPromptRefusalKind | null;
   /**
    * The transcript tail the daemon served for this session, oldest first.
    *
@@ -215,21 +240,26 @@ export interface TuiSessionState {
 const EMPTY_TUI_SESSION: TuiSessionState = {
   sent: null,
   busy: false,
+  awaitingReply: false,
   reply: null,
+  replyUnavailable: false,
   refusal: null,
+  refusalKind: null,
   history: [],
   historyTruncated: false,
 };
 
 /**
- * What the operator can actually do about a `tui_unreachable` refusal. The
- * daemon's own message names the session it could not reach; this names the
- * causes that produce the state and the one remedy that fixes both, because a
- * bare code tells the operator their tap failed without saying why or what to
- * do about it.
+ * What an operator can repair after the session index and the live socket
+ * disagreed. The row may still say live while its owner already closed,
+ * switched sessions, or lost the bridge, so the remedy starts at the terminal.
  */
 const TUI_UNREACHABLE_GUIDANCE =
-  "This session is live in a terminal the daemon cannot reach: it was probably started before `ompd install`, or it is running under a different profile, so it never picked up the bridge. Restart it in its terminal so it picks the bridge up, then prompt it again.";
+  "The terminal that owned this session is no longer reachable. Return to that terminal, make sure this session is still open, then try again.";
+
+/** Scope refusals cannot be repaired by retrying the same instruction. */
+const TUI_SCOPE_GUIDANCE =
+  "This device does not hold the prompt scope. Pair it again with prompt access before steering this terminal.";
 
 export function emptyConsole(scopes: readonly string[]): ConsoleState {
   return {
@@ -360,16 +390,31 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "error": {
       const { code, message } = event.event;
-      // The wire error carries no session id; it goes to the socket that
-      // asked, which is this one, while the surface it was asked from is the
-      // open terminal screen. Only that screen can correlate the refusal, so
-      // one that lands after the operator backed out falls through to the
-      // notice below: there is no surface left to hold the guidance.
-      if (code === "tui_unreachable" && state.selectedTui !== null) {
-        return withTuiSession(state, state.selectedTui, tui => ({
+      const selectedTui = state.selectedTui;
+      const promptPending =
+        selectedTui !== null && (state.tuiSessions.get(selectedTui)?.sent ?? null) !== null;
+      // Prompt errors carry no session id, but a local prompt echo means this
+      // open terminal screen has exactly one request awaiting an answer. A
+      // refusal after the operator left has no honest screen correlation and
+      // falls through to the ordinary notice path.
+      if (code === "tui_unreachable" && selectedTui !== null) {
+        return withTuiSession(state, selectedTui, tui => ({
           ...tui,
           sent: null,
+          awaitingReply: false,
+          replyUnavailable: false,
           refusal: TUI_UNREACHABLE_GUIDANCE,
+          refusalKind: "owner-gone",
+        }));
+      }
+      if (code !== undefined && SCOPE_CODES[code] && promptPending && selectedTui !== null) {
+        return withTuiSession(state, selectedTui, tui => ({
+          ...tui,
+          sent: null,
+          awaitingReply: false,
+          replyUnavailable: false,
+          refusal: TUI_SCOPE_GUIDANCE,
+          refusalKind: "scope",
         }));
       }
       if (code !== undefined && SCOPE_CODES[code]) {
@@ -424,7 +469,15 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     }
 
     case "tui_prompt":
-      return withTuiSession(state, event.sessionId, tui => ({ ...tui, sent: event.text, refusal: null }));
+      return withTuiSession(state, event.sessionId, tui => ({
+        ...tui,
+        sent: event.text,
+        awaitingReply: true,
+        reply: null,
+        replyUnavailable: false,
+        refusal: null,
+        refusalKind: null,
+      }));
 
     case "tui_activity":
       return applyTuiActivity(state, event.event);
@@ -591,20 +644,37 @@ function withSession(
 
 /**
  * Terminal turn progress, folded as hints about one row. A `turn_start`
- * retires the sent echo (the terminal took the turn) and proves the bridge is
- * back, so it also clears a refusal that a previous prompt earned;
- * `assistant_text` replaces the last reply rather than appending, because the
- * event is a hint, never a transcript; `turn_end` clears the busy mark.
+ * retires the sent echo and proves the bridge is back, so it also clears a
+ * previous refusal. A turn this phone started remains awaiting until its end.
+ * If no readable assistant text arrived by then, the screen names the missing
+ * readback instead of leaving an empty pane that looks stalled.
  */
 function applyTuiActivity(state: ConsoleState, event: TuiActivityEvent): ConsoleState {
   return withTuiSession(state, event.sessionId, tui => {
     switch (event.kind) {
       case "turn_start":
-        return { ...tui, sent: null, busy: true, refusal: null };
+        return {
+          ...tui,
+          sent: null,
+          busy: true,
+          refusal: null,
+          refusalKind: null,
+        };
       case "assistant_text":
-        return event.text === undefined ? tui : { ...tui, reply: event.text };
+        return event.text === undefined
+          ? tui
+          : {
+              ...tui,
+              reply: event.text,
+              replyUnavailable: false,
+            };
       case "turn_end":
-        return { ...tui, busy: false };
+        return {
+          ...tui,
+          busy: false,
+          awaitingReply: false,
+          replyUnavailable: tui.awaitingReply && tui.reply === null,
+        };
     }
   });
 }
@@ -676,6 +746,18 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
 export function canInvite(state: ConsoleState, storedScopes: readonly string[]): boolean {
   if (state.grantedScopes !== undefined) return state.grantedScopes.includes(SCOPE_APPROVE);
   return storedScopes.length === 0 || storedScopes.includes(SCOPE_APPROVE);
+}
+
+/**
+ * Whether this device may steer a live terminal. The daemon's hello wins,
+ * then the stored pairing hint. An empty stored grant means old or unknown,
+ * not missing, so the terminal may still answer and name a real refusal.
+ */
+export function tuiPromptAccess(state: ConsoleState, storedScopes: readonly string[]): TuiPromptAccess {
+  const scopes = state.grantedScopes;
+  if (scopes !== undefined) return scopes.includes(SCOPE_PROMPT) ? "granted" : "missing";
+  if (storedScopes.length === 0) return "unknown";
+  return storedScopes.includes(SCOPE_PROMPT) ? "granted" : "missing";
 }
 
 /** Hints about one terminal session. A row never prompted is not missing, it is blank. */
