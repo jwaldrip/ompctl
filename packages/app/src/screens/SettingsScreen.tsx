@@ -39,8 +39,16 @@ import type { Connection } from "../platform/connection.ts";
  */
 const POLICY_OPTIONS: ReadonlyArray<{ mode: PolicyMode; name: string; governs: string }> = [
   { mode: "strict", name: "Strict", governs: "Asks before every write and every command." },
-  { mode: "standard", name: "Standard", governs: "Writes inside the workspace run on their own; everything else asks." },
-  { mode: "trusted", name: "Trusted", governs: "Commands run on their own too, except critical ones, which still ask." },
+  {
+    mode: "standard",
+    name: "Standard",
+    governs: "Writes inside the workspace run on their own; everything else asks.",
+  },
+  {
+    mode: "trusted",
+    name: "Trusted",
+    governs: "Commands run on their own too, except critical ones, which still ask.",
+  },
 ];
 
 /**
@@ -178,9 +186,7 @@ export function SettingsScreen({
       <View style={styles.header}>
         <Kicker color={ink.muted}>Daemon</Kicker>
         <Display heading>Settings</Display>
-        <Body color={ink.plain}>
-          What this daemon may do without asking, and whether it keeps its Mac awake.
-        </Body>
+        <Body color={ink.plain}>What this daemon may do without asking, and whether it keeps its Mac awake.</Body>
       </View>
 
       {status.kind === "loading" ? (
@@ -201,9 +207,8 @@ export function SettingsScreen({
           {canManage ? null : (
             <View style={styles.notice} testID="settings-readonly-notice">
               <Label color={signal.ochre} style={styles.noticeText}>
-                This pairing can watch but not change: it holds no manage scope. Grant manage when
-                minting this device&rsquo;s credential, from the daemon or from a device that can
-                invite.
+                This pairing can watch but not change: it holds no manage scope. Grant manage when minting this
+                device&rsquo;s credential, from the daemon or from a device that can invite.
               </Label>
             </View>
           )}
@@ -266,8 +271,7 @@ export function SettingsScreen({
             >
               <View style={styles.optionCopy}>
                 <Body color={ink.plain}>
-                  Keeps the daemon&rsquo;s Mac awake while agents run, so long turns do not pause on
-                  sleep.
+                  Keeps the daemon&rsquo;s Mac awake while agents run, so long turns do not pause on sleep.
                 </Body>
               </View>
               <Label
@@ -280,8 +284,8 @@ export function SettingsScreen({
           </View>
 
           <Body color={ink.faint}>
-            Changes persist immediately. The running daemon picks up policy and its sleep guard the
-            next time it restarts.
+            Changes persist immediately. The running daemon picks up policy and its sleep guard the next time it
+            restarts.
           </Body>
         </>
       )}

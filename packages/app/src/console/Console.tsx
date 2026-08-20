@@ -39,8 +39,8 @@ import { ConnectionSwitcherScreen } from "../screens/ConnectionSwitcherScreen.ts
 import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { InviteScreen } from "../screens/InviteScreen.tsx";
 import { RemoteStartScreen } from "../screens/RemoteStartScreen.tsx";
-import { SettingsScreen } from "../screens/SettingsScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
+import { SettingsScreen } from "../screens/SettingsScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";

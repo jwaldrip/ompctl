@@ -41,6 +41,7 @@ import {
   type SessionLiveStatus,
   type SessionQuery,
   type SessionSortDir,
+  type SessionSortKey,
   type SessionSummary,
   type SkillSummary,
   type Store,
@@ -1719,10 +1720,7 @@ export class Gateway {
         try {
           return Response.json(config.read());
         } catch (err) {
-          return Response.json(
-            { error: err instanceof Error ? err.message : "settings read failed" },
-            { status: 502 },
-          );
+          return Response.json({ error: err instanceof Error ? err.message : "settings read failed" }, { status: 502 });
         }
       }
 
@@ -1741,10 +1739,7 @@ export class Gateway {
         config.apply(settings);
         return Response.json(config.read());
       } catch (err) {
-        return Response.json(
-          { error: err instanceof Error ? err.message : "settings apply failed" },
-          { status: 502 },
-        );
+        return Response.json({ error: err instanceof Error ? err.message : "settings apply failed" }, { status: 502 });
       }
     }
 
@@ -2966,7 +2961,8 @@ export class Gateway {
           this.#send(ws, {
             t: "error",
             code: "bad_frame",
-            message: "settings_write needs exactly a policyMode of strict, standard, or trusted and a keepAwake boolean",
+            message:
+              "settings_write needs exactly a policyMode of strict, standard, or trusted and a keepAwake boolean",
           });
           return;
         }

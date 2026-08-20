@@ -460,6 +460,7 @@ export interface ClientEventMap {
   device_invited: DeviceInvitedEvent;
   fs_listing: FsListingEvent;
   clone_progress: CloneProgressEvent;
+  clone_done: CloneDoneEvent;
   settings: SettingsEvent;
   session_tail: SessionTailEvent;
 }
