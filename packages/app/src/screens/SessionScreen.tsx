@@ -9,7 +9,7 @@
 import type { Agent, ApprovalChoice, ApprovalScope, PlanReviewChoice, WebViewActionResult } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
-import { Keyboard, Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { webViewCapability } from "../browser";
 import { Composer } from "../components/Composer.tsx";
@@ -24,6 +24,7 @@ import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { agentSignal, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import type { SessionState } from "../session/model.ts";
 import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
 
@@ -67,23 +68,9 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   const narration = useNarration(session.entries, props.narrationSpeech);
 
   const [browserOpen, setBrowserOpen] = useState(false);
-  // The keyboard's measured height, paid as padding below the composer.
-  //
-  // KeyboardAvoidingView was here and did nothing on an iPad: the composer's
-  // frame was identical with the keyboard up and down, so the send control sat
-  // behind the keyboard and neither a person nor an automated run could reach
-  // it. Measuring what the platform reports and paying it ourselves is the
-  // pattern that actually holds, and it is one mechanism rather than two, so
-  // nothing double counts. Web reports no keyboard, which is correct there.
-  const [keyboardInset, setKeyboardInset] = useState(0);
-  useEffect(() => {
-    const shown = Keyboard.addListener("keyboardDidShow", event => setKeyboardInset(event.endCoordinates.height));
-    const hidden = Keyboard.addListener("keyboardDidHide", () => setKeyboardInset(0));
-    return () => {
-      shown.remove();
-      hidden.remove();
-    };
-  }, []);
+  // Shared with every other bottom-anchored control, so the mechanism is one
+  // thing rather than a copy per screen.
+  const keyboardInset = useKeyboardInset();
   const driver = useRef<WebViewTarget | null>(null);
   const executedRequestId = useRef<string | null>(null);
 
@@ -290,10 +277,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           never both: while the keyboard is up it covers that inset entirely,
           so paying both would leave a gap the height of the indicator.
         */}
-        <View
-          style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : insets.bottom }}
-          testID="session-composer-safe"
-        >
+        <View style={{ paddingBottom: bottomInsetFor(keyboardInset, insets.bottom) }} testID="session-composer-safe">
           <Composer
             enabled={connection === "connected"}
             busy={busy}

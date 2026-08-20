@@ -30,7 +30,7 @@ import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useRef, useState } from "react";
 import type { ListRenderItemInfo } from "react-native";
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
@@ -38,6 +38,7 @@ import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 
 export interface TerminalSessionScreenProps {
@@ -77,6 +78,9 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   const tone = status === null ? signal.oxide : signal[SESSION_STATUS_SIGNALS[status]];
   const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
   const insets = useSafeAreaInsets();
+  // The same mechanism the agent log uses: KeyboardAvoidingView is inert on an
+  // iPad, so the keyboard's measured height is paid as padding instead.
+  const keyboardInset = useKeyboardInset();
 
   const [text, setText] = useState("");
   const trimmed = text.trim();
@@ -282,49 +286,48 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </Label>
       </View>
 
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
-        {/*
-          Home-indicator inset lives on a child, not on KeyboardAvoidingView,
-          for the same reason as the agent log: KAV's padding behavior owns
-          paddingBottom while the keyboard is moving.
-        */}
-        <View style={{ paddingBottom: insets.bottom }} testID="terminal-composer-safe">
-          <View style={styles.composer}>
-            <TextInput
-              testID="terminal-composer-input"
-              style={[styles.field, type.body, !composerEnabled && styles.fieldOff]}
-              value={text}
-              onChangeText={setText}
-              editable={composerEnabled}
-              multiline
-              placeholder={placeholder}
-              placeholderTextColor={ink.faint}
-              // Enter sends on a keyboard; Shift+Enter is a newline. Sending
-              // stays available mid-turn: a second prompt steers the running
-              // turn, which is the delivery the daemon defaults to.
-              submitBehavior="submit"
-              onSubmitEditing={submit}
-            />
+      {/*
+        Below the composer sits either the keyboard or the home indicator,
+        never both. This was a KeyboardAvoidingView, which does nothing on an
+        iPad: the send control's frame is identical with the keyboard up and
+        down, so the control sits behind the keyboard and nobody can press it.
+      */}
+      <View style={{ paddingBottom: bottomInsetFor(keyboardInset, insets.bottom) }} testID="terminal-composer-safe">
+        <View style={styles.composer}>
+          <TextInput
+            testID="terminal-composer-input"
+            style={[styles.field, type.body, !composerEnabled && styles.fieldOff]}
+            value={text}
+            onChangeText={setText}
+            editable={composerEnabled}
+            multiline
+            placeholder={placeholder}
+            placeholderTextColor={ink.faint}
+            // Enter sends on a keyboard; Shift+Enter is a newline. Sending
+            // stays available mid-turn: a second prompt steers the running
+            // turn, which is the delivery the daemon defaults to.
+            submitBehavior="submit"
+            onSubmitEditing={submit}
+          />
 
-            <Pressable
-              testID="terminal-composer-send"
-              accessibilityRole="button"
-              accessibilityLabel="Send to this terminal"
-              accessibilityState={{ disabled: !canSend }}
-              disabled={!canSend}
-              onPress={submit}
-              style={({ pressed }) => [
-                styles.action,
-                { borderColor: canSend ? signal.sage : ground.edge },
-                pressed && { backgroundColor: ground.active },
-              ]}
-            >
-              <Glyph name="send" size={14} color={canSend ? signal.sage : ink.faint} />
-              <Label color={canSend ? signal.sage : ink.faint}>Send</Label>
-            </Pressable>
-          </View>
+          <Pressable
+            testID="terminal-composer-send"
+            accessibilityRole="button"
+            accessibilityLabel="Send to this terminal"
+            accessibilityState={{ disabled: !canSend }}
+            disabled={!canSend}
+            onPress={submit}
+            style={({ pressed }) => [
+              styles.action,
+              { borderColor: canSend ? signal.sage : ground.edge },
+              pressed && { backgroundColor: ground.active },
+            ]}
+          >
+            <Glyph name="send" size={14} color={canSend ? signal.sage : ink.faint} />
+            <Label color={canSend ? signal.sage : ink.faint}>Send</Label>
+          </Pressable>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </SafeScreen>
   );
 }
