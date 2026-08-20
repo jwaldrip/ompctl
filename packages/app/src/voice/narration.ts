@@ -155,11 +155,20 @@ function errorMessage(cause: unknown): string {
  * far. Cursors retain the prefix already observed, and only the new suffix can
  * enter the speech queue. Tool, system, user, and thought rows never get a
  * cursor, so they cannot be spoken accidentally.
+ *
+ * A row is identified by its position among the prose rows, never by its id.
+ * The transcript coalesces a reply's chunks into one row that adopts the id of
+ * the newest chunk, and this daemon changes that id mid-sentence: `c7be8049`
+ * then `febf0117` for one text. Keyed by id, the adopted id reads as a row
+ * nobody has spoken from yet, and the reply is read again from the top with the
+ * operator listening. Prose rows only ever append, never reorder, so position
+ * holds for the life of a row, across both an id the wire changed and the
+ * resume of a message that had already settled.
  */
 export class SessionNarrator {
   readonly #speech: NarrationSpeech;
   readonly #onFailure: (message: string) => void;
-  readonly #cursors = new Map<string, NarrationCursor>();
+  readonly #cursors: NarrationCursor[] = [];
   #enabled = false;
   #generation = 0;
   #tail: Promise<void> = Promise.resolve();
@@ -176,9 +185,9 @@ export class SessionNarrator {
 
     this.#enabled = true;
     this.#generation += 1;
-    this.#cursors.clear();
+    this.#cursors.length = 0;
     for (const entry of assistantProse(entries)) {
-      this.#cursors.set(entry.id, { seen: entry.text, pending: "" });
+      this.#cursors.push({ seen: entry.text, pending: "" });
     }
     return true;
   }
@@ -187,20 +196,20 @@ export class SessionNarrator {
   update(entries: readonly Entry[]): void {
     if (!this.#enabled) return;
 
-    for (const entry of assistantProse(entries)) {
-      const before = this.#cursors.get(entry.id) ?? { seen: "", pending: "" };
+    for (const [index, entry] of assistantProse(entries).entries()) {
+      const before = this.#cursors[index] ?? { seen: "", pending: "" };
 
       // ACP message chunks append. If a future producer replaces text instead,
       // baseline the replacement rather than repeating a prefix the user may
       // already have heard.
       if (!entry.text.startsWith(before.seen)) {
-        this.#cursors.set(entry.id, { seen: entry.text, pending: "" });
+        this.#cursors[index] = { seen: entry.text, pending: "" };
         continue;
       }
 
       const delta = entry.text.slice(before.seen.length);
       const segments = takeSegments(before.pending + delta, !entry.streaming);
-      this.#cursors.set(entry.id, { seen: entry.text, pending: segments.pending });
+      this.#cursors[index] = { seen: entry.text, pending: segments.pending };
       for (const segment of segments.ready) this.#enqueue(segment);
     }
   }
@@ -210,7 +219,7 @@ export class SessionNarrator {
     if (!this.#enabled) return;
     this.#enabled = false;
     this.#generation += 1;
-    this.#cursors.clear();
+    this.#cursors.length = 0;
 
     const queued = this.#tail.catch(() => {});
     const stopped = this.#speech.stop().catch(cause => {
@@ -236,7 +245,7 @@ export class SessionNarrator {
         if (!this.#enabled || generation !== this.#generation) return;
         this.#enabled = false;
         this.#generation += 1;
-        this.#cursors.clear();
+        this.#cursors.length = 0;
         this.#onFailure(`Narration stopped: ${errorMessage(cause)}`);
       });
   }

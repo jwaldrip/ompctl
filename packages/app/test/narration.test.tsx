@@ -5,7 +5,7 @@ import type { Agent } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Entry, SessionState } from "../src/session/model.ts";
-import { EMPTY_SESSION } from "../src/session/model.ts";
+import { EMPTY_SESSION, endTurn, reduce } from "../src/session/model.ts";
 
 // These modules import React Native. Loading them after rnw.ts is what makes
 // this test exercise the web target instead of Bun trying to load native code.
@@ -65,6 +65,50 @@ describe("session narration", () => {
     await narrator.whenIdle();
 
     expect(speech.spoken).toEqual(["The first sentence.", "The second sentence."]);
+  });
+
+  /**
+   * The wire changes a reply's message id mid-sentence, and the transcript
+   * coalesces those chunks into one row which adopts the newest id. So a row's
+   * id is not its identity: remembering how much of a row has been spoken
+   * against that id loses the record the moment the id moves, and the reply is
+   * read again from the top with the operator listening.
+   *
+   * Driven through the reducer rather than hand-built rows, because the point
+   * is what this transcript actually does with that wire.
+   */
+  test("an id the wire changes mid-reply does not re-read what was already spoken", async () => {
+    const speech = new RecordingSpeech();
+    const narrator = new SessionNarrator(speech);
+    narrator.start([]);
+
+    const chunk = (messageId: string, text: string): unknown => ({
+      sessionUpdate: "agent_message_chunk",
+      messageId,
+      content: { type: "text", text },
+    });
+
+    const rowIds = new Set<string>();
+    let state = EMPTY_SESSION;
+    for (const frame of [
+      chunk("c7be8049", "Probe one is green. "),
+      chunk("febf0117", "Probe two is "),
+      chunk("febf0117", "green too."),
+    ]) {
+      state = reduce(state, frame);
+      for (const entry of state.entries) if (entry.kind === "assistant") rowIds.add(entry.id);
+      narrator.update(state.entries);
+    }
+    state = endTurn(state);
+    narrator.update(state.entries);
+    await narrator.whenIdle();
+
+    // Guards the case itself. Without these the assertion below would also pass
+    // on a stream that split the reply in two, or never changed the id at all.
+    expect(state.entries.length).toBe(1);
+    expect([...rowIds]).toEqual(["c7be8049", "febf0117"]);
+
+    expect(speech.spoken).toEqual(["Probe one is green.", "Probe two is green too."]);
   });
 
   test("turning narration off stops the current speech and drops queued reply text", async () => {
