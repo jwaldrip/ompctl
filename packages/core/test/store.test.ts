@@ -7,7 +7,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Agent, Device } from "../src/index.ts";
+import type { Agent, Device, Run } from "../src/index.ts";
 import { REDACTED, redact, Store } from "../src/index.ts";
 
 const stores: Store[] = [];
@@ -321,17 +321,33 @@ describe("interrupted runs", () => {
     // `hasActiveRun` stays true, and a singleton routine never fires again.
     const s = fresh();
     const at = "2026-01-01T00:00:00.000Z";
-    s.upsertRun({ id: "run_q", routineId: "rtn_a", state: "queued", startedAt: at });
-    s.upsertRun({ id: "run_r", routineId: "rtn_a", state: "running", startedAt: at });
+    const actions = (state: Run["actions"][number]["state"], summary?: string): Run["actions"] => [
+      {
+        actionId: "act_a",
+        actionName: "A",
+        index: 0,
+        state,
+        startedAt: at,
+        ...(summary === undefined ? {} : { summary }),
+      },
+    ];
+    s.upsertRun({ id: "run_q", routineId: "rtn_a", state: "queued", startedAt: at, actions: actions("queued") });
+    s.upsertRun({ id: "run_r", routineId: "rtn_a", state: "running", startedAt: at, actions: actions("running") });
     s.upsertRun({
       id: "run_ok",
       routineId: "rtn_a",
       state: "succeeded",
       startedAt: at,
       finishedAt: at,
-      summary: "nothing broke",
+      actions: actions("succeeded", "nothing broke"),
     });
-    s.upsertRun({ id: "run_other", routineId: "rtn_b", state: "running", startedAt: at });
+    s.upsertRun({
+      id: "run_other",
+      routineId: "rtn_b",
+      state: "running",
+      startedAt: at,
+      actions: actions("running"),
+    });
 
     expect(s.failInterruptedRuns("the daemon exited")).toBe(3);
 
@@ -344,7 +360,7 @@ describe("interrupted runs", () => {
     // survive untouched.
     expect(settled.get("run_ok")?.state).toBe("succeeded");
     expect(settled.get("run_ok")?.error).toBeUndefined();
-    expect(settled.get("run_ok")?.summary).toBe("nothing broke");
+    expect(settled.get("run_ok")?.actions[0]?.summary).toBe("nothing broke");
 
     expect(s.hasActiveRun("rtn_a")).toBe(false);
     expect(s.hasActiveRun("rtn_b")).toBe(false);

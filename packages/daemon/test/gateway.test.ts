@@ -662,6 +662,16 @@ describe("webhook route", () => {
               state: "succeeded",
               startedAt: "2026-01-01T00:00:00.000Z",
               finishedAt: "2026-01-01T00:00:01.000Z",
+              actions: [
+                {
+                  actionId: "act_webhook",
+                  actionName: "Webhook",
+                  index: 0,
+                  state: "succeeded",
+                  startedAt: "2026-01-01T00:00:00.000Z",
+                  finishedAt: "2026-01-01T00:00:01.000Z",
+                },
+              ],
             },
           };
         },
@@ -683,6 +693,83 @@ describe("webhook route", () => {
     });
     expect(refused.status).toBe(403);
     expect(await refused.json()).toEqual({ error: "webhook_refused" });
+  });
+});
+
+describe("routine socket frames", () => {
+  test("a hub-relayed client writes ordered actions, runs them, and receives every outcome", async () => {
+    const h = await harness({
+      routines: {
+        runNow: async routineId => ({
+          id: "run_socket",
+          routineId,
+          state: "failed",
+          startedAt: "2026-08-19T00:00:00.000Z",
+          finishedAt: "2026-08-19T00:00:02.000Z",
+          actions: [
+            {
+              actionId: "text-back",
+              actionName: "Text back",
+              index: 0,
+              state: "failed",
+              startedAt: "2026-08-19T00:00:00.000Z",
+              finishedAt: "2026-08-19T00:00:01.000Z",
+              error: "text provider refused",
+            },
+            {
+              actionId: "webhook",
+              actionName: "Webhook",
+              index: 1,
+              state: "succeeded",
+              startedAt: "2026-08-19T00:00:01.000Z",
+              finishedAt: "2026-08-19T00:00:02.000Z",
+              summary: "delivered",
+            },
+          ],
+          error: "text provider refused",
+        }),
+        fireWebhook: async () => ({ accepted: false, reason: "not_found" }),
+      },
+    });
+    const token = await h.pair("phone", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT]);
+    const socket = await connect(h.port, token);
+    if (!socket) throw new Error("socket did not open");
+    await socket.next(frame => frame.t === "hello", "hello");
+
+    socket.send({
+      t: "routine_write",
+      routine: {
+        id: "rtn_socket",
+        name: "Incoming call",
+        enabled: true,
+        trigger: { kind: "webhook", secretRef: "whsec_socket" },
+        actions: [
+          { id: "text-back", name: "Text back", prompt: "send text", cwd: "/work", labels: {} },
+          { id: "webhook", name: "Webhook", prompt: "call webhook", cwd: "/work", labels: {} },
+        ],
+        singleton: false,
+        labels: {},
+        createdAt: "2026-08-19T00:00:00.000Z",
+      },
+    });
+    const snapshot = await socket.next(frame => frame.t === "routines", "routine snapshot");
+    if (snapshot.t !== "routines") throw new Error("expected routines frame");
+    expect(snapshot.routines[0]?.actions.map(action => action.id)).toEqual(["text-back", "webhook"]);
+    expect(h.store.listRoutines()[0]?.actions.every(action => action.host.kind === "local")).toBe(true);
+
+    socket.send({ t: "routine_run", routineId: "rtn_socket" });
+    const ran = await socket.next(frame => frame.t === "routine_ran", "routine outcome");
+    if (ran.t !== "routine_ran") throw new Error("expected routine_ran frame");
+    expect(ran.run.actions.map(action => [action.actionId, action.state])).toEqual([
+      ["text-back", "failed"],
+      ["webhook", "succeeded"],
+    ]);
+
+    socket.send({ t: "routine_secret_rotate", routineId: "rtn_socket" });
+    const rotated = await socket.next(frame => frame.t === "routine_secret", "routine secret");
+    if (rotated.t !== "routine_secret") throw new Error("expected routine_secret frame");
+    expect(rotated.routineId).toBe("rtn_socket");
+    expect(rotated.secret.length).toBeGreaterThan(20);
   });
 });
 

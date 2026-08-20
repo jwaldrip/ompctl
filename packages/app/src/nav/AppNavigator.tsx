@@ -51,6 +51,7 @@ export type ShellParamList = {
   newSession: undefined;
   agentConfig: { agentId: AgentId };
   settings: undefined;
+  routines: undefined;
 };
 
 /** Which detail surface the console model says is open. */
@@ -91,6 +92,8 @@ export interface ShellSurfaces {
    * phone the same as a direct one.
    */
   settings: (back: () => void) => JSX.Element;
+  /** Configure ordered routine actions and inspect their individual outcomes. */
+  routines: (back: () => void) => JSX.Element;
   /**
    * Browse the daemon's machine and start a session, or clone a repo, where
    * the operator chooses. `done` is the way back, on the same one-way-out
@@ -209,6 +212,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
           <Stack.Screen name="invite" component={InviteRoute} options={INVITE_OPTIONS} />
           <Stack.Screen name="newSession" component={NewSessionRoute} options={NEW_SESSION_OPTIONS} />
           <Stack.Screen name="settings" component={SettingsRoute} options={SETTINGS_OPTIONS} />
+          <Stack.Screen name="routines" component={RoutinesRoute} options={ROUTINES_OPTIONS} />
         </Stack.Navigator>
       </NavigationContainer>
     </SurfaceContext.Provider>
@@ -221,6 +225,7 @@ const CONNECTIONS_OPTIONS = { title: "Connections" } as const;
 const INVITE_OPTIONS = { title: "Invite a device" } as const;
 const NEW_SESSION_OPTIONS = { title: "New session" } as const;
 const SETTINGS_OPTIONS = { title: "Daemon settings" } as const;
+const ROUTINES_OPTIONS = { title: "Routines" } as const;
 
 function FleetRoute(): JSX.Element {
   return useSurfaces().fleet();
@@ -258,6 +263,10 @@ function InviteRoute({ navigation }: NativeStackScreenProps<ShellParamList, "inv
 
 function SettingsRoute({ navigation }: NativeStackScreenProps<ShellParamList, "settings">): JSX.Element {
   return useSurfaces().settings(() => navigation.goBack());
+}
+
+function RoutinesRoute({ navigation }: NativeStackScreenProps<ShellParamList, "routines">): JSX.Element {
+  return useSurfaces().routines(() => navigation.goBack());
 }
 
 function NewSessionRoute({ navigation }: NativeStackScreenProps<ShellParamList, "newSession">): JSX.Element {
@@ -319,6 +328,16 @@ const MENU_ITEMS: readonly MenuItem[] = [
     go: navigation => {
       navigation.goBack();
       navigation.navigate("newSession");
+    },
+  },
+  {
+    title: "Routines",
+    detail: "Fan one trigger out to several ordered actions",
+    glyph: "tasks",
+    testID: "menu-routines",
+    go: navigation => {
+      navigation.goBack();
+      navigation.navigate("routines");
     },
   },
 ];
