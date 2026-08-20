@@ -1,9 +1,4 @@
-import {
-  type RemoteRoutine,
-  type Run,
-  SCOPE_MANAGE,
-  SCOPE_PROMPT,
-} from "@ompd/core/contracts";
+import { type RemoteRoutine, type Run, SCOPE_MANAGE, SCOPE_PROMPT } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -90,9 +85,7 @@ export function RoutinesScreen({
       }),
       client.on("error", event => {
         setPending(null);
-        setStatus(current =>
-          current.kind === "loading" ? { kind: "failed", message: event.message } : current,
-        );
+        setStatus(current => (current.kind === "loading" ? { kind: "failed", message: event.message } : current));
       }),
     ];
     client.start();
@@ -107,20 +100,17 @@ export function RoutinesScreen({
     client.readRoutines();
   }, [client]);
 
-  const updateAction = useCallback(
-    (index: number, field: "name" | "prompt" | "cwd", value: string) => {
-      setDraft(current => {
-        if (current === null) return null;
-        return {
-          ...current,
-          actions: current.actions.map((action, actionIndex) =>
-            actionIndex === index ? { ...action, [field]: value } : action,
-          ),
-        };
-      });
-    },
-    [],
-  );
+  const updateAction = useCallback((index: number, field: "name" | "prompt" | "cwd", value: string) => {
+    setDraft(current => {
+      if (current === null) return null;
+      return {
+        ...current,
+        actions: current.actions.map((action, actionIndex) =>
+          actionIndex === index ? { ...action, [field]: value } : action,
+        ),
+      };
+    });
+  }, []);
 
   const save = useCallback(() => {
     if (!canManage || draft === null || draft.actions.length === 0) return;
@@ -324,7 +314,10 @@ export function RoutinesScreen({
                   setDraft(current =>
                     current === null
                       ? null
-                      : { ...current, actions: current.actions.filter((_candidate, actionIndex) => actionIndex !== index) },
+                      : {
+                          ...current,
+                          actions: current.actions.filter((_candidate, actionIndex) => actionIndex !== index),
+                        },
                   )
                 }
                 style={styles.smallButton}
@@ -346,7 +339,13 @@ export function RoutinesScreen({
                         ...current,
                         actions: [
                           ...current.actions,
-                          { id: mintId("act"), name: `Action ${current.actions.length + 1}`, prompt: "", cwd: "", labels: {} },
+                          {
+                            id: mintId("act"),
+                            name: `Action ${current.actions.length + 1}`,
+                            prompt: "",
+                            cwd: "",
+                            labels: {},
+                          },
                         ],
                       },
                 )
@@ -357,7 +356,12 @@ export function RoutinesScreen({
               <Glyph name="newTask" size={13} color={signal.sage} />
               <Label color={signal.sage}>Add action</Label>
             </Pressable>
-            <Pressable accessibilityRole="button" onPress={() => setDraft(null)} style={styles.smallButton} testID="routine-cancel">
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setDraft(null)}
+              style={styles.smallButton}
+              testID="routine-cancel"
+            >
               <Label color={ink.muted}>Cancel</Label>
             </Pressable>
             <Pressable accessibilityRole="button" onPress={save} style={styles.smallButton} testID="routine-save">
@@ -388,14 +392,42 @@ const styles = StyleSheet.create({
     borderColor: ground.line,
     backgroundColor: ground.raised,
   },
-  card: { gap: space.step, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line, backgroundColor: ground.raised },
+  card: {
+    gap: space.step,
+    padding: space.step,
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+    backgroundColor: ground.raised,
+  },
   cardHeader: { flexDirection: "row", alignItems: "flex-start", gap: space.step },
   copy: { flex: 1, gap: space.hair },
   action: { flexDirection: "row", alignItems: "center", gap: space.step, paddingTop: space.hair },
-  actionOrder: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: ground.active },
+  actionOrder: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: ground.active,
+  },
   controls: { flexDirection: "row", flexWrap: "wrap", gap: space.hair },
-  smallButton: { minHeight: TOUCH_TARGET, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.hair, paddingHorizontal: space.step },
-  primaryButton: { minHeight: TOUCH_TARGET, marginHorizontal: space.wide, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.hair, backgroundColor: signal.sage },
+  smallButton: {
+    minHeight: TOUCH_TARGET,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.hair,
+    paddingHorizontal: space.step,
+  },
+  primaryButton: {
+    minHeight: TOUCH_TARGET,
+    marginHorizontal: space.wide,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.hair,
+    backgroundColor: signal.sage,
+  },
   secret: { gap: space.hair, padding: space.step, backgroundColor: ground.active },
   editor: { gap: space.step, paddingHorizontal: space.wide, paddingBottom: space.wide },
   editorAction: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },
@@ -407,5 +439,13 @@ const styles = StyleSheet.create({
     ...type.body,
   },
   promptInput: { minHeight: 88, paddingVertical: space.step, textAlignVertical: "top" },
-  back: { minHeight: TOUCH_TARGET, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.hair, borderTopWidth: stroke.hair, borderTopColor: ground.edge },
+  back: {
+    minHeight: TOUCH_TARGET,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.hair,
+    borderTopWidth: stroke.hair,
+    borderTopColor: ground.edge,
+  },
 });

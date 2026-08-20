@@ -378,9 +378,7 @@ export class Store {
     );
     if (columns.has("actions_json")) return;
 
-    const rows = this.#db.query("SELECT * FROM runs ORDER BY started_at").all() as Array<
-      Record<string, string | null>
-    >;
+    const rows = this.#db.query("SELECT * FROM runs ORDER BY started_at").all() as Array<Record<string, string | null>>;
     const firstActions = new Map(this.listRoutines().map(routine => [routine.id, routine.actions[0]]));
     this.#db.transaction(() => {
       this.#db.run("DROP INDEX IF EXISTS runs_routine");
@@ -775,9 +773,9 @@ export class Store {
    * why nobody settled it.
    */
   failInterruptedRuns(error: string): number {
-    const rows = this.#db
-      .query(`SELECT * FROM runs WHERE state IN ('queued','running')`)
-      .all() as Array<Record<string, string | null>>;
+    const rows = this.#db.query(`SELECT * FROM runs WHERE state IN ('queued','running')`).all() as Array<
+      Record<string, string | null>
+    >;
     const finishedAt = new Date().toISOString();
     for (const row of rows) {
       const actions = JSON.parse(row.actions_json as string) as Run["actions"];
