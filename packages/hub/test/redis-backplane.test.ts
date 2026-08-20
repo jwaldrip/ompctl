@@ -11,8 +11,8 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { RedisClient } from "bun";
 import { generateIdentity, TunnelDaemon } from "@ompd/tunnel";
+import { RedisClient } from "bun";
 import { RecordingAudit } from "../src/audit.ts";
 import type { RelayEnvelope } from "../src/backplane.ts";
 import { Hub } from "../src/hub.ts";

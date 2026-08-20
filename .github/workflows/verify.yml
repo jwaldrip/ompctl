@@ -21,6 +21,23 @@ jobs:
     name: Typecheck + tests
     runs-on: ubuntu-22.04
     timeout-minutes: 25
+    # The hub's redis-backed backplane is the part that can only work or fail
+    # for real against a real redis, so its tests are skipped rather than run
+    # against the memory implementation when none is named. `hub-deploy.yml`
+    # provides one, but that workflow is `workflow_dispatch` only, so nothing
+    # automatic has ever run them: a relay that stopped routing while still
+    # answering `linked` was invisible to every check in this repository. It is
+    # here, on every pull request, for the same reason the rest of this workflow
+    # is deliberately unfiltered.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       # Full history: the provenance sweep walks every ref, and the default
       # depth-1 checkout would leave it auditing a single commit.
@@ -37,6 +54,8 @@ jobs:
       - name: Typecheck and lint every workspace
         run: bun run check
       - name: Unit and integration tests
+        env:
+          OMPD_TEST_REDIS_URL: redis://127.0.0.1:6379
         run: bun run test
       # Guards the scrubbed history. Runs on every PR because a single careless
       # paste into any file would reintroduce what a history rewrite removed, and
