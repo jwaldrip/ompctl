@@ -53,6 +53,7 @@ import {
   fleetClearances,
   openSessionTarget,
   sessionFor,
+  tuiPromptAccess,
   tuiSessionFor,
 } from "./state.ts";
 import { createOmpdClient, useConsole } from "./useConsole.ts";
@@ -226,9 +227,9 @@ export function Console({
     );
   };
 
-  // A terminal session's prompt surface is not a variant of the log: there is
-  // no transcript to attach to. Keyed like the log so switching rows builds a
-  // fresh composer instead of carrying one row's draft into another's.
+  // A terminal session has no agent stream to attach to. It gets a bounded
+  // transcript tail plus live progress hints, and stays keyed like the agent
+  // log so switching rows never carries one session's draft into another.
   const terminal = (sessionId: string, back: () => void): JSX.Element => {
     const row = state.sessionIndex.find(candidate => candidate.id === sessionId);
     return (
@@ -236,6 +237,8 @@ export function Console({
         key={sessionId}
         title={row?.title ?? "Terminal session"}
         cwd={row?.cwd ?? row?.flattenedDir ?? ""}
+        status={row?.status ?? null}
+        promptAccess={tuiPromptAccess(state, connection.scopes)}
         tui={tuiSessionFor(state, sessionId)}
         connection={state.connection}
         onBack={back}
