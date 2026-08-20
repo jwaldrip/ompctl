@@ -49,7 +49,7 @@ describe("a captured turn", () => {
     expect(state.activity.tools).toBe(4);
   });
 
-  test("seven chunks coalesce into one message per messageId", () => {
+  test("seven chunks coalesce into one reply, whatever ids the wire used", () => {
     const state = reduceAll(EMPTY_SESSION, STREAM);
     const assistants = state.entries.filter((entry): entry is AssistantEntry => entry.kind === "assistant");
     const ids = new Set(
@@ -60,10 +60,26 @@ describe("a captured turn", () => {
           Reflect.get(update, "sessionUpdate") === "agent_message_chunk",
       ).map(update => Reflect.get(update as object, "messageId")),
     );
-    // Seven payloads, two messages. A bubble per chunk is the bug this catches.
+    // Two ids, one reply. Reading this fixture as two messages was an
+    // inference: capturing the socket showed this daemon changing the message
+    // id mid-sentence, `c7be8049` then `febf0117`, for one text. Splitting
+    // there is what put half a token in each of two rows on an iPad.
     expect(ids.size).toBe(2);
-    expect(assistants.length).toBe(2);
+    expect(assistants.length).toBe(1);
     expect(assistants[0]?.text.length).toBeGreaterThan(40);
+  });
+
+  test("a chunk that names its message continues the row it started", () => {
+    // Observed on a real iPad: the reply arrived as one text block from the
+    // daemon, and the transcript showed it as two rows, so no row held the
+    // whole token and a round trip that had actually succeeded read as failed.
+    const state = reduceAll(EMPTY_SESSION, [
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ompctl-path-" } },
+      { sessionUpdate: "agent_message_chunk", messageId: "m_named", content: { type: "text", text: "abc123" } },
+    ]);
+    const assistants = state.entries.filter((entry): entry is AssistantEntry => entry.kind === "assistant");
+    expect(assistants.length).toBe(1);
+    expect(assistants[0]?.text).toBe("ompctl-path-abc123");
   });
 
   test("a settled turn leaves nothing streaming", () => {

@@ -122,7 +122,7 @@ function fileResponse(rel: string): Response | null {
   });
 }
 
-Bun.serve({
+const server = Bun.serve({
   port,
   hostname: "0.0.0.0",
   fetch(req) {
@@ -143,4 +143,7 @@ Bun.serve({
   },
 });
 
-console.log(JSON.stringify({ severity: "INFO", message: "ompctl web listening", port }));
+// The port the socket actually bound, not the one that was asked for: PORT=0
+// means "any free port", and a caller that has to find this server needs the
+// answer rather than the request.
+console.log(JSON.stringify({ severity: "INFO", message: "ompctl web listening", port: server.port }));
