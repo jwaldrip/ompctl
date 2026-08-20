@@ -40,20 +40,19 @@ afterAll(() => {
  * that line rather than polling on a timer. A fixed sleep would guess at the
  * race and pay the guess on every CI run; the log is the actual event.
  *
- * The port is high and random because an unrelated dev server holding a
- * conventional port once caused a check in this repo to audit a completely
- * different service. Readiness is still confirmed from our own process's output,
- * so a stranger on the port cannot satisfy it.
+ * The port is chosen by the OS, not guessed: a random high port collided on CI
+ * (`Failed to start server. Is port 45300 in use?`) because two runs picked the
+ * same number, and a wider random range only makes that rarer. PORT=0 asks for
+ * any free port and the server reports the one it bound, so there is no number
+ * left to collide over. Readiness is still confirmed from our own process's
+ * output, so a stranger on a port cannot satisfy it.
  */
 async function start(env: Record<string, string>): Promise<Started> {
-  const port = 45000 + Math.floor(Math.random() * 900);
   const proc = Bun.spawn(["bun", serverPath], {
-    env: { ...process.env, PORT: String(port), ...env },
+    env: { ...process.env, PORT: "0", ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
-  const started: Started = { base: `http://127.0.0.1:${port}`, stop: () => proc.kill() };
-  running.push(started);
 
   const decoder = new TextDecoder();
   let seen = "";
@@ -61,7 +60,14 @@ async function start(env: Record<string, string>): Promise<Started> {
   // the losing call and drop chunks.
   for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
     seen += decoder.decode(chunk, { stream: true });
-    if (seen.includes("ompctl web listening")) return started;
+    // The readiness line carries the bound port, which is the only place this
+    // process can learn it once the OS has done the choosing.
+    const port = /"message":"ompctl web listening","port":(\d+)/.exec(seen)?.[1];
+    if (port !== undefined) {
+      const started: Started = { base: `http://127.0.0.1:${port}`, stop: () => proc.kill() };
+      running.push(started);
+      return started;
+    }
   }
 
   proc.kill();

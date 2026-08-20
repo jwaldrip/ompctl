@@ -22,6 +22,10 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
+// Extensionless on purpose: Metro picks `e2e-plaintext.ios.ts` for iOS and the
+// plain module everywhere else. Naming the extension would defeat that and
+// hand every platform the same answer.
+import { E2E_PLAINTEXT_TOKEN } from "../platform/e2e-plaintext";
 
 export function PairScreen({
   notice,
@@ -87,7 +91,10 @@ export function PairScreen({
                 : target.hubUrl}
           </Label>
         )}
-        <Field label="Token" value={token} onChange={setToken} secure testID="pair-token" />
+        {/* Masked for every human launch. The simulator harness unmasks it so
+            iOS does not raise its own save-password sheet, which Detox cannot
+            reach and which would stop an unattended run. */}
+        <Field label="Token" value={token} onChange={setToken} secure={!E2E_PLAINTEXT_TOKEN} testID="pair-token" />
         {token.trim().length === 0 || target?.transport === "direct" ? null : (
           <Label color={credential === null ? signal.ochre : ink.muted} testID="pair-token-kind">
             {credential === null ? "Not a device token" : `Daemon ${credential.daemonId.slice(0, 11)}...`}
