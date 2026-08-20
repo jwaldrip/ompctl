@@ -40,6 +40,7 @@ import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { InviteScreen } from "../screens/InviteScreen.tsx";
 import { RemoteStartScreen } from "../screens/RemoteStartScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
+import { SettingsScreen } from "../screens/SettingsScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
@@ -262,7 +263,7 @@ export function Console({
     ),
     session: log,
     terminal,
-    connections: (back, invite) => (
+    connections: (back, invite, settings) => (
       <ConnectionSwitcherScreen
         canInvite={canInvite(state, connection.scopes)}
         connections={connections}
@@ -270,9 +271,15 @@ export function Console({
         onBack={back}
         onInvite={invite}
         onSelect={onSelectConnection}
+        onSettings={settings}
       />
     ),
     invite: done => <InviteScreen connection={connection} onDone={done} />,
+    // Owns its own socket for the same reason the invite screen does: the
+    // settings ask is small and rare, and it must not compete with the list
+    // for the console's connection. The screen decides from the pairing's
+    // scopes whether it may change anything or only read.
+    settings: back => <SettingsScreen connection={connection} onBack={back} />,
     // This screen owns its own socket rather than borrowing the console's, so
     // browsing and cloning cannot compete with the list for the connection the
     // operator is watching. The cost is that the console does not hear its

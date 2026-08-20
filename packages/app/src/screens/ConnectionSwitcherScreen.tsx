@@ -14,6 +14,7 @@ export function ConnectionSwitcherScreen({
   onBack,
   onInvite,
   onSelect,
+  onSettings,
 }: {
   /**
    * Whether the active pairing may mint a credential, decided by the
@@ -34,6 +35,13 @@ export function ConnectionSwitcherScreen({
    */
   onInvite: () => void;
   onSelect: (id: string) => void;
+  /**
+   * Opens the daemon's own settings. Offered for every pairing, not just
+   * manage-holding ones: the settings screen renders what governs the
+   * machine read-only when the scope to change it is missing, and hiding the
+   * row would hide the reading too.
+   */
+  onSettings: () => void;
 }): JSX.Element {
   return (
     <SafeScreen style={styles.screen} testID="connection-switcher">
@@ -52,6 +60,19 @@ export function ConnectionSwitcherScreen({
           <ConnectionRow active={entry.id === connections.activeId} entry={entry} key={entry.id} onSelect={onSelect} />
         ))}
       </View>
+      <Pressable
+        accessibilityRole="button"
+        onPress={onSettings}
+        style={styles.settingsRow}
+        testID="open-daemon-settings"
+      >
+        <View style={styles.settingsCopy}>
+          <Label>Daemon settings</Label>
+          <Text numberOfLines={1} style={styles.settingsHint}>
+            Policy and keep-awake for the active pairing
+          </Text>
+        </View>
+      </Pressable>
       <Pressable accessibilityRole="button" onPress={onAdd} style={styles.add} testID="add-connection">
         <Text style={styles.addText}>Add connection</Text>
       </Pressable>
@@ -112,6 +133,17 @@ const styles = StyleSheet.create({
   status: { ...type.label },
   statusActive: { color: signal.sage },
   statusIdle: { color: ink.muted },
+  settingsRow: {
+    alignItems: "center",
+    backgroundColor: ground.surface,
+    borderColor: ground.edge,
+    borderWidth: stroke.hair,
+    flexDirection: "row",
+    minHeight: TOUCH_TARGET,
+    padding: space.step,
+  },
+  settingsCopy: { flex: 1, gap: space.tight },
+  settingsHint: { ...type.body, color: ink.muted },
   add: {
     alignItems: "center",
     backgroundColor: signal.sage,

@@ -45,6 +45,7 @@ import {
   type SessionSummary,
   type SkillSummary,
   type Store,
+  type SyncSettings,
   type Task,
   type TuiActivityKind,
   type TuiSteerDelivery,
@@ -426,11 +427,11 @@ export interface ConnectorCatalog {
 /**
  * The two persisted settings that may move between daemons. Binding, hub,
  * binary and credential settings deliberately have no place in this surface.
+ * Lives in the core contracts now that the socket frames carry it, so the
+ * wire and the seam cannot drift apart; re-exported because daemon-side code
+ * and tests reach it through this module.
  */
-export interface SyncSettings {
-  policyMode: "strict" | "standard" | "trusted";
-  keepAwake: boolean;
-}
+export type { SyncSettings };
 
 export interface SyncConfig {
   read(): SyncSettings;
@@ -548,6 +549,29 @@ function parseSyncDocument(value: unknown): SyncDocument | null {
     return null;
   }
   return value as unknown as SyncDocument;
+}
+
+const SYNC_SETTINGS_KEYS: Record<string, true> = {
+  policyMode: true,
+  keepAwake: true,
+};
+
+/**
+ * The exact body `/v1/sync-settings` accepts. Unknown fields are refused
+ * rather than dropped: this surface moves two settings and nothing else, so a
+ * body carrying more is aimed at the wrong endpoint, and silently accepting
+ * the recognizable parts would let that mistake pass as a success.
+ */
+function parseSyncSettings(value: unknown): SyncSettings | null {
+  if (!isRecord(value)) return null;
+  if (Object.keys(value).some(key => SYNC_SETTINGS_KEYS[key] !== true)) return null;
+  if (
+    (value.policyMode !== "strict" && value.policyMode !== "standard" && value.policyMode !== "trusted") ||
+    typeof value.keepAwake !== "boolean"
+  ) {
+    return null;
+  }
+  return { policyMode: value.policyMode, keepAwake: value.keepAwake };
 }
 /**
  * The slice of task lifecycle the gateway needs. `create` and `cancel` take
@@ -1673,6 +1697,50 @@ export class Gateway {
       const secret = randomBytes(32).toString("base64url");
       this.#store.upsertWebhookSecret(routine.trigger.secretRef, createHash("sha256").update(secret).digest("hex"));
       return Response.json({ secret }, { status: 201 });
+    }
+
+    if (path === "/v1/sync-settings" && (req.method === "GET" || req.method === "POST")) {
+      // This is the CLI, curl, and direct-LAN door: the app never calls it,
+      // because a hub relay carries one sealed websocket and proxies no daemon
+      // HTTP, so the phone reaches the same two settings through the
+      // `settings_read`/`settings_write` frames instead. Same seam, same
+      // gates, two doors by transport.
+      //
+      // Reading the daemon's policy is watching; changing it moves the bar
+      // every other scope is measured against, which is `manage`'s job alone.
+      // Export/import stay at `manage` for both verbs because a sync document
+      // is a full state copy; these two settings are safe to watch with `read`
+      // so a watch-only pairing can still see what governs it.
+      const needed = req.method === "GET" ? SCOPE_READ : SCOPE_MANAGE;
+      if (!scopes.has(needed)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const config = this.#syncConfig;
+      if (!config) return Response.json({ error: "sync_unavailable" }, { status: 503 });
+
+      if (req.method === "GET") {
+        try {
+          return Response.json(config.read());
+        } catch (err) {
+          return Response.json({ error: err instanceof Error ? err.message : "settings read failed" }, { status: 502 });
+        }
+      }
+
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const settings = parseSyncSettings(body);
+      if (settings === null) return Response.json({ error: "invalid_settings" }, { status: 400 });
+      try {
+        // Confirmed, not echoed: the response is what the daemon reads back
+        // after applying, so a client renders the state that now persists
+        // rather than the state it asked for.
+        config.apply(settings);
+        return Response.json(config.read());
+      } catch (err) {
+        return Response.json({ error: err instanceof Error ? err.message : "settings apply failed" }, { status: 502 });
+      }
     }
 
     if (path === "/v1/sync/export" && req.method === "GET") {
@@ -2931,6 +2999,84 @@ export class Gateway {
         // `session/set_mode` is a round trip to the agent, and every socket
         // must keep being served while one client's mode change lands.
         void this.#serveAgentConfigWrite(ws, target.sessions, target.sessionId, frame.agentId, frame.modeId);
+        return;
+      }
+
+      case "settings_read": {
+        // The same read gate the HTTP route runs, because a hub-relayed
+        // phone reaches this frame instead of that route and must not meet
+        // a weaker door here. The reply goes to the asking socket only:
+        // settings are an answer to a request, not a broadcast.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "settings requires read scope" });
+          return;
+        }
+        const config = this.#syncConfig;
+        if (!config) {
+          this.#send(ws, {
+            t: "error",
+            code: "settings_unavailable",
+            message: "no settings store is wired into this daemon",
+          });
+          return;
+        }
+        try {
+          this.#send(ws, { t: "settings", ...config.read() });
+        } catch (err) {
+          this.#send(ws, {
+            t: "error",
+            code: "settings_failed",
+            message: err instanceof Error ? err.message : "settings read failed",
+          });
+        }
+        return;
+      }
+
+      case "settings_write": {
+        // The same manage gate the HTTP route takes: this moves the bar every
+        // other scope is measured against, and a read-only phone must not be
+        // able to do it by reaching for the socket instead of the route.
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "settings_write requires manage scope",
+          });
+          return;
+        }
+        // The wire is not a place to assume anyone kept to the contract: the
+        // same value checks the HTTP route runs on its body, on the two
+        // fields this frame owns. The frame's own `t` is the discriminator,
+        // not a field, so it is lifted out before the values are validated.
+        const settings = parseSyncSettings({ policyMode: frame.policyMode, keepAwake: frame.keepAwake });
+        if (settings === null) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message:
+              "settings_write needs exactly a policyMode of strict, standard, or trusted and a keepAwake boolean",
+          });
+          return;
+        }
+        const config = this.#syncConfig;
+        if (!config) {
+          this.#send(ws, {
+            t: "error",
+            code: "settings_unavailable",
+            message: "no settings store is wired into this daemon",
+          });
+          return;
+        }
+        try {
+          config.apply(settings);
+          this.#send(ws, { t: "settings", ...config.read() });
+        } catch (err) {
+          this.#send(ws, {
+            t: "error",
+            code: "settings_failed",
+            message: err instanceof Error ? err.message : "settings apply failed",
+          });
+        }
         return;
       }
 
