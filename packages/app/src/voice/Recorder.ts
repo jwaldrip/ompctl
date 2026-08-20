@@ -78,7 +78,11 @@ export function clipRejection(clip: RecorderClip): string | null {
   if (clip.base64Pcm.length > MAX_AUDIO_BASE64_CHARS) {
     return "the recording is too long for this room";
   }
-  if (!Number.isInteger(clip.sampleRate) || clip.sampleRate < MIN_SAMPLE_RATE_HZ || clip.sampleRate > MAX_SAMPLE_RATE_HZ) {
+  if (
+    !Number.isInteger(clip.sampleRate) ||
+    clip.sampleRate < MIN_SAMPLE_RATE_HZ ||
+    clip.sampleRate > MAX_SAMPLE_RATE_HZ
+  ) {
     return `this build recorded at ${clip.sampleRate} Hz, which the room cannot carry`;
   }
   return null;

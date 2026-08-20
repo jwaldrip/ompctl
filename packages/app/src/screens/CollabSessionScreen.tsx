@@ -5,7 +5,7 @@
  * supplies authority, and the daemon is the source of participant identity.
  */
 
-import { SCOPE_PROMPT, type CollabVoiceNoteFrame, type CollabVoiceParticipant } from "@ompd/core/contracts";
+import { type CollabVoiceNoteFrame, type CollabVoiceParticipant, SCOPE_PROMPT } from "@ompd/core/contracts";
 import type { ConnectionState, OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +17,14 @@ import { Body, Data, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
 import { type CollabAudioPlayer, CollabVoiceQueue } from "../voice/collab-voice.ts";
-import { clipAudio, clipRejection, createRecorder, mintNoteId, type Recorder, type RecorderClip } from "../voice/Recorder.ts";
+import {
+  clipAudio,
+  clipRejection,
+  createRecorder,
+  mintNoteId,
+  type Recorder,
+  type RecorderClip,
+} from "../voice/Recorder.ts";
 
 const defaultAudioPlayer: CollabAudioPlayer = {
   play: async () => {},
@@ -35,10 +42,7 @@ const MAX_HOLD_MS = 30_000;
 const ELAPSED_TICK_MS = 200;
 
 /** One hold at a time, from finger down to the send-or-discard decision. */
-type HoldPhase =
-  | { kind: "idle" }
-  | { kind: "holding" }
-  | { kind: "review"; clip: RecorderClip; durationMs: number };
+type HoldPhase = { kind: "idle" } | { kind: "holding" } | { kind: "review"; clip: RecorderClip; durationMs: number };
 
 interface LiveHold {
   /** start() can still be settling when the finger lifts; endHold awaits it. */
@@ -329,9 +333,7 @@ export function CollabSessionScreen({
         {recordGate === "unavailable" ? (
           <View style={styles.recordState} testID="collab-record-unavailable">
             <Glyph color={signal.ochre} name="warning" size={16} />
-            <Body color={ink.plain}>
-              This build cannot record voice notes: it has no microphone module yet.
-            </Body>
+            <Body color={ink.plain}>This build cannot record voice notes: it has no microphone module yet.</Body>
           </View>
         ) : null}
         {recordGate === "scope" ? (
