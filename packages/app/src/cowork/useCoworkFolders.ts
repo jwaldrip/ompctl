@@ -94,9 +94,7 @@ export function useCoworkFolders(connection: Connection | undefined): [CoworkFol
     // side's rule for a caller that somehow bypasses the picker.
     if (!hostPath.startsWith("/")) return;
     setFolders(previous =>
-      previous.some(folder => folder.hostPath === hostPath)
-        ? previous
-        : [...previous, { hostPath, mode: "ro" }],
+      previous.some(folder => folder.hostPath === hostPath) ? previous : [...previous, { hostPath, mode: "ro" }],
     );
   }, []);
 
@@ -183,4 +181,3 @@ function refusalFor(status: number, error: string | undefined): ContainerStart {
     retryable: true,
   };
 }
-

@@ -172,13 +172,7 @@ export function FolderPickerScreen(props: FolderPickerScreenProps): JSX.Element 
   );
 }
 
-function PickerRow({
-  entry,
-  onOpen,
-}: {
-  entry: FsEntry;
-  onOpen: () => void;
-}): JSX.Element {
+function PickerRow({ entry, onOpen }: { entry: FsEntry; onOpen: () => void }): JSX.Element {
   // Only a directory the daemon itself listed is offered. A file cannot be a
   // folder binding, and a symlink is the one entry the daemon deliberately did
   // not resolve, so this screen cannot promise it lands inside the roots: the

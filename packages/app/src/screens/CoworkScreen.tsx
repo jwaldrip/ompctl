@@ -38,9 +38,9 @@ import type { NewTaskInput } from "../components/TaskSidebar.tsx";
 import { TaskSidebar } from "../components/TaskSidebar.tsx";
 import type { TaskListState } from "../cowork/tasks.ts";
 import { taskListView } from "../cowork/tasks.ts";
+import type { ConnectorSummary, SkillSummary, Task } from "../cowork/types.ts";
 import type { BoundFolder, ContainerStart } from "../cowork/useCoworkFolders.ts";
 import { useCoworkFolders } from "../cowork/useCoworkFolders.ts";
-import type { ConnectorSummary, SkillSummary, Task } from "../cowork/types.ts";
 import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
 import { useSplitLayout } from "../design/layout.ts";
@@ -242,12 +242,7 @@ function FolderBinding({
     <View style={styles.folders} testID="cowork-folders">
       <View style={styles.foldersHead}>
         <Kicker color={ink.muted}>Bound folders</Kicker>
-        <Pressable
-          accessibilityRole="button"
-          onPress={onAdd}
-          style={styles.add}
-          testID="cowork-folder-add"
-        >
+        <Pressable accessibilityRole="button" onPress={onAdd} style={styles.add} testID="cowork-folder-add">
           <Glyph name="newTask" color={ink.bright} size={12} />
           <Label color={ink.bright}>Add folder</Label>
         </Pressable>
@@ -388,7 +383,13 @@ const styles = StyleSheet.create({
     padding: space.step,
   },
   foldersHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  add: { flexDirection: "row", alignItems: "center", gap: space.tight, minHeight: TOUCH_TARGET, paddingHorizontal: space.snug },
+  add: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.snug,
+  },
   folderRow: { flexDirection: "row", alignItems: "center", gap: space.snug, minHeight: TOUCH_TARGET },
   folderPath: { flex: 1 },
   unbind: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET, minWidth: TOUCH_TARGET },
