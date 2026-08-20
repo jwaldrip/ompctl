@@ -58,10 +58,12 @@ import { UnauthorizedError } from "../packages/daemon/src/supervisor.ts";
 // Fixture repository
 // ---------------------------------------------------------------------------
 
+// biome-ignore lint/suspicious/noTemplateCurlyInString: fixture source file; the literal template expression is the payload under test
 const GREET = ["export function greet(name: string): string {", "  return `Hello, ${name}!`;", "}", ""].join("\n");
 
 const GREET_TRIMMED = [
   "export function greet(name: string): string {",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture source file; the literal template expression is the payload under test
   "  return `Hello, ${name.trim()}!`;",
   "}",
   "",
@@ -91,11 +93,13 @@ const GREET_TEST_WITH_TRIM = [
   "",
 ].join("\n");
 
+// biome-ignore lint/suspicious/noTemplateCurlyInString: fixture source file; the literal template expression is the payload under test
 const FAREWELL = ["export function farewell(name: string): string {", "  return `Goodbye, ${name}.`;", "}", ""].join(
   "\n",
 );
 
 /** Breaks `test/farewell.test.ts`. Used to prove the verify command discriminates. */
+// biome-ignore lint/suspicious/noTemplateCurlyInString: fixture source file; the literal template expression is the payload under test
 const FAREWELL_BROKEN = ["export function farewell(name: string): string {", "  return `Bye ${name}`;", "}", ""].join(
   "\n",
 );
@@ -104,6 +108,7 @@ const FAREWELL_BROKEN = ["export function farewell(name: string): string {", "  
 const FAREWELL_COMMENTED = [
   "/** Says goodbye. */",
   "export function farewell(name: string): string {",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: fixture source file; the literal template expression is the payload under test
   "  return `Goodbye, ${name}.`;",
   "}",
   "",
