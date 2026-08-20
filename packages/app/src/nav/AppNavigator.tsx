@@ -50,6 +50,7 @@ export type ShellParamList = {
   invite: undefined;
   newSession: undefined;
   agentConfig: { agentId: AgentId };
+  settings: undefined;
 };
 
 /** Which detail surface the console model says is open. */
@@ -82,12 +83,18 @@ export interface ShellSurfaces {
    */
   session: (agentId: AgentId, back: () => void, openConfig: () => void) => JSX.Element;
   terminal: (sessionId: string, back: () => void) => JSX.Element;
-  connections: (back: () => void, invite: () => void) => JSX.Element;
+  connections: (back: () => void, invite: () => void, settings: () => void) => JSX.Element;
   invite: (done: () => void) => JSX.Element;
   /**
-   * Browse the daemon's machine and start a session, or clone a repo, where the
-   * operator chooses. `done` is the way back, on the same one-way-out rule the
-   * detail routes follow.
+   * Read and change the daemon's own settings: its policy posture and its
+   * keep-awake. Rides the connection's socket, so it reaches a hub-paired
+   * phone the same as a direct one.
+   */
+  settings: (back: () => void) => JSX.Element;
+  /**
+   * Browse the daemon's machine and start a session, or clone a repo, where
+   * the operator chooses. `done` is the way back, on the same one-way-out
+   * rule the detail routes follow.
    */
   newSession: (done: () => void) => JSX.Element;
   /**
@@ -201,6 +208,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
           <Stack.Screen name="connections" component={ConnectionsRoute} options={CONNECTIONS_OPTIONS} />
           <Stack.Screen name="invite" component={InviteRoute} options={INVITE_OPTIONS} />
           <Stack.Screen name="newSession" component={NewSessionRoute} options={NEW_SESSION_OPTIONS} />
+          <Stack.Screen name="settings" component={SettingsRoute} options={SETTINGS_OPTIONS} />
         </Stack.Navigator>
       </NavigationContainer>
     </SurfaceContext.Provider>
@@ -212,6 +220,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
 const CONNECTIONS_OPTIONS = { title: "Connections" } as const;
 const INVITE_OPTIONS = { title: "Invite a device" } as const;
 const NEW_SESSION_OPTIONS = { title: "New session" } as const;
+const SETTINGS_OPTIONS = { title: "Daemon settings" } as const;
 
 function FleetRoute(): JSX.Element {
   return useSurfaces().fleet();
@@ -239,11 +248,16 @@ function ConnectionsRoute({ navigation }: NativeStackScreenProps<ShellParamList,
   return useSurfaces().connections(
     () => navigation.goBack(),
     () => navigation.navigate("invite"),
+    () => navigation.navigate("settings"),
   );
 }
 
 function InviteRoute({ navigation }: NativeStackScreenProps<ShellParamList, "invite">): JSX.Element {
   return useSurfaces().invite(() => navigation.goBack());
+}
+
+function SettingsRoute({ navigation }: NativeStackScreenProps<ShellParamList, "settings">): JSX.Element {
+  return useSurfaces().settings(() => navigation.goBack());
 }
 
 function NewSessionRoute({ navigation }: NativeStackScreenProps<ShellParamList, "newSession">): JSX.Element {

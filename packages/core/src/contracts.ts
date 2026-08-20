@@ -507,6 +507,51 @@ export interface TranscriptTailMessage {
 // Client wire protocol
 // ---------------------------------------------------------------------------
 
+/** One selectable value of an agent config option, as the agent offers it. */
+export interface AgentConfigChoice {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+/**
+ * One config option of a live agent session, verbatim as that session reports
+ * it: the mode, the model, whatever else the agent exposes. Declared here
+ * rather than imported from the daemon because the wire is where a client
+ * meets this shape, and a client cannot reach across into the daemon's
+ * package for a type. Structurally the daemon's own `SessionConfigOption`, so
+ * the gateway hands its options straight to a frame with no conversion in
+ * between to drift.
+ *
+ * `currentValue` is what the session holds now and `options` is everything it
+ * will accept, so a client offering a choice outside that list is offering a
+ * refusal.
+ */
+export interface AgentConfigOption {
+  id: string;
+  name: string;
+  /** Groups related options, e.g. `mode` or `model`. */
+  category: string;
+  /** Widget hint from the agent, e.g. `select`. */
+  type: string;
+  currentValue: string;
+  options: AgentConfigChoice[];
+}
+
+/** The three policy postures a daemon can hold. See `PolicyConfig.mode` for what each does. */
+export type PolicyMode = "strict" | "standard" | "trusted";
+
+/**
+ * The two persisted settings a paired device may read and, holding `manage`,
+ * change: the posture every agent on the machine runs under, and whether the
+ * daemon keeps its host awake while it works. Binding, hub, binary, and
+ * credential settings deliberately have no place here.
+ */
+export interface SyncSettings {
+  policyMode: PolicyMode;
+  keepAwake: boolean;
+}
+
 export type ClientFrame =
   | { t: "attach"; agentId: AgentId; sinceSeq?: number }
   | { t: "detach"; agentId: AgentId }
@@ -589,6 +634,37 @@ export type ClientFrame =
    * thousand messages in it shows a composer and nothing else.
    */
   | { t: "session_tail"; sessionId: string; limit?: number }
+  /**
+   * Ask what the daemon's two persisted settings hold right now. The hub
+   * relay carries one sealed websocket and proxies no daemon HTTP, so a phone
+   * reads these through this frame rather than `GET /v1/sync-settings`.
+   * Answered by `settings`, to the asking socket only.
+   */
+  | { t: "settings_read" }
+  /**
+   * Change both persisted settings in one frame. One-shot like the other
+   * instructions: never replayed after a reconnect, so the operator retaps
+   * rather than wonders. Answered by `settings` carrying what the daemon
+   * reads back after applying, so a client renders confirmed state, never
+   * its own request.
+   */
+  | ({ t: "settings_write" } & SyncSettings)
+  /**
+   * Ask what config options one agent's live session holds right now, the
+   * mode among them. The hub relay carries one sealed websocket and proxies
+   * no daemon HTTP, so a phone reads this through this frame rather than
+   * `GET /v1/agents/:id/config`. Answered by `agent_config`, to the asking
+   * socket only.
+   */
+  | { t: "agent_config_read"; agentId: AgentId }
+  /**
+   * Move one agent's session onto `modeId`. One-shot like the other
+   * instructions: never replayed after a reconnect, so the operator retaps
+   * rather than wonders. Answered by `agent_config` carrying what the daemon
+   * reads back after the session applied it, so a client renders confirmed
+   * state and never its own request.
+   */
+  | { t: "agent_config_write"; agentId: AgentId; modeId: string }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -677,6 +753,22 @@ export type ServerFrame =
    * reader stopped at its byte budget with unread bytes behind it.
    */
   | { t: "session_tail"; sessionId: string; messages: TranscriptTailMessage[]; truncated: boolean }
+  /**
+   * The daemon's settings as it holds them now, answering `settings_read` or
+   * `settings_write` and sent only to the socket that asked. Read back after
+   * any apply, so it is the daemon's confirmation rather than an echo of the
+   * request.
+   */
+  | ({ t: "settings" } & SyncSettings)
+  /**
+   * One agent's session config as the daemon holds it now, answering
+   * `agent_config_read` or `agent_config_write` and sent only to the socket
+   * that asked. Read back from the session after any apply, so it is the
+   * daemon's confirmation rather than an echo of the request: a client that
+   * renders this is showing what the agent runs under, never what a device
+   * asked for.
+   */
+  | { t: "agent_config"; agentId: AgentId; configOptions: AgentConfigOption[] }
   | { t: "pong" };
 
 // ---------------------------------------------------------------------------
