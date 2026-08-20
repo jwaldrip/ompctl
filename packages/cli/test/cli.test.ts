@@ -1407,16 +1407,29 @@ describe("reads and writes over the API", () => {
     expect(h.stderr()).toContain("No device token found");
   });
 
-  test("a failed routine run exits non-zero", async () => {
+  test("a failed routine run exits non-zero and names the action that failed", async () => {
     const h = harness({
       routes: {
         "POST /v1/routines/rt_1/run": {
-          body: { run: { id: "run_1", routineId: "rt_1", state: "failed", startedAt: "", error: "boom" } },
+          body: {
+            run: {
+              id: "run_1",
+              routineId: "rt_1",
+              state: "failed",
+              startedAt: "",
+              actions: [
+                { actionId: "ac_1", actionName: "digest", index: 0, state: "succeeded", startedAt: "" },
+                { actionId: "ac_2", actionName: "publish", index: 1, state: "failed", startedAt: "", error: "boom" },
+              ],
+            },
+          },
         },
       },
     });
 
     expect(await run(["run", "rt_1"], h.ctx)).toBe(1);
+    expect(h.stdout()).toContain("1. digest  succeeded");
+    expect(h.stdout()).toContain("2. publish  failed");
     expect(h.stdout()).toContain("boom");
   });
 

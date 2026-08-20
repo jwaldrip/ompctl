@@ -38,11 +38,13 @@ import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
 import { AppNavigator } from "../nav/AppNavigator.tsx";
 import type { Connection, ConnectionList } from "../platform/connection.ts";
+import { AgentConfigScreen } from "../screens/AgentConfigScreen.tsx";
 import { ConnectionSwitcherScreen } from "../screens/ConnectionSwitcherScreen.tsx";
 import { CoworkScreen } from "../screens/CoworkScreen.tsx";
 import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { InviteScreen } from "../screens/InviteScreen.tsx";
 import { RemoteStartScreen } from "../screens/RemoteStartScreen.tsx";
+import { RoutinesScreen } from "../screens/RoutinesScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
 import { SettingsScreen } from "../screens/SettingsScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
@@ -56,6 +58,7 @@ import {
   fleetClearances,
   openSessionTarget,
   sessionFor,
+  tuiPromptAccess,
   tuiSessionFor,
 } from "./state.ts";
 import { createOmpdClient, useConsole } from "./useConsole.ts";
@@ -127,6 +130,15 @@ export function Console({
     actions.select(top.id);
   }, [split, state.selected, state.agents, actions]);
 
+  // The config pane belongs to the session it was opened on: switching the
+  // selection swaps the detail beside it on a tablet, and returning to a
+  // session must not resurrect a config screen left over from the last one.
+  const [configPane, setConfigPane] = useState<AgentId | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the dependency is the signal, not a used value; the pane resets when the selection changes
+  useEffect(() => {
+    setConfigPane(null);
+  }, [state.selected]);
+
   // Read rather than depended on, so the row handlers below keep one identity
   // for the life of the console.
   const latest = useRef({ state, actions });
@@ -158,7 +170,7 @@ export function Console({
     current.actions.openSession(openSessionTarget(current.state, session.id));
   }, []);
 
-  const log = (agentId: AgentId, back: () => void): JSX.Element => {
+  const log = (agentId: AgentId, back: () => void, openConfig: () => void): JSX.Element => {
     // `agentFor`, not a raw roster lookup: a resumed session starts streaming
     // before any roster frame lists its agent, and the log it is streaming must
     // be on screen rather than waiting for an unrelated roster change. The
@@ -193,6 +205,7 @@ export function Console({
         spoken={state.spoken.get(agent.id)?.text ?? null}
         fleetClearances={clearances}
         onBack={back}
+        onOpenConfig={openConfig}
         onSubmit={text => {
           actions.prompt(agent.id, text);
         }}
@@ -219,9 +232,9 @@ export function Console({
     );
   };
 
-  // A terminal session's prompt surface is not a variant of the log: there is
-  // no transcript to attach to. Keyed like the log so switching rows builds a
-  // fresh composer instead of carrying one row's draft into another's.
+  // A terminal session has no agent stream to attach to. It gets a bounded
+  // transcript tail plus live progress hints, and stays keyed like the agent
+  // log so switching rows never carries one session's draft into another.
   const terminal = (sessionId: string, back: () => void): JSX.Element => {
     const row = state.sessionIndex.find(candidate => candidate.id === sessionId);
     return (
@@ -229,6 +242,8 @@ export function Console({
         key={sessionId}
         title={row?.title ?? "Terminal session"}
         cwd={row?.cwd ?? row?.flattenedDir ?? ""}
+        status={row?.status ?? null}
+        promptAccess={tuiPromptAccess(state, connection.scopes)}
         tui={tuiSessionFor(state, sessionId)}
         connection={state.connection}
         onBack={back}
@@ -237,6 +252,32 @@ export function Console({
         }}
       />
     );
+  };
+
+  // The config surface is stateless between visits: the daemon's config
+  // routes answer each request whole, so nothing here joins the console
+  // model. The scopes are the daemon's own last answer when it gives one,
+  // the stored pairing's claim otherwise, and the screen treats an old
+  // pairing's silence as optimistic until a refusal says otherwise.
+  const agentConfig = (agentId: AgentId, back: () => void): JSX.Element => (
+    <AgentConfigScreen
+      agentId={agentId}
+      agentName={agentFor(state, agentId)?.name}
+      connection={connection}
+      grantedScopes={state.grantedScopes}
+      onBack={back}
+    />
+  );
+
+  // The tablet's detail pane has no stack to push the config onto, so it
+  // swaps in place beside the list: the same screen the navigator pushes on
+  // a phone, with the pane's own back in place of the stack's.
+  const splitPane = (): JSX.Element | null => {
+    const selected = state.selected;
+    if (selected !== null && configPane === selected) {
+      return agentConfig(selected, () => setConfigPane(null));
+    }
+    return splitDetail(state, log, terminal, actions.back, setConfigPane);
   };
 
   const surfaces: ShellSurfaces = {
@@ -261,12 +302,13 @@ export function Console({
               onUnarchive={onUnarchive}
             />
           </View>
-          {split ? <View style={styles.splitDetail}>{splitDetail(state, log, terminal, actions.back)}</View> : null}
+          {split ? <View style={styles.splitDetail}>{splitPane()}</View> : null}
         </View>
       </SafeScreen>
     ),
     session: log,
     terminal,
+    agentConfig,
     connections: (back, invite, settings) => (
       <ConnectionSwitcherScreen
         canInvite={canInvite(state, connection.scopes)}
@@ -284,6 +326,7 @@ export function Console({
     // for the console's connection. The screen decides from the pairing's
     // scopes whether it may change anything or only read.
     settings: back => <SettingsScreen connection={connection} onBack={back} />,
+    routines: back => <RoutinesScreen connection={connection} onBack={back} />,
     // This screen owns its own socket rather than borrowing the console's, so
     // browsing and cloning cannot compete with the list for the connection the
     // operator is watching. The cost is that the console does not hear its
@@ -368,11 +411,13 @@ function selectionOf(state: ConsoleState): ShellSelection | null {
  */
 function splitDetail(
   state: ConsoleState,
-  log: (agentId: AgentId, back: () => void) => JSX.Element,
+  log: (agentId: AgentId, back: () => void, openConfig: () => void) => JSX.Element,
   terminal: (sessionId: string, back: () => void) => JSX.Element,
   back: () => void,
+  openConfig: (agentId: AgentId) => void,
 ): JSX.Element | null {
-  if (state.selected !== null) return log(state.selected, back);
+  const selected = state.selected;
+  if (selected !== null) return log(selected, back, () => openConfig(selected));
   if (state.selectedTui !== null) return terminal(state.selectedTui, back);
   return null;
 }

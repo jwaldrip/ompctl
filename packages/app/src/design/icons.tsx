@@ -59,6 +59,7 @@ import {
   faTerminal,
   faTrashCan,
   faTriangleExclamation,
+  faVolumeHigh,
   faWandMagicSparkles,
   faWindowMaximize,
   faXmark,
@@ -114,6 +115,7 @@ export type GlyphName =
   /** Walk up to the containing directory. */
   | "up"
   | "browser"
+  | "narration"
   | "unknown";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
@@ -189,6 +191,8 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // The agent's own sandboxed WebView, which is a window it drives rather
   // than the globe `fetch` uses for an HTTP call with no page behind it.
   browser: faWindowMaximize,
+  // Narration is sound leaving this device, not microphone input from the operator.
+  narration: faVolumeHigh,
   unknown: faCircleQuestion,
 };
 

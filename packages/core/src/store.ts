@@ -28,6 +28,19 @@ import type {
 } from "./contracts.ts";
 import { redact, redactString } from "./redact.ts";
 
+const ROUTINES_TABLE = `CREATE TABLE IF NOT EXISTS routines (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL,
+  trigger_json TEXT NOT NULL, actions_json TEXT NOT NULL,
+  singleton INTEGER NOT NULL DEFAULT 1,
+  labels TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+)`;
+
+const RUNS_TABLE = `CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, state TEXT NOT NULL,
+  started_at TEXT NOT NULL, finished_at TEXT, actions_json TEXT NOT NULL,
+  error TEXT
+)`;
+
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
@@ -69,12 +82,7 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
 CREATE INDEX IF NOT EXISTS auth_tokens_hash ON auth_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS auth_tokens_device ON auth_tokens(device_id);
 
-CREATE TABLE IF NOT EXISTS routines (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL,
-  trigger_json TEXT NOT NULL, prompt TEXT NOT NULL, cwd TEXT NOT NULL,
-  host TEXT NOT NULL, singleton INTEGER NOT NULL DEFAULT 1,
-  timeout_seconds INTEGER, labels TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
-);
+${ROUTINES_TABLE};
 
 -- A webhook trigger refers to this row by its stable secretRef. The value
 -- presented to the public route is never persisted, only its SHA-256 hash.
@@ -83,10 +91,7 @@ CREATE TABLE IF NOT EXISTS webhook_secrets (
 );
 
 
-CREATE TABLE IF NOT EXISTS runs (
-  id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, agent_id TEXT, state TEXT NOT NULL,
-  started_at TEXT NOT NULL, finished_at TEXT, summary TEXT, error TEXT
-);
+${RUNS_TABLE};
 CREATE INDEX IF NOT EXISTS runs_routine ON runs(routine_id, started_at DESC);
 
 -- One row per named unit of work started from a sidebar. agent_id points at
@@ -291,6 +296,8 @@ export class Store {
     this.#db = new Database(path, { create: true });
     this.#db.run(SCHEMA);
     this.#migrateAgentHubMetadata();
+    this.#migrateRoutineActions();
+    this.#migrateRunActions();
   }
 
   close(): void {
@@ -316,6 +323,97 @@ export class Store {
     ] as const) {
       if (!columns.has(name)) this.#db.run(`ALTER TABLE agents ADD COLUMN ${name} ${type}`);
     }
+  }
+
+  /**
+   * Move the old one-prompt routine rows to the ordered action contract in one
+   * transaction. SQLite leaves an existing table unchanged after CREATE, so a
+   * real daemon needs an explicit copy before the scheduler can read actions.
+   */
+  #migrateRoutineActions(): void {
+    const columns = new Set(
+      (this.#db.query("PRAGMA table_info(routines)").all() as Array<{ name: string }>).map(column => column.name),
+    );
+    if (columns.has("actions_json")) return;
+
+    const rows = this.#db.query("SELECT * FROM routines ORDER BY created_at").all() as Array<
+      Record<string, string | number | null>
+    >;
+    this.#db.transaction(() => {
+      this.#db.run("ALTER TABLE routines RENAME TO routines_one_prompt");
+      this.#db.run(ROUTINES_TABLE);
+      const insert = this.#db.query(
+        `INSERT INTO routines (id,name,enabled,trigger_json,actions_json,singleton,labels,created_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+      );
+      for (const row of rows) {
+        const action = {
+          id: `act_${row.id as string}`,
+          name: row.name as string,
+          prompt: row.prompt as string,
+          cwd: row.cwd as string,
+          host: JSON.parse(row.host as string),
+          timeoutSeconds: (row.timeout_seconds as number | null) ?? undefined,
+          labels: JSON.parse((row.labels as string) ?? "{}"),
+        };
+        insert.run(
+          row.id as string,
+          row.name as string,
+          row.enabled as number,
+          row.trigger_json as string,
+          JSON.stringify([action]),
+          row.singleton as number,
+          (row.labels as string | null) ?? "{}",
+          row.created_at as string,
+        );
+      }
+      this.#db.run("DROP TABLE routines_one_prompt");
+    })();
+  }
+
+  /** Carry old run history forward as a one-action outcome instead of losing it. */
+  #migrateRunActions(): void {
+    const columns = new Set(
+      (this.#db.query("PRAGMA table_info(runs)").all() as Array<{ name: string }>).map(column => column.name),
+    );
+    if (columns.has("actions_json")) return;
+
+    const rows = this.#db.query("SELECT * FROM runs ORDER BY started_at").all() as Array<Record<string, string | null>>;
+    const firstActions = new Map(this.listRoutines().map(routine => [routine.id, routine.actions[0]]));
+    this.#db.transaction(() => {
+      this.#db.run("DROP INDEX IF EXISTS runs_routine");
+      this.#db.run("ALTER TABLE runs RENAME TO runs_one_action");
+      this.#db.run(RUNS_TABLE);
+      const insert = this.#db.query(
+        `INSERT INTO runs (id,routine_id,state,started_at,finished_at,actions_json,error)
+         VALUES (?,?,?,?,?,?,?)`,
+      );
+      for (const row of rows) {
+        const configured = firstActions.get(row.routine_id as string);
+        const action = {
+          actionId: configured?.id ?? `act_${row.routine_id as string}`,
+          actionName: configured?.name ?? "Migrated action",
+          index: 0,
+          agentId: row.agent_id ?? undefined,
+          state: row.state,
+          startedAt: row.started_at,
+          finishedAt: row.finished_at ?? undefined,
+          summary: row.summary ?? undefined,
+          error: row.error ?? undefined,
+        };
+        insert.run(
+          row.id as string,
+          row.routine_id as string,
+          row.state as string,
+          row.started_at as string,
+          (row.finished_at as string | null) ?? null,
+          JSON.stringify([action]),
+          (row.error as string | null) ?? null,
+        );
+      }
+      this.#db.run("DROP TABLE runs_one_action");
+      this.#db.run("CREATE INDEX runs_routine ON runs(routine_id, started_at DESC)");
+    })();
   }
 
   upsertAgent(a: Agent): void {
@@ -570,25 +668,22 @@ export class Store {
 
   // -- routines and runs ---------------------------------------------------
 
-  upsertRoutine(r: Routine): void {
+  upsertRoutine(routine: Routine): void {
     this.#db
       .query(
         `INSERT OR REPLACE INTO routines
-         (id,name,enabled,trigger_json,prompt,cwd,host,singleton,timeout_seconds,labels,created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+         (id,name,enabled,trigger_json,actions_json,singleton,labels,created_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
       )
       .run(
-        r.id,
-        r.name,
-        r.enabled ? 1 : 0,
-        JSON.stringify(r.trigger),
-        r.prompt,
-        r.cwd,
-        JSON.stringify(r.host),
-        r.singleton ? 1 : 0,
-        r.timeoutSeconds ?? null,
-        JSON.stringify(r.labels),
-        r.createdAt,
+        routine.id,
+        routine.name,
+        routine.enabled ? 1 : 0,
+        JSON.stringify(routine.trigger),
+        JSON.stringify(routine.actions),
+        routine.singleton ? 1 : 0,
+        JSON.stringify(routine.labels),
+        routine.createdAt,
       );
   }
 
@@ -596,18 +691,15 @@ export class Store {
     const rows = this.#db.query(`SELECT * FROM routines ORDER BY created_at`).all() as Array<
       Record<string, string | number | null>
     >;
-    return rows.map(r => ({
-      id: r.id as string,
-      name: r.name as string,
-      enabled: r.enabled === 1,
-      trigger: JSON.parse(r.trigger_json as string),
-      prompt: r.prompt as string,
-      cwd: r.cwd as string,
-      host: JSON.parse(r.host as string),
-      singleton: r.singleton === 1,
-      timeoutSeconds: (r.timeout_seconds as number | null) ?? undefined,
-      labels: JSON.parse((r.labels as string) ?? "{}"),
-      createdAt: r.created_at as string,
+    return rows.map(row => ({
+      id: row.id as string,
+      name: row.name as string,
+      enabled: row.enabled === 1,
+      trigger: JSON.parse(row.trigger_json as string),
+      actions: JSON.parse(row.actions_json as string),
+      singleton: row.singleton === 1,
+      labels: JSON.parse((row.labels as string) ?? "{}"),
+      createdAt: row.created_at as string,
     }));
   }
 
@@ -646,17 +738,16 @@ export class Store {
   upsertRun(run: Run): void {
     this.#db
       .query(
-        `INSERT OR REPLACE INTO runs (id,routine_id,agent_id,state,started_at,finished_at,summary,error)
-         VALUES (?,?,?,?,?,?,?,?)`,
+        `INSERT OR REPLACE INTO runs (id,routine_id,state,started_at,finished_at,actions_json,error)
+         VALUES (?,?,?,?,?,?,?)`,
       )
       .run(
         run.id,
         run.routineId,
-        run.agentId ?? null,
         run.state,
         run.startedAt,
         run.finishedAt ?? null,
-        run.summary ?? null,
+        JSON.stringify(run.actions),
         run.error ?? null,
       );
   }
@@ -682,27 +773,43 @@ export class Store {
    * why nobody settled it.
    */
   failInterruptedRuns(error: string): number {
-    return this.#db
-      .query(
-        `UPDATE runs SET state='failed', finished_at=COALESCE(finished_at,?), error=COALESCE(error,?)
-         WHERE state IN ('queued','running')`,
-      )
-      .run(new Date().toISOString(), error).changes;
+    const rows = this.#db.query(`SELECT * FROM runs WHERE state IN ('queued','running')`).all() as Array<
+      Record<string, string | null>
+    >;
+    const finishedAt = new Date().toISOString();
+    for (const row of rows) {
+      const actions = JSON.parse(row.actions_json as string) as Run["actions"];
+      for (const action of actions) {
+        if (action.state !== "queued" && action.state !== "running") continue;
+        action.state = "failed";
+        action.finishedAt = finishedAt;
+        action.error ??= error;
+      }
+      this.upsertRun({
+        id: row.id as string,
+        routineId: row.routine_id as string,
+        state: "failed",
+        startedAt: row.started_at as string,
+        finishedAt: row.finished_at ?? finishedAt,
+        actions,
+        error: row.error ?? error,
+      });
+    }
+    return rows.length;
   }
 
   listRuns(routineId: string, limit = 50): Run[] {
     const rows = this.#db
       .query(`SELECT * FROM runs WHERE routine_id=? ORDER BY started_at DESC LIMIT ?`)
       .all(routineId, limit) as Array<Record<string, string | null>>;
-    return rows.map(r => ({
-      id: r.id as string,
-      routineId: r.routine_id as string,
-      agentId: r.agent_id ?? undefined,
-      state: r.state as Run["state"],
-      startedAt: r.started_at as string,
-      finishedAt: r.finished_at ?? undefined,
-      summary: r.summary ?? undefined,
-      error: r.error ?? undefined,
+    return rows.map(row => ({
+      id: row.id as string,
+      routineId: row.routine_id as string,
+      state: row.state as Run["state"],
+      startedAt: row.started_at as string,
+      finishedAt: row.finished_at ?? undefined,
+      actions: JSON.parse(row.actions_json as string),
+      error: row.error ?? undefined,
     }));
   }
 

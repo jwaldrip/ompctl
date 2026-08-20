@@ -22,17 +22,17 @@
  * send button into an interrupt while a turn runs, because an agent's turn
  * can be cancelled from here. A terminal's cannot, and sending mid-turn is a
  * steer, the delivery the daemon itself defaults to, so the button stays
- * Send and stays enabled.
+ * Send while the session is eligible, even when a turn is already running.
  */
 
-import type { TranscriptTailMessage } from "@ompd/core/contracts";
+import type { SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useRef, useState } from "react";
 import type { ListRenderItemInfo } from "react-native";
 import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { TuiSessionState } from "../console/state.ts";
+import type { TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
@@ -43,6 +43,10 @@ import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 export interface TerminalSessionScreenProps {
   title: string;
   cwd: string;
+  /** Current index truth. Null means the daemon no longer lists this session. */
+  status: SessionLiveStatus | null;
+  /** Scope truth after the daemon hello, or the stored pairing hint before it. */
+  promptAccess: TuiPromptAccess;
   /** This session's served transcript tail plus the hints the console holds about it. */
   tui: TuiSessionState;
   connection: ConnectionState;
@@ -50,17 +54,42 @@ export interface TerminalSessionScreenProps {
   onSubmit: (text: string) => void;
 }
 
+function notLiveGuidance(status: SessionLiveStatus | null): string {
+  switch (status) {
+    case null:
+      return "The daemon no longer lists this session. Return to Sessions to refresh before trying another action.";
+    case "live-tui":
+      return "This session is still live in its terminal.";
+    case "live-ompd":
+      return "An ompd agent now owns this session, not the terminal. Return to Sessions to open its agent log.";
+    case "dormant":
+      return "No terminal owns this session now. Return to Sessions to resume it from its current state.";
+    case "archived":
+      return "This session is archived and cannot be steered. Return to Sessions to choose an available session.";
+  }
+}
+
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
-  const { tui, connection } = props;
-  // The row vocabulary is the one status vocabulary the contract produces;
-  // this screen paints the same colour the fleet row carries.
-  const tone = signal[SESSION_STATUS_SIGNALS["live-tui"]];
+  const { tui, connection, status, promptAccess } = props;
+  // The latest index row, not the row that opened this route, decides whether
+  // steering is still safe. A terminal can close while the screen remains.
+  const liveTerminal = status === "live-tui";
+  const tone = status === null ? signal.oxide : signal[SESSION_STATUS_SIGNALS[status]];
+  const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
   const insets = useSafeAreaInsets();
 
   const [text, setText] = useState("");
   const trimmed = text.trim();
   const connected = connection === "connected";
-  const canSend = connected && trimmed.length > 0;
+  const composerEnabled = connected && liveTerminal && promptAccess !== "missing" && tui.refusalKind !== "scope";
+  const canSend = composerEnabled && trimmed.length > 0;
+  const placeholder = !connected
+    ? "No link"
+    : !liveTerminal
+      ? "Session is not live in a terminal"
+      : promptAccess === "missing" || tui.refusalKind === "scope"
+        ? "Prompt scope required"
+        : "Say something to this terminal";
 
   const submit = (): void => {
     if (!canSend) return;
@@ -139,7 +168,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </View>
 
         <Kicker color={tone} testID="terminal-state">
-          {STATUS_LABELS["live-tui"]}
+          {statusLabel}
         </Kicker>
       </View>
 
@@ -167,15 +196,52 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
       )}
 
       <View style={[styles.hints, tui.history.length === 0 && styles.hintsFill]}>
-        {tui.refusal === null ? null : (
-          <View testID="terminal-refusal" style={styles.refusal}>
+        {liveTerminal ? null : (
+          <View testID="terminal-not-live-tui" style={styles.refusal}>
             <View style={styles.refusalHead}>
               <Glyph name="warning" size={13} color={signal.oxide} />
-              <Label color={signal.oxide}>No bridge to this terminal</Label>
+              <Label color={signal.oxide}>Not a live terminal session</Label>
+            </View>
+            <Body color={ink.bright}>{notLiveGuidance(status)}</Body>
+          </View>
+        )}
+
+        {promptAccess === "missing" || tui.refusalKind === "scope" ? (
+          <View testID="terminal-scope-refusal" style={styles.refusal}>
+            <View style={styles.refusalHead}>
+              <Glyph name="warning" size={13} color={signal.oxide} />
+              <Label color={signal.oxide}>Prompt scope required</Label>
+            </View>
+            <Body color={ink.bright}>
+              {tui.refusalKind === "scope" && tui.refusal !== null
+                ? tui.refusal
+                : "This device does not hold the prompt scope. Pair it again with prompt access before steering this terminal."}
+            </Body>
+          </View>
+        ) : null}
+
+        {tui.refusalKind === "owner-gone" && tui.refusal !== null ? (
+          <View testID="terminal-owner-gone" style={styles.refusal}>
+            <View style={styles.refusalHead}>
+              <Glyph name="warning" size={13} color={signal.oxide} />
+              <Label color={signal.oxide}>Owning terminal is unreachable</Label>
             </View>
             <Body color={ink.bright}>{tui.refusal}</Body>
           </View>
-        )}
+        ) : null}
+
+        {tui.replyUnavailable ? (
+          <View testID="terminal-reply-unavailable" style={styles.refusal}>
+            <View style={styles.refusalHead}>
+              <Glyph name="warning" size={13} color={signal.ochre} />
+              <Label color={signal.ochre}>Reply stayed in the terminal</Label>
+            </View>
+            <Body color={ink.bright}>
+              This turn ended without readable assistant text. Its full transcript and tool output remain in the owning
+              terminal.
+            </Body>
+          </View>
+        ) : null}
 
         {tui.busy ? (
           <Kicker color={tone} testID="terminal-busy">
@@ -197,22 +263,23 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           </View>
         )}
 
-        {/*
-          The explainer exists for a surface with nothing on it: served
-          history, a hint, or a turn in flight all mean the operator can see
-          what this screen is, and repeating the introduction underneath a
-          transcript is noise.
-        */}
-        {tui.history.length > 0 ||
-        tui.refusal !== null ||
-        tui.sent !== null ||
-        tui.reply !== null ||
-        tui.busy ? null : (
+        {liveTerminal &&
+        tui.history.length === 0 &&
+        tui.refusal === null &&
+        tui.sent === null &&
+        tui.reply === null &&
+        !tui.replyUnavailable &&
+        !tui.busy ? (
           <Body color={ink.muted} testID="terminal-explainer">
-            This session is live in a terminal on the machine. What is sent from here is delivered to it as your own
-            turn, and its progress is reported back here as it happens.
+            This session is live in a terminal on the machine. This phone steers it without taking ownership, and live
+            progress returns here.
           </Body>
-        )}
+        ) : null}
+
+        <Label color={ink.faint} testID="terminal-transcript-limit" style={styles.boundary}>
+          Only recent text and live assistant replies appear here. The full transcript and tool output stay in the
+          terminal.
+        </Label>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
@@ -225,12 +292,12 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           <View style={styles.composer}>
             <TextInput
               testID="terminal-composer-input"
-              style={[styles.field, type.body, !connected && styles.fieldOff]}
+              style={[styles.field, type.body, !composerEnabled && styles.fieldOff]}
               value={text}
               onChangeText={setText}
-              editable={connected}
+              editable={composerEnabled}
               multiline
-              placeholder={connected ? "Say something to this terminal" : "No link"}
+              placeholder={placeholder}
               placeholderTextColor={ink.faint}
               // Enter sends on a keyboard; Shift+Enter is a newline. Sending
               // stays available mid-turn: a second prompt steers the running
@@ -300,6 +367,7 @@ const styles = StyleSheet.create({
   hintsFill: { flex: 1 },
   refusal: { gap: space.snug, borderWidth: stroke.hair, borderColor: signal.oxide, padding: space.step },
   refusalHead: { flexDirection: "row", alignItems: "center", gap: space.tight },
+  boundary: { marginTop: "auto", paddingTop: space.snug },
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",

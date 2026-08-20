@@ -20,14 +20,20 @@ final class LaunchSmokeUITests: XCTestCase {
 
         let pairEndpoint = app.textFields["pair-endpoint"]
         let console = app.otherElements["console"]
-        // 60s/15s, not 30s/5s: a shared CI runner on an older Xcode (16.4 vs.
-        // a modern local install) genuinely needs more wall time for an iPad
-        // simulator's first boot, bundle fetch, and Hermes bytecode
-        // compilation than a local Mac does. A generous margin here is
-        // cheap; a flaky CI gate that intermittently fails a correct build
-        // is not.
-        let pairAppeared = pairEndpoint.waitForExistence(timeout: 60)
-        let consoleAppeared = console.waitForExistence(timeout: 15)
+        // 180s/30s, not 60s/15s. The 60s budget was measured and it is not a
+        // margin, it is a coin flip: across unrelated branches this element
+        // appeared at 23.1s, 41.1s, 54.1s, 54.1s, and twice at the full
+        // ceiling, once on a branch that could not have caused it. A shared CI
+        // runner on an older Xcode pays for an iPad simulator's first boot,
+        // bundle fetch, and Hermes bytecode compilation, and that cost is not
+        // stable run to run.
+        //
+        // A generous margin is cheap: a passing run returns as soon as the
+        // element exists, so this costs nothing when the app is healthy. A
+        // gate that intermittently fails a correct build is expensive, because
+        // it teaches everyone to re-run red instead of reading it.
+        let pairAppeared = pairEndpoint.waitForExistence(timeout: 180)
+        let consoleAppeared = console.waitForExistence(timeout: 30)
         XCTAssertTrue(
             pairAppeared || consoleAppeared,
             "expected pairing screen (pair-endpoint) or console after launch"
