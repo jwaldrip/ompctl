@@ -449,10 +449,8 @@ const SYNC_ROUTINE_KEYS: Record<string, true> = {
   name: true,
   enabled: true,
   trigger: true,
-  prompt: true,
-  cwd: true,
+  actions: true,
   singleton: true,
-  timeoutSeconds: true,
   labels: true,
   createdAt: true,
 };
@@ -512,6 +510,33 @@ function isTrigger(value: unknown): value is Routine["trigger"] {
   }
 }
 
+function isSyncAction(value: unknown): value is SyncRoutine["actions"][number] {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (
+    keys.some(
+      key =>
+        key !== "id" &&
+        key !== "name" &&
+        key !== "prompt" &&
+        key !== "cwd" &&
+        key !== "timeoutSeconds" &&
+        key !== "labels",
+    )
+  ) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    typeof value.prompt === "string" &&
+    typeof value.cwd === "string" &&
+    (value.timeoutSeconds === undefined || typeof value.timeoutSeconds === "number") &&
+    isRecord(value.labels) &&
+    Object.values(value.labels).every(label => typeof label === "string")
+  );
+}
+
 function isSyncRoutine(value: unknown): value is SyncRoutine {
   if (
     !isRecord(value) ||
@@ -525,10 +550,9 @@ function isSyncRoutine(value: unknown): value is SyncRoutine {
     typeof value.name === "string" &&
     typeof value.enabled === "boolean" &&
     isTrigger(value.trigger) &&
-    typeof value.prompt === "string" &&
-    typeof value.cwd === "string" &&
+    Array.isArray(value.actions) &&
+    value.actions.every(isSyncAction) &&
     typeof value.singleton === "boolean" &&
-    (value.timeoutSeconds === undefined || typeof value.timeoutSeconds === "number") &&
     isRecord(value.labels) &&
     Object.values(value.labels).every(label => typeof label === "string") &&
     typeof value.createdAt === "string"
@@ -602,10 +626,8 @@ export interface SyncRoutine {
   name: string;
   enabled: boolean;
   trigger: Routine["trigger"];
-  prompt: string;
-  cwd: string;
+  actions: Array<Omit<Routine["actions"][number], "host">>;
   singleton: boolean;
-  timeoutSeconds?: number;
   labels: Record<string, string>;
   createdAt: string;
 }
@@ -1754,7 +1776,10 @@ export class Gateway {
       try {
         return Response.json({
           ...config.read(),
-          routines: this.#store.listRoutines().map(({ host: _host, ...routine }) => routine),
+          routines: this.#store.listRoutines().map(routine => ({
+            ...routine,
+            actions: routine.actions.map(({ host: _host, ...action }) => action),
+          })),
           skills: await skills.list(),
           connectors: await connectors.list(),
         } satisfies SyncDocument);
@@ -1778,9 +1803,12 @@ export class Gateway {
       try {
         config.apply({ policyMode: document.policyMode, keepAwake: document.keepAwake });
         for (const routine of document.routines) {
-          // Execution hosts never travel. Imported routines execute locally,
+          // Execution hosts never travel. Imported actions execute locally,
           // through the receiving daemon's own supervisor.
-          this.#store.upsertRoutine({ ...routine, host: { kind: "local" } });
+          this.#store.upsertRoutine({
+            ...routine,
+            actions: routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
+          });
         }
         return Response.json({ ok: true, routines: document.routines.length });
       } catch (err) {
@@ -2988,6 +3016,87 @@ export class Gateway {
         return;
       }
 
+      case "routines_read": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "routines_read requires read scope" });
+          return;
+        }
+        this.#send(ws, this.#routineSnapshot());
+        return;
+      }
+
+      case "routine_write": {
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "routine_write requires manage scope" });
+          return;
+        }
+        if (!isSyncRoutine(frame.routine)) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "routine_write needs one complete routine" });
+          return;
+        }
+        this.#store.upsertRoutine({
+          ...frame.routine,
+          actions: frame.routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
+        });
+        this.#send(ws, this.#routineSnapshot());
+        return;
+      }
+
+      case "routine_run": {
+        if (
+          typeof frame.routineId !== "string" ||
+          frame.routineId.length === 0 ||
+          !ws.data.scopes.has(SCOPE_MANAGE) ||
+          !ws.data.scopes.has(SCOPE_PROMPT)
+        ) {
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "routine_run requires a routineId plus manage and prompt scope",
+          });
+          return;
+        }
+        const runner = this.#routines;
+        if (!runner) {
+          this.#send(ws, { t: "error", code: "routines_unavailable", message: "no routine runner is wired in" });
+          return;
+        }
+        void runner.runNow(frame.routineId, this.#actorOf(ws)).then(
+          run => this.#send(ws, { t: "routine_ran", run }),
+          err =>
+            this.#send(ws, {
+              t: "error",
+              code: err instanceof UnauthorizedError ? "unauthorized" : "routine_failed",
+              message: err instanceof Error ? err.message : "routine run failed",
+            }),
+        );
+        return;
+      }
+
+      case "routine_secret_rotate": {
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "routine_secret_rotate requires manage scope",
+          });
+          return;
+        }
+        const routine = this.#store.listRoutines().find(candidate => candidate.id === frame.routineId);
+        if (!routine) {
+          this.#send(ws, { t: "error", code: "not_found", message: "routine not found" });
+          return;
+        }
+        if (routine.trigger.kind !== "webhook") {
+          this.#send(ws, { t: "error", code: "not_a_webhook_routine", message: "routine is not webhook-triggered" });
+          return;
+        }
+        const secret = randomBytes(32).toString("base64url");
+        this.#store.upsertWebhookSecret(routine.trigger.secretRef, createHash("sha256").update(secret).digest("hex"));
+        this.#send(ws, { t: "routine_secret", routineId: routine.id, secret });
+        return;
+      }
+
       case "session_takeover":
       case "session_resume": {
         // The same manage gate the HTTP takeover route takes: handing the
@@ -3484,6 +3593,18 @@ export class Gateway {
         message: err instanceof Error ? err.message : "session tail failed",
       });
     }
+  }
+
+  #routineSnapshot(): Extract<ServerFrame, { t: "routines" }> {
+    const routines = this.#store.listRoutines();
+    return {
+      t: "routines",
+      routines: routines.map(routine => ({
+        ...routine,
+        actions: routine.actions.map(({ host: _host, ...action }) => action),
+      })),
+      runs: routines.flatMap(routine => this.#store.listRuns(routine.id, 10)),
+    };
   }
 
   #send(ws: GatewaySocket, frame: ServerFrame): void {

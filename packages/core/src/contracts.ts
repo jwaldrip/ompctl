@@ -209,21 +209,57 @@ export type TriggerSpec =
   | { kind: "manual" }
   | { kind: "webhook"; secretRef: string };
 
+export interface RoutineAction {
+  /** Stable within the routine, so an outcome still names the configured action after a rename. */
+  id: string;
+  name: string;
+  /** Prompt delivered to a fresh agent when this action runs. */
+  prompt: string;
+  cwd: string;
+  host: HostSpec;
+  timeoutSeconds?: number;
+  labels: Record<string, string>;
+}
+
 export interface Routine {
   id: string;
   name: string;
   enabled: boolean;
   trigger: TriggerSpec;
-  /** Prompt delivered to a fresh agent on each run. */
-  prompt: string;
-  cwd: string;
-  host: HostSpec;
-  /** Skip a run if the previous one is still going. */
+  /** Actions run in this order. Every action records its own terminal outcome. */
+  actions: RoutineAction[];
+  /** Skip the whole event if a previous event is still running. */
   singleton: boolean;
-  /** Kill a run that exceeds this. */
-  timeoutSeconds?: number;
   labels: Record<string, string>;
   createdAt: string;
+}
+
+/**
+ * A routine safe to carry across a remote socket. Execution hosts never travel:
+ * every received action runs through the daemon's local supervisor.
+ */
+export interface RemoteRoutine extends Omit<Routine, "actions"> {
+  actions: Array<Omit<RoutineAction, "host">>;
+}
+
+export type ActionRunState = "queued" | "running" | "succeeded" | "failed" | "refused" | "timed_out" | "skipped";
+
+export interface ActionRefusal {
+  code: "invalid_action" | "unauthorized";
+  reason: string;
+}
+
+export interface ActionRun {
+  actionId: string;
+  actionName: string;
+  index: number;
+  agentId?: AgentId;
+  state: ActionRunState;
+  startedAt: string;
+  finishedAt?: string;
+  summary?: string;
+  error?: string;
+  refusal?: ActionRefusal;
 }
 
 export type RunState = "queued" | "running" | "succeeded" | "failed" | "skipped" | "timed_out";
@@ -231,12 +267,12 @@ export type RunState = "queued" | "running" | "succeeded" | "failed" | "skipped"
 export interface Run {
   id: string;
   routineId: string;
-  agentId?: AgentId;
   state: RunState;
   startedAt: string;
   finishedAt?: string;
-  /** Final assistant text, truncated for listing. */
-  summary?: string;
+  /** Ordered one-for-one with the routine actions captured when this event started. */
+  actions: ActionRun[];
+  /** Event-level cause, used for singleton skips and daemon interruption. */
   error?: string;
 }
 
@@ -590,6 +626,17 @@ export type ClientFrame =
   | { t: "device_invite"; name: string; scopes: string[] }
   | RemoteStartClientFrame
   /**
+   * Read every routine and its recent event outcomes through the sealed socket.
+   * A hub-relayed phone has no route to the daemon's HTTP API.
+   */
+  | { t: "routines_read" }
+  /** Replace one complete routine definition. Requires manage scope. */
+  | { t: "routine_write"; routine: RemoteRoutine }
+  /** Run one enabled routine now. Requires manage and prompt scope. */
+  | { t: "routine_run"; routineId: string }
+  /** Rotate a webhook routine's one-time secret. Requires manage scope. */
+  | { t: "routine_secret_rotate"; routineId: string }
+  /**
    * The tail of a session's transcript, read straight from its file.
    *
    * Read scope, not manage: this is reading a transcript, which a read-only
@@ -690,6 +737,12 @@ export type ServerFrame =
    * Sent only to the socket that asked.
    */
   | { t: "session_opened"; sessionId: string; agentId: AgentId }
+  /** Current routine definitions and recent event outcomes, only for the asking socket. */
+  | { t: "routines"; routines: RemoteRoutine[]; runs: Run[] }
+  /** One routine event completed, with every action outcome in configured order. */
+  | { t: "routine_ran"; run: Run }
+  /** One-time webhook secret returned only to the socket that rotated it. */
+  | { t: "routine_secret"; routineId: string; secret: string }
   /**
    * The answer to a `device_invite`: the one-time view of a credential just
    * minted, sent only to the socket that asked. Never broadcast, never

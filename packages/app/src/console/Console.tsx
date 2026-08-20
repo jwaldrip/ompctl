@@ -41,6 +41,7 @@ import { InviteScreen } from "../screens/InviteScreen.tsx";
 import { RemoteStartScreen } from "../screens/RemoteStartScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
 import { SettingsScreen } from "../screens/SettingsScreen.tsx";
+import { RoutinesScreen } from "../screens/RoutinesScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
@@ -280,6 +281,7 @@ export function Console({
     // for the console's connection. The screen decides from the pairing's
     // scopes whether it may change anything or only read.
     settings: back => <SettingsScreen connection={connection} onBack={back} />,
+    routines: back => <RoutinesScreen connection={connection} onBack={back} />,
     // This screen owns its own socket rather than borrowing the console's, so
     // browsing and cloning cannot compete with the list for the connection the
     // operator is watching. The cost is that the console does not hear its

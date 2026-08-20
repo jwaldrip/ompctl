@@ -33,6 +33,8 @@ import type {
   CollabVoiceParticipant,
   FsListing,
   PlanReviewChoice,
+  RemoteRoutine,
+  Run,
   ServerFrame,
   SessionQuery,
   SessionSummary,
@@ -176,6 +178,10 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // operator believes the machine now runs under a different policy and it
   // does not, which is the same failure class as a lost `decide`.
   settings_write: true,
+  routines_read: false,
+  routine_write: true,
+  routine_run: true,
+  routine_secret_rotate: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -438,6 +444,20 @@ export interface SettingsEvent {
   settings: SyncSettings;
 }
 
+export interface RoutinesEvent {
+  routines: RemoteRoutine[];
+  runs: Run[];
+}
+
+export interface RoutineRanEvent {
+  run: Run;
+}
+
+export interface RoutineSecretEvent {
+  routineId: string;
+  secret: string;
+}
+
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -462,6 +482,9 @@ export interface ClientEventMap {
   clone_progress: CloneProgressEvent;
   clone_done: CloneDoneEvent;
   settings: SettingsEvent;
+  routines: RoutinesEvent;
+  routine_ran: RoutineRanEvent;
+  routine_secret: RoutineSecretEvent;
   session_tail: SessionTailEvent;
 }
 
@@ -816,6 +839,26 @@ export class OmpdClient {
    */
   writeSettings(settings: SyncSettings): void {
     this.send({ t: "settings_write", policyMode: settings.policyMode, keepAwake: settings.keepAwake });
+  }
+
+  /** Read routines and their recent per-action outcomes over the sealed socket. */
+  readRoutines(): void {
+    this.send({ t: "routines_read" });
+  }
+
+  /** Replace one routine definition. The daemon supplies local execution hosts. */
+  writeRoutine(routine: RemoteRoutine): void {
+    this.send({ t: "routine_write", routine });
+  }
+
+  /** Run one routine now. The completed per-action outcomes arrive as `routine_ran`. */
+  runRoutine(routineId: string): void {
+    this.send({ t: "routine_run", routineId });
+  }
+
+  /** Rotate a webhook secret. The plaintext arrives once as `routine_secret`. */
+  rotateRoutineSecret(routineId: string): void {
+    this.send({ t: "routine_secret_rotate", routineId });
   }
 
   /**
@@ -1175,6 +1218,15 @@ export class OmpdClient {
         this.emit("settings", {
           settings: { policyMode: frame.policyMode, keepAwake: frame.keepAwake },
         });
+        return;
+      case "routines":
+        this.emit("routines", { routines: frame.routines, runs: frame.runs });
+        return;
+      case "routine_ran":
+        this.emit("routine_ran", { run: frame.run });
+        return;
+      case "routine_secret":
+        this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });
         return;
       case "tui_activity":
         this.emit("tui_activity", {
