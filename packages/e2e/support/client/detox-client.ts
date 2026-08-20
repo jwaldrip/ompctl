@@ -8,10 +8,10 @@
  * hierarchy, so the field receives exactly what the step asked for.
  *
  * The API is read off globalThis rather than imported. When Detox is driven
- * programmatically, `detox/internals`' `init()` installs one worker and
- * publishes `device`, `element`, `by`, and `waitFor`; importing the `detox`
- * package instead yields a module that was never bound to the allocated device.
- * `support/detox-lifecycle.ts` owns that initialization.
+ * programmatically, `detox/internals`' `installWorker()` is what publishes
+ * `device`, `element`, `by`, and `waitFor`; importing the `detox` package
+ * instead yields a module that was never bound to the allocated device.
+ * `support/detox-lifecycle.ts` owns that call.
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, renameSync } from "node:fs";

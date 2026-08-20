@@ -77,7 +77,7 @@
  *   OMPCTL_APK_DIR                dir holding CI's android-apks artifact pair
  */
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -326,10 +326,7 @@ function armPowerRestore(): boolean {
   const wake = adb(["shell", "input", "keyevent", "KEYCODE_WAKEUP"]);
   const power = adb(["shell", "dumpsys", "power"]).out;
   const armed =
-    stayOn.code === 0 &&
-    wake.code === 0 &&
-    power.includes("mStayOn=true") &&
-    power.includes("mWakefulness=Awake");
+    stayOn.code === 0 && wake.code === 0 && power.includes("mStayOn=true") && power.includes("mWakefulness=Awake");
   check("device stays awake while powered", armed, "PowerManager did not report awake with stay-on enabled");
   return armed;
 }
