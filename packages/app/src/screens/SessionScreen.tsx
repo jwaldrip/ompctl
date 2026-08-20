@@ -39,6 +39,8 @@ export interface SessionScreenProps {
   /** Pending clearances across the fleet, so the readout is not agent-local. */
   fleetClearances: number;
   onBack: () => void;
+  /** Open this agent's config surface: the mode it runs and the model it names. */
+  onOpenConfig?: () => void;
   onSubmit: (text: string) => void;
   onCancel: () => void;
   onDecide: (requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
@@ -168,10 +170,23 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             onPress={() => {
               setBrowserOpen(open => !open);
             }}
-            style={({ pressed }) => [styles.browserToggle, pressed && { backgroundColor: ground.active }]}
+            style={({ pressed }) => [styles.headAction, pressed && { backgroundColor: ground.active }]}
           >
             <Glyph name="browser" size={14} color={browserOpen ? tone : ink.muted} />
             <Label color={browserOpen ? ink.plain : ink.muted}>Browser</Label>
+          </Pressable>
+        )}
+
+        {props.onOpenConfig === undefined ? null : (
+          <Pressable
+            testID="session-open-config"
+            accessibilityRole="button"
+            accessibilityLabel="Open this session's mode and model"
+            onPress={props.onOpenConfig}
+            style={({ pressed }) => [styles.headAction, pressed && { backgroundColor: ground.active }]}
+          >
+            <Glyph name="commands" size={14} color={ink.muted} />
+            <Label color={ink.muted}>Config</Label>
           </Pressable>
         )}
       </View>
@@ -246,7 +261,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.tight,
   },
-  browserToggle: {
+  headAction: {
     minHeight: TOUCH_TARGET,
     paddingHorizontal: space.snug,
     flexDirection: "row",

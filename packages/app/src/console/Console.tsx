@@ -24,7 +24,7 @@
 import type { AgentId } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { AgentHub } from "../components/AgentHub.tsx";
 import { Toast } from "../components/Toast.tsx";
@@ -35,6 +35,7 @@ import { ground, ink, space, stroke } from "../design/tokens.ts";
 import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
 import { AppNavigator } from "../nav/AppNavigator.tsx";
 import type { Connection, ConnectionList } from "../platform/connection.ts";
+import { AgentConfigScreen } from "../screens/AgentConfigScreen.tsx";
 import { ConnectionSwitcherScreen } from "../screens/ConnectionSwitcherScreen.tsx";
 import { FleetScreen } from "../screens/FleetScreen.tsx";
 import { InviteScreen } from "../screens/InviteScreen.tsx";
@@ -122,6 +123,14 @@ export function Console({
     actions.select(top.id);
   }, [split, state.selected, state.agents, actions]);
 
+  // The config pane belongs to the session it was opened on: switching the
+  // selection swaps the detail beside it on a tablet, and returning to a
+  // session must not resurrect a config screen left over from the last one.
+  const [configPane, setConfigPane] = useState<AgentId | null>(null);
+  useEffect(() => {
+    setConfigPane(null);
+  }, [state.selected]);
+
   // Read rather than depended on, so the row handlers below keep one identity
   // for the life of the console.
   const latest = useRef({ state, actions });
@@ -153,7 +162,7 @@ export function Console({
     current.actions.openSession(openSessionTarget(current.state, session.id));
   }, []);
 
-  const log = (agentId: AgentId, back: () => void): JSX.Element => {
+  const log = (agentId: AgentId, back: () => void, openConfig: () => void): JSX.Element => {
     // `agentFor`, not a raw roster lookup: a resumed session starts streaming
     // before any roster frame lists its agent, and the log it is streaming must
     // be on screen rather than waiting for an unrelated roster change. The
@@ -188,6 +197,7 @@ export function Console({
         spoken={state.spoken.get(agent.id)?.text ?? null}
         fleetClearances={clearances}
         onBack={back}
+        onOpenConfig={openConfig}
         onSubmit={text => {
           actions.prompt(agent.id, text);
         }}
@@ -234,6 +244,32 @@ export function Console({
     );
   };
 
+  // The config surface is stateless between visits: the daemon's config
+  // routes answer each request whole, so nothing here joins the console
+  // model. The scopes are the daemon's own last answer when it gives one,
+  // the stored pairing's claim otherwise, and the screen treats an old
+  // pairing's silence as optimistic until a refusal says otherwise.
+  const agentConfig = (agentId: AgentId, back: () => void): JSX.Element => (
+    <AgentConfigScreen
+      agentId={agentId}
+      agentName={agentFor(state, agentId)?.name}
+      connection={connection}
+      grantedScopes={state.grantedScopes}
+      onBack={back}
+    />
+  );
+
+  // The tablet's detail pane has no stack to push the config onto, so it
+  // swaps in place beside the list: the same screen the navigator pushes on
+  // a phone, with the pane's own back in place of the stack's.
+  const splitPane = (): JSX.Element | null => {
+    const selected = state.selected;
+    if (selected !== null && configPane === selected) {
+      return agentConfig(selected, () => setConfigPane(null));
+    }
+    return splitDetail(state, log, terminal, actions.back, setConfigPane);
+  };
+
   const surfaces: ShellSurfaces = {
     daemonLabel,
     canInvite: canInvite(state, connection.scopes),
@@ -256,12 +292,13 @@ export function Console({
               onUnarchive={onUnarchive}
             />
           </View>
-          {split ? <View style={styles.splitDetail}>{splitDetail(state, log, terminal, actions.back)}</View> : null}
+          {split ? <View style={styles.splitDetail}>{splitPane()}</View> : null}
         </View>
       </SafeScreen>
     ),
     session: log,
     terminal,
+    agentConfig,
     connections: (back, invite) => (
       <ConnectionSwitcherScreen
         canInvite={canInvite(state, connection.scopes)}
@@ -325,11 +362,13 @@ function selectionOf(state: ConsoleState): ShellSelection | null {
  */
 function splitDetail(
   state: ConsoleState,
-  log: (agentId: AgentId, back: () => void) => JSX.Element,
+  log: (agentId: AgentId, back: () => void, openConfig: () => void) => JSX.Element,
   terminal: (sessionId: string, back: () => void) => JSX.Element,
   back: () => void,
+  openConfig: (agentId: AgentId) => void,
 ): JSX.Element | null {
-  if (state.selected !== null) return log(state.selected, back);
+  const selected = state.selected;
+  if (selected !== null) return log(selected, back, () => openConfig(selected));
   if (state.selectedTui !== null) return terminal(state.selectedTui, back);
   return null;
 }
