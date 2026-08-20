@@ -176,37 +176,49 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         )}
       </View>
 
-      <PlanCard
-        canApprove={props.canApprove}
-        onRespond={props.onDecidePlan}
-        plan={session.plan}
-        refusal={props.refusal}
-        review={session.planReview}
-      />
+      {/*
+        The keyboard has to take its space from the transcript, not from the
+        composer. Wrapping only the composer left it correct on a phone and
+        wrong on an iPad, where the keyboard is tall enough to cover the send
+        control: the text was visible, the button was not, and neither a person
+        nor an automated run could send. Owning the whole body means the
+        transcript shrinks and the composer stays on screen.
+      */}
+      <KeyboardAvoidingView
+        style={styles.body}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+      >
+        <PlanCard
+          canApprove={props.canApprove}
+          onRespond={props.onDecidePlan}
+          plan={session.plan}
+          refusal={props.refusal}
+          review={session.planReview}
+        />
 
-      <Transcript
-        entries={session.entries}
-        canApprove={props.canApprove}
-        refusal={props.refusal}
-        onDecide={props.onDecide}
-        spoken={props.spoken}
-      />
+        <Transcript
+          entries={session.entries}
+          canApprove={props.canApprove}
+          refusal={props.refusal}
+          onDecide={props.onDecide}
+          spoken={props.spoken}
+        />
 
-      {webViewCapability === null || !browserOpen ? null : (
-        <View style={styles.browser} testID="session-browser">
-          <webViewCapability.Driver ref={driver} style={styles.driver} />
-        </View>
-      )}
+        {webViewCapability === null || !browserOpen ? null : (
+          <View style={styles.browser} testID="session-browser">
+            <webViewCapability.Driver ref={driver} style={styles.driver} />
+          </View>
+        )}
 
-      <StatusReadout
-        state={connection}
-        attempt={props.attempt}
-        delayMs={props.delayMs}
-        usage={session.usage}
-        clearances={props.fleetClearances}
-      />
+        <StatusReadout
+          state={connection}
+          attempt={props.attempt}
+          delayMs={props.delayMs}
+          usage={session.usage}
+          clearances={props.fleetClearances}
+        />
 
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
         {/*
           Home-indicator inset lives on a child, not on KeyboardAvoidingView.
           KAV's padding behavior owns paddingBottom for the keyboard; putting
@@ -227,6 +239,9 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
 }
 
 const styles = StyleSheet.create({
+  // Owns the space between the header and the bottom of the screen, so the
+  // keyboard's inset lands here rather than on top of the composer.
+  body: { flex: 1 },
   head: {
     flexDirection: "row",
     alignItems: "center",
