@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Entry, SessionState } from "../src/session/model.ts";
 import { EMPTY_SESSION } from "../src/session/model.ts";
+
 // These modules import React Native. Loading them after rnw.ts is what makes
 // this test exercise the web target instead of Bun trying to load native code.
 
@@ -92,7 +93,16 @@ describe("session narration", () => {
     const speech = new RecordingSpeech();
     const narrator = new SessionNarrator(speech);
     const rows: Entry[] = [
-      { kind: "tool", id: "tool", toolKind: "execute", title: "Run tests", status: "completed", input: null, output: "done", locations: [] },
+      {
+        kind: "tool",
+        id: "tool",
+        toolKind: "execute",
+        title: "Run tests",
+        status: "completed",
+        input: null,
+        output: "done",
+        locations: [],
+      },
       { kind: "unknown", id: "system", label: "system notice", payload: { text: "Do not say this." } },
       { kind: "user", id: "user", text: "Do not echo me." },
       { kind: "assistant", id: "thought", text: "Private reasoning.", streaming: true, thought: true },
@@ -140,7 +150,9 @@ describe("session narration", () => {
     const toggle = host.querySelector('[data-testid="session-narration-toggle"]') as HTMLElement | null;
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("aria-disabled")).toBe("true");
-    expect(host.querySelector('[data-testid="session-narration-status"]')?.textContent).toContain("Narration unavailable");
+    expect(host.querySelector('[data-testid="session-narration-status"]')?.textContent).toContain(
+      "Narration unavailable",
+    );
     expect(host.querySelector('[data-testid="session-narration-reason"]')?.textContent).toBe(reason);
 
     act(() => root.unmount());

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { NativeModules, Platform } from "react-native";
 import type { Entry } from "../session/model.ts";
 
-export type NarrationAvailability = { readonly available: true } | { readonly available: false; readonly reason: string };
+export type NarrationAvailability =
+  | { readonly available: true }
+  | { readonly available: false; readonly reason: string };
 
 /**
  * The device speech contract narration needs.
@@ -248,7 +250,10 @@ export interface NarrationState {
 }
 
 /** Keep one narrator aligned with the selected session's cumulative entries. */
-export function useNarration(entries: readonly Entry[], speech: NarrationSpeech = deviceNarrationSpeech): NarrationState {
+export function useNarration(
+  entries: readonly Entry[],
+  speech: NarrationSpeech = deviceNarrationSpeech,
+): NarrationState {
   const [enabled, setEnabled] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [narrator] = useState(

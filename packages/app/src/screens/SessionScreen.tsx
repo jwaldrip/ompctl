@@ -188,7 +188,11 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           testID="session-narration-toggle"
           accessibilityRole="switch"
           accessibilityLabel={
-            !narration.available ? "Narration unavailable" : narration.enabled ? "Turn narration off" : "Turn narration on"
+            !narration.available
+              ? "Narration unavailable"
+              : narration.enabled
+                ? "Turn narration off"
+                : "Turn narration on"
           }
           accessibilityState={{ checked: narration.enabled, disabled: !narration.available }}
           disabled={!narration.available}
@@ -196,10 +200,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           style={({ pressed }) => [styles.narrationToggle, pressed && { backgroundColor: ground.active }]}
         >
           <Glyph name="narration" size={14} color={narration.enabled ? signal.sage : ink.muted} />
-          <Label
-            color={narration.enabled ? ink.bright : ink.muted}
-            testID="session-narration-status"
-          >
+          <Label color={narration.enabled ? ink.bright : ink.muted} testID="session-narration-status">
             {!narration.available ? "Narration unavailable" : narration.enabled ? "Narration on" : "Narration off"}
           </Label>
         </Pressable>
@@ -209,7 +210,9 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           testID="session-narration-reason"
         >
           {narration.reason ??
-            (narration.enabled ? "Reading new agent prose as it arrives." : "Read new agent prose aloud as it arrives.")}
+            (narration.enabled
+              ? "Reading new agent prose as it arrives."
+              : "Read new agent prose aloud as it arrives.")}
         </Label>
       </View>
 
