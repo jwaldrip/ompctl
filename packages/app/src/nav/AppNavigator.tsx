@@ -49,6 +49,7 @@ export type ShellParamList = {
   connections: undefined;
   invite: undefined;
   newSession: undefined;
+  agentConfig: { agentId: AgentId };
   settings: undefined;
 };
 
@@ -76,8 +77,11 @@ export interface ShellSurfaces {
    * tells the model once. A screen that cleared the model directly instead would
    * leave the swipe and the hardware button on a different path from its own
    * button, which is how one of the three ends up not working.
+   *
+   * The log also takes the way into its agent's config, supplied here so the
+   * session screen never needs to know a navigator exists.
    */
-  session: (agentId: AgentId, back: () => void) => JSX.Element;
+  session: (agentId: AgentId, back: () => void, openConfig: () => void) => JSX.Element;
   terminal: (sessionId: string, back: () => void) => JSX.Element;
   connections: (back: () => void, invite: () => void, settings: () => void) => JSX.Element;
   invite: (done: () => void) => JSX.Element;
@@ -93,6 +97,12 @@ export interface ShellSurfaces {
    * rule the detail routes follow.
    */
   newSession: (done: () => void) => JSX.Element;
+  /**
+   * One agent's mode and model, pushed from its open session. The agent id
+   * comes from the route, which got it from that session, so this surface can
+   * never describe a session other than the one it was opened from.
+   */
+  agentConfig: (agentId: AgentId, back: () => void) => JSX.Element;
 }
 
 export interface AppNavigatorProps {
@@ -193,6 +203,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
           />
           <Stack.Screen name="session" component={SessionRoute} options={OWN_CHROME} />
           <Stack.Screen name="terminal" component={TerminalRoute} options={OWN_CHROME} />
+          <Stack.Screen name="agentConfig" component={AgentConfigRoute} options={OWN_CHROME} />
           <Stack.Screen name="menu" component={MenuRoute} options={{ title: "Menu", presentation: "modal" }} />
           <Stack.Screen name="connections" component={ConnectionsRoute} options={CONNECTIONS_OPTIONS} />
           <Stack.Screen name="invite" component={InviteRoute} options={INVITE_OPTIONS} />
@@ -216,11 +227,21 @@ function FleetRoute(): JSX.Element {
 }
 
 function SessionRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "session">): JSX.Element {
-  return useSurfaces().session(route.params.agentId, () => navigation.goBack());
+  // The config entry rides the session it configures, carrying the same agent
+  // id this route holds, so what it opens can never be another session.
+  return useSurfaces().session(
+    route.params.agentId,
+    () => navigation.goBack(),
+    () => navigation.navigate("agentConfig", { agentId: route.params.agentId }),
+  );
 }
 
 function TerminalRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "terminal">): JSX.Element {
   return useSurfaces().terminal(route.params.sessionId, () => navigation.goBack());
+}
+
+function AgentConfigRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "agentConfig">): JSX.Element {
+  return useSurfaces().agentConfig(route.params.agentId, () => navigation.goBack());
 }
 
 function ConnectionsRoute({ navigation }: NativeStackScreenProps<ShellParamList, "connections">): JSX.Element {
