@@ -2842,6 +2842,98 @@ export class Gateway {
         return;
       }
 
+      case "agent_config_read": {
+        // The same read gate the HTTP route runs, because a hub-relayed phone
+        // reaches this frame instead of that route and must not meet a weaker
+        // door here. The reply goes to the asking socket only: a config is the
+        // answer to a request, not a broadcast.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code: "unauthorized",
+            message: "agent config requires read scope",
+          });
+          return;
+        }
+        if (typeof frame.agentId !== "string" || frame.agentId.length === 0) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "agent_config_read needs an agentId" });
+          return;
+        }
+        const configured = this.#resolveAgentSession(ws, frame.agentId);
+        if (!configured) return;
+        const options = configured.sessions.configFor(configured.sessionId);
+        // The same 503 the HTTP route gives when the session has reported no
+        // config yet: an empty answer would read as an agent with no modes,
+        // which is a different and false statement.
+        if (!options) {
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code: "config_unavailable",
+            message: `no config has been reported for agent ${frame.agentId}`,
+          });
+          return;
+        }
+        this.#send(ws, { t: "agent_config", agentId: frame.agentId, configOptions: options });
+        return;
+      }
+
+      case "agent_config_write": {
+        // Prompt rather than manage, the HTTP route's own bar and for its
+        // reason: `plan` is the read-only mode, so moving off it widens what
+        // the agent may do and a device holding only `read` must not be able
+        // to do that, while anyone who can send a prompt can already make a
+        // default-mode agent act.
+        if (!ws.data.scopes.has(SCOPE_PROMPT)) {
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code: "unauthorized",
+            message: "agent_config_write requires prompt scope",
+          });
+          return;
+        }
+        // The wire is not a place to assume anyone kept to the contract: the
+        // same value checks the HTTP route runs on its body, on the two fields
+        // this frame owns.
+        if (
+          typeof frame.agentId !== "string" ||
+          frame.agentId.length === 0 ||
+          typeof frame.modeId !== "string" ||
+          frame.modeId.length === 0
+        ) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "agent_config_write needs an agentId and a non-empty modeId",
+          });
+          return;
+        }
+        const target = this.#resolveAgentSession(ws, frame.agentId);
+        if (!target) return;
+        // Checked against what this session actually offers, exactly as the
+        // HTTP route does: forwarding an unknown mode would either be ignored
+        // or wedge the turn, and both look like the daemon losing the request.
+        const known = target.sessions.configFor(target.sessionId)?.find(option => option.id === MODE_OPTION_ID);
+        if (known && !known.options.some(choice => choice.value === frame.modeId)) {
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code: "unknown_mode",
+            message: `agent ${frame.agentId} has no mode ${frame.modeId}; it offers ${known.options
+              .map(choice => choice.value)
+              .join(", ")}`,
+          });
+          return;
+        }
+        // Detached like the session index reply, and for the same reason:
+        // `session/set_mode` is a round trip to the agent, and every socket
+        // must keep being served while one client's mode change lands.
+        void this.#serveAgentConfigWrite(ws, target.sessions, target.sessionId, frame.agentId, frame.modeId);
+        return;
+      }
+
       case "session_takeover":
       case "session_resume": {
         // The same manage gate the HTTP takeover route takes: handing the
@@ -3336,6 +3428,87 @@ export class Gateway {
         t: "error",
         code: "session_tail_failed",
         message: err instanceof Error ? err.message : "session tail failed",
+      });
+    }
+  }
+
+  /**
+   * The live session behind an agent id, or the one named refusal that says
+   * why there is none. Shared by both agent-config frames so a phone is told
+   * the same thing whichever it sent, and so neither can answer an id the
+   * store holds no row for with a crash or with silence.
+   *
+   * The refusals are the HTTP route's own, one per cause: the seam missing
+   * from this daemon, the agent not existing, and the agent existing with no
+   * session behind it are three different problems, and an operator whose
+   * phone says "unavailable" for all three cannot act on any of them.
+   */
+  #resolveAgentSession(
+    ws: GatewaySocket,
+    agentId: AgentId,
+  ): { sessions: SessionConfig; sessionId: string } | undefined {
+    const sessions = this.#sessions;
+    if (!sessions) {
+      this.#send(ws, {
+        t: "error",
+        agentId,
+        code: "config_unavailable",
+        message: "no session config is wired into this daemon",
+      });
+      return undefined;
+    }
+    const agent = this.#store.getAgent(agentId);
+    if (!agent) {
+      this.#send(ws, {
+        t: "error",
+        agentId,
+        code: "unknown_agent",
+        message: `no agent ${agentId} exists on this daemon`,
+      });
+      return undefined;
+    }
+    const sessionId = agent.acpSessionId;
+    if (sessionId === undefined) {
+      this.#send(ws, {
+        t: "error",
+        agentId,
+        code: "no_session",
+        message: `agent ${agentId} has no live session to configure`,
+      });
+      return undefined;
+    }
+    return { sessions, sessionId };
+  }
+
+  /**
+   * One socket `agent_config_write`: the mode asked of the session, then the
+   * daemon's read-back of what that session now holds. The reply carries the
+   * read-back rather than the request, so a client renders the mode the agent
+   * actually runs under even if the agent settled somewhere else.
+   */
+  async #serveAgentConfigWrite(
+    ws: GatewaySocket,
+    sessions: SessionConfig,
+    sessionId: string,
+    agentId: AgentId,
+    modeId: string,
+  ): Promise<void> {
+    try {
+      // Not audited, for the reason the HTTP route names: `AuditAction` is a
+      // frozen closed union with no member for a mode change, and recording
+      // this under a member that means something else would corrupt the audit
+      // log to fake coverage.
+      const options = await sessions.setMode(sessionId, modeId);
+      this.#send(ws, { t: "agent_config", agentId, configOptions: options });
+    } catch (err) {
+      // Detached from `#handle`, so its last-line-of-defence try/catch no
+      // longer covers this: a mode change that cannot land must still cost the
+      // asking socket exactly one error frame, never a dropped one.
+      this.#send(ws, {
+        t: "error",
+        agentId,
+        code: "agent_config_failed",
+        message: err instanceof Error ? err.message : "set_mode failed",
       });
     }
   }
