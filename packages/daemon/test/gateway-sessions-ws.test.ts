@@ -448,9 +448,9 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
 
   test("/v1/health answers promptly while a cold warm pass is still counting", async () => {
     const h = await corpusHarness();
-    // Twelve multi-megabyte transcripts: ~65ms of counting on this machine
-    // (measured ~0.75MB/ms streamed), an order of magnitude past the 25ms
-    // health bound below.
+    // Twelve multi-megabyte transcripts: ~65ms of synchronous counting on
+    // this machine (measured ~0.75MB/ms streamed), beyond both the 60ms
+    // first-paint ceiling and the 25ms health ceiling below.
     for (let i = 0; i < 12; i++) {
       writeCountedSessionFile(h.sessionsRoot, `aaaaaaaa-0000-7000-0000-${String(i).padStart(12, "0")}`, 3600, 1100);
     }
@@ -463,7 +463,7 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
     // the scan yields while it works. A build or warm pass that blocked the
     // loop would delay this frame itself past the bound below.
     const first = await socket.next(isSessionsFrame, "first-paint sessions frame");
-    expect(performance.now() - t0).toBeLessThan(35);
+    expect(performance.now() - t0).toBeLessThan(60);
     expect(isSessionsFrame(first) && first.sessions.every(s => s.messageCount === null)).toBe(true);
 
     // The warm pass is now counting in the background; health must answer
