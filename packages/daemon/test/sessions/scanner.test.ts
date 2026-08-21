@@ -19,6 +19,7 @@ import { join } from "node:path";
 import {
   COUNT_CHUNK_BYTES,
   countMessages,
+  countMessagesAsync,
   findSessionFile,
   findSessionFileIter,
   scanSessionFiles,
@@ -229,7 +230,7 @@ function writeRaw(name: string, content: string): string {
 describe("countMessages streaming equivalence", () => {
   const C = COUNT_CHUNK_BYTES;
 
-  test("table: every fixture agrees with the whole-file oracle", () => {
+  test("table: every fixture agrees with the whole-file oracle", async () => {
     const title = JSON.stringify({ type: "title", v: 1, title: "t", updatedAt: "t" });
     const userLine = JSON.stringify({ type: "message", id: "a", message: { role: "user", content: [] } });
     const noiseLine = JSON.stringify({ type: "model_change", id: "n", model: "m" });
@@ -316,6 +317,7 @@ describe("countMessages streaming equivalence", () => {
       const path = writeRaw(`${name.replace(/[^a-z0-9]+/gi, "-")}.jsonl`, content);
       expect(countMessages(path), name).toBe(expected);
       expect(countMessages(path), name).toBe(legacyCountMessages(path));
+      expect(await countMessagesAsync(path), `${name} async`).toBe(expected);
     }
   });
 

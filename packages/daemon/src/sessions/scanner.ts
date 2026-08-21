@@ -295,14 +295,39 @@ export function parseTurnLine(text: string): SessionTurnLine | null {
  * `session_scan_cache` table, which makes every build after the first one a
  * cache hit for message counts instead of a re-read.
  */
+class TurnCounter {
+  #carry: Buffer[] = [];
+  #count = 0;
+
+  push(chunk: Uint8Array): void {
+    const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    let lineStart = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] !== 0x0a) continue;
+      const text =
+        this.#carry.length > 0
+          ? Buffer.concat([...this.#carry, bytes.subarray(lineStart, i)]).toString("utf8")
+          : bytes.toString("utf8", lineStart, i);
+      this.#carry = [];
+      if (parseTurnLine(text) !== null) this.#count++;
+      lineStart = i + 1;
+    }
+    if (lineStart < bytes.length) {
+      this.#carry.push(Buffer.from(bytes.subarray(lineStart)));
+    }
+  }
+
+  finish(): number {
+    if (this.#carry.length > 0 && parseTurnLine(Buffer.concat(this.#carry).toString("utf8")) !== null) {
+      this.#count++;
+    }
+    return this.#count;
+  }
+}
+
 export function* countMessagesChunks(fd: number): Generator<void, number> {
   const chunk = Buffer.allocUnsafe(COUNT_CHUNK_BYTES);
-  // Bytes of the line still unterminated at the end of the last chunk. A
-  // list, not one Buffer: a pathological single line spanning many chunks
-  // must concatenate once at its newline, not copy its whole prefix every
-  // chunk.
-  let carry: Buffer[] = [];
-  let count = 0;
+  const counter = new TurnCounter();
   let position = 0;
   for (;;) {
     let bytesRead: number;
@@ -313,27 +338,21 @@ export function* countMessagesChunks(fd: number): Generator<void, number> {
     }
     if (bytesRead === 0) break;
     position += bytesRead;
-
-    let lineStart = 0;
-    for (let i = 0; i < bytesRead; i++) {
-      if (chunk[i] !== 0x0a) continue;
-      const text =
-        carry.length > 0
-          ? Buffer.concat([...carry, chunk.subarray(lineStart, i)]).toString("utf8")
-          : chunk.toString("utf8", lineStart, i);
-      carry = [];
-      if (parseTurnLine(text) !== null) count++;
-      lineStart = i + 1;
-    }
-    if (lineStart < bytesRead) {
-      carry.push(Buffer.from(chunk.subarray(lineStart, bytesRead)));
-    }
+    counter.push(chunk.subarray(0, bytesRead));
     yield; // One chunk per cooperative step.
   }
-  // The trailing line after the last newline, if any: the old whole-file
-  // split counted it too, so it is counted here as well.
-  if (carry.length > 0 && parseTurnLine(Buffer.concat(carry).toString("utf8")) !== null) count++;
-  return count;
+  return counter.finish();
+}
+
+/** Count turns without opening or reading the transcript on the daemon's event-loop thread. */
+export async function countMessagesAsync(path: string): Promise<number> {
+  try {
+    const counter = new TurnCounter();
+    for await (const chunk of Bun.file(path).stream()) counter.push(chunk);
+    return counter.finish();
+  } catch {
+    return 0;
+  }
 }
 
 /**

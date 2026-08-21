@@ -13,11 +13,10 @@
  *
  * The build never blocks the event loop for long and never blocks first
  * paint on a count:
- * - `build()` is async and cooperative: it yields while scanning (every
- *   `SCAN_YIELD_EVERY_FILES` files) and the background warm pass yields
- *   inside long counts (every `COUNT_YIELD_INTERVAL_BYTES` bytes) and
- *   between files, so HTTP routes, websocket pings, and relay acks keep
- *   being served mid-build. A hub client's reconnect replay used to restart
+ * - `build()` is async and cooperative: it yields while scanning, and the
+ *   background warm pass streams transcript bytes off the event-loop thread
+ *   and yields between files, so HTTP routes, websocket pings, and relay acks
+ *   keep being served mid-build. A hub client's reconnect replay used to restart
  *   a multi-minute synchronous scan and starve even `/v1/health`; that
  *   failure mode is the reason this file is async at all.
  * - First paint serves every row immediately, with counts from the durable
@@ -31,7 +30,6 @@
  *   multiply the work it is reconnecting because of.
  */
 
-import { closeSync, openSync } from "node:fs";
 import type { SessionScanCacheEntry, Store } from "@ompd/core";
 import type {
   AgentId,
@@ -47,8 +45,7 @@ import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import { type DecodedCwd, decodeSessionDirName } from "./cwd-codec.ts";
 import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
 import {
-  COUNT_CHUNK_BYTES,
-  countMessagesChunks,
+  countMessagesAsync,
   findSessionFileIter,
   MESSAGE_COUNT_SIZE_CEILING_BYTES,
   type RawSessionFile,
@@ -101,15 +98,6 @@ interface BuildOutcome {
  * the scan, at a `setImmediate` cost measured in well under a microsecond.
  */
 const SCAN_YIELD_EVERY_FILES = 8;
-
-/**
- * Yield cadence inside one file's count, in bytes. Measured here: streamed
- * counting runs 0.746MB/ms, so 2MiB of work is a ~2.8ms slice between
- * yields. Long enough that yielding costs nothing measurable against the
- * count itself, short enough that a ping or relay ack waits at most a few
- * milliseconds even inside a 50MB transcript.
- */
-const COUNT_YIELD_INTERVAL_BYTES = 2 * 1024 * 1024;
 
 /**
  * Cache-write batch size, in files. One transaction per batch instead of
@@ -363,7 +351,7 @@ export class SessionIndex {
       if (cached && cached.mtimeMs === file.mtimeMs && cached.sizeBytes === file.sizeBytes) {
         continue;
       }
-      const count = await this.#countFileCooperatively(file.path);
+      const count = await countMessagesAsync(file.path);
       batch.push({ sessionId: file.id, mtimeMs: file.mtimeMs, sizeBytes: file.sizeBytes, messageCount: count });
       await yieldToEventLoop(); // Between files, so a corpus of tiny files cannot chain into one long sync run either.
       if (batch.length >= WARM_CACHE_BATCH_ROWS) {
@@ -373,32 +361,6 @@ export class SessionIndex {
       }
     }
     if (batch.length > 0) this.#store.setSessionScanCacheBatch(batch);
-  }
-
-  /** The same streamed counting as `countMessages`, driven with periodic event-loop yields. */
-  async #countFileCooperatively(path: string): Promise<number> {
-    let fd: number;
-    try {
-      fd = openSync(path, "r");
-    } catch {
-      return 0;
-    }
-    try {
-      const steps = countMessagesChunks(fd);
-      let sinceYield = 0;
-      let step = steps.next();
-      while (!step.done) {
-        sinceYield += COUNT_CHUNK_BYTES;
-        if (sinceYield >= COUNT_YIELD_INTERVAL_BYTES) {
-          sinceYield = 0;
-          await yieldToEventLoop();
-        }
-        step = steps.next();
-      }
-      return step.value;
-    } finally {
-      closeSync(fd);
-    }
   }
 
   /** The first-paint rows of one shared build, without a query applied. */
