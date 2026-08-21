@@ -68,12 +68,13 @@ describe("readSessionHistory", () => {
     );
     const seen: string[] = [];
     let before: number | undefined;
+    let done = false;
     do {
       const page = await readSessionHistory(path, { before, limit: 2 });
       seen.unshift(...page.entries.flatMap(entry => (entry.kind === "tool" ? [] : [entry.text])));
       before = page.nextBefore ?? undefined;
-      if (page.nextBefore === null) break;
-    } while (true);
+      done = page.nextBefore === null;
+    } while (!done);
     expect(seen).toEqual(Array.from({ length: 7 }, (_, index) => `turn-${index}`));
   });
 

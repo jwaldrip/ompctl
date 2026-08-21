@@ -234,7 +234,7 @@ export function useConsole(
       for (const off of offs) off();
       client.close();
     };
-  }, [client, settleWebViewAction, selectAgent]);
+  }, [client, requestHistory, settleWebViewAction]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -344,7 +344,7 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [client, settleWebViewAction, selectAgent],
+    [client, requestHistory, settleWebViewAction, selectAgent],
   );
 
   return [state, actions];
