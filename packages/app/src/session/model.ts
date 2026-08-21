@@ -131,6 +131,24 @@ export interface UnknownEntry {
 
 export type Entry = UserEntry | AssistantEntry | ToolEntry | ApprovalEntry | UnknownEntry;
 
+/**
+ * List identity for one transcript row.
+ *
+ * `entry.id` is the ACP message id. Thinking and reply of one turn often share
+ * that id (observed on a real iPad: `.$assistant=26509f48d-…` twice). The
+ * FlatList keyed on `kind:id`, so both children were `assistant:<same>`, and
+ * React painted the yellow banner over the log. The array index would be
+ * unique and would remount every row as the stream grows, which is the
+ * recycler failure the RN docs warn about.
+ *
+ * Channel (thought vs message) is the field that actually distinguishes those
+ * two rows. Other kinds already have unique ids of their own.
+ */
+export function transcriptRowKey(entry: Entry): string {
+  if (entry.kind === "assistant") return `assistant:${entry.thought ? "thought" : "message"}:${entry.id}`;
+  return `${entry.kind}:${entry.id}`;
+}
+
 export interface SessionState {
   readonly entries: readonly Entry[];
   readonly plan: readonly PlanEntry[];

@@ -18,6 +18,7 @@ import {
   reduce,
   reduceAll,
   resolveApproval,
+  transcriptRowKey,
 } from "../src/session/model.ts";
 
 interface Capture {
@@ -80,6 +81,30 @@ describe("a captured turn", () => {
     const assistants = state.entries.filter((entry): entry is AssistantEntry => entry.kind === "assistant");
     expect(assistants.length).toBe(1);
     expect(assistants[0]?.text).toBe("ompctl-path-abc123");
+  });
+
+  test("thinking and reply that share a message id still have distinct list keys", () => {
+    // Observed on a real iPad: `.$assistant=26509f48d-…` twice. Thinking and
+    // the reply used one ACP message id, and the FlatList keyed on kind:id, so
+    // both children were `assistant:<same>`.
+    const state = reduceAll(EMPTY_SESSION, [
+      {
+        sessionUpdate: "agent_thought_chunk",
+        messageId: "26509f48d-4445-43b6-be9e-e185ece32148",
+        content: { type: "text", text: "must call todo first" },
+      },
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "26509f48d-4445-43b6-be9e-e185ece32148",
+        content: { type: "text", text: "ompctl-path-token" },
+      },
+    ]);
+    const assistants = state.entries.filter((entry): entry is AssistantEntry => entry.kind === "assistant");
+    expect(assistants).toHaveLength(2);
+    const keys = assistants.map(transcriptRowKey);
+    expect(new Set(keys).size).toBe(2);
+    expect(keys[0]).toContain("thought");
+    expect(keys[1]).toContain("message");
   });
 
   test("a settled turn leaves nothing streaming", () => {
