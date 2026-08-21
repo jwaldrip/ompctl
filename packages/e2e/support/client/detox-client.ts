@@ -162,25 +162,19 @@ export class DetoxClient implements E2EClient {
     await this.waitFor(testId);
     const g = globals();
     const field = g.element(g.by.id(testId));
-    // replaceText updates iOS through Detox without invoking the keyboard's
-    // password heuristic. typeText on a secure token field opens the system
-    // "Save Password?" sheet outside the app, which Detox correctly cannot tap
-    // and which makes an otherwise unattended run require a person. Android
-    // keeps typeText because it is the path that reaches its native field
-    // reliably, and its state reset never opens this iOS-only sheet.
-    if (this.kind === "ios") {
-      // Detox's own activation point for a text field sits near its top-left
-      // corner, and its visibility probe there fails against this composer's
-      // hairline border, so the run stalls on a field a person can plainly
-      // type into. An explicit interior point is the same gesture without the
-      // corner: it still requires the field to be on screen and hittable.
-      await field.tap({ x: 40, y: 20 });
-      await field.replaceText(value);
-    } else {
-      await field.tap();
-      await field.clearText();
-      await field.typeText(value);
-    }
+    // replaceText writes the value through the native view without driving the
+    // IME. typeText was the Android path until a Pixel run proved it opens
+    // Gboard, whose toolbar then sits over the next field; the following tap
+    // hits Gboard's settings gear, Espresso reports no activity in RESUMED,
+    // and the suite is looking at a keyboard preferences screen. iOS already
+    // used replaceText to keep the system password sheet from appearing; the
+    // same call is what keeps Android inside the app.
+    //
+    // Detox's default activation point sits at the field's top-left corner
+    // and fails the visibility probe against a hairline border, so an
+    // explicit interior point is the same gesture without the corner.
+    await field.tap({ x: 40, y: 20 });
+    await field.replaceText(value);
   }
 
   async textOf(testId: string): Promise<string> {
