@@ -77,4 +77,6 @@ Feature: What a paired device can do with its sessions
     And I dismiss the keyboard
     And I select "composer-send"
     Then the agent replies in "transcript" echoing "<nonce>"
+    And I cannot see "toast"
+    And I cannot see "toast-link"
     And I capture "12-round-trip"
