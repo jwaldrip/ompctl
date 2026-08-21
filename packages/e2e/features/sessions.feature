@@ -86,7 +86,7 @@ Feature: What a paired device can do with its sessions
   # able to wake a known durable session and reach its transcript/composer.
   @dormant
   Scenario: A dormant session resumes into an interactive transcript
-    Then "session-status-first" contains "dormant"
+    Then "session-open-first" contains "resume"
     When I select "session-open-first"
     Then I can see "session"
     And I can see "transcript"
