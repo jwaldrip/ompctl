@@ -76,15 +76,14 @@ Then("I report the sessions listed in {string}", async function (this: OmpctlWor
 });
 
 /**
- * The reply half of the round trip. A fixed sleep would pass on a dead socket
- * that merely outlasts it, and a bare existence check would pass on a reply
- * left over from before the prompt. So this waits for the one thing neither
- * can fake: the agent echoing the per-scenario nonce that no earlier turn
- * contains. The speaker's row id `entry-assistant` is fixed here on purpose:
- * the step is about the agent, and which rows speak for the agent is the
- * app's contract, not the scenario's to choose. Each poll scrolls the list to
- * its end first, because a virtualized list leaves the newest rows unmounted
- * until something scrolls to them, and the echo is always the newest row.
+ * The reply half of the round trip.
+ *
+ * This MUST be exact. The old substring match passed an agent row that began
+ * with the nonce and then streamed 4,000 characters of `:0:0:0:` followed by
+ * "Internal error during token generation". The screenshot proved the
+ * product was broken while cucumber reported 18/18. The accessible row label
+ * carries the speaker prefix, so equality also proves this is an agent reply,
+ * not thinking text or the user's own prompt.
  */
 Then("the agent replies in {string} echoing {string}", async function (
   this: OmpctlWorld,
@@ -92,18 +91,21 @@ Then("the agent replies in {string} echoing {string}", async function (
   needle: string,
 ) {
   const expected = this.resolve(needle);
+  const expectedLabel = `agent: ${expected}`;
   const deadline = Date.now() + 90_000;
+  let observed: string[] = [];
   while (Date.now() < deadline) {
     await this.app.scrollToEnd(listId);
-    const labels = await this.app.labelsOf("entry-assistant");
-    if (labels.some(label => label.toLowerCase().includes(expected.toLowerCase()))) {
-      return;
-    }
+    observed = await this.app.labelsOf("entry-assistant");
+    if (observed.includes(expectedLabel)) return;
     const { promise: tick, resolve: ticked } = Promise.withResolvers<void>();
     setTimeout(ticked, 500);
     await tick;
   }
-  assert.fail(`no agent row in ${listId} echoed "${expected}" within 90s`);
+  const tail = observed.slice(-3).map(label => JSON.stringify(label)).join(", ");
+  assert.fail(
+    `no agent row in ${listId} equalled ${JSON.stringify(expectedLabel)} within 90s; last labels: ${tail || "none"}`,
+  );
 });
 
 Given("I capture {string}", async function (this: OmpctlWorld, name: string) {

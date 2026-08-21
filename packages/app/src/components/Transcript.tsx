@@ -21,7 +21,7 @@ import { FlatList, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
-import type { Entry } from "../session/model.ts";
+import { type Entry, transcriptRowKey } from "../session/model.ts";
 import { ApprovalCard } from "./ApprovalCard.tsx";
 import { RichText } from "./rich/RichText.tsx";
 import { ToolCard } from "./ToolCard.tsx";
@@ -50,7 +50,7 @@ export function Transcript({ entries, canApprove, refusal, onDecide, spoken }: T
       style={styles.list}
       contentContainerStyle={styles.content}
       data={entries as Entry[]}
-      keyExtractor={entry => `${entry.kind}:${entry.id}`}
+      keyExtractor={transcriptRowKey}
       renderItem={renderItem}
       // The keyboard must never be the reason a control is unreachable. Dragging
       // the transcript puts it away, a tap on a row still reaches the row rather
