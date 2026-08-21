@@ -90,6 +90,7 @@ Feature: What a paired device can do with its sessions
     When I select "session-open-first"
     Then I can see "session"
     And I can see "transcript"
+    And I can see "entry-assistant"
     And I can see "composer-input"
     And I cannot see "toast"
     And I cannot see "toast-link"
