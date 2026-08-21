@@ -8,6 +8,7 @@
  */
 import { Given, Then, When } from "@cucumber/cucumber";
 import { strict as assert } from "node:assert";
+import { writeSync } from "node:fs";
 import type { OmpctlWorld } from "../support/world.ts";
 
 When("I select {string}", async function (this: OmpctlWorld, testId: string) {
@@ -67,7 +68,11 @@ Then("I report the sessions listed in {string}", async function (this: OmpctlWor
   const count = Number.parseInt(text.replace(/[^0-9]/g, ""), 10);
   assert.ok(Number.isFinite(count) && count >= 1, `${testId} read "${text}", which reports no sessions`);
   this.attach(`sessions listed: ${count}`, "text/plain");
-  console.log(`[path] sessions listed: ${count}`);
+  // writeSync: cucumber's stdout is a pipe into check-path, so console.log is
+  // block-buffered and can exit without flushing. The gate greps this exact
+  // marker out of the captured bytes; if it is not on the wire the round trip
+  // still happened and the check still fails.
+  writeSync(1, `[path] sessions listed: ${count}\n`);
 });
 
 /**

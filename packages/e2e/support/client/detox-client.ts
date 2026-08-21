@@ -162,25 +162,20 @@ export class DetoxClient implements E2EClient {
     await this.waitFor(testId);
     const g = globals();
     const field = g.element(g.by.id(testId));
-    // replaceText updates iOS through Detox without invoking the keyboard's
-    // password heuristic. typeText on a secure token field opens the system
-    // "Save Password?" sheet outside the app, which Detox correctly cannot tap
-    // and which makes an otherwise unattended run require a person. Android
-    // keeps typeText because it is the path that reaches its native field
-    // reliably, and its state reset never opens this iOS-only sheet.
     if (this.kind === "ios") {
-      // Detox's own activation point for a text field sits near its top-left
-      // corner, and its visibility probe there fails against this composer's
-      // hairline border, so the run stalls on a field a person can plainly
-      // type into. An explicit interior point is the same gesture without the
-      // corner: it still requires the field to be on screen and hittable.
+      // Detox's default activation point sits at the field's top-left corner
+      // and fails the visibility probe against a hairline border, so an
+      // explicit interior point is the same gesture without the corner.
       await field.tap({ x: 40, y: 20 });
       await field.replaceText(value);
-    } else {
-      await field.tap();
-      await field.clearText();
-      await field.typeText(value);
+      return;
     }
+    // A tap focuses the field and opens Gboard. On the Pixel that IME's
+    // suggestion chip then sits over the next field, so the next tap hits
+    // the letter "t" (observed: hub became "twss://hub.ompctl.ai") or the
+    // settings gear (Espresso then reports no activity in RESUMED).
+    // replaceText sets the native text without driving the IME.
+    await field.replaceText(value);
   }
 
   async textOf(testId: string): Promise<string> {
@@ -228,18 +223,39 @@ export class DetoxClient implements E2EClient {
   }
 
   /**
-   * Put the keyboard away by tapping the screen's scroll surface, which is what
-   * a person does: React Native's lists dismiss the keyboard on a tap that is
-   * not on an input. This was a no-op while the phone's keyboard left the send
-   * control reachable; an iPad's keyboard covers it, so the scenario stalled on
-   * a control the operator can see and press.
+   * Put the keyboard away so it stops covering the next target.
    *
-   * Android needs nothing here: its own back gesture is not in play and the
-   * composer stays reachable. A screen with no scroll surface is not an error;
-   * there is simply nothing to tap.
+   * iOS: tap the screen's scroll surface, which is what a person does.
+   * Android: KEYCODE_BACK, but only when the IME is actually showing. Back
+   * otherwise leaves the pair form, which is how an earlier run lost the
+   * activity entirely. A tap-to-dismiss is not used on Android because a
+   * Pixel run showed Gboard's suggestion chip eating that tap and turning
+   * `wss://hub.ompctl.ai` into `twss://hub.ompctl.ai`.
    */
   async dismissKeyboard(): Promise<void> {
-    if (this.kind !== "ios") return;
+    if (this.kind === "android") {
+      const serial = process.env.DETOX_ADB_NAME;
+      if (serial === undefined) return;
+      const adb = `${process.env.ANDROID_SDK_ROOT ?? process.env.ANDROID_HOME ?? ""}/platform-tools/adb`;
+      // dumpsys input_method is megabytes; reading it whole throws ENOBUFS
+      // and dies before the suite can even fill the token. Filter on device.
+      // grep's exit 1 when the flag is absent is "IME hidden", not a failure.
+      let dump = "";
+      try {
+        dump = execSync(`${adb} -s ${serial} shell dumpsys input_method | grep mInputShown`, {
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+      } catch {
+        return;
+      }
+      if (!dump.includes("mInputShown=true")) return;
+      execSync(`${adb} -s ${serial} shell input keyevent KEYCODE_BACK`, {
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+      return;
+    }
     const g = globals();
     for (const surface of ["transcript", "fleet-list", "fleet"]) {
       try {

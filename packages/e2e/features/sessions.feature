@@ -13,6 +13,11 @@ Feature: What a paired device can do with its sessions
     And I dismiss the keyboard
     And I select "pair-submit"
     Then I can see "fleet"
+    # Cellular through the hub is slower than a simulator on loopback: the
+    # fleet screen mounts before the agents snapshot arrives, and treating
+    # that empty flash as failure would fail a path that is about to work.
+    # Waiting for a real row is the assertion the empty-state check wanted.
+    And I can see "session-open-first"
     And I cannot see "fleet-empty"
 
   Scenario: The sessions list reports what the daemon actually holds
