@@ -853,6 +853,16 @@ export class Hub {
   // -- upkeep ----------------------------------------------------------------
 
   async #tick(): Promise<void> {
+    // Bun.serve idleTimeout is 120s. A websocket with no bytes is closed as
+    // 1006, no close frame. The daemon reconnects, bursts, and the hub then
+    // closes it 4429 rate limited. That loop is what a phone sees as retries
+    // and half-delivered agent text. Both HubToDaemon and HubToClient already
+    // define ping and both legs already answer pong; nothing sent one. This
+    // tick is 5s, well under 120s, so a live leg never looks idle. The ping
+    // is not an envelope and does not move the ack ledger.
+    for (const ws of this.#daemons.values()) this.#sendDaemon(ws, { t: "ping" });
+    for (const ws of this.#clients.values()) this.#sendClient(ws, { t: "ping" });
+
     for (const daemonId of this.#daemons.keys()) {
       let held = false;
       try {
