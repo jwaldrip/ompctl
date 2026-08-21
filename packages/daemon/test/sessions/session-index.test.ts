@@ -315,7 +315,7 @@ describe("SessionIndex single-flight", () => {
     // The scan seam holds the first build open until the second request has
     // joined it, so the overlap is deterministic rather than a scheduling
     // race; the files it replays are the real ones the real scan would find.
-    const realFiles = scanSessionFiles(sessionsRoot);
+    const realFiles = await scanSessionFiles(sessionsRoot);
     let scanCalls = 0;
     const gate = Promise.withResolvers<void>();
     const index = new SessionIndex({
@@ -362,7 +362,9 @@ describe("SessionIndex single-flight", () => {
       runDaemonsRoot: tempRoot("session-index-empty-run-"),
       scan: root => {
         scanCalls += 1;
-        return scanSessionFiles(root);
+        return (async function* () {
+          yield* await scanSessionFiles(root);
+        })();
       },
     });
 

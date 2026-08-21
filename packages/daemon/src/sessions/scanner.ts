@@ -16,7 +16,8 @@
  * served while both run.
  */
 
-import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readSync } from "node:fs";
+import { type FileHandle, open as openAsync, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 
@@ -64,10 +65,10 @@ function isoFromFilenameTimestamp(raw: string): string {
  * whole thing to read a title that lives in its first 200 bytes is exactly
  * the I/O this scanner exists to avoid.
  */
-function readFirstLine(path: string, maxBytes = 65_536): string | null {
-  let fd: number;
+async function readFirstLine(path: string, maxBytes = 65_536): Promise<string | null> {
+  let file: FileHandle;
   try {
-    fd = openSync(path, "r");
+    file = await openAsync(path, "r");
   } catch {
     return null;
   }
@@ -78,7 +79,7 @@ function readFirstLine(path: string, maxBytes = 65_536): string | null {
     let collectedLength = 0;
     let position = 0;
     while (collectedLength < maxBytes) {
-      const bytesRead = readSync(fd, chunk, 0, chunkSize, position);
+      const { bytesRead } = await file.read(chunk, 0, chunkSize, position);
       if (bytesRead === 0) break;
       const newlineIdx = chunk.subarray(0, bytesRead).indexOf(0x0a);
       if (newlineIdx !== -1) {
@@ -91,7 +92,7 @@ function readFirstLine(path: string, maxBytes = 65_536): string | null {
     }
     return collectedLength > 0 ? Buffer.concat(collected).toString("utf8") : null;
   } finally {
-    closeSync(fd);
+    await file.close();
   }
 }
 
@@ -116,10 +117,12 @@ function extractTitle(firstLine: string | null): string {
  * that entry to "no sessions" rather than failing the whole scan -- the
  * filesystem can change under a background index build at any time.
  */
-export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSessionsDir()): Generator<RawSessionFile> {
+export async function* scanSessionFilesIter(
+  sessionsRoot: string | undefined = getSessionsDir(),
+): AsyncGenerator<RawSessionFile> {
   let groupDirs: string[];
   try {
-    groupDirs = readdirSync(sessionsRoot, { withFileTypes: true })
+    groupDirs = (await readdir(sessionsRoot, { withFileTypes: true }))
       .filter(entry => entry.isDirectory())
       .map(entry => entry.name);
   } catch {
@@ -130,7 +133,7 @@ export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSess
     const groupPath = join(sessionsRoot, flattenedDir);
     let fileNames: string[];
     try {
-      fileNames = readdirSync(groupPath, { withFileTypes: true })
+      fileNames = (await readdir(groupPath, { withFileTypes: true }))
         .filter(entry => entry.isFile() && entry.name.endsWith(".jsonl"))
         .map(entry => entry.name);
     } catch {
@@ -146,9 +149,9 @@ export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSess
       let mtimeMs: number;
       let sizeBytes: number;
       try {
-        const stat = statSync(filePath);
-        mtimeMs = stat.mtimeMs;
-        sizeBytes = stat.size;
+        const fileStat = await stat(filePath);
+        mtimeMs = fileStat.mtimeMs;
+        sizeBytes = fileStat.size;
       } catch {
         continue; // Vanished between readdir and stat.
       }
@@ -157,7 +160,7 @@ export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSess
         path: filePath,
         flattenedDir,
         createdAt: isoFromFilenameTimestamp(tsRaw),
-        title: extractTitle(readFirstLine(filePath)),
+        title: extractTitle(await readFirstLine(filePath)),
         mtimeMs,
         sizeBytes,
       };
@@ -166,8 +169,10 @@ export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSess
 }
 
 /** The whole scan in one array; `SessionIndex` streams the iterator instead so it can yield. */
-export function scanSessionFiles(sessionsRoot?: string): RawSessionFile[] {
-  return [...scanSessionFilesIter(sessionsRoot)];
+export async function scanSessionFiles(sessionsRoot?: string): Promise<RawSessionFile[]> {
+  const files: RawSessionFile[] = [];
+  for await (const file of scanSessionFilesIter(sessionsRoot)) files.push(file);
+  return files;
 }
 
 /**
