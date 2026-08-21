@@ -72,14 +72,16 @@ describe("scanSessionFiles", () => {
     expect(file!.createdAt).toBe("2026-08-11T01:11:48.090Z");
   });
 
-  test("reads title from the header line without a message line present", async () => {
+  test("reads title and exact cwd from the bounded JSONL header", async () => {
     const root = tempRoot("scanner-title-");
     writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
       { type: "title", v: 1, title: "Build the thing" },
+      { type: "session", version: 3, id: SESSION_ID_A, timestamp: "t", cwd: "/exact/project" },
     ]);
 
     const [file] = await scanSessionFiles(root);
     expect(file!.title).toBe("Build the thing");
+    expect(file!.cwd).toBe("/exact/project");
   });
 
   test("an empty title header degrades to an empty string, not a throw", async () => {

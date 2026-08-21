@@ -280,6 +280,25 @@ describe("SessionIndex first paint and background warming", () => {
     expect(cacheWrites()).toBe(1);
   });
 
+  test("sub-microsecond SQLite mtime round-trip drift remains a cache hit", async () => {
+    const sessionsRoot = tempRoot("session-index-mtime-roundtrip-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    writeSessionFile(sessionsRoot, "-x", "2026-08-11T01-11-48-090Z", SESSION_A, [
+      titleLine("t"),
+      messageLine("m1", "user"),
+    ]);
+    const [file] = await scanSessionFiles(sessionsRoot);
+    store.setSessionScanCache(SESSION_A, {
+      mtimeMs: file!.mtimeMs + 0.0004,
+      sizeBytes: file!.sizeBytes,
+      messageCount: 1,
+    });
+
+    const result = await buildIndex(sessionsRoot, store).queryWithWarm();
+    expect(result.sessions[0]!.messageCount).toBe(1);
+    expect(result.warmed).toBeNull();
+  });
+
   test("an appended file invalidates its cached count by mtime+size", async () => {
     const sessionsRoot = tempRoot("session-index-invalidate-");
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));

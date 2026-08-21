@@ -31,6 +31,8 @@ export interface RawSessionFile {
   /** ISO timestamp, reconstructed from the filename. */
   createdAt: string;
   title: string;
+  /** Exact cwd from the session header, or null when the bounded header is absent or malformed. */
+  cwd: string | null;
   mtimeMs: number;
   sizeBytes: number;
 }
@@ -59,33 +61,35 @@ function isoFromFilenameTimestamp(raw: string): string {
   return `${date}T${hh}:${mm}:${ss}.${ms}Z`;
 }
 
-/**
- * Read only the first line of a file, bounded to `maxBytes` regardless of the
- * file's total size. A session file can grow past ten megabytes; loading the
- * whole thing to read a title that lives in its first 200 bytes is exactly
- * the I/O this scanner exists to avoid.
- */
-async function readFirstLine(path: string, maxBytes = 65_536): Promise<string | null> {
-  try {
-    const text = await Bun.file(path).slice(0, maxBytes).text();
-    if (text.length === 0) return null;
-    const newlineIdx = text.indexOf("\n");
-    return newlineIdx === -1 ? text : text.slice(0, newlineIdx);
-  } catch {
-    return null;
-  }
+interface SessionHeader {
+  title: string;
+  cwd: string | null;
 }
 
-/** The header line's `title`, or "" for a malformed, absent, or genuinely empty header. Never throws: a scan of 305 files cannot fail wholesale because one has a corrupt first line. */
-function extractTitle(firstLine: string | null): string {
-  if (!firstLine) return "";
+/**
+ * Read the bounded JSONL header. OMP records the display title first and the
+ * exact cwd in the following `session` row, so the index never needs to
+ * reverse the intentionally lossy flattened directory name by walking disk.
+ */
+async function readSessionHeader(path: string, maxBytes = 65_536): Promise<SessionHeader> {
+  const header: SessionHeader = { title: "", cwd: null };
   try {
-    const parsed = JSON.parse(firstLine) as { title?: unknown };
-    if (typeof parsed.title === "string") return parsed.title;
+    const text = await Bun.file(path).slice(0, maxBytes).text();
+    for (const line of text.split("\n")) {
+      if (line.length === 0) continue;
+      try {
+        const record = JSON.parse(line) as { type?: unknown; title?: unknown; cwd?: unknown };
+        if (header.title.length === 0 && typeof record.title === "string") header.title = record.title;
+        if (record.type === "session" && typeof record.cwd === "string") header.cwd = record.cwd;
+        if (header.title.length > 0 && header.cwd !== null) break;
+      } catch {
+        // A malformed row proves nothing about the other bounded header rows.
+      }
+    }
   } catch {
-    // Malformed header; an empty title is the honest answer, not a thrown scan.
+    // One unreadable transcript cannot fail the whole catalog.
   }
-  return "";
+  return header;
 }
 
 /**
@@ -135,12 +139,14 @@ export async function* scanSessionFilesIter(
       } catch {
         continue; // Vanished between readdir and stat.
       }
+      const header = await readSessionHeader(filePath);
       yield {
         id,
         path: filePath,
         flattenedDir,
         createdAt: isoFromFilenameTimestamp(tsRaw),
-        title: extractTitle(await readFirstLine(filePath)),
+        title: header.title,
+        cwd: header.cwd,
         mtimeMs,
         sizeBytes,
       };

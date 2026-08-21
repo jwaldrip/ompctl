@@ -66,13 +66,15 @@ function writeSessionFile(
   filenameTimestamp: string,
   id: string,
   title: string,
+  cwd: string,
   mtime: Date,
 ): void {
   const groupDir = join(sessionsRoot, flattenedDir);
   mkdirSync(groupDir, { recursive: true });
-  const line = JSON.stringify({ type: "title", v: 1, title, updatedAt: new Date().toISOString() });
+  const titleLine = JSON.stringify({ type: "title", v: 1, title, updatedAt: new Date().toISOString() });
+  const sessionLine = JSON.stringify({ type: "session", version: 3, id, timestamp: "t", cwd });
   const filePath = join(groupDir, `${filenameTimestamp}_${id}.jsonl`);
-  writeFileSync(filePath, `${line}\n`);
+  writeFileSync(filePath, `${titleLine}\n${sessionLine}\n`);
   // Explicit, deterministic mtime, so ordering never depends on the
   // filesystem clock landing two writes on the same tick under load.
   utimesSync(filePath, mtime, mtime);
@@ -249,15 +251,15 @@ async function harness(): Promise<Harness> {
   const port = await gw.listen();
 
   const mtimeBase = new Date("2026-08-13T00:00:00.000Z").getTime();
-  // The flattened names are the ones OMP itself would write for these real
-  // directories, so the index decodes both rows' cwd back with confidence
-  // and a frame has the exact value the daemon expects to see echoed.
+  // The JSONL session header is the cwd source of truth; its flattened
+  // directory remains only the durable grouping key OMP writes on disk.
   writeSessionFile(
     sessionsRoot,
     encodeSessionDirName(liveDir),
     "2026-08-10T00-00-00-000Z",
     SESSION_LIVE,
     "held by a TUI",
+    liveDir,
     new Date(mtimeBase),
   );
   writeSessionFile(
@@ -266,6 +268,7 @@ async function harness(): Promise<Harness> {
     "2026-08-12T00-00-00-000Z",
     SESSION_DORMANT,
     "on disk only",
+    dormantDir,
     new Date(mtimeBase + 1000),
   );
   writeLiveTuiPresence(runRoot, liveDir);

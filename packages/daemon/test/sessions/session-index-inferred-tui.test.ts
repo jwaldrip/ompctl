@@ -40,7 +40,7 @@ function titleLine(title: string): unknown {
   return { type: "title", v: 1, title, updatedAt: new Date().toISOString() };
 }
 
-/** A real, on-disk home directory holding one real project subdirectory, so decodeSessionDirName resolves it to "ok" rather than walking the actual machine's home. */
+/** A real project directory and the same flattened grouping key OMP writes beside its JSONL header. */
 function buildProjectFixture(): { home: string; projectDir: string; flattenedDir: string } {
   const home = tempRoot("session-index-infer-home-");
   const projectDir = join(home, "proj");
@@ -55,13 +55,16 @@ function writeSessionFile(
   flattenedDir: string,
   filenameTimestamp: string,
   id: string,
+  cwd: string,
   lines: unknown[],
   mtime: Date,
 ): string {
   const groupDir = join(sessionsRoot, flattenedDir);
   mkdirSync(groupDir, { recursive: true });
   const filePath = join(groupDir, `${filenameTimestamp}_${id}.jsonl`);
-  writeFileSync(filePath, `${lines.map(l => JSON.stringify(l)).join("\n")}\n`);
+  const [title, ...rest] = lines;
+  const records = [title, { type: "session", version: 3, id, timestamp: "t", cwd }, ...rest];
+  writeFileSync(filePath, `${records.map(line => JSON.stringify(line)).join("\n")}\n`);
   utimesSync(filePath, mtime, mtime);
   return filePath;
 }
@@ -88,7 +91,15 @@ describe("SessionIndex inferred live-tui", () => {
     const { home, projectDir, flattenedDir } = buildProjectFixture();
     const sessionsRoot = tempRoot("session-index-infer-one-");
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
-    writeSessionFile(sessionsRoot, flattenedDir, "2026-08-11T00-00-05-000Z", SESSION_A, [titleLine("t")], AFTER_T0);
+    writeSessionFile(
+      sessionsRoot,
+      flattenedDir,
+      "2026-08-11T00-00-05-000Z",
+      SESSION_A,
+      projectDir,
+      [titleLine("t")],
+      AFTER_T0,
+    );
 
     const runRoot = tempRoot("session-index-run-infer-one-");
     writeBarePresence(join(runRoot, "hash1", "clients"), "bare", projectDir, T0);
@@ -103,8 +114,24 @@ describe("SessionIndex inferred live-tui", () => {
     const { home, projectDir, flattenedDir } = buildProjectFixture();
     const sessionsRoot = tempRoot("session-index-infer-two-");
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
-    writeSessionFile(sessionsRoot, flattenedDir, "2026-08-11T00-00-05-000Z", SESSION_A, [titleLine("a")], AFTER_T0);
-    writeSessionFile(sessionsRoot, flattenedDir, "2026-08-11T00-00-06-000Z", SESSION_B, [titleLine("b")], LATER_T0);
+    writeSessionFile(
+      sessionsRoot,
+      flattenedDir,
+      "2026-08-11T00-00-05-000Z",
+      SESSION_A,
+      projectDir,
+      [titleLine("a")],
+      AFTER_T0,
+    );
+    writeSessionFile(
+      sessionsRoot,
+      flattenedDir,
+      "2026-08-11T00-00-06-000Z",
+      SESSION_B,
+      projectDir,
+      [titleLine("b")],
+      LATER_T0,
+    );
 
     const runRoot = tempRoot("session-index-run-infer-two-");
     writeBarePresence(join(runRoot, "hash1", "clients"), "bare", projectDir, T0);
@@ -122,7 +149,15 @@ describe("SessionIndex inferred live-tui", () => {
     const { home, projectDir, flattenedDir } = buildProjectFixture();
     const sessionsRoot = tempRoot("session-index-infer-stale-");
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
-    writeSessionFile(sessionsRoot, flattenedDir, "2026-08-10T23-59-55-000Z", SESSION_A, [titleLine("t")], BEFORE_T0);
+    writeSessionFile(
+      sessionsRoot,
+      flattenedDir,
+      "2026-08-10T23-59-55-000Z",
+      SESSION_A,
+      projectDir,
+      [titleLine("t")],
+      BEFORE_T0,
+    );
 
     const runRoot = tempRoot("session-index-run-infer-stale-");
     writeBarePresence(join(runRoot, "hash1", "clients"), "bare", projectDir, T0);
@@ -142,6 +177,7 @@ describe("SessionIndex inferred live-tui", () => {
       flattenedDir,
       "2026-08-11T00-00-05-000Z",
       SESSION_A,
+      projectDir,
       [titleLine("explicit")],
       AFTER_T0,
     );
@@ -152,6 +188,7 @@ describe("SessionIndex inferred live-tui", () => {
       flattenedDir,
       "2026-08-11T00-00-06-000Z",
       SESSION_C,
+      projectDir,
       [titleLine("unrelated")],
       LATER_T0,
     );
