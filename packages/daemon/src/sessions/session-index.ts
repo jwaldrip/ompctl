@@ -228,7 +228,7 @@ export class SessionIndex {
     }
     const misses: RawSessionFile[] = [];
     const archived = this.#store.listArchivedSessionIds();
-    const liveClients = listLiveClientPresences(this.#runDaemonsRoot ?? runDaemonsRoot());
+    const liveClients = await listLiveClientPresences(this.#runDaemonsRoot ?? runDaemonsRoot());
     const liveClientBySessionId = new Map<string, (typeof liveClients)[number]>();
     for (const client of liveClients) {
       if (client.sessionId) liveClientBySessionId.set(client.sessionId, client);

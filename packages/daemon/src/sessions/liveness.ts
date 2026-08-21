@@ -13,7 +13,7 @@
  * drifting out of sync.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getDaemonRuntimeDir } from "@oh-my-pi/pi-utils";
 
@@ -58,10 +58,10 @@ export function isPidAlive(pid: number): boolean {
  * than treated as evidence of anything -- it proves nothing about liveness
  * either way.
  */
-export function listLiveClientPresences(root: string = runDaemonsRoot()): ClientPresenceRecord[] {
+export async function listLiveClientPresences(root: string = runDaemonsRoot()): Promise<ClientPresenceRecord[]> {
   let projectHashDirs: string[];
   try {
-    projectHashDirs = readdirSync(root, { withFileTypes: true })
+    projectHashDirs = (await readdir(root, { withFileTypes: true }))
       .filter(entry => entry.isDirectory())
       .map(entry => entry.name);
   } catch {
@@ -73,7 +73,7 @@ export function listLiveClientPresences(root: string = runDaemonsRoot()): Client
     const clientsDir = join(root, projectHash, "clients");
     let fileNames: string[];
     try {
-      fileNames = readdirSync(clientsDir, { withFileTypes: true })
+      fileNames = (await readdir(clientsDir, { withFileTypes: true }))
         .filter(entry => entry.isFile() && entry.name.endsWith(".json"))
         .map(entry => entry.name);
     } catch {
@@ -85,8 +85,8 @@ export function listLiveClientPresences(root: string = runDaemonsRoot()): Client
       let record: ClientPresenceRecord;
       let registeredAtMs: number;
       try {
-        record = JSON.parse(readFileSync(presencePath, "utf8"));
-        registeredAtMs = statSync(presencePath).mtimeMs;
+        record = JSON.parse(await Bun.file(presencePath).text());
+        registeredAtMs = (await stat(presencePath)).mtimeMs;
       } catch {
         continue;
       }
