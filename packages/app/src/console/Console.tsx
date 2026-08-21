@@ -190,6 +190,12 @@ export function Console({
         </SafeScreen>
       );
     }
+    const resumeSummary =
+      agent.acpSessionId === undefined ? undefined : state.sessionIndex.find(row => row.id === agent.acpSessionId);
+    const resumeTarget =
+      agent.acpSessionId === undefined || resumeSummary?.cwd == null
+        ? undefined
+        : { kind: "dormant" as const, sessionId: agent.acpSessionId, cwd: resumeSummary.cwd };
     return (
       // Keyed, so selecting a different agent builds a new screen rather than
       // re-rendering one with a different target. Registration follows that
@@ -219,10 +225,10 @@ export function Console({
           actions.cancel(agent.id);
         }}
         onResume={
-          agent.acpSessionId === undefined || agent.cwd.length === 0
+          resumeTarget === undefined
             ? undefined
             : () => {
-                actions.openSession({ kind: "dormant", sessionId: agent.acpSessionId ?? "", cwd: agent.cwd });
+                actions.openSession(resumeTarget);
               }
         }
         onDecide={(requestId, choice, scope) => {

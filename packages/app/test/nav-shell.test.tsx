@@ -463,7 +463,7 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
   });
 
   test("a stopped subagent keeps its transcript and can resume the same session", () => {
-    const shell = mountShell();
+    const shell = mountShell([summary("sub-session-done", { status: "dormant", cwd: "/canonical" })]);
     try {
       act(() => {
         shell.client.emit("agents", {
@@ -510,7 +510,7 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
       expect(shell.el("entry-assistant")?.getAttribute("aria-label")).toBe("agent: Durable finding.");
       expect(shell.el("composer-input")).toBeNull();
       shell.press("session-resume");
-      expect(shell.client.resumes).toEqual([{ sessionId: "sub-session-done", cwd: "/workspace" }]);
+      expect(shell.client.resumes).toEqual([{ sessionId: "sub-session-done", cwd: "/canonical" }]);
     } finally {
       shell.unmount();
     }
