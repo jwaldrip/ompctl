@@ -543,10 +543,20 @@ export class Supervisor {
     };
     this.#store.upsertAgent(agent);
 
+    // `session/load` replays history BEFORE its response. A resume already
+    // knows the session id, so route that replay to the new agent before
+    // awaiting the response. Waiting until after it returns drops every
+    // historical thought/tool/message notification and opens an empty log.
+    const expectedSessionId = "sessionId" in input ? input.sessionId : undefined;
+    if (expectedSessionId !== undefined) this.#sessionAgent.set(expectedSessionId, id);
+
     let sessionId: string;
     try {
       sessionId = await openSession(entry, id);
     } catch (err) {
+      if (expectedSessionId !== undefined && this.#sessionAgent.get(expectedSessionId) === id) {
+        this.#sessionAgent.delete(expectedSessionId);
+      }
       // The host answered `initialize` but cannot serve this session. Release
       // it if it serves nobody else: a provisioned container that no handle
       // points at is never reclaimed, and the agent row must not be left
@@ -556,6 +566,9 @@ export class Supervisor {
       throw err;
     }
     agent.acpSessionId = sessionId;
+    if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
+      this.#sessionAgent.delete(expectedSessionId);
+    }
     agent.state = "idle";
     this.#store.upsertAgent(agent);
 

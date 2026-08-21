@@ -35,6 +35,8 @@ export interface FakeHostController {
   elicit(sessionId: string, message: string, enumValues: string[]): Promise<string>;
   /** Push a `session/update` notification. */
   emitUpdate(sessionId: string, update: unknown): void;
+  /** Notifications the fake emits synchronously while `session/load` is in flight. */
+  replayOnLoad(updates: unknown[]): void;
   /** Push OMP's live AgentRegistry extension notification. */
   emitAgentRegistry(agents: AcpAgentRegistrySnapshot[]): void;
   /** Session ids handed out by `session/new`, in order. */
@@ -82,6 +84,7 @@ export function createFakeHost(): FakeHostController {
   const loads: string[] = [];
   const loadRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }> = [];
   const prompts: Array<{ sessionId: string; text: string }> = [];
+  let loadReplay: unknown[] = [];
   const waiters = new Map<number | string, (result: unknown) => void>();
   /** Which host serves each session, so a frame reaches the right transport. */
   const sessionClients = new Map<string, AcpClient>();
@@ -201,6 +204,13 @@ export function createFakeHost(): FakeHostController {
       });
       sessionClients.set(sessionId, client);
       if (!modes.has(sessionId)) modes.set(sessionId, "default");
+      for (const update of loadReplay) {
+        toClient(client, {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: { sessionId, update },
+        });
+      }
       toClient(client, {
         jsonrpc: "2.0",
         id: msg.id,
@@ -305,6 +315,9 @@ export function createFakeHost(): FakeHostController {
         method: "session/update",
         params: { sessionId, update },
       });
+    },
+    replayOnLoad: updates => {
+      loadReplay = [...updates];
     },
     emitAgentRegistry: agents => {
       toClient(latest, {
