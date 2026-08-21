@@ -56,6 +56,9 @@ export interface SessionScreenProps {
   onCancel: () => void;
   /** Wake this exact durable session under a new live agent. */
   onResume?: () => void;
+  historyBefore?: number | null;
+  historyLoading?: boolean;
+  onLoadEarlier?: () => void;
   onDecide: (requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   onDecidePlan: (requestId: string, choice: PlanReviewChoice) => void;
   /** The action this selected screen must perform next, keyed by request id. */
@@ -266,6 +269,9 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           refusal={props.refusal}
           onDecide={props.onDecide}
           spoken={props.spoken}
+          canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
+          loadingEarlier={props.historyLoading}
+          onLoadEarlier={props.onLoadEarlier}
         />
 
         {webViewCapability === null || !browserOpen ? null : (

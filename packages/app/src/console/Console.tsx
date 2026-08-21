@@ -206,6 +206,9 @@ export function Console({
         canApprove={state.canApprove}
         refusal={state.refusal}
         spoken={state.spoken.get(agent.id)?.text ?? null}
+        historyBefore={state.historyBefore.get(agent.id)}
+        historyLoading={state.historyLoading.has(agent.id)}
+        onLoadEarlier={() => actions.loadEarlier(agent.id)}
         fleetClearances={clearances}
         onBack={back}
         onOpenConfig={openConfig}

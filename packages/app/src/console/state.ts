@@ -30,6 +30,7 @@ import type {
   ConnectionState,
   PlanReviewEvent,
   SayEvent,
+  SessionHistoryEvent,
   SessionTailEvent,
   StatusEvent,
   TuiActivityEvent,
@@ -43,6 +44,7 @@ import {
   appendPrompt,
   EMPTY_SESSION,
   endTurn,
+  mergeSessionHistory,
   reduce,
   resolveApproval,
   resolvePlanReview,
@@ -129,6 +131,9 @@ export interface ConsoleState {
   readonly rosterMisses: ReadonlyMap<AgentId, number>;
   /** Latest spoken summary per agent. Text only; this build has no voice. */
   readonly spoken: ReadonlyMap<AgentId, { seq: number; text: string }>;
+  /** Opaque byte cursor for the next older durable history page per agent. */
+  readonly historyBefore: ReadonlyMap<AgentId, number | null>;
+  readonly historyLoading: ReadonlySet<AgentId>;
   readonly connection: ConnectionState;
   readonly attempt: number;
   readonly delayMs: number | undefined;
@@ -268,6 +273,8 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     sessionIndex: [],
     watermarks: new Map(),
     rosterMisses: new Map(),
+    historyBefore: new Map(),
+    historyLoading: new Set(),
     spoken: new Map(),
     connection: "connecting",
     attempt: 0,
@@ -302,6 +309,8 @@ export type ConsoleEvent =
   | { t: "tui_activity"; event: TuiActivityEvent }
   /** Daemon: the tail of a terminal session's transcript, answering this device's ask. */
   | { t: "session_tail"; event: SessionTailEvent }
+  | { t: "session_history"; event: SessionHistoryEvent }
+  | { t: "history_request"; agentId: AgentId }
   /** Local: the operator opened a terminal session's prompt surface, or went back to the bay. */
   | { t: "tui_select"; sessionId: string | null }
   /** Local: echo of a prompt this device just sent to a terminal session. */
@@ -487,6 +496,22 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
         history: event.event.messages,
         historyTruncated: event.event.truncated,
       }));
+
+    case "history_request": {
+      const historyLoading = new Set(state.historyLoading);
+      historyLoading.add(event.agentId);
+      return { ...state, historyLoading };
+    }
+
+    case "session_history": {
+      const { agentId, entries, nextBefore } = event.event;
+      const next = withSession(state, agentId, session => mergeSessionHistory(session, entries));
+      const historyBefore = new Map(next.historyBefore);
+      historyBefore.set(agentId, nextBefore);
+      const historyLoading = new Set(next.historyLoading);
+      historyLoading.delete(agentId);
+      return { ...next, historyBefore, historyLoading };
+    }
 
     case "prompt":
       return withSession(state, event.agentId, session => appendPrompt(session, event.text));

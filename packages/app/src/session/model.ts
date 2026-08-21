@@ -17,7 +17,7 @@
  * is owed the truth that something happened, even when we cannot name it.
  */
 
-import type { ApprovalChoice, PlanReviewChoice } from "@ompd/core/contracts";
+import type { ApprovalChoice, PlanReviewChoice, SessionHistoryEntry } from "@ompd/core/contracts";
 
 // ---------------------------------------------------------------------------
 // State
@@ -147,6 +147,36 @@ export type Entry = UserEntry | AssistantEntry | ToolEntry | ApprovalEntry | Unk
 export function transcriptRowKey(entry: Entry): string {
   if (entry.kind === "assistant") return `assistant:${entry.thought ? "thought" : "message"}:${entry.id}`;
   return `${entry.kind}:${entry.id}`;
+}
+
+/** Prepend one durable history page without duplicating live/replayed rows. */
+export function mergeSessionHistory(state: SessionState, history: readonly SessionHistoryEntry[]): SessionState {
+  if (history.length === 0) return state;
+  const existing = new Set(state.entries.map(transcriptRowKey));
+  const prepend: Entry[] = [];
+  for (const item of history) {
+    const entry: Entry =
+      item.kind === "user"
+        ? { kind: "user", id: item.id, text: item.text }
+        : item.kind === "assistant"
+          ? { kind: "assistant", id: item.id, text: item.text, thought: item.thought, streaming: false }
+          : {
+              kind: "tool",
+              id: item.id,
+              toolKind: item.toolKind,
+              title: item.title,
+              status: item.status,
+              input: item.input,
+              output: item.output,
+              locations: item.locations,
+            };
+    const key = transcriptRowKey(entry);
+    if (existing.has(key)) continue;
+    existing.add(key);
+    prepend.push(entry);
+  }
+  if (prepend.length === 0) return state;
+  return { ...state, entries: [...prepend, ...state.entries] };
 }
 
 export interface SessionState {

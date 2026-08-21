@@ -179,6 +179,73 @@ describe("browser actions", () => {
   });
 });
 
+describe("durable session history", () => {
+  test("older structured blocks prepend once and live updates stay last", () => {
+    const live = drive([
+      {
+        t: "update",
+        event: {
+          agentId: "a1",
+          seq: 9,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "m-live",
+            content: { type: "text", text: "Live tail." },
+          },
+        },
+      },
+    ]);
+    const withHistory = apply(live, {
+      t: "session_history",
+      event: {
+        agentId: "a1",
+        sessionId: "s1",
+        nextBefore: 123,
+        entries: [
+          { kind: "user", id: "u1", text: "Earlier ask.", at: "" },
+          { kind: "assistant", id: "m1", text: "Earlier thought.", thought: true, at: "" },
+          {
+            kind: "tool",
+            id: "tc1",
+            toolKind: "read",
+            title: "Read policy",
+            status: "completed",
+            input: { path: "policy.ts" },
+            output: "policy body",
+            locations: ["policy.ts"],
+            at: "",
+          },
+          { kind: "assistant", id: "m-live", text: "Live tail.", thought: false, at: "" },
+        ],
+      },
+    });
+    const entries = sessionFor(withHistory, "a1").entries;
+    expect(entries.map(entry => entry.id)).toEqual(["u1", "m1", "tc1", "m-live"]);
+    expect(withHistory.historyBefore.get("a1")).toBe(123);
+
+    const repeated = apply(withHistory, {
+      t: "session_history",
+      event: {
+        agentId: "a1",
+        sessionId: "s1",
+        nextBefore: null,
+        entries: withHistory.sessions.get("a1")?.entries as never,
+      },
+    });
+    expect(sessionFor(repeated, "a1").entries).toHaveLength(4);
+  });
+
+  test("history request marks loading until its page arrives", () => {
+    const loading = apply(emptyConsole([]), { t: "history_request", agentId: "a1" });
+    expect(loading.historyLoading.has("a1")).toBe(true);
+    const settled = apply(loading, {
+      t: "session_history",
+      event: { agentId: "a1", sessionId: "s1", entries: [], nextBefore: null },
+    });
+    expect(settled.historyLoading.has("a1")).toBe(false);
+  });
+});
+
 describe("the roster is the authority", () => {
   test("one snapshot without the open agent keeps the session it just opened", () => {
     const state = drive([

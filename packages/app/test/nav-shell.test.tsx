@@ -65,6 +65,7 @@ class CannedClient {
   readonly attached: AgentId[] = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly agentPrompts: Array<{ agentId: AgentId; text: string }> = [];
+  readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -97,6 +98,9 @@ class CannedClient {
    */
   sessionTail(sessionId: string, limit?: number): void {
     this.tails.push({ sessionId, limit });
+  }
+  sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
+    this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
   }
   sessionPrompt(sessionId: string, text: string): void {
     this.prompts.push({ sessionId, text });
@@ -507,6 +511,61 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
       expect(shell.el("composer-input")).toBeNull();
       shell.press("session-resume");
       expect(shell.client.resumes).toEqual([{ sessionId: "sub-session-done", cwd: "/workspace" }]);
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("Load earlier requests the daemon's opaque history cursor", () => {
+    const shell = mountShell();
+    try {
+      act(() => {
+        shell.client.emit("agents", {
+          t: "agents",
+          agents: [
+            {
+              id: "agt_root" as AgentId,
+              name: "Root",
+              state: "idle",
+              acpSessionId: "sess-root",
+              host: { kind: "local", id: "1", spec: { kind: "local" } },
+              cwd: "/workspace",
+              createdAt: "2026-02-01T00:00:00.000Z",
+              lastActiveAt: "2026-02-01T00:00:00.000Z",
+              labels: {},
+            },
+            {
+              id: "agt_history" as AgentId,
+              name: "History Scout",
+              state: "idle",
+              acpSessionId: "sess-history",
+              parentAgentId: "agt_root" as AgentId,
+              host: { kind: "local", id: "1", spec: { kind: "local" } },
+              cwd: "/workspace",
+              createdAt: "2026-02-01T00:01:00.000Z",
+              lastActiveAt: "2026-02-01T00:01:00.000Z",
+              labels: {},
+            },
+          ],
+        });
+      });
+      shell.press("agent-hub-open-agt_history");
+      expect(shell.client.histories).toEqual([{ agentId: "agt_history", sessionId: "sess-history" }]);
+
+      act(() => {
+        shell.client.emit("session_history", {
+          agentId: "agt_history",
+          sessionId: "sess-history",
+          entries: [{ kind: "assistant", id: "old", text: "Older.", thought: false, at: "" }],
+          nextBefore: 4242,
+        });
+      });
+      expect(shell.el("entry-assistant")?.getAttribute("aria-label")).toBe("agent: Older.");
+      shell.press("history-load-earlier");
+      expect(shell.client.histories).toEqual([
+        { agentId: "agt_history", sessionId: "sess-history" },
+        { agentId: "agt_history", sessionId: "sess-history", before: 4242 },
+      ]);
     } finally {
       shell.unmount();
     }

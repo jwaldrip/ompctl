@@ -56,6 +56,7 @@ import type { Server, ServerWebSocket } from "bun";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
+import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import {
@@ -2938,6 +2939,48 @@ export class Gateway {
         return;
       }
 
+      case "session_history": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "session history requires read scope" });
+          return;
+        }
+        if (
+          typeof frame.agentId !== "string" ||
+          frame.agentId.length === 0 ||
+          typeof frame.sessionId !== "string" ||
+          frame.sessionId.length === 0 ||
+          (frame.before !== undefined && (!Number.isSafeInteger(frame.before) || frame.before < 0)) ||
+          (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0))
+        ) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "session history frame is malformed" });
+          return;
+        }
+        const agent = this.#store.getAgent(frame.agentId);
+        if (agent === null || agent.acpSessionId !== frame.sessionId) {
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code: "unknown_session",
+            message: "agent does not own the requested session",
+          });
+          return;
+        }
+        const historyIndex = this.#sessionIndex;
+        if (!historyIndex) {
+          this.#send(ws, { t: "error", code: "sessions_unavailable", message: "no session index is wired" });
+          return;
+        }
+        void this.#serveSessionHistoryFrame(
+          ws,
+          historyIndex,
+          frame.agentId,
+          frame.sessionId,
+          frame.before,
+          frame.limit,
+        );
+        return;
+      }
+
       case "agent_config_read": {
         // The same read gate the HTTP route runs, because a hub-relayed phone
         // reaches this frame instead of that route and must not meet a weaker
@@ -3686,6 +3729,42 @@ export class Gateway {
         t: "error",
         code: "session_tail_failed",
         message: err instanceof Error ? err.message : "session tail failed",
+      });
+    }
+  }
+
+  /** One bounded structured history page, addressed only through the index. */
+  async #serveSessionHistoryFrame(
+    ws: GatewaySocket,
+    index: SessionIndex,
+    agentId: AgentId,
+    sessionId: string,
+    before: number | undefined,
+    limit: number | undefined,
+  ): Promise<void> {
+    try {
+      const path = await index.pathFor(sessionId);
+      if (path === undefined) {
+        this.#send(ws, { t: "error", agentId, code: "unknown_session", message: `no session ${sessionId}` });
+        return;
+      }
+      const history = await readSessionHistory(path, {
+        ...(before === undefined ? {} : { before }),
+        ...(limit === undefined ? {} : { limit: Math.min(limit, HISTORY_MAX_TURNS) }),
+      });
+      this.#send(ws, {
+        t: "session_history",
+        agentId,
+        sessionId,
+        entries: history.entries,
+        nextBefore: history.nextBefore,
+      });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        agentId,
+        code: "session_history_failed",
+        message: err instanceof Error ? err.message : "session history failed",
       });
     }
   }
