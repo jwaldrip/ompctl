@@ -237,10 +237,18 @@ export class DetoxClient implements E2EClient {
       const serial = process.env.DETOX_ADB_NAME;
       if (serial === undefined) return;
       const adb = `${process.env.ANDROID_SDK_ROOT ?? process.env.ANDROID_HOME ?? ""}/platform-tools/adb`;
-      const dump = execSync(`${adb} -s ${serial} shell dumpsys input_method`, {
-        encoding: "utf8",
-        stdio: "pipe",
-      });
+      // dumpsys input_method is megabytes; reading it whole throws ENOBUFS
+      // and dies before the suite can even fill the token. Filter on device.
+      // grep's exit 1 when the flag is absent is "IME hidden", not a failure.
+      let dump = "";
+      try {
+        dump = execSync(`${adb} -s ${serial} shell dumpsys input_method | grep mInputShown`, {
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+      } catch {
+        return;
+      }
       if (!dump.includes("mInputShown=true")) return;
       execSync(`${adb} -s ${serial} shell input keyevent KEYCODE_BACK`, {
         encoding: "utf8",
