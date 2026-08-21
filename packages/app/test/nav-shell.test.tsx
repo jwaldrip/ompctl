@@ -444,7 +444,7 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
         });
       });
 
-      const assistantLabels = [...shell.host.querySelectorAll('[data-testid="entry-assistant"]')].map(row =>
+      const assistantLabels = [...shell.host.querySelectorAll('[data-testid^="entry-assistant"]')].map(row =>
         row.getAttribute("aria-label"),
       );
       expect(assistantLabels).toContain("thinking: Inspecting authorization.");

@@ -219,19 +219,22 @@ describe("the transcript seam", () => {
       { kind: "assistant", id: "reply-1", text: REPLY, streaming: true, thought: false },
     ];
     const { host, dispose } = mount(entries);
-    const rows = host.querySelectorAll('[data-testid="entry-assistant"]');
-    expect(rows).toHaveLength(2);
+    const first = host.querySelector('[data-testid="entry-assistant"]');
+    const second = host.querySelector('[data-testid="entry-assistant-reply-1"]');
+    expect(host.querySelectorAll('[data-testid^="entry-assistant"]')).toHaveLength(2);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
 
     const labelOf = (row: Element): string =>
       row.getAttribute("aria-label") ?? row.getAttribute("accessibilityLabel") ?? row.textContent ?? "";
 
-    expect(labelOf(rows[0] as Element)).toBe(`thinking: ${REPLY}`);
-    expect(labelOf(rows[1] as Element)).toBe(`agent: ${REPLY}`);
+    expect(labelOf(first as Element)).toBe(`thinking: ${REPLY}`);
+    expect(labelOf(second as Element)).toBe(`agent: ${REPLY}`);
 
     // The pixels, though, render structure: the fence markers the label keeps
     // are gone from what is drawn, and the heading text is. Label raw, screen
     // rich, both at once.
-    const drawn = (rows[1] as Element).textContent ?? "";
+    const drawn = (second as Element).textContent ?? "";
     expect(drawn).toContain("Deploy notes");
     expect(drawn).toContain("bun run check");
     expect(drawn).not.toContain("```");

@@ -49,11 +49,22 @@ export function Transcript({
   loadingEarlier,
   onLoadEarlier,
 }: TranscriptProps): JSX.Element {
+  const firstUserIndex = entries.findIndex(entry => entry.kind === "user");
+  const firstAssistantIndex = entries.findIndex(entry => entry.kind === "assistant");
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<Entry>) => (
-      <EntryRow entry={item} canApprove={canApprove} refusal={refusal} onDecide={onDecide} />
+    ({ item, index }: ListRenderItemInfo<Entry>) => (
+      <EntryRow
+        entry={item}
+        canApprove={canApprove}
+        refusal={refusal}
+        onDecide={onDecide}
+        firstOfKind={
+          (item.kind === "user" && index === firstUserIndex) ||
+          (item.kind === "assistant" && index === firstAssistantIndex)
+        }
+      />
     ),
-    [canApprove, refusal, onDecide],
+    [canApprove, refusal, onDecide, firstUserIndex, firstAssistantIndex],
   );
 
   return (
@@ -99,25 +110,23 @@ function EntryRow({
   canApprove,
   refusal,
   onDecide,
+  firstOfKind,
 }: {
   entry: Entry;
   canApprove: boolean;
   refusal?: string;
   onDecide: (requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
+  firstOfKind: boolean;
 }): JSX.Element {
   switch (entry.kind) {
     case "user":
       return (
         <View
           style={styles.row}
-          // Constant, like the assistant row below: both e2e drivers match
-          // testIDs exactly, so a check enumerates the rows carrying this id
-          // and matches the accessibility label, whose speaker prefix keeps
-          // the sent-message assertion on the operator. List identity already
-          // comes from keyExtractor. This is also the pair a round-trip check
-          // asserts together: the sent prompt beside the reply that answered
-          // it, which is what proves history landed rather than a lone tail.
-          testID="entry-user"
+          // The first user row keeps the stable e2e id; every later row is
+          // keyed by its durable entry id so native automation never receives
+          // an ambiguous matcher when a resumed transcript contains history.
+          testID={firstOfKind ? "entry-user" : `entry-user-${entry.id}`}
           accessible
           accessibilityLabel={`you: ${entry.text}`}
         >
@@ -132,12 +141,10 @@ function EntryRow({
       return (
         <View
           style={styles.row}
-          // Constant, not per-entry: a feature file cannot interpolate an
-          // entry id and both e2e drivers match testIDs exactly, so the path
-          // scenario enumerates the rows carrying this id and matches the
-          // label, whose speaker prefix keeps the reply assertion on the
-          // agent. List identity already comes from keyExtractor above.
-          testID="entry-assistant"
+          // The first assistant row keeps the stable e2e id; every later row
+          // is keyed by its durable entry id so native automation never
+          // receives an ambiguous matcher for a multi-turn history page.
+          testID={firstOfKind ? "entry-assistant" : `entry-assistant-${entry.id}`}
           accessible
           accessibilityLabel={`${entry.thought ? "thinking" : "agent"}: ${entry.text}`}
         >
