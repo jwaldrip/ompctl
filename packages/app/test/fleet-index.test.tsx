@@ -279,13 +279,14 @@ describe("opening a row resolves to a holder, a claim, or the terminal prompt su
     expect(target).toEqual({ kind: "dormant", sessionId: "s-dormant", cwd: DIR_B });
   });
 
-  test("a stopped roster holder resumes from Fleet instead of attaching to its dead agent id", () => {
+  test("a stopped roster holder resumes with the index's canonical cwd, not its stale alias", () => {
     const state = drive([
       { t: "sessions", event: { sessions: INDEX } },
       {
         t: "agents",
         event: {
-          agents: [agent("agt_stopped", { state: "stopped", acpSessionId: "s-dormant", cwd: DIR_B })],
+          // macOS: an agent created in /tmp is indexed under /private/tmp.
+          agents: [agent("agt_stopped", { state: "stopped", acpSessionId: "s-dormant", cwd: "/tmp/alias" })],
         },
       },
     ]);

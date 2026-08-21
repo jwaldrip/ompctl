@@ -80,3 +80,17 @@ Feature: What a paired device can do with its sessions
     And I cannot see "toast"
     And I cannot see "toast-link"
     And I capture "12-round-trip"
+
+  # Model-independent half of the mobile continuity contract. The machine
+  # may have no model quota at all; a paired read,prompt device must still be
+  # able to wake a known durable session and reach its transcript/composer.
+  @dormant
+  Scenario: A dormant session resumes into an interactive transcript
+    Then "session-status-first" contains "dormant"
+    When I select "session-open-first"
+    Then I can see "session"
+    And I can see "transcript"
+    And I can see "composer-input"
+    And I cannot see "toast"
+    And I cannot see "toast-link"
+    And I capture "13-dormant-resumed"

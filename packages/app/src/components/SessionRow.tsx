@@ -116,7 +116,7 @@ export const SessionRow = memo(function SessionRow({
           <Title numberOfLines={1} style={styles.title}>
             {session.title || "Untitled session"}
           </Title>
-          <Kicker color={tone} testID={`session-status-${session.id}`}>
+          <Kicker color={tone} testID={firstPathOpen ? "session-status-first" : `session-status-${session.id}`}>
             {STATUS_LABELS[session.status]}
           </Kicker>
         </View>

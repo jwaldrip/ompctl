@@ -918,6 +918,7 @@ export type SessionOpenTarget =
   | { readonly kind: "unopenable"; readonly sessionId: string };
 
 export function openSessionTarget(state: ConsoleState, rowId: string): SessionOpenTarget {
+  const summary = state.sessionIndex.find(row => row.id === rowId);
   // The roster is fresher than the index for a live holder. A terminal holder
   // is different: Fleet labels its row Resume, so attaching to the dead agent
   // id would open history but leave interaction impossible. Agent Hub opens
@@ -925,15 +926,18 @@ export function openSessionTarget(state: ConsoleState, rowId: string): SessionOp
   const holder = state.agents.find(agent => agent.acpSessionId === rowId || agent.id === rowId);
   if (holder !== undefined) {
     if (TERMINAL_AGENT_STATES.includes(holder.state)) {
-      if (holder.acpSessionId === undefined || holder.cwd.length === 0) {
+      // The index owns the canonical cwd the daemon verifies. Agent rows may
+      // hold a filesystem alias (`/tmp`) for the same directory the scanner
+      // reports as `/private/tmp`; echoing the agent's copy is a guaranteed
+      // cwd_mismatch.
+      if (holder.acpSessionId === undefined || summary?.cwd == null) {
         return { kind: "unopenable", sessionId: rowId };
       }
-      return { kind: "dormant", sessionId: holder.acpSessionId, cwd: holder.cwd };
+      return { kind: "dormant", sessionId: holder.acpSessionId, cwd: summary.cwd };
     }
     return { kind: "agent", sessionId: rowId, agentId: holder.id };
   }
 
-  const summary = state.sessionIndex.find(row => row.id === rowId);
   // A stale row: a newer index dropped it, and the roster never held it.
   if (summary === undefined) {
     return { kind: "unopenable", sessionId: rowId };
