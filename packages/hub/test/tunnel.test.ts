@@ -492,6 +492,58 @@ describe("refusals", () => {
   });
 });
 
+describe("idle keepalive", () => {
+  test(
+    "the hub pings an idle daemon so the leg does not look idle",
+    async () => {
+      fleet = await startHubs(1);
+      const url = fleet.hubs[0]?.url ?? "";
+      const inbound: { t?: string }[] = [];
+      const identity = await enroll(fleet, "alpha");
+      const daemon = new TunnelDaemon({
+        hubUrl: url,
+        identity,
+        acceptor: echoAcceptor("alpha", {}),
+        transport: hubUrl => {
+          const socket = new WebSocket(hubUrl);
+          const shim: TunnelSocketLike = {
+            get readyState() {
+              return socket.readyState;
+            },
+            set readyState(_value: number) {},
+            send: data => socket.send(data),
+            close: (code, reason) => socket.close(code, reason),
+            onopen: null,
+            onclose: null,
+            onerror: null,
+            onmessage: null,
+          };
+          socket.onopen = () => shim.onopen?.();
+          socket.onclose = event => shim.onclose?.({ code: event.code, reason: event.reason });
+          socket.onerror = () => shim.onerror?.({ message: "socket error" });
+          socket.onmessage = event => {
+            const text = String(event.data);
+            try {
+              inbound.push(JSON.parse(text) as { t?: string });
+            } catch {
+              // not a hub envelope; still deliver
+            }
+            shim.onmessage?.(text);
+          };
+          return shim;
+        },
+      });
+      running.push(daemon);
+      daemon.start();
+      await until(() => daemon.registered, "alpha to register");
+      await until(() => inbound.some(frame => frame.t === "ping"), "the hub to ping the idle daemon", 12_000);
+      expect(daemon.registered).toBe(true);
+    },
+    15_000,
+  );
+});
+
+
 async function currentDaemonId(fixture: FleetFixture, label: string): Promise<string | null> {
   for (const row of await fixture.registry.list()) if (row.label === label) return row.daemonId;
   return null;
