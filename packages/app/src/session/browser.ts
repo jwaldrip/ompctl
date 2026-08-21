@@ -56,6 +56,39 @@ export interface BrowserSession {
   readonly sizeBytes: number;
 }
 
+/**
+ * List identity for a fleet row.
+ *
+ * `session.id` is the domain identity and is the right React key when it is
+ * unique. React Native's recycler treats a duplicate key as "this is the same
+ * cell", which is what painted the yellow banner on a real iPad. The array
+ * index would be unique, and would also remount every row on sort, which is
+ * the failure the RN docs warn about.
+ *
+ * So: id, then createdAt and cwd (the fields that still distinguish two
+ * rows the index wrongly gave the same id), then a collision counter that
+ * only appears when those still clash. The counter is encounter order in
+ * THIS array, so a sort of two colliding rows can swap #1/#2; that case is
+ * the daemon repeating a row, not a real pair of sessions.
+ */
+export function fleetRowKeys(sessions: readonly BrowserSession[]): Map<BrowserSession, string> {
+  const used = new Set<string>();
+  const keys = new Map<BrowserSession, string>();
+  for (const session of sessions) {
+    const base = `${session.id}:${session.createdAt}:${session.cwd}`;
+    let key = base;
+    let n = 0;
+    while (used.has(key)) {
+      n += 1;
+      key = `${base}#${n}`;
+    }
+    used.add(key);
+    keys.set(session, key);
+  }
+  return keys;
+}
+
+
 // ---------------------------------------------------------------------------
 // Sort
 // ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ import {
   browserView,
   DEFAULT_SORT,
   EMPTY_BROWSER,
+  fleetRowKeys,
   groupByCwd,
   SORT_LABELS,
 } from "../src/session/browser.ts";
@@ -270,6 +271,38 @@ describe("grouping toggle and group collapse", () => {
     expect(before.collapsedGroups.has("/a")).toBe(false);
   });
 });
+
+describe("fleet row keys", () => {
+  test("unique session ids produce unique keys", () => {
+    const keys = [...fleetRowKeys(CORPUS).values()];
+    expect(new Set(keys).size).toBe(CORPUS.length);
+  });
+
+  test("the same id in two cwds still produces two keys, neither of which is the array index", () => {
+    const a = session({ id: "same", cwd: "/a", createdAt: "2026-01-01T00:00:00.000Z" });
+    const b = session({ id: "same", cwd: "/b", createdAt: "2026-01-01T00:00:00.000Z" });
+    const keys = fleetRowKeys([a, b]);
+    expect(keys.get(a)).not.toBe(keys.get(b));
+    expect(keys.get(a)).not.toBe("0");
+    expect(keys.get(b)).not.toBe("1");
+  });
+
+  test("two identical rows still get distinct keys", () => {
+    const a = session({ id: "dup", cwd: "/a", createdAt: "2026-01-01T00:00:00.000Z" });
+    const b = session({ id: "dup", cwd: "/a", createdAt: "2026-01-01T00:00:00.000Z" });
+    const keys = fleetRowKeys([a, b]);
+    expect(keys.get(a)).toBe("dup:2026-01-01T00:00:00.000Z:/a");
+    expect(keys.get(b)).toBe("dup:2026-01-01T00:00:00.000Z:/a#1");
+  });
+
+  test("a sort of unique-id rows does not change each object's key", () => {
+    const rows = [session({ id: "x" }), session({ id: "y" }), session({ id: "z" })];
+    const before = fleetRowKeys(rows);
+    const after = fleetRowKeys([...rows].reverse());
+    for (const row of rows) expect(after.get(row)).toBe(before.get(row));
+  });
+});
+
 
 /** Numeric projection of a session along a sort field, for monotonicity checks. */
 function sortKey(session: BrowserSession, field: SortField): number {

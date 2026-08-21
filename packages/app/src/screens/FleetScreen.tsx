@@ -31,7 +31,7 @@ import { Glyph } from "../design/icons.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
-import { browserView } from "../session/browser.ts";
+import { browserView, fleetRowKeys } from "../session/browser.ts";
 
 export interface FleetScreenProps {
   browser: BrowserState;
@@ -87,8 +87,6 @@ const BATCH_PERIOD_MS = 50;
 /** Stable and hoisted: a fresh element here would remount the empty state per render. */
 const EMPTY = <Empty />;
 
-const keyOf = (session: BrowserSession): string => session.id;
-
 export function FleetScreen({
   browser,
   onSort,
@@ -123,6 +121,11 @@ export function FleetScreen({
   // find it is the honest result, not a bug to paper over.
   const rendered = browser.grouped ? sections.flatMap(section => section.data) : view.flatSessions;
   const firstPathId = rendered.find(opensAgentTranscript)?.id;
+  const rowKeys = useMemo(() => fleetRowKeys(rendered), [rendered]);
+  const keyOf = useCallback(
+    (session: BrowserSession) => rowKeys.get(session) ?? `${session.id}:${session.createdAt}:${session.cwd}`,
+    [rowKeys],
+  );
 
   const renderGrouped = useCallback(
     ({ item }: { item: BrowserSession }) => (
