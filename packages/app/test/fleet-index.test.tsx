@@ -219,6 +219,23 @@ describe("a live agent is overlaid onto its indexed session", () => {
     expect(resumed).toHaveLength(1);
     expect(resumed[0]).toMatchObject({ title: "current holder", status: "live-ompd" });
   });
+
+  test("a sessions frame that names one id twice still produces one row", () => {
+    // The daemon's index is supposed to be unique on id. When it is not,
+    // FleetScreen's keyExtractor is session.id, so two children share a key
+    // and React paints the yellow banner over the list. Observed on a real
+    // iPad the moment pairing completed: "encountered two children with the
+    // same key". Last write wins, matching the synthesized-row map below.
+    const duped = drive([
+      {
+        t: "sessions",
+        event: { sessions: [summary("s-dup", { title: "first" }), summary("s-dup", { title: "second" })] },
+      },
+    ]);
+    const rows = browserSessionsOf(duped).filter(row => row.id === "s-dup");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.title).toBe("second");
+  });
 });
 
 // ---------------------------------------------------------------------------

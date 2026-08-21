@@ -832,12 +832,15 @@ export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
     holding.set(agent.acpSessionId, agent);
   }
 
-  const rows: BrowserSession[] = [];
-  const indexed = new Set<string>();
+  // A row's id is a session identity, so it may appear once. The index is
+  // supposed to be unique on id; when it is not, FleetScreen's keyExtractor
+  // is that id and React paints "encountered two children with the same key"
+  // over the list. Observed on a real iPad the moment pairing completed.
+  // Last write wins, same as the synthesized-row map below.
+  const fromIndex = new Map<string, BrowserSession>();
   for (const summary of state.sessionIndex) {
-    indexed.add(summary.id);
     const agent = holding.get(summary.id);
-    rows.push({
+    fromIndex.set(summary.id, {
       id: summary.id,
       title: agent?.name ?? summary.title,
       // `flattenedDir` is always present for exactly this case: a group the
@@ -853,6 +856,8 @@ export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
       sizeBytes: summary.byteSize,
     });
   }
+  const indexed = new Set(fromIndex.keys());
+  const rows: BrowserSession[] = [...fromIndex.values()];
 
   // An agent created since the last ask holds a session the snapshot cannot
   // know about yet, and a fleet browser that hides the agent someone just
