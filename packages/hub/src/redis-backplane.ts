@@ -311,8 +311,14 @@ export class RedisBackplane implements Backplane {
     try {
       for (const client of [this.#subscriber, this.#commands]) {
         try {
-          client.close();
-        } catch {
+          // Bun's type surface has described this as void in some releases,
+          // while Redis 7 teardown returns a promise that rejects when the
+          // test deliberately killed the subscription connection. `await`
+          // handles both shapes and keeps that rejection inside this catch
+          // instead of surfacing between tests.
+          await client.close();
+        } catch (err) {
+          if (!isRedisConnectionClosedError(err)) throw err;
           // Already closed. Nothing to release and nothing to report.
         }
       }
