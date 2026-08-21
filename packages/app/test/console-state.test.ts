@@ -196,31 +196,39 @@ describe("the roster is the authority", () => {
     expect(state.notice).toBeNull();
   });
 
-  test("a second agreeing snapshot takes the transcript with it", () => {
+  test("repeated roster misses mark the agent stopped but keep its transcript selected", () => {
     const state = drive([
-      { t: "agents", event: { agents: [agent("a1"), agent("a2")] } },
+      { t: "agents", event: { agents: [agent("a1"), agent("a2", { acpSessionId: "s2", parentAgentId: "a1" })] } },
       { t: "select", agentId: "a2" },
       ...turn("a2"),
       { t: "agents", event: { agents: [agent("a1")] } },
       { t: "agents", event: { agents: [agent("a1")] } },
     ]);
 
-    expect(state.sessions.has("a2")).toBe(false);
-    expect(state.watermarks.has("a2")).toBe(false);
-    expect(state.selected).toBeNull();
-    expect(state.notice).toBe("That agent is gone.");
+    expect(state.sessions.has("a2")).toBe(true);
+    expect(state.watermarks.has("a2")).toBe(true);
+    expect(state.selected).toBe("a2");
+    expect(state.notice).toBeNull();
+    expect(agentFor(state, "a2")?.state).toBe("stopped");
+    expect(agentFor(state, "a2")).toMatchObject({ acpSessionId: "s2", parentAgentId: "a1" });
   });
 
-  test("a terminal agent is reaped by the first snapshot without it", () => {
+  test("a terminal agent leaving the roster keeps its complete transcript viewable", () => {
     const state = drive([
-      { t: "agents", event: { agents: [agent("a1"), agent("a2", { state: "stopped" })] } },
+      {
+        t: "agents",
+        event: { agents: [agent("a1"), agent("a2", { state: "stopped", acpSessionId: "s2", parentAgentId: "a1" })] },
+      },
       { t: "select", agentId: "a2" },
       ...turn("a2"),
       { t: "agents", event: { agents: [agent("a1")] } },
     ]);
 
-    expect(state.sessions.has("a2")).toBe(false);
-    expect(state.selected).toBeNull();
+    expect(state.sessions.has("a2")).toBe(true);
+    expect(sessionFor(state, "a2").entries.length).toBeGreaterThan(0);
+    expect(state.selected).toBe("a2");
+    expect(agentFor(state, "a2")?.state).toBe("stopped");
+    expect(agentFor(state, "a2")).toMatchObject({ acpSessionId: "s2", parentAgentId: "a1" });
   });
 
   test("an update retires the absence streak, so a streaming agent survives stale rosters", () => {

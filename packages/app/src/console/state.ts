@@ -531,16 +531,26 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
  * So an absent agent is deleted only on corroborated absence: a second
  * consecutive snapshot without it, or a single one after the previous roster
  * showed it stopped or failed. A terminal agent is never coming back on that
- * id, and the daemon keeps terminal agents listed while their transcript is
- * retained, so its disappearance from a later snapshot is the reap. Updates
- * and selections reset the streak elsewhere in this file, which is what makes
- * the tolerance safe in both directions: an agent still streaming can never
- * be reaped by a stale roster, and an agent that has really gone silent is
- * cleaned up once two snapshots agree it is gone.
+ * id. Its disappearance from a later snapshot changes liveness, never
+ * history: the transcript is durable and must remain viewable after its
+ * process exits. Updates and selections reset the streak elsewhere in this
+ * file, which keeps the resume race honest; two misses only make the stand-in
+ * terminal and retire actions that need a live host.
  */
 function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleState {
   const before = new Map(state.agents.map(agent => [agent.id, agent]));
   const live = new Set(agents.map(agent => agent.id));
+
+  // The daemon roster is liveness, not the only copy of identity. Keep rows
+  // it drops as stopped so transcripts do not lose their title, cwd, session
+  // id, or parentAgentId. That metadata is what makes a stopped subagent both
+  // navigable and resumable; replacing it with an anonymous stand-in is the
+  // same blink-out in a quieter form.
+  const retainedAgents: Agent[] = [...agents];
+  for (const previous of state.agents) {
+    if (live.has(previous.id)) continue;
+    retainedAgents.push(TERMINAL_AGENT_STATES.includes(previous.state) ? previous : { ...previous, state: "stopped" });
+  }
 
   const sessions = new Map(state.sessions);
   for (const agent of agents) {
@@ -552,44 +562,32 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
     }
   }
 
-  const watermarks = new Map(state.watermarks);
-  const spoken = new Map(state.spoken);
   const pendingWebViewActions = new Map(state.pendingWebViewActions);
   const rosterMisses = new Map(state.rosterMisses);
-  let lost = false;
-  for (const agentId of [...sessions.keys()]) {
+  for (const agentId of sessions.keys()) {
     if (live.has(agentId)) {
       rosterMisses.delete(agentId);
       continue;
     }
-    const misses = (rosterMisses.get(agentId) ?? 0) + 1;
     const previous = before.get(agentId);
     const wasTerminal = previous !== undefined && TERMINAL_AGENT_STATES.includes(previous.state);
-    if (misses >= 2 || wasTerminal) {
-      sessions.delete(agentId);
-      watermarks.delete(agentId);
-      spoken.delete(agentId);
-      pendingWebViewActions.delete(agentId);
-      rosterMisses.delete(agentId);
-      if (state.selected === agentId) lost = true;
-      continue;
-    }
+    const misses = wasTerminal ? 2 : Math.min(2, (rosterMisses.get(agentId) ?? 0) + 1);
     rosterMisses.set(agentId, misses);
-  }
+    if (misses < 2) continue;
 
-  const selected = lost ? null : state.selected;
+    // No host can settle these after two agreeing roster misses. Transcript,
+    // watermarks and spoken output stay: they are history, not liveness.
+    pendingWebViewActions.delete(agentId);
+    const session = sessions.get(agentId);
+    if (session !== undefined) sessions.set(agentId, endTurn(session));
+  }
 
   return {
     ...state,
-    agents,
+    agents: retainedAgents,
     sessions,
-    watermarks,
-    spoken,
     pendingWebViewActions,
     rosterMisses,
-    selected,
-    notice: lost ? "That agent is gone." : state.notice,
-    noticeAboutLink: lost ? false : state.noticeAboutLink,
   };
 }
 
@@ -723,10 +721,13 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   if (roster !== undefined) return roster;
   const session = state.sessions.get(agentId);
   if (session === undefined) return null;
+  const gone = (state.rosterMisses.get(agentId) ?? 0) >= 2;
   return {
     id: agentId,
     name: session.info.title ?? "Session",
-    state: "idle",
+    // One missing roster may race a resume replay. Two means the host is gone:
+    // keep the transcript selected, but do not offer controls that send to it.
+    state: gone ? "stopped" : "idle",
     // Inert: nothing renders host data on a session screen, and the roster
     // entry replaces this whole object on arrival.
     host: { kind: "local", id: "0", spec: { kind: "local" } },

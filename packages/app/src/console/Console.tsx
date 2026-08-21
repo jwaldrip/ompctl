@@ -21,7 +21,7 @@
  * is the same cost as never having windowed the list.
  */
 
-import type { AgentId } from "@ompd/core/contracts";
+import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -169,6 +169,9 @@ export function Console({
     const current = latest.current;
     current.actions.openSession(openSessionTarget(current.state, session.id));
   }, []);
+  const onOpenAgent = useCallback((agent: Agent) => {
+    latest.current.actions.select(agent.id);
+  }, []);
 
   const log = (agentId: AgentId, back: () => void, openConfig: () => void): JSX.Element => {
     // `agentFor`, not a raw roster lookup: a resumed session starts streaming
@@ -212,6 +215,13 @@ export function Console({
         onCancel={() => {
           actions.cancel(agent.id);
         }}
+        onResume={
+          agent.acpSessionId === undefined || agent.cwd.length === 0
+            ? undefined
+            : () => {
+                actions.openSession({ kind: "dormant", sessionId: agent.acpSessionId ?? "", cwd: agent.cwd });
+              }
+        }
         onDecide={(requestId, choice, scope) => {
           actions.decide(agent.id, requestId, choice, scope);
         }}
@@ -290,7 +300,10 @@ export function Console({
       <SafeScreen testID="fleet-surface">
         <View style={split ? styles.splitLayout : styles.singleLayout}>
           <View style={split ? styles.splitBay : styles.bay}>
-            <AgentHub agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)} />
+            <AgentHub
+              agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)}
+              onOpen={onOpenAgent}
+            />
             <FleetScreen
               browser={browser}
               onSort={onSort}

@@ -6,7 +6,14 @@
  * last, because it is the only thing here a thumb reaches for.
  */
 
-import type { Agent, ApprovalChoice, ApprovalScope, PlanReviewChoice, WebViewActionResult } from "@ompd/core/contracts";
+import {
+  type Agent,
+  type ApprovalChoice,
+  type ApprovalScope,
+  type PlanReviewChoice,
+  TERMINAL_AGENT_STATES,
+  type WebViewActionResult,
+} from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -47,6 +54,8 @@ export interface SessionScreenProps {
   onOpenConfig?: () => void;
   onSubmit: (text: string) => void;
   onCancel: () => void;
+  /** Wake this exact durable session under a new live agent. */
+  onResume?: () => void;
   onDecide: (requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   onDecidePlan: (requestId: string, choice: PlanReviewChoice) => void;
   /** The action this selected screen must perform next, keyed by request id. */
@@ -64,6 +73,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   const { agent, session, connection } = props;
   const tone = signal[agentSignal(agent.state)];
   const busy = agent.state === "busy";
+  const terminal = TERMINAL_AGENT_STATES.includes(agent.state);
   const insets = useSafeAreaInsets();
   const narration = useNarration(session.entries, props.narrationSpeech);
 
@@ -278,12 +288,30 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           so paying both would leave a gap the height of the indicator.
         */}
         <View style={{ paddingBottom: bottomInsetFor(keyboardInset, insets.bottom) }} testID="session-composer-safe">
-          <Composer
-            enabled={connection === "connected"}
-            busy={busy}
-            onSubmit={props.onSubmit}
-            onCancel={props.onCancel}
-          />
+          {terminal ? (
+            <View style={styles.resume}>
+              <Label color={ink.muted}>This agent stopped. Its complete transcript stays available.</Label>
+              {props.onResume === undefined ? null : (
+                <Pressable
+                  testID="session-resume"
+                  accessibilityRole="button"
+                  accessibilityLabel={`Resume ${agent.name}`}
+                  onPress={props.onResume}
+                  style={({ pressed }) => [styles.resumeButton, pressed && { backgroundColor: ground.active }]}
+                >
+                  <Glyph name="resume" size={13} color={tone} />
+                  <Label color={ink.plain}>Resume session</Label>
+                </Pressable>
+              )}
+            </View>
+          ) : (
+            <Composer
+              enabled={connection === "connected"}
+              busy={busy}
+              onSubmit={props.onSubmit}
+              onCancel={props.onCancel}
+            />
+          )}
         </View>
       </View>
     </SafeScreen>
@@ -346,6 +374,23 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.heavy,
     borderTopColor: ground.edge,
     backgroundColor: ground.surface,
+  },
+  resume: {
+    padding: space.step,
+    gap: space.snug,
+    backgroundColor: ground.surface,
+    borderTopWidth: stroke.heavy,
+    borderTopColor: ground.edge,
+  },
+  resumeButton: {
+    minHeight: TOUCH_TARGET,
+    alignSelf: "flex-start",
+    paddingHorizontal: space.step,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
   },
   driver: { flex: 1 },
 });

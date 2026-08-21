@@ -39,7 +39,7 @@ const CONNECTION: Connection = {
   transport: "direct",
   url: "ws://127.0.0.1:7777/v1/socket",
   token: "tok_1",
-  scopes: ["read", "approve", "manage"],
+  scopes: ["read", "prompt", "approve", "manage"],
 };
 
 const CONNECTIONS: ConnectionList = {
@@ -62,6 +62,9 @@ const CONNECTIONS: ConnectionList = {
 class CannedClient {
   readonly prompts: Array<{ sessionId: string; text: string }> = [];
   readonly tails: Array<{ sessionId: string; limit?: number }> = [];
+  readonly attached: AgentId[] = [];
+  readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
+  readonly agentPrompts: Array<{ agentId: AgentId; text: string }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -82,7 +85,9 @@ class CannedClient {
   start(): void {}
   close(): void {}
   reconnectNow(): void {}
-  attach(): void {}
+  attach(agentId: AgentId): void {
+    this.attached.push(agentId);
+  }
   listSessions(): void {}
   /**
    * Recorded rather than ignored: opening a terminal route asks for the
@@ -96,8 +101,12 @@ class CannedClient {
   sessionPrompt(sessionId: string, text: string): void {
     this.prompts.push({ sessionId, text });
   }
-  resumeSession(): void {}
-  prompt(): void {}
+  resumeSession(sessionId: string, cwd: string): void {
+    this.resumes.push({ sessionId, cwd });
+  }
+  prompt(agentId: AgentId, text: string): void {
+    this.agentPrompts.push({ agentId, text });
+  }
   cancel(): void {}
   decide(): void {}
   decidePlan(): void {}
@@ -181,6 +190,21 @@ function mountShell(rows: readonly SessionSummary[] = [summary("sess_live")]): S
       host.remove();
     },
   };
+}
+
+function typeInto(input: HTMLElement, value: string): void {
+  const key = Object.keys(input).find(name => name.startsWith("__reactProps$"));
+  if (key === undefined) throw new Error("no React props on the rendered input");
+  const props = Reflect.get(input, key) as { onChange?: (event: unknown) => void };
+  if (typeof props.onChange !== "function") throw new Error("the rendered input has no onChange handler");
+  (input as HTMLInputElement).value = value;
+  props.onChange({
+    target: input,
+    currentTarget: input,
+    nativeEvent: { text: value },
+    preventDefault: () => {},
+    stopPropagation: () => {},
+  });
 }
 
 /** The padding react-native-web writes as inline style on a host node. */
@@ -337,6 +361,152 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
       });
       expect(shell.el("agent-hub")).not.toBeNull();
       expect(shell.el("agent-hub-agt_scout")).not.toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("a subagent row opens its complete transcript surface", () => {
+    const shell = mountShell();
+    try {
+      act(() => {
+        shell.client.emit("agents", {
+          t: "agents",
+          agents: [
+            {
+              id: "agt_main" as AgentId,
+              name: "Primary",
+              state: "busy",
+              host: { kind: "local", id: "1", spec: { kind: "local" } },
+              cwd: "/workspace",
+              createdAt: "2026-02-01T00:00:00.000Z",
+              lastActiveAt: "2026-02-01T00:00:00.000Z",
+              labels: {},
+            },
+            {
+              id: "agt_scout" as AgentId,
+              name: "Policy Scout",
+              state: "idle",
+              host: { kind: "local", id: "1", spec: { kind: "local" } },
+              cwd: "/workspace",
+              createdAt: "2026-02-01T00:01:00.000Z",
+              lastActiveAt: "2026-02-01T00:01:00.000Z",
+              parentAgentId: "agt_main" as AgentId,
+              acpSessionId: "sub-session",
+              labels: {},
+            },
+          ],
+        });
+      });
+
+      shell.press("agent-hub-open-agt_scout");
+      expect(shell.client.attached).toContain("agt_scout");
+      expect(shell.el("session-name")?.textContent).toBe("Policy Scout");
+
+      act(() => {
+        shell.client.emit("update", {
+          t: "update",
+          agentId: "agt_scout",
+          seq: 1,
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            messageId: "m1",
+            content: { type: "text", text: "Inspecting authorization." },
+          },
+        });
+        shell.client.emit("update", {
+          t: "update",
+          agentId: "agt_scout",
+          seq: 2,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tc1",
+            title: "Read policy",
+            kind: "read",
+            status: "completed",
+            rawInput: { path: "policy.ts" },
+            rawOutput: { content: [{ type: "text", text: "policy body" }] },
+          },
+        });
+        shell.client.emit("update", {
+          t: "update",
+          agentId: "agt_scout",
+          seq: 3,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "m1",
+            content: { type: "text", text: "Authorization is correct." },
+          },
+        });
+      });
+
+      const assistantLabels = [...shell.host.querySelectorAll('[data-testid="entry-assistant"]')].map(row =>
+        row.getAttribute("aria-label"),
+      );
+      expect(assistantLabels).toContain("thinking: Inspecting authorization.");
+      expect(assistantLabels).toContain("agent: Authorization is correct.");
+      expect(shell.el("tool-title-tc1")?.textContent).toBe("Read policy");
+      expect(shell.el("tool-output-tc1")?.textContent).toContain("policy body");
+
+      const composer = shell.el("composer-input");
+      if (composer === null) throw new Error("subagent composer did not render");
+      act(() => typeInto(composer, "Continue the subagent."));
+      shell.press("composer-send");
+      expect(shell.client.agentPrompts).toEqual([{ agentId: "agt_scout", text: "Continue the subagent." }]);
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("a stopped subagent keeps its transcript and can resume the same session", () => {
+    const shell = mountShell();
+    try {
+      act(() => {
+        shell.client.emit("agents", {
+          t: "agents",
+          agents: [
+            {
+              id: "agt_main" as AgentId,
+              name: "Primary",
+              state: "idle",
+              host: { kind: "local", id: "1", spec: { kind: "local" } },
+              cwd: "/workspace",
+              createdAt: "2026-02-01T00:00:00.000Z",
+              lastActiveAt: "2026-02-01T00:00:00.000Z",
+              labels: {},
+            },
+            {
+              id: "agt_done" as AgentId,
+              name: "Finished Scout",
+              state: "stopped",
+              host: { kind: "local", id: "dead", spec: { kind: "local" } },
+              cwd: "/workspace",
+              createdAt: "2026-02-01T00:01:00.000Z",
+              lastActiveAt: "2026-02-01T00:02:00.000Z",
+              parentAgentId: "agt_main" as AgentId,
+              acpSessionId: "sub-session-done",
+              labels: {},
+            },
+          ],
+        });
+        shell.client.emit("update", {
+          t: "update",
+          agentId: "agt_done",
+          seq: 1,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "done-message",
+            content: { type: "text", text: "Durable finding." },
+          },
+        });
+      });
+
+      shell.press("agent-hub-open-agt_done");
+      expect(shell.el("session-name")?.textContent).toBe("Finished Scout");
+      expect(shell.el("entry-assistant")?.getAttribute("aria-label")).toBe("agent: Durable finding.");
+      expect(shell.el("composer-input")).toBeNull();
+      shell.press("session-resume");
+      expect(shell.client.resumes).toEqual([{ sessionId: "sub-session-done", cwd: "/workspace" }]);
     } finally {
       shell.unmount();
     }

@@ -1,8 +1,8 @@
 import type { Agent, AgentState } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { Body, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, signalWash, space, stroke } from "../design/tokens.ts";
+import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 
 export interface AgentHubNode {
   agent: Agent;
@@ -45,6 +45,8 @@ export interface AgentHubProps {
    * ambient session view, already on screen as the top-level Fleet row.
    */
   agents: readonly Agent[];
+  /** Open this exact root or nested agent's durable transcript. */
+  onOpen: (agent: Agent) => void;
   /** A fixed clock makes runtime output deterministic for callers and tests. */
   now?: number;
   testID?: string;
@@ -71,7 +73,12 @@ function createsCycle(node: AgentHubNode, parent: AgentHubNode, byId: ReadonlyMa
  * above the list that is the point of the screen. Absence is the correct way
  * to render absence: when a subagent appears the block appears with it.
  */
-export function AgentHub({ agents, now = Date.now(), testID = "agent-hub" }: AgentHubProps): JSX.Element | null {
+export function AgentHub({
+  agents,
+  onOpen,
+  now = Date.now(),
+  testID = "agent-hub",
+}: AgentHubProps): JSX.Element | null {
   const tree = agentHubTree(agents);
   if (tree.length === 0) return null;
   return (
@@ -81,13 +88,23 @@ export function AgentHub({ agents, now = Date.now(), testID = "agent-hub" }: Age
         <Label color={ink.plain}>{`${agents.length} ${agents.length === 1 ? "agent" : "agents"}`}</Label>
       </View>
       {tree.map(node => (
-        <AgentHubBranch key={node.agent.id} node={node} depth={0} now={now} />
+        <AgentHubBranch key={node.agent.id} node={node} depth={0} now={now} onOpen={onOpen} />
       ))}
     </View>
   );
 }
 
-function AgentHubBranch({ node, depth, now }: { node: AgentHubNode; depth: number; now: number }): JSX.Element {
+function AgentHubBranch({
+  node,
+  depth,
+  now,
+  onOpen,
+}: {
+  node: AgentHubNode;
+  depth: number;
+  now: number;
+  onOpen: (agent: Agent) => void;
+}): JSX.Element {
   const { agent } = node;
   const metrics = agent.metrics;
   const runtimeMs = metrics?.durationMs ?? Math.max(0, now - Date.parse(agent.createdAt));
@@ -100,7 +117,13 @@ function AgentHubBranch({ node, depth, now }: { node: AgentHubNode; depth: numbe
 
   return (
     <View style={[styles.branch, depth > 0 && styles.nested]} testID={`agent-hub-${agent.id}`}>
-      <View style={styles.row}>
+      <Pressable
+        testID={`agent-hub-open-${agent.id}`}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${agent.name} session`}
+        onPress={() => onOpen(agent)}
+        style={({ pressed }) => [styles.row, pressed && { backgroundColor: ground.active }]}
+      >
         <View style={[styles.status, { backgroundColor: signalWash[status] }]}>
           <Label color={signal[status]}>{agent.state}</Label>
         </View>
@@ -113,9 +136,9 @@ function AgentHubBranch({ node, depth, now }: { node: AgentHubNode; depth: numbe
             {costLabel === null ? null : <Kicker color={ink.muted}>{costLabel}</Kicker>}
           </View>
         </View>
-      </View>
+      </Pressable>
       {node.children.map(child => (
-        <AgentHubBranch key={child.agent.id} node={child} depth={depth + 1} now={now} />
+        <AgentHubBranch key={child.agent.id} node={child} depth={depth + 1} now={now} onOpen={onOpen} />
       ))}
     </View>
   );
@@ -152,7 +175,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: stroke.hair,
     borderLeftColor: ground.edge,
   },
-  row: { flexDirection: "row", gap: space.snug, alignItems: "flex-start" },
+  row: { minHeight: TOUCH_TARGET, flexDirection: "row", gap: space.snug, alignItems: "flex-start" },
   status: { minWidth: 64, paddingHorizontal: space.tight, paddingVertical: space.hair, alignItems: "center" },
   details: { flex: 1, gap: space.hair },
   meta: { flexDirection: "row", flexWrap: "wrap", columnGap: space.snug, rowGap: space.hair },
