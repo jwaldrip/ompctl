@@ -279,6 +279,23 @@ describe("opening a row resolves to a holder, a claim, or the terminal prompt su
     expect(target).toEqual({ kind: "dormant", sessionId: "s-dormant", cwd: DIR_B });
   });
 
+  test("a stopped roster holder resumes from Fleet instead of attaching to its dead agent id", () => {
+    const state = drive([
+      { t: "sessions", event: { sessions: INDEX } },
+      {
+        t: "agents",
+        event: {
+          agents: [agent("agt_stopped", { state: "stopped", acpSessionId: "s-dormant", cwd: DIR_B })],
+        },
+      },
+    ]);
+    expect(openSessionTarget(state, "s-dormant")).toEqual({
+      kind: "dormant",
+      sessionId: "s-dormant",
+      cwd: DIR_B,
+    });
+  });
+
   test("a row the index dropped, or whose cwd it could not decode, is unopenable", () => {
     const state = drive([{ t: "sessions", event: { sessions: INDEX } }]);
     // A stale row a newer index dropped: no echo exists, so no claim does.

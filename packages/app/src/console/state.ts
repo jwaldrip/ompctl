@@ -918,11 +918,18 @@ export type SessionOpenTarget =
   | { readonly kind: "unopenable"; readonly sessionId: string };
 
 export function openSessionTarget(state: ConsoleState, rowId: string): SessionOpenTarget {
-  // The roster first: it is fresher than the snapshot, and a synthesized row
-  // carries an agent id directly. Attaching to a terminal agent is still the
-  // right open; it opens the transcript the operator tapped.
+  // The roster is fresher than the index for a live holder. A terminal holder
+  // is different: Fleet labels its row Resume, so attaching to the dead agent
+  // id would open history but leave interaction impossible. Agent Hub opens
+  // that durable history explicitly; Fleet wakes the same ACP session.
   const holder = state.agents.find(agent => agent.acpSessionId === rowId || agent.id === rowId);
   if (holder !== undefined) {
+    if (TERMINAL_AGENT_STATES.includes(holder.state)) {
+      if (holder.acpSessionId === undefined || holder.cwd.length === 0) {
+        return { kind: "unopenable", sessionId: rowId };
+      }
+      return { kind: "dormant", sessionId: holder.acpSessionId, cwd: holder.cwd };
+    }
     return { kind: "agent", sessionId: rowId, agentId: holder.id };
   }
 
