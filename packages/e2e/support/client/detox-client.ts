@@ -162,18 +162,19 @@ export class DetoxClient implements E2EClient {
     await this.waitFor(testId);
     const g = globals();
     const field = g.element(g.by.id(testId));
-    // replaceText writes the value through the native view without driving the
-    // IME. typeText was the Android path until a Pixel run proved it opens
-    // Gboard, whose toolbar then sits over the next field; the following tap
-    // hits Gboard's settings gear, Espresso reports no activity in RESUMED,
-    // and the suite is looking at a keyboard preferences screen. iOS already
-    // used replaceText to keep the system password sheet from appearing; the
-    // same call is what keeps Android inside the app.
-    //
-    // Detox's default activation point sits at the field's top-left corner
-    // and fails the visibility probe against a hairline border, so an
-    // explicit interior point is the same gesture without the corner.
-    await field.tap({ x: 40, y: 20 });
+    if (this.kind === "ios") {
+      // Detox's default activation point sits at the field's top-left corner
+      // and fails the visibility probe against a hairline border, so an
+      // explicit interior point is the same gesture without the corner.
+      await field.tap({ x: 40, y: 20 });
+      await field.replaceText(value);
+      return;
+    }
+    // A tap focuses the field and opens Gboard. On the Pixel that IME's
+    // suggestion chip then sits over the next field, so the next tap hits
+    // the letter "t" (observed: hub became "twss://hub.ompctl.ai") or the
+    // settings gear (Espresso then reports no activity in RESUMED).
+    // replaceText sets the native text without driving the IME.
     await field.replaceText(value);
   }
 
@@ -222,18 +223,31 @@ export class DetoxClient implements E2EClient {
   }
 
   /**
-   * Put the keyboard away by tapping the screen's scroll surface, which is what
-   * a person does: React Native's lists dismiss the keyboard on a tap that is
-   * not on an input. This was a no-op while the phone's keyboard left the send
-   * control reachable; an iPad's keyboard covers it, so the scenario stalled on
-   * a control the operator can see and press.
+   * Put the keyboard away so it stops covering the next target.
    *
-   * Android needs nothing here: its own back gesture is not in play and the
-   * composer stays reachable. A screen with no scroll surface is not an error;
-   * there is simply nothing to tap.
+   * iOS: tap the screen's scroll surface, which is what a person does.
+   * Android: KEYCODE_BACK, but only when the IME is actually showing. Back
+   * otherwise leaves the pair form, which is how an earlier run lost the
+   * activity entirely. A tap-to-dismiss is not used on Android because a
+   * Pixel run showed Gboard's suggestion chip eating that tap and turning
+   * `wss://hub.ompctl.ai` into `twss://hub.ompctl.ai`.
    */
   async dismissKeyboard(): Promise<void> {
-    if (this.kind !== "ios") return;
+    if (this.kind === "android") {
+      const serial = process.env.DETOX_ADB_NAME;
+      if (serial === undefined) return;
+      const adb = `${process.env.ANDROID_SDK_ROOT ?? process.env.ANDROID_HOME ?? ""}/platform-tools/adb`;
+      const dump = execSync(`${adb} -s ${serial} shell dumpsys input_method`, {
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+      if (!dump.includes("mInputShown=true")) return;
+      execSync(`${adb} -s ${serial} shell input keyevent KEYCODE_BACK`, {
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+      return;
+    }
     const g = globals();
     for (const surface of ["transcript", "fleet-list", "fleet"]) {
       try {
