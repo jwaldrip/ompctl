@@ -412,7 +412,12 @@ export class Supervisor {
    * shape `/collab` has for taking over a session live in a terminal.
    */
   async resumeAgent(input: ResumeAgentInput, actor: Actor): Promise<Agent> {
-    const who = this.#authorize(actor, SCOPE_MANAGE, "agent.resume");
+    // Resume is the missing first half of prompt for a durable session: load
+    // the exact indexed session, then speak to it. Creating a new session or
+    // taking over a live TUI still requires manage. Without this, a device
+    // granted prompt can interact only until its agent process exits, after
+    // which the same conversation becomes a permanent permission error.
+    const who = this.#authorize(actor, SCOPE_PROMPT, "agent.resume");
     const heldBy = this.#sessionAgent.get(input.sessionId);
     if (heldBy) {
       throw new Error(`session ${input.sessionId} is already held by agent ${heldBy}`);
@@ -622,6 +627,19 @@ export class Supervisor {
 
   async shutdown(): Promise<void> {
     const entries = [...this.#hosts.values()];
+    // A host belongs to this process. Settle its rows BEFORE removing it from
+    // the map: `kill()` closes the ACP transport synchronously in tests, and
+    // #onHostClosed deliberately ignores a key another teardown already
+    // removed. Clearing first therefore left every idle row live-looking in
+    // SQLite even though its process was gone.
+    for (const entry of entries) {
+      for (const agentId of entry.agents) {
+        const agent = this.#store.getAgent(agentId);
+        if (agent !== null && !TERMINAL_AGENT_STATES.includes(agent.state)) {
+          this.#store.setAgentState(agentId, "stopped");
+        }
+      }
+    }
     this.#hosts.clear();
     for (const entry of entries) entry.host.kill();
     // Killing the local end of `docker exec` stops the remote `omp acp`, but

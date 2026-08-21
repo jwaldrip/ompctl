@@ -3191,15 +3191,18 @@ export class Gateway {
 
       case "session_takeover":
       case "session_resume": {
-        // The same manage gate the HTTP takeover route takes: handing the
-        // daemon a session it did not spawn is driving this machine, not
-        // watching it, and a read-only phone must not be able to do it by
-        // reaching for the socket instead of the unreachable route.
-        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+        // Resume is the prerequisite to prompt an indexed dormant session, so
+        // it needs the same prompt scope as the interaction that follows.
+        // Takeover still seizes a session currently owned by a live terminal
+        // and remains manage. Shape and index verification below are identical
+        // for both; only the authority they exercise differs.
+        const scope = frame.t === "session_resume" ? SCOPE_PROMPT : SCOPE_MANAGE;
+        const scopeName = frame.t === "session_resume" ? "prompt" : "manage";
+        if (!ws.data.scopes.has(scope)) {
           this.#send(ws, {
             t: "error",
             code: "unauthorized",
-            message: `${frame.t} requires manage scope`,
+            message: `${frame.t} requires ${scopeName} scope`,
           });
           return;
         }

@@ -182,21 +182,18 @@ describe("resumeAgent", () => {
     expect(h.fake.loads).toEqual([priorSessionId]);
   });
 
-  test("refuses to resume without manage scope, before touching a host or the peer", async () => {
+  test("prompt scope may resume a known session; read alone is refused before touching a host", async () => {
     const h = harness();
-    const noManage: Actor = { deviceId: "no-manage", scopes: [SCOPE_READ] };
-    h.store.addDevice({
-      id: "no-manage",
-      name: "no-manage",
-      publicKey: "pk",
-      scopes: [SCOPE_READ],
-      createdAt: new Date().toISOString(),
-    });
+    const prompter = h.pair("prompter", [SCOPE_READ, SCOPE_PROMPT]);
+    const resumed = await h.sup.resumeAgent({ name: "r", cwd: "/work", sessionId: "known" }, prompter);
+    expect(resumed.acpSessionId).toBe("known");
+    expect(h.fake.loads).toEqual(["known"]);
 
-    await expect(h.sup.resumeAgent({ name: "r", cwd: "/work", sessionId: "x" }, noManage)).rejects.toThrow(
-      /missing manage scope/,
+    const reader = h.pair("reader", [SCOPE_READ]);
+    await expect(h.sup.resumeAgent({ name: "r", cwd: "/work", sessionId: "other" }, reader)).rejects.toThrow(
+      /missing prompt scope/,
     );
-    expect(h.fake.loads).toEqual([]);
+    expect(h.fake.loads).toEqual(["known"]);
   });
 
   test("lastActiveAt-bearing agent row exists immediately, before the load resolves, same lifecycle createAgent has", async () => {
