@@ -322,6 +322,7 @@ class CannedClient {
   readonly sessionPrompts: Array<{ sessionId: string; text: string }> = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly tails: Array<{ sessionId: string; limit: number | undefined }> = [];
+  readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -358,6 +359,9 @@ class CannedClient {
   }
   sessionTail(sessionId: string, limit?: number): void {
     this.tails.push({ sessionId, limit });
+  }
+  sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
+    this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
   }
   prompt(): void {}
   cancel(): void {}
@@ -544,6 +548,7 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
       });
       expect(mounted.state().selected).toBe("agt_adopted");
       expect(mounted.client.attached).toEqual([{ agentId: "agt_adopted", options: { sinceSeq: 0 } }]);
+      expect(mounted.client.histories).toEqual([{ agentId: "agt_adopted", sessionId: "s-tui" }]);
     } finally {
       mounted.unmount();
     }
