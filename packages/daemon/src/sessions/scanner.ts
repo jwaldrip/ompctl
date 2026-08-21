@@ -17,7 +17,7 @@
  */
 
 import { closeSync, openSync, readdirSync, readSync } from "node:fs";
-import { type FileHandle, open as openAsync, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 
@@ -66,33 +66,13 @@ function isoFromFilenameTimestamp(raw: string): string {
  * the I/O this scanner exists to avoid.
  */
 async function readFirstLine(path: string, maxBytes = 65_536): Promise<string | null> {
-  let file: FileHandle;
   try {
-    file = await openAsync(path, "r");
+    const text = await Bun.file(path).slice(0, maxBytes).text();
+    if (text.length === 0) return null;
+    const newlineIdx = text.indexOf("\n");
+    return newlineIdx === -1 ? text : text.slice(0, newlineIdx);
   } catch {
     return null;
-  }
-  try {
-    const chunkSize = 4096;
-    const chunk = Buffer.alloc(chunkSize);
-    const collected: Buffer[] = [];
-    let collectedLength = 0;
-    let position = 0;
-    while (collectedLength < maxBytes) {
-      const { bytesRead } = await file.read(chunk, 0, chunkSize, position);
-      if (bytesRead === 0) break;
-      const newlineIdx = chunk.subarray(0, bytesRead).indexOf(0x0a);
-      if (newlineIdx !== -1) {
-        collected.push(chunk.subarray(0, newlineIdx));
-        return Buffer.concat(collected).toString("utf8");
-      }
-      collected.push(Buffer.from(chunk.subarray(0, bytesRead)));
-      collectedLength += bytesRead;
-      position += bytesRead;
-    }
-    return collectedLength > 0 ? Buffer.concat(collected).toString("utf8") : null;
-  } finally {
-    await file.close();
   }
 }
 
