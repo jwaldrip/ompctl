@@ -6,6 +6,9 @@
 // Includes from @react-native-async-storage/async-storage
 #include <winrt/ReactNativeAsyncStorage.h>
 
+// Includes from @react-native-clipboard/clipboard
+#include <winrt/Clipboard.h>
+
 // Includes from react-native-svg
 #include <winrt/RNSVG.h>
 
@@ -22,6 +25,8 @@ void RegisterAutolinkedNativeModulePackages(winrt::Windows::Foundation::Collecti
 { 
     // IReactPackageProviders from @react-native-async-storage/async-storage
     packageProviders.Append(winrt::ReactNativeAsyncStorage::ReactPackageProvider());
+    // IReactPackageProviders from @react-native-clipboard/clipboard
+    packageProviders.Append(winrt::Clipboard::ReactPackageProvider());
     // IReactPackageProviders from react-native-svg
     packageProviders.Append(winrt::RNSVG::ReactPackageProvider());
     // IReactPackageProviders from react-native-view-shot
