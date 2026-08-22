@@ -10,16 +10,16 @@
  * whatever it opens onto at once — the same reasoning `Console` already
  * applies to the bay and the log.
  *
- * Narrow (down to 390px): a permanent side rail has nowhere to go — at 390px
- * a 240px sidebar plus a 64px rail leaves under 90px for content, which is
- * not a screen, it's a sliver. So the rail becomes a bottom tab bar (four
- * destinations, each a full screen), the sidebar's task list becomes the
- * Tasks tab's own full-screen content, and selecting a task pushes its detail
- * over the list with a back button — the same push-not-split pattern
- * `SessionScreen` already uses for the fleet vs. one agent's log. A bottom
- * tab bar beats a hamburger drawer here because these are four permanent
- * peer destinations an operator returns to constantly, not settings visited
- * once — the cost of always-visible icons is worth it at that frequency.
+ * Narrow (down to 390px): a permanent side rail has nowhere to go. At 390px a
+ * 300px sidebar and a 104px rail already come to 404, more than the whole
+ * window, before a single point goes to content. So the rail becomes a bottom
+ * tab bar (four destinations, each a full screen), the sidebar's task list
+ * becomes the Tasks tab's own full-screen content, and selecting a task pushes
+ * its detail over the list with a back button, the same push-not-split pattern
+ * `SessionScreen` already uses for the fleet vs. one agent's log. A bottom tab
+ * bar beats a hamburger drawer here because these are four permanent peer
+ * destinations an operator returns to constantly, not settings visited once,
+ * and the cost of always-visible icons is worth it at that frequency.
  *
  * The tasks tab also carries the folder binding: cowork work is scoped to
  * directories on the daemon's own disk, mounted into the container it starts
@@ -58,7 +58,8 @@ interface Destination {
   glyph: GlyphName;
 }
 
-const DESTINATIONS: readonly Destination[] = [
+/** Exported so the layout gate can measure every label the rail has to fit. */
+export const DESTINATIONS: readonly Destination[] = [
   { id: "tasks", label: "Tasks", glyph: "tasks" },
   { id: "skills", label: "Skills", glyph: "skill" },
   { id: "connectors", label: "Connectors", glyph: "connector" },
@@ -354,7 +355,21 @@ const styles = StyleSheet.create({
   sidebarColumn: { width: 300, borderRightWidth: stroke.hair, borderRightColor: ground.line },
   contentColumn: { flex: 1 },
   navSide: {
-    width: 64,
+    // The rail has to fit CONNECTORS whole. It is one word, and one word
+    // cannot wrap: at 64 points the rail fitted CONNECT (62.36) and pushed ORS
+    // onto a second line, which is what an operator reported. The label
+    // measures 89.34 points in the face `Kicker` renders it in (Archivo-Medium
+    // at 11 points with its 1.1 tracking, upper case, measured with CoreText
+    // against the fonts in src/design/fonts), so the box is that plus a gutter
+    // each side and the hairline, rounded up to the four-point grid. Widening
+    // rather than shortening the label because the rail only exists in the
+    // wide layout, where the narrowest screen that draws it (iPad mini in
+    // portrait, 744) still leaves 340 points of content beside the sidebar,
+    // and `Connectors` is the word the destination it opens uses throughout.
+    // test/no-hidden-content.test.ts re-measures this and fails if it stops
+    // fitting.
+    width: 104,
+    paddingHorizontal: space.tight,
     borderRightWidth: stroke.hair,
     borderRightColor: ground.line,
     paddingVertical: space.step,

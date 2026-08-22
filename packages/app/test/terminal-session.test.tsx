@@ -22,7 +22,7 @@ import { apply, emptyConsole, tuiSessionFor } from "../src/console/state.ts";
 // Dynamic on purpose, same reason as `fleet-screen.test.tsx`: these modules
 // import "react-native", which would resolve before `./rnw.ts`'s
 // `mock.module` call could substitute it.
-const { TerminalSessionScreen } = await import("../src/screens/TerminalSessionScreen.tsx");
+const { TerminalSessionScreen, HINT_WORDS } = await import("../src/screens/TerminalSessionScreen.tsx");
 const { StyleSheet } = await import("react-native");
 
 declare global {
@@ -236,7 +236,9 @@ describe("a prompted terminal renders its hints", () => {
     const html = renderScreen(state);
     expect(html).toContain('data-testid="terminal-sent"');
     expect(html).toContain("status of the deploy?");
-    expect(html).toContain("Sent to this terminal");
+    // Read from the screen rather than spelled out again: the gutter is 66
+    // points wide and the word that goes in it is chosen by what fits there.
+    expect(html).toContain(HINT_WORDS.sent);
     expect(html).not.toContain('data-testid="terminal-busy"');
     expect(html).not.toContain('data-testid="terminal-reply"');
   });
