@@ -31,7 +31,9 @@ import {
   type HostSpec,
   type PersistCollabVoiceNoteInput,
   type QueuedIntent,
+  ROUTINE_DELETE_REFUSAL_REASONS,
   type Routine,
+  type RoutineDeleteResult,
   type Run,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
@@ -412,6 +414,11 @@ export interface WebhookFireAttempt {
 export interface RoutineRunner {
   runNow(routineId: string, actor: Actor): Promise<Run>;
   fireWebhook(routineId: string, presentedSecret: string): Promise<WebhookFireAttempt>;
+  /**
+   * Delete routines for good, with per-id results. On the runner rather than
+   * the store because only the scheduler knows whether a run is in flight.
+   */
+  deleteRoutines(routineIds: readonly string[]): Promise<RoutineDeleteResult[]>;
 }
 
 /**
@@ -1863,6 +1870,33 @@ export class Gateway {
       }
     }
 
+    // A POST with a body rather than `DELETE /v1/routines/:id`, mirroring
+    // `/v1/sessions/delete`: the capability is a list, every id answers for
+    // itself in `results`, and a refusal among them does not fail the rest.
+    // The response is 200 even when every id was refused, because the request
+    // was understood and answered; a caller checks `results`, not the status.
+    if (path === "/v1/routines/delete" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const runner = this.#routines;
+      if (!runner) return Response.json({ error: "routines_unavailable" }, { status: 503 });
+      let body: { routineIds?: unknown };
+      try {
+        body = (await req.json()) as { routineIds?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const ids = body.routineIds;
+      // An empty list is refused rather than answered with an empty result,
+      // for the same reason as sessions: for something irreversible, "I
+      // deleted nothing" and "you asked me to delete nothing" are worth
+      // telling apart.
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || id.length === 0)) {
+        return Response.json({ error: "routineIds must be a non-empty array of routine ids" }, { status: 400 });
+      }
+      const results = await this.#deleteRoutines(runner, ids as string[], actor.deviceId);
+      return Response.json({ results });
+    }
+
     if (path === "/v1/skills" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
       const catalog = this.#skills;
@@ -3296,6 +3330,67 @@ export class Gateway {
         return;
       }
 
+      case "routine_delete": {
+        // Audited under the action itself rather than dropped, with no ids:
+        // the frame has not been shape-checked yet, so there is nothing here
+        // worth recording beyond the attempt. Mirrors `session_delete`.
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#store.audit({
+            action: "routine.delete",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "unauthorized" },
+          });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "routine_delete requires manage scope" });
+          return;
+        }
+        const runner = this.#routines;
+        if (!runner) {
+          this.#send(ws, {
+            t: "error",
+            code: "routines_unavailable",
+            message: "no routine runner is wired into this daemon",
+          });
+          return;
+        }
+        // The wire is not a place to assume anyone kept to the contract. An
+        // empty list is refused rather than answered with an empty result,
+        // for the same irreversible-operation reason as the HTTP door.
+        if (
+          !Array.isArray(frame.routineIds) ||
+          frame.routineIds.length === 0 ||
+          frame.routineIds.some(id => typeof id !== "string" || id.length === 0)
+        ) {
+          this.#store.audit({
+            action: "routine.delete",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "routine_delete needs at least one non-empty routine id",
+          });
+          return;
+        }
+        // Detached like `session_delete`: the runner's answer is async, and
+        // this socket keeps being served while it is produced.
+        void this.#deleteRoutines(runner, frame.routineIds, ws.data.deviceId).then(
+          results => {
+            this.#send(ws, { t: "routines_deleted", results });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "routine_delete_failed",
+              message: err instanceof Error ? err.message : "routine delete failed",
+            });
+          },
+        );
+        return;
+      }
+
       case "session_takeover":
       case "session_resume": {
         // Resume is the prerequisite to prompt an indexed dormant session, so
@@ -3910,6 +4005,40 @@ export class Gateway {
               sessionId: result.sessionId,
               refusal: result.refusal,
               reason: SESSION_DELETE_REFUSAL_REASONS[result.refusal],
+            },
+      });
+    }
+    return results;
+  }
+
+  /**
+   * The one place a routine deletion happens, for both doors: the HTTP route
+   * and the socket frame. Shared for the same reason as `#deleteSessions` --
+   * two copies would eventually disagree about what gets written, and the log
+   * of who destroyed an operator's automation is the last thing that should
+   * depend on which road the request took.
+   *
+   * One record per id, whichever way that id went. `outcome` is `ok` for a
+   * deletion, `denied` for a running or unknown routine (both decisions this
+   * daemon made), and `error` for a store failure, because nothing decided it.
+   */
+  async #deleteRoutines(
+    runner: RoutineRunner,
+    routineIds: readonly string[],
+    actorDeviceId: string,
+  ): Promise<RoutineDeleteResult[]> {
+    const results = await runner.deleteRoutines(routineIds);
+    for (const result of results) {
+      this.#store.audit({
+        action: "routine.delete",
+        actorDeviceId,
+        outcome: result.deleted ? "ok" : result.refusal === "failed" ? "error" : "denied",
+        detail: result.deleted
+          ? { routineId: result.routineId }
+          : {
+              routineId: result.routineId,
+              refusal: result.refusal,
+              reason: ROUTINE_DELETE_REFUSAL_REASONS[result.refusal],
             },
       });
     }

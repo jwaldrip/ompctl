@@ -651,6 +651,9 @@ describe("webhook route", () => {
         runNow: async () => {
           throw new Error("manual route was called");
         },
+        deleteRoutines: async () => {
+          throw new Error("delete route was called");
+        },
         fireWebhook: async (routineId, secret) => {
           deliveries.push({ routineId, secret });
           if (secret !== "webhook-secret") return { accepted: false, reason: "forbidden" };
@@ -729,6 +732,9 @@ describe("routine socket frames", () => {
           error: "text provider refused",
         }),
         fireWebhook: async () => ({ accepted: false, reason: "not_found" }),
+        deleteRoutines: async () => {
+          throw new Error("delete frame was sent");
+        },
       },
     });
     const token = await h.pair("phone", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT]);

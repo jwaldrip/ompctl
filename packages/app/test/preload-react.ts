@@ -42,3 +42,9 @@ mockAppAndWorkspace("react/jsx-dev-runtime", jsxDevRuntime);
 mockAppAndWorkspace("react-dom", reactDom);
 mockAppAndWorkspace("react-dom/server", reactDomServer);
 mockAppAndWorkspace("react-dom/client", reactDomClient);
+
+// The clipboard package resolves its TurboModule at import time, which no bun
+// target survives; the render tests only need the seam to exist.
+mockAppAndWorkspace("@react-native-clipboard/clipboard", {
+  setString: () => {},
+});

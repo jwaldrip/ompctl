@@ -58,6 +58,7 @@ export type Command =
   | { kind: "routines" }
   | { kind: "run"; routineId: string }
   | { kind: "webhook-secret"; routineId: string }
+  | { kind: "routine-delete"; routineId: string }
   | { kind: "sync-config"; targetUrl: string; token: string }
   | { kind: "audit"; limit: number }
   | { kind: "open" }
@@ -115,6 +116,8 @@ routines
   run <routineId>         run a routine now
   routines webhook-secret <routineId>
                           replace a webhook secret and print the new value once
+  routines delete <routineId>
+                          delete a routine, its runs, and its webhook secret
   sync-config <target-url> --token <target-token>
                           import non-secret configuration from another daemon
 
@@ -400,12 +403,16 @@ export function parseCommand(argv: string[]): Command {
     case "routines": {
       const action = rest[0];
       if (action === undefined) return { kind: "routines" };
-      if (action !== "webhook-secret") {
-        throw new UsageError(`unknown routines action ${action}; use routines or routines webhook-secret <routineId>`);
+      if (action !== "webhook-secret" && action !== "delete") {
+        throw new UsageError(
+          `unknown routines action ${action}; use routines, routines webhook-secret <routineId>, or routines delete <routineId>`,
+        );
       }
       const args = rest.slice(1);
-      rejectExtra(args, 1, "routines webhook-secret");
-      return { kind: "webhook-secret", routineId: requirePositional(args, 0, "routineId") };
+      rejectExtra(args, 1, `routines ${action}`);
+      return action === "delete"
+        ? { kind: "routine-delete", routineId: requirePositional(args, 0, "routineId") }
+        : { kind: "webhook-secret", routineId: requirePositional(args, 0, "routineId") };
     }
 
     case "run":
