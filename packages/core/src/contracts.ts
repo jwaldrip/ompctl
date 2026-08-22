@@ -724,7 +724,15 @@ export type ClientFrame =
   /** Rotate a webhook routine's one-time secret. Requires manage scope. */
   | { t: "routine_secret_rotate"; routineId: string }
   /**
-   * The tail of a session's transcript, read straight from its file.
+   * Delete routines for good. Requires manage scope, and refuses per id rather
+   * than failing the batch. The one irreversible operation on the routine
+   * catalog, so it is armed behind an explicit confirm on every surface that
+   * offers it.
+   */
+  | { t: "routine_delete"; routineIds: string[] }
+  /**
+   * The tail of a session's transcript, read straight from its file, and the
+   * pages of it older than that.
    *
    * Read scope, not manage: this is reading a transcript, which a read-only
    * device is already entitled to for its own agents, and it changes nothing
@@ -732,11 +740,18 @@ export type ClientFrame =
    * turns; the daemon defaults it and caps it, so a client cannot ask for a
    * whole 10MB transcript in one frame.
    *
+   * `cursor` is how the rest of the conversation is reached: every answer
+   * carries the byte offset the next older page starts from, and sending it
+   * back asks for that page. Absent means the newest turns. Paging rides
+   * this frame rather than `session_history` because that one is keyed by
+   * agent id, and a live terminal session has no agent row to key on, which
+   * is the whole reason this frame exists.
+   *
    * A live terminal session has no agent row, so `attach` and its `update`
    * stream cannot reach it. Without this frame, tapping a session with a
    * thousand messages in it shows a composer and nothing else.
    */
-  | { t: "session_tail"; sessionId: string; limit?: number }
+  | { t: "session_tail"; sessionId: string; limit?: number; cursor?: number }
   | { t: "session_history"; agentId: AgentId; sessionId: string; before?: number; limit?: number }
   /**
    * Ask what the daemon's two persisted settings hold right now. The hub
@@ -855,6 +870,13 @@ export type ServerFrame =
   /** One-time webhook secret returned only to the socket that rotated it. */
   | { t: "routine_secret"; routineId: string; secret: string }
   /**
+   * What a `routine_delete` did, one result per id asked for, sent only to the
+   * socket that asked. Beside `sessions_deleted` rather than an error frame,
+   * for the same reason: a mixed batch has both answers and an error frame
+   * cannot say which ids it covers.
+   */
+  | { t: "routines_deleted"; results: RoutineDeleteResult[] }
+  /**
    * The answer to a `device_invite`: the one-time view of a credential just
    * minted, sent only to the socket that asked. Never broadcast, never
    * replayed after a reconnect -- a credential delivered twice is a second
@@ -863,13 +885,32 @@ export type ServerFrame =
   | { t: "device_invited"; token: string; name: string; scopes: string[] }
   | RemoteStartServerFrame
   /**
-   * The transcript tail answering a `session_tail` frame, sent only to the
-   * socket that asked. Oldest first, so a client appends live activity below
-   * it without reordering. `truncated` says the tail is not the whole
+   * One page of a transcript answering a `session_tail` frame, sent only to
+   * the socket that asked. Oldest first, so a client appends live activity
+   * below it without reordering. `truncated` says this page is not the whole
    * transcript: either an older turn exists past the ones returned, or the
    * reader stopped at its byte budget with unread bytes behind it.
+   *
+   * `nextCursor` is the byte offset the next older page starts from, or null
+   * when this page reached the start of the file. It is a cursor, not a
+   * promise of words: a page can arrive empty with a non-null cursor,
+   * because a long run of tool traffic says nothing and the reader stopped
+   * at its budget inside one. A client keeps asking from the cursor rather
+   * than treating an empty page as the end.
+   *
+   * `cursor` echoes the offset this page was read from, and is absent on the
+   * answer to a cursorless ask. A client needs it to tell a first page from
+   * an older one without guessing from timestamps, and to drop a page that
+   * answers an ask its surface has already replaced.
    */
-  | { t: "session_tail"; sessionId: string; messages: TranscriptTailMessage[]; truncated: boolean }
+  | {
+      t: "session_tail";
+      sessionId: string;
+      messages: TranscriptTailMessage[];
+      truncated: boolean;
+      nextCursor: number | null;
+      cursor?: number;
+    }
   | {
       t: "session_history";
       agentId: AgentId;
@@ -946,6 +987,14 @@ export type AuditAction =
    * and, on a refusal, which refusal it was.
    */
   | "session.delete"
+  /**
+   * A device deleted one routine and its runs and webhook credential, or was
+   * refused. One record per id, whichever way it went, for the same reason as
+   * `session.delete`: the log has to answer "who removed that routine" for
+   * every id anyone ever named, not only the ones that succeeded. `detail`
+   * carries the routine id and, on a refusal, which refusal it was.
+   */
+  | "routine.delete"
   /**
    * A device cloned a repository onto this machine, or was refused. `detail`
    * carries the url and the destination; a url carrying a credential is
@@ -1272,6 +1321,45 @@ export const SESSION_DELETE_REFUSAL_REASONS: Record<SessionDeleteRefusal, string
   not_found: "this machine has no session with that id",
   failed: "the transcript could not be removed from disk",
 };
+
+/**
+ * Why one id in a routine delete request was refused. Named rather than
+ * boolean for the same reason as `SessionDeleteRefusal`: each answer calls
+ * for something different from an operator.
+ *
+ * - `running`: a run of this routine is in flight right now. Deleting the
+ *   definition under a live run would orphan a record still being written,
+ *   so the operator lets the run finish (or stops it) and deletes then.
+ * - `not_found`: this daemon holds no routine with that id. Reported rather
+ *   than treated as already gone, because the usual cause is a typo or a
+ *   stale list, and silence there reads as a successful delete.
+ * - `failed`: the definition was there and the removal did not succeed. The
+ *   routine is intact; the cause is on the machine.
+ */
+export type RoutineDeleteRefusal = "running" | "not_found" | "failed";
+
+/** One id's outcome, mirroring `SessionDeleteResult` for the same reasons. */
+export type RoutineDeleteResult =
+  | { routineId: string; deleted: true }
+  | { routineId: string; deleted: false; refusal: RoutineDeleteRefusal };
+
+/** The wording for each refusal, shared by every surface for the same reason. */
+export const ROUTINE_DELETE_REFUSAL_REASONS: Record<RoutineDeleteRefusal, string> = {
+  running: "a run of this routine is in flight; let it finish or stop it first",
+  not_found: "this daemon holds no routine with that id",
+  failed: "the routine could not be removed from the store",
+};
+
+/**
+ * The public route a webhook routine's caller POSTs to. One copy of the path
+ * shape, because the gateway matches it and the app renders it: two copies
+ * would drift, and instructions that name a route the daemon no longer serves
+ * are worse than none. The id is encoded, so a caller can hand this the exact
+ * id the daemon minted without thinking about URL syntax.
+ */
+export function webhookPath(routineId: string): string {
+  return `/v1/webhooks/${encodeURIComponent(routineId)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Browsing the machine, and starting work on it

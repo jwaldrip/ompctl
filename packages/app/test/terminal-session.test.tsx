@@ -38,7 +38,7 @@ function drive(events: readonly ConsoleEvent[], from = emptyConsole([])): Consol
   return state;
 }
 
-function renderScreen(state: ConsoleState): string {
+function renderScreen(state: ConsoleState, onLoadEarlier: () => void = () => {}): string {
   return renderToStaticMarkup(
     <TerminalSessionScreen
       title="session s-tui"
@@ -48,13 +48,17 @@ function renderScreen(state: ConsoleState): string {
       tui={tuiSessionFor(state, SESSION)}
       connection="connected"
       onBack={() => {}}
+      onLoadEarlier={onLoadEarlier}
       onSubmit={() => {}}
     />,
   );
 }
 
-/** One `session_tail` frame, as the daemon sends it: oldest first. */
-const served = (truncated: boolean): ConsoleEvent => ({
+/**
+ * One `session_tail` frame, as the daemon sends it: oldest first, with the
+ * cursor for the page older than this one, or null at the file's start.
+ */
+const served = (truncated: boolean, nextCursor: number | null = null): ConsoleEvent => ({
   t: "session_tail",
   event: {
     sessionId: SESSION,
@@ -63,11 +67,12 @@ const served = (truncated: boolean): ConsoleEvent => ({
       { role: "assistant", text: "all four suites are green", at: "2026-08-13T00:00:02.000Z" },
     ],
     truncated,
+    nextCursor,
   },
 });
 
 /** Mounted, because containment and layout questions are tree questions. */
-function mountScreen(state: ConsoleState): { host: HTMLDivElement; root: Root } {
+function mountScreen(state: ConsoleState, onLoadEarlier: () => void = () => {}): { host: HTMLDivElement; root: Root } {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -81,6 +86,7 @@ function mountScreen(state: ConsoleState): { host: HTMLDivElement; root: Root } 
         tui={tuiSessionFor(state, SESSION)}
         connection="connected"
         onBack={() => {}}
+        onLoadEarlier={onLoadEarlier}
         onSubmit={() => {}}
       />,
     );
@@ -147,6 +153,7 @@ describe("the terminal composer", () => {
           tui={tuiSessionFor(emptyConsole([]), SESSION)}
           connection="connected"
           onBack={() => {}}
+          onLoadEarlier={() => {}}
           onSubmit={text => {
             submitted.push(text);
           }}
@@ -200,6 +207,7 @@ describe("the terminal composer", () => {
           tui={tuiSessionFor(state, SESSION)}
           connection="connected"
           onBack={() => {}}
+          onLoadEarlier={() => {}}
           onSubmit={text => {
             submitted.push(text);
           }}
@@ -334,9 +342,84 @@ describe("a terminal session renders the transcript the daemon served", () => {
     expect(html).not.toContain('data-testid="terminal-explainer"');
   });
 
-  test("a truncated tail says older turns are not shown; a complete one does not", () => {
-    expect(renderScreen(drive([served(true)]))).toContain('data-testid="terminal-log-truncated"');
-    expect(renderScreen(drive([served(false)]))).not.toContain('data-testid="terminal-log-truncated"');
+  test("a page with older file behind it offers Load earlier, and the file's start offers nothing", () => {
+    // What stood here was a kicker reading that older turns are not shown:
+    // true, and a dead end. The control is the same one, under the same id,
+    // the agent log's transcript uses for the same act.
+    const paged = renderScreen(drive([served(true, 4096)]));
+    expect(paged).toContain('data-testid="history-load-earlier"');
+    expect(paged).toContain("Load earlier");
+    expect(paged).not.toContain('data-testid="terminal-log-truncated"');
+
+    // Reaching the start of the file is an answer: no control, and nothing
+    // left implying there is more to see.
+    const whole = renderScreen(drive([served(false)]));
+    expect(whole).not.toContain('data-testid="history-load-earlier"');
+    expect(whole).not.toContain("Load earlier");
+  });
+
+  test("a page in flight disables the control and says it is loading", () => {
+    const loading = renderScreen(drive([served(true, 4096), { t: "tui_history_request", sessionId: SESSION }]));
+
+    expect(loading).toContain('data-testid="history-load-earlier"');
+    expect(loading).toContain("Loading earlier…");
+    expect(loading).toContain('aria-disabled="true"');
+  });
+
+  test("pressing Load earlier asks the console for the older page", () => {
+    const asks: number[] = [];
+    const { host, root } = mountScreen(drive([served(true, 4096)]), () => asks.push(1));
+
+    const control = host.querySelector('[data-testid="history-load-earlier"]');
+    expect(control).not.toBeNull();
+    act(() => {
+      control?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(asks.length).toBe(1);
+    unmountScreen(host, root);
+  });
+
+  test("an older page prepends its turns above the ones already on screen", () => {
+    const html = renderScreen(
+      drive([
+        served(true, 4096),
+        {
+          t: "session_tail",
+          event: {
+            sessionId: SESSION,
+            messages: [
+              { role: "user", text: "what did we decide about the index?", at: "2026-08-12T09:00:00.000Z" },
+              { role: "assistant", text: "we rebuilt it cold", at: "2026-08-12T09:00:01.000Z" },
+            ],
+            truncated: true,
+            nextCursor: 2048,
+            cursor: 4096,
+          },
+        },
+      ]),
+    );
+
+    // Older above newer, and the page already on screen is still there: a
+    // paged answer that replaced the history would lose the turns the
+    // operator was reading.
+    expect(html.indexOf("what did we decide about the index?")).toBeLessThan(html.indexOf("run the deploy checks"));
+    expect(html.indexOf("we rebuilt it cold")).toBeLessThan(html.indexOf("all four suites are green"));
+    // Still more file behind it, so the way back is still offered.
+    expect(html).toContain('data-testid="history-load-earlier"');
+  });
+
+  test("a session of pure tool traffic still offers the way back, with no log to head", () => {
+    // The daemon read a screenful of tool calls and found no words in it,
+    // but named the offset to keep reading from. Without a control here the
+    // operator's only answer is an explainer about an empty session they
+    // plainly talked in.
+    const html = renderScreen(
+      drive([{ t: "session_tail", event: { sessionId: SESSION, messages: [], truncated: true, nextCursor: 9000 } }]),
+    );
+
+    expect(html).not.toContain('data-testid="terminal-log"');
+    expect(html).toContain('data-testid="history-load-earlier"');
   });
 
   test("an empty tail renders the explainer rather than a blank pane", () => {
@@ -344,7 +427,7 @@ describe("a terminal session renders the transcript the daemon served", () => {
     // daemon answered, and the answer was nothing, so the surface must still
     // say what it is.
     const html = renderScreen(
-      drive([{ t: "session_tail", event: { sessionId: SESSION, messages: [], truncated: false } }]),
+      drive([{ t: "session_tail", event: { sessionId: SESSION, messages: [], truncated: false, nextCursor: null } }]),
     );
 
     expect(html).not.toContain('data-testid="terminal-log"');
@@ -383,6 +466,7 @@ describe("a terminal session renders the transcript the daemon served", () => {
             sessionId: "s-other",
             messages: [{ role: "user", text: "belongs to another session", at: "" }],
             truncated: false,
+            nextCursor: null,
           },
         },
       ]),
@@ -413,6 +497,7 @@ describe("a terminal session renders the transcript the daemon served", () => {
           tui={tuiSessionFor(state, SESSION)}
           connection="connected"
           onBack={() => {}}
+          onLoadEarlier={() => {}}
           onSubmit={() => {}}
         />,
       );
@@ -530,6 +615,7 @@ describe("live hints continue the conversation rather than detaching from it", (
           { role: "user", text: "re-run the deploy checks", at: "2026-08-13T00:00:03.000Z" },
         ],
         truncated: false,
+        nextCursor: null,
       },
     };
     const { host, root } = mountScreen(

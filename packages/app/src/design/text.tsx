@@ -20,6 +20,8 @@ interface LineProps {
   children: ReactNode;
   color?: string;
   style?: StyleProp<TextStyle>;
+  /** RN Text's own prop, surfaced for values an operator must lift verbatim. */
+  selectable?: boolean;
   numberOfLines?: number;
   /** Marks a line as a heading for assistive technology on every platform. */
   heading?: boolean;
@@ -86,9 +88,16 @@ export function Data({ children, color = ink.bright, style, numberOfLines, testI
 }
 
 /** Command output and paths, where column alignment carries meaning. */
-export function Code({ children, color = ink.plain, style, numberOfLines, testID }: LineProps): JSX.Element {
+export function Code({
+  children,
+  color = ink.plain,
+  style,
+  numberOfLines,
+  selectable,
+  testID,
+}: LineProps): JSX.Element {
   return (
-    <Text testID={testID} numberOfLines={numberOfLines} style={[type.code, { color }, style]}>
+    <Text testID={testID} numberOfLines={numberOfLines} selectable={selectable} style={[type.code, { color }, style]}>
       {children}
     </Text>
   );

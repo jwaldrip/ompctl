@@ -593,7 +593,7 @@ describe("leaving a live session does not pay for its stream", () => {
       expect(bay.el("terminal-session")).not.toBeNull();
       resetCounts();
 
-      bay.frame("session_tail", { sessionId: "sess_000", messages: [], truncated: false });
+      bay.frame("session_tail", { sessionId: "sess_000", messages: [], truncated: false, nextCursor: null });
       for (let i = 0; i < 8; i += 1) {
         bay.frame("tui_activity", { sessionId: "sess_000", kind: "turn_start" });
         bay.frame("tui_activity", { sessionId: "sess_000", kind: "assistant_text", text: `working ${i}` });

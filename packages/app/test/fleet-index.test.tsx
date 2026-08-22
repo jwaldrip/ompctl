@@ -323,7 +323,7 @@ class CannedClient {
   readonly attached: Array<{ agentId: AgentId; options: unknown }> = [];
   readonly sessionPrompts: Array<{ sessionId: string; text: string }> = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
-  readonly tails: Array<{ sessionId: string; limit: number | undefined }> = [];
+  readonly tails: Array<{ sessionId: string; limit: number | undefined; cursor?: number }> = [];
   readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
@@ -359,8 +359,8 @@ class CannedClient {
   resumeSession(sessionId: string, cwd: string): void {
     this.resumes.push({ sessionId, cwd });
   }
-  sessionTail(sessionId: string, limit?: number): void {
-    this.tails.push({ sessionId, limit });
+  sessionTail(sessionId: string, limit?: number, cursor?: number): void {
+    this.tails.push({ sessionId, limit, ...(cursor === undefined ? {} : { cursor }) });
   }
   sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
     this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
@@ -487,6 +487,112 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
       expect(mounted.client.resumes).toHaveLength(0);
       expect(mounted.client.attached).toHaveLength(0);
       expect(mounted.state().selected).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("loading earlier asks from the cursor the daemon handed back, and only once per page", () => {
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
+      });
+      act(() => {
+        mounted.client.emit("session_tail", {
+          sessionId: "s-tui",
+          messages: [{ role: "user", text: "the newest words", at: "" }],
+          truncated: true,
+          nextCursor: 4096,
+        });
+      });
+
+      act(() => {
+        mounted.actions().loadEarlierTui("s-tui");
+      });
+      expect(mounted.client.tails).toEqual([
+        { sessionId: "s-tui", limit: undefined },
+        { sessionId: "s-tui", limit: undefined, cursor: 4096 },
+      ]);
+
+      // A second tap while that page is in flight must not put a second ask
+      // for the same offset on the wire.
+      act(() => {
+        mounted.actions().loadEarlierTui("s-tui");
+      });
+      expect(mounted.client.tails).toHaveLength(2);
+
+      // And once the file's start is reached there is nothing left to ask
+      // for, whatever the surface does.
+      act(() => {
+        mounted.client.emit("session_tail", {
+          sessionId: "s-tui",
+          messages: [{ role: "user", text: "the oldest words", at: "" }],
+          truncated: false,
+          nextCursor: null,
+          cursor: 4096,
+        });
+      });
+      act(() => {
+        mounted.actions().loadEarlierTui("s-tui");
+      });
+      expect(mounted.client.tails).toHaveLength(2);
+      expect(tuiSessionFor(mounted.state(), "s-tui").history.map(m => m.text)).toEqual([
+        "the oldest words",
+        "the newest words",
+      ]);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a page of pure tool traffic is asked past, not reported as the end of the file", () => {
+    // The exhaustion case that would otherwise strand the operator: the
+    // daemon's page carried no words because a screenful of the file is tool
+    // calls, and the file still holds plenty behind it.
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
+      });
+      act(() => {
+        mounted.client.emit("session_tail", { sessionId: "s-tui", messages: [], truncated: true, nextCursor: 9000 });
+      });
+      act(() => {
+        mounted.actions().loadEarlierTui("s-tui");
+      });
+      act(() => {
+        mounted.client.emit("session_tail", {
+          sessionId: "s-tui",
+          messages: [],
+          truncated: true,
+          nextCursor: 6000,
+          cursor: 9000,
+        });
+      });
+
+      // The empty page's own cursor was asked for without the operator
+      // tapping again: they asked for earlier words, not earlier bytes.
+      expect(mounted.client.tails).toEqual([
+        { sessionId: "s-tui", limit: undefined },
+        { sessionId: "s-tui", limit: undefined, cursor: 9000 },
+        { sessionId: "s-tui", limit: undefined, cursor: 6000 },
+      ]);
+      expect(tuiSessionFor(mounted.state(), "s-tui").historyLoadingEarlier).toBe(true);
+
+      // Words at last: the walk settles rather than running on.
+      act(() => {
+        mounted.client.emit("session_tail", {
+          sessionId: "s-tui",
+          messages: [{ role: "assistant", text: "words behind the noise", at: "" }],
+          truncated: true,
+          nextCursor: 3000,
+          cursor: 6000,
+        });
+      });
+      expect(mounted.client.tails).toHaveLength(3);
+      expect(tuiSessionFor(mounted.state(), "s-tui").history.map(m => m.text)).toEqual(["words behind the noise"]);
+      expect(tuiSessionFor(mounted.state(), "s-tui").historyLoadingEarlier).toBe(false);
     } finally {
       mounted.unmount();
     }

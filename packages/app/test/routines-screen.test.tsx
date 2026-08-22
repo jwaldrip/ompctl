@@ -2,6 +2,7 @@ import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ClientFrame, RemoteRoutine, ServerFrame } from "@ompd/core/contracts";
+import { ROUTINE_DELETE_REFUSAL_REASONS, webhookPath } from "@ompd/core/contracts";
 import { OmpdClient, type SocketCloseInfo, type SocketLike } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -453,6 +454,142 @@ describe("RoutinesScreen", () => {
     const write = writes[0];
     if (write?.t !== "routine_write") throw new Error("expected routine_write");
     expect(write.routine.trigger).toEqual({ kind: "manual" });
+
+    act(() => root.unmount());
+    host.remove();
+  });
+});
+
+describe("RoutinesScreen delete and webhook surface", () => {
+  /** The endpoint a directly-paired device can reach, so the rendered root is real, not a placeholder. */
+  const DIRECT: Connection = {
+    transport: "direct",
+    url: "ws://127.0.0.1:7777/v1/socket",
+    token: "tok_direct",
+    scopes: ["read", "manage", "prompt"],
+  };
+
+  function clipboardWrites(): string[] {
+    return (globalThis as { __clipboardWrites?: string[] }).__clipboardWrites ?? [];
+  }
+
+  test("a directly-paired device renders exactly the path the daemon serves", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(DIRECT);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    // The daemon-side suite POSTs to `webhookPath(id)` and its route answers;
+    // this asserts the app renders that same helper's output under a real
+    // derived root, so the two surfaces cannot drift apart silently.
+    expect(el(host, "routine-rtn_calls-endpoint")?.textContent).toBe(
+      `POST http://127.0.0.1:7777${webhookPath(ROUTINE.id)}`,
+    );
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a hub-relayed device names the daemon address as the root it cannot read", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    expect(el(host, "routine-rtn_calls-endpoint")?.textContent).toBe(`POST {daemon address}${webhookPath(ROUTINE.id)}`);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("delete arms behind a confirm that names the routine, then sends one frame and drops the card", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    // First tap only arms: nothing is sent and the confirm names what dies.
+    act(() => el(host, "routine-rtn_calls-delete")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_delete")).toEqual([]);
+    expect(el(host, "routine-rtn_calls-confirm-delete")?.textContent).toContain(ROUTINE.name);
+    expect(el(host, "routine-rtn_calls-confirm-delete")?.textContent).toContain("webhook secret");
+
+    // Keep it disarms with nothing sent.
+    act(() => el(host, "routine-rtn_calls-confirm-cancel")?.click());
+    await settle();
+    expect(el(host, "routine-rtn_calls-confirm-delete")).toBeNull();
+    expect(socket.framesOfType("routine_delete")).toEqual([]);
+
+    act(() => el(host, "routine-rtn_calls-delete")?.click());
+    await settle();
+    act(() => el(host, "routine-rtn_calls-confirm-yes")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_delete")).toEqual([{ t: "routine_delete", routineIds: [ROUTINE.id] }]);
+
+    act(() => socket.deliver({ t: "routines_deleted", results: [{ routineId: ROUTINE.id, deleted: true }] }));
+    await settle();
+    expect(el(host, "routine-rtn_calls")).toBeNull();
+    expect(el(host, "routines-empty")).not.toBeNull();
+    // The daemon is authoritative, so the screen re-reads rather than only
+    // trusting its local filter.
+    expect(socket.framesOfType("routines_read").length).toBeGreaterThan(1);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a refused delete names its reason on the card it named, and the card stays", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    act(() => el(host, "routine-rtn_calls-delete")?.click());
+    await settle();
+    act(() => el(host, "routine-rtn_calls-confirm-yes")?.click());
+    await settle();
+    act(() =>
+      socket.deliver({
+        t: "routines_deleted",
+        results: [{ routineId: ROUTINE.id, deleted: false, refusal: "running" }],
+      }),
+    );
+    await settle();
+
+    expect(el(host, "routine-rtn_calls-delete-refused")?.textContent).toBe(ROUTINE_DELETE_REFUSAL_REASONS.running);
+    expect(el(host, "routine-rtn_calls")).not.toBeNull();
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("rotating shows the secret exactly once and the copy control lifts the bare URL with its token", async () => {
+    forbidFetch();
+    clipboardWrites().length = 0;
+    const { socket, host, root } = await mounted(DIRECT);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    act(() => el(host, "routine-rtn_calls-rotate-secret")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_secret_rotate")).toEqual([
+      { t: "routine_secret_rotate", routineId: ROUTINE.id },
+    ]);
+
+    act(() => socket.deliver({ t: "routine_secret", routineId: ROUTINE.id, secret: "fresh-secret-value" }));
+    await settle();
+
+    const expectedUrl = `http://127.0.0.1:7777${webhookPath(ROUTINE.id)}?token=${encodeURIComponent("fresh-secret-value")}`;
+    expect(el(host, "routine-secret-value")?.textContent).toBe("fresh-secret-value");
+    expect(el(host, "routine-rtn_calls-secret-url")?.textContent).toBe(expectedUrl);
+
+    act(() => el(host, "routine-secret-copy")?.click());
+    await settle();
+    // The pasteboard receives the URL only: no method prefix, so it pastes
+    // clean into a shell.
+    expect(clipboardWrites()).toEqual([expectedUrl]);
+    expect(el(host, "routine-secret-copy")?.textContent).toContain("Copied");
 
     act(() => root.unmount());
     host.remove();

@@ -426,6 +426,69 @@ describe("the session tail websocket frame", () => {
     expect(socket.frames.some(isTailFrame)).toBe(false);
     socket.close();
   });
+
+  test("a cursor pages the same session backwards, one page per ask, to the start of the file", async () => {
+    // The whole point of the frame carrying a cursor: a live terminal session
+    // has no agent row, so this is the only road older turns can travel, and
+    // the operator must be able to walk the conversation rather than see its
+    // last screenful and a dead end.
+    const h = await harness();
+    const socket = await h.connect(await h.pair([SCOPE_READ]));
+
+    const texts: string[] = [];
+    let cursor: number | undefined;
+    const cursors: (number | null)[] = [];
+    for (let page = 0; page < 4; page++) {
+      socket.send({ t: "session_tail", sessionId: SESSION, limit: 1, ...(cursor === undefined ? {} : { cursor }) });
+      const reply = await socket.next(isTailFrame, `session tail page ${page}`);
+      if (!isTailFrame(reply)) throw new Error("expected a session_tail frame");
+      // The echo is what lets a client match an answer to the ask it made.
+      expect(reply.cursor).toBe(cursor);
+      texts.push(...reply.messages.map(m => m.text));
+      cursors.push(reply.nextCursor);
+      if (reply.nextCursor === null) break;
+      cursor = reply.nextCursor;
+    }
+
+    // Newest first by page, oldest first within each, and every turn of the
+    // file arrives exactly once.
+    expect(texts).toEqual(["three", "two", "one"]);
+    expect(cursors.at(-1)).toBeNull();
+    socket.close();
+  });
+
+  test("a cursor past the end of the file answers exhausted rather than the newest turns again", async () => {
+    const h = await harness();
+    const socket = await h.connect(await h.pair([SCOPE_READ]));
+
+    socket.send({ t: "session_tail", sessionId: SESSION, cursor: 50_000_000 });
+    const reply = await socket.next(isTailFrame, "session tail frame");
+    if (!isTailFrame(reply)) throw new Error("expected a session_tail frame");
+
+    expect(reply.messages).toEqual([]);
+    expect(reply.nextCursor).toBeNull();
+    expect(reply.truncated).toBe(false);
+    socket.close();
+  });
+
+  test("a cursor the contract cannot express is refused rather than coerced", async () => {
+    const h = await harness();
+    const socket = await h.connect(await h.pair([SCOPE_READ]));
+
+    // Untyped on purpose: a negative offset and a fractional one are both
+    // shapes a byte cursor cannot mean, and rounding either would page from
+    // somewhere the client never named.
+    socket.sendRaw(JSON.stringify({ t: "session_tail", sessionId: SESSION, cursor: -1 }));
+    const negative = await socket.next(f => f.t === "error", "negative cursor error");
+    expect(negative.t === "error" ? negative.code : "").toBe("bad_frame");
+
+    socket.sendRaw(JSON.stringify({ t: "session_tail", sessionId: SESSION, cursor: 12.5 }));
+    const fractional = await socket.next(f => f.t === "error", "fractional cursor error");
+    expect(fractional.t === "error" ? fractional.code : "").toBe("bad_frame");
+
+    expect(socket.frames.some(isTailFrame)).toBe(false);
+    socket.close();
+  });
 });
 
 afterEach(async () => {

@@ -1,5 +1,9 @@
 /**
- * The last few turns of one session file, read from the end.
+ * The last few turns of one session file, read from the end -- and, page by
+ * page, all the way back to its first if a client keeps asking. Each answer
+ * carries the byte offset the next older page starts from, so a phone can
+ * walk a whole terminal conversation backwards one screenful at a time
+ * without the daemon ever reading the file forward.
  *
  * A phone tapping a live terminal session has no agent row to attach to and
  * no update stream to replay, so the only place its history exists is the
@@ -38,43 +42,31 @@ export const TAIL_DEFAULT_MESSAGES = 30;
 
 /**
  * Hard ceiling on turns, whatever a client asks for. With the per-turn text
- * cap below, one reply is bounded at 100 * 8KiB of text: far under any
- * websocket frame limit, while still letting an operator ask for more than
- * the default without a second round trip.
+ * cap below, one frame still carries a page a phone can render, and the byte
+ * budgets below bound what filling it can cost.
  */
 export const TAIL_MAX_MESSAGES = 100;
 
 /**
  * One leg of the walk, in bytes: how far the reader looks for words before it
- * stops, and how far it keeps collecting them once it has found some.
- *
- * Measured against this machine's 17 real session files over 4MB: in 15 of
- * them the newest turn sits within 0.02MB of EOF and the thirtieth within
- * 0.77MB, so a megabyte is the whole tail for a normal session and a 112.5MB
- * file costs 832KB of reading (8.3ms) rather than its size.
+ * collects a full page of them, and how far it gathers neighbours once the
+ * first turn lands. Measured against real sessions here: words sit megabytes
+ * behind EOF on tool-heavy files, so a shorter leg reports conversations as
+ * empty.
  */
 export const TAIL_SOFT_MAX_BYTES = 1024 * 1024;
 
 /**
  * Ceiling on the whole walk, in bytes. Reached only when a session has said
- * nothing for a very long time.
- *
- * Two of those 17 files end in a run of pure tool traffic: their newest words
- * sit 8.18MB and 11.68MB behind EOF, and under a single one-megabyte budget
- * both answered with no turns at all -- the empty pane this whole frame exists
- * to fix, reproduced on real data. So the soft budget bounds the normal case
- * and this one bounds the pathological one: 16MB of backward walking costs
- * about 78ms here (roughly 5 to 6ms per megabyte, parsing-dominated) and is
- * cooperative throughout, which is the right trade against a screen that
- * shows the operator nothing.
+ * nothing for megabytes; bounded so a pathological file is expensive, never
+ * fatal.
  */
 export const TAIL_HARD_MAX_BYTES = 16 * 1024 * 1024;
 
 /**
  * Cap on one turn's text. A pasted stack trace or a 200KB file dump is one
- * legitimate turn, and shipping it whole would let a single message dominate
- * the frame. Cut turns end with `TAIL_TEXT_CUT_MARK` so the client renders a
- * visibly shortened message rather than a silently altered one.
+ * line in the file, and a transcript whose first row is a wall of it is not
+ * a transcript a phone can read.
  */
 export const TAIL_MAX_TEXT_BYTES = 8 * 1024;
 
@@ -88,11 +80,30 @@ export interface SessionTailResult {
   truncated: boolean;
   /** Bytes actually read. The measurable proof a big file did not cost its size. */
   bytesRead: number;
+  /**
+   * The byte offset the next older page starts from, or null when the walk
+   * reached the start of the file (or the cursor named nothing behind it).
+   *
+   * A cursor, not a promise of words: a page can come back empty with a
+   * non-null cursor, because a run of tool traffic says nothing and the walk
+   * stopped at its budget mid-run. The caller keeps paging from the cursor;
+   * stopping at the first empty page would strand a reader with megabytes of
+   * conversation still behind it. Session files only grow at the end, so an
+   * offset from an earlier page stays valid under a live session's appends.
+   */
+  nextCursor: number | null;
 }
 
 export interface SessionTailOptions {
   /** Requested turns, clamped to `[1, TAIL_MAX_MESSAGES]`. Absent means `TAIL_DEFAULT_MESSAGES`. */
   limit?: number;
+  /**
+   * Byte offset to read backwards from: the `nextCursor` an earlier page
+   * returned. Absent means the end of the file, which serves the newest
+   * turns. The same two-leg budgets bound every page, so paging a big file
+   * costs its pages, never its size.
+   */
+  cursor?: number;
   /** One leg of the walk. Overridden by tests that need a budget smaller than a fixture. */
   softMaxBytes?: number;
   /** Ceiling on the whole walk, however little it has found. */
@@ -155,40 +166,43 @@ function capText(text: string, maxBytes: number): string {
 interface TailProgress {
   /** Bytes actually read from the file. */
   read: number;
-  /** Start offset of the lowest line produced. Zero means the walk reached the start of the file. */
+  /** Start offset of the lowest line produced, including the line currently being handed over. Zero means the walk reached the start of the file. */
   unread: number;
 }
 
 /**
- * The backward-reading core: complete lines from the end of `fd`, newest
+ * The backward-reading core: complete lines from `start` downwards, newest
  * first, with `null` marking each chunk boundary so the caller can hand over
  * the event loop exactly once per unit of real I/O.
  *
- * Splitting at 0x0a bytes and decoding each line separately is byte-for-byte
- * equivalent to decoding the whole file and splitting the text, for the same
- * reason the forward counter relies on: 0x0a never appears inside a UTF-8
- * multi-byte sequence. `pending` holds the bytes of the one line still
- * unresolved below what has been read, so a line spanning many chunks is
- * concatenated once, at its newline, rather than recopied per chunk.
+ * `start` is the end of the file for a newest-tail read, or a page cursor
+ * for an older one; nothing else differs, because a page is the same walk
+ * begun partway through the file. Splitting at 0x0a bytes and decoding each
+ * line separately is byte-for-byte equivalent to decoding the whole file and
+ * splitting the text, for the same reason the forward counter relies on:
+ * 0x0a never appears inside a UTF-8 multi-byte sequence. `pending` holds the
+ * bytes of the one line still unresolved below what has been read, so a line
+ * spanning many chunks is concatenated once, at its newline, rather than
+ * recopied per chunk.
  */
 function* linesFromEnd(
   fd: number,
-  size: number,
+  start: number,
   maxBytes: number,
   progress: TailProgress,
 ): Generator<string | null, void> {
   const chunk = Buffer.allocUnsafe(COUNT_CHUNK_BYTES);
-  let position = size;
+  let position = start;
   let pending: Buffer[] = [];
   let pendingLength = 0;
   progress.unread = position;
 
   while (position > 0 && progress.read < maxBytes) {
     const want = Math.min(COUNT_CHUNK_BYTES, position, maxBytes - progress.read);
-    const start = position - want;
+    const at = position - want;
     let bytesRead: number;
     try {
-      bytesRead = readSync(fd, chunk, 0, want, start);
+      bytesRead = readSync(fd, chunk, 0, want, at);
     } catch {
       return; // Unreadable mid-read: whatever was produced stands, the rest stays unread.
     }
@@ -202,14 +216,16 @@ function* linesFromEnd(
     let lineEnd = bytesRead;
     for (let i = bytesRead - 1; i >= 0; i--) {
       if (chunk[i] !== 0x0a) continue;
+      // Everything from this newline up has been produced, so the unread
+      // remainder is exactly the bytes below it. Recorded before the yield
+      // so a caller capturing the cursor while holding this line reads the
+      // boundary of THIS line, not of the one before it.
+      progress.unread = position + i;
       const head = chunk.subarray(i + 1, lineEnd);
       yield pendingLength > 0 ? Buffer.concat([head, ...pending]).toString("utf8") : head.toString("utf8");
       pending = [];
       pendingLength = 0;
       lineEnd = i;
-      // Everything from this newline up has been produced, so the unread
-      // remainder is exactly the bytes below it.
-      progress.unread = position + i;
     }
     if (lineEnd > 0) {
       // Bytes above the chunk's lowest newline belong to a line continuing
@@ -223,24 +239,35 @@ function* linesFromEnd(
 
   // A file that does not begin with a newline ends this walk with one
   // unterminated line at offset 0. That is a real line, and the forward
-  // counter counts its counterpart, so it is produced here too.
+  // counter counts its counterpart, so it is produced here too. The offset
+  // is recorded before the yield for the same reason as every other line.
   if (position === 0 && pendingLength > 0) {
-    yield Buffer.concat(pending).toString("utf8");
     progress.unread = 0;
+    yield Buffer.concat(pending).toString("utf8");
   }
 }
 
 /**
- * The last turns of the session file at `path`.
+ * One page of turns from the session file at `path`, read backwards.
  *
- * The walk has two legs, because one budget cannot serve both jobs. Looking
- * for words is the first leg: a session that ended in a long run of tool
- * traffic has none for megabytes, and stopping at the soft budget there is
- * what makes a tail come back empty on a session the operator plainly
- * conversed in. Collecting them is the second: once a turn is in hand, the
- * reader spends at most one more soft budget gathering its neighbours. The
- * hard ceiling bounds the pair, so the pathological case is expensive but
- * never unbounded.
+ * With no cursor the page starts at the end of the file and serves the
+ * newest turns; with the `nextCursor` of an earlier page it serves the next
+ * older turns. Either way the walk has two legs, because one budget cannot
+ * serve both jobs. Looking for words is the first leg: a session that ended
+ * in a long run of tool traffic has none for megabytes, and stopping at the
+ * soft budget there is what makes a tail come back empty on a session the
+ * operator plainly conversed in. Collecting them is the second: once a turn
+ * is in hand, the reader spends at most one more soft budget gathering its
+ * neighbours. The hard ceiling bounds the pair, so the pathological case is
+ * expensive but never unbounded.
+ *
+ * The cursor for the next page is the boundary beneath the oldest turn this
+ * page sent, and the two directions it is chosen from differ deliberately.
+ * When the limit ends the walk, the extra turn that proved `truncated` was
+ * read but never sent, so the cursor must sit above it to let the next page
+ * send it; when a budget ends the walk, every line below the cursor already
+ * proved silent, so the cursor sits beneath all of them and the next page
+ * never pays for them again.
  *
  * A file that cannot be opened or read answers with an empty tail rather than
  * throwing: one unreadable session must cost that session's screen, not the
@@ -255,10 +282,21 @@ export async function readSessionTail(path: string, opts: SessionTailOptions = {
   try {
     fd = openSync(path, "r");
   } catch {
-    return { messages: [], truncated: false, bytesRead: 0 };
+    return { messages: [], truncated: false, bytesRead: 0, nextCursor: null };
   }
   try {
     const size = fstatSync(fd).size;
+    // A cursor at or past the end names nothing behind it that this reader
+    // has not already served. Equality is the normal last page; past it can
+    // only happen if the file shrank under a stale cursor, and the honest
+    // answer either way is exhaustion rather than a re-read of the newest
+    // turns onto the front of a paged history. Without a cursor the walk
+    // starts at the end by design, which is every default tail ever served,
+    // so only an explicit cursor can take this branch.
+    const start = opts.cursor === undefined ? size : Math.min(Math.max(Math.trunc(opts.cursor), 0), size);
+    if (opts.cursor !== undefined && start >= size) {
+      return { messages: [], truncated: false, bytesRead: 0, nextCursor: null };
+    }
     const progress: TailProgress = { read: 0, unread: 0 };
     const newestFirst: TranscriptTailMessage[] = [];
     // The walk continues one turn past the limit deliberately: seeing that
@@ -270,8 +308,13 @@ export async function readSessionTail(path: string, opts: SessionTailOptions = {
     // leg gives up. Null while the reader is still looking, which is the only
     // state allowed to spend more than one soft budget.
     let stopAt: number | null = null;
+    // The boundary beneath the oldest turn sent so far, captured at each
+    // push because that is where the next page must resume when the limit
+    // ends this one. Initialised to the walk's own start so a page that never
+    // fills still has a truthful, non-losing fallback cursor.
+    let pageBoundary = start;
 
-    for (const line of linesFromEnd(fd, size, hardMaxBytes, progress)) {
+    for (const line of linesFromEnd(fd, start, hardMaxBytes, progress)) {
       if (line === null) {
         await yieldToEventLoop();
         // Chunk granularity, checked here rather than per line: a chunk is the
@@ -293,16 +336,22 @@ export async function readSessionTail(path: string, opts: SessionTailOptions = {
         break;
       }
       newestFirst.push({ role: turn.role, text: capText(text, TAIL_MAX_TEXT_BYTES), at: turn.at });
+      // `unread` is already the newline that closed this line, which is the
+      // exact offset the next page resumes from to re-read this turn's older
+      // neighbour without ever repeating this one.
+      pageBoundary = progress.unread;
       // The looking leg is over. Whatever it cost, the collecting leg gets one
       // soft budget of its own, so words found deep in a file arrive with the
       // turns around them rather than alone.
       stopAt ??= progress.read + softMaxBytes;
     }
 
+    const nextCursor = older ? pageBoundary : progress.unread > 0 ? progress.unread : null;
     return {
       messages: newestFirst.reverse(),
       truncated: older || progress.unread > 0,
       bytesRead: progress.read,
+      nextCursor,
     };
   } finally {
     closeSync(fd);
