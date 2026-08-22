@@ -17,11 +17,11 @@ import type {
   Agent,
   AgentId,
   ClientFrame,
+  PromptImage,
   ServerFrame,
   SessionDeleteResult,
   SessionSummary,
-  type PromptImage,
-  type TranscriptTailMessage,
+  TranscriptTailMessage,
 } from "../src/contracts.ts";
 import {
   type AgentsEvent,
