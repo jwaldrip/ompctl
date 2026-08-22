@@ -18,7 +18,17 @@
  *   content by default and that floor is what produces the overflow;
  * - a row of readings wraps rather than overflowing;
  * - a notice is a band in the column, not a layer over it.
+ *
+ * A third arrived on 2026-08-22, the same shape once more: a fixed 340-point
+ * master pane squeezed the fleet list until the pane's own edge cut the sort
+ * bar's SIZE chip down to a bare S. So the class gains its third rule:
+ *
+ * - a row of column labels is never wider than its container lets it be
+ *   seen: the container either fits it, scrolls it, or the bay is wide
+ *   enough at its floor that neither is needed.
  */
+
+import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
@@ -71,5 +81,37 @@ describe("a notice occupies space rather than covering it", () => {
       if (isNotice && text.includes('position: "absolute"')) offenders.push(file);
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("a column label cannot be cut at its container's edge", () => {
+  test("the sort bar's chips scroll rather than clip", async () => {
+    const text = await source("src/components/SortBar.tsx");
+    // The bar is the fleet's one row of column labels, and the bay's edge is
+    // exactly where it was being cut. A horizontal ScrollView keeps overflow
+    // reachable; any other container crops it at the pane edge.
+    expect(text).toMatch(/<ScrollView[^>]*horizontal/);
+  });
+
+  test("the bay's floor fits the whole sort bar at rest", async () => {
+    // The rule the floor exists for: at the default type size every chip and
+    // the arrow must be on screen without a swipe, so the floor can never
+    // sit under the bar's measured width. The imports are dynamic because a
+    // static one would resolve react-native before ./rnw.ts substitutes it,
+    // and the widths are read from the modules rather than matched out of
+    // the source because they are computed, not written down.
+    const { SORT_BAR_CONTENT_WIDTH } = await import("../src/components/SortBar.tsx");
+    const { SPLIT_BAY_MIN } = await import("../src/design/layout.ts");
+    expect(SPLIT_BAY_MIN).toBeGreaterThanOrEqual(SORT_BAR_CONTENT_WIDTH);
+  });
+
+  test("the bay's width is computed from the window, never a fixed literal", async () => {
+    const text = await source("src/console/Console.tsx");
+    // 340 on every tablet whatever the screen is the defect; the literal in
+    // the style sheet is how it happened. The lookbehind keeps a
+    // borderRightWidth from satisfying the check the way a width property
+    // would fail it.
+    expect(styleBlock(text, "splitBay")).not.toMatch(/(?<![A-Za-z])width\s*:/);
+    expect(text).toContain("useSplitBayWidth()");
   });
 });

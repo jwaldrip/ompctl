@@ -31,7 +31,7 @@ import { Toast } from "../components/Toast.tsx";
 import { skillInvocation } from "../cowork/catalog.ts";
 import type { NewTaskInput } from "../cowork/tasks.ts";
 import { useCowork } from "../cowork/useCowork.ts";
-import { useSplitLayout } from "../design/layout.ts";
+import { useSplitBayWidth, useSplitLayout } from "../design/layout.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
@@ -95,6 +95,11 @@ export function Console({
 }: ConsoleProps): JSX.Element {
   const [state, actions] = useConsole(connection, createClient, deviceMemoVoice);
   const split = useSplitLayout();
+  // The bay's share of the window, clamped between a floor that fits its own
+  // sort bar and a ceiling that keeps the log pane fed. A fixed 340 on every
+  // tablet whatever the screen is the defect this replaces; the numbers and
+  // their reasons live with the other layout rules in design/layout.ts.
+  const bayWidth = useSplitBayWidth();
   const [browser, dispatchBrowser] = useReducer(browserReduce, EMPTY_BROWSER);
 
   useEffect(() => {
@@ -332,7 +337,7 @@ export function Console({
       // status bar while the list pads itself in the middle of the screen.
       <SafeScreen testID="fleet-surface">
         <View style={split ? styles.splitLayout : styles.singleLayout}>
-          <View style={split ? styles.splitBay : styles.bay}>
+          <View style={split ? [styles.splitBay, { width: bayWidth }] : styles.bay}>
             <AgentHub
               agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)}
               onOpen={onOpenAgent}
@@ -571,7 +576,10 @@ const styles = StyleSheet.create({
   singleLayout: { flex: 1 },
   splitLayout: { flex: 1, flexDirection: "row" },
   bay: { flex: 1 },
-  splitBay: { width: 340, borderRightWidth: stroke.heavy, borderRightColor: ground.edge },
+  // No width here by design: the bay's width is computed from the window at
+  // render (`useSplitBayWidth`), and a literal in the sheet is exactly how
+  // the fixed 340 happened. `test/no-hidden-content.test.ts` holds the rule.
+  splitBay: { borderRightWidth: stroke.heavy, borderRightColor: ground.edge },
   splitDetail: { flex: 1 },
   gone: { alignItems: "center", justifyContent: "center", padding: space.gulf },
   limit: { gap: space.step, justifyContent: "center", padding: space.gulf },
