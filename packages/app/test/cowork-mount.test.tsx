@@ -1,25 +1,23 @@
 /**
- * The Cowork route: reachable, pointed at this pairing, and honest about the hub.
+ * The Cowork route: reachable, pointed at this pairing, and working on the
+ * transport Jason's phone actually holds.
  *
- * The real `Console` over a canned socket and a canned `fetch`, the same
- * division `nav-shell.test.tsx` drives the shell with, because what is under
- * test is the mount rather than the screen. The screen itself is already
- * covered by `cowork-smoke.test.tsx` against data handed straight to it; what
- * only this composition can prove is the part that was missing: that the
- * surface is reachable at all, that its data edge is aimed at the daemon and
- * credential this device is paired with, and that a hub pairing is told the
- * limit instead of being left in front of catalogues that can never fill.
+ * The hub case is the point of the file. Cowork used to read the daemon's own
+ * HTTP routes, which a hub-paired phone has no address for (the hub tunnels
+ * exactly one HTTP shape, the routine webhook POST, and Cowork adds no
+ * second), so such a phone got a named limit where the surface should have
+ * been. Every ask is a socket frame now, so the hub pairing gets the surface,
+ * and the assertions below are on the frames the surface sent rather than on a
+ * rendered row: "the surface received this pairing's client" is not observable
+ * from the tree, and a screen aimed at the wrong socket would still render.
  *
- * Every assertion goes through a `testID` a person can find in the source, or
- * through the request the surface actually made. None goes through a
- * screenshot: a pixel cannot say which route is mounted or which host was
- * asked, and those are the two things that were broken.
+ * Any HTTP at all from this route is a regression, so `fetch` throws here.
  */
 
 import "./rnw.ts";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { Agent } from "@ompd/core/contracts";
+import type { Agent, ClientFrame } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -65,9 +63,28 @@ const AGENT: Agent = {
   labels: {},
 };
 
-/** The client surface `useConsole` touches, canned, in the shape `nav-shell.test.tsx` uses it. */
+const TASK = {
+  id: "t_1",
+  title: "Mount the cowork surface",
+  prompt: "wire the route",
+  agentId: AGENT.id,
+  state: "running" as const,
+  createdAt: "2026-02-01T00:00:00.000Z",
+  updatedAt: "2026-02-01T00:00:00.000Z",
+  labels: {},
+};
+
+/**
+ * The client surface both `useConsole` and the Cowork surface touch, canned,
+ * in the shape `nav-shell.test.tsx` uses it. Every cowork ask is recorded as
+ * the frame it would put on the wire, which is what makes "the surface is
+ * driving this pairing's socket" checkable.
+ */
 class CannedClient {
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+  readonly sent: ClientFrame[] = [];
+  /** What this canned socket claims about its link, read once at mount. */
+  connectionState = "connected";
 
   emit(name: string, event: unknown): void {
     for (const listener of this.listeners.get(name) ?? []) listener(event);
@@ -84,6 +101,13 @@ class CannedClient {
       );
     };
   }
+  framesOfType<T extends ClientFrame["t"]>(t: T): Extract<ClientFrame, { t: T }>[] {
+    const matches: Extract<ClientFrame, { t: T }>[] = [];
+    for (const frame of this.sent) {
+      if (frame.t === t) matches.push(frame as Extract<ClientFrame, { t: T }>);
+    }
+    return matches;
+  }
   start(): void {}
   close(): void {}
   reconnectNow(): void {}
@@ -99,63 +123,48 @@ class CannedClient {
   registerWebView(): void {}
   unregisterWebView(): void {}
   webViewResult(): void {}
+  listDirectory(path?: string): void {
+    this.sent.push(path === undefined ? { t: "fs_list" } : { t: "fs_list", path });
+  }
+  createSession(cwd: string): void {
+    this.sent.push({ t: "session_create", cwd });
+  }
+  cloneRepo(url: string, parent: string): void {
+    this.sent.push({ t: "repo_clone", url, parent });
+  }
+  readSkills(cwd?: string): void {
+    this.sent.push(cwd === undefined ? { t: "skills_read" } : { t: "skills_read", cwd });
+  }
+  readConnectors(cwd?: string): void {
+    this.sent.push(cwd === undefined ? { t: "connectors_read" } : { t: "connectors_read", cwd });
+  }
+  readTasks(): void {
+    this.sent.push({ t: "tasks_read" });
+  }
+  createTask(input: { title: string; prompt: string; agentId: string }): void {
+    this.sent.push({ t: "task_create", ...input });
+  }
+  cancelTask(taskId: string): void {
+    this.sent.push({ t: "task_cancel", taskId });
+  }
+  createAgent(request: { name: string; cwd: string }): void {
+    this.sent.push({ t: "agent_create", ...request });
+  }
 }
 
-/** One HTTP ask the surface made. Named for the daemon side, so it cannot be mistaken for the DOM `Request`. */
-interface DaemonAsk {
-  url: string;
-  /** The credential the surface presented, as the daemon would read it. */
-  authorization: string | null;
-}
-
-const requests: DaemonAsk[] = [];
 const ORIGINAL_FETCH = globalThis.fetch;
-
-/**
- * The daemon's three Cowork routes, canned, and a record of who asked.
- *
- * Recording the request is the point: "the surface received the connection" is
- * not observable from the tree, and asserting a rendered row alone would pass
- * against a surface aimed at the wrong host with the wrong token.
- */
-function cannedDaemon(): void {
-  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    requests.push({ url, authorization: new Headers(init?.headers).get("Authorization") });
-    const body = url.includes("/v1/skills")
-      ? { skills: [{ name: "debug", description: "diagnose without fixing", kind: "skill", source: "native:native" }] }
-      : url.includes("/v1/connectors")
-        ? { connectors: [{ name: "github", connected: true, status: "connected" }] }
-        : {
-            tasks: [
-              {
-                id: "t_1",
-                title: "Mount the cowork surface",
-                prompt: "wire the route",
-                agentId: AGENT.id,
-                state: "running",
-                createdAt: "2026-02-01T00:00:00.000Z",
-                updatedAt: "2026-02-01T00:00:00.000Z",
-                labels: {},
-              },
-            ],
-          };
-    return Promise.resolve(
-      new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }),
-    );
-  }) as unknown as typeof fetch;
-}
-
-/** Refuses any HTTP at all: the hub path must not reach for a route the hub has no tunnel for. */
-function forbidFetch(): void {
-  globalThis.fetch = ((input: RequestInfo | URL) => {
-    requests.push({ url: String(input), authorization: null });
-    return Promise.reject(new Error("the cowork route must not attempt HTTP on a hub pairing"));
-  }) as unknown as typeof fetch;
-}
+const httpAttempts: string[] = [];
 
 beforeEach(() => {
-  requests.length = 0;
+  httpAttempts.length = 0;
+  const forbidden: typeof fetch = Object.assign(
+    async (input: Parameters<typeof fetch>[0]) => {
+      httpAttempts.push(String(input));
+      throw new Error(`the cowork route must not reach for HTTP: ${String(input)}`);
+    },
+    { preconnect: () => {} },
+  );
+  globalThis.fetch = forbidden;
 });
 
 afterEach(() => {
@@ -164,10 +173,11 @@ afterEach(() => {
 
 interface Shell {
   host: HTMLElement;
+  client: CannedClient;
   el: (testID: string) => HTMLElement | null;
   press: (testID: string) => void;
-  /** Let the polled fetches land and their state commit. */
-  settle: () => Promise<void>;
+  /** Deliver one server frame's event, the way the real client would emit it. */
+  emit: (name: string, event: unknown) => void;
   unmount: () => void;
 }
 
@@ -204,6 +214,7 @@ function mountShell(connection: Connection): Shell {
 
   return {
     host,
+    client,
     el,
     press: (testID: string) => {
       const target = el(testID);
@@ -212,11 +223,9 @@ function mountShell(connection: Connection): Shell {
         target.click();
       });
     },
-    settle: async () => {
-      await act(async () => {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        setTimeout(resolve, 0);
-        await promise;
+    emit: (name, event) => {
+      act(() => {
+        client.emit(name, event);
       });
     },
     unmount: () => {
@@ -229,8 +238,7 @@ function mountShell(connection: Connection): Shell {
 }
 
 describe("the shell menu reaches the cowork surface", () => {
-  test("the entry is in the menu and pushes the route", async () => {
-    cannedDaemon();
+  test("the entry is in the menu and pushes the route", () => {
     const shell = mountShell(DIRECT);
     try {
       // Unreachable is the bug this closes: the surface existed and nothing
@@ -249,71 +257,89 @@ describe("the shell menu reaches the cowork surface", () => {
       // The surface's own navigation is present, so what landed is the whole
       // screen rather than a header with nothing under it.
       expect(shell.el("cowork-nav")).not.toBeNull();
-
-      // The route's first poll lands inside the test rather than after it, so
-      // nothing commits state into an unmounted tree.
-      await shell.settle();
     } finally {
       shell.unmount();
     }
   });
 });
 
-describe("the surface is handed this pairing's connection", () => {
-  test("it asks the daemon the connection names, with the connection's own credential", async () => {
-    cannedDaemon();
+describe("the surface asks over this pairing's socket", () => {
+  test("it sends the three catalogue frames, scoped to the open session's cwd", () => {
     const shell = mountShell(DIRECT);
     try {
-      // Route-scoped rather than console-wide: nothing polls Cowork's routes
-      // until the operator is actually on the surface.
-      expect(requests).toHaveLength(0);
+      // Route-scoped rather than console-wide: nothing asks for Cowork's
+      // frames until the operator is actually on the surface.
+      expect(shell.client.framesOfType("tasks_read")).toEqual([]);
 
       shell.press("open-menu");
       shell.press("open-cowork");
 
-      const urls = requests.map(request => request.url);
-      expect(urls).toContain(`http://127.0.0.1:7777/v1/skills?cwd=${encodeURIComponent(CWD)}`);
-      expect(urls).toContain(`http://127.0.0.1:7777/v1/connectors?cwd=${encodeURIComponent(CWD)}`);
-      expect(urls).toContain("http://127.0.0.1:7777/v1/tasks");
-      // One credential, this pairing's, on every route. A surface built from a
-      // stale or empty token would still render, which is why this is asserted
-      // on the request rather than inferred from the tree.
-      expect(requests.filter(request => request.authorization !== "Bearer tok_direct")).toEqual([]);
+      expect(shell.client.framesOfType("skills_read")).toEqual([{ t: "skills_read", cwd: CWD }]);
+      expect(shell.client.framesOfType("connectors_read")).toEqual([{ t: "connectors_read", cwd: CWD }]);
+      expect(shell.client.framesOfType("tasks_read")).toEqual([{ t: "tasks_read" }]);
+      // Not one byte of HTTP: the whole surface is frames now.
+      expect(httpAttempts).toEqual([]);
 
-      await shell.settle();
-      // What the daemon answered is on screen, so the connection carried data
-      // and not just a request.
+      // What the daemon answers is on screen, so the socket carried data and
+      // not just an ask.
+      shell.emit("tasks", { tasks: [TASK] });
       expect(shell.el("task-t_1")).not.toBeNull();
       expect(shell.el("cowork-notice")).toBeNull();
     } finally {
       shell.unmount();
     }
   });
+
+  test("a refused ask is named on screen rather than left as four empty catalogues", () => {
+    const shell = mountShell(DIRECT);
+    try {
+      shell.press("open-menu");
+      shell.press("open-cowork");
+
+      shell.emit("error", { message: "skills_read requires read scope", code: "unauthorized" });
+
+      expect(shell.el("cowork-notice")?.textContent).toContain("read scope");
+    } finally {
+      shell.unmount();
+    }
+  });
 });
 
-describe("a hub pairing is told the limit rather than left waiting", () => {
-  test("the route names the hub's HTTP limit and never reaches for a route the relay lacks", async () => {
-    forbidFetch();
+describe("a hub pairing reaches the same surface", () => {
+  test("the route mounts and asks the same frames a direct pairing does", () => {
     const shell = mountShell(HUB);
     try {
       shell.press("open-menu");
-      // Present on a hub too: an operator who cannot use the surface still has
-      // to be able to find out why, which is the whole point of naming it.
-      expect(shell.el("open-cowork")).not.toBeNull();
       shell.press("open-cowork");
 
-      expect(shell.el("cowork-unreachable")).not.toBeNull();
-      // Not the surface: four empty catalogues would read as a daemon with
-      // nothing installed on it, which is a lie about a working machine.
-      expect(shell.el("cowork-screen")).toBeNull();
-      expect(shell.el("cowork-surface")).toBeNull();
-      expect(shell.host.textContent).toContain("hub");
+      // The whole point: no limit screen, the real surface.
+      expect(shell.el("cowork-unreachable")).toBeNull();
+      expect(shell.el("cowork-surface")).not.toBeNull();
+      expect(shell.el("cowork-screen")).not.toBeNull();
 
-      await shell.settle();
-      // Fail closed by construction, not by a request that failed: the state is
-      // decided from the pairing, so nothing is ever in flight to wait on.
-      expect(requests).toHaveLength(0);
-      expect(shell.el("cowork-unreachable")).not.toBeNull();
+      expect(shell.client.framesOfType("skills_read")).toEqual([{ t: "skills_read", cwd: CWD }]);
+      expect(shell.client.framesOfType("connectors_read")).toEqual([{ t: "connectors_read", cwd: CWD }]);
+      expect(shell.client.framesOfType("tasks_read")).toEqual([{ t: "tasks_read" }]);
+      expect(httpAttempts).toEqual([]);
+
+      shell.emit("tasks", { tasks: [TASK] });
+      expect(shell.el("task-t_1")).not.toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("the folder binding and its picker are live on a hub pairing too", () => {
+    const shell = mountShell(HUB);
+    try {
+      shell.press("open-menu");
+      shell.press("open-cowork");
+
+      // The binding is drawn because the surface has a socket, not because
+      // the pairing happens to be direct.
+      expect(shell.el("cowork-folders")).not.toBeNull();
+      shell.press("cowork-folder-add");
+      expect(shell.client.framesOfType("fs_list")).toEqual([{ t: "fs_list" }]);
     } finally {
       shell.unmount();
     }

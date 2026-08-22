@@ -2,14 +2,23 @@
  * The one impure edge between the client and the Cowork screen.
  *
  * Everything that decides what is on screen lives in `tasks.ts` and
- * `catalog.ts` and is pure. This file owns the fetches and the poll interval,
- * mirroring the split `console/useConsole.ts` already draws between a socket
- * and the reducer it feeds. Lifecycle is REST-polled rather than pushed —
- * CoworkSurface is not adding a task-scoped websocket channel in this pass —
- * so this hook refetches on an interval instead of subscribing to anything.
+ * `catalog.ts` and is pure. This file owns the socket asks and the poll
+ * interval, mirroring the split `remote/useRemoteStart.ts` already draws
+ * between a client and the reducer it feeds. Every ask rides the sealed
+ * socket rather than a daemon HTTP route: the transport the console's own
+ * socket already survives on is the transport Cowork asks on too, and a
+ * hub-paired phone has no address for those routes. The hub does tunnel one
+ * HTTP shape (the routine webhook POST); Cowork adds no second one, because a
+ * general tunnel would carry this device's token through the hub.
  *
- * `POST /v1/tasks` requires an existing `agentId`: creating a task never
- * provisions a host (that is a separate manage-scope act, `POST /v1/agents`).
+ * Lifecycle stays a poll rather than becoming a push, deliberately: the
+ * roster frame answers "what is running right now", the daemon holds no
+ * task-scoped subscription to join, and inventing one to save a frame nobody
+ * asked for would add a push surface that must then be kept correct. A
+ * dropped link costs one stale interval, never a silent roster.
+ *
+ * `task_create` requires an existing `agentId`: creating a task never
+ * provisions a host (that is a separate manage-scope act, `agent_create`).
  * `defaultAgentId` is the caller's answer to "which session does a new task
  * with no session of its own target" — this hook does not pick one itself,
  * because picking a session is app-shell integration (which agent is "the
@@ -18,22 +27,12 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { Connection } from "../platform/connection.ts";
+import type { CoworkClient } from "./client.ts";
 import type { NewTaskInput, TaskListState } from "./tasks.ts";
 import { EMPTY_TASKS, reduceTasks } from "./tasks.ts";
-import type { ConnectorSummary, SkillSummary, Task } from "./types.ts";
+import type { ConnectorSummary, SkillSummary } from "./types.ts";
 
 const POLL_INTERVAL_MS = 4000;
-
-/** `ws://host/v1/socket?x=1#y` becomes `http://host` — the root every Cowork route hangs off. Mirrors `client.ts`'s `agentsEndpoint`. */
-export function restRoot(socketUrl: string): string | null {
-  const match = /^(wss?|https?):\/\/([^/?#]+)/.exec(socketUrl);
-  if (match === null) return null;
-  const [, scheme, authority] = match;
-  if (scheme === undefined || authority === undefined || authority.length === 0) return null;
-  const secure = scheme === "wss" || scheme === "https";
-  return `${secure ? "https" : "http"}://${authority}`;
-}
 
 export interface CoworkState {
   tasks: TaskListState;
@@ -51,102 +50,89 @@ export interface CoworkActions {
   refresh: () => void;
 }
 
-interface SkillsResponse {
-  skills: SkillSummary[];
-}
-
-interface ConnectorsResponse {
-  connectors: ConnectorSummary[];
-}
-
-interface TasksResponse {
-  tasks: Task[];
-}
-
 export function useCowork(
-  connection: Connection,
+  client: CoworkClient,
   cwd: string,
   defaultAgentId: string | null,
 ): [CoworkState, CoworkActions] {
   const [state, setState] = useState<CoworkState>(EMPTY_STATE);
-  // Cowork's routes are plain REST, and the hub tunnels exactly one request
-  // shape today, a webhook fire: no tunnel is wired for `/v1/tasks`,
-  // `/v1/skills` or `/v1/connectors`, so a hub connection has no root and
-  // every fetch below fails closed instead of guessing at one.
-  const root = connection.transport === "direct" ? restRoot(connection.url) : null;
 
-  const authFetch = useCallback(
-    (path: string, init?: RequestInit): Promise<Response> => {
-      if (root === null) return Promise.reject(new Error("connection is not a websocket URL"));
-      const headers = new Headers(init?.headers);
-      headers.set("Authorization", `Bearer ${connection.token}`);
-      return fetch(`${root}${path}`, { ...init, headers });
-    },
-    [root, connection.token],
-  );
 
-  const load = useCallback(async () => {
-    try {
-      const [skillsRes, connectorsRes, tasksRes] = await Promise.all([
-        authFetch(`/v1/skills?cwd=${encodeURIComponent(cwd)}`),
-        authFetch(`/v1/connectors?cwd=${encodeURIComponent(cwd)}`),
-        authFetch("/v1/tasks"),
-      ]);
-      if (!skillsRes.ok || !connectorsRes.ok || !tasksRes.ok) {
-        throw new Error(`daemon returned ${skillsRes.status}/${connectorsRes.status}/${tasksRes.status}`);
-      }
-      const [skillsBody, connectorsBody, tasksBody] = (await Promise.all([
-        skillsRes.json(),
-        connectorsRes.json(),
-        tasksRes.json(),
-      ])) as [SkillsResponse, ConnectorsResponse, TasksResponse];
-      setState({
-        tasks: reduceTasks(EMPTY_TASKS, { t: "load", tasks: tasksBody.tasks }),
-        skills: skillsBody.skills,
-        connectors: connectorsBody.connectors,
-        loading: false,
-        error: null,
-      });
-    } catch (cause) {
-      setState(previous => ({ ...previous, loading: false, error: describe(cause) }));
-    }
-  }, [authFetch, cwd]);
+  const ask = useCallback((): void => {
+    // The cwd is passed through exactly, empty string included, the same way
+    // the REST poll this replaced always sent `?cwd=`: the daemon resolves
+    // what an empty workspace means, not this device.
+    client.readSkills(cwd);
+    client.readConnectors(cwd);
+    client.readTasks();
+  }, [client, cwd]);
 
   useEffect(() => {
-    void load();
-    const interval = setInterval(() => void load(), POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
-  }, [load]);
+    const offs = [
+      // Each answer is its own slice of truth: one refused catalogue does not
+      // blank the other two, and any answer at all retires the loading state
+      // and the error the previous ask left.
+      client.on("skills", event =>
+        setState(previous => ({ ...previous, skills: event.skills, loading: false, error: null })),
+      ),
+      client.on("connectors", event =>
+        setState(previous => ({ ...previous, connectors: event.connectors, loading: false, error: null })),
+      ),
+      client.on("tasks", event =>
+        setState(previous => ({
+          ...previous,
+          tasks: reduceTasks(EMPTY_TASKS, { t: "load", tasks: event.tasks }),
+          loading: false,
+          error: null,
+        })),
+      ),
+      // One task as the daemon holds it now: the answer to a start or a
+      // cancel, folded in rather than awaited so the roster never depends on
+      // this device matching replies to asks.
+      client.on("task", event =>
+        setState(previous => ({ ...previous, tasks: reduceTasks(previous.tasks, { t: "upsert", task: event.task }) })),
+      ),
+      client.on("error", event => setState(previous => ({ ...previous, loading: false, error: event.message }))),
+      client.on("status", event => {
+        // Every `connected` is a link that has just become usable, and the
+        // client never replays catalogue frames across one: the first ask for
+        // a socket that was still opening when this hook mounted, and the
+        // restoration of what a drop took away, both ride this branch.
+        if (event.state === "connected") ask();
+      }),
+    ];
+    // Asked for here only when the link is already up -- a socket still
+    // connecting would drop the frames and report the loss, so on that link
+    // the first `connected` above carries the ask instead. Exactly one of
+    // the two fires.
+    if (client.connectionState === "connected") ask();
+    const interval = setInterval(ask, POLL_INTERVAL_MS);
+    return () => {
+      for (const off of offs) off();
+      clearInterval(interval);
+    };
+  }, [client, ask]);
 
   const startTask = useCallback(
     async (input: NewTaskInput) => {
       if (defaultAgentId === null) {
         throw new Error("no session to target — pick or create an agent before starting a task");
       }
-      const response = await authFetch("/v1/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...input, agentId: defaultAgentId }),
-      });
-      if (!response.ok) throw new Error(`failed to start task: ${response.status}`);
-      const created = (await response.json()) as Task;
-      setState(previous => ({ ...previous, tasks: reduceTasks(previous.tasks, { t: "upsert", task: created }) }));
+      // Fire-and-ask: the created task arrives as the `task` event and a
+      // refusal arrives as `error`, both folded into the state above, so
+      // there is no promise here that could resolve before the daemon has
+      // said anything.
+      client.createTask({ ...input, agentId: defaultAgentId });
     },
-    [authFetch, defaultAgentId],
+    [client, defaultAgentId],
   );
 
   const cancelTask = useCallback(
     async (id: string) => {
-      const response = await authFetch(`/v1/tasks/${id}/cancel`, { method: "POST" });
-      if (!response.ok) throw new Error(`failed to cancel task: ${response.status}`);
-      await load();
+      client.cancelTask(id);
     },
-    [authFetch, load],
+    [client],
   );
 
-  return [state, { startTask, cancelTask, refresh: () => void load() }];
-}
-
-function describe(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
+  return [state, { startTask, cancelTask, refresh: ask }];
 }

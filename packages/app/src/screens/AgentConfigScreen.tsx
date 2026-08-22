@@ -28,12 +28,12 @@ import type { AgentId } from "@ompd/core/contracts";
 import { SCOPE_PROMPT, SCOPE_READ } from "@ompd/core/contracts";
 import { type JSX, useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
-import { restRoot } from "../cowork/useCowork.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
+import { restRoot } from "../platform/rest-root.ts";
 
 /**
  * The one option the daemon's POST accepts. Mirrors the gateway's

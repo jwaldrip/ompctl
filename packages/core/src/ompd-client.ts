@@ -32,7 +32,9 @@ import type {
   CollabVoiceNoteFrame,
   CollabVoiceNoteInput,
   CollabVoiceParticipant,
+  ConnectorSummary,
   FsListing,
+  HostSpec,
   PlanReviewChoice,
   RemoteRoutine,
   RoutineDeleteResult,
@@ -42,7 +44,9 @@ import type {
   SessionHistoryEntry,
   SessionQuery,
   SessionSummary,
+  SkillSummary,
   SyncSettings,
+  Task,
   TranscriptTailMessage,
   TuiActivityKind,
   TuiSteerDelivery,
@@ -199,15 +203,28 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // operator believing a routine is armed, a lost run leaves them waiting on
   // work that never started, and a lost rotate leaves a secret they think
   // they replaced still live at the webhook.
-  routines_read: false,
   routine_write: true,
   routine_run: true,
   routine_secret_rotate: true,
+  routines_read: false,
   // Irreversible and never replayed, exactly `session_delete`'s class: a
   // delete that never left leaves an operator believing a routine is gone
   // while its schedule still fires; re-sending after they may have changed
   // their mind would be worse.
   routine_delete: true,
+  // Snapshot asks, same class as `settings_read`: nothing on the machine
+  // changes, and the Cowork surface polls on an interval and re-asks on every
+  // reconnect, so reporting the loss would only echo the reconnect.
+  skills_read: false,
+  connectors_read: false,
+  tasks_read: false,
+  // Instructions that silently did not happen: a lost task start or cancel
+  // leaves an operator watching a roster that never moves, and a lost agent
+  // create leaves them waiting on a container that was never asked for.
+  // Same failure class as a lost `prompt`.
+  task_create: true,
+  task_cancel: true,
+  agent_create: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -217,9 +234,8 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
 export interface BackoffOptions {
   /** Delay before the first retry. */
   baseMs: number;
-  /** Ceiling. Growth stops here however long the outage runs. */
   maxMs: number;
-  /** Multiplier applied per consecutive failure. */
+
   factor: number;
   /**
    * Fraction of the delay given over to randomness, in `[0, 1]`. A delay lands
@@ -543,6 +559,37 @@ export interface AgentConfigEvent {
   configOptions: AgentConfigOption[];
 }
 
+/**
+ * The skills or connectors catalogue answering `readSkills`/`readConnectors`,
+ * delivered only to the client that asked. Wire-safe by construction: the
+ * daemon reshapes before sending, so a connector's raw config never rides in.
+ */
+export interface SkillsEvent {
+  skills: SkillSummary[];
+}
+
+export interface ConnectorsEvent {
+  connectors: ConnectorSummary[];
+}
+
+/** The task roster answering `readTasks`. A snapshot, not a push: it says what a poll saw. */
+export interface TasksEvent {
+  tasks: Task[];
+}
+
+/**
+ * One task as the daemon holds it now, answering `createTask` or
+ * `cancelTask`. Confirmation rather than echo: it carries what the daemon
+ * created or cancelled, not what this client asked for.
+ */
+export interface TaskEvent {
+  task: Task;
+}
+
+/** The agent a `createAgent` made, delivered only to the client that asked. */
+export interface AgentCreatedEvent {
+  agent: Agent;
+}
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -564,6 +611,11 @@ export interface ClientEventMap {
   session_opened: SessionOpenedEvent;
   sessions_deleted: SessionsDeletedEvent;
   device_invited: DeviceInvitedEvent;
+  skills: SkillsEvent;
+  connectors: ConnectorsEvent;
+  tasks: TasksEvent;
+  task: TaskEvent;
+  agent_created: AgentCreatedEvent;
   fs_listing: FsListingEvent;
   clone_progress: CloneProgressEvent;
   clone_done: CloneDoneEvent;
@@ -1021,6 +1073,90 @@ export class OmpdClient {
   }
 
   /**
+   * Ask for the skills catalogue scoped to `cwd`, or to the agent's cwd when
+   * `agentId` is given instead (`cwd` wins when both are). The answer arrives
+   * as the `skills` event, or an `error` naming the refusal.
+   *
+   * A snapshot ask, same class as `readSettings`: the Cowork surface re-asks
+   * on its poll and after every reconnect, so it is never replayed.
+   */
+  readSkills(cwd?: string, agentId?: string): void {
+    this.send({
+      t: "skills_read",
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(agentId === undefined ? {} : { agentId }),
+    });
+  }
+
+  /** The connectors catalogue, scoped exactly like `readSkills`. */
+  readConnectors(cwd?: string, agentId?: string): void {
+    this.send({
+      t: "connectors_read",
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(agentId === undefined ? {} : { agentId }),
+    });
+  }
+
+  /** The task roster, optionally narrowed to one agent's tasks. */
+  readTasks(agentId?: string): void {
+    this.send({ t: "tasks_read", ...(agentId === undefined ? {} : { agentId }) });
+  }
+
+  /**
+   * Start one task: a named prompt against a session that already exists.
+   * The created task arrives as the `task` event; a scope or validation
+   * refusal arrives as an `error` naming it. One-shot like the other
+   * instructions: a replayed start would run the prompt twice.
+   */
+  createTask(input: {
+    title: string;
+    prompt: string;
+    agentId: AgentId;
+    skillName?: string;
+    labels?: Record<string, string>;
+  }): void {
+    this.send({
+      t: "task_create",
+      title: input.title,
+      prompt: input.prompt,
+      agentId: input.agentId,
+      ...(input.skillName === undefined ? {} : { skillName: input.skillName }),
+      ...(input.labels === undefined ? {} : { labels: input.labels }),
+    });
+  }
+
+  /**
+   * Cancel one task. The task as the daemon now holds it arrives as the
+   * `task` event; a refusal arrives as an `error` naming it.
+   */
+  cancelTask(taskId: string): void {
+    this.send({ t: "task_cancel", taskId });
+  }
+
+  /**
+   * Create an agent, host and all: the manage-scoped act a Cowork container
+   * start rides. The agent arrives as the `agent_created` event, so a caller
+   * renders confirmed state rather than its own request; a refusal arrives as
+   * an `error` naming it. One-shot, for the reason `createSession` is.
+   */
+  createAgent(request: {
+    name: string;
+    cwd: string;
+    host?: HostSpec;
+    routineId?: string;
+    labels?: Record<string, string>;
+  }): void {
+    this.send({
+      t: "agent_create",
+      name: request.name,
+      cwd: request.cwd,
+      ...(request.host === undefined ? {} : { host: request.host }),
+      ...(request.routineId === undefined ? {} : { routineId: request.routineId }),
+      ...(request.labels === undefined ? {} : { labels: request.labels }),
+    });
+  }
+
+  /**
    * Ask what config options one agent's session holds, the mode among them.
    * The answer arrives as the `agent_config` event, or an `error` naming the
    * refusal: `unknown_agent` for an id this daemon holds no row for,
@@ -1416,6 +1552,21 @@ export class OmpdClient {
           entries: frame.entries,
           nextBefore: frame.nextBefore,
         });
+        return;
+      case "skills":
+        this.emit("skills", { skills: frame.skills });
+        return;
+      case "connectors":
+        this.emit("connectors", { connectors: frame.connectors });
+        return;
+      case "tasks":
+        this.emit("tasks", { tasks: frame.tasks });
+        return;
+      case "task":
+        this.emit("task", { task: frame.task });
+        return;
+      case "agent_created":
+        this.emit("agent_created", { agent: frame.agent });
         return;
       case "settings":
         this.emit("settings", {
