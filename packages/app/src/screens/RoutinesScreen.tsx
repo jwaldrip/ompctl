@@ -1,5 +1,5 @@
+import { type RemoteRoutine, type Run, SCOPE_MANAGE, SCOPE_PROMPT, type TriggerSpec } from "@ompd/core/contracts";
 import { CronError, nextFireTime } from "@ompd/core/cron";
-import { type RemoteRoutine, type Run, type TriggerSpec, SCOPE_MANAGE, SCOPE_PROMPT } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -231,12 +231,9 @@ export function RoutinesScreen({
       let trigger: TriggerSpec;
       if (kind === "schedule") {
         trigger =
-          draft.trigger.kind === "cron" || draft.trigger.kind === "interval"
-            ? draft.trigger
-            : { ...DEFAULT_CRON };
+          draft.trigger.kind === "cron" || draft.trigger.kind === "interval" ? draft.trigger : { ...DEFAULT_CRON };
       } else if (kind === "webhook") {
-        trigger =
-          draft.trigger.kind === "webhook" ? draft.trigger : { kind: "webhook", secretRef: mintId("whsec") };
+        trigger = draft.trigger.kind === "webhook" ? draft.trigger : { kind: "webhook", secretRef: mintId("whsec") };
       } else {
         trigger = { kind: "manual" };
       }
@@ -265,9 +262,12 @@ export function RoutinesScreen({
     (text: string) => {
       setIntervalEdit(current => ({ ...current, text }));
       const value = Number(text.trim());
-      const seconds = text.trim() === "" || !Number.isFinite(value) ? 0 : Math.round(value * INTERVAL_UNITS[intervalEdit.unit]);
+      const seconds =
+        text.trim() === "" || !Number.isFinite(value) ? 0 : Math.round(value * INTERVAL_UNITS[intervalEdit.unit]);
       setDraft(current =>
-        current !== null && current.trigger.kind === "interval" ? { ...current, trigger: { kind: "interval", seconds } } : current,
+        current !== null && current.trigger.kind === "interval"
+          ? { ...current, trigger: { kind: "interval", seconds } }
+          : current,
       );
     },
     [intervalEdit.unit],
@@ -280,7 +280,9 @@ export function RoutinesScreen({
       const seconds =
         intervalEdit.text.trim() === "" || !Number.isFinite(value) ? 0 : Math.round(value * INTERVAL_UNITS[unit]);
       setDraft(current =>
-        current !== null && current.trigger.kind === "interval" ? { ...current, trigger: { kind: "interval", seconds } } : current,
+        current !== null && current.trigger.kind === "interval"
+          ? { ...current, trigger: { kind: "interval", seconds } }
+          : current,
       );
     },
     [intervalEdit],
@@ -632,7 +634,9 @@ export function RoutinesScreen({
                         style={[styles.option, intervalEdit.unit === unit ? styles.optionSelected : null]}
                         testID={`routine-interval-unit-${unit}`}
                       >
-                        <Label color={intervalEdit.unit === unit ? signal.sage : ink.muted}>{INTERVAL_LABELS[unit]}</Label>
+                        <Label color={intervalEdit.unit === unit ? signal.sage : ink.muted}>
+                          {INTERVAL_LABELS[unit]}
+                        </Label>
                       </Pressable>
                     ))}
                   </View>
@@ -774,7 +778,12 @@ export function RoutinesScreen({
               <Glyph name="newTask" size={13} color={signal.sage} />
               <Label color={signal.sage}>Add action</Label>
             </Pressable>
-            <Pressable accessibilityRole="button" onPress={() => setDraft(null)} style={styles.smallButton} testID="routine-cancel">
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setDraft(null)}
+              style={styles.smallButton}
+              testID="routine-cancel"
+            >
               <Label color={ink.muted}>Cancel</Label>
             </Pressable>
             <Pressable
