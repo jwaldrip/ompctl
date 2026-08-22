@@ -14,6 +14,8 @@
 		87F19ADE3FC4E22E6DD21F41 /* PairingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7447C492347B48399A5C6E9D /* PairingUITests.swift */; };
 		0B70E1A20000000000000001 /* OmpctlNarration.m in Sources */ = {isa = PBXBuildFile; fileRef = 0B70E1A20000000000000003 /* OmpctlNarration.m */; };
 		0B70E1A20000000000000002 /* OmpctlNarration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B70E1A20000000000000004 /* OmpctlNarration.swift */; };
+		0B70E1A20000000000000005 /* OmpctlVoice.m in Sources */ = {isa = PBXBuildFile; fileRef = 0B70E1A20000000000000007 /* OmpctlVoice.m */; };
+		0B70E1A20000000000000006 /* OmpctlVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B70E1A20000000000000008 /* OmpctlVoice.swift */; };
 		D1E3657E5B7B4AC383CC94F1 /* LaunchSmokeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D5DC395512D4408AC076F09 /* LaunchSmokeUITests.swift */; };
 		F5FFF68EB761642F798DA35E /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
@@ -41,6 +43,8 @@
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ompd/AppDelegate.swift; sourceTree = "<group>"; };
 		0B70E1A20000000000000003 /* OmpctlNarration.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = OmpctlNarration.m; path = ompd/OmpctlNarration.m; sourceTree = "<group>"; };
 		0B70E1A20000000000000004 /* OmpctlNarration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OmpctlNarration.swift; path = ompd/OmpctlNarration.swift; sourceTree = "<group>"; };
+		0B70E1A20000000000000007 /* OmpctlVoice.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = OmpctlVoice.m; path = ompd/OmpctlVoice.m; sourceTree = "<group>"; };
+		0B70E1A20000000000000008 /* OmpctlVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OmpctlVoice.swift; path = ompd/OmpctlVoice.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = ompd/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		8EB1714DD9D82BD87C694FE2 /* ompdUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ompdUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
@@ -72,6 +76,8 @@
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
 				0B70E1A20000000000000004 /* OmpctlNarration.swift */,
 				0B70E1A20000000000000003 /* OmpctlNarration.m */,
+				0B70E1A20000000000000008 /* OmpctlVoice.swift */,
+				0B70E1A20000000000000007 /* OmpctlVoice.m */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
@@ -319,6 +325,8 @@
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
 				0B70E1A20000000000000002 /* OmpctlNarration.swift in Sources */,
 				0B70E1A20000000000000001 /* OmpctlNarration.m in Sources */,
+				0B70E1A20000000000000006 /* OmpctlVoice.swift in Sources */,
+				0B70E1A20000000000000005 /* OmpctlVoice.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

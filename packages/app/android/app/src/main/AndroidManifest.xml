@@ -6,6 +6,10 @@
          No photo or video is stored; only the in-app code scanner reads the
          live camera feed for the moment it takes to decode a code. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Recording voice memos to send to the agent as audio frames. Audio is
+         streamed to the user's own daemon for transcription and never stored
+         on the device. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
       android:name=".MainApplication"
