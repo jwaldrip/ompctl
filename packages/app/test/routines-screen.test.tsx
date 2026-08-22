@@ -2,7 +2,7 @@ import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ClientFrame, RemoteRoutine, ServerFrame } from "@ompd/core/contracts";
-import { ROUTINE_DELETE_REFUSAL_REASONS, webhookPath } from "@ompd/core/contracts";
+import { hubWebhookPath, ROUTINE_DELETE_REFUSAL_REASONS, webhookPath } from "@ompd/core/contracts";
 import { OmpdClient, type SocketCloseInfo, type SocketLike } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -490,13 +490,44 @@ describe("RoutinesScreen delete and webhook surface", () => {
     host.remove();
   });
 
-  test("a hub-relayed device names the daemon address as the root it cannot read", async () => {
+  test("a hub-relayed device renders the hub's own firable address, not a placeholder", async () => {
     forbidFetch();
     const { socket, host, root } = await mounted(MANAGER);
     act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
     await settle();
 
-    expect(el(host, "routine-rtn_calls-endpoint")?.textContent).toBe(`POST {daemon address}${webhookPath(ROUTINE.id)}`);
+    // The hub tunnels this shape and `packages/hub/test/tunnel.test.ts` proves
+    // the round trip, so the card can name a real address rather than shrug.
+    expect(el(host, "routine-rtn_calls-endpoint")?.textContent).toBe(
+      `POST https://hub.ompctl.ai${hubWebhookPath(MANAGER.daemonId, ROUTINE.id)}`,
+    );
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("the copy control behind a hub lifts a URL that can actually be fired", async () => {
+    forbidFetch();
+    clipboardWrites().length = 0;
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    act(() => el(host, "routine-rtn_calls-rotate-secret")?.click());
+    await settle();
+    act(() => socket.deliver({ t: "routine_secret", routineId: ROUTINE.id, secret: "fresh-secret-value" }));
+    await settle();
+
+    // The sharpest cost of the old copy: this string carries a live secret to
+    // wherever the operator pastes it, so a placeholder host made it both
+    // unusable and a leak.
+    const expectedUrl = `https://hub.ompctl.ai${hubWebhookPath(MANAGER.daemonId, ROUTINE.id)}?token=${encodeURIComponent("fresh-secret-value")}`;
+    expect(el(host, "routine-rtn_calls-secret-url")?.textContent).toBe(expectedUrl);
+
+    act(() => el(host, "routine-secret-copy")?.click());
+    await settle();
+    expect(clipboardWrites()).toEqual([expectedUrl]);
+    expect(expectedUrl).not.toContain("{daemon address}");
 
     act(() => root.unmount());
     host.remove();

@@ -1361,6 +1361,22 @@ export function webhookPath(routineId: string): string {
   return `/v1/webhooks/${encodeURIComponent(routineId)}`;
 }
 
+/**
+ * The same fire, addressed to a hub instead of the daemon itself. The hub
+ * tunnels this one request shape: it takes the POST, sends it down the
+ * daemon's already-open sealed socket as a `webhook_request`, and replays the
+ * daemon's `webhook_response` as a real HTTP response. Two segments rather
+ * than one because the hub serves many daemons and has to be told which.
+ *
+ * This is the address to hand out for a daemon with no reachable address of
+ * its own, which is the ordinary case. The routine's secret is the only thing
+ * gating it, and the hub reads that secret in order to forward it, so it is a
+ * credential to treat as one.
+ */
+export function hubWebhookPath(daemonId: string, routineId: string): string {
+  return `/v1/webhooks/${encodeURIComponent(daemonId)}/${encodeURIComponent(routineId)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Browsing the machine, and starting work on it
 //
