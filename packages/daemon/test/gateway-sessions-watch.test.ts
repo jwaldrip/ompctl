@@ -244,13 +244,6 @@ describe("the watcher-driven sessions push", () => {
     // the push gate, not a dead socket.
     silent.send({ t: "ping" });
     await silent.next(f => f.t === "pong", "pong");
-
-    // The ask armed the watcher one round trip ago, and the platform watch
-    // needs a moment of its own after registration before events flow. In
-    // production an actively written session heals this gap with its next
-    // append; this test writes exactly once, so it waits the arming gap out
-    // rather than racing it.
-    await sleep(250);
     writeSessionFile(
       h.sessionsRoot,
       "-late",
@@ -264,7 +257,7 @@ describe("the watcher-driven sessions push", () => {
       f => isSessionsFrame(f) && f.sessions.some(s => s.id === SESSION_LATE),
       "a push carrying the new session",
     );
-    expect(pushed.sessions.some(s => s.id === SESSION_LATE && s.title === "appeared later")).toBe(true);
+    expect(isSessionsFrame(pushed) && pushed.sessions.some(s => s.id === SESSION_LATE && s.title === "appeared later")).toBe(true);
 
     // A wrongly-broadcast push would have been sent in the same synchronous
     // fan-out as the frame `asked` just received; a margin wider than the
@@ -287,9 +280,13 @@ describe("the watcher-driven sessions push", () => {
     );
     const baseline = asked.frames.filter(isSessionsFrame).length;
 
-    // One agent-shaped burst: five session files appearing back to back
-    // while the seed transcript is appended to. Every one of these writes is
-    // a filesystem event; none of them may cost its own frame.
+    // One agent-shaped burst: five session files appearing over a few
+    // hundred milliseconds while the seed transcript is appended to. The
+    // gaps are wide enough that the platform delivers each write as its own
+    // event (macOS FSEvents coalesces same-tick writes, which would make a
+    // broken debounce look coalesced for free) and narrow enough that the
+    // whole burst still falls inside one debounce window. Every write is an
+    // event; none of them may cost its own frame.
     for (let i = 0; i < 5; i++) {
       writeSessionFile(
         h.sessionsRoot,
@@ -300,6 +297,7 @@ describe("the watcher-driven sessions push", () => {
         new Date(`2026-08-15T00:00:0${i}.000Z`),
       );
       appendTurn(h.sessionsRoot, i);
+      await sleep(30);
     }
 
     const last = burstId(4);

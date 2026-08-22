@@ -24,7 +24,7 @@
 
 import { statSync, watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
-import { basename } from "node:path";
+import { basename, join, sep } from "node:path";
 import { SESSION_FILE_RE } from "./scanner.ts";
 
 /**
@@ -112,11 +112,26 @@ export function watchSessionFiles(
       arm();
       return;
     }
-    // The root also collects editor temp files and Finder droppings; only a
-    // session file can change the catalog, so nothing else may cost a
-    // rebuild. Directory events themselves need no case here: every session
-    // file inside a new group directory reports under its own name.
-    if (SESSION_FILE_RE.test(basename(filename))) arm();
+    if (filename.includes(sep)) {
+      // An entry inside a group directory: only a session file can change
+      // the catalog, so editor temp files and Finder droppings cost nothing
+      // here.
+      if (SESSION_FILE_RE.test(basename(filename))) arm();
+      return;
+    }
+    // A root-level entry. A group directory appearing is how a new
+    // project's sessions arrive, and a file created inside a just-created
+    // directory does not reliably report under its own name (verified
+    // against macOS FSEvents), so the directory event itself must arm. The
+    // stat tells a group directory from junk at the root, so droppings
+    // still cost nothing.
+    try {
+      if (statSync(join(sessionsRoot, filename)).isDirectory()) arm();
+    } catch {
+      // Vanished between the event and the stat: it reported a departure,
+      // and departures inside group directories report under their own
+      // names, which the branch above already arms on.
+    }
   });
   fsWatcher.on("error", err => {
     opts.onError?.(err);
