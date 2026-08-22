@@ -566,9 +566,7 @@ describe("the session_delete websocket frame", () => {
       { sessionId: SESSION_DORMANT, deleted: true },
     ]);
     // The refusal is about the file, not only about the answer.
-    expect(
-      existsSync(join(h.sessionsRoot, "-live", `2026-08-10T00-00-00-000Z_${SESSION_LIVE}.jsonl`)),
-    ).toBe(true);
+    expect(existsSync(join(h.sessionsRoot, "-live", `2026-08-10T00-00-00-000Z_${SESSION_LIVE}.jsonl`))).toBe(true);
     expect(existsSync(dormantPath(h.sessionsRoot))).toBe(false);
     socket.close();
   });

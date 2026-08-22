@@ -326,10 +326,7 @@ describe("the watcher-driven sessions push", () => {
     asked.send({ t: "sessions" });
     // Drain the ask's own answer, so any later `sessions` frame on this
     // socket can only be a watcher push.
-    await asked.next(
-      f => isSessionsFrame(f) && f.sessions.some(s => s.id === SESSION_BASE),
-      "the ask's first paint",
-    );
+    await asked.next(f => isSessionsFrame(f) && f.sessions.some(s => s.id === SESSION_BASE), "the ask's first paint");
 
     // The real deletion path, not an `rmSync` standing in for it: the whole
     // question is whether what the daemon does to the file produces the
