@@ -30,6 +30,7 @@
  *   multiply the work it is reconnecting because of.
  */
 
+import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
@@ -37,6 +38,7 @@ import type { SessionScanCacheEntry, Store } from "@ompd/core";
 import type {
   AgentId,
   SessionCwdScope,
+  SessionDeleteResult,
   SessionGroup,
   SessionLiveStatus,
   SessionQuery,
@@ -91,6 +93,19 @@ export interface SessionQueryResult {
 interface BuildOutcome {
   rows: SessionSummary[];
   warm: Promise<void> | null;
+  /**
+   * Every session a process holds right now, by id, as this build resolved
+   * it: one of ompd's own non-terminal agents, or a verified live client
+   * presence, or the single-candidate inference for a bare `omp` whose
+   * presence record predates carrying a session id.
+   *
+   * Separate from `status` because `status` cannot answer this: an archive
+   * mark deliberately outranks liveness there, so an archived row a busy
+   * agent still holds reports `archived`. Deletion has to know the
+   * difference, and reading it off the row would let an archived-then-resumed
+   * session be deleted out from under its own writer.
+   */
+  held: Set<string>;
 }
 
 /**
@@ -223,6 +238,7 @@ export class SessionIndex {
       }
     }
     const misses: RawSessionFile[] = [];
+    const held = new Set<string>();
     const archived = this.#store.listArchivedSessionIds();
     const liveClients = await listLiveClientPresences(this.#runDaemonsRoot ?? runDaemonsRoot());
     const liveClientBySessionId = new Map<string, (typeof liveClients)[number]>();
@@ -270,6 +286,9 @@ export class SessionIndex {
       const liveClient = liveClientBySessionId.get(file.id);
       const inferredClient = inferredClientByFileId.get(file.id);
 
+      const heldByProcess = agentId !== undefined || liveClient !== undefined || inferredClient !== undefined;
+      if (heldByProcess) held.add(file.id);
+
       let status: SessionLiveStatus;
       let pid: number | undefined;
       if (isArchived) {
@@ -311,7 +330,7 @@ export class SessionIndex {
       });
     }
     const warm = misses.length > 0 ? this.#startWarm(misses) : null;
-    return { rows: summaries, warm };
+    return { rows: summaries, warm, held };
   }
 
   /**
@@ -469,6 +488,79 @@ export class SessionIndex {
 
   unarchive(sessionId: string): void {
     this.#store.unarchiveSession(sessionId);
+  }
+
+  /**
+   * Delete sessions for good: the transcript file, the per-session artifact
+   * directory OMP writes beside it (same name, `.jsonl` dropped, holding
+   * subagent transcripts), and this store's two rows about the session.
+   *
+   * The one irreversible operation on this catalog, so its refusals are
+   * deliberate rather than incidental:
+   *
+   * - A session a process currently holds is refused. `live-ompd` means one
+   *   of this daemon's own agents is writing it, `live-tui` means a terminal
+   *   somewhere is. Unlinking a file out from under an open writer does not
+   *   stop the writer: on both platforms this runs on it keeps appending to
+   *   an inode nothing can reach any more, so the operator loses the rest of
+   *   a session that appeared to survive. Stopping or taking over the
+   *   session first is the honest order, and the refusal says so.
+   * - An id this machine has no file for is refused, not silently reported
+   *   as deleted. A caller naming an id that is not here has a stale row or
+   *   a typo, and both deserve to be told.
+   *
+   * Per-id results, in the order asked: one refusal must not abandon the
+   * rest of a batch, because the batch exists precisely for the case where
+   * hundreds of dead sessions are being cleared and one of them is live.
+   *
+   * Ordering inside one deletion is the file first, the store second. A
+   * removal that fails leaves the store's rows describing a transcript that
+   * is still there, which is a consistent state; dropping the rows first and
+   * then failing to unlink would leave a real session with its archive mark
+   * silently cleared.
+   *
+   * Liveness comes from one shared build for the whole batch, and from that
+   * build's `held` set rather than from a row's `status`: an archive mark
+   * outranks liveness in `status`, so an archived session a busy agent still
+   * holds reports `archived` there and would otherwise be deletable out from
+   * under its own writer. Asking per id would also rescan the tree once per
+   * id, which a batch of hundreds cannot afford.
+   */
+  async delete(sessionIds: readonly string[]): Promise<SessionDeleteResult[]> {
+    if (sessionIds.length === 0) return [];
+    const { held } = await this.#buildShared();
+    const results: SessionDeleteResult[] = [];
+
+    for (const sessionId of sessionIds) {
+      if (held.has(sessionId)) {
+        results.push({ sessionId, deleted: false, refusal: "live" });
+        continue;
+      }
+      // Resolved through the targeted walk rather than taken from the build:
+      // a row is a wire type and carries no path, and this walk only ever
+      // returns a file under the configured root whose name matches the
+      // session naming scheme, so an id arriving from a client cannot steer
+      // the unlink anywhere else.
+      const path = await this.pathFor(sessionId);
+      if (path === undefined) {
+        results.push({ sessionId, deleted: false, refusal: "not_found" });
+        continue;
+      }
+      try {
+        await rm(path);
+        // `force` on the directory, not on the file: the transcript's absence
+        // would mean this deleted nothing, while an artifact directory is
+        // optional and most sessions have none.
+        await rm(path.slice(0, -".jsonl".length), { recursive: true, force: true });
+      } catch {
+        results.push({ sessionId, deleted: false, refusal: "failed" });
+        continue;
+      }
+      this.#store.deleteSessionRecords(sessionId);
+      results.push({ sessionId, deleted: true });
+    }
+
+    return results;
   }
 
   /**

@@ -679,6 +679,24 @@ export type ClientFrame =
    */
   | { t: "session_resume"; sessionId: string; cwd: string }
   /**
+   * Delete sessions: the transcript files themselves, and everything this
+   * daemon persists about them. Irreversible, so it is the one session frame
+   * that carries a list: clearing hundreds of dead fixture sessions one
+   * frame at a time is not a capability anyone would use, and a batch whose
+   * ids each succeed or are refused on their own is safer than a loop the
+   * client has to drive and reconcile itself.
+   *
+   * Requires manage scope, the same gate archiving takes, and every id is
+   * audited including its refusal. A session a process currently holds is
+   * refused by name rather than deleted: see `SessionDeleteRefusal`.
+   *
+   * Answered by `sessions_deleted`, one result per id, to the asking socket
+   * only. The fleet's own refresh does not ride that answer: the sessions
+   * watcher sees the files go away and pushes a new index to every socket
+   * that asked for one.
+   */
+  | { t: "session_delete"; sessionIds: string[] }
+  /**
    * Mint a new device's credential over this socket, in one authenticated
    * request. The two HTTP steps this replaces -- an unauthenticated
    * `POST /v1/pair` that records an intent, then an approve-scoped
@@ -818,6 +836,13 @@ export type ServerFrame =
    * Sent only to the socket that asked.
    */
   | { t: "session_opened"; sessionId: string; agentId: AgentId }
+  /**
+   * What a `session_delete` did, one result per id asked for, sent only to
+   * the socket that asked. A refusal is reported here beside the deletions
+   * rather than as an `error` frame, because a mixed batch has both and an
+   * error frame cannot say which ids it covers.
+   */
+  | { t: "sessions_deleted"; results: SessionDeleteResult[] }
   /** Current routine definitions and recent event outcomes, only for the asking socket. */
   | { t: "routines"; routines: RemoteRoutine[]; runs: Run[] }
   /** One routine event completed, with every action outcome in configured order. */
@@ -907,6 +932,15 @@ export type AuditAction =
   | "fs.list"
   /** A device started a session at a directory it chose, or was refused. */
   | "session.create"
+  /**
+   * A device deleted one session's transcript from disk, or was refused.
+   * One record per id, whichever way it went: this is the only operation in
+   * this daemon that destroys an operator's own work irreversibly, so the
+   * log has to answer "who removed that session" for every id anyone ever
+   * named, not only the ones that succeeded. `detail` carries the session id
+   * and, on a refusal, which refusal it was.
+   */
+  | "session.delete"
   /**
    * A device cloned a repository onto this machine, or was refused. `detail`
    * carries the url and the destination; a url carrying a credential is
@@ -1194,6 +1228,45 @@ export interface SessionGroup {
   cwd: string | null;
   sessions: SessionSummary[];
 }
+
+/**
+ * Why one id in a delete request was refused. Named rather than boolean
+ * because the three answers call for three different things from an
+ * operator: stop the session, check the id, or look at the machine.
+ *
+ * - `live`: a process holds this session right now (`live-ompd` or
+ *   `live-tui`). Deleting the transcript under a running writer would leave
+ *   it appending to an unlinked file, so the operator stops it or takes it
+ *   over first.
+ * - `not_found`: this machine has no session file with that id. Reported
+ *   rather than treated as already gone, because the usual cause is a typo
+ *   or a stale row, and silence there reads as a successful delete.
+ * - `failed`: the file was there and the removal did not succeed. The
+ *   session is intact; the cause is on the machine (permissions, a mount).
+ */
+export type SessionDeleteRefusal = "live" | "not_found" | "failed";
+
+/**
+ * One id's outcome. Every id in a request gets exactly one of these, so a
+ * batch that refuses some and deletes the rest reports precisely which. A
+ * single ok/failed for the whole batch would leave an operator unable to
+ * tell what is still on disk.
+ */
+export type SessionDeleteResult =
+  | { sessionId: string; deleted: true }
+  | { sessionId: string; deleted: false; refusal: SessionDeleteRefusal };
+
+/**
+ * The wording for each refusal, shared by every surface that has to say why:
+ * the daemon's audit detail, the HTTP response a script reads, and the app's
+ * own notice. One copy, because two would drift and an operator would meet
+ * whichever one the surface they happened to be on kept.
+ */
+export const SESSION_DELETE_REFUSAL_REASONS: Record<SessionDeleteRefusal, string> = {
+  live: "a process is holding this session; stop it or take it over first",
+  not_found: "this machine has no session with that id",
+  failed: "the transcript could not be removed from disk",
+};
 
 // ---------------------------------------------------------------------------
 // Browsing the machine, and starting work on it

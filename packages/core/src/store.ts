@@ -973,6 +973,28 @@ export class Store {
   }
 
   /**
+   * Drop everything this store keeps about one session: its archive mark and
+   * its cached message count. For a session whose file has been deleted, so
+   * both rows now describe a transcript that no longer exists.
+   *
+   * One transaction, because half of this is worse than neither: a surviving
+   * scan-cache row would let a session that came back under the same id (a
+   * restore from a backup, a copied fixture) report the deleted transcript's
+   * count as its own, since the cache key is mtime plus size and a restore
+   * can reproduce both.
+   *
+   * Deliberately not named `deleteSession`: it removes this store's rows, and
+   * the session file is `SessionIndex`'s to unlink. A name that claimed the
+   * whole deletion would invite a caller to believe the transcript was gone.
+   */
+  deleteSessionRecords(sessionId: string): void {
+    this.#db.transaction(() => {
+      this.#db.query(`DELETE FROM session_archive WHERE session_id=?`).run(sessionId);
+      this.#db.query(`DELETE FROM session_scan_cache WHERE session_id=?`).run(sessionId);
+    })();
+  }
+
+  /**
    * Every archived session id, in one query, so an index build checks
    * membership in a `Set` instead of issuing one `SELECT` per session in the
    * catalog.

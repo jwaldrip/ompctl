@@ -79,6 +79,8 @@ function render(browser: BrowserState): string {
       onOpen={NOOP_SESSION}
       onArchive={NOOP_SESSION}
       onUnarchive={NOOP_SESSION}
+      onDelete={NOOP_SESSION}
+      deleteAccess="granted"
     />,
   );
 }

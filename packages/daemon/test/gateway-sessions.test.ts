@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DefaultPolicy, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
@@ -50,6 +50,11 @@ interface Harness {
   pair(scopes: string[]): Promise<string>;
   http(path: string, init?: RequestInit, token?: string): Promise<Response>;
   gateway: Gateway;
+  /** The daemon's own store, so a test can read the audit log the routes write. */
+  store: Store;
+  sessionsRoot: string;
+  /** Where client-presence records live, so a test can make one session genuinely live-tui. */
+  runRoot: string;
 }
 
 async function harness(opts: { withSessionIndex?: boolean } = {}): Promise<Harness> {
@@ -118,6 +123,9 @@ async function harness(opts: { withSessionIndex?: boolean } = {}): Promise<Harne
   return {
     base,
     gateway: gw,
+    store,
+    sessionsRoot,
+    runRoot: emptyRunRoot,
     pair: async scopes => {
       const res = await fetch(`${base}/v1/pair`, {
         method: "POST",
@@ -262,6 +270,105 @@ describe("POST /v1/sessions/:id/archive and /unarchive", () => {
       sessions: Array<{ id: string }>;
     };
     expect(afterUnarchive.sessions.map(s => s.id)).toContain(SESSION_ID);
+  });
+});
+
+describe("POST /v1/sessions/delete", () => {
+  const SESSION_ID = "aaaaaaaa-0000-7000-0000-000000000001";
+  const OTHER_ID = "bbbbbbbb-0000-7000-0000-000000000002";
+  const UNKNOWN_ID = "dddddddd-0000-7000-0000-000000000009";
+
+  function transcript(sessionsRoot: string): string {
+    return join(sessionsRoot, "-a", `2026-08-10T00-00-00-000Z_${SESSION_ID}.jsonl`);
+  }
+
+  function deleteBody(sessionIds: string[]): RequestInit {
+    return { method: "POST", body: JSON.stringify({ sessionIds }) };
+  }
+
+  test("requires the manage scope, not just read", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ]);
+    const res = await h.http("/v1/sessions/delete", deleteBody([SESSION_ID]), token);
+    expect(res.status).toBe(403);
+    // The refusal is the whole answer: nothing left the disk.
+    expect(existsSync(transcript(h.sessionsRoot))).toBe(true);
+  });
+
+  test("deletes the transcript from disk and audits it against the asking device", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const path = transcript(h.sessionsRoot);
+    expect(existsSync(path)).toBe(true);
+
+    const res = await h.http("/v1/sessions/delete", deleteBody([SESSION_ID]), token);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ results: [{ sessionId: SESSION_ID, deleted: true }] });
+    expect(existsSync(path)).toBe(false);
+
+    const listed = (await (await h.http("/v1/sessions?includeArchived=true", {}, token)).json()) as {
+      sessions: Array<{ id: string }>;
+    };
+    expect(listed.sessions.map(s => s.id)).not.toContain(SESSION_ID);
+
+    const deviceId = h.store.listDevices()[0]?.id;
+    expect(deviceId).toBeDefined();
+    const audited = h.store.listAudit().filter(entry => entry.action === "session.delete");
+    expect(audited).toHaveLength(1);
+    expect(audited[0]).toMatchObject({ outcome: "ok", actorDeviceId: deviceId, detail: { sessionId: SESSION_ID } });
+  });
+
+  test("a live session is refused with a named reason, its file survives, and the refusal is audited", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    // A presence record naming the session, with this process as its pid:
+    // liveness is verified against the real process table, and the only pid a
+    // test can guarantee is alive is its own.
+    const clientsDir = join(h.runRoot, "hash1", "clients");
+    mkdirSync(clientsDir, { recursive: true });
+    writeFileSync(
+      join(clientsDir, "live.json"),
+      JSON.stringify({ pid: process.pid, id: "live", projectDir: "/x", sessionId: SESSION_ID }),
+    );
+
+    const res = await h.http("/v1/sessions/delete", deleteBody([SESSION_ID]), token);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      results: [{ sessionId: SESSION_ID, deleted: false, refusal: "live" }],
+    });
+    expect(existsSync(transcript(h.sessionsRoot))).toBe(true);
+
+    const audited = h.store.listAudit().filter(entry => entry.action === "session.delete");
+    expect(audited).toHaveLength(1);
+    expect(audited[0]).toMatchObject({ outcome: "denied", detail: { sessionId: SESSION_ID, refusal: "live" } });
+    // The reason travels with the record, so an operator reading the log is
+    // told why rather than left to decode a code.
+    expect(String(audited[0]?.detail.reason)).toContain("holding this session");
+  });
+
+  test("a batch reports one outcome per id, and an unknown id is refused rather than reported deleted", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+
+    const res = await h.http("/v1/sessions/delete", deleteBody([UNKNOWN_ID, SESSION_ID, OTHER_ID]), token);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      results: [
+        { sessionId: UNKNOWN_ID, deleted: false, refusal: "not_found" },
+        { sessionId: SESSION_ID, deleted: true },
+        { sessionId: OTHER_ID, deleted: true },
+      ],
+    });
+    expect(existsSync(transcript(h.sessionsRoot))).toBe(false);
+    expect(h.store.listAudit().filter(entry => entry.action === "session.delete")).toHaveLength(3);
+  });
+
+  test("an empty list is refused rather than answered with an empty success", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const res = await h.http("/v1/sessions/delete", deleteBody([]), token);
+    expect(res.status).toBe(400);
+    expect(existsSync(transcript(h.sessionsRoot))).toBe(true);
   });
 });
 
