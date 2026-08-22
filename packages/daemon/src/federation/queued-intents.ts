@@ -1,4 +1,11 @@
-import { type Actor, type HostMount, type HostSpec, type QueuedIntent, SCOPE_MANAGE } from "@ompd/core";
+import {
+  type Actor,
+  type HostMount,
+  type HostSpec,
+  parsePromptImages,
+  type QueuedIntent,
+  SCOPE_MANAGE,
+} from "@ompd/core";
 import type { Supervisor } from "../supervisor.ts";
 
 /** The narrow remote surface a local delegate needs to drain a replica queue. */
@@ -172,7 +179,19 @@ export class QueuedIntentDrainer {
         const fields = objectFields(intent.payload, `intent ${intent.id} prompt payload`);
         const text = stringField(fields, "text");
         if (text.length === 0) throw new Error(`intent ${intent.id} prompt text is empty`);
-        await this.#supervisor.prompt(intent.agentId, text, actor);
+        // Re-validated on replay rather than trusted from the store: an intent
+        // payload is persisted state, and the gateway that queued it and the
+        // daemon that replays it are two processes with two clocks. The same
+        // named budgets apply, so a poisoned payload is refused, not relayed
+        // on to an agent.
+        const images = parsePromptImages(fields.images);
+        if (!images.ok) throw new Error(`intent ${intent.id} prompt images refused: ${images.refusal}`);
+        await this.#supervisor.prompt(
+          intent.agentId,
+          text,
+          actor,
+          images.images.length > 0 ? images.images : undefined,
+        );
         return;
       }
       case "cancel":

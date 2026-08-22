@@ -33,6 +33,7 @@ import {
   type BridgeSocket,
   bridgeBackoffDelayMs,
   bridgeTrace,
+  type UserMessageContent,
   wireOmpdBridge,
 } from "../src/index.ts";
 
@@ -91,7 +92,7 @@ interface Fixture {
   ctx: BridgeContext;
   sockets: FakeSocket[];
   timers: Scheduled[];
-  sent: Array<{ message: string; options?: { deliverAs?: string } }>;
+  sent: Array<{ message: UserMessageContent; options?: { deliverAs?: string } }>;
   /** Run the pending retry, as omp's managed timer would. */
   fireTimer(): void;
   /** Change what `getSessionId` answers, as `/resume` does. */

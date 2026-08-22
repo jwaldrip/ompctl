@@ -215,6 +215,15 @@ webView.WebView = ({ children }: SvgProps) => children ?? null;
 webView.default = webView.WebView;
 mock.module("react-native-webview", () => webView);
 
+// `react-native-image-picker` resolves its native module table at import
+// time, which under bun is a ReferenceError that poisons every module loaded
+// after it. The stub keeps the import inert; availability is decided by the
+// attachments seam's own probe, never by this import, and a test that wants
+// to drive picking injects a fake picker through the seam instead.
+mock.module("react-native-image-picker", () => ({
+  launchImageLibrary: () => Promise.reject(new Error("no photo picker under bun test")),
+}));
+
 mock.module("react-native-view-shot", () => ({
   captureRef: () => Promise.reject(new Error("captureRef is unavailable under bun test")),
 }));

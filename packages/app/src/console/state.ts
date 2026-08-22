@@ -51,6 +51,7 @@ import {
   appendApproval,
   appendPrompt,
   EMPTY_SESSION,
+  echoText,
   endTurn,
   mergeSessionHistory,
   reduce,
@@ -370,11 +371,11 @@ export type ConsoleEvent =
   /** Local: the operator opened a terminal session's prompt surface, or went back to the bay. */
   | { t: "tui_select"; sessionId: string | null }
   /** Local: echo of a prompt this device just sent to a terminal session. */
-  | { t: "tui_prompt"; sessionId: string; text: string }
+  | { t: "tui_prompt"; sessionId: string; text: string; imageCount?: number }
   /** Local: the operator opened a strip, or went back to the bay. */
   | { t: "select"; agentId: AgentId | null }
   /** Local: echo of a prompt this device just sent. */
-  | { t: "prompt"; agentId: AgentId; text: string }
+  | { t: "prompt"; agentId: AgentId; text: string; imageCount?: number }
   /** Local: a clearance this device just settled. */
   | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
@@ -559,7 +560,7 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     case "tui_prompt":
       return withTuiSession(state, event.sessionId, tui => ({
         ...tui,
-        sent: event.text,
+        sent: echoText(event.text, event.imageCount ?? 0),
         awaitingReply: true,
         reply: null,
         replyUnavailable: false,
@@ -595,7 +596,7 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     }
 
     case "prompt":
-      return withSession(state, event.agentId, session => appendPrompt(session, event.text));
+      return withSession(state, event.agentId, session => appendPrompt(session, event.text, event.imageCount ?? 0));
 
     case "decide":
       return withSession(state, event.agentId, session => resolveApproval(session, event.requestId, event.choice));
