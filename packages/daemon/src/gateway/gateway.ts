@@ -37,7 +37,9 @@ import {
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   SCOPE_READ,
+  SESSION_DELETE_REFUSAL_REASONS,
   type ServerFrame,
+  type SessionDeleteResult,
   type SessionLiveStatus,
   type SessionQuery,
   type SessionSortDir,
@@ -2031,6 +2033,34 @@ export class Gateway {
       return Response.json({ ok: true });
     }
 
+    // A POST with a body rather than `DELETE /v1/sessions/:id`, because the
+    // capability is a list: clearing hundreds of dead sessions one request at
+    // a time is not something anyone would do, and a body is the only place a
+    // list can ride. Every id answers for itself in `results`, so a refusal
+    // among them does not fail the rest -- and the response is 200 even when
+    // every id was refused, because the request was understood and answered.
+    // A caller checks `results`, not the status line.
+    if (path === "/v1/sessions/delete" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+      let body: { sessionIds?: unknown };
+      try {
+        body = (await req.json()) as { sessionIds?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const ids = body.sessionIds;
+      // An empty list is refused rather than answered with an empty result:
+      // for something irreversible, "I deleted nothing" and "you asked me to
+      // delete nothing" are worth telling apart.
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || id.length === 0)) {
+        return Response.json({ error: "sessionIds must be a non-empty array of session ids" }, { status: 400 });
+      }
+      const results = await this.#deleteSessions(index, ids as string[], actor.deviceId);
+      return Response.json({ results });
+    }
+
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
@@ -3303,6 +3333,72 @@ export class Gateway {
         return;
       }
 
+      case "session_delete": {
+        // Manage, the same gate archiving takes, and the same one takeover
+        // takes: this is the operator's own record of their work being
+        // destroyed, and a read-only device must not reach it.
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          // Audited under the action itself rather than dropped, and with no
+          // session id: the frame has not been shape-checked yet, so there is
+          // nothing here worth recording beyond the attempt.
+          this.#store.audit({
+            action: "session.delete",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "unauthorized" },
+          });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "session_delete requires manage scope" });
+          return;
+        }
+        const index = this.#sessionIndex;
+        if (!index) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        // The wire is not a place to assume anyone kept to the contract. An
+        // empty list is refused rather than answered with an empty result:
+        // for an irreversible operation, "I deleted nothing" and "you asked
+        // me to delete nothing" are worth telling apart.
+        if (
+          !Array.isArray(frame.sessionIds) ||
+          frame.sessionIds.length === 0 ||
+          frame.sessionIds.some(id => typeof id !== "string" || id.length === 0)
+        ) {
+          this.#store.audit({
+            action: "session.delete",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "session_delete needs at least one non-empty session id",
+          });
+          return;
+        }
+        // Detached like the index build it runs on top of: this walks the
+        // sessions tree, and this socket (and every other) keeps being served
+        // while it does.
+        void this.#deleteSessions(index, frame.sessionIds, ws.data.deviceId).then(
+          results => {
+            this.#send(ws, { t: "sessions_deleted", results });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "session_delete_failed",
+              message: err instanceof Error ? err.message : "session delete failed",
+            });
+          },
+        );
+        return;
+      }
+
       case "fs_list": {
         // Audited at every exit, refusals included, for the reason
         // `session_prompt` is: this is a device reading the operator's own
@@ -3782,6 +3878,42 @@ export class Gateway {
         message: err instanceof Error ? err.message : "session index failed",
       });
     }
+  }
+
+  /**
+   * The one place a session deletion happens, for both doors: the HTTP route
+   * and the socket frame. Shared rather than duplicated because the audit
+   * record is the point -- two copies would eventually disagree about what
+   * gets written, and the log of who destroyed an operator's transcripts is
+   * the last thing that should depend on which road the request took.
+   *
+   * One record per id, whichever way that id went, carrying the id and the
+   * refusal when there was one. `outcome` is `ok` for a deletion and `denied`
+   * for a live or unknown session, because both of those are decisions this
+   * daemon made about the request; a removal that failed on the machine is
+   * `error`, because nothing decided it.
+   */
+  async #deleteSessions(
+    index: SessionIndex,
+    sessionIds: readonly string[],
+    actorDeviceId: string,
+  ): Promise<SessionDeleteResult[]> {
+    const results = await index.delete(sessionIds);
+    for (const result of results) {
+      this.#store.audit({
+        action: "session.delete",
+        actorDeviceId,
+        outcome: result.deleted ? "ok" : result.refusal === "failed" ? "error" : "denied",
+        detail: result.deleted
+          ? { sessionId: result.sessionId }
+          : {
+              sessionId: result.sessionId,
+              refusal: result.refusal,
+              reason: SESSION_DELETE_REFUSAL_REASONS[result.refusal],
+            },
+      });
+    }
+    return results;
   }
 
   /**

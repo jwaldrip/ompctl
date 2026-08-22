@@ -18,11 +18,18 @@ import type {
   AgentId,
   ApprovalChoice,
   PlanReviewChoice,
+  SessionDeleteResult,
   SessionSummary,
   TranscriptTailMessage,
   WebViewAction,
 } from "@ompd/core/contracts";
-import { SCOPE_APPROVE, SCOPE_PROMPT, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
+import {
+  SCOPE_APPROVE,
+  SCOPE_MANAGE,
+  SCOPE_PROMPT,
+  SESSION_DELETE_REFUSAL_REASONS,
+  TERMINAL_AGENT_STATES,
+} from "@ompd/core/contracts";
 import type {
   AgentsEvent,
   ApprovalEvent,
@@ -199,21 +206,29 @@ export interface ConsoleState {
 }
 
 /**
- * What this device knows about its right to use the prompt scope, which is
- * what speaking to an agent and steering a terminal both spend.
+ * What this device knows about its right to use one scope.
  *
  * `unknown` preserves compatibility with a pairing or daemon that never
  * reported scopes. Only `missing` is a refusal, because absence of evidence
  * from an older peer must not silently remove a control that may still work.
+ * No fourth value: a control either acts, acts optimistically, or says why
+ * it cannot, and a screen that had a fourth case to render would be guessing.
  */
-export type PromptScopeAccess = "granted" | "unknown" | "missing";
+export type ScopeAccess = "granted" | "unknown" | "missing";
+
+/**
+ * The prompt scope's posture, which is what speaking to an agent and steering
+ * a terminal both spend. An alias rather than its own union so every
+ * scope-gated control in the app answers to one rule.
+ */
+export type PromptScopeAccess = ScopeAccess;
 
 /**
  * The same rule, under the name the terminal screen has always imported.
  * Kept as an alias rather than inlined so the terminal's props stay stable
  * while the microphone and any later prompt-gated control share one rule.
  */
-export type TuiPromptAccess = PromptScopeAccess;
+export type TuiPromptAccess = ScopeAccess;
 
 /** The two prompt refusals this screen can repair differently. */
 export type TuiPromptRefusalKind = "owner-gone" | "scope";
@@ -832,16 +847,61 @@ export function canInvite(state: ConsoleState, storedScopes: readonly string[]):
 }
 
 /**
- * The three-way prompt scope rule every prompt-gated control follows: the
- * daemon's hello wins once it has reported scopes, the stored pairing's
- * claim stands in until then, and an empty stored grant means old or
- * unknown rather than missing.
+ * The three-way rule every scope-gated control follows: the daemon's hello
+ * wins once it has reported scopes, the stored pairing's claim stands in
+ * until then, and an empty stored grant means old or unknown rather than
+ * missing.
+ *
+ * One implementation for every scope, because the interesting part is the
+ * three-way posture rather than which scope is being asked about, and two
+ * copies of it would eventually disagree about what an older pairing means.
  */
-export function promptScopeAccess(state: ConsoleState, storedScopes: readonly string[]): PromptScopeAccess {
+function scopeAccess(state: ConsoleState, storedScopes: readonly string[], scope: string): ScopeAccess {
   const scopes = state.grantedScopes;
-  if (scopes !== undefined) return scopes.includes(SCOPE_PROMPT) ? "granted" : "missing";
+  if (scopes !== undefined) return scopes.includes(scope) ? "granted" : "missing";
   if (storedScopes.length === 0) return "unknown";
-  return storedScopes.includes(SCOPE_PROMPT) ? "granted" : "missing";
+  return storedScopes.includes(scope) ? "granted" : "missing";
+}
+
+/** The prompt scope's posture: what speaking to an agent and steering a terminal spend. */
+export function promptScopeAccess(state: ConsoleState, storedScopes: readonly string[]): PromptScopeAccess {
+  return scopeAccess(state, storedScopes, SCOPE_PROMPT);
+}
+
+/**
+ * The manage scope's posture: what archiving already spends and what deleting
+ * a session spends. `unknown` stays optimistic here as it does everywhere
+ * else, and deliberately so even for something irreversible: the control is
+ * two deliberate taps deep and the daemon enforces the scope regardless, so
+ * an older pairing meets a refusal it can read rather than a control that
+ * silently went missing.
+ */
+export function manageScopeAccess(state: ConsoleState, storedScopes: readonly string[]): ScopeAccess {
+  return scopeAccess(state, storedScopes, SCOPE_MANAGE);
+}
+
+/**
+ * What to tell the operator about a delete the daemon has answered, or null
+ * when there is nothing to say.
+ *
+ * Silence on success is deliberate: the rows disappear from the fleet, which
+ * is the confirmation, and a toast repeating it would be noise on the one
+ * action whose effect is impossible to miss. A refusal is the opposite case.
+ * Nothing on screen changes when a delete is refused, so without this the
+ * operator watches a session they asked to destroy stay exactly where it was
+ * and has to guess whether the tap registered.
+ *
+ * Pure, and here rather than at the socket, so the wording is testable
+ * without a client and the reasons stay the daemon's own.
+ */
+export function sessionDeleteNotice(results: readonly SessionDeleteResult[]): string | null {
+  const refused = results.filter(result => !result.deleted);
+  if (refused.length === 0) return null;
+  const [first] = refused;
+  if (first === undefined || first.deleted) return null;
+  const reason = SESSION_DELETE_REFUSAL_REASONS[first.refusal];
+  if (refused.length === 1) return `That session was not deleted: ${reason}.`;
+  return `${refused.length} sessions were not deleted. The first: ${reason}.`;
 }
 
 /** The same rule for the terminal steering surface, under its historic name. */

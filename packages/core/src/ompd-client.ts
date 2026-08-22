@@ -37,6 +37,7 @@ import type {
   RemoteRoutine,
   Run,
   ServerFrame,
+  SessionDeleteResult,
   SessionHistoryEntry,
   SessionQuery,
   SessionSummary,
@@ -157,6 +158,11 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // rather than watch a session that will never open.
   session_takeover: true,
   session_resume: true,
+  // Irreversible and never replayed. A delete that never left is an
+  // operator action that silently did not happen, and the operator must
+  // hear that rather than believe a transcript is gone; re-sending it on a
+  // reconnect would be worse, because by then they may have decided not to.
+  session_delete: true,
   // Same failure class as the one-shot session frames, with more at stake:
   // an invite that never left is a credential the operator believes they
   // handed over and did not, and the new device's user is left scanning a
@@ -392,6 +398,17 @@ export interface SessionOpenedEvent {
 }
 
 /**
+ * What a `deleteSessions` did, one result per id asked for. Delivered to the
+ * socket that asked and nowhere else; the fleet's own refresh arrives
+ * separately as a `sessions` snapshot the daemon's watcher pushes when the
+ * files go away, so a surface listening only to this event learns the
+ * outcome, and one listening only to the index learns the new world.
+ */
+export interface SessionsDeletedEvent {
+  results: SessionDeleteResult[];
+}
+
+/**
  * A credential minted by this device's own `inviteDevice`, answering exactly
  * the socket that asked. The token is the one-time view: nothing downstream
  * of this event retains it unless the operator chooses to show or spend it.
@@ -520,6 +537,7 @@ export interface ClientEventMap {
   collab_voice_history: CollabVoiceHistoryEvent;
   sessions: SessionsEvent;
   session_opened: SessionOpenedEvent;
+  sessions_deleted: SessionsDeletedEvent;
   device_invited: DeviceInvitedEvent;
   fs_listing: FsListingEvent;
   clone_progress: CloneProgressEvent;
@@ -866,6 +884,23 @@ export class OmpdClient {
    */
   resumeSession(sessionId: string, cwd: string): void {
     this.send({ t: "session_resume", sessionId, cwd });
+  }
+
+  /**
+   * Delete sessions: their transcripts, and everything the daemon persists
+   * about them. Irreversible, and requires manage scope. The answer arrives
+   * as the `sessions_deleted` event, one result per id, which is where a
+   * refusal (a live session, an unknown id) is reported.
+   *
+   * Takes a list because the daemon's frame does, and a caller with one
+   * session passes one id. One-shot with a visible loss, like every other
+   * instruction here, and never replayed: see `LOSS_IS_VISIBLE`.
+   *
+   * Copied rather than forwarded, matching `inviteDevice`: the caller's array
+   * must not be able to change what this client is about to put on the wire.
+   */
+  deleteSessions(sessionIds: readonly string[]): void {
+    this.send({ t: "session_delete", sessionIds: [...sessionIds] });
   }
 
   /**
@@ -1297,6 +1332,9 @@ export class OmpdClient {
         return;
       case "session_opened":
         this.emit("session_opened", { sessionId: frame.sessionId, agentId: frame.agentId });
+        return;
+      case "sessions_deleted":
+        this.emit("sessions_deleted", { results: frame.results });
         return;
       case "device_invited":
         this.emit("device_invited", { token: frame.token, name: frame.name, scopes: frame.scopes });

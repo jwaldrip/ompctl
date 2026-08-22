@@ -27,6 +27,7 @@ import { FlatList, Pressable, type PressableStateCallbackType, SectionList, Styl
 import { GroupHeader } from "../components/GroupHeader.tsx";
 import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
+import type { ScopeAccess } from "../console/state.ts";
 import { Glyph } from "../design/icons.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
@@ -42,6 +43,16 @@ export interface FleetScreenProps {
   onOpen: (session: BrowserSession) => void;
   onArchive: (session: BrowserSession) => void;
   onUnarchive: (session: BrowserSession) => void;
+  /** Destroy one session's transcript. The row takes the operator through a confirmation first. */
+  onDelete: (session: BrowserSession) => void;
+  /**
+   * Whether this pairing holds the manage scope deleting spends. `missing`
+   * leaves every row's delete control on screen and disabled, and says so
+   * once at the top rather than per row: a screen full of rows each
+   * explaining the same missing grant is noise, and a control that vanished
+   * would be a silent refusal.
+   */
+  deleteAccess: ScopeAccess;
   /** Injected so a test can pin the row clocks instead of racing the wall. */
   now?: number;
 }
@@ -98,6 +109,8 @@ export function FleetScreen({
   onOpen,
   onArchive,
   onUnarchive,
+  onDelete,
+  deleteAccess,
   now,
 }: FleetScreenProps): JSX.Element {
   const view = useMemo(() => browserView(browser), [browser]);
@@ -133,10 +146,12 @@ export function FleetScreen({
         onOpen={onOpen}
         onArchive={onArchive}
         onUnarchive={onUnarchive}
+        onDelete={onDelete}
+        deleteAccess={deleteAccess}
         now={now}
       />
     ),
-    [firstPathId, onOpen, onArchive, onUnarchive, now],
+    [firstPathId, onOpen, onArchive, onUnarchive, onDelete, deleteAccess, now],
   );
 
   const renderFlat = useCallback(
@@ -148,10 +163,12 @@ export function FleetScreen({
         onOpen={onOpen}
         onArchive={onArchive}
         onUnarchive={onUnarchive}
+        onDelete={onDelete}
+        deleteAccess={deleteAccess}
         now={now}
       />
     ),
-    [firstPathId, onOpen, onArchive, onUnarchive, now],
+    [firstPathId, onOpen, onArchive, onUnarchive, onDelete, deleteAccess, now],
   );
 
   const renderSectionHeader = useCallback(
@@ -207,6 +224,18 @@ export function FleetScreen({
           ) : null}
         </Pressable>
       </View>
+
+      {deleteAccess === "missing" ? (
+        // A band in the column, never a layer over it: see
+        // `test/no-hidden-content.test.ts` for why nothing here floats.
+        <View style={styles.scopeNotice} testID="fleet-delete-scope-notice">
+          <Glyph name="warning" size={12} color={signal.ochre} />
+          <Label color={signal.ochre} style={styles.scopeNoticeText}>
+            This pairing can archive but not delete: it holds no manage scope. Grant manage when minting this
+            device&rsquo;s credential, from the daemon or from a device that can invite.
+          </Label>
+        </View>
+      ) : null}
 
       <SortBar sort={browser.sort} onChange={onSort} />
 
@@ -284,5 +313,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   togglePressed: { backgroundColor: ground.active },
+  scopeNotice: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: space.tight,
+    paddingHorizontal: space.wide,
+    paddingVertical: space.snug,
+    backgroundColor: ground.surface,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+  },
+  // Shrinkable, so the sentence wraps inside the band instead of running out
+  // of it and under whatever draws next.
+  scopeNoticeText: { flex: 1, minWidth: 0 },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },
 });

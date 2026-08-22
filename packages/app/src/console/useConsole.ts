@@ -22,7 +22,7 @@ import { createHubSocketFactory } from "../platform/socket.ts";
 import type { MemoVoice } from "../voice/memo.ts";
 import { deviceMemoVoice } from "../voice/memo.ts";
 import type { ConsoleState, SessionOpenTarget } from "./state.ts";
-import { apply, emptyConsole, promptScopeAccess } from "./state.ts";
+import { apply, emptyConsole, manageScopeAccess, promptScopeAccess, sessionDeleteNotice } from "./state.ts";
 import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
 export type { WebViewTarget } from "./webview.ts";
@@ -48,6 +48,16 @@ export interface ConsoleActions {
    * terminal with no bridge answers `tui_unreachable` instead.
    */
   promptTui: (sessionId: string, text: string) => void;
+  /**
+   * Delete one session for good: its transcript leaves the machine. The
+   * fleet's own refresh arrives as the daemon's pushed index rather than
+   * from here, and a refusal arrives as a notice, because nothing on screen
+   * changes when a delete is refused.
+   *
+   * Whoever calls this has already taken the operator through a
+   * confirmation: this sends the frame, it does not ask.
+   */
+  deleteSession: (sessionId: string) => void;
   /** Register this selected screen as the agent's live WebView target. */
   mountWebView: (agentId: AgentId) => void;
   /** Withdraw the selected screen's target. Safe to call after a failed mount. */
@@ -227,6 +237,14 @@ export function useConsole(
       client.on("sessions", event => {
         dispatch({ t: "sessions", event });
       }),
+      client.on("sessions_deleted", event => {
+        // Only refusals reach the operator; the deleted rows leaving the
+        // fleet are their own confirmation. `sessionDeleteNotice` owns that
+        // decision and the wording.
+        const notice = sessionDeleteNotice(event.results);
+        if (notice === null) return;
+        dispatch({ t: "error", event: { message: notice } });
+      }),
       client.on("session_history", event => {
         dispatch({ t: "session_history", event });
       }),
@@ -387,6 +405,22 @@ export function useConsole(
       promptTui(sessionId, text) {
         client.sessionPrompt(sessionId, text);
         dispatch({ t: "tui_prompt", sessionId, text });
+      },
+      deleteSession(sessionId) {
+        // The row renders the missing scope and offers no confirmation, but
+        // this checks it again rather than trusting the surface: the frame is
+        // irreversible where it lands, and a client that sends one it knows
+        // will be refused teaches an operator to ignore refusals.
+        if (manageScopeAccess(stateRef.current, connection.scopes) === "missing") {
+          dispatch({
+            t: "error",
+            event: {
+              message: "This device does not hold the manage scope. Pair it again with manage access to delete.",
+            },
+          });
+          return;
+        }
+        client.deleteSessions([sessionId]);
       },
       startVoice(agentId) {
         const current = stateRef.current;

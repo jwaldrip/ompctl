@@ -18,6 +18,7 @@ import type {
   AgentId,
   ClientFrame,
   ServerFrame,
+  SessionDeleteResult,
   SessionSummary,
   TranscriptTailMessage,
   WebViewAction,
@@ -1239,6 +1240,78 @@ describe("sessions surface", () => {
     h.client.prompt(AGENT, "hello");
     expect(errors.length).toBe(1);
     expect(errors[0]).toContain("prompt");
+  });
+});
+
+describe("session delete surface", () => {
+  const SESSION = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
+
+  test("deleteSessions sends the ids as given, and a later mutation of the caller's array cannot change them", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    const ids = [SESSION];
+    h.client.deleteSessions(ids);
+    ids.push("019feebf-6449-7000-9474-a2ae1f871930");
+
+    expect(socket.framesOfType("session_delete")).toEqual([{ t: "session_delete", sessionIds: [SESSION] }]);
+  });
+
+  test("a sessions_deleted frame dispatches the per-id results the daemon sent", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionDeleteResult[][] = [];
+    h.client.on("sessions_deleted", event => received.push(event.results));
+
+    socket.deliver({
+      t: "sessions_deleted",
+      results: [
+        { sessionId: SESSION, deleted: false, refusal: "live" },
+        { sessionId: "019feebf-6449-7000-9474-a2ae1f871930", deleted: true },
+      ],
+    });
+
+    expect(received).toEqual([
+      [
+        { sessionId: SESSION, deleted: false, refusal: "live" },
+        { sessionId: "019feebf-6449-7000-9474-a2ae1f871930", deleted: true },
+      ],
+    ]);
+  });
+
+  test("losing a delete to a closed socket is reported, unlike losing a sessions ask", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // The state a reconnecting phone spends its whole backoff in.
+    expect(h.latest().readyState).not.toBe(1);
+
+    h.client.deleteSessions([SESSION]);
+
+    // An instruction that silently did not happen is the failure this
+    // reports: an operator who confirmed a deletion must not be left
+    // believing a transcript is gone when the frame never left.
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("session_delete");
+  });
+
+  test("a delete is never replayed after a reconnect", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.deleteSessions([SESSION]);
+    expect(first.framesOfType("session_delete")).toHaveLength(1);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // Re-sending would delete a session the operator may have decided,
+    // watching a spinner, not to delete after all.
+    expect(second.framesOfType("session_delete")).toEqual([]);
   });
 });
 

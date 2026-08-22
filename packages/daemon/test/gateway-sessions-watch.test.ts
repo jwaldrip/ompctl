@@ -18,7 +18,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ClientFrame, DefaultPolicy, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
+import { type ClientFrame, DefaultPolicy, SCOPE_MANAGE, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { SESSION_WATCH_QUIET_MS, SessionIndex } from "../src/sessions/index.ts";
@@ -153,7 +153,8 @@ interface Harness {
   port: number;
   gateway: Gateway;
   sessionsRoot: string;
-  pair(): Promise<string>;
+  /** Read scope alone by default; the delete case below needs manage too. */
+  pair(scopes?: string[]): Promise<string>;
   connect(token: string): Promise<SocketClient>;
 }
 
@@ -195,7 +196,7 @@ async function harness(): Promise<Harness> {
     port,
     gateway: gw,
     sessionsRoot,
-    pair: async () => {
+    pair: async (scopes = [SCOPE_READ]) => {
       const res = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -203,7 +204,7 @@ async function harness(): Promise<Harness> {
       });
       const body = (await res.json()) as { code?: unknown };
       if (typeof body.code !== "string") throw new Error("pair response carried no code");
-      return gw.approvePairing(body.code, [SCOPE_READ]);
+      return gw.approvePairing(body.code, scopes);
     },
     connect: token => connect(port, token),
   };
@@ -315,6 +316,34 @@ describe("the watcher-driven sessions push", () => {
     // Exactly the two frames one push produces: first paint, then the warm
     // upgrade. One frame per write would be ten or more here.
     expect(pushedFrames).toBe(2);
+  });
+
+  test("a session deleted through the daemon pushes the new index, so the fleet updates with no manual refresh", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const asked = await h.connect(token);
+
+    asked.send({ t: "sessions" });
+    // Drain the ask's own answer, so any later `sessions` frame on this
+    // socket can only be a watcher push.
+    await asked.next(f => isSessionsFrame(f) && f.sessions.some(s => s.id === SESSION_BASE), "the ask's first paint");
+
+    // The real deletion path, not an `rmSync` standing in for it: the whole
+    // question is whether what the daemon does to the file produces the
+    // watcher event, and a test that removed the file itself would answer a
+    // different question.
+    asked.send({ t: "session_delete", sessionIds: [SESSION_BASE] });
+    const answered = await asked.next(f => f.t === "sessions_deleted", "the delete's own answer");
+    if (answered.t !== "sessions_deleted") throw new Error("expected a sessions_deleted frame");
+    expect(answered.results).toEqual([{ sessionId: SESSION_BASE, deleted: true }]);
+
+    // The push. Distinguishable from the delete's own answer by frame type,
+    // and from the first paint by content: the deleted row is gone from it.
+    const pushed = await asked.next(
+      f => isSessionsFrame(f) && !f.sessions.some(s => s.id === SESSION_BASE),
+      "a push carrying the index without the deleted session",
+    );
+    expect(isSessionsFrame(pushed) && pushed.sessions).toEqual([]);
   });
 });
 

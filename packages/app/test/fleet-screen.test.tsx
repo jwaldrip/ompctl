@@ -24,6 +24,7 @@ import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ScopeAccess } from "../src/console/state.ts";
 import type { BrowserSession, BrowserState } from "../src/session/browser.ts";
 import { EMPTY_BROWSER } from "../src/session/browser.ts";
 import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
@@ -91,7 +92,7 @@ function stylesForMarkup(markup: string): string {
 }
 
 /** Markup plus only the atomic CSS used by that rendered page. */
-function render(browser: BrowserState): string {
+function render(browser: BrowserState, deleteAccess: ScopeAccess = "granted"): string {
   const markup = renderToStaticMarkup(
     <FleetScreen
       browser={browser}
@@ -102,6 +103,8 @@ function render(browser: BrowserState): string {
       onOpen={NOOP_SESSION}
       onArchive={NOOP_SESSION}
       onUnarchive={NOOP_SESSION}
+      onDelete={NOOP_SESSION}
+      deleteAccess={deleteAccess}
       now={NOW}
     />,
   );

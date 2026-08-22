@@ -96,6 +96,8 @@ function renderFleet(browser: BrowserState): string {
       onOpen={() => {}}
       onArchive={() => {}}
       onUnarchive={() => {}}
+      onDelete={() => {}}
+      deleteAccess="granted"
       now={NOW}
     />,
   );

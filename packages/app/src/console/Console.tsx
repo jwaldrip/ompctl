@@ -57,6 +57,7 @@ import {
   browserSessionsOf,
   canInvite,
   fleetClearances,
+  manageScopeAccess,
   openSessionTarget,
   promptScopeAccess,
   sessionFor,
@@ -163,6 +164,15 @@ export function Console({
   }, []);
   const onUnarchive = useCallback((session: BrowserSession) => {
     dispatchBrowser({ t: "unarchive", id: session.id });
+  }, []);
+  // Deletion is the one row action that leaves the device: archive and
+  // restore are browser-local gestures, while this destroys a transcript on
+  // the operator's machine. The row has already taken them through its
+  // confirmation by the time this runs, and the fleet updates from the
+  // daemon's own pushed index rather than from a local guess about what is
+  // now gone.
+  const onDelete = useCallback((session: BrowserSession) => {
+    latest.current.actions.deleteSession(session.id);
   }, []);
   // Rows are sessions, not agents: the pure resolver in state.ts decides what
   // the tap lands on, and the action owns the impure ways to reach it -- attach,
@@ -336,6 +346,8 @@ export function Console({
               onOpen={onOpen}
               onArchive={onArchive}
               onUnarchive={onUnarchive}
+              onDelete={onDelete}
+              deleteAccess={manageScopeAccess(state, connection.scopes)}
             />
           </View>
           {split ? <View style={styles.splitDetail}>{splitPane()}</View> : null}

@@ -1,11 +1,20 @@
 /**
  * One session, as a row in the browser.
  *
- * Open and archive are the two actions, and they must not read as the same
- * kind of thing. Open is the primary tap target, spans the row, and reads as
- * an affirmative "go here." Archive sits in a fixed corner, is quieter than
- * the row it sits in, and its glyph is a box, not a blade: nothing about it
- * should make a person hesitate the way a delete control would.
+ * Open and archive are the everyday actions, and they must not read as the
+ * same kind of thing. Open is the primary tap target, spans the row, and
+ * reads as an affirmative "go here." Archive sits in a fixed corner, is
+ * quieter than the row it sits in, and its glyph is a box, not a blade:
+ * nothing about it should make a person hesitate the way a delete control
+ * would.
+ *
+ * Delete is the third action and it is deliberately not one of those two. A
+ * first press only arms the row: the row's content is replaced by a band
+ * naming the session, and only a second press on that band's own control
+ * destroys anything. That band puts the destructive control at the leading
+ * edge, where the title was, and puts Keep at the trailing edge, under
+ * exactly the corner a thumb reaching for archive lands on. So a mis-reach
+ * arms at worst, and a second mis-reach cancels.
  *
  * `dormant`, `live-tui`, and `live-ompd` all take you into the session, but
  * they are not the same verb: a dormant session is resumed, a live-ompd one
@@ -15,8 +24,9 @@
  */
 
 import type { JSX } from "react";
-import { memo, useCallback } from "react";
+import { memo, useCallback, useState } from "react";
 import { Pressable, type PressableStateCallbackType, StyleSheet, View } from "react-native";
+import type { ScopeAccess } from "../console/state.ts";
 import { shortenPath } from "../design/format.ts";
 import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
@@ -32,6 +42,21 @@ export interface SessionRowProps {
   onOpen: (session: BrowserSession) => void;
   onArchive: (session: BrowserSession) => void;
   onUnarchive: (session: BrowserSession) => void;
+  /**
+   * Destroy this session's transcript. Called only from the armed band's own
+   * control, never from the first press, so a row can reach this exactly
+   * once per two deliberate taps.
+   */
+  onDelete: (session: BrowserSession) => void;
+  /**
+   * Whether this pairing holds the manage scope deleting spends. `missing`
+   * disables the control and names the reason on it rather than hiding it: a
+   * control that vanished would leave an operator wondering whether this
+   * build can delete at all. `unknown` (an older pairing or daemon that
+   * never reported scopes) stays enabled, and the daemon's refusal is what
+   * corrects it.
+   */
+  deleteAccess: ScopeAccess;
   now?: number;
   /**
    * True only on the single row the committed path scenario opens by name.
@@ -76,11 +101,22 @@ export const SessionRow = memo(function SessionRow({
   onOpen,
   onArchive,
   onUnarchive,
+  onDelete,
+  deleteAccess,
   now,
   firstPathOpen = false,
 }: SessionRowProps): JSX.Element {
   const tone = signal[SESSION_STATUS_SIGNALS[session.status]];
   const archived = session.status === "archived";
+  const name = session.title || "Untitled session";
+  /**
+   * Whether this row is asking to be confirmed. Local, and the one piece of
+   * state a row owns: it is one row's transient question, nothing outside the
+   * row consults it, and two rows armed at once harms nobody. It also cannot
+   * outlive the row, so a deleted session's armed band cannot land on
+   * whatever row takes its place.
+   */
+  const [armed, setArmed] = useState(false);
 
   const open = useCallback(() => {
     onOpen(session);
@@ -92,6 +128,18 @@ export const SessionRow = memo(function SessionRow({
       onArchive(session);
     }
   }, [onArchive, onUnarchive, session]);
+  const arm = useCallback(() => {
+    setArmed(true);
+  }, []);
+  const keep = useCallback(() => {
+    setArmed(false);
+  }, []);
+  const confirmDelete = useCallback(() => {
+    // Disarmed first, so the band cannot be pressed twice while the fleet
+    // waits for the daemon's answer and the row is still on screen.
+    setArmed(false);
+    onDelete(session);
+  }, [onDelete, session]);
   const openActionStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.openAction,
@@ -101,6 +149,40 @@ export const SessionRow = memo(function SessionRow({
     [session.status],
   );
 
+  if (armed) {
+    return (
+      <View testID={`session-row-${session.id}`} style={styles.row}>
+        <View style={[styles.bar, { backgroundColor: signal.oxide }]} />
+
+        <Pressable
+          testID={`session-delete-confirm-${session.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${name} permanently`}
+          onPress={confirmDelete}
+          style={confirmActionStyle}
+        >
+          <Glyph name="delete" size={13} color={signal.oxide} />
+          <Kicker color={signal.oxide}>Delete</Kicker>
+        </Pressable>
+
+        <View style={styles.confirmBody}>
+          <Label color={ink.bright} numberOfLines={2} testID={`session-delete-prompt-${session.id}`}>
+            {`Delete ${name}? Its transcript leaves this machine for good.`}
+          </Label>
+        </View>
+
+        <Pressable
+          testID={`session-delete-cancel-${session.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={`Keep ${name}`}
+          onPress={keep}
+          style={keepActionStyle}
+        >
+          <Kicker color={ink.plain}>Keep</Kicker>
+        </Pressable>
+      </View>
+    );
+  }
   return (
     <View testID={`session-row-${session.id}`} style={styles.row}>
       <View style={[styles.bar, { backgroundColor: tone }]} />
@@ -161,6 +243,22 @@ export const SessionRow = memo(function SessionRow({
           style={archiveActionStyle}
         >
           <Glyph name={archived ? "restore" : "archive"} size={13} color={ink.faint} />
+        </Pressable>
+
+        <Pressable
+          testID={`session-delete-${session.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={
+            deleteAccess === "missing"
+              ? `Delete ${name} unavailable: this pairing holds no manage scope`
+              : `Delete ${name}`
+          }
+          accessibilityState={{ disabled: deleteAccess === "missing" }}
+          disabled={deleteAccess === "missing"}
+          onPress={arm}
+          style={deleteActionStyle}
+        >
+          <Glyph name="delete" size={13} color={deleteAccess === "missing" ? ink.faint : signal.oxide} />
         </Pressable>
       </View>
     </View>
@@ -231,6 +329,40 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  // Separated from archive by a heavier rule than the hairlines elsewhere in
+  // this row, because the two controls beside each other are the reversible
+  // action and the irreversible one, and the eye needs to be told.
+  deleteAction: {
+    width: TOUCH_TARGET,
+    alignItems: "center",
+    justifyContent: "center",
+    borderLeftWidth: stroke.heavy,
+    borderLeftColor: ground.edge,
+  },
+  // The armed band's own controls. The destructive one sits at the leading
+  // edge, where the title was and where no control was before, so no muscle
+  // memory reaches it; Keep takes the trailing corner the everyday actions
+  // occupy.
+  confirmAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    paddingHorizontal: space.wide,
+    justifyContent: "center",
+    borderRightWidth: stroke.hair,
+    borderRightColor: ground.line,
+  },
+  // Shrinkable for the same reason `body` is: the prompt names the session,
+  // titles are long, and a name that overflowed would paint under Keep.
+  confirmBody: { flex: 1, minWidth: 0, paddingVertical: space.snug, paddingHorizontal: space.wide },
+  keepAction: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: space.wide,
+    minWidth: TOUCH_TARGET,
+    borderLeftWidth: stroke.hair,
+    borderLeftColor: ground.line,
+  },
   actionPressed: { backgroundColor: ground.active },
 });
 
@@ -240,5 +372,17 @@ const styles = StyleSheet.create({
 const bodyStyle = ({ pressed }: PressableStateCallbackType) => [styles.body, pressed && styles.actionPressed];
 const archiveActionStyle = ({ pressed }: PressableStateCallbackType) => [
   styles.archiveAction,
+  pressed && styles.actionPressed,
+];
+const deleteActionStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.deleteAction,
+  pressed && styles.actionPressed,
+];
+const confirmActionStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.confirmAction,
+  pressed && styles.actionPressed,
+];
+const keepActionStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.keepAction,
   pressed && styles.actionPressed,
 ];

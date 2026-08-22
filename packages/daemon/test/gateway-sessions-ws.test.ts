@@ -14,10 +14,18 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ClientFrame, DefaultPolicy, SCOPE_PROMPT, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
+import {
+  type ClientFrame,
+  DefaultPolicy,
+  SCOPE_MANAGE,
+  SCOPE_PROMPT,
+  SCOPE_READ,
+  type ServerFrame,
+  Store,
+} from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { SessionIndex } from "../src/sessions/index.ts";
@@ -151,6 +159,10 @@ async function connect(port: number, token: string): Promise<SocketClient> {
 interface Harness {
   port: number;
   gateway: Gateway;
+  /** The seeded sessions tree, so a test can check what is still on disk. */
+  sessionsRoot: string;
+  /** The daemon's own store, so a test can read the audit log its frames write. */
+  store: Store;
   pair(scopes: string[]): Promise<string>;
   connect(token: string): Promise<SocketClient>;
 }
@@ -214,6 +226,8 @@ async function harness(opts: { withSessionIndex?: boolean } = {}): Promise<Harne
   return {
     port,
     gateway: gw,
+    sessionsRoot,
+    store,
     pair: async scopes => {
       const res = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
         method: "POST",
@@ -356,7 +370,7 @@ describe("the sessions websocket frame", () => {
  */
 describe("the sessions frame's first paint, upgrade, and liveness", () => {
   /** The same harness shape, over a corpus the test owns: sessions with real message lines, a cold store. */
-  async function corpusHarness(): Promise<Harness & { sessionsRoot: string }> {
+  async function corpusHarness(): Promise<Harness> {
     const dbPath = join(tempDir("gw-ws-corpus-db-"), "ompd.db");
     paths.push(dbPath);
     const store = new Store(dbPath);
@@ -389,6 +403,7 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
       port,
       gateway: gw,
       sessionsRoot,
+      store,
       pair: async scopes => {
         const res = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
           method: "POST",
@@ -485,6 +500,105 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
     // serving throughout it rather than parked behind the count.
     expect(isSessionsFrame(upgraded) && upgraded.sessions.every(s => s.messageCount === 20_000)).toBe(true);
     expect(answered).toBeGreaterThan(3);
+    socket.close();
+  });
+});
+
+/**
+ * The delete frame, which is the road a hub-relayed phone must take: the
+ * relay carries sealed websocket frames and no daemon HTTP at all, so
+ * `POST /v1/sessions/delete` is a route that phone cannot reach.
+ */
+describe("the session_delete websocket frame", () => {
+  const dormantPath = (sessionsRoot: string): string =>
+    join(sessionsRoot, "-dormant", `2026-08-12T00-00-00-000Z_${SESSION_DORMANT}.jsonl`);
+
+  function isDeletedFrame(frame: ServerFrame): frame is Extract<ServerFrame, { t: "sessions_deleted" }> {
+    return frame.t === "sessions_deleted";
+  }
+
+  test("deletes a dormant session's transcript and answers the asking socket with the result", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await h.connect(token);
+    expect(existsSync(dormantPath(h.sessionsRoot))).toBe(true);
+
+    socket.send({ t: "session_delete", sessionIds: [SESSION_DORMANT] });
+    const reply = await socket.next(isDeletedFrame, "sessions_deleted frame");
+    if (!isDeletedFrame(reply)) throw new Error("expected a sessions_deleted frame");
+
+    expect(reply.results).toEqual([{ sessionId: SESSION_DORMANT, deleted: true }]);
+    expect(existsSync(dormantPath(h.sessionsRoot))).toBe(false);
+    expect(h.store.listAudit().filter(entry => entry.action === "session.delete")).toHaveLength(1);
+    socket.close();
+  });
+
+  test("refuses a client without the manage scope, and audits the attempt", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ]); // holds read, not manage
+    const socket = await h.connect(token);
+
+    socket.send({ t: "session_delete", sessionIds: [SESSION_DORMANT] });
+    const reply = await socket.next(f => f.t === "error", "scope refusal error");
+    if (reply.t !== "error") throw new Error("expected an error frame");
+
+    expect(reply.code).toBe("unauthorized");
+    expect(reply.message).toContain("manage scope");
+    expect(existsSync(dormantPath(h.sessionsRoot))).toBe(true);
+    expect(socket.frames.some(isDeletedFrame)).toBe(false);
+    expect(h.store.listAudit().filter(entry => entry.action === "session.delete")).toMatchObject([
+      { outcome: "denied", detail: { reason: "unauthorized" } },
+    ]);
+    socket.close();
+  });
+
+  test("a mixed batch refuses the live session by name and still deletes the dormant one", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await h.connect(token);
+
+    socket.send({ t: "session_delete", sessionIds: [SESSION_LIVE, SESSION_DORMANT] });
+    const reply = await socket.next(isDeletedFrame, "sessions_deleted frame");
+    if (!isDeletedFrame(reply)) throw new Error("expected a sessions_deleted frame");
+
+    expect(reply.results).toEqual([
+      { sessionId: SESSION_LIVE, deleted: false, refusal: "live" },
+      { sessionId: SESSION_DORMANT, deleted: true },
+    ]);
+    // The refusal is about the file, not only about the answer.
+    expect(existsSync(join(h.sessionsRoot, "-live", `2026-08-10T00-00-00-000Z_${SESSION_LIVE}.jsonl`))).toBe(true);
+    expect(existsSync(dormantPath(h.sessionsRoot))).toBe(false);
+    socket.close();
+  });
+
+  test("refuses a frame naming no session rather than answering it with an empty success", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await h.connect(token);
+
+    socket.send({ t: "session_delete", sessionIds: [] });
+    const reply = await socket.next(f => f.t === "error", "empty batch error");
+    if (reply.t !== "error") throw new Error("expected an error frame");
+
+    expect(reply.code).toBe("bad_frame");
+    expect(socket.frames.some(isDeletedFrame)).toBe(false);
+    socket.close();
+  });
+
+  test("refuses a malformed id list instead of coercing it", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await h.connect(token);
+    // Untyped on purpose: a bare string where the contract wants an array
+    // could be silently wrapped into a one-element batch, and for an
+    // irreversible operation that guess is unacceptable. `send` would have
+    // rejected this at compile time, which is what `sendRaw` exists for.
+    socket.sendRaw(JSON.stringify({ t: "session_delete", sessionIds: SESSION_DORMANT }));
+    const reply = await socket.next(f => f.t === "error", "shape error");
+    if (reply.t !== "error") throw new Error("expected an error frame");
+
+    expect(reply.code).toBe("bad_frame");
+    expect(existsSync(dormantPath(h.sessionsRoot))).toBe(true);
     socket.close();
   });
 });
