@@ -42,6 +42,7 @@ function renderScreen(
       tui={tuiSessionFor(state, SESSION)}
       connection="connected"
       onBack={() => {}}
+      onLoadEarlier={() => {}}
       onSubmit={() => {}}
     />,
   );
@@ -66,6 +67,7 @@ function mountScreen(options: {
         tui={tuiSessionFor(options.state ?? emptyConsole([]), SESSION)}
         connection="connected"
         onBack={() => {}}
+        onLoadEarlier={() => {}}
         onSubmit={options.onSubmit}
       />,
     );
