@@ -17,7 +17,6 @@ import {
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { webViewCapability } from "../browser";
 import { Composer } from "../components/Composer.tsx";
 import { PlanCard } from "../components/PlanCard.tsx";
@@ -28,7 +27,7 @@ import type { WebViewTarget } from "../console/webview.ts";
 import { routeWebViewAction } from "../console/webview.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
-import { SafeScreen } from "../design/SafeScreen.tsx";
+import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { agentSignal, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
@@ -102,7 +101,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   const tone = signal[agentSignal(agent.state)];
   const busy = agent.state === "busy";
   const terminal = TERMINAL_AGENT_STATES.includes(agent.state);
-  const insets = useSafeAreaInsets();
+  const ownedBottom = useOwnedBottomInset();
   const narration = useNarration(session.entries, props.narrationSpeech);
 
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -368,8 +367,19 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           Below the composer sits either the keyboard or the home indicator,
           never both: while the keyboard is up it covers that inset entirely,
           so paying both would leave a gap the height of the indicator.
+
+          The pad is the inset this screen owns, zero when a shell above has
+          already paid it, so a nested session lines up with the list beside
+          it rather than floating an inset above. And the view that pays is
+          the view that paints: a parent's padding is outside every child, so
+          only a surface-coloured pad owner runs the composer's colour the
+          last inset down to the screen edge instead of stopping short and
+          showing the shell's base beneath the message box.
         */}
-        <View style={{ paddingBottom: bottomInsetFor(keyboardInset, insets.bottom) }} testID="session-composer-safe">
+        <View
+          style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
+          testID="session-composer-safe"
+        >
           {terminal ? (
             <View style={styles.resume}>
               <Label color={ink.muted}>This agent stopped. Its complete transcript stays available.</Label>
@@ -446,6 +456,12 @@ const styles = StyleSheet.create({
   // Owns the space between the header and the bottom of the screen, so the
   // keyboard's inset lands here rather than on top of the composer.
   body: { flex: 1 },
+  // The band that owns the screen's bottom edge, microphone to home
+  // indicator. It paints the composer's surface because it is the view that
+  // pays the inset below the composer: a parent's padding is outside every
+  // child, so a transparent pad owner is how the shell's base colour ends up
+  // showing between the message box and the screen edge.
+  composerSafe: { backgroundColor: ground.surface },
   head: {
     flexDirection: "row",
     alignItems: "center",

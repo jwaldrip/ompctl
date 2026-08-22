@@ -3,22 +3,34 @@
  * for the other. A phone with a notch that lost its design padding is how a
  * form ends up jammed against the status bar on one edge and the home
  * indicator on the other.
+ *
+ * It must also survive being nested: the same screen is pushed on a phone,
+ * where its own shell is the outermost thing on screen, and embedded in a
+ * tablet's detail pane, where a shell above has already padded the window.
  */
 
 import "./rnw.ts";
 
 import { describe, expect, mock, test } from "bun:test";
-import { act, type ReactNode } from "react";
+import { act, createContext, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 // Known insets, set before SafeScreen is imported so the module sees them.
+// The shape mirrors ./rnw.ts's mock rather than stubbing two exports: this
+// file also stands alone, and @react-navigation/elements links named exports
+// (initialWindowMetrics among them) from this module at load time.
 const INSETS = { top: 47, right: 0, bottom: 34, left: 0 };
+const FRAME = { x: 0, y: 0, width: 390, height: 844 };
 mock.module("react-native-safe-area-context", () => ({
   SafeAreaProvider: ({ children }: { children?: ReactNode }) => children ?? null,
+  SafeAreaView: ({ children }: { children?: ReactNode }) => children ?? null,
+  SafeAreaInsetsContext: createContext(INSETS),
+  SafeAreaFrameContext: createContext(FRAME),
+  initialWindowMetrics: { frame: FRAME, insets: INSETS },
   useSafeAreaInsets: () => INSETS,
 }));
 
-const { Text } = await import("react-native");
+const { StyleSheet, Text } = await import("react-native");
 const { SafeScreen } = await import("../src/design/SafeScreen.tsx");
 const { SessionScreen } = await import("../src/screens/SessionScreen.tsx");
 const { EMPTY_SESSION } = await import("../src/session/model.ts");
@@ -38,6 +50,22 @@ function cssPadding(el: Element | null): { top: string; bottom: string; left: st
     left: style.paddingLeft || style.getPropertyValue("padding-left"),
     right: style.paddingRight || style.getPropertyValue("padding-right"),
   };
+}
+
+/**
+ * `getSheet` is a react-native-web extension, the same unchecked cast
+ * `fleet-screen.test.tsx` makes: static StyleSheet values compile to atomic
+ * classes whose declarations live here rather than in the markup.
+ */
+const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
+
+/** The sheet rules addressing any of these classes, scoped so a declaration on some other element cannot satisfy an assertion. */
+function sheetRulesFor(classes: readonly string[]): string {
+  return rnwStyleSheet
+    .getSheet()
+    .textContent.split("\n")
+    .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
+    .join("\n");
 }
 
 describe("SafeScreen", () => {
@@ -198,6 +226,108 @@ describe("SafeScreen", () => {
     expect(back).not.toBeNull();
     const label = host.querySelector('[data-testid="session-back-label"]');
     expect(label?.textContent).toBe("Sessions");
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+
+  test("a nested shell does not pay the bottom inset an ancestor already paid", () => {
+    // The raw insets read the same wherever the screen sits, and the
+    // ancestor's padding already stops the nested content above the home
+    // indicator, so a nested shell paying again is the double count that
+    // floated the tablet's composer an inset above the list beside it.
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(
+        <SafeScreen testID="outer">
+          <SafeScreen testID="inner">
+            <Text testID="deep">content</Text>
+          </SafeScreen>
+        </SafeScreen>,
+      );
+    });
+
+    expect(cssPadding(host.querySelector('[data-testid="outer"]')).bottom).toBe("34px");
+    expect(cssPadding(host.querySelector('[data-testid="inner"]')).bottom).toBe("0px");
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+
+  test("a composer under a paid shell pays nothing, and alone it pays on a surface-coloured view", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    const screen = (
+      <SessionScreen
+        agent={{
+          id: "agt_test",
+          name: "probe",
+          state: "idle",
+          host: { kind: "local", id: "1", spec: { kind: "local" } },
+          cwd: "/tmp",
+          createdAt: new Date(0).toISOString(),
+          lastActiveAt: new Date(0).toISOString(),
+          labels: {},
+        }}
+        session={EMPTY_SESSION}
+        connection="connected"
+        attempt={0}
+        voice={{
+          access: "unknown",
+          mic: { available: false, reason: "no microphone in this test" },
+          speech: { available: false, reason: "no playback in this test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        }}
+        spoken={null}
+        fleetClearances={0}
+        canApprove
+        onBack={() => {}}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+        onDecide={() => {}}
+        onDecidePlan={() => {}}
+      />
+    );
+
+    // Nested under a shell that paid: the composer drops its own bottom
+    // inset entirely, which is what lines it up with the list beside it.
+    act(() => {
+      root.render(<SafeScreen testID="outer">{screen}</SafeScreen>);
+    });
+    expect(cssPadding(host.querySelector('[data-testid="session-composer-safe"]')).bottom).toBe("0px");
+
+    // Standing alone: the inset is paid, and the payer is the composer's
+    // own surface. A transparent wrapper paying the pad is exactly the
+    // strip of the shell's base colour below the message box the operator
+    // reported on the tablet, so the payer's own background is asserted,
+    // found by walking up from the field to whoever pays the inset.
+    act(() => {
+      root.render(screen);
+    });
+    expect(cssPadding(host.querySelector('[data-testid="session-composer-safe"]')).bottom).toBe("34px");
+    const field = host.querySelector('[data-testid="composer-input"]');
+    let payer: Element | null = field;
+    while (payer !== null && (payer as HTMLElement).style.paddingBottom !== "34px") {
+      payer = payer.parentElement;
+    }
+    expect(payer).not.toBeNull();
+    // RNW compiles static StyleSheet values into its sheet rather than
+    // inline style, so the payer's colour is read from the rules its own
+    // classes select: ground.surface, which is the composer's surface.
+    const rules = sheetRulesFor([...(payer?.classList ?? [])]);
+    expect(rules).toMatch(/background-color:\s*rgba\(28,\s*26,\s*22,/);
 
     act(() => {
       root.unmount();

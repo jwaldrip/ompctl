@@ -43,11 +43,10 @@ import type { JSX } from "react";
 import { useCallback, useRef, useState } from "react";
 import type { ListRenderItemInfo } from "react-native";
 import { FlatList, Pressable, StyleSheet, TextInput, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
-import { SafeScreen } from "../design/SafeScreen.tsx";
+import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
@@ -140,7 +139,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   const liveTerminal = status === "live-tui";
   const tone = status === null ? signal.oxide : signal[SESSION_STATUS_SIGNALS[status]];
   const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
-  const insets = useSafeAreaInsets();
+  const ownedBottom = useOwnedBottomInset();
   // The same mechanism the agent log uses: KeyboardAvoidingView is inert on an
   // iPad, so the keyboard's measured height is paid as padding instead.
   const keyboardInset = useKeyboardInset();
@@ -390,8 +389,17 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         never both. This was a KeyboardAvoidingView, which does nothing on an
         iPad: the send control's frame is identical with the keyboard up and
         down, so the control sits behind the keyboard and nobody can press it.
+
+        The pad is the inset this screen owns, zero when a shell above has
+        already paid it, and the paying view paints the composer's surface:
+        a parent's padding is outside every child, so a transparent pad owner
+        is how the shell's base colour ends up showing between the message
+        box and the screen edge.
       */}
-      <View style={{ paddingBottom: bottomInsetFor(keyboardInset, insets.bottom) }} testID="terminal-composer-safe">
+      <View
+        style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
+        testID="terminal-composer-safe"
+      >
         <View style={styles.composer}>
           <TextInput
             testID="terminal-composer-input"
@@ -432,6 +440,12 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
 }
 
 const styles = StyleSheet.create({
+  // The band that owns the screen's bottom edge. It paints the composer's
+  // surface because it is the view that pays the inset below the composer:
+  // a parent's padding is outside every child, so a transparent pad owner is
+  // how the shell's base colour ends up showing between the message box and
+  // the screen edge.
+  composerSafe: { backgroundColor: ground.surface },
   head: {
     flexDirection: "row",
     alignItems: "center",
