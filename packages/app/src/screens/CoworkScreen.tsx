@@ -36,6 +36,7 @@ import { ConnectorsView, PluginsView, SkillsView } from "../components/CoworkCat
 import { TaskDetail } from "../components/TaskDetail.tsx";
 import type { NewTaskInput } from "../components/TaskSidebar.tsx";
 import { TaskSidebar } from "../components/TaskSidebar.tsx";
+import type { CoworkClient } from "../cowork/client.ts";
 import type { TaskListState } from "../cowork/tasks.ts";
 import { taskListView } from "../cowork/tasks.ts";
 import type { ConnectorSummary, SkillSummary, Task } from "../cowork/types.ts";
@@ -46,11 +47,17 @@ import { Glyph } from "../design/icons.tsx";
 import { useSplitLayout } from "../design/layout.ts";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
-import type { Connection } from "../platform/connection.ts";
 import type { RemoteStartClient } from "../remote/useRemoteStart.ts";
 import { FolderPickerScreen } from "./FolderPickerScreen.tsx";
 
 export type CoworkView = "tasks" | "skills" | "connectors" | "plugins";
+
+/**
+ * What this screen needs of the daemon socket: the catalogue and task frames
+ * `useCowork` drives, the `agent_create` the binding starts, and the browse
+ * frames the picker rides. `OmpdClient` satisfies it as-is.
+ */
+export type CoworkDaemonClient = CoworkClient & RemoteStartClient;
 
 interface Destination {
   id: CoworkView;
@@ -75,18 +82,15 @@ export interface CoworkScreenProps {
   onOpenSession: (agentId: string) => void;
   now?: number;
   /**
-   * The daemon this device is driving. Present, the tasks tab gains the
-   * folder binding and its picker: both need the daemon's own routes, its
-   * listing to browse by and its agent route to start the container. Absent,
-   * the section is not drawn rather than drawn dead.
+   * The socket this device drives the daemon over. Present, the tasks tab
+   * gains the folder binding and its picker: both ride frames on this one
+   * client, its `fs_list` to browse by and its `agent_create` to start the
+   * container. Absent, the section is not drawn rather than drawn dead.
+   *
+   * One client, shared, rather than a socket per surface: choosing a folder
+   * must not open a second link beside the one the catalogues are polling.
    */
-  connection?: Connection;
-  /**
-   * An already-started client the picker may share, so choosing a folder does
-   * not open a second socket beside the console's. Absent, the picker builds
-   * and closes its own for exactly as long as it is on screen.
-   */
-  client?: RemoteStartClient;
+  client?: CoworkDaemonClient;
 }
 
 export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
@@ -94,7 +98,7 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
   const split = useSplitLayout();
   const [view, setView] = useState<CoworkView>("tasks");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [folderState, folderActions] = useCoworkFolders(props.connection);
+  const [folderState, folderActions] = useCoworkFolders(props.client);
   const [picking, setPicking] = useState(false);
 
   const listView = useMemo(() => taskListView(tasks), [tasks]);
@@ -115,28 +119,19 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
   // A half-height sheet over a task list would serve neither the picker nor
   // the list it covers. Rendered after every hook above so the early return
   // cannot change how many of them run.
-  if (props.connection !== undefined && picking) {
-    // Rendered per branch rather than built as one spread object: the
-    // picker's props are a discriminated union (own a socket via a
-    // connection, or share the caller's client), and each branch names its
-    // member directly instead of assembling a shape the union then rejects.
+  if (props.client !== undefined && picking) {
     const pick = (path: string): void => {
       folderActions.bind(path);
       setPicking(false);
     };
-    const back = (): void => setPicking(false);
-    return props.client === undefined ? (
-      <FolderPickerScreen connection={props.connection} onPick={pick} onBack={back} />
-    ) : (
-      <FolderPickerScreen client={props.client} onPick={pick} onBack={back} />
-    );
+    return <FolderPickerScreen client={props.client} onPick={pick} onBack={() => setPicking(false)} />;
   }
 
   // The binding rides the tasks tab in both layouts, above whatever else the
   // tab is showing: it stays reachable beside a task's detail because it is
   // the scope that detail runs under, not a screen of its own.
   const folderBinding =
-    props.connection === undefined ? null : (
+    props.client === undefined ? null : (
       <FolderBinding
         folders={folderState.folders}
         start={folderState.start}

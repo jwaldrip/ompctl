@@ -779,6 +779,57 @@ export type ClientFrame =
    * state and never its own request.
    */
   | { t: "agent_config_write"; agentId: AgentId; modeId: string }
+  /**
+   * The Cowork catalogue reads, sealed-socket versions of `GET /v1/skills`
+   * and `GET /v1/connectors`. A hub-paired phone reaches these frames rather
+   * than those routes: the hub tunnels exactly one HTTP shape today (the
+   * routine webhook POST, carried as `webhook_request`/`webhook_response`),
+   * and Cowork deliberately does not add a second, because a general tunnel
+   * would carry this device's bearer token through the hub while typed frames
+   * keep the hub relaying opaque sealed traffic. `cwd` scopes the discovery
+   * the way the route's query parameter does; `agentId` resolves to that
+   * agent's cwd, and `cwd` wins when both are given. Answered by
+   * `skills`/`connectors`, to the asking socket only.
+   */
+  | { t: "skills_read"; cwd?: string; agentId?: string }
+  | { t: "connectors_read"; cwd?: string; agentId?: string }
+  /**
+   * The task roster over this socket, the `GET /v1/tasks` twin. Answered by
+   * `tasks`, to the asking socket only.
+   */
+  | { t: "tasks_read"; agentId?: string }
+  /**
+   * Start one task, the `POST /v1/tasks` twin: a named prompt against a
+   * session that already exists, never a session-spawner. Answered by `task`
+   * carrying what the daemon created, to the asking socket only.
+   */
+  | {
+      t: "task_create";
+      title: string;
+      prompt: string;
+      agentId: AgentId;
+      skillName?: string;
+      labels?: Record<string, string>;
+    }
+  /**
+   * Cancel one task, the `POST /v1/tasks/:id/cancel` twin. Answered by
+   * `task` carrying the task as the daemon now holds it, to the asking
+   * socket only.
+   */
+  | { t: "task_cancel"; taskId: string }
+  /**
+   * Create an agent, the `POST /v1/agents` twin: the manage-scoped act that
+   * provisions a host, which is how a Cowork container start crosses the
+   * socket. Answered by `agent_created`, to the asking socket only.
+   */
+  | {
+      t: "agent_create";
+      name: string;
+      cwd: string;
+      host?: HostSpec;
+      routineId?: string;
+      labels?: Record<string, string>;
+    }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -864,6 +915,19 @@ export type ServerFrame =
   | { t: "routine_ran"; run: Run }
   /** One-time webhook secret returned only to the socket that rotated it. */
   | { t: "routine_secret"; routineId: string; secret: string }
+  /**
+   * The skills or connectors catalogue answering `skills_read`/
+   * `connectors_read`, sent only to the socket that asked. Reshaped and
+   * wire-safe by construction: never a connector's raw config.
+   */
+  | { t: "skills"; skills: SkillSummary[] }
+  | { t: "connectors"; connectors: ConnectorSummary[] }
+  /** The task roster answering `tasks_read`, sent only to the socket that asked. */
+  | { t: "tasks"; tasks: Task[] }
+  /** One task as the daemon now holds it, answering `task_create` or `task_cancel`. */
+  | { t: "task"; task: Task }
+  /** The agent an `agent_create` made, sent only to the socket that asked. */
+  | { t: "agent_created"; agent: Agent }
   /**
    * What a `routine_delete` did, one result per id asked for, sent only to the
    * socket that asked. Beside `sessions_deleted` rather than an error frame,

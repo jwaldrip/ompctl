@@ -399,38 +399,28 @@ export function Console({
         }}
       />
     ),
-    // Two things this route can honestly be, decided by the pairing rather than
-    // by a fetch that failed. Cowork reads the daemon's own HTTP routes, and a
-    // hub relay carries one sealed websocket and no HTTP at all, which is why
-    // `cowork/useCowork.ts` has no root to hang a request off a hub connection
-    // and fails every one closed. Left to that, the screen would render four
-    // empty catalogues and read as a daemon with nothing on it, so the limit is
-    // named here instead. The branch sits above `CoworkSurface` so a hub pairing
-    // never starts a poll it cannot answer.
-    cowork: done =>
-      connection.transport === "direct" ? (
-        <CoworkSurface
-          connection={connection}
-          target={coworkTarget(state)}
-          // The same pop-then-select `newSession` does: a task names the agent
-          // running it, and opening it from here has to land on that session's
-          // log rather than leaving the operator on the surface they tapped in.
-          // A stale id lands on the log route's own "That session closed."
-          onOpenSession={agentId => {
-            done();
-            actions.select(agentId);
-          }}
-        />
-      ) : (
-        <SafeScreen style={styles.limit} testID="cowork-unreachable">
-          <Body color={signal.ochre}>Cowork is unreachable from this pairing.</Body>
-          <Body color={ink.muted}>
-            Tasks, skills, and connectors are read over the daemon's own HTTP routes. This device is paired through the
-            hub, which relays one sealed socket and no HTTP, so there is nothing behind it to ask. Attach on the
-            daemon's own network to use this surface.
-          </Body>
-        </SafeScreen>
-      ),
+    // Mounted for every pairing, hub included: the whole surface rides socket
+    // frames now, so there is no daemon route for a hub-paired phone to fail
+    // to address and no limit left to name. The screen this replaced said
+    // Cowork was unreachable from a hub pairing, which was true of the fetches
+    // and is no longer true of anything.
+    cowork: done => (
+      <CoworkSurface
+        connection={connection}
+        // The same seam `useConsole` builds its socket through, so a test
+        // drives this surface's socket the way it drives the console's.
+        createClient={createClient}
+        target={coworkTarget(state)}
+        // The same pop-then-select `newSession` does: a task names the agent
+        // running it, and opening it from here has to land on that session's
+        // log rather than leaving the operator on the surface they tapped in.
+        // A stale id lands on the log route's own "That session closed."
+        onOpenSession={agentId => {
+          done();
+          actions.select(agentId);
+        }}
+      />
+    ),
   };
 
   // The stack presents an open session only where the list cannot hold it: on a
@@ -507,15 +497,20 @@ function coworkTarget(state: ConsoleState): { cwd: string; agentId: AgentId | nu
  *
  * A component rather than one of the closures above, because `useCowork` is a
  * hook and a surface is a plain function: the poll needs something React can
- * mount and unmount with the route. `RemoteStartScreen` draws the same line for
- * the socket it owns; this is the REST side of it.
+ * mount and unmount with the route.
  *
- * Mounted only for a direct pairing, decided by the caller, which is also what
- * keeps this from having to render two different hook orders.
+ * It owns one socket for as long as it is on screen, the same call
+ * `RemoteStartScreen`, `SettingsScreen`, and `RoutinesScreen` make and for
+ * the same two reasons: the catalogue poll must not compete with the list the
+ * operator is watching, and every refusal arriving on this socket is this
+ * surface's own -- an `error` frame here answered one of Cowork's asks, so
+ * the notice below never reports somebody else's failed prompt. The client is
+ * built once per mount, never per render: a socket per render is a reconnect
+ * loop that looks like a flaky daemon.
  *
- * `CoworkScreen` takes data and gives back intent: it holds no fetch, no error
+ * `CoworkScreen` takes data and gives back intent: it holds no ask, no error
  * state, and no inset of its own. So this owns all three. The notice matters
- * most: a refused or failed load with nothing said would leave four empty
+ * most: a refused or failed read with nothing said would leave four empty
  * catalogues on screen, which reads as a daemon with no skills installed rather
  * than as a question that never got an answer.
  */
@@ -523,14 +518,27 @@ function CoworkSurface({
   connection,
   target,
   onOpenSession,
+  createClient = createOmpdClient,
 }: {
   connection: Connection;
   target: { cwd: string; agentId: AgentId | null };
   onOpenSession: (agentId: AgentId) => void;
+  /** Seam for tests: builds the socket client this surface rides. */
+  createClient?: (connection: Connection) => OmpdClient;
 }): JSX.Element {
-  const [state, actions] = useCowork(connection, target.cwd, target.agentId);
-  // Held here rather than in the hook: a rejected action is this screen's to
-  // report, and `useCowork`'s own `error` belongs to the load it names.
+  const clientRef = useRef<OmpdClient | null>(null);
+  if (clientRef.current === null) clientRef.current = createClient(connection);
+  const client = clientRef.current;
+
+  useEffect(() => {
+    client.start();
+    return () => client.close();
+  }, [client]);
+
+  const [state, actions] = useCowork(client, target.cwd, target.agentId);
+  // Held here rather than in the hook: a start refused before any frame left
+  // this device (no session to target) is this screen's to report, while
+  // `useCowork`'s own `error` carries what the daemon said.
   const [refusal, setRefusal] = useState<string | null>(null);
 
   const start = (input: NewTaskInput): void => {
@@ -556,6 +564,10 @@ function CoworkSurface({
         tasks={state.tasks}
         skills={state.skills}
         connectors={state.connectors}
+        // The same client the catalogues ride: the folder picker browses with
+        // its `fs_list` frames and the binding starts a container with its
+        // `agent_create`, so choosing a folder opens no second link.
+        client={client}
         onStartTask={start}
         // Invoking a skill is starting a task that runs it: the same act the
         // composer performs, with the invocation text `catalog.ts` already
