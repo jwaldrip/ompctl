@@ -32,7 +32,8 @@ Feature: What a paired device can do with its sessions
     And I capture "08-sessions-sorted-by-age"
 
   Scenario: The connection this device is using can be inspected
-    When I select "open-connection-switcher"
+    When I select "open-menu"
+    And I select "menu-connections"
     Then I can see "connection-switcher"
     And I can see "add-connection"
     And I capture "09-connections"
@@ -42,13 +43,15 @@ Feature: What a paired device can do with its sessions
   # then refused. This asserts the scope gate holds in the UI, which is the half
   # a daemon-side permission check cannot cover.
   Scenario: A device without the approve scope is not offered the invite control
-    When I select "open-connection-switcher"
+    When I select "open-menu"
+    And I select "menu-connections"
     Then I can see "connection-switcher"
     And I cannot see "invite-device"
     And I capture "10-invite-hidden-without-scope"
 
   Scenario: Leaving the connection switcher returns to the sessions
-    When I select "open-connection-switcher"
+    When I select "open-menu"
+    And I select "menu-connections"
     And I can see "connection-switcher"
     And I select "close-connection-switcher"
     Then I can see "fleet"
