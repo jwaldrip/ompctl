@@ -455,15 +455,24 @@ export interface CloneDoneEvent {
 }
 
 /**
- * A session's transcript tail, answering `sessionTail`. Oldest first, so a
- * view appends live `tui_activity` below it without reordering. `truncated`
- * says the tail is not the whole transcript, which is a rendering hint and
- * nothing more.
+ * One page of a session's transcript, answering `sessionTail`. Oldest first,
+ * so a view appends live `tui_activity` below it without reordering.
+ * `truncated` says the page is not the whole transcript, which is a
+ * rendering hint and nothing more.
+ *
+ * `nextCursor` is the offset to ask from for the next older page, or null at
+ * the start of the file. An empty page with a non-null cursor is a real
+ * answer, not an end: a long run of tool traffic says nothing, so a view
+ * asks on rather than stopping. `cursor` is the offset this page was read
+ * from, absent when the ask carried none, which is how a view tells a first
+ * page from an older one and drops a page answering an ask it has replaced.
  */
 export interface SessionTailEvent {
   sessionId: string;
   messages: TranscriptTailMessage[];
   truncated: boolean;
+  nextCursor: number | null;
+  cursor?: number;
 }
 
 /** One structured page of durable session history. */
@@ -904,19 +913,25 @@ export class OmpdClient {
   }
 
   /**
-   * Ask for the tail of a session's transcript. The answer arrives as the
-   * `session_tail` event, or an `error` naming the cause: `unknown_session`
-   * for an id this machine holds no file for.
+   * Ask for one page of a session's transcript: the newest turns, or the
+   * page older than `cursor` when an earlier answer handed one over. The
+   * answer arrives as the `session_tail` event, or an `error` naming the
+   * cause: `unknown_session` for an id this machine holds no file for.
    *
-   * One-shot, deliberately unlike `listSessions`: a transcript tail is a
+   * One-shot, deliberately unlike `listSessions`: a transcript page is a
    * snapshot of a screen the operator is looking at, so the surface that
-   * wants one asks when it opens. Replaying it on every reconnect would
-   * re-read a file for a screen nobody may still be on, and the daemon's
-   * `tui_activity` stream already carries what changed since.
+   * wants one asks when it opens, and asks again when the operator reaches
+   * for older turns. Replaying it on every reconnect would re-read a file
+   * for a screen nobody may still be on, and the daemon's `tui_activity`
+   * stream already carries what changed since.
    */
-  sessionTail(sessionId: string, limit?: number): void {
-    const frame: ClientFrame =
-      limit === undefined ? { t: "session_tail", sessionId } : { t: "session_tail", sessionId, limit };
+  sessionTail(sessionId: string, limit?: number, cursor?: number): void {
+    const frame: ClientFrame = {
+      t: "session_tail",
+      sessionId,
+      ...(limit === undefined ? {} : { limit }),
+      ...(cursor === undefined ? {} : { cursor }),
+    };
     this.send(frame);
   }
 
@@ -1359,6 +1374,11 @@ export class OmpdClient {
           sessionId: frame.sessionId,
           messages: frame.messages,
           truncated: frame.truncated,
+          // An older daemon sends neither cursor field. Absent `nextCursor`
+          // has to read as "no older page reachable" rather than as zero,
+          // which would be an offset a client could ask from.
+          nextCursor: frame.nextCursor ?? null,
+          ...(frame.cursor === undefined ? {} : { cursor: frame.cursor }),
         });
         return;
       case "session_history":
