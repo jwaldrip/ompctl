@@ -28,7 +28,7 @@ import type { ImageAttachmentPicker } from "../src/platform/attachments.ts";
 // bun, so the module has to be evaluated after `rnw.ts` has installed the
 // stub. A static import would hoist above it. The type import above is
 // erased, so it costs no evaluation.
-const { createImageAttachmentPicker } = await import("../src/platform/attachments.ts");
+const { createImageAttachmentPicker, probeImagePickerModule } = await import("../src/platform/attachments.ts");
 
 /** Comfortably inside the ceiling, and valid base64, which the wire checks. */
 const FITS = "A".repeat(1000);
@@ -177,5 +177,70 @@ describe("picking images for a prompt", () => {
     expect(reason).toContain("no photo picker module");
     // A pick that resolved empty here would look exactly like a cancel.
     expect(picker.pick(4)).rejects.toThrow("no photo picker is available on this platform");
+  });
+});
+
+/**
+ * The probe, against the module plumbing a real device actually exposes.
+ *
+ * These shapes are measured, not imagined. An iPhone 17 simulator running
+ * this app on React Native 0.81 reports `__turboModuleProxy` as `undefined`,
+ * `RN$Bridgeless` and `RN$UnifiedNativeModuleProxy` as true, and the module
+ * present at `nativeModuleProxy.ImagePicker`. A probe that only knows the
+ * turbo proxy answers "no picker" there, which is what shipped: the control
+ * was disabled on every iPhone with the module sitting right there.
+ */
+describe("probing for the native picker", () => {
+  const KEYS = [
+    "__turboModuleProxy",
+    "nativeModuleProxy",
+    "RN$Bridgeless",
+    "RN$TurboInterop",
+    "RN$UnifiedNativeModuleProxy",
+  ] as const;
+
+  /** Install one runtime's globals, run, and put the host back as it was. */
+  function underRuntime<T>(globals: Record<string, unknown>, body: () => T): T {
+    const host = globalThis as unknown as Record<string, unknown>;
+    const saved: Record<string, unknown> = {};
+    for (const key of KEYS) saved[key] = host[key];
+    for (const key of KEYS) delete host[key];
+    Object.assign(host, globals);
+    try {
+      return body();
+    } finally {
+      for (const key of KEYS) delete host[key];
+      for (const key of KEYS) if (saved[key] !== undefined) host[key] = saved[key];
+    }
+  }
+
+  test("finds the module a bridgeless iOS build exposes through the unified proxy", () => {
+    const module = { launchImageLibrary: () => {} };
+    const found = underRuntime(
+      { RN$Bridgeless: true, RN$UnifiedNativeModuleProxy: true, nativeModuleProxy: { ImagePicker: module } },
+      probeImagePickerModule,
+    );
+
+    expect(found).toBe(module);
+  });
+
+  test("finds the module a turbo proxy serves", () => {
+    const module = { launchImageLibrary: () => {} };
+    const found = underRuntime(
+      { RN$Bridgeless: true, __turboModuleProxy: (name: string) => (name === "ImagePicker" ? module : undefined) },
+      probeImagePickerModule,
+    );
+
+    expect(found).toBe(module);
+  });
+
+  test("answers undefined on a bridgeless runtime that serves neither", () => {
+    // No turbo proxy, and the runtime does not say the legacy table is live,
+    // so there is nothing to read and nothing to invent.
+    expect(underRuntime({ RN$Bridgeless: true, nativeModuleProxy: {} }, probeImagePickerModule)).toBeUndefined();
+  });
+
+  test("answers undefined on a host with no React Native plumbing at all", () => {
+    expect(underRuntime({}, probeImagePickerModule)).toBeUndefined();
   });
 });

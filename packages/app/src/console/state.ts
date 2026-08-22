@@ -271,16 +271,23 @@ export interface TuiSessionState {
   /** Stable refusal vocabulary for the screen heading and recovery copy. */
   readonly refusalKind: TuiPromptRefusalKind | null;
   /**
-   * The transcript tail the daemon served for this session, oldest first.
+   * The transcript this device holds for the session, oldest first.
    *
-   * Replaced wholesale by each `session_tail` frame rather than merged: the
-   * daemon reads the file's end every time it is asked, so the newest answer
-   * is the truth and a merge would only invent an ordering neither side
-   * agreed on.
+   * A cursorless `session_tail` frame replaces it wholesale rather than
+   * merging: the daemon reads the file's end every time it is asked, so the
+   * newest answer is the truth and a merge would only invent an ordering
+   * neither side agreed on. A paged frame prepends, because the daemon read
+   * strictly older bytes than everything already held.
    */
   readonly history: readonly TranscriptTailMessage[];
-  /** True when older turns exist above the tail the daemon served. */
-  readonly historyTruncated: boolean;
+  /**
+   * The byte offset the next older page starts from, or null when there is
+   * no older page to ask for: the file's start is reached, or nothing has
+   * been served yet. What the load-earlier control is offered on.
+   */
+  readonly historyCursor: number | null;
+  /** True while an older page is in flight, so the control cannot be tapped twice. */
+  readonly historyLoadingEarlier: boolean;
 }
 
 const EMPTY_TUI_SESSION: TuiSessionState = {
@@ -292,7 +299,8 @@ const EMPTY_TUI_SESSION: TuiSessionState = {
   refusal: null,
   refusalKind: null,
   history: [],
-  historyTruncated: false,
+  historyCursor: null,
+  historyLoadingEarlier: false,
 };
 
 /**
@@ -354,10 +362,12 @@ export type ConsoleEvent =
   | { t: "unauthorized"; event: UnauthorizedEvent }
   /** Daemon: turn progress from a live terminal session this device can prompt. */
   | { t: "tui_activity"; event: TuiActivityEvent }
-  /** Daemon: the tail of a terminal session's transcript, answering this device's ask. */
+  /** Daemon: one page of a terminal session's transcript, answering this device's ask. */
   | { t: "session_tail"; event: SessionTailEvent }
   | { t: "session_history"; event: SessionHistoryEvent }
   | { t: "history_request"; agentId: AgentId }
+  /** Local: this device just asked a terminal session for an older page. */
+  | { t: "tui_history_request"; sessionId: string }
   /** Local: the operator opened a terminal session's prompt surface, or went back to the bay. */
   | { t: "tui_select"; sessionId: string | null }
   /** Local: echo of a prompt this device just sent to a terminal session. */
@@ -562,11 +572,12 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       return applyTuiActivity(state, event.event);
 
     case "session_tail":
-      return withTuiSession(state, event.event.sessionId, tui => ({
-        ...tui,
-        history: event.event.messages,
-        historyTruncated: event.event.truncated,
-      }));
+      return applySessionTail(state, event.event);
+
+    case "tui_history_request":
+      return withTuiSession(state, event.sessionId, tui =>
+        tui.historyLoadingEarlier ? tui : { ...tui, historyLoadingEarlier: true },
+      );
 
     case "history_request": {
       const historyLoading = new Set(state.historyLoading);
@@ -773,6 +784,64 @@ function applyTuiActivity(state: ConsoleState, event: TuiActivityEvent): Console
         };
     }
   });
+}
+
+/**
+ * One page of a terminal session's transcript, folded into what this device
+ * holds for that session.
+ *
+ * The frame's echoed `cursor` decides which of two different things this is.
+ * Absent means the daemon read the end of the file, which is what a fresh
+ * open asks for, so it replaces the history wholesale. Present means an
+ * older page, which prepends: the daemon read strictly older bytes than
+ * anything already held, so there is nothing to merge and no ordering to
+ * invent.
+ *
+ * A page whose cursor is not the one this session is holding answers an ask
+ * some later open already replaced, and is dropped. Frames cross the hub
+ * relay with no ordering guarantee against each other, so without this a
+ * page in flight when the operator left and came back would prepend a
+ * stranger's stretch of file onto a freshly served tail.
+ */
+function applySessionTail(state: ConsoleState, event: SessionTailEvent): ConsoleState {
+  return withTuiSession(state, event.sessionId, tui => {
+    if (event.cursor === undefined) {
+      return {
+        ...tui,
+        history: event.messages,
+        historyCursor: event.nextCursor,
+        historyLoadingEarlier: false,
+      };
+    }
+    if (tui.historyCursor !== event.cursor) return tui;
+    return {
+      ...tui,
+      history: event.messages.length === 0 ? tui.history : [...event.messages, ...tui.history],
+      historyCursor: event.nextCursor,
+      historyLoadingEarlier: false,
+    };
+  });
+}
+
+/**
+ * The offset to ask a terminal session for next, once a page has landed, or
+ * null when the operator's tap is fully answered.
+ *
+ * A page can legitimately carry no turns while megabytes of file remain: a
+ * long run of tool traffic says nothing, and the reader stops at its budget
+ * inside one. The operator asked for earlier words, not earlier bytes, so an
+ * empty page is not an answer and the view asks on from its cursor. Only a
+ * page that produced turns, or one that reached the file's start, settles.
+ *
+ * The cursor must also have moved. A page that cannot advance -- one line
+ * larger than the whole read budget is the only way -- would otherwise be
+ * asked for forever.
+ */
+export function tuiPageToAskFor(event: SessionTailEvent): number | null {
+  if (event.cursor === undefined) return null;
+  if (event.messages.length > 0) return null;
+  if (event.nextCursor === null || event.nextCursor >= event.cursor) return null;
+  return event.nextCursor;
 }
 
 function withTuiSession(

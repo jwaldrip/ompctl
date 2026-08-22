@@ -20,6 +20,7 @@
  * worse than no check at all.
  */
 
+import { realpathSync } from "node:fs";
 import { dirname, relative as relativeTo, resolve, sep } from "node:path";
 
 /** `path(line,col): error TS1234: message`, which is every diagnostic tsgo prints. */
@@ -43,7 +44,27 @@ interface Diagnostic {
   ours: boolean;
 }
 
-const repoRoot = resolve(import.meta.dirname, "..");
+/**
+ * Both sides of the comparison below are resolved through the filesystem, not
+ * just normalised as strings. On macOS a worktree under `/tmp` is physically
+ * `/private/tmp`, and the compiler prints its cwd's physical path while
+ * `import.meta.dirname` keeps the specifier's `/tmp` one. Comparing those two
+ * made `relativeTo` answer `../../..`, which `classify` read as "outside this
+ * repo, not ours", so every real diagnostic in such a worktree was filed as
+ * somebody else's and the project reported clean with its own source broken.
+ * That is a gate that cannot fail, which is worse than no gate.
+ */
+function physical(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    // A path that does not exist cannot be resolved, and inventing one would
+    // be the same silent misfiling this function exists to prevent.
+    return path;
+  }
+}
+
+const repoRoot = physical(resolve(import.meta.dirname, ".."));
 const excludedPrefix = `node_modules${sep}`;
 
 /**
@@ -57,11 +78,15 @@ const excludedPrefix = `node_modules${sep}`;
  * diagnostic gets filed as somebody else's and stops gating.
  */
 function classify(path: string, spawnedIn: string): { path: string; ours: boolean } {
-  const absolute = resolve(spawnedIn, path);
+  const absolute = physical(resolve(spawnedIn, path));
   const fromRoot = relativeTo(repoRoot, absolute);
-  // A path outside the repo is not this project's to gate on, and reporting it
-  // absolute at least says so plainly.
-  if (fromRoot.startsWith("..")) return { path: absolute, ours: false };
+  // Only one kind of diagnostic is legitimately not this repo's: one inside a
+  // `node_modules` directory. Anything else that lands outside the repo root
+  // is a classification failure rather than somebody else's problem, so it
+  // gates. Reporting it absolute says plainly which file could not be placed.
+  if (fromRoot.startsWith("..")) {
+    return { path: absolute, ours: !absolute.includes(`${sep}node_modules${sep}`) };
+  }
   return { path: fromRoot, ours: !fromRoot.startsWith(excludedPrefix) };
 }
 
@@ -107,9 +132,21 @@ let failed = false;
 for (const project of projects) {
   // Spawned in the project's own directory so the compiler's relative paths
   // have exactly one meaning, whichever directory this script was called from.
-  const projectPath = resolve(process.cwd(), project);
+  //
+  // Physical, and `PWD` set to match, because the compiler reports each file
+  // relative to `PWD` while resolving the file itself physically. Under a
+  // worktree reached through a symlink, macOS `/tmp` being `/private/tmp`
+  // being the everyday case, those two disagree and it emits paths like
+  // `../../../../private/tmp/<repo>/packages/app/src/x.ts`: up out of the
+  // logical path, back down the physical one. Re-resolved here that lands
+  // outside the repo, where `classify` reads it as somebody else's and stops
+  // gating, so the project reports clean with its own source broken.
+  const projectPath = physical(resolve(process.cwd(), project));
   const spawnedIn = dirname(projectPath);
-  const run = Bun.spawnSync(["bunx", "tsgo", "-p", projectPath, "--noEmit"], { cwd: spawnedIn });
+  const run = Bun.spawnSync(["bunx", "tsgo", "-p", projectPath, "--noEmit"], {
+    cwd: spawnedIn,
+    env: { ...process.env, PWD: spawnedIn },
+  });
   const output = new TextDecoder().decode(run.stdout) + new TextDecoder().decode(run.stderr);
   const { diagnostics, unparsed } = parse(output, spawnedIn);
   const ours = diagnostics.filter(diagnostic => diagnostic.ours);

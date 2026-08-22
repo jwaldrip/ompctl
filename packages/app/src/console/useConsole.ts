@@ -23,7 +23,15 @@ import { createHubSocketFactory } from "../platform/socket.ts";
 import type { MemoVoice } from "../voice/memo.ts";
 import { deviceMemoVoice } from "../voice/memo.ts";
 import type { ConsoleState, SessionOpenTarget } from "./state.ts";
-import { apply, emptyConsole, manageScopeAccess, promptScopeAccess, sessionDeleteNotice } from "./state.ts";
+import {
+  apply,
+  emptyConsole,
+  manageScopeAccess,
+  promptScopeAccess,
+  sessionDeleteNotice,
+  tuiPageToAskFor,
+  tuiSessionFor,
+} from "./state.ts";
 import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
 export type { WebViewTarget } from "./webview.ts";
@@ -49,6 +57,12 @@ export interface ConsoleActions {
    * terminal with no bridge answers `tui_unreachable` instead.
    */
   promptTui: (sessionId: string, text: string, images?: PromptImage[]) => void;
+  /**
+   * Ask a live terminal session for the page of turns older than the one on
+   * screen. Ignored when the file's start is already reached or a page is
+   * already in flight, so a double tap cannot ask twice.
+   */
+  loadEarlierTui: (sessionId: string) => void;
   /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
@@ -164,6 +178,22 @@ export function useConsole(
       if (stateRef.current.historyLoading.has(agentId)) return;
       dispatch({ t: "history_request", agentId });
       client.sessionHistory(agentId, sessionId, before);
+    },
+    [client],
+  );
+
+  /**
+   * Ask one terminal session for the page older than `cursor`.
+   *
+   * Takes the cursor rather than reading it back out of state, because the
+   * caller that matters most is the answer handler continuing past an empty
+   * page: it holds the fresh cursor from the frame it just folded in, while
+   * a state read between commits could still see the one before it.
+   */
+  const askOlderTui = useCallback(
+    (sessionId: string, cursor: number): void => {
+      dispatch({ t: "tui_history_request", sessionId });
+      client.sessionTail(sessionId, undefined, cursor);
     },
     [client],
   );
@@ -285,6 +315,12 @@ export function useConsole(
       }),
       client.on("session_tail", event => {
         dispatch({ t: "session_tail", event });
+        // A page of pure tool traffic carries no turns while the file still
+        // holds plenty behind it, and the operator tapped for earlier words
+        // rather than earlier bytes. Asking on from the page's own cursor is
+        // what keeps that tap from ending on an unchanged screen.
+        const next = tuiPageToAskFor(event);
+        if (next !== null) askOlderTui(event.sessionId, next);
       }),
       client.on("unauthorized", event => {
         dispatch({ t: "unauthorized", event });
@@ -314,7 +350,7 @@ export function useConsole(
       for (const off of offs) off();
       client.close();
     };
-  }, [client, requestHistory, settleWebViewAction, voice]);
+  }, [askOlderTui, client, requestHistory, settleWebViewAction, voice]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -407,6 +443,14 @@ export function useConsole(
         client.sessionPrompt(sessionId, text, undefined, images);
         dispatch({ t: "tui_prompt", sessionId, text, imageCount: images?.length ?? 0 });
       },
+      loadEarlierTui(sessionId) {
+        const tui = tuiSessionFor(stateRef.current, sessionId);
+        // Nothing older to reach, or an ask already out: the control renders
+        // both states, but a tap that arrives anyway must not put a second
+        // request on the wire for the same page.
+        if (tui.historyCursor === null || tui.historyLoadingEarlier) return;
+        askOlderTui(sessionId, tui.historyCursor);
+      },
       deleteSession(sessionId) {
         // The row renders the missing scope and offers no confirmation, but
         // this checks it again rather than trusting the surface: the frame is
@@ -489,7 +533,7 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [client, connection.scopes, requestHistory, settleWebViewAction, selectAgent, voice],
+    [askOlderTui, client, connection.scopes, requestHistory, settleWebViewAction, selectAgent, voice],
   );
 
   return [state, actions];

@@ -301,6 +301,9 @@ export function Console({
         onSubmit={(text, images) => {
           actions.promptTui(sessionId, text, images);
         }}
+        onLoadEarlier={() => {
+          actions.loadEarlierTui(sessionId);
+        }}
       />
     );
   };

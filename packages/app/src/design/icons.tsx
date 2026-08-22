@@ -35,6 +35,7 @@ import {
   faClockRotateLeft,
   faCodeBranch,
   faCoins,
+  faCopy,
   faDiagramProject,
   faFileLines,
   faFolder,
@@ -121,7 +122,8 @@ export type GlyphName =
   | "mic"
   /** An image being attached to a prompt; `attach` is this device joining a session. */
   | "image"
-  | "unknown";
+  | "unknown"
+  | "copy";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
@@ -205,6 +207,9 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // paperclip, because what this control adds is an image, not a file.
   image: faImage,
   unknown: faCircleQuestion,
+  // Two sheets of paper, one lifted off the other: the one shape every
+  // platform's users already read as "duplicate this exactly".
+  copy: faCopy,
 };
 
 export interface GlyphProps {

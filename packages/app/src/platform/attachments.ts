@@ -153,22 +153,50 @@ function refusalSentence(name: string, mimeType: string, base64Chars: number, re
 }
 
 /**
- * Whether the picker's native module is linked. Every native target this app
- * ships runs the new architecture (`RCTNewArchEnabled`), where the module
- * table hangs off the turbo proxy the library itself dispatches through, so
- * that proxy is the probe. `react-native` is deliberately not imported here:
- * react-native-web does not export `TurboModuleRegistry`, and a binding that
- * is missing on one host is a load-time crash there. A missing module is
- * `undefined`, the named-unavailable state, not an error to guess about.
+ * Whether the picker's native module is linked.
+ *
+ * This used to read `globalThis.__turboModuleProxy` and stop there, on the
+ * theory that the new architecture hangs its whole module table off that
+ * proxy. Run on a real iOS build, that is wrong. React Native 0.81
+ * bridgeless reports `__turboModuleProxy` as `undefined`, `RN$Bridgeless`
+ * and `RN$UnifiedNativeModuleProxy` as true, and the module itself present
+ * at `nativeModuleProxy.ImagePicker`. The old probe therefore answered "no
+ * picker" on the one platform this feature was written for, so the control
+ * was disabled on every iPhone with the module sitting right there.
+ *
+ * What is mirrored here is the pair of roads `TurboModuleRegistry` walks in
+ * `Libraries/TurboModule/TurboModuleRegistry.js`: the turbo proxy first, then
+ * the legacy table, which bridgeless still answers from while the runtime
+ * says the unified proxy is in play. `NativeModules` is `nativeModuleProxy`
+ * whenever that global exists (`Libraries/BatchedBridge/NativeModules.js`),
+ * which on a device it does.
+ *
+ * Mirrored rather than imported, and that is a real cost worth naming: this
+ * seam has to agree with a registry it does not call. The alternative is
+ * worse. `react-native` exposes `TurboModuleRegistry` through a CommonJS
+ * getter that bun's module lexer cannot see, so a static named import is a
+ * load-time `SyntaxError` under `bun test` even though Metro resolves it
+ * fine, and the deep path pulls in the bridge at import time. Reading
+ * globals is the one form that costs nothing on a host that has none of
+ * them. A missing module is `undefined`, the named-unavailable state, not an
+ * error to guess about.
  */
 export function probeImagePickerModule(): unknown {
-  // `globalThis` carries no type for React Native's turbo proxy, and a host
-  // without the new architecture has no such property at all.
-  const host = globalThis as { __turboModuleProxy?: (name: string) => unknown };
-  const proxy = host.__turboModuleProxy;
+  // `globalThis` carries no type for React Native's module plumbing, and a
+  // host outside React Native has none of these properties at all.
+  const host = globalThis as {
+    __turboModuleProxy?: (name: string) => unknown;
+    nativeModuleProxy?: Record<string, unknown>;
+    RN$Bridgeless?: boolean;
+    RN$TurboInterop?: boolean;
+    RN$UnifiedNativeModuleProxy?: boolean;
+  };
   try {
-    const turbo = proxy?.("ImagePicker");
+    const turbo = host.__turboModuleProxy?.("ImagePicker");
     if (turbo !== null && turbo !== undefined) return turbo;
+    const legacyServed =
+      host.RN$Bridgeless !== true || host.RN$TurboInterop === true || host.RN$UnifiedNativeModuleProxy === true;
+    if (legacyServed) return host.nativeModuleProxy?.ImagePicker ?? undefined;
   } catch {
     // A host whose proxy refuses the name is a host without the module.
   }

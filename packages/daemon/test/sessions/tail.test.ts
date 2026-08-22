@@ -330,7 +330,7 @@ describe("readSessionTail", () => {
   test("a missing file answers with an empty tail instead of throwing", async () => {
     const tail = await readSessionTail("/no/such/session.jsonl");
 
-    expect(tail).toEqual({ messages: [], truncated: false, bytesRead: 0 });
+    expect(tail).toEqual({ messages: [], truncated: false, bytesRead: 0, nextCursor: null });
   });
 
   test("an empty file answers with an empty tail", async () => {
@@ -402,6 +402,184 @@ describe("readSessionTail", () => {
       { role: "user", text: "no stamp", at: "" },
       { role: "assistant", text: "stamped", at: "2026-08-13T12:34:56.789Z" },
     ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Paging backwards through the file, from a cursor each page hands back.
+  // A live terminal session's whole history is reachable only this way: the
+  // tail is a window, and the cursor is what moves the window.
+  // -------------------------------------------------------------------------
+  describe("paging backwards through the file", () => {
+    test("three pages walk a ten-turn file to its start, in order, with nothing repeated or lost", async () => {
+      const lines: unknown[] = [...PREAMBLE];
+      for (let i = 1; i <= 10; i++) lines.push(turn(i % 2 === 0 ? "assistant" : "user", `turn-${i}`));
+      const path = sessionFile(lines);
+
+      const seen: string[] = [];
+      const costs: number[] = [];
+      let cursor: number | undefined;
+      let pages = 0;
+      for (;;) {
+        const page = await readSessionTail(path, { limit: 4, ...(cursor === undefined ? {} : { cursor }) });
+        pages += 1;
+        costs.push(page.bytesRead);
+        seen.push(...page.messages.map(m => m.text));
+        expect(page.messages.length).toBeLessThanOrEqual(4);
+        // Each page is oldest first, and every page after the first is
+        // entirely older than the one before it: the union arrives in
+        // conversation order without any client-side sorting.
+        if (page.nextCursor === null) break;
+        expect(page.nextCursor).toBeGreaterThan(0);
+        cursor = page.nextCursor;
+      }
+
+      expect(pages).toBe(3);
+      expect(seen).toEqual([
+        "turn-7",
+        "turn-8",
+        "turn-9",
+        "turn-10",
+        "turn-3",
+        "turn-4",
+        "turn-5",
+        "turn-6",
+        "turn-1",
+        "turn-2",
+      ]);
+      // Every page cost real bytes and none cost more than one pair of legs.
+      expect(costs.every(cost => cost > 0 && cost <= TAIL_SOFT_MAX_BYTES * 2)).toBe(true);
+    });
+
+    test("the turn read past the limit is never lost between pages", async () => {
+      // The limit walk reads one turn past the cut to prove `truncated`, and
+      // that turn's words are never sent. A cursor placed beneath it would
+      // strand it: sent by no page, skipped by the next. The cursor must sit
+      // above it, so the next page opens with exactly those words.
+      const path = sessionFile([
+        ...PREAMBLE,
+        turn("user", "the oldest"),
+        turn("assistant", "the middle"),
+        turn("user", "the newest"),
+      ]);
+
+      const first = await readSessionTail(path, { limit: 1 });
+      expect(first.messages.map(m => m.text)).toEqual(["the newest"]);
+      expect(first.nextCursor).not.toBeNull();
+
+      const second = await readSessionTail(path, { limit: 1, cursor: first.nextCursor! });
+      expect(second.messages.map(m => m.text)).toEqual(["the middle"]);
+
+      const third = await readSessionTail(path, { limit: 1, cursor: second.nextCursor! });
+      expect(third.messages.map(m => m.text)).toEqual(["the oldest"]);
+      expect(third.nextCursor).toBeNull();
+    });
+
+    test("a page can be empty with megabytes behind it, and the cursor still advances", async () => {
+      // The interesting page: the budget ends mid-run-of-tool-traffic, so
+      // the page carries no words while the file holds plenty behind it.
+      // Stopping there would strand the operator mid-file; advancing the
+      // cursor is what makes continuing possible.
+      const path = sessionFile([
+        ...PREAMBLE,
+        turn("user", "words before the noise"),
+        ...toolNoise(200),
+        turn("assistant", "words after the noise"),
+      ]);
+      const size = statSync(path).size;
+
+      const first = await readSessionTail(path, { limit: 1, softMaxBytes: 8192, hardMaxBytes: 64 * 1024 });
+      expect(first.messages.map(m => m.text)).toEqual(["words after the noise"]);
+      expect(first.nextCursor).not.toBeNull();
+
+      const empty = await readSessionTail(path, {
+        limit: 1,
+        cursor: first.nextCursor!,
+        softMaxBytes: 8192,
+        hardMaxBytes: 64 * 1024,
+      });
+      expect(empty.messages).toEqual([]);
+      expect(empty.truncated).toBe(true);
+      // Advanced into the noise but not past the whole file: the cursor is
+      // what lets the next ask start deeper rather than repeat this one.
+      expect(empty.nextCursor).not.toBeNull();
+      expect(empty.nextCursor!).toBeGreaterThan(0);
+      expect(empty.nextCursor!).toBeLessThan(first.nextCursor!);
+      expect(size).toBeGreaterThan(first.bytesRead);
+
+      // Asking on from the empty page's cursor reaches the words behind the
+      // noise: no page-after-page dead end.
+      let cursor = empty.nextCursor;
+      const texts: string[] = [];
+      let asks = 0;
+      while (cursor !== null && asks < 20) {
+        asks += 1;
+        const page = await readSessionTail(path, {
+          limit: 1,
+          cursor: cursor ?? undefined,
+          softMaxBytes: 8192,
+          hardMaxBytes: 64 * 1024,
+        });
+        texts.push(...page.messages.map(m => m.text));
+        cursor = page.nextCursor;
+      }
+      expect(texts).toEqual(["words before the noise"]);
+    });
+
+    test("exhaustion answers the file's first turn and then a real, empty end", async () => {
+      const path = sessionFile([...PREAMBLE, turn("user", "first ever"), turn("assistant", "last ever")]);
+
+      const first = await readSessionTail(path, { limit: 1 });
+      expect(first.messages.map(m => m.text)).toEqual(["last ever"]);
+      const second = await readSessionTail(path, { limit: 1, cursor: first.nextCursor! });
+      expect(second.messages.map(m => m.text)).toEqual(["first ever"]);
+      expect(second.nextCursor).toBeNull();
+      expect(second.truncated).toBe(false);
+
+      // The file's start is an answer, not a spinner: asking past it costs
+      // nothing and says so plainly.
+      const past = await readSessionTail(path, { limit: 1, cursor: 0 });
+      expect(past).toEqual({ messages: [], truncated: false, bytesRead: 0, nextCursor: null });
+    });
+
+    test("a cursor at or past the end of file answers exhausted rather than re-serving the newest turns", async () => {
+      const path = sessionFile([...PREAMBLE, turn("user", "only turn")]);
+      const size = statSync(path).size;
+
+      expect(await readSessionTail(path, { cursor: size })).toEqual({
+        messages: [],
+        truncated: false,
+        bytesRead: 0,
+        nextCursor: null,
+      });
+      // Past the end can only mean the file shrank under a stale cursor.
+      expect(await readSessionTail(path, { cursor: size * 10 })).toEqual({
+        messages: [],
+        truncated: false,
+        bytesRead: 0,
+        nextCursor: null,
+      });
+    });
+
+    test("a cursor stays valid while the live session appends", async () => {
+      // Session files grow at the end. A page taken before an append and a
+      // page taken from its cursor after must agree, because the wire
+      // protocol's whole paging scheme rests on those offsets not moving.
+      const path = tempFile("growing.jsonl", "");
+      const lines: unknown[] = [...PREAMBLE, turn("user", "old one"), turn("assistant", "old two")];
+      writeFileSync(path, `${lines.map(line => JSON.stringify(line)).join("\n")}\n`);
+
+      const first = await readSessionTail(path, { limit: 1 });
+      expect(first.messages.map(m => m.text)).toEqual(["old two"]);
+
+      writeFileSync(
+        path,
+        `${[...lines.map(line => JSON.stringify(line)), JSON.stringify(turn("user", "appended live"))].join("\n")}\n`,
+      );
+
+      const second = await readSessionTail(path, { limit: 1, cursor: first.nextCursor! });
+      expect(second.messages.map(m => m.text)).toEqual(["old one"]);
+      expect(second.nextCursor).toBeNull();
+    });
   });
 });
 

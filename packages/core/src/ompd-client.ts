@@ -36,6 +36,7 @@ import type {
   PlanReviewChoice,
   PromptImage,
   RemoteRoutine,
+  RoutineDeleteResult,
   Run,
   ServerFrame,
   SessionDeleteResult,
@@ -203,6 +204,11 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   routine_write: true,
   routine_run: true,
   routine_secret_rotate: true,
+  // Irreversible and never replayed, exactly `session_delete`'s class: a
+  // delete that never left leaves an operator believing a routine is gone
+  // while its schedule still fires; re-sending after they may have changed
+  // their mind would be worse.
+  routine_delete: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -456,15 +462,24 @@ export interface CloneDoneEvent {
 }
 
 /**
- * A session's transcript tail, answering `sessionTail`. Oldest first, so a
- * view appends live `tui_activity` below it without reordering. `truncated`
- * says the tail is not the whole transcript, which is a rendering hint and
- * nothing more.
+ * One page of a session's transcript, answering `sessionTail`. Oldest first,
+ * so a view appends live `tui_activity` below it without reordering.
+ * `truncated` says the page is not the whole transcript, which is a
+ * rendering hint and nothing more.
+ *
+ * `nextCursor` is the offset to ask from for the next older page, or null at
+ * the start of the file. An empty page with a non-null cursor is a real
+ * answer, not an end: a long run of tool traffic says nothing, so a view
+ * asks on rather than stopping. `cursor` is the offset this page was read
+ * from, absent when the ask carried none, which is how a view tells a first
+ * page from an older one and drops a page answering an ask it has replaced.
  */
 export interface SessionTailEvent {
   sessionId: string;
   messages: TranscriptTailMessage[];
   truncated: boolean;
+  nextCursor: number | null;
+  cursor?: number;
 }
 
 /** One structured page of durable session history. */
@@ -509,6 +524,16 @@ export interface RoutineSecretEvent {
 }
 
 /**
+ * What a `deleteRoutines` did, one result per id asked for. Delivered to the
+ * socket that asked; the refreshed catalogue arrives separately as a
+ * `routines` snapshot, so a surface listening only to this event learns the
+ * refusal without waiting on a refresh it may never get.
+ */
+export interface RoutinesDeletedEvent {
+  results: RoutineDeleteResult[];
+}
+
+/**
  * One agent's session config as the daemon holds it now, answering
  * `readAgentConfig` or `writeAgentConfig`. Confirmation rather than echo:
  * after a write it carries what the daemon read back from the session, so a
@@ -546,6 +571,7 @@ export interface ClientEventMap {
   settings: SettingsEvent;
   routines: RoutinesEvent;
   routine_ran: RoutineRanEvent;
+  routines_deleted: RoutinesDeletedEvent;
   routine_secret: RoutineSecretEvent;
   session_tail: SessionTailEvent;
   session_history: SessionHistoryEvent;
@@ -911,19 +937,25 @@ export class OmpdClient {
   }
 
   /**
-   * Ask for the tail of a session's transcript. The answer arrives as the
-   * `session_tail` event, or an `error` naming the cause: `unknown_session`
-   * for an id this machine holds no file for.
+   * Ask for one page of a session's transcript: the newest turns, or the
+   * page older than `cursor` when an earlier answer handed one over. The
+   * answer arrives as the `session_tail` event, or an `error` naming the
+   * cause: `unknown_session` for an id this machine holds no file for.
    *
-   * One-shot, deliberately unlike `listSessions`: a transcript tail is a
+   * One-shot, deliberately unlike `listSessions`: a transcript page is a
    * snapshot of a screen the operator is looking at, so the surface that
-   * wants one asks when it opens. Replaying it on every reconnect would
-   * re-read a file for a screen nobody may still be on, and the daemon's
-   * `tui_activity` stream already carries what changed since.
+   * wants one asks when it opens, and asks again when the operator reaches
+   * for older turns. Replaying it on every reconnect would re-read a file
+   * for a screen nobody may still be on, and the daemon's `tui_activity`
+   * stream already carries what changed since.
    */
-  sessionTail(sessionId: string, limit?: number): void {
-    const frame: ClientFrame =
-      limit === undefined ? { t: "session_tail", sessionId } : { t: "session_tail", sessionId, limit };
+  sessionTail(sessionId: string, limit?: number, cursor?: number): void {
+    const frame: ClientFrame = {
+      t: "session_tail",
+      sessionId,
+      ...(limit === undefined ? {} : { limit }),
+      ...(cursor === undefined ? {} : { cursor }),
+    };
     this.send(frame);
   }
 
@@ -982,6 +1014,15 @@ export class OmpdClient {
   /** Rotate a webhook secret. The plaintext arrives once as `routine_secret`. */
   rotateRoutineSecret(routineId: string): void {
     this.send({ t: "routine_secret_rotate", routineId });
+  }
+
+  /**
+   * Delete routines for good. Per-id outcomes arrive as `routines_deleted`;
+   * a refusal names itself, so a surface can say what to do next rather than
+   * that it simply cannot.
+   */
+  deleteRoutines(routineIds: readonly string[]): void {
+    this.send({ t: "routine_delete", routineIds: [...routineIds] });
   }
 
   /**
@@ -1373,6 +1414,11 @@ export class OmpdClient {
           sessionId: frame.sessionId,
           messages: frame.messages,
           truncated: frame.truncated,
+          // An older daemon sends neither cursor field. Absent `nextCursor`
+          // has to read as "no older page reachable" rather than as zero,
+          // which would be an offset a client could ask from.
+          nextCursor: frame.nextCursor ?? null,
+          ...(frame.cursor === undefined ? {} : { cursor: frame.cursor }),
         });
         return;
       case "session_history":
@@ -1396,6 +1442,9 @@ export class OmpdClient {
         return;
       case "routine_secret":
         this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });
+        return;
+      case "routines_deleted":
+        this.emit("routines_deleted", { results: frame.results });
         return;
       case "agent_config":
         this.emit("agent_config", {
