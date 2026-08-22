@@ -1,10 +1,11 @@
 /**
- * The Cowork folder binding, driven end to end: the picker rides a real
- * `OmpdClient` over a fake socket (so the frames in `socket.sent` are the
- * frames a daemon would receive), and the container start rides a stubbed
- * `fetch` that records the exact body posted to `/v1/agents`.
+ * The Cowork folder binding, driven end to end: the picker and the container
+ * start both ride a real `OmpdClient` over a fake socket, so the frames in
+ * `socket.sent` are the frames a daemon would receive and the answers are the
+ * frames a daemon would send back. Nothing here touches HTTP, which is the
+ * point: a hub-paired phone has no address for the daemon's own routes.
  *
- * The mounts payload is asserted byte for byte against the shape
+ * The mounts payload is asserted field for field against the shape
  * `packages/daemon/src/provisioner/container.ts` validates, because a shape
  * that drifts silently is a container that starts without the folder the
  * operator just picked, which is the one failure this surface must not have.
@@ -18,7 +19,6 @@ import { OmpdClient, type SocketCloseInfo, type SocketLike } from "@ompd/core/om
 import { act, type JSX } from "react";
 import { createRoot } from "react-dom/client";
 
-import type { Connection } from "../src/platform/connection.ts";
 import { resetWindowSize, setWindowWidth } from "./rnw.ts";
 
 // Dynamic on purpose, the same reason `remote-start.test.tsx` is: a static
@@ -83,13 +83,6 @@ interface Harness {
 const ROOT = "/Users/op";
 const DEV = "/Users/op/dev";
 
-const CONNECTION: Connection = {
-  transport: "direct",
-  url: "ws://127.0.0.1:7777/v1/socket",
-  token: "tok_test",
-  scopes: ["read", "prompt", "manage"],
-};
-
 /** The listing a daemon would answer with for `/Users/op/dev`. */
 const DEV_LISTING: ServerFrame = {
   t: "fs_listing",
@@ -116,7 +109,7 @@ const ROOTS_LISTING: ServerFrame = {
 
 const openedSessions: string[] = [];
 
-function mount(withConnection: boolean = true): Harness {
+function mount(withClient: boolean = true): Harness {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -148,7 +141,7 @@ function mount(withConnection: boolean = true): Harness {
         onStartTask={() => {}}
         onInvokeSkill={() => {}}
         onOpenSession={agentId => openedSessions.push(agentId)}
-        {...(withConnection ? { connection: CONNECTION, client } : {})}
+        {...(withClient ? { client } : {})}
       />
     );
   }
@@ -200,29 +193,21 @@ function browseToDev(h: Harness): void {
 }
 
 // ---------------------------------------------------------------------------
-// The fetch the container start rides, captured rather than dialed.
+// The start rides the same socket the picker does: no fetch stub, because
+// there is no fetch left to stub.
 // ---------------------------------------------------------------------------
 
+/** A fetch attempt from this surface is a regression, so any call throws rather than answering. */
 const realFetch = globalThis.fetch;
-let posted: Array<{ url: string; init: RequestInit }> = [];
-let answer: Response = new Response(JSON.stringify({ agent: { id: "agt_test" } }), { status: 201 });
 
 beforeEach(() => {
-  posted = [];
-  answer = new Response(JSON.stringify({ agent: { id: "agt_test" } }), { status: 201 });
-  // Contextually typed as `typeof fetch` by the annotation rather than cast
-  // to it: the parameters then follow whatever fetch's real type is here
-  // (Bun's, not lib.dom's), with no hand-restated signature to drift. Bun's
-  // fetch carries a required `preconnect` member, so the fake is a whole
-  // fetch-shaped object: the capturing function plus a no-op preconnect.
-  const capture: typeof fetch = Object.assign(
-    async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      posted.push({ url: String(input), init: init ?? {} });
-      return answer;
+  const forbidden: typeof fetch = Object.assign(
+    async (input: Parameters<typeof fetch>[0]) => {
+      throw new Error(`the cowork surface must not reach for HTTP: ${String(input)}`);
     },
     { preconnect: () => {} },
   );
-  globalThis.fetch = capture;
+  globalThis.fetch = forbidden;
 });
 
 afterEach(() => {
@@ -230,15 +215,6 @@ afterEach(() => {
   resetWindowSize();
   openedSessions.length = 0;
 });
-
-/** Let the start's fetch chain settle before asserting on the named state. */
-async function settle(): Promise<void> {
-  await act(async () => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 0);
-    await promise;
-  });
-}
 
 // ---------------------------------------------------------------------------
 // The picker
@@ -387,7 +363,7 @@ describe("binding on the cowork screen", () => {
     h.unmount();
   });
 
-  test("draws no binding section without a connection", () => {
+  test("draws no binding section without a client", () => {
     const h = mount(false);
 
     expect(h.query("cowork-folders")).toBeNull();
@@ -411,24 +387,37 @@ describe("binding on the cowork screen", () => {
 // ---------------------------------------------------------------------------
 
 describe("starting the container", () => {
-  test("posts the exact mounts shape the provisioner validates and reports the agent", async () => {
+  test("sends the exact mounts shape the provisioner validates and reports the agent", () => {
     const h = mount();
     browseToDev(h);
     h.press("folder-picker-confirm");
 
     h.press("cowork-container-start");
-    await settle();
 
-    expect(posted.length).toBe(1);
-    expect(posted[0]?.url).toBe("http://127.0.0.1:7777/v1/agents");
-    const headers = new Headers(posted[0]?.init.headers);
-    expect(headers.get("Authorization")).toBe("Bearer tok_test");
     // Exactly what container.ts validates: absolute hostPath, explicit mode,
-    // every mount at its identical path inside, first bound folder as cwd.
-    expect(JSON.parse(String(posted[0]?.init.body))).toEqual({
-      name: "dev",
-      cwd: DEV,
-      host: { kind: "container", mounts: [{ hostPath: DEV, mode: "ro" }] },
+    // every mount at its identical path inside, first bound folder as cwd --
+    // carried on the socket, so a hub pairing reaches it too.
+    expect(h.socket.framesOfType("agent_create")).toEqual([
+      {
+        t: "agent_create",
+        name: "dev",
+        cwd: DEV,
+        host: { kind: "container", mounts: [{ hostPath: DEV, mode: "ro" }] },
+      },
+    ]);
+
+    h.deliver({
+      t: "agent_created",
+      agent: {
+        id: "agt_test",
+        name: "dev",
+        state: "idle",
+        host: { kind: "container", id: "ctr_1" },
+        cwd: DEV,
+        createdAt: "2026-02-01T00:00:00.000Z",
+        lastActiveAt: "2026-02-01T00:00:00.000Z",
+        labels: {},
+      },
     });
 
     h.press("cowork-container-open");
@@ -437,7 +426,7 @@ describe("starting the container", () => {
     h.unmount();
   });
 
-  test("mounts every bound folder, in binding order, with the first as cwd", async () => {
+  test("mounts every bound folder, in binding order, with the first as cwd", () => {
     const h = mount();
     browseToDev(h);
     h.press("folder-picker-confirm");
@@ -449,9 +438,9 @@ describe("starting the container", () => {
     h.press("folder-picker-confirm");
 
     h.press("cowork-container-start");
-    await settle();
 
-    expect(JSON.parse(String(posted[0]?.init.body))).toEqual({
+    expect(h.socket.framesOfType("agent_create").at(-1)).toEqual({
+      t: "agent_create",
       name: "dev",
       cwd: DEV,
       host: {
@@ -466,14 +455,13 @@ describe("starting the container", () => {
     h.unmount();
   });
 
-  test("a scope refusal is a named state, not a silent one", async () => {
-    answer = new Response(JSON.stringify({ error: "forbidden" }), { status: 403 });
+  test("a scope refusal is a named state, not a silent one", () => {
     const h = mount();
     browseToDev(h);
     h.press("folder-picker-confirm");
 
     h.press("cowork-container-start");
-    await settle();
+    h.deliver({ t: "error", code: "unauthorized", message: "agent_create requires manage scope" });
 
     expect(h.text("cowork-container-refused")).toContain("manage scope");
     // Not retryable: the reason says so without promising another attempt.
@@ -482,14 +470,17 @@ describe("starting the container", () => {
     h.unmount();
   });
 
-  test("a validation refusal carries the daemon's own reason", async () => {
-    answer = new Response(JSON.stringify({ error: 'mount path must be absolute, got "etc"' }), { status: 500 });
+  test("a validation refusal carries the daemon's own reason", () => {
     const h = mount();
     browseToDev(h);
     h.press("folder-picker-confirm");
 
     h.press("cowork-container-start");
-    await settle();
+    h.deliver({
+      t: "error",
+      code: "agent_create_failed",
+      message: 'mount path must be absolute, got "etc"',
+    });
 
     expect(h.text("cowork-container-refused")).toContain("the daemon refused the mounts");
     expect(h.text("cowork-container-refused")).toContain("absolute");
@@ -497,22 +488,16 @@ describe("starting the container", () => {
     h.unmount();
   });
 
-  test("a dead link is named and marked worth retrying", async () => {
-    // Annotated like the capture stub above: the throw is the whole function,
-    // and the no-op preconnect is what makes it a whole `typeof fetch`.
-    const deadLink: typeof fetch = Object.assign(
-      async () => {
-        throw new Error("connection refused");
-      },
-      { preconnect: () => {} },
-    );
-    globalThis.fetch = deadLink;
+  test("a dead link is named and marked worth retrying", () => {
     const h = mount();
     browseToDev(h);
     h.press("folder-picker-confirm");
 
+    // What the client itself reports when a frame cannot leave: `agent_create`
+    // is one of the losses it makes visible, so the surface hears it as an
+    // error rather than waiting forever on an answer that will never come.
+    h.socket.close();
     h.press("cowork-container-start");
-    await settle();
 
     expect(h.text("cowork-container-refused")).toContain("could not reach the daemon");
     expect(h.text("cowork-container-refused")).toContain("Worth trying again");
@@ -520,14 +505,30 @@ describe("starting the container", () => {
     h.unmount();
   });
 
-  test("answers a start with nothing bound by name rather than by silence", async () => {
+  test("a replica names its own limit rather than pretending to start", () => {
+    const h = mount();
+    browseToDev(h);
+    h.press("folder-picker-confirm");
+
+    h.press("cowork-container-start");
+    h.deliver({
+      t: "error",
+      code: "replica",
+      message: "this daemon is a replica; create the agent where its directories live",
+    });
+
+    expect(h.text("cowork-container-refused")).toContain("replica");
+
+    h.unmount();
+  });
+
+  test("answers a start with nothing bound by name rather than by silence", () => {
     const h = mount();
 
     h.press("cowork-container-start");
-    await settle();
 
     expect(h.text("cowork-container-refused")).toContain("Bind a folder first");
-    expect(posted.length).toBe(0);
+    expect(h.socket.framesOfType("agent_create")).toEqual([]);
 
     h.unmount();
   });
