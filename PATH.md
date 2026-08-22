@@ -143,6 +143,17 @@ Two defects were found by looking at the frames rather than the code:
 - Detox had been launching a stale simulator binary from the previous day, which is why both native modules still reported missing after they were built. The banners only changed once the build went to the path Detox actually launches. A screenshot of an app nobody rebuilt is not evidence about the code.
 - Repeated rich blocks collided on their keys. React reported `Encountered two children with the same key, list:1:true` on the device. The renderer keyed blocks by content, so two rules both keyed to `rule` and two identical paragraphs collided the same way. Keys are position-prefixed now, and `packages/app/test/rich-text.test.tsx` reproduces the exact device complaint when the fix is reverted.
 
+### Landed on 2026-08-22: routines can be scheduled, and sessions can be deleted for good
+
+- **Routines were never missing, the phone was.** The daemon implements cron, interval, manual and webhook triggers and the scheduler is armed at boot. Proven rather than read: an interval routine produced eight runs, succeeding every 30 seconds, and stopped the moment it was disabled. What the app could create was hardcoded to webhook, so a scheduled routine was unreachable from the phone. The editor now offers Schedule, Webhook and Manual, can change an existing routine's kind, shows the next fire time, and blocks a save on an unparsable cron or a blank `cwd` with the reason stated rather than the control hidden. Cron evaluation moved into `@ompd/core` so exactly one implementation exists.
+- **Sessions can be deleted, not just archived.** Archiving deliberately never touches the file. `SessionIndex.delete(ids)` removes the transcript and its sibling artifact directory, then drops the archive mark and the cached scan count in one transaction, file first so a failed unlink leaves consistent state. Exposed as `POST /v1/sessions/delete` and a `session_delete` frame, gated on manage scope, one audit record per id. The app arms before it acts: the first press replaces the row with a band naming the session, and archive is not rendered while armed.
+- **302 fixture sessions removed on this machine**, taking the fleet from 625 to 323. Every id was chosen from a reviewed manifest, no file from the manifest remains on disk, no artifact directory remains, and the daemon wrote 302 `session.delete` / ok audit records.
+
+Two defects this work found, both in the instruments rather than the product:
+
+- A liveness read off `SessionSummary.status` made an archived session deletable while a process still held it, because an archive mark deliberately outranks liveness there. The index now returns the set of sessions a process actually holds and delete refuses from it.
+- A probe reported scheduled routines dead after waiting 170 seconds for a `routine_ran` event. The database showed four successful runs inside that exact window: the event never reaches a socket that has not asked for routines. The probe was broken, not the scheduler, and it spent eight agent runs before it was stopped.
+
 ## Queue
 
 Everything Jason has asked for, in exactly one state. Parked is not dropped.
@@ -162,6 +173,8 @@ Everything Jason has asked for, in exactly one state. Parked is not dropped.
 - Live speech, slice A: live duplex over the voice bridge, turn taking, no WebRTC. Decided 2026-08-22, not started
 - Live speech, slice B: true realtime voice, needs `react-native-webrtc`, a daemon WebRTC peer, and a TURN story. Open only if slice A's turn latency is not good enough to talk to
 - Audio was never heard on hardware: narration and the mic are proven to the wire and to the UI, not to the speaker
+- Deleting a session from the phone is untested on hardware: the row control and its confirmation are proven by unit tests and by 302 real deletions over HTTP, not by a thumb on a device
+- Creating a scheduled routine from the phone is untested on hardware: the trigger picker lives behind the menu and no Detox path reaches it
 
 **parked** (starts only after `PATH GREEN`)
 - BushidoPhone, Jason's iPad, Test iPhone, Apple Watch
