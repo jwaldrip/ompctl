@@ -71,6 +71,8 @@
 	<string>ompctl connects to the ompd daemon running on your own computer, over your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>ompctl records your voice to send memo speech to your agent. Audio is streamed to your own daemon and is not stored on the device.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>ompctl attaches a photo you pick to the prompt you send it. The image goes to your own daemon and is not stored on the device.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

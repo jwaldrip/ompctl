@@ -116,7 +116,7 @@ function BlockView({ block, muted }: { block: RichBlock; muted: boolean }): Reac
         <View style={styles.list}>
           {block.items.map((item, index) => (
             <View key={`li:${spansText(item).slice(0, 64)}`} style={styles.listRow}>
-              {/* Fixed marker column so a wrapped item hangs past its number, not under it. */}
+              {/* Marker column so a wrapped item hangs past its number, not under it. */}
               <Label color={ink.muted} style={styles.listMarker}>
                 {block.ordered ? `${index + 1}.` : "\u2022"}
               </Label>
@@ -208,7 +208,13 @@ const styles = StyleSheet.create({
   link: { textDecorationLine: "underline" },
   list: { gap: space.tight },
   listRow: { flexDirection: "row", gap: space.snug },
-  listMarker: { width: 20, textAlign: "right" },
+  // A floor, not a fixed width. 20 points aligns every one- and two-digit
+  // marker, which is all but the longest lists, but `100.` measures 25.00 in
+  // this face (Archivo-Medium at the label's 12 points with its 0.3 tracking,
+  // measured with CoreText) and a fixed 20 would have broken it across two
+  // lines. A minimum keeps the alignment it was for and still cannot cut a
+  // marker, however long the list runs.
+  listMarker: { minWidth: 20, textAlign: "right" },
   listItem: { flex: 1 },
   quote: {
     borderLeftWidth: stroke.heavy,

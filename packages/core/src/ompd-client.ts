@@ -32,16 +32,22 @@ import type {
   CollabVoiceNoteFrame,
   CollabVoiceNoteInput,
   CollabVoiceParticipant,
+  ConnectorSummary,
   FsListing,
+  HostSpec,
   PlanReviewChoice,
+  PromptImage,
   RemoteRoutine,
+  RoutineDeleteResult,
   Run,
   ServerFrame,
   SessionDeleteResult,
   SessionHistoryEntry,
   SessionQuery,
   SessionSummary,
+  SkillSummary,
   SyncSettings,
+  Task,
   TranscriptTailMessage,
   TuiActivityKind,
   TuiSteerDelivery,
@@ -198,10 +204,28 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // operator believing a routine is armed, a lost run leaves them waiting on
   // work that never started, and a lost rotate leaves a secret they think
   // they replaced still live at the webhook.
-  routines_read: false,
   routine_write: true,
   routine_run: true,
   routine_secret_rotate: true,
+  routines_read: false,
+  // Irreversible and never replayed, exactly `session_delete`'s class: a
+  // delete that never left leaves an operator believing a routine is gone
+  // while its schedule still fires; re-sending after they may have changed
+  // their mind would be worse.
+  routine_delete: true,
+  // Snapshot asks, same class as `settings_read`: nothing on the machine
+  // changes, and the Cowork surface polls on an interval and re-asks on every
+  // reconnect, so reporting the loss would only echo the reconnect.
+  skills_read: false,
+  connectors_read: false,
+  tasks_read: false,
+  // Instructions that silently did not happen: a lost task start or cancel
+  // leaves an operator watching a roster that never moves, and a lost agent
+  // create leaves them waiting on a container that was never asked for.
+  // Same failure class as a lost `prompt`.
+  task_create: true,
+  task_cancel: true,
+  agent_create: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -211,9 +235,8 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
 export interface BackoffOptions {
   /** Delay before the first retry. */
   baseMs: number;
-  /** Ceiling. Growth stops here however long the outage runs. */
   maxMs: number;
-  /** Multiplier applied per consecutive failure. */
+
   factor: number;
   /**
    * Fraction of the delay given over to randomness, in `[0, 1]`. A delay lands
@@ -455,15 +478,24 @@ export interface CloneDoneEvent {
 }
 
 /**
- * A session's transcript tail, answering `sessionTail`. Oldest first, so a
- * view appends live `tui_activity` below it without reordering. `truncated`
- * says the tail is not the whole transcript, which is a rendering hint and
- * nothing more.
+ * One page of a session's transcript, answering `sessionTail`. Oldest first,
+ * so a view appends live `tui_activity` below it without reordering.
+ * `truncated` says the page is not the whole transcript, which is a
+ * rendering hint and nothing more.
+ *
+ * `nextCursor` is the offset to ask from for the next older page, or null at
+ * the start of the file. An empty page with a non-null cursor is a real
+ * answer, not an end: a long run of tool traffic says nothing, so a view
+ * asks on rather than stopping. `cursor` is the offset this page was read
+ * from, absent when the ask carried none, which is how a view tells a first
+ * page from an older one and drops a page answering an ask it has replaced.
  */
 export interface SessionTailEvent {
   sessionId: string;
   messages: TranscriptTailMessage[];
   truncated: boolean;
+  nextCursor: number | null;
+  cursor?: number;
 }
 
 /** One structured page of durable session history. */
@@ -508,6 +540,16 @@ export interface RoutineSecretEvent {
 }
 
 /**
+ * What a `deleteRoutines` did, one result per id asked for. Delivered to the
+ * socket that asked; the refreshed catalogue arrives separately as a
+ * `routines` snapshot, so a surface listening only to this event learns the
+ * refusal without waiting on a refresh it may never get.
+ */
+export interface RoutinesDeletedEvent {
+  results: RoutineDeleteResult[];
+}
+
+/**
  * One agent's session config as the daemon holds it now, answering
  * `readAgentConfig` or `writeAgentConfig`. Confirmation rather than echo:
  * after a write it carries what the daemon read back from the session, so a
@@ -518,6 +560,37 @@ export interface AgentConfigEvent {
   configOptions: AgentConfigOption[];
 }
 
+/**
+ * The skills or connectors catalogue answering `readSkills`/`readConnectors`,
+ * delivered only to the client that asked. Wire-safe by construction: the
+ * daemon reshapes before sending, so a connector's raw config never rides in.
+ */
+export interface SkillsEvent {
+  skills: SkillSummary[];
+}
+
+export interface ConnectorsEvent {
+  connectors: ConnectorSummary[];
+}
+
+/** The task roster answering `readTasks`. A snapshot, not a push: it says what a poll saw. */
+export interface TasksEvent {
+  tasks: Task[];
+}
+
+/**
+ * One task as the daemon holds it now, answering `createTask` or
+ * `cancelTask`. Confirmation rather than echo: it carries what the daemon
+ * created or cancelled, not what this client asked for.
+ */
+export interface TaskEvent {
+  task: Task;
+}
+
+/** The agent a `createAgent` made, delivered only to the client that asked. */
+export interface AgentCreatedEvent {
+  agent: Agent;
+}
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -539,12 +612,18 @@ export interface ClientEventMap {
   session_opened: SessionOpenedEvent;
   sessions_deleted: SessionsDeletedEvent;
   device_invited: DeviceInvitedEvent;
+  skills: SkillsEvent;
+  connectors: ConnectorsEvent;
+  tasks: TasksEvent;
+  task: TaskEvent;
+  agent_created: AgentCreatedEvent;
   fs_listing: FsListingEvent;
   clone_progress: CloneProgressEvent;
   clone_done: CloneDoneEvent;
   settings: SettingsEvent;
   routines: RoutinesEvent;
   routine_ran: RoutineRanEvent;
+  routines_deleted: RoutinesDeletedEvent;
   routine_secret: RoutineSecretEvent;
   session_tail: SessionTailEvent;
   session_history: SessionHistoryEvent;
@@ -763,7 +842,13 @@ export class OmpdClient {
     this.send({ t: "webview_result", agentId, requestId, result });
   }
 
-  prompt(agentId: AgentId, text: string, images?: string[]): void {
+  /**
+   * Send a prompt, optionally with images. The wire budgets in
+   * `parsePromptImages` are enforced again by the daemon, so this method
+   * trusting its caller is not the boundary; it is a convenience that keeps
+   * the empty-images case byte-identical to the frame every older peer sends.
+   */
+  prompt(agentId: AgentId, text: string, images?: PromptImage[]): void {
     const frame: ClientFrame =
       images && images.length > 0 ? { t: "prompt", agentId, text, images } : { t: "prompt", agentId, text };
     this.send(frame);
@@ -904,19 +989,25 @@ export class OmpdClient {
   }
 
   /**
-   * Ask for the tail of a session's transcript. The answer arrives as the
-   * `session_tail` event, or an `error` naming the cause: `unknown_session`
-   * for an id this machine holds no file for.
+   * Ask for one page of a session's transcript: the newest turns, or the
+   * page older than `cursor` when an earlier answer handed one over. The
+   * answer arrives as the `session_tail` event, or an `error` naming the
+   * cause: `unknown_session` for an id this machine holds no file for.
    *
-   * One-shot, deliberately unlike `listSessions`: a transcript tail is a
+   * One-shot, deliberately unlike `listSessions`: a transcript page is a
    * snapshot of a screen the operator is looking at, so the surface that
-   * wants one asks when it opens. Replaying it on every reconnect would
-   * re-read a file for a screen nobody may still be on, and the daemon's
-   * `tui_activity` stream already carries what changed since.
+   * wants one asks when it opens, and asks again when the operator reaches
+   * for older turns. Replaying it on every reconnect would re-read a file
+   * for a screen nobody may still be on, and the daemon's `tui_activity`
+   * stream already carries what changed since.
    */
-  sessionTail(sessionId: string, limit?: number): void {
-    const frame: ClientFrame =
-      limit === undefined ? { t: "session_tail", sessionId } : { t: "session_tail", sessionId, limit };
+  sessionTail(sessionId: string, limit?: number, cursor?: number): void {
+    const frame: ClientFrame = {
+      t: "session_tail",
+      sessionId,
+      ...(limit === undefined ? {} : { limit }),
+      ...(cursor === undefined ? {} : { cursor }),
+    };
     this.send(frame);
   }
 
@@ -978,6 +1069,99 @@ export class OmpdClient {
   }
 
   /**
+   * Delete routines for good. Per-id outcomes arrive as `routines_deleted`;
+   * a refusal names itself, so a surface can say what to do next rather than
+   * that it simply cannot.
+   */
+  deleteRoutines(routineIds: readonly string[]): void {
+    this.send({ t: "routine_delete", routineIds: [...routineIds] });
+  }
+
+  /**
+   * Ask for the skills catalogue scoped to `cwd`, or to the agent's cwd when
+   * `agentId` is given instead (`cwd` wins when both are). The answer arrives
+   * as the `skills` event, or an `error` naming the refusal.
+   *
+   * A snapshot ask, same class as `readSettings`: the Cowork surface re-asks
+   * on its poll and after every reconnect, so it is never replayed.
+   */
+  readSkills(cwd?: string, agentId?: string): void {
+    this.send({
+      t: "skills_read",
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(agentId === undefined ? {} : { agentId }),
+    });
+  }
+
+  /** The connectors catalogue, scoped exactly like `readSkills`. */
+  readConnectors(cwd?: string, agentId?: string): void {
+    this.send({
+      t: "connectors_read",
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(agentId === undefined ? {} : { agentId }),
+    });
+  }
+
+  /** The task roster, optionally narrowed to one agent's tasks. */
+  readTasks(agentId?: string): void {
+    this.send({ t: "tasks_read", ...(agentId === undefined ? {} : { agentId }) });
+  }
+
+  /**
+   * Start one task: a named prompt against a session that already exists.
+   * The created task arrives as the `task` event; a scope or validation
+   * refusal arrives as an `error` naming it. One-shot like the other
+   * instructions: a replayed start would run the prompt twice.
+   */
+  createTask(input: {
+    title: string;
+    prompt: string;
+    agentId: AgentId;
+    skillName?: string;
+    labels?: Record<string, string>;
+  }): void {
+    this.send({
+      t: "task_create",
+      title: input.title,
+      prompt: input.prompt,
+      agentId: input.agentId,
+      ...(input.skillName === undefined ? {} : { skillName: input.skillName }),
+      ...(input.labels === undefined ? {} : { labels: input.labels }),
+    });
+  }
+
+  /**
+   * Cancel one task. The task as the daemon now holds it arrives as the
+   * `task` event; a refusal arrives as an `error` naming it.
+   */
+  cancelTask(taskId: string): void {
+    this.send({ t: "task_cancel", taskId });
+  }
+
+  /**
+   * Create an agent, host and all: the manage-scoped act a Cowork container
+   * start rides. The agent arrives as the `agent_created` event, so a caller
+   * renders confirmed state rather than its own request; a refusal arrives as
+   * an `error` naming it. One-shot, for the reason `createSession` is.
+   */
+  createAgent(request: {
+    name: string;
+    cwd: string;
+    host?: HostSpec;
+    routineId?: string;
+    labels?: Record<string, string>;
+  }): void {
+    this.send({
+      t: "agent_create",
+      name: request.name,
+      cwd: request.cwd,
+      ...(request.host === undefined ? {} : { host: request.host }),
+      ...(request.routineId === undefined ? {} : { routineId: request.routineId }),
+      ...(request.labels === undefined ? {} : { labels: request.labels }),
+    });
+  }
+
+  /**
    * Ask what config options one agent's session holds, the mode among them.
    * The answer arrives as the `agent_config` event, or an `error` naming the
    * refusal: `unknown_agent` for an id this daemon holds no row for,
@@ -1009,12 +1193,19 @@ export class OmpdClient {
    * Prompt a session a registered live TUI owns. The daemon answers with a
    * `tui_unreachable` error when no connected TUI holds that session, so a
    * dormant row in the index is an explicit refusal, never a silent drop.
+   * Images ride the steer as the same content blocks the agent prompt uses.
    */
-  sessionPrompt(sessionId: string, text: string, deliverAs?: TuiSteerDelivery): void {
+  sessionPrompt(sessionId: string, text: string, deliverAs?: TuiSteerDelivery, images?: PromptImage[]): void {
     const frame: ClientFrame =
-      deliverAs === undefined
+      deliverAs === undefined && (images === undefined || images.length === 0)
         ? { t: "session_prompt", sessionId, text }
-        : { t: "session_prompt", sessionId, text, deliverAs };
+        : {
+            t: "session_prompt",
+            sessionId,
+            text,
+            ...(deliverAs === undefined ? {} : { deliverAs }),
+            ...(images !== undefined && images.length > 0 ? { images } : {}),
+          };
     this.send(frame);
   }
 
@@ -1359,6 +1550,11 @@ export class OmpdClient {
           sessionId: frame.sessionId,
           messages: frame.messages,
           truncated: frame.truncated,
+          // An older daemon sends neither cursor field. Absent `nextCursor`
+          // has to read as "no older page reachable" rather than as zero,
+          // which would be an offset a client could ask from.
+          nextCursor: frame.nextCursor ?? null,
+          ...(frame.cursor === undefined ? {} : { cursor: frame.cursor }),
         });
         return;
       case "session_history":
@@ -1368,6 +1564,21 @@ export class OmpdClient {
           entries: frame.entries,
           nextBefore: frame.nextBefore,
         });
+        return;
+      case "skills":
+        this.emit("skills", { skills: frame.skills });
+        return;
+      case "connectors":
+        this.emit("connectors", { connectors: frame.connectors });
+        return;
+      case "tasks":
+        this.emit("tasks", { tasks: frame.tasks });
+        return;
+      case "task":
+        this.emit("task", { task: frame.task });
+        return;
+      case "agent_created":
+        this.emit("agent_created", { agent: frame.agent });
         return;
       case "settings":
         this.emit("settings", {
@@ -1382,6 +1593,9 @@ export class OmpdClient {
         return;
       case "routine_secret":
         this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });
+        return;
+      case "routines_deleted":
+        this.emit("routines_deleted", { results: frame.results });
         return;
       case "agent_config":
         this.emit("agent_config", {

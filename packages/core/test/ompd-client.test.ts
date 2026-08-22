@@ -17,6 +17,7 @@ import type {
   Agent,
   AgentId,
   ClientFrame,
+  PromptImage,
   ServerFrame,
   SessionDeleteResult,
   SessionSummary,
@@ -761,15 +762,20 @@ describe("outbound frames", () => {
     h.client.start();
     const socket = bringUp(h);
 
+    const png: PromptImage = { data: "iVBORw0KGgo=", mimeType: "image/png" };
     h.client.prompt(AGENT, "ship it");
-    h.client.prompt(AGENT, "look at this", ["data:image/png;base64,AAAA"]);
+    h.client.prompt(AGENT, "look at this", [png]);
+    h.client.sessionPrompt("s-tui", "steer this");
+    h.client.sessionPrompt("s-tui", "with a picture", "followUp", [png]);
     h.client.cancel(AGENT);
     h.client.decide(AGENT, "req_1", "allow", "always");
     h.client.decide(AGENT, "req_2", "deny");
 
     expect(socket.sent).toEqual([
       { t: "prompt", agentId: AGENT, text: "ship it" },
-      { t: "prompt", agentId: AGENT, text: "look at this", images: ["data:image/png;base64,AAAA"] },
+      { t: "prompt", agentId: AGENT, text: "look at this", images: [png] },
+      { t: "session_prompt", sessionId: "s-tui", text: "steer this" },
+      { t: "session_prompt", sessionId: "s-tui", text: "with a picture", deliverAs: "followUp", images: [png] },
       { t: "cancel", agentId: AGENT },
       { t: "decide", agentId: AGENT, requestId: "req_1", choice: "allow", scope: "always" },
       { t: "decide", agentId: AGENT, requestId: "req_2", choice: "deny" },
@@ -1563,21 +1569,25 @@ describe("browse, start and clone surface", () => {
 describe("session tail surface", () => {
   const SESSION = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
 
-  test("sessionTail sends the frame, carrying a limit only when one was given", () => {
+  test("sessionTail sends the frame, carrying a limit and a cursor only when given", () => {
     const h = harness();
     h.client.start();
     const socket = bringUp(h);
 
     h.client.sessionTail(SESSION);
     h.client.sessionTail(SESSION, 5);
+    // The paging ask: an offset an earlier answer handed back, with the
+    // limit left to the daemon's default.
+    h.client.sessionTail(SESSION, undefined, 4096);
 
     expect(socket.framesOfType("session_tail")).toEqual([
       { t: "session_tail", sessionId: SESSION },
       { t: "session_tail", sessionId: SESSION, limit: 5 },
+      { t: "session_tail", sessionId: SESSION, cursor: 4096 },
     ]);
   });
 
-  test("a session_tail server frame dispatches the typed event with the daemon's turns", () => {
+  test("a session_tail server frame dispatches the typed event with the daemon's turns and cursors", () => {
     const h = harness();
     h.client.start();
     const socket = bringUp(h);
@@ -1588,9 +1598,22 @@ describe("session tail surface", () => {
       { role: "user", text: "status of the deploy?", at: "2026-08-13T00:00:01.000Z" },
       { role: "assistant", text: "all green", at: "2026-08-13T00:00:02.000Z" },
     ];
-    socket.deliver({ t: "session_tail", sessionId: SESSION, messages, truncated: true });
+    socket.deliver({ t: "session_tail", sessionId: SESSION, messages, truncated: true, nextCursor: 8192 });
+    // An older page: the echoed cursor is what tells a view this answers a
+    // paging ask rather than a first open.
+    socket.deliver({
+      t: "session_tail",
+      sessionId: SESSION,
+      messages: [],
+      truncated: true,
+      nextCursor: 4096,
+      cursor: 8192,
+    });
 
-    expect(received).toEqual([{ sessionId: SESSION, messages, truncated: true }]);
+    expect(received).toEqual([
+      { sessionId: SESSION, messages, truncated: true, nextCursor: 8192 },
+      { sessionId: SESSION, messages: [], truncated: true, nextCursor: 4096, cursor: 8192 },
+    ]);
   });
 
   test("a reconnect does not re-issue the request: a tail belongs to a screen, not to the socket", () => {

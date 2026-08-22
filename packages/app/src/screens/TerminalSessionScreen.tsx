@@ -3,12 +3,20 @@
  *
  * A session running in a terminal has no agent row, so this device cannot
  * `attach` to it and there is no update stream to replay. What it can have is
- * the session's own file: the daemon reads the tail of that JSONL and serves
+ * the session's own file: the daemon reads a page of that JSONL and serves
  * it as `session_tail`, which is the history this screen renders. Above the
  * composer, oldest first, so the newest turn sits closest to where the
  * operator types. Tapping a session with a thousand messages in it used to
  * open a composer over an empty pane, which reads as a broken session rather
  * than as a surface that never had a transcript.
+ *
+ * The page is a window, not the conversation, and every answer carries the
+ * offset the next older one starts from. So the head of the log is a Load
+ * earlier control, the same one under the same id the agent log uses, and
+ * pressing it walks the file backwards until its start, where the control
+ * goes away. What stood there before was a kicker reading that older turns
+ * were not shown: true, and a dead end on a session whose recent screenfuls
+ * are all tool traffic.
  *
  * Sent and the last reply are turns of this conversation, not chrome: the
  * daemon delivers prompts to the terminal as the operator's own turn and
@@ -29,13 +37,13 @@
  * Send while the session is eligible, even when a turn is already running.
  */
 
-import type { SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
+import type { PromptImage, SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useRef, useState } from "react";
-import type { ListRenderItemInfo } from "react-native";
-import { FlatList, Pressable, StyleSheet, TextInput, View } from "react-native";
+import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AttachmentsBar } from "../components/AttachmentsBar.tsx";
 import type { TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -43,6 +51,7 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
+import { imageAttachmentPicker } from "../platform/attachments.ts";
 import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 
 export interface TerminalSessionScreenProps {
@@ -56,8 +65,28 @@ export interface TerminalSessionScreenProps {
   tui: TuiSessionState;
   connection: ConnectionState;
   onBack: () => void;
-  onSubmit: (text: string) => void;
+  /**
+   * Ask for the page of turns older than the ones on screen. The screen
+   * offers this only while `tui.historyCursor` names one, so a press always
+   * has a page to ask for.
+   */
+  onLoadEarlier: () => void;
+  onSubmit: (text: string, images?: PromptImage[]) => void;
 }
+
+/**
+ * The gutter's second line for a live hint, where a served turn shows its
+ * elapsed stamp. One word each, because the gutter leaves 66 points for text
+ * and `Sent to this terminal` needs 155.95 of them. Wrapping could not save
+ * it either: its longest word alone (TERMINAL, 65.00) outgrew the 58 points
+ * the old 68-point gutter left, so the column broke the word rather than the
+ * phrase. Cutting it back to one word loses nothing. The gutter's first line
+ * already says `you` or `agent`, the row's accessibility label repeats that
+ * attribution in front of the words, and the row's own testID names which
+ * kind this is. The phrase was saying the same thing a third time, in the
+ * narrowest column on the screen.
+ */
+export const HINT_WORDS = { sent: "sent", reply: "reply" } as const;
 
 function notLiveGuidance(status: SessionLiveStatus | null): string {
   switch (status) {
@@ -74,11 +103,21 @@ function notLiveGuidance(status: SessionLiveStatus | null): string {
   }
 }
 
-/** One row of the conversation this screen renders: a served turn, or a live hint continuing it. */
+/**
+ * One row of the conversation this screen renders: a served turn, or a live
+ * hint continuing it.
+ *
+ * The key is carried on the row rather than derived at render time, and a
+ * turn's is its depth from the newest turn rather than its index from the
+ * top. Older pages prepend, so an index from the top renumbers every row
+ * already on screen each time the operator loads earlier; depth from the
+ * newest never moves, because nothing is ever inserted below a turn. Hints
+ * are keyed by what they are: there is at most one of each.
+ */
 type LogRow =
-  | { kind: "turn"; message: TranscriptTailMessage }
-  | { kind: "sent"; text: string }
-  | { kind: "reply"; text: string };
+  | { kind: "turn"; key: string; message: TranscriptTailMessage }
+  | { kind: "sent"; key: string; text: string }
+  | { kind: "reply"; key: string; text: string };
 
 /**
  * The conversation the log renders: the served tail, then this device's live
@@ -93,13 +132,18 @@ type LogRow =
  * device last said or heard.
  */
 function logRows(tui: TuiSessionState): LogRow[] {
-  const rows: LogRow[] = tui.history.map(message => ({ kind: "turn", message }));
+  const newest = tui.history.length - 1;
+  const rows: LogRow[] = tui.history.map((message, index) => ({
+    kind: "turn",
+    key: `turn:${newest - index}`,
+    message,
+  }));
   const tailEnd = tui.history.at(-1);
   if (tui.sent !== null && !(tailEnd?.role === "user" && tailEnd.text === tui.sent)) {
-    rows.push({ kind: "sent", text: tui.sent });
+    rows.push({ kind: "sent", key: "sent", text: tui.sent });
   }
   if (tui.reply !== null && !(tailEnd?.role === "assistant" && tailEnd.text === tui.reply)) {
-    rows.push({ kind: "reply", text: tui.reply });
+    rows.push({ kind: "reply", key: "reply", text: tui.reply });
   }
   return rows;
 }
@@ -118,10 +162,14 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   const rows = logRows(tui);
 
   const [text, setText] = useState("");
+  const [images, setImages] = useState<PromptImage[]>([]);
   const trimmed = text.trim();
   const connected = connection === "connected";
   const composerEnabled = connected && liveTerminal && promptAccess !== "missing" && tui.refusalKind !== "scope";
-  const canSend = composerEnabled && trimmed.length > 0;
+  // An image-only prompt steers as well as a text-only one; the daemon's own
+  // frame check is what says a prompt with neither is empty, and this screen
+  // refuses it here first so the operator never needs the round trip.
+  const canSend = composerEnabled && (trimmed.length > 0 || images.length > 0);
   const placeholder = !connected
     ? "No link"
     : !liveTerminal
@@ -132,8 +180,9 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
 
   const submit = (): void => {
     if (!canSend) return;
-    props.onSubmit(trimmed);
+    props.onSubmit(trimmed, images.length > 0 ? images : undefined);
     setText("");
+    setImages([]);
   };
 
   const log = useRef<FlatList<LogRow>>(null);
@@ -164,7 +213,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           <Kicker color={ink.faint}>{elapsed(item.message.at)}</Kicker>
         )
       ) : (
-        <Kicker color={ink.faint}>{item.kind === "sent" ? "Sent to this terminal" : "Last reply"}</Kicker>
+        <Kicker color={ink.faint}>{item.kind === "sent" ? HINT_WORDS.sent : HINT_WORDS.reply}</Kicker>
       );
     // Gutter attribution rather than alternating bubbles, the same call
     // `Transcript` made: there are only ever two speakers and bubbles halve
@@ -202,6 +251,29 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
     );
   }, []);
 
+  /**
+   * The way back through the conversation, in the same words and under the
+   * same id the agent log's transcript uses: one act, one idiom. Offered
+   * only while the daemon's last page named an older one, so reaching the
+   * start of the file removes the control rather than leaving a press that
+   * can never answer.
+   */
+  const earlier =
+    tui.historyCursor === null ? null : (
+      <Pressable
+        testID="history-load-earlier"
+        accessibilityRole="button"
+        accessibilityLabel="Load earlier turns of this terminal session"
+        accessibilityState={{ disabled: tui.historyLoadingEarlier }}
+        disabled={tui.historyLoadingEarlier}
+        onPress={props.onLoadEarlier}
+        style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
+      >
+        <Glyph name="resume" size={11} color={ink.muted} />
+        <Label color={ink.muted}>{tui.historyLoadingEarlier ? "Loading earlier…" : "Load earlier"}</Label>
+      </Pressable>
+    );
+
   return (
     <SafeScreen edges={{ top: true, bottom: false, left: true, right: true }} testID="terminal-session">
       <View style={[styles.head, { borderBottomColor: tone }]}>
@@ -235,28 +307,27 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </Kicker>
       </View>
 
-      {rows.length === 0 ? null : (
+      {rows.length === 0 ? (
+        // No turns yet, and a cursor still naming older file: a session whose
+        // recent screenfuls are pure tool traffic opens with nothing to show
+        // and everything still to read, so the control has to be reachable
+        // without a log to head.
+        earlier === null ? null : (
+          <View style={styles.earlierAlone}>{earlier}</View>
+        )
+      ) : (
         <FlatList
           ref={log}
           testID="terminal-log"
           style={styles.log}
           contentContainerStyle={styles.logContent}
           data={rows}
-          // Turns carry no id of their own: the daemon serves words, not
-          // rows. Position plus timestamp is stable within one served tail,
-          // and a new tail replaces the list wholesale anyway. Hint rows
-          // have no position in the served tail and no timestamp, so theirs
-          // is position plus kind. Position alone is unique within this
-          // list, so no key can collide even when timestamps repeat.
-          keyExtractor={(row, index) => (row.kind === "turn" ? `${index}:${row.message.at}` : `${index}:${row.kind}`)}
+          // The row's own key, built where the rows are: turns carry no id of
+          // their own, and a key derived from the index here would renumber
+          // every row on screen each time an older page prepends.
+          keyExtractor={row => row.key}
           renderItem={renderRow}
-          ListHeaderComponent={
-            tui.historyTruncated ? (
-              <Kicker color={ink.faint} testID="terminal-log-truncated">
-                Older turns are not shown
-              </Kicker>
-            ) : null
-          }
+          ListHeaderComponent={earlier}
           onContentSizeChange={showNewest}
         />
       )}
@@ -342,38 +413,54 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
       */}
       <View style={{ paddingBottom: bottomInsetFor(keyboardInset, insets.bottom) }} testID="terminal-composer-safe">
         <View style={styles.composer}>
-          <TextInput
-            testID="terminal-composer-input"
-            style={[styles.field, type.body, !composerEnabled && styles.fieldOff]}
-            value={text}
-            onChangeText={setText}
-            editable={composerEnabled}
-            multiline
-            placeholder={placeholder}
-            placeholderTextColor={ink.faint}
-            // Enter sends on a keyboard; Shift+Enter is a newline. Sending
-            // stays available mid-turn: a second prompt steers the running
-            // turn, which is the delivery the daemon defaults to.
-            submitBehavior="submit"
-            onSubmitEditing={submit}
+          {/*
+            The attachment band, inside the composer surface for the same
+            reason the agent composer carries it: the chips are part of the
+            turn being composed, and a steer can carry an image exactly as an
+            agent prompt can. The band renders its own named-unavailable
+            state, so a build with no picker says so instead of hiding.
+          */}
+          <AttachmentsBar
+            picker={imageAttachmentPicker}
+            images={images}
+            onImages={setImages}
+            enabled={composerEnabled}
+            prefix="terminal-composer"
           />
+          <View style={styles.composerRow}>
+            <TextInput
+              testID="terminal-composer-input"
+              style={[styles.field, type.body, !composerEnabled && styles.fieldOff]}
+              value={text}
+              onChangeText={setText}
+              editable={composerEnabled}
+              multiline
+              placeholder={placeholder}
+              placeholderTextColor={ink.faint}
+              // Enter sends on a keyboard; Shift+Enter is a newline. Sending
+              // stays available mid-turn: a second prompt steers the running
+              // turn, which is the delivery the daemon defaults to.
+              submitBehavior="submit"
+              onSubmitEditing={submit}
+            />
 
-          <Pressable
-            testID="terminal-composer-send"
-            accessibilityRole="button"
-            accessibilityLabel="Send to this terminal"
-            accessibilityState={{ disabled: !canSend }}
-            disabled={!canSend}
-            onPress={submit}
-            style={({ pressed }) => [
-              styles.action,
-              { borderColor: canSend ? signal.sage : ground.edge },
-              pressed && { backgroundColor: ground.active },
-            ]}
-          >
-            <Glyph name="send" size={14} color={canSend ? signal.sage : ink.faint} />
-            <Label color={canSend ? signal.sage : ink.faint}>Send</Label>
-          </Pressable>
+            <Pressable
+              testID="terminal-composer-send"
+              accessibilityRole="button"
+              accessibilityLabel="Send to this terminal"
+              accessibilityState={{ disabled: !canSend }}
+              disabled={!canSend}
+              onPress={submit}
+              style={({ pressed }) => [
+                styles.action,
+                { borderColor: canSend ? signal.sage : ground.edge },
+                pressed && { backgroundColor: ground.active },
+              ]}
+            >
+              <Glyph name="send" size={14} color={canSend ? signal.sage : ink.faint} />
+              <Label color={canSend ? signal.sage : ink.faint}>Send</Label>
+            </Pressable>
+          </View>
         </View>
       </View>
     </SafeScreen>
@@ -405,12 +492,35 @@ const styles = StyleSheet.create({
   // instead of leaving a void under the operator's last words. Once the tail
   // outgrows the pane both declarations are inert and the list just scrolls.
   logContent: { padding: space.step, gap: space.step, flexGrow: 1, justifyContent: "flex-end" },
+  // The same control shape the agent log's transcript uses for the same act,
+  // so the two surfaces do not teach two different gestures for going back
+  // through a conversation.
+  earlier: {
+    minHeight: TOUCH_TARGET,
+    alignSelf: "center",
+    paddingHorizontal: space.step,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
+  // With no turns to head, the control stands where the log would be rather
+  // than crowding the bands under it.
+  earlierAlone: { paddingTop: space.step, alignItems: "center" },
   turn: { flexDirection: "row", gap: space.step },
   // A hint row wraps its gutter and prose once more so the hint's own
   // testID can sit inside the row that carries the turn's positional one.
   hintSkin: { flex: 1, flexDirection: "row", gap: space.step },
   gutter: {
-    width: 68,
+    // 76 to match `Transcript`'s gutter exactly, which is the point: the
+    // module doc calls this the same gutter-and-prose language a served turn
+    // uses, and the two columns differing by 8 points was drift rather than a
+    // decision. The hairline and the padding leave 66 points for text, which
+    // fits every word this column holds: AGENT (43.96), REPLY (40.26), and
+    // the widest stamp `elapsed` can produce (365D 23H, 58.73, which the old
+    // 58 points cut in half). Measured with CoreText in the face `Kicker`
+    // renders; test/no-hidden-content.test.ts re-measures and fails if a word
+    // stops fitting.
+    width: 76,
     borderLeftWidth: stroke.heavy,
     paddingLeft: space.snug,
     gap: space.tight,
@@ -428,13 +538,19 @@ const styles = StyleSheet.create({
   refusalHead: { flexDirection: "row", alignItems: "center", gap: space.tight },
   boundary: { marginTop: "auto", paddingTop: space.snug },
   composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: space.snug,
+    gap: space.tight,
     padding: space.step,
     backgroundColor: ground.surface,
     borderTopWidth: stroke.hair,
     borderTopColor: ground.edge,
+  },
+  // The input and send sit in their own row inside the composer surface, so
+  // the attachment band can sit above them in the same surface without
+  // participating in the row's flex-end alignment.
+  composerRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.snug,
   },
   field: {
     flex: 1,

@@ -36,12 +36,14 @@ import {
   faClockRotateLeft,
   faCodeBranch,
   faCoins,
+  faCopy,
   faEllipsis,
   faFileLines,
   faFolder,
   faGaugeHigh,
   faGlobe,
   faHand,
+  faImage,
   faLayerGroup,
   faLink,
   faListCheck,
@@ -122,7 +124,10 @@ export type GlyphName =
   | "browser"
   | "narration"
   | "mic"
-  | "unknown";
+  /** An image being attached to a prompt; `attach` is this device joining a session. */
+  | "image"
+  | "unknown"
+  | "copy";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
@@ -222,7 +227,13 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // Speech into this device, the microphone itself; narration is sound
   // leaving it, so the two never share a glyph.
   mic: faMicrophone,
+  // A picture riding a prompt, drawn as the picture itself rather than the
+  // paperclip, because what this control adds is an image, not a file.
+  image: faImage,
   unknown: faCircleQuestion,
+  // Two sheets of paper, one lifted off the other: the one shape every
+  // platform's users already read as "duplicate this exactly".
+  copy: faCopy,
 };
 
 export interface GlyphProps {

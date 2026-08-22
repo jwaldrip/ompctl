@@ -621,10 +621,93 @@ export interface SyncSettings {
   keepAwake: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Prompt attachments
+//
+// A prompt can carry images alongside its text, on both delivery paths: the
+// agent prompt and the terminal steer. The bytes ride the same sealed socket
+// as every other frame -- the hub relays one websocket and proxies no HTTP,
+// so there is no upload endpoint a phone could reach even if we wanted one.
+//
+// That relay hop is what sizes the ceiling, not the agent: the hub caps one
+// frame at 1,000,000 bytes (`MAX_FRAME_BYTES` in `packages/hub/src/hub.ts`),
+// and a frame the hub refuses to carry is a disconnect the phone cannot tell
+// apart from a dead daemon. The budgets below keep the worst case -- four
+// images plus a normal prompt's text and JSON envelope -- under that cap with
+// headroom. The ACP client's own 32 MiB line limit is never the binding
+// constraint.
+//
+// A phone is not a trusted client, so the daemon enforces the same budgets at
+// its socket boundary rather than trusting the app's picker: exceeding them
+// is a named refusal, never a crash, a truncation, or a silent drop.
+// ---------------------------------------------------------------------------
+
+/** One image riding a prompt. `data` is base64-encoded bytes, no data: URL wrapper. */
+export interface PromptImage {
+  data: string;
+  mimeType: string;
+}
+
+/** At most this many images per prompt. */
+export const MAX_PROMPT_IMAGES = 4;
+
+/** One image's base64 may be at most this many characters (about 256 KiB decoded). */
+export const MAX_PROMPT_IMAGE_BASE64_CHARS = 350_000;
+
+/** Every image on one prompt together may be at most this many base64 characters. */
+export const MAX_PROMPT_IMAGES_BASE64_CHARS = 700_000;
+
+/** The image types an agent's `image` prompt capability covers, and nothing else. */
+export const PROMPT_IMAGE_MIME_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/** Why a prompt's images were refused. Named so the app and the daemon say the same words. */
+export type PromptImageRefusal = "too_many" | "too_large" | "bad_mime" | "bad_data";
+
+/** The wording for each refusal, shared by every surface that has to say why. */
+export const PROMPT_IMAGE_REFUSAL_REASONS: Readonly<Record<PromptImageRefusal, string>> = {
+  too_many: `A prompt can carry at most ${MAX_PROMPT_IMAGES} images.`,
+  too_large: `Images must stay small enough for one relayed prompt frame: at most ${MAX_PROMPT_IMAGE_BASE64_CHARS.toLocaleString("en-US")} base64 characters each and ${MAX_PROMPT_IMAGES_BASE64_CHARS.toLocaleString("en-US")} together. Resize before attaching.`,
+  bad_mime: `Only ${PROMPT_IMAGE_MIME_TYPES.join(", ")} can ride a prompt.`,
+  bad_data: "An attachment was not readable base64 image data.",
+};
+
+/**
+ * Validate untrusted prompt images against the wire budgets. Returns the
+ * parsed images, or the first named refusal. Both ends of the wire call this:
+ * the app before it sends, the daemon before it accepts, so a client cannot
+ * smuggle an unbounded base64 blob past a boundary that only one of them
+ * checks.
+ */
+export function parsePromptImages(
+  value: unknown,
+): { ok: true; images: PromptImage[] } | { ok: false; refusal: PromptImageRefusal } {
+  if (value === undefined) return { ok: true, images: [] };
+  if (!Array.isArray(value) || value.length === 0) return { ok: false, refusal: "bad_data" };
+  if (value.length > MAX_PROMPT_IMAGES) return { ok: false, refusal: "too_many" };
+
+  const images: PromptImage[] = [];
+  let total = 0;
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) return { ok: false, refusal: "bad_data" };
+    const { data, mimeType } = raw as Record<string, unknown>;
+    if (typeof data !== "string" || typeof mimeType !== "string") return { ok: false, refusal: "bad_data" };
+    // Padding at the end, base64 alphabet everywhere else, and at least one
+    // character of payload: this is what keeps "base64" from being a label on
+    // an arbitrary string the daemon would then relay verbatim.
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return { ok: false, refusal: "bad_data" };
+    if (data.length > MAX_PROMPT_IMAGE_BASE64_CHARS) return { ok: false, refusal: "too_large" };
+    if (!PROMPT_IMAGE_MIME_TYPES.includes(mimeType.toLowerCase())) return { ok: false, refusal: "bad_mime" };
+    total += data.length;
+    images.push({ data, mimeType: mimeType.toLowerCase() });
+  }
+  if (total > MAX_PROMPT_IMAGES_BASE64_CHARS) return { ok: false, refusal: "too_large" };
+  return { ok: true, images };
+}
+
 export type ClientFrame =
   | { t: "attach"; agentId: AgentId; sinceSeq?: number }
   | { t: "detach"; agentId: AgentId }
-  | { t: "prompt"; agentId: AgentId; text: string; images?: string[] }
+  | { t: "prompt"; agentId: AgentId; text: string; images?: PromptImage[] }
   | { t: "cancel"; agentId: AgentId }
   | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice; scope?: ApprovalScope }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
@@ -648,7 +731,7 @@ export type ClientFrame =
    * the daemon routes the text to that TUI as a `tui_steer`. `deliverAs`
    * defaults to `steer` server-side, matching omp's own `sendMessage` default.
    */
-  | { t: "session_prompt"; sessionId: string; text: string; deliverAs?: TuiSteerDelivery }
+  | { t: "session_prompt"; sessionId: string; text: string; deliverAs?: TuiSteerDelivery; images?: PromptImage[] }
   /** A registered live TUI reporting turn progress back to the daemon. */
   | { t: "tui_activity"; sessionId: string; kind: TuiActivityKind; text?: string }
   /**
@@ -719,7 +802,15 @@ export type ClientFrame =
   /** Rotate a webhook routine's one-time secret. Requires manage scope. */
   | { t: "routine_secret_rotate"; routineId: string }
   /**
-   * The tail of a session's transcript, read straight from its file.
+   * Delete routines for good. Requires manage scope, and refuses per id rather
+   * than failing the batch. The one irreversible operation on the routine
+   * catalog, so it is armed behind an explicit confirm on every surface that
+   * offers it.
+   */
+  | { t: "routine_delete"; routineIds: string[] }
+  /**
+   * The tail of a session's transcript, read straight from its file, and the
+   * pages of it older than that.
    *
    * Read scope, not manage: this is reading a transcript, which a read-only
    * device is already entitled to for its own agents, and it changes nothing
@@ -727,11 +818,18 @@ export type ClientFrame =
    * turns; the daemon defaults it and caps it, so a client cannot ask for a
    * whole 10MB transcript in one frame.
    *
+   * `cursor` is how the rest of the conversation is reached: every answer
+   * carries the byte offset the next older page starts from, and sending it
+   * back asks for that page. Absent means the newest turns. Paging rides
+   * this frame rather than `session_history` because that one is keyed by
+   * agent id, and a live terminal session has no agent row to key on, which
+   * is the whole reason this frame exists.
+   *
    * A live terminal session has no agent row, so `attach` and its `update`
    * stream cannot reach it. Without this frame, tapping a session with a
    * thousand messages in it shows a composer and nothing else.
    */
-  | { t: "session_tail"; sessionId: string; limit?: number }
+  | { t: "session_tail"; sessionId: string; limit?: number; cursor?: number }
   | { t: "session_history"; agentId: AgentId; sessionId: string; before?: number; limit?: number }
   /**
    * Ask what the daemon's two persisted settings hold right now. The hub
@@ -764,6 +862,57 @@ export type ClientFrame =
    * state and never its own request.
    */
   | { t: "agent_config_write"; agentId: AgentId; modeId: string }
+  /**
+   * The Cowork catalogue reads, sealed-socket versions of `GET /v1/skills`
+   * and `GET /v1/connectors`. A hub-paired phone reaches these frames rather
+   * than those routes: the hub tunnels exactly one HTTP shape today (the
+   * routine webhook POST, carried as `webhook_request`/`webhook_response`),
+   * and Cowork deliberately does not add a second, because a general tunnel
+   * would carry this device's bearer token through the hub while typed frames
+   * keep the hub relaying opaque sealed traffic. `cwd` scopes the discovery
+   * the way the route's query parameter does; `agentId` resolves to that
+   * agent's cwd, and `cwd` wins when both are given. Answered by
+   * `skills`/`connectors`, to the asking socket only.
+   */
+  | { t: "skills_read"; cwd?: string; agentId?: string }
+  | { t: "connectors_read"; cwd?: string; agentId?: string }
+  /**
+   * The task roster over this socket, the `GET /v1/tasks` twin. Answered by
+   * `tasks`, to the asking socket only.
+   */
+  | { t: "tasks_read"; agentId?: string }
+  /**
+   * Start one task, the `POST /v1/tasks` twin: a named prompt against a
+   * session that already exists, never a session-spawner. Answered by `task`
+   * carrying what the daemon created, to the asking socket only.
+   */
+  | {
+      t: "task_create";
+      title: string;
+      prompt: string;
+      agentId: AgentId;
+      skillName?: string;
+      labels?: Record<string, string>;
+    }
+  /**
+   * Cancel one task, the `POST /v1/tasks/:id/cancel` twin. Answered by
+   * `task` carrying the task as the daemon now holds it, to the asking
+   * socket only.
+   */
+  | { t: "task_cancel"; taskId: string }
+  /**
+   * Create an agent, the `POST /v1/agents` twin: the manage-scoped act that
+   * provisions a host, which is how a Cowork container start crosses the
+   * socket. Answered by `agent_created`, to the asking socket only.
+   */
+  | {
+      t: "agent_create";
+      name: string;
+      cwd: string;
+      host?: HostSpec;
+      routineId?: string;
+      labels?: Record<string, string>;
+    }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -811,9 +960,11 @@ export type ServerFrame =
   /**
    * Deliver a message into a session a registered live TUI owns. The daemon
    * sends this only in answer to a prompt-scoped `session_prompt`, and only to
-   * the socket that registered the session.
+   * the socket that registered the session. Images ride the steer as omp's own
+   * `sendUserMessage` content blocks, the same vocabulary the agent prompt
+   * uses, so a terminal turn and an agent turn can carry the same attachment.
    */
-  | { t: "tui_steer"; sessionId: string; text: string; deliverAs: TuiSteerDelivery }
+  | { t: "tui_steer"; sessionId: string; text: string; deliverAs: TuiSteerDelivery; images?: PromptImage[] }
   /**
    * Turn progress from a registered live TUI, forwarded by the daemon to
    * clients that asked for the session index. Keyed by session id, not agent
@@ -850,6 +1001,26 @@ export type ServerFrame =
   /** One-time webhook secret returned only to the socket that rotated it. */
   | { t: "routine_secret"; routineId: string; secret: string }
   /**
+   * The skills or connectors catalogue answering `skills_read`/
+   * `connectors_read`, sent only to the socket that asked. Reshaped and
+   * wire-safe by construction: never a connector's raw config.
+   */
+  | { t: "skills"; skills: SkillSummary[] }
+  | { t: "connectors"; connectors: ConnectorSummary[] }
+  /** The task roster answering `tasks_read`, sent only to the socket that asked. */
+  | { t: "tasks"; tasks: Task[] }
+  /** One task as the daemon now holds it, answering `task_create` or `task_cancel`. */
+  | { t: "task"; task: Task }
+  /** The agent an `agent_create` made, sent only to the socket that asked. */
+  | { t: "agent_created"; agent: Agent }
+  /**
+   * What a `routine_delete` did, one result per id asked for, sent only to the
+   * socket that asked. Beside `sessions_deleted` rather than an error frame,
+   * for the same reason: a mixed batch has both answers and an error frame
+   * cannot say which ids it covers.
+   */
+  | { t: "routines_deleted"; results: RoutineDeleteResult[] }
+  /**
    * The answer to a `device_invite`: the one-time view of a credential just
    * minted, sent only to the socket that asked. Never broadcast, never
    * replayed after a reconnect -- a credential delivered twice is a second
@@ -858,13 +1029,32 @@ export type ServerFrame =
   | { t: "device_invited"; token: string; name: string; scopes: string[] }
   | RemoteStartServerFrame
   /**
-   * The transcript tail answering a `session_tail` frame, sent only to the
-   * socket that asked. Oldest first, so a client appends live activity below
-   * it without reordering. `truncated` says the tail is not the whole
+   * One page of a transcript answering a `session_tail` frame, sent only to
+   * the socket that asked. Oldest first, so a client appends live activity
+   * below it without reordering. `truncated` says this page is not the whole
    * transcript: either an older turn exists past the ones returned, or the
    * reader stopped at its byte budget with unread bytes behind it.
+   *
+   * `nextCursor` is the byte offset the next older page starts from, or null
+   * when this page reached the start of the file. It is a cursor, not a
+   * promise of words: a page can arrive empty with a non-null cursor,
+   * because a long run of tool traffic says nothing and the reader stopped
+   * at its budget inside one. A client keeps asking from the cursor rather
+   * than treating an empty page as the end.
+   *
+   * `cursor` echoes the offset this page was read from, and is absent on the
+   * answer to a cursorless ask. A client needs it to tell a first page from
+   * an older one without guessing from timestamps, and to drop a page that
+   * answers an ask its surface has already replaced.
    */
-  | { t: "session_tail"; sessionId: string; messages: TranscriptTailMessage[]; truncated: boolean }
+  | {
+      t: "session_tail";
+      sessionId: string;
+      messages: TranscriptTailMessage[];
+      truncated: boolean;
+      nextCursor: number | null;
+      cursor?: number;
+    }
   | {
       t: "session_history";
       agentId: AgentId;
@@ -941,6 +1131,14 @@ export type AuditAction =
    * and, on a refusal, which refusal it was.
    */
   | "session.delete"
+  /**
+   * A device deleted one routine and its runs and webhook credential, or was
+   * refused. One record per id, whichever way it went, for the same reason as
+   * `session.delete`: the log has to answer "who removed that routine" for
+   * every id anyone ever named, not only the ones that succeeded. `detail`
+   * carries the routine id and, on a refusal, which refusal it was.
+   */
+  | "routine.delete"
   /**
    * A device cloned a repository onto this machine, or was refused. `detail`
    * carries the url and the destination; a url carrying a credential is
@@ -1267,6 +1465,45 @@ export const SESSION_DELETE_REFUSAL_REASONS: Record<SessionDeleteRefusal, string
   not_found: "this machine has no session with that id",
   failed: "the transcript could not be removed from disk",
 };
+
+/**
+ * Why one id in a routine delete request was refused. Named rather than
+ * boolean for the same reason as `SessionDeleteRefusal`: each answer calls
+ * for something different from an operator.
+ *
+ * - `running`: a run of this routine is in flight right now. Deleting the
+ *   definition under a live run would orphan a record still being written,
+ *   so the operator lets the run finish (or stops it) and deletes then.
+ * - `not_found`: this daemon holds no routine with that id. Reported rather
+ *   than treated as already gone, because the usual cause is a typo or a
+ *   stale list, and silence there reads as a successful delete.
+ * - `failed`: the definition was there and the removal did not succeed. The
+ *   routine is intact; the cause is on the machine.
+ */
+export type RoutineDeleteRefusal = "running" | "not_found" | "failed";
+
+/** One id's outcome, mirroring `SessionDeleteResult` for the same reasons. */
+export type RoutineDeleteResult =
+  | { routineId: string; deleted: true }
+  | { routineId: string; deleted: false; refusal: RoutineDeleteRefusal };
+
+/** The wording for each refusal, shared by every surface for the same reason. */
+export const ROUTINE_DELETE_REFUSAL_REASONS: Record<RoutineDeleteRefusal, string> = {
+  running: "a run of this routine is in flight; let it finish or stop it first",
+  not_found: "this daemon holds no routine with that id",
+  failed: "the routine could not be removed from the store",
+};
+
+/**
+ * The public route a webhook routine's caller POSTs to. One copy of the path
+ * shape, because the gateway matches it and the app renders it: two copies
+ * would drift, and instructions that name a route the daemon no longer serves
+ * are worse than none. The id is encoded, so a caller can hand this the exact
+ * id the daemon minted without thinking about URL syntax.
+ */
+export function webhookPath(routineId: string): string {
+  return `/v1/webhooks/${encodeURIComponent(routineId)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Browsing the machine, and starting work on it

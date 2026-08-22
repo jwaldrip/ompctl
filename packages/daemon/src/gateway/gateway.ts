@@ -30,8 +30,12 @@ import {
   type EndpointOffer,
   type HostSpec,
   type PersistCollabVoiceNoteInput,
+  PROMPT_IMAGE_REFUSAL_REASONS,
+  parsePromptImages,
   type QueuedIntent,
+  ROUTINE_DELETE_REFUSAL_REASONS,
   type Routine,
+  type RoutineDeleteResult,
   type Run,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
@@ -412,6 +416,11 @@ export interface WebhookFireAttempt {
 export interface RoutineRunner {
   runNow(routineId: string, actor: Actor): Promise<Run>;
   fireWebhook(routineId: string, presentedSecret: string): Promise<WebhookFireAttempt>;
+  /**
+   * Delete routines for good, with per-id results. On the runner rather than
+   * the store because only the scheduler knows whether a run is in flight.
+   */
+  deleteRoutines(routineIds: readonly string[]): Promise<RoutineDeleteResult[]>;
 }
 
 /**
@@ -590,6 +599,20 @@ const SYNC_SETTINGS_KEYS: Record<string, true> = {
  * body carrying more is aimed at the wrong endpoint, and silently accepting
  * the recognizable parts would let that mistake pass as a success.
  */
+/**
+ * A catalogue read's optional scoping fields, checked at the socket door
+ * before the shared path runs: the wire is not a place to assume the frame
+ * kept to the contract. A type guard rather than inline checks so the frame
+ * narrows to `CatalogQuery` for the shared call.
+ */
+function isCatalogQuery(frame: object): frame is CatalogQuery {
+  const query = frame as { cwd?: unknown; agentId?: unknown };
+  return (
+    (query.cwd === undefined || typeof query.cwd === "string") &&
+    (query.agentId === undefined || typeof query.agentId === "string")
+  );
+}
+
 function parseSyncSettings(value: unknown): SyncSettings | null {
   if (!isRecord(value)) return null;
   if (Object.keys(value).some(key => SYNC_SETTINGS_KEYS[key] !== true)) return null;
@@ -608,6 +631,43 @@ function parseSyncSettings(value: unknown): SyncSettings | null {
  * the same defence-in-depth `/v1/agents/:id/prompt` already has, not the only
  * ones.
  */
+/** How a skills/connectors catalogue query is scoped: `cwd` wins, else the agent's own. */
+export interface CatalogQuery {
+  cwd?: string;
+  agentId?: string;
+}
+
+/**
+ * What one shared Cowork capability answered, as facts rather than wire
+ * shapes. The HTTP door maps these onto status codes and the socket door onto
+ * frames, so the two cannot disagree about what happened, only about how to
+ * say it.
+ */
+export type CoworkListOutcome<T> =
+  | { kind: "ok"; value: T }
+  /** No catalogue wired into this daemon build: the feature is off, not empty. */
+  | { kind: "off" }
+  /** The query named an agent this daemon holds no row for. */
+  | { kind: "unknown-agent" }
+  | { kind: "failed"; error: string };
+
+/** A task mutation's answer, on the same shared-facts rule as the reads. */
+export type TaskOutcome =
+  | { kind: "ok"; value: Task }
+  | { kind: "off" }
+  | { kind: "bad"; error: string }
+  | { kind: "refused"; error: string }
+  /** What was named does not exist, or the mutation could not run on it. */
+  | { kind: "missing"; error: string };
+
+/** An agent creation's answer, including the replica's queue-instead-of-run. */
+export type AgentCreateOutcome =
+  | { kind: "created"; agent: Agent }
+  | { kind: "queued"; intent: QueuedIntent }
+  | { kind: "bad"; error: string }
+  | { kind: "refused"; error: string }
+  | { kind: "failed"; error: string };
+
 export interface TaskCatalog {
   get(id: string): Task | null;
   list(agentId?: string): Task[];
@@ -1044,6 +1104,15 @@ export class Gateway {
       port: this.#port,
       fetch: (req, server) => this.#fetch(req, server),
       /**
+       * 255, Bun's ceiling. The default 10s kills any request whose handler
+       * legitimately waits out an agent turn before answering, which is what
+       * the webhook route and `POST /v1/routines/:id/run` both do: a fire
+       * observed live died at exactly 10s while its turn kept running. A turn
+       * longer than the ceiling still loses its response (the run itself
+       * completes); no larger value exists to hold it for.
+       */
+      idleTimeout: 255,
+      /**
        * A request handler that throws is a bug in this daemon, and Bun's own
        * 500 body says only "Internal error" with the stack going nowhere. That
        * is indistinguishable from a route that deliberately answered 500,
@@ -1414,51 +1483,24 @@ export class Gateway {
 
     if (path === "/v1/agents" && req.method === "POST") {
       if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
-      let body: {
-        name?: unknown;
-        cwd?: unknown;
-        host?: HostSpec;
-        routineId?: string;
-        labels?: Record<string, string>;
-      };
+      let body: unknown;
       try {
-        body = (await req.json()) as typeof body;
+        body = await req.json();
       } catch {
         return Response.json({ error: "bad_json" }, { status: 400 });
       }
-      if (typeof body.name !== "string" || typeof body.cwd !== "string") {
-        return Response.json({ error: "name and cwd are required" }, { status: 400 });
+      // One shared path with the `agent_create` frame below, so the route and
+      // the socket cannot disagree about what creating an agent is. The
+      // supervisor's own authorize-and-audit is the mutation record both
+      // doors leave behind.
+      const outcome = await this.#createAgentOverWire(body, actor);
+      if (outcome.kind === "bad") return Response.json({ error: outcome.error }, { status: 400 });
+      if (outcome.kind === "queued") return Response.json({ intent: outcome.intent }, { status: 202 });
+      if (outcome.kind === "refused") return Response.json({ error: "forbidden" }, { status: 403 });
+      if (outcome.kind === "failed") {
+        return Response.json({ error: outcome.error }, { status: 500 });
       }
-      if (this.#federation?.replica === true) {
-        const agentId = createAgentId();
-        const intent = this.#enqueueIntent(agentId, actor, "new-agent", {
-          name: body.name,
-          cwd: body.cwd,
-          host: body.host,
-          routineId: body.routineId,
-          labels: body.labels,
-        });
-        return Response.json({ intent }, { status: 202 });
-      }
-
-      try {
-        const agent = await this.#sup.createAgent(
-          {
-            name: body.name,
-            cwd: body.cwd,
-            host: body.host,
-            routineId: body.routineId,
-            labels: body.labels,
-          },
-          actor,
-        );
-        return Response.json({ agent }, { status: 201 });
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          return Response.json({ error: "forbidden" }, { status: 403 });
-        }
-        return Response.json({ error: err instanceof Error ? err.message : "agent creation failed" }, { status: 500 });
-      }
+      return Response.json({ agent: outcome.agent }, { status: 201 });
     }
 
     const agentRoute = /^\/v1\/agents\/([^/]+)$/.exec(path);
@@ -1538,19 +1580,35 @@ export class Gateway {
       // The same gate the socket's `prompt` frame passes, and the supervisor
       // re-authorizes from the device row behind it either way.
       if (!scopes.has(SCOPE_PROMPT)) return Response.json({ error: "forbidden" }, { status: 403 });
-      let body: { text?: unknown };
+      let body: { text?: unknown; images?: unknown };
       try {
         body = (await req.json()) as typeof body;
       } catch {
         return Response.json({ error: "bad_json" }, { status: 400 });
       }
-      if (typeof body.text !== "string" || body.text.length === 0) {
+      const images = parsePromptImages(body.images);
+      if (typeof body.text !== "string" || (body.text.length === 0 && !(images.ok && images.images.length > 0))) {
         return Response.json({ error: "text is required" }, { status: 400 });
+      }
+      if (!images.ok) {
+        // The same budgets and the same words as the socket frame, so a client
+        // meets one vocabulary whichever road it takes. Ignoring the field
+        // instead would be the one worse answer: a caller believing an image
+        // reached the agent that never did.
+        return Response.json(
+          { error: `attachment_${images.refusal}`, message: PROMPT_IMAGE_REFUSAL_REASONS[images.refusal] },
+          { status: 413 },
+        );
       }
 
       const agentId = promptRoute[1] ?? "";
       if (this.#queuesForDelegate(agentId)) {
-        const intent = this.#enqueueIntent(agentId, actor, "prompt", { text: body.text });
+        const intent = this.#enqueueIntent(
+          agentId,
+          actor,
+          "prompt",
+          images.images.length > 0 ? { text: body.text as string, images: images.images } : { text: body.text },
+        );
         return Response.json({ intent }, { status: 202 });
       }
 
@@ -1558,7 +1616,12 @@ export class Gateway {
         // Awaited, unlike the socket path: the whole point of this route is to
         // hand a script the stop reason, which does not exist until the turn
         // settles. The turn itself is identical either way.
-        const result = await this.#sup.prompt(promptRoute[1] ?? "", body.text, actor);
+        const result = await this.#sup.prompt(
+          agentId,
+          body.text as string,
+          actor,
+          images.images.length > 0 ? images.images : undefined,
+        );
         return Response.json({ agentId: promptRoute[1], stopReason: result.stopReason });
       } catch (err) {
         if (err instanceof UnauthorizedError) {
@@ -1863,40 +1926,64 @@ export class Gateway {
       }
     }
 
+    // A POST with a body rather than `DELETE /v1/routines/:id`, mirroring
+    // `/v1/sessions/delete`: the capability is a list, every id answers for
+    // itself in `results`, and a refusal among them does not fail the rest.
+    // The response is 200 even when every id was refused, because the request
+    // was understood and answered; a caller checks `results`, not the status.
+    if (path === "/v1/routines/delete" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const runner = this.#routines;
+      if (!runner) return Response.json({ error: "routines_unavailable" }, { status: 503 });
+      let body: { routineIds?: unknown };
+      try {
+        body = (await req.json()) as { routineIds?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const ids = body.routineIds;
+      // An empty list is refused rather than answered with an empty result,
+      // for the same reason as sessions: for something irreversible, "I
+      // deleted nothing" and "you asked me to delete nothing" are worth
+      // telling apart.
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || id.length === 0)) {
+        return Response.json({ error: "routineIds must be a non-empty array of routine ids" }, { status: 400 });
+      }
+      const results = await this.#deleteRoutines(runner, ids as string[], actor.deviceId);
+      return Response.json({ results });
+    }
+
     if (path === "/v1/skills" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
-      const catalog = this.#skills;
-      if (!catalog) return Response.json({ error: "skills_unavailable" }, { status: 503 });
-      const resolved = this.#resolveCatalogCwd(url);
-      if ("notFound" in resolved) return Response.json({ error: "not_found" }, { status: 404 });
-      try {
-        return Response.json({ skills: await catalog.list(resolved.cwd) });
-      } catch (err) {
-        return Response.json({ error: err instanceof Error ? err.message : "skill discovery failed" }, { status: 502 });
-      }
+      // One shared path with the `skills_read` frame below, so the route and
+      // the socket cannot disagree about what a catalogue read is.
+      const outcome = await this.#listSkills({
+        cwd: url.searchParams.get("cwd") ?? undefined,
+        agentId: url.searchParams.get("agentId") ?? undefined,
+      });
+      if (outcome.kind === "off") return Response.json({ error: "skills_unavailable" }, { status: 503 });
+      if (outcome.kind === "unknown-agent") return Response.json({ error: "not_found" }, { status: 404 });
+      if (outcome.kind === "failed") return Response.json({ error: outcome.error }, { status: 502 });
+      return Response.json({ skills: outcome.value });
     }
 
     if (path === "/v1/connectors" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
-      const catalog = this.#connectors;
-      if (!catalog) return Response.json({ error: "connectors_unavailable" }, { status: 503 });
-      const resolved = this.#resolveCatalogCwd(url);
-      if ("notFound" in resolved) return Response.json({ error: "not_found" }, { status: 404 });
-      try {
-        return Response.json({ connectors: await catalog.list(resolved.cwd) });
-      } catch (err) {
-        return Response.json(
-          { error: err instanceof Error ? err.message : "connector discovery failed" },
-          { status: 502 },
-        );
-      }
+      const outcome = await this.#listConnectors({
+        cwd: url.searchParams.get("cwd") ?? undefined,
+        agentId: url.searchParams.get("agentId") ?? undefined,
+      });
+      if (outcome.kind === "off") return Response.json({ error: "connectors_unavailable" }, { status: 503 });
+      if (outcome.kind === "unknown-agent") return Response.json({ error: "not_found" }, { status: 404 });
+      if (outcome.kind === "failed") return Response.json({ error: outcome.error }, { status: 502 });
+      return Response.json({ connectors: outcome.value });
     }
 
     if (path === "/v1/tasks" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
-      const catalog = this.#tasks;
-      if (!catalog) return Response.json({ error: "tasks_unavailable" }, { status: 503 });
-      return Response.json({ tasks: catalog.list(url.searchParams.get("agentId") ?? undefined) });
+      const outcome = this.#listTasks(url.searchParams.get("agentId") ?? undefined);
+      if (outcome.kind === "off") return Response.json({ error: "tasks_unavailable" }, { status: 503 });
+      return Response.json({ tasks: outcome.value });
     }
 
     const taskRoute = /^\/v1\/tasks\/([^/]+)$/.exec(path);
@@ -1914,44 +2001,23 @@ export class Gateway {
       // prompt against a session that already exists, not a session-spawner.
       // Creating that session is `manage`'s job via `POST /v1/agents`.
       if (!scopes.has(SCOPE_PROMPT)) return Response.json({ error: "forbidden" }, { status: 403 });
-      const catalog = this.#tasks;
-      if (!catalog) return Response.json({ error: "tasks_unavailable" }, { status: 503 });
-      let body: {
-        title?: unknown;
-        prompt?: unknown;
-        agentId?: unknown;
-        skillName?: unknown;
-        labels?: Record<string, string>;
-      };
+      let body: unknown;
       try {
-        body = (await req.json()) as typeof body;
+        body = await req.json();
       } catch {
         return Response.json({ error: "bad_json" }, { status: 400 });
       }
-      if (typeof body.title !== "string" || typeof body.prompt !== "string" || typeof body.agentId !== "string") {
-        return Response.json({ error: "title, prompt, and agentId are required" }, { status: 400 });
-      }
-      if (body.skillName !== undefined && typeof body.skillName !== "string") {
-        return Response.json({ error: "skillName must be a string" }, { status: 400 });
-      }
-      try {
-        const task = await catalog.create(
-          {
-            title: body.title,
-            prompt: body.prompt,
-            agentId: body.agentId,
-            ...(body.skillName === undefined ? {} : { skillName: body.skillName }),
-            ...(body.labels === undefined ? {} : { labels: body.labels }),
-          },
-          actor,
-        );
-        return Response.json({ task }, { status: 201 });
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          return Response.json({ error: "forbidden" }, { status: 403 });
-        }
-        return Response.json({ error: err instanceof Error ? err.message : "task creation failed" }, { status: 404 });
-      }
+      // One shared path with the `task_create` frame below, so the route and
+      // the socket cannot disagree about what starting a task is.
+      const createOutcome = await this.#createTask(body, actor);
+      if (createOutcome.kind === "off") return Response.json({ error: "tasks_unavailable" }, { status: 503 });
+      if (createOutcome.kind === "bad") return Response.json({ error: createOutcome.error }, { status: 400 });
+      if (createOutcome.kind === "refused") return Response.json({ error: "forbidden" }, { status: 403 });
+      // 404 rather than 500, unchanged from before the shared path existed:
+      // the failures that land here (unknown agent, unknown task) are all
+      // "what you named is not there", and this status is a public contract.
+      if (createOutcome.kind !== "ok") return Response.json({ error: createOutcome.error }, { status: 404 });
+      return Response.json({ task: createOutcome.value }, { status: 201 });
     }
 
     const taskCancel = /^\/v1\/tasks\/([^/]+)\/cancel$/.exec(path);
@@ -1960,17 +2026,11 @@ export class Gateway {
       // `Supervisor.cancel` itself; this call re-authorizes from the device
       // row regardless.
       if (!scopes.has(SCOPE_PROMPT)) return Response.json({ error: "forbidden" }, { status: 403 });
-      const catalog = this.#tasks;
-      if (!catalog) return Response.json({ error: "tasks_unavailable" }, { status: 503 });
-      try {
-        const task = await catalog.cancel(taskCancel[1] ?? "", actor);
-        return Response.json({ task });
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          return Response.json({ error: "forbidden" }, { status: 403 });
-        }
-        return Response.json({ error: err instanceof Error ? err.message : "cancel failed" }, { status: 404 });
-      }
+      const outcome = await this.#cancelTask(taskCancel[1] ?? "", actor);
+      if (outcome.kind === "off") return Response.json({ error: "tasks_unavailable" }, { status: 503 });
+      if (outcome.kind === "refused") return Response.json({ error: "forbidden" }, { status: 403 });
+      if (outcome.kind !== "ok") return Response.json({ error: outcome.error }, { status: 404 });
+      return Response.json({ task: outcome.value });
     }
 
     // -- sessions ------------------------------------------------------------
@@ -2070,16 +2130,299 @@ export class Gateway {
    * `cwd` wins when both are given. `agentId` resolves through this daemon's
    * own agent rows rather than being handed to discovery as a raw path,
    * because an operator asking "what does agent X have" who mistypes the id
-   * must get a 404, not a silent fall-through to the daemon's own default
+   * must get a refusal, not a silent fall-through to the daemon's own default
    * project directory and a catalogue for the wrong workspace.
+   *
+   * Takes the query fields rather than a URL so the HTTP route and the
+   * `skills_read`/`connectors_read` frames resolve through this one method.
    */
-  #resolveCatalogCwd(url: URL): { cwd: string | undefined } | { notFound: true } {
-    const cwd = url.searchParams.get("cwd");
-    if (cwd !== null) return { cwd };
-    const agentId = url.searchParams.get("agentId");
-    if (agentId === null) return { cwd: undefined };
-    const agent = this.#store.getAgent(agentId);
+  #resolveCatalogCwd(query: CatalogQuery): { cwd: string | undefined } | { notFound: true } {
+    if (query.cwd !== undefined) return { cwd: query.cwd };
+    if (query.agentId === undefined) return { cwd: undefined };
+    const agent = this.#store.getAgent(query.agentId);
     return agent ? { cwd: agent.cwd } : { notFound: true };
+  }
+
+  /**
+   * The skills catalogue for one workspace. One shared path for the
+   * `GET /v1/skills` route and the `skills_read` frame: whichever door is
+   * asked, the same resolution, the same catalogue call, the same failure
+   * facts. Only the wire each door speaks differs.
+   */
+  async #listSkills(query: CatalogQuery): Promise<CoworkListOutcome<SkillSummary[]>> {
+    const catalog = this.#skills;
+    if (!catalog) return { kind: "off" };
+    const resolved = this.#resolveCatalogCwd(query);
+    if ("notFound" in resolved) return { kind: "unknown-agent" };
+    try {
+      return { kind: "ok", value: await catalog.list(resolved.cwd) };
+    } catch (err) {
+      return { kind: "failed", error: err instanceof Error ? err.message : "skill discovery failed" };
+    }
+  }
+
+  /** The connector counterpart to `#listSkills`, on the same shared-path rule. */
+  async #listConnectors(query: CatalogQuery): Promise<CoworkListOutcome<ConnectorSummary[]>> {
+    const catalog = this.#connectors;
+    if (!catalog) return { kind: "off" };
+    const resolved = this.#resolveCatalogCwd(query);
+    if ("notFound" in resolved) return { kind: "unknown-agent" };
+    try {
+      return { kind: "ok", value: await catalog.list(resolved.cwd) };
+    } catch (err) {
+      return { kind: "failed", error: err instanceof Error ? err.message : "connector discovery failed" };
+    }
+  }
+
+  /**
+   * The task roster, optionally narrowed to one agent. One shared path for
+   * `GET /v1/tasks` and the `tasks_read` frame.
+   */
+  #listTasks(agentId: string | undefined): { kind: "ok"; value: Task[] } | { kind: "off" } {
+    const catalog = this.#tasks;
+    if (!catalog) return { kind: "off" };
+    return { kind: "ok", value: catalog.list(agentId) };
+  }
+
+  /**
+   * Start one task. One shared path for `POST /v1/tasks` and the
+   * `task_create` frame. Takes the already-parsed body: the HTTP door keeps
+   * its own JSON parse (and its `bad_json` answer), the socket door receives
+   * a parsed frame, and every field check beyond that lives here.
+   *
+   * The audit is `Supervisor.prompt`'s own, reached through the catalog: the
+   * same `agent.prompt` record either door leaves behind.
+   */
+  async #createTask(body: unknown, actor: Actor): Promise<TaskOutcome> {
+    const catalog = this.#tasks;
+    if (!catalog) return { kind: "off" };
+    const input = body as {
+      title?: unknown;
+      prompt?: unknown;
+      agentId?: unknown;
+      skillName?: unknown;
+      labels?: unknown;
+    };
+    if (typeof input.title !== "string" || typeof input.prompt !== "string" || typeof input.agentId !== "string") {
+      return { kind: "bad", error: "title, prompt, and agentId are required" };
+    }
+    if (input.skillName !== undefined && typeof input.skillName !== "string") {
+      return { kind: "bad", error: "skillName must be a string" };
+    }
+    // `labels` passes through unvalidated, exactly as the HTTP route always
+    // did: inventing a stricter check here would change a public contract in
+    // the same change that adds a second door to it.
+    try {
+      return {
+        kind: "ok",
+        value: await catalog.create(
+          {
+            title: input.title,
+            prompt: input.prompt,
+            agentId: input.agentId,
+            ...(input.skillName === undefined ? {} : { skillName: input.skillName }),
+            ...(input.labels === undefined ? {} : { labels: input.labels as Record<string, string> }),
+          },
+          actor,
+        ),
+      };
+    } catch (err) {
+      return this.#taskRefusal(err);
+    }
+  }
+
+  /**
+   * Cancel one task. One shared path for `POST /v1/tasks/:id/cancel` and the
+   * `task_cancel` frame; the audit is `Supervisor.cancel`'s own.
+   */
+  async #cancelTask(taskId: string, actor: Actor): Promise<TaskOutcome> {
+    const catalog = this.#tasks;
+    if (!catalog) return { kind: "off" };
+    try {
+      return { kind: "ok", value: await catalog.cancel(taskId, actor) };
+    } catch (err) {
+      return this.#taskRefusal(err);
+    }
+  }
+
+  /** The shared mapping of a task-mutation throw onto the outcome both doors see. */
+  #taskRefusal(err: unknown): Exclude<TaskOutcome, { kind: "ok" | "off" }> {
+    if (err instanceof UnauthorizedError) return { kind: "refused", error: err.message };
+    return { kind: "missing", error: err instanceof Error ? err.message : "task operation failed" };
+  }
+
+  /**
+   * Create an agent, host and all. One shared path for `POST /v1/agents` and
+   * the `agent_create` frame: the same shape checks, the same replica
+   * decision, and `Supervisor.createAgent`'s own authorize-and-audit as the
+   * mutation record either door leaves behind.
+   */
+  async #createAgentOverWire(body: unknown, actor: Actor): Promise<AgentCreateOutcome> {
+    const input = body as {
+      name?: unknown;
+      cwd?: unknown;
+      host?: HostSpec;
+      routineId?: string;
+      labels?: Record<string, string>;
+    };
+    if (typeof input.name !== "string" || typeof input.cwd !== "string") {
+      return { kind: "bad", error: "name and cwd are required" };
+    }
+    if (this.#federation?.replica === true) {
+      const intent = this.#enqueueIntent(createAgentId(), actor, "new-agent", {
+        name: input.name,
+        cwd: input.cwd,
+        host: input.host,
+        routineId: input.routineId,
+        labels: input.labels,
+      });
+      return { kind: "queued", intent };
+    }
+    try {
+      return {
+        kind: "created",
+        agent: await this.#sup.createAgent(
+          {
+            name: input.name,
+            cwd: input.cwd,
+            host: input.host,
+            ...(input.routineId === undefined ? {} : { routineId: input.routineId }),
+            ...(input.labels === undefined ? {} : { labels: input.labels }),
+          },
+          actor,
+        ),
+      };
+    } catch (err) {
+      if (err instanceof UnauthorizedError) return { kind: "refused", error: err.message };
+      return { kind: "failed", error: err instanceof Error ? err.message : "agent creation failed" };
+    }
+  }
+
+  /** One socket skills read, mapping the shared outcome onto the asking socket. */
+  async #serveSkillsRead(ws: GatewaySocket, query: CatalogQuery): Promise<void> {
+    const outcome = await this.#listSkills(query);
+    switch (outcome.kind) {
+      case "ok":
+        this.#send(ws, { t: "skills", skills: outcome.value });
+        return;
+      case "off":
+        this.#send(ws, {
+          t: "error",
+          code: "skills_unavailable",
+          message: "no skills catalogue is wired into this daemon",
+        });
+        return;
+      case "unknown-agent":
+        this.#send(ws, {
+          t: "error",
+          code: "not_found",
+          message: query.agentId === undefined ? "no such agent" : `no agent ${query.agentId} on this machine`,
+        });
+        return;
+      case "failed":
+        this.#send(ws, { t: "error", code: "skills_failed", message: outcome.error });
+    }
+  }
+
+  /** One socket connectors read, on the same shared-outcome rule. */
+  async #serveConnectorsRead(ws: GatewaySocket, query: CatalogQuery): Promise<void> {
+    const outcome = await this.#listConnectors(query);
+    switch (outcome.kind) {
+      case "ok":
+        this.#send(ws, { t: "connectors", connectors: outcome.value });
+        return;
+      case "off":
+        this.#send(ws, {
+          t: "error",
+          code: "connectors_unavailable",
+          message: "no connector catalogue is wired into this daemon",
+        });
+        return;
+      case "unknown-agent":
+        this.#send(ws, {
+          t: "error",
+          code: "not_found",
+          message: query.agentId === undefined ? "no such agent" : `no agent ${query.agentId} on this machine`,
+        });
+        return;
+      case "failed":
+        this.#send(ws, { t: "error", code: "connectors_failed", message: outcome.error });
+    }
+  }
+
+  /**
+   * One socket task mutation, mapping the shared outcome onto the asking
+   * socket. Takes the already-started mutation so its scope gate has run
+   * before any await, the same shape `routine_run` uses.
+   */
+  async #serveTaskMutation(ws: GatewaySocket, asked: string, mutation: Promise<TaskOutcome>): Promise<void> {
+    let outcome: TaskOutcome;
+    try {
+      outcome = await mutation;
+    } catch (err) {
+      // The shared path maps its own throws; this guard is for the promise
+      // itself, so the asking socket still costs exactly one error frame.
+      this.#send(ws, {
+        t: "error",
+        code: "task_failed",
+        message: err instanceof Error ? err.message : `${asked} failed`,
+      });
+      return;
+    }
+    switch (outcome.kind) {
+      case "ok":
+        this.#send(ws, { t: "task", task: outcome.value });
+        return;
+      case "off":
+        this.#send(ws, {
+          t: "error",
+          code: "tasks_unavailable",
+          message: "no task lifecycle is wired into this daemon",
+        });
+        return;
+      case "bad":
+        this.#send(ws, { t: "error", code: "bad_frame", message: outcome.error });
+        return;
+      case "refused":
+        this.#send(ws, { t: "error", code: "unauthorized", message: outcome.error });
+        return;
+      case "missing":
+        this.#send(ws, { t: "error", code: "not_found", message: outcome.error });
+    }
+  }
+
+  /**
+   * One socket agent creation, mapping the shared outcome onto the asking
+   * socket. The audit is `Supervisor.createAgent`'s own; this adds nothing.
+   */
+  async #serveAgentCreate(ws: GatewaySocket, frame: Extract<ClientFrame, { t: "agent_create" }>): Promise<void> {
+    const outcome = await this.#createAgentOverWire(frame, this.#actorOf(ws));
+    switch (outcome.kind) {
+      case "created":
+        this.#send(ws, { t: "agent_created", agent: outcome.agent });
+        return;
+      case "queued":
+        // The HTTP door answers a queue with 202 because a caller there may
+        // genuinely want one. This door refuses, for the reason
+        // `session_create` refuses on a replica: the mount paths this frame
+        // carries were resolved on this replica's own disk (by its own
+        // `fs_list`) and mean nothing on the delegate that would run the
+        // agent, so a queued start is not the start that was asked for.
+        this.#send(ws, {
+          t: "error",
+          code: "replica",
+          message: "this daemon is a replica; create the agent where its directories live",
+        });
+        return;
+      case "bad":
+        this.#send(ws, { t: "error", code: "bad_frame", message: outcome.error });
+        return;
+      case "refused":
+        this.#send(ws, { t: "error", code: "unauthorized", message: outcome.error });
+        return;
+      case "failed":
+        this.#send(ws, { t: "error", code: "agent_create_failed", message: outcome.error });
+    }
   }
 
   /**
@@ -2737,17 +3080,33 @@ export class Gateway {
           });
           return;
         }
+        const images = parsePromptImages(frame.images);
         if (
           typeof frame.sessionId !== "string" ||
           frame.sessionId.length === 0 ||
           typeof frame.text !== "string" ||
-          frame.text.length === 0 ||
+          // An image-only prompt is a real prompt; emptiness only rules out a
+          // frame with no content of either kind.
+          (frame.text.length === 0 && images.ok && images.images.length === 0) ||
           (frame.deliverAs !== undefined && !isTuiSteerDelivery(frame.deliverAs))
         ) {
           // `nextTurn` lands here: `pi.sendUserMessage` has no such mode, and
           // refusing it is the honest answer, not downgrading it to a steer.
           audit("denied", { reason: "bad_frame" });
           this.#send(ws, { t: "error", code: "bad_frame", message: "invalid session prompt" });
+          return;
+        }
+        if (!images.ok) {
+          // The same budgets the agent prompt enforces, for the same reason:
+          // this frame also rides one relayed socket hop, and a refusal that
+          // names itself is the alternative to a disconnect the phone would
+          // read as a dead daemon.
+          audit("denied", { reason: `attachment_${images.refusal}`, sessionId: frame.sessionId });
+          this.#send(ws, {
+            t: "error",
+            code: `attachment_${images.refusal}`,
+            message: PROMPT_IMAGE_REFUSAL_REASONS[images.refusal],
+          });
           return;
         }
         const deliverAs: TuiSteerDelivery = frame.deliverAs ?? "steer";
@@ -2766,8 +3125,18 @@ export class Gateway {
           });
           return;
         }
-        audit("ok", { sessionId: frame.sessionId, deliverAs });
-        this.#send(owner, { t: "tui_steer", sessionId: frame.sessionId, text: frame.text, deliverAs });
+        audit("ok", {
+          sessionId: frame.sessionId,
+          deliverAs,
+          ...(images.images.length > 0 ? { images: images.images.length } : {}),
+        });
+        this.#send(owner, {
+          t: "tui_steer",
+          sessionId: frame.sessionId,
+          text: frame.text,
+          deliverAs,
+          ...(images.images.length > 0 ? { images: images.images } : {}),
+        });
         return;
       }
 
@@ -2978,12 +3347,14 @@ export class Gateway {
         if (
           typeof frame.sessionId !== "string" ||
           frame.sessionId.length === 0 ||
-          (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0))
+          (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0)) ||
+          (frame.cursor !== undefined && (!Number.isSafeInteger(frame.cursor) || frame.cursor < 0))
         ) {
           this.#send(ws, {
             t: "error",
             code: "bad_frame",
-            message: "session tail needs a sessionId and a positive integer limit when given",
+            message:
+              "session tail needs a sessionId, a positive integer limit when given, and a non-negative integer cursor when given",
           });
           return;
         }
@@ -2999,7 +3370,7 @@ export class Gateway {
         // Detached like the index reply, and for the same reason: resolving
         // the file and reading its tail are async, and every socket must keep
         // being served while one client's transcript is read.
-        void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit);
+        void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit, frame.cursor);
         return;
       }
 
@@ -3134,6 +3505,132 @@ export class Gateway {
         // `session/set_mode` is a round trip to the agent, and every socket
         // must keep being served while one client's mode change lands.
         void this.#serveAgentConfigWrite(ws, target.sessions, target.sessionId, frame.agentId, frame.modeId);
+        return;
+      }
+
+      case "skills_read": {
+        // The same read gate the HTTP route runs, because a hub-relayed phone
+        // reaches this frame instead of that route and must not meet a weaker
+        // door here. The reply goes to the asking socket only: a catalogue is
+        // an answer to a request, not a broadcast.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "skills_read requires read scope" });
+          return;
+        }
+        if (!isCatalogQuery(frame)) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "skills_read needs a string cwd and agentId, when given",
+          });
+          return;
+        }
+        // Detached like the session index: discovery is async, and this
+        // socket keeps being served while the catalogue is read.
+        void this.#serveSkillsRead(ws, frame);
+        return;
+      }
+
+      case "connectors_read": {
+        // Read, the same gate and for the same reason as `skills_read`.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "connectors_read requires read scope" });
+          return;
+        }
+        if (!isCatalogQuery(frame)) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "connectors_read needs a string cwd and agentId, when given",
+          });
+          return;
+        }
+        void this.#serveConnectorsRead(ws, frame);
+        return;
+      }
+
+      case "tasks_read": {
+        // Read, matching `GET /v1/tasks`: the roster is watching, not acting.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "tasks_read requires read scope" });
+          return;
+        }
+        if (frame.agentId !== undefined && typeof frame.agentId !== "string") {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "tasks_read needs a string agentId, when given" });
+          return;
+        }
+        const outcome = this.#listTasks(frame.agentId);
+        if (outcome.kind === "off") {
+          this.#send(ws, {
+            t: "error",
+            code: "tasks_unavailable",
+            message: "no task lifecycle is wired into this daemon",
+          });
+          return;
+        }
+        this.#send(ws, { t: "tasks", tasks: outcome.value });
+        return;
+      }
+
+      case "task_create": {
+        // Prompt, the HTTP route's own bar and for its reason: a task is a
+        // named prompt against a session that already exists, so anyone who
+        // may prompt may start one, and a read-only device may not.
+        if (!ws.data.scopes.has(SCOPE_PROMPT)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "task_create requires prompt scope" });
+          return;
+        }
+        // The same value checks the shared path runs; the frame carries no
+        // `bad_json` equivalent because it arrived parsed, so a wrong shape
+        // is a bad_frame rather than a parse failure.
+        if (
+          typeof frame.title !== "string" ||
+          typeof frame.prompt !== "string" ||
+          typeof frame.agentId !== "string" ||
+          (frame.skillName !== undefined && typeof frame.skillName !== "string")
+        ) {
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "task_create needs a title, a prompt, an agentId, and a string skillName when given",
+          });
+          return;
+        }
+        // Detached like `routine_run`: `Supervisor.prompt` runs the prompt,
+        // and every socket keeps being served while it lands.
+        void this.#serveTaskMutation(ws, "task_create", this.#createTask(frame, this.#actorOf(ws)));
+        return;
+      }
+
+      case "task_cancel": {
+        // Prompt, the same gate the HTTP cancel route and the `cancel` frame
+        // take: cancelling a task is cancelling the prompt that runs it.
+        if (!ws.data.scopes.has(SCOPE_PROMPT)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "task_cancel requires prompt scope" });
+          return;
+        }
+        if (typeof frame.taskId !== "string" || frame.taskId.length === 0) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "task_cancel needs a non-empty taskId" });
+          return;
+        }
+        void this.#serveTaskMutation(ws, "task_cancel", this.#cancelTask(frame.taskId, this.#actorOf(ws)));
+        return;
+      }
+
+      case "agent_create": {
+        // Manage, the HTTP route's own bar: this provisions a host, which is
+        // the most privileged thing a device can ask for over either door.
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "agent_create requires manage scope" });
+          return;
+        }
+        if (typeof frame.name !== "string" || typeof frame.cwd !== "string") {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "agent_create needs a name and a cwd" });
+          return;
+        }
+        // Detached like `session_create`: provisioning a host is async, and
+        // this socket keeps being served while the container comes up.
+        void this.#serveAgentCreate(ws, frame);
         return;
       }
 
@@ -3293,6 +3790,67 @@ export class Gateway {
         const secret = randomBytes(32).toString("base64url");
         this.#store.upsertWebhookSecret(routine.trigger.secretRef, createHash("sha256").update(secret).digest("hex"));
         this.#send(ws, { t: "routine_secret", routineId: routine.id, secret });
+        return;
+      }
+
+      case "routine_delete": {
+        // Audited under the action itself rather than dropped, with no ids:
+        // the frame has not been shape-checked yet, so there is nothing here
+        // worth recording beyond the attempt. Mirrors `session_delete`.
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#store.audit({
+            action: "routine.delete",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "unauthorized" },
+          });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "routine_delete requires manage scope" });
+          return;
+        }
+        const runner = this.#routines;
+        if (!runner) {
+          this.#send(ws, {
+            t: "error",
+            code: "routines_unavailable",
+            message: "no routine runner is wired into this daemon",
+          });
+          return;
+        }
+        // The wire is not a place to assume anyone kept to the contract. An
+        // empty list is refused rather than answered with an empty result,
+        // for the same irreversible-operation reason as the HTTP door.
+        if (
+          !Array.isArray(frame.routineIds) ||
+          frame.routineIds.length === 0 ||
+          frame.routineIds.some(id => typeof id !== "string" || id.length === 0)
+        ) {
+          this.#store.audit({
+            action: "routine.delete",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "routine_delete needs at least one non-empty routine id",
+          });
+          return;
+        }
+        // Detached like `session_delete`: the runner's answer is async, and
+        // this socket keeps being served while it is produced.
+        void this.#deleteRoutines(runner, frame.routineIds, ws.data.deviceId).then(
+          results => {
+            this.#send(ws, { t: "routines_deleted", results });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "routine_delete_failed",
+              message: err instanceof Error ? err.message : "routine delete failed",
+            });
+          },
+        );
         return;
       }
 
@@ -3485,24 +4043,45 @@ export class Gateway {
           });
           return;
         }
+        // The image budgets are enforced here rather than in the app: a phone
+        // is a peer on this socket, not a trusted client, and the hub's frame
+        // cap protects the relay, not the daemon. A refusal names itself so a
+        // client can say what to do about it instead of guessing.
+        const images = parsePromptImages(frame.images);
+        if (!images.ok) {
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code: `attachment_${images.refusal}`,
+            message: PROMPT_IMAGE_REFUSAL_REASONS[images.refusal],
+          });
+          return;
+        }
         // Announced before it is sent, so whoever is tracking how a device is
         // talking to an agent learns it typed even if the prompt then fails.
         this.#onTextPrompt?.(frame.agentId, this.#actorOf(ws));
         if (this.#queuesForDelegate(frame.agentId)) {
-          this.#enqueueIntent(frame.agentId, this.#actorOf(ws), "prompt", { text: frame.text });
+          this.#enqueueIntent(
+            frame.agentId,
+            this.#actorOf(ws),
+            "prompt",
+            images.images.length > 0 ? { text: frame.text, images: images.images } : { text: frame.text },
+          );
           return;
         }
 
         // Deliberately not awaited: a turn outlives the frame that started it,
         // and the socket has to stay responsive to `cancel` while it runs.
-        void this.#sup.prompt(frame.agentId, frame.text, this.#actorOf(ws)).catch((err: unknown) => {
-          this.#send(ws, {
-            t: "error",
-            agentId: frame.agentId,
-            code: err instanceof UnauthorizedError ? "unauthorized" : "prompt_failed",
-            message: err instanceof Error ? err.message : "prompt failed",
+        void this.#sup
+          .prompt(frame.agentId, frame.text, this.#actorOf(ws), images.images.length > 0 ? images.images : undefined)
+          .catch((err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              agentId: frame.agentId,
+              code: err instanceof UnauthorizedError ? "unauthorized" : "prompt_failed",
+              message: err instanceof Error ? err.message : "prompt failed",
+            });
           });
-        });
         return;
       }
 
@@ -3917,20 +4496,57 @@ export class Gateway {
   }
 
   /**
+   * The one place a routine deletion happens, for both doors: the HTTP route
+   * and the socket frame. Shared for the same reason as `#deleteSessions` --
+   * two copies would eventually disagree about what gets written, and the log
+   * of who destroyed an operator's automation is the last thing that should
+   * depend on which road the request took.
+   *
+   * One record per id, whichever way that id went. `outcome` is `ok` for a
+   * deletion, `denied` for a running or unknown routine (both decisions this
+   * daemon made), and `error` for a store failure, because nothing decided it.
+   */
+  async #deleteRoutines(
+    runner: RoutineRunner,
+    routineIds: readonly string[],
+    actorDeviceId: string,
+  ): Promise<RoutineDeleteResult[]> {
+    const results = await runner.deleteRoutines(routineIds);
+    for (const result of results) {
+      this.#store.audit({
+        action: "routine.delete",
+        actorDeviceId,
+        outcome: result.deleted ? "ok" : result.refusal === "failed" ? "error" : "denied",
+        detail: result.deleted
+          ? { routineId: result.routineId }
+          : {
+              routineId: result.routineId,
+              refusal: result.refusal,
+              reason: ROUTINE_DELETE_REFUSAL_REASONS[result.refusal],
+            },
+      });
+    }
+    return results;
+  }
+
+  /**
    * One socket `session_tail` request: the session's file located through the
    * index (which refuses an id the catalog does not hold, so a client cannot
-   * name an arbitrary path), then its last turns read from the end.
+   * name an arbitrary path), then one page of its turns read from the end,
+   * or from the cursor an earlier page handed the client.
    *
    * The limit is clamped here as well as in the reader, because the gateway
    * is the door: a client asking for a million turns gets the ceiling, not a
    * refusal, since the honest answer to "show me more" is as much as a frame
-   * can carry.
+   * can carry. The cursor is not clamped here: only the reader knows the
+   * file's size, and it answers an offset past the end as exhaustion.
    */
   async #serveSessionTailFrame(
     ws: GatewaySocket,
     index: SessionIndex,
     sessionId: string,
     limit: number | undefined,
+    cursor: number | undefined,
   ): Promise<void> {
     try {
       const path = await index.pathFor(sessionId);
@@ -3944,12 +4560,18 @@ export class Gateway {
       }
       const tail = await readSessionTail(path, {
         ...(limit === undefined ? {} : { limit: Math.min(limit, TAIL_MAX_MESSAGES) }),
+        ...(cursor === undefined ? {} : { cursor }),
       });
       this.#send(ws, {
         t: "session_tail",
         sessionId,
         messages: tail.messages,
         truncated: tail.truncated,
+        nextCursor: tail.nextCursor,
+        // Echoed so the asking client can tell this page's place in the file
+        // without inferring it from the turns, which a first page and an
+        // older page can both leave ambiguous.
+        ...(cursor === undefined ? {} : { cursor }),
       });
     } catch (err) {
       // Detached from `#handle`, so its last-line-of-defence try/catch no

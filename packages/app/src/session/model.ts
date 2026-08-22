@@ -557,14 +557,28 @@ function appendUnknown(state: SessionState, label: string, payload: unknown): Se
 // ---------------------------------------------------------------------------
 
 /**
+ * The local echo of what a prompt carried. The words are shown as typed; the
+ * images are named rather than inlined, because this echo exists so a send
+ * leaves a visible trace, not so the transcript re-renders base64 the daemon
+ * never echoed back. An image-only prompt still shows as a trace rather than
+ * an apparent no-op.
+ */
+export function echoText(text: string, imageCount: number): string {
+  const trimmed = text.trim();
+  if (imageCount <= 0) return trimmed;
+  const images = `${imageCount} image${imageCount === 1 ? "" : "s"}`;
+  return trimmed.length === 0 ? `[${images} attached]` : `${trimmed} [${images} attached]`;
+}
+
+/**
  * Echoes what the operator just sent. The daemon does not replay a prompt back
  * as an update, and a prompt that leaves no trace on screen reads as a dropped
  * one.
  */
-export function appendPrompt(state: SessionState, text: string): SessionState {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return state;
-  const entry: UserEntry = { kind: "user", id: `prompt-${state.ordinal}`, text: trimmed };
+export function appendPrompt(state: SessionState, text: string, imageCount = 0): SessionState {
+  const echoed = echoText(text, imageCount);
+  if (echoed.length === 0) return state;
+  const entry: UserEntry = { kind: "user", id: `prompt-${state.ordinal}`, text: echoed };
   return {
     ...state,
     entries: [...closeStreams(state.entries), entry],

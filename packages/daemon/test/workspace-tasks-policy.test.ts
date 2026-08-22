@@ -155,10 +155,13 @@ describe("POST /v1/tasks and the policy engine", () => {
     expect(rec?.rule).toBe("timeout");
 
     // The prompt the fake peer actually received is the exact text the task
-    // named -- nothing rewrote or intercepted it on the way through.
+    // named -- nothing rewrote or intercepted it on the way through. The
+    // blocks array is the whole wire payload, so asserting it too is what
+    // keeps `text` honest rather than a summary the recorder made up.
     expect(h.fake.prompts.at(-1)).toEqual({
       sessionId,
       text: "/skill:touch-file do the thing",
+      blocks: [{ type: "text", text: "/skill:touch-file do the thing" }],
     });
   });
 
