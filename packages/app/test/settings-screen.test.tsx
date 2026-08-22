@@ -3,8 +3,9 @@
  * confirmed values it renders, and the states it must not fake. The screen
  * rides the client's `readSettings`/`writeSettings`, so these tests drive a
  * real `OmpdClient` on a canned wire, the same harness the invite screen's
- * test uses -- no HTTP exists on a hub relay, and a screen that reached for
- * it here would be reaching for a road that is not there.
+ * test uses -- the hub tunnels only a webhook fire and no tunnel is wired for
+ * the settings route, so a screen that reached for it here would be reaching
+ * for a road that is not there.
  *
  * The acceptance that matters most is here on purpose: a pairing without
  * `manage` still reads its daemon's settings, with the reason named, rather
@@ -31,7 +32,7 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-/** The transport a phone actually holds: a relay with no daemon HTTP behind it. */
+/** The transport a phone actually holds: a relay with no tunnel to the settings route behind it. */
 const MANAGER_CONNECTION: Connection = {
   transport: "hub",
   hubUrl: "wss://hub.ompctl.ai/relay",

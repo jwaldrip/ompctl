@@ -61,8 +61,12 @@ export type DaemonToHub =
   | { t: "ack"; sessionId: SessionId; received: number }
   | { t: "pong" }
   /**
-   * The public relay forwards a webhook request to the pinned daemon. The body
-   * stays opaque base64url data; only the local daemon decides what it means.
+   * The daemon's answer to a tunneled webhook, which the hub replays as a real
+   * HTTP response. `body` is typed `SealedPayload` for the shape only: unlike
+   * every other use of that alias it is base64url of plaintext, not
+   * ciphertext, so the hub does read it. Acceptable only because the whole
+   * exchange is gated by a narrow per-routine secret rather than a device
+   * credential.
    */
   | {
       t: "webhook_response";
@@ -85,7 +89,12 @@ export type HubToDaemon =
   | { t: "ping" }
   /**
    * An unauthenticated-by-device webhook, scoped by its own routine secret.
-   * The hub forwards it over the already-open daemon leg and never executes it.
+   * The hub forwards it over the already-open daemon leg and never executes
+   * it. `secret` and `body` are both plaintext to the hub: it cannot verify
+   * the secret, only carry it, and carrying it is what lets a routine on a
+   * machine with no address be fired from anywhere. This is the one request
+   * shape tunneled through the hub, and generalising it would mean carrying a
+   * device bearer token the same way.
    */
   | {
       t: "webhook_request";

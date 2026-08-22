@@ -16,7 +16,7 @@ Product domain: **ompctl.ai**. Cloud DNS is the source of truth. Squarespace hol
 ## Host split (load-bearing)
 
 - **`app.ompctl.ai`** serves the web console **and** `/.well-known/apple-app-site-association` + `assetlinks.json`.
-- **`hub.ompctl.ai`** is the websocket relay only. It does **not** serve the SPA or association files.
+- **`hub.ompctl.ai`** is the relay: the websocket legs, plus `POST /v1/webhooks/<daemonId>/<routineId>`, which it tunnels to the pinned daemon. It does **not** serve the SPA or association files.
 
 Mapping the app host onto the hub image would break Universal Links and leave the web app undeployed.
 

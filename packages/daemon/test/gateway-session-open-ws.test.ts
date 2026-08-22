@@ -1,8 +1,9 @@
 /**
  * The `session_takeover` and `session_resume` frames from the wire: the
  * sealed-socket road a hub-relayed phone takes to open a session, which
- * cannot reach `POST /v1/sessions/:id/takeover` at all because the relay
- * carries frames only, never daemon HTTP paths. Everything the route
+ * cannot reach `POST /v1/sessions/:id/takeover` at all because the hub
+ * carries no tunnel for that route; a webhook fire is the one request shape
+ * it does tunnel. Everything the route
  * enforces must hold here, plus the checks only this path needs: the
  * caller's cwd/pid echo is verified against the daemon's own index, and an
  * already-held session answers idempotently instead of spawning a second

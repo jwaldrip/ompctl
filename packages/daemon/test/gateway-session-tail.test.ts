@@ -1,12 +1,13 @@
 /**
  * The `session_tail` websocket frame from the wire.
  *
- * A hub-relayed phone reaches the daemon through one sealed websocket and no
- * HTTP at all, so this frame is not a convenience beside a route: it is the
- * only road a session's own transcript can take to the surface the operator is
- * looking at. Everything that makes it safe therefore has to hold here --
- * the read gate, the refusal of an id this machine holds no file for, the
- * feature-off answer -- because there is no stronger door beside it.
+ * A hub-relayed phone has no road to a transcript route: the hub tunnels
+ * exactly one request shape, a webhook fire, and none is wired for anything
+ * a transcript could ride. So this frame is not a convenience beside a route:
+ * it is the only road a session's own transcript can take to the surface the
+ * operator is looking at. Everything that makes it safe therefore has to hold
+ * here -- the read gate, the refusal of an id this machine holds no file for,
+ * the feature-off answer -- because there is no stronger door beside it.
  *
  * The fixtures follow gateway-sessions-ws.test.ts: real session files on disk
  * under a temp sessions root, and a socket helper whose every wait is on an

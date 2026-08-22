@@ -5,9 +5,13 @@
  * `/v1/agents/:id/config`), which fixes two honest limits the screen states
  * rather than hides:
  *
- *  - A hub pairing carries the sealed socket and no HTTP, so from behind the
- *    relay these routes are unreachable. The screen says so instead of
- *    guessing at a root, the same fail-closed rule Cowork's fetches follow.
+ *  - The hub tunnels exactly one request shape today, a webhook fire, and no
+ *    tunnel is wired for `/v1/agents/:id/config`, so from behind the relay
+ *    these routes are unreachable. Generalising that tunnel is the thing not
+ *    being done: a proxied config read would carry this device's bearer token
+ *    through the hub, making the hub a credential path rather than a carrier
+ *    of opaque sealed traffic. The screen says so instead of guessing at a
+ *    root, the same fail-closed rule Cowork's fetches follow.
  *  - The POST changes exactly one option, the session mode, and the daemon
  *    validates the value against that option's own choices. Every other
  *    option, the model included, reads back its live current value while its
@@ -201,12 +205,12 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
   const canSet = effectiveScopes === undefined ? true : effectiveScopes.includes(SCOPE_PROMPT);
 
   // The config routes are plain REST on the socket url's origin, and only a
-  // direct pairing has one: the hub relay carries the socket protocol and no
-  // HTTP, so this fails closed rather than guessing at a root.
+  // direct pairing has one: the hub carries no tunnel for these routes, so
+  // this fails closed rather than guessing at a root.
   const root = connection.transport === "direct" ? restRoot(connection.url) : null;
   const unreachable =
     connection.transport === "hub"
-      ? "Config is served by the daemon's own HTTP routes, and this pairing reaches the daemon through the hub relay, which carries the socket and nothing else. Pair this device directly, on the daemon's network, to configure a session."
+      ? "Config is served by the daemon's own HTTP routes, and this pairing reaches the daemon through the hub, which carries no route for them. Pair this device directly, on the daemon's network, to configure a session."
       : root === null
         ? "This pairing's url is not a socket address, so there is no HTTP root to read the daemon's config from."
         : canRead

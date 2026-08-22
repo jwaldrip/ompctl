@@ -9,11 +9,14 @@
  * half of that contract, the one that mints the bundle in the first place.
  *
  * The mint rides the socket this connection already holds, for every
- * transport. A hub relay carries one sealed websocket and no daemon HTTP, so
- * the two-request HTTP flow (`POST /v1/pair`, then `POST /v1/pairings/approve`)
- * could only ever work from the daemon's own network; one `device_invite`
- * frame replaces both steps and works from anywhere the app is already
- * connected. The daemon, not this screen, enforces the ceiling: the picker
+ * transport. The hub tunnels exactly one request shape today, a webhook fire,
+ * and no tunnel is wired for the pairing routes, so the two-request HTTP flow
+ * (`POST /v1/pair`, then `POST /v1/pairings/approve`) could only ever work
+ * from the daemon's own network; one `device_invite` frame replaces both steps
+ * and works from anywhere the app is already connected. Tunnelling those
+ * routes instead would have meant handing the hub this device's bearer token
+ * to forward, which is the one thing the sealed socket exists to avoid.
+ * The daemon, not this screen, enforces the ceiling: the picker
  * starts at this device's own scopes, widening past them is still possible
  * because the operator may legitimately want a different grant, and a
  * widened ask comes back as a readable refusal rather than a quieter grant.

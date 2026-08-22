@@ -41,7 +41,7 @@ const DIRECT: Connection = {
   scopes: ["read", "approve", "manage"],
 };
 
-/** The transport Jason's phone actually holds: a relay for one sealed socket, and no daemon HTTP behind it. */
+/** The transport Jason's phone actually holds: a relay whose one tunnel fires a webhook, with no route to Cowork's. */
 const HUB: Connection = {
   transport: "hub",
   hubUrl: "wss://hub.ompctl.ai/relay",

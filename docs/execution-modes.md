@@ -9,7 +9,7 @@ OMP-as-driver has four modes. All four run through one local daemon
 |---|---|---|---|
 | **Code** | The existing agent coding session (`omp acp` spawned by the supervisor). Every other mode ultimately produces one of these. | Local `omp acp` host (or container/cloud host) | Yes — this is the supervisor/host machinery every mode below reuses. |
 | **Chat** | An interactive session driven from a client (app/web/CLI), same as today's console. | Local host, via ompd | Yes — `Console`/`SessionScreen`, `useConsole`, gateway websocket. |
-| **Routine** | A prompt fired on a trigger: `cron` (time) or `webhook` (external event), tracked as a `Run`. | Local host, via `Scheduler` | Cron: yes (`routines/cron.ts`, `routines/scheduler.ts`). Webhook: trigger kind already modeled (`scheduler.ts` treats `manual`/`webhook` as "driven from outside the clock"), but no public HTTP surface exists to fire one. **Gap.** |
+| **Routine** | A prompt fired on a trigger: `cron` (time) or `webhook` (external event), tracked as a `Run`. | Local host, via `Scheduler` | Cron: yes (`routines/cron.ts`, `routines/scheduler.ts`). Webhook: yes. The hub tunnels `POST /v1/webhooks/<daemonId>/<routineId>` down the daemon's open socket and replays the daemon's own answer, and `packages/hub/test/tunnel.test.ts` proves it across two instances. |
 | **Cowork** | Work scoped to one or more bound directories, executed on a container/VM host so the blast radius is the bound set, not the whole machine. | `container`/`cloud` host via `HostProvisioner` | Backend: yes (`workspace/{tasks,skills,connectors}.ts`, `provisioner/{container,cloud,local}.ts`). Directory-binding UX (choosing which folders a task's container sees) and web/desktop UI parity: **gap.** |
 
 ## The constraint that shapes all of it
@@ -40,10 +40,14 @@ external caller
  local ompd  ──▶  Scheduler.fireWebhook(routineId, token)  ──▶  Supervisor (same as cron)
 ```
 
-- The secret is per-routine, minted by the daemon, never known to the hub in
-  plaintext beyond what it needs to route (the hub already cannot decrypt
-  payloads; the webhook token is verified daemon-side, same trust boundary
-  as everything else in `docs/hub.md`).
+- The secret is per-routine and minted by the daemon, but the hub does read it:
+  it arrives as an `x-webhook-secret` header or a `?token=` query parameter and
+  the hub puts it in the `webhook_request` frame as a plaintext field, because
+  forwarding it is the only way the daemon can verify it. The request body
+  crosses the same way. This is the one exception to the content-blindness in
+  `docs/hub.md`, and it is acceptable only because the credential is narrow:
+  verification is still daemon-side, and the secret fires one routine on one
+  daemon and authorises nothing else.
 - No device pairing is required for a webhook caller — pairing is for
   people, a webhook token is for a service. That is a deliberately
   different, narrower credential: it can only ever fire one named routine.

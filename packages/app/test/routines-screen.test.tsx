@@ -2,7 +2,7 @@ import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ClientFrame, RemoteRoutine, ServerFrame } from "@ompd/core/contracts";
-import { ROUTINE_DELETE_REFUSAL_REASONS, webhookPath } from "@ompd/core/contracts";
+import { hubWebhookPath, ROUTINE_DELETE_REFUSAL_REASONS, webhookPath } from "@ompd/core/contracts";
 import { OmpdClient, type SocketCloseInfo, type SocketLike } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -377,7 +377,7 @@ describe("RoutinesScreen", () => {
     host.remove();
   });
 
-  test("a webhook routine shows the post endpoint and the hub's no-HTTP limit plainly", async () => {
+  test("a webhook routine behind the hub shows the hub's own firable address", async () => {
     forbidFetch();
     const { socket, host, root } = await mounted(MANAGER);
     act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
@@ -386,10 +386,19 @@ describe("RoutinesScreen", () => {
     act(() => el(host, "routine-rtn_calls-edit")?.click());
     await settle();
 
-    expect(el(host, "routine-webhook-endpoint")?.textContent).toContain("/v1/webhooks/rtn_calls");
-    const notice = el(host, "routine-webhook-hub-notice");
-    expect(notice?.textContent).toContain("sealed socket");
-    expect(notice?.textContent).toContain("proxies no HTTP");
+    // The hub tunnels this exact shape: two segments, daemon then routine.
+    // `packages/hub/test/tunnel.test.ts` proves the round trip end to end.
+    expect(el(host, "routine-webhook-endpoint")?.textContent).toBe(
+      "POST https://hub.ompctl.ai/v1/webhooks/dae_0123456789abcdef/rtn_calls",
+    );
+
+    // The notice has to tell the operator the address works and that the
+    // secret is the gate, not that the endpoint is out of reach.
+    const notice = el(host, "routine-webhook-hub-notice")?.textContent ?? "";
+    expect(notice).toContain("it works");
+    expect(notice).toContain("current secret");
+    expect(notice).not.toContain("cannot reach");
+    expect(notice).not.toContain("proxies no HTTP");
 
     act(() => root.unmount());
     host.remove();
@@ -481,13 +490,44 @@ describe("RoutinesScreen delete and webhook surface", () => {
     host.remove();
   });
 
-  test("a hub-relayed device names the daemon address as the root it cannot read", async () => {
+  test("a hub-relayed device renders the hub's own firable address, not a placeholder", async () => {
     forbidFetch();
     const { socket, host, root } = await mounted(MANAGER);
     act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
     await settle();
 
-    expect(el(host, "routine-rtn_calls-endpoint")?.textContent).toBe(`POST {daemon address}${webhookPath(ROUTINE.id)}`);
+    // The hub tunnels this shape and `packages/hub/test/tunnel.test.ts` proves
+    // the round trip, so the card can name a real address rather than shrug.
+    expect(el(host, "routine-rtn_calls-endpoint")?.textContent).toBe(
+      `POST https://hub.ompctl.ai${hubWebhookPath(MANAGER.daemonId, ROUTINE.id)}`,
+    );
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("the copy control behind a hub lifts a URL that can actually be fired", async () => {
+    forbidFetch();
+    clipboardWrites().length = 0;
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    act(() => el(host, "routine-rtn_calls-rotate-secret")?.click());
+    await settle();
+    act(() => socket.deliver({ t: "routine_secret", routineId: ROUTINE.id, secret: "fresh-secret-value" }));
+    await settle();
+
+    // The sharpest cost of the old copy: this string carries a live secret to
+    // wherever the operator pastes it, so a placeholder host made it both
+    // unusable and a leak.
+    const expectedUrl = `https://hub.ompctl.ai${hubWebhookPath(MANAGER.daemonId, ROUTINE.id)}?token=${encodeURIComponent("fresh-secret-value")}`;
+    expect(el(host, "routine-rtn_calls-secret-url")?.textContent).toBe(expectedUrl);
+
+    act(() => el(host, "routine-secret-copy")?.click());
+    await settle();
+    expect(clipboardWrites()).toEqual([expectedUrl]);
+    expect(expectedUrl).not.toContain("{daemon address}");
 
     act(() => root.unmount());
     host.remove();

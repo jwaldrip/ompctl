@@ -919,8 +919,9 @@ export class OmpdClient {
   /**
    * Ask for the session index. The answer arrives as the `sessions` event,
    * never a return value: on a phone behind a hub relay the request and the
-   * answer both ride the sealed socket, because that relay carries no daemon
-   * HTTP for a `GET /v1/sessions` to fall back on. Re-issued automatically
+   * answer both ride the sealed socket, because the hub tunnels exactly one
+   * request shape today, a webhook fire, and no tunnel is wired for a
+   * `GET /v1/sessions` to fall back on. Re-issued automatically
    * after a reconnect, like an attachment.
    */
   listSessions(query?: SessionQuery): void {
@@ -949,8 +950,9 @@ export class OmpdClient {
 
   /**
    * Mint a credential for one new device over this socket -- the sealed road
-   * a hub-relayed phone must take, because the relay carries frames only and
-   * the two HTTP pairing routes do not exist behind it. The answer arrives
+   * a hub-relayed phone must take, because the hub carries no tunnel for the
+   * two HTTP pairing routes, and wiring one would mean handing it this
+   * device's bearer token to forward. The answer arrives
    * as the `device_invited` event, or an `error` naming the refusal.
    *
    * One-shot, like `takeOverSession`, for a reason that admits no replay at

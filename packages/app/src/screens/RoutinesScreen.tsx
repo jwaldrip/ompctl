@@ -1,4 +1,5 @@
 import {
+  hubWebhookPath,
   type RemoteRoutine,
   ROUTINE_DELETE_REFUSAL_REASONS,
   type Run,
@@ -164,12 +165,24 @@ function nextFirePreview(trigger: TriggerSpec, now: Date): NextFirePreview {
 /**
  * The exact URL a caller POSTs to, with no method prefix: this string is the
  * one the copy control lifts into a shell, so it must paste clean. Built from
- * the one path helper the daemon side also tests against, so the instructions
- * cannot drift from the route. A hub-relayed phone names the daemon address as
- * a placeholder because the hub carries no HTTP to read a root from.
+ * the path helpers the daemon and hub sides are both matched against, so the
+ * instructions cannot drift from the route.
+ *
+ * A hub pairing gets a real address rather than a placeholder. The hub tunnels
+ * this one request shape, `POST /v1/webhooks/<daemonId>/<routineId>`, down the
+ * daemon's already-open sealed socket and replays the daemon's own answer, so
+ * a routine on a laptop with no reachable address is firable from anywhere.
+ * The phone holds both halves of that address in its own pairing. This matters
+ * most for the copy control: handing an operator `{daemon address}/...` with a
+ * live secret pasted on the end is a string that cannot work and that leaks
+ * the secret into wherever they paste it.
  */
 function webhookUrl(routineId: string, connection: Connection): string {
-  const root = connection.transport === "direct" ? restRoot(connection.url) : null;
+  if (connection.transport === "hub") {
+    const hub = restRoot(connection.hubUrl);
+    return `${hub ?? "{hub address}"}${hubWebhookPath(connection.daemonId, routineId)}`;
+  }
+  const root = restRoot(connection.url);
   return `${root ?? "{daemon address}"}${webhookPath(routineId)}`;
 }
 
@@ -511,9 +524,9 @@ export function RoutinesScreen({
                     </Body>
                     {connection.transport === "hub" ? (
                       <Body color={ink.muted}>
-                        This phone cannot reach that endpoint itself: it is paired through the hub, which relays one
-                        sealed socket and proxies no HTTP. An outside caller posts from any machine that can reach the
-                        daemon's own address.
+                        That address is the hub's and it works: the hub relays the fire down this daemon's sealed
+                        socket, so no caller needs a route to the daemon's own network. The secret is shown once when
+                        rotated and cannot be read back; the daemon keeps only its hash.
                       </Body>
                     ) : (
                       <Body color={ink.muted}>
@@ -825,9 +838,11 @@ export function RoutinesScreen({
               </Code>
               {connection.transport === "hub" ? (
                 <Body color={ink.muted} testID="routine-webhook-hub-notice">
-                  This phone cannot reach that endpoint itself: it is paired through the hub, which relays one sealed
-                  socket and proxies no HTTP. An outside caller posts from any machine that can reach the daemon's own
-                  address, bearing the current secret.
+                  That address is the hub's, and it works: the hub relays the fire down this daemon's sealed socket and
+                  answers with the daemon's own reply, so nothing has to reach the daemon's network and the daemon needs
+                  no open port. Any caller holding the current secret can POST there. The hub reads that secret in order
+                  to forward it, so it is the one credential this routine hands out; rotate it from this routine's card
+                  after saving.
                 </Body>
               ) : (
                 <Body color={ink.muted}>
