@@ -725,10 +725,14 @@ export class Store {
    * a deletion that deleted nothing.
    */
   deleteRoutine(routineId: string): boolean {
-    const row = this.#db.query(`SELECT trigger_json FROM routines WHERE id=?`).get(routineId) as
-      | { trigger_json: string }
-      | undefined;
-    if (row === undefined) return false;
+    // `get()` answers null, not undefined, when the id matches no row; the
+    // undefined check this replaced never fired, so an unknown id fell through
+    // to the unparsable-trigger catch and reported a deletion that deleted
+    // nothing.
+    const row = this.#db.query(`SELECT trigger_json FROM routines WHERE id=?`).get(routineId) as {
+      trigger_json: string;
+    } | null;
+    if (row === null) return false;
 
     let secretRef: string | undefined;
     try {

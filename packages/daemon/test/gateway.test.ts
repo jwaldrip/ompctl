@@ -32,6 +32,8 @@ import {
   type AgentId,
   type ClientFrame,
   DefaultPolicy,
+  ROUTINE_DELETE_REFUSAL_REASONS,
+  type RoutineDeleteResult,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
@@ -39,6 +41,7 @@ import {
   type ServerFrame,
   Store,
   type WebViewActionResult,
+  webhookPath,
 } from "@ompd/core";
 import { Gateway, GatewayEvents, type RoutineRunner } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
@@ -696,6 +699,199 @@ describe("webhook route", () => {
     });
     expect(refused.status).toBe(403);
     expect(await refused.json()).toEqual({ error: "webhook_refused" });
+  });
+
+  test("the endpoint the app renders, built by webhookPath, is the one the route serves", async () => {
+    // The whole point of the shared helper: the app renders `webhookPath(id)`
+    // and this request is built from the same call, so the served route and
+    // the operator's instructions cannot drift apart silently. If either the
+    // helper or the gateway's route regex changes without the other, the
+    // request lands somewhere else and this fails.
+    const deliveries: Array<{ routineId: string; secret: string }> = [];
+    const h = await harness({
+      routines: {
+        runNow: async () => {
+          throw new Error("manual route was called");
+        },
+        deleteRoutines: async () => {
+          throw new Error("delete route was called");
+        },
+        fireWebhook: async (routineId, secret) => {
+          deliveries.push({ routineId, secret });
+          return {
+            accepted: secret === "webhook-secret",
+            reason: secret === "webhook-secret" ? undefined : "forbidden",
+          } as const;
+        },
+      },
+    });
+
+    // The header form the app's card documents first.
+    const byHeader = await fetch(`${h.base}${webhookPath("rtn_drift")}`, {
+      method: "POST",
+      headers: { "x-webhook-secret": "webhook-secret" },
+    });
+    expect(byHeader.status).toBeLessThan(300);
+    expect(deliveries).toEqual([{ routineId: "rtn_drift", secret: "webhook-secret" }]);
+
+    // The ?token= alternative the same card offers, which the hub notice says
+    // is the only spelling some callers can manage.
+    const byQuery = await fetch(`${h.base}${webhookPath("rtn_drift")}?token=${encodeURIComponent("webhook-secret")}`, {
+      method: "POST",
+    });
+    expect(byQuery.status).toBeLessThan(300);
+    expect(deliveries).toHaveLength(2);
+  });
+});
+
+describe("routine delete doors", () => {
+  /** A runner that records ids and answers from a script, so the audit trail is the only thing under test. */
+  function scriptedRunner(results: RoutineDeleteResult[], called: string[]): RoutineRunner {
+    return {
+      runNow: async () => {
+        throw new Error("run route was called");
+      },
+      fireWebhook: async () => ({ accepted: false, reason: "not_found" }),
+      deleteRoutines: async ids => {
+        called.push(...ids);
+        return results;
+      },
+    };
+  }
+
+  test("the HTTP route deletes through the shared path and writes one audit row per id", async () => {
+    const called: string[] = [];
+    const h = await harness({
+      routines: scriptedRunner(
+        [
+          { routineId: "rtn_a", deleted: true },
+          { routineId: "rtn_b", deleted: false, refusal: "running" },
+        ],
+        called,
+      ),
+    });
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    const res = await h.http(
+      "/v1/routines/delete",
+      { method: "POST", body: JSON.stringify({ routineIds: ["rtn_a", "rtn_b"] }) },
+      manage,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      results: [
+        { routineId: "rtn_a", deleted: true },
+        { routineId: "rtn_b", deleted: false, refusal: "running" },
+      ],
+    });
+    expect(called).toEqual(["rtn_a", "rtn_b"]);
+
+    const entries = h.store.listAudit().filter(e => e.action === "routine.delete");
+    expect(entries).toHaveLength(2);
+    expect(entries[1]).toMatchObject({
+      action: "routine.delete",
+      actorDeviceId: h.store.listDevices().find(d => d.name === "laptop")?.id,
+      outcome: "ok",
+    });
+    // A refusal is a decision this daemon made, so its wording is the shared
+    // one every surface shows, not a private string the HTTP layer invented.
+    expect(entries[0]).toMatchObject({
+      outcome: "denied",
+      detail: { refusal: "running", reason: ROUTINE_DELETE_REFUSAL_REASONS.running },
+    });
+  });
+
+  test("the HTTP route refuses a device without manage scope and never reaches the runner", async () => {
+    const called: string[] = [];
+    const h = await harness({ routines: scriptedRunner([], called) });
+    const readOnly = await h.pair("phone", [SCOPE_READ]);
+
+    const res = await h.http(
+      "/v1/routines/delete",
+      { method: "POST", body: JSON.stringify({ routineIds: ["rtn_a"] }) },
+      readOnly,
+    );
+    expect(res.status).toBe(403);
+    expect(called).toEqual([]);
+  });
+
+  test("the HTTP route refuses an empty id list rather than answering it with success", async () => {
+    const called: string[] = [];
+    const h = await harness({ routines: scriptedRunner([], called) });
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    const res = await h.http(
+      "/v1/routines/delete",
+      { method: "POST", body: JSON.stringify({ routineIds: [] }) },
+      manage,
+    );
+    expect(res.status).toBe(400);
+    expect(called).toEqual([]);
+  });
+
+  test("the socket frame deletes through the same shared path and answers the asking socket", async () => {
+    const called: string[] = [];
+    const h = await harness({
+      routines: scriptedRunner([{ routineId: "rtn_sock", deleted: true }], called),
+    });
+    const token = await h.pair("phone", [SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await connect(h.port, token);
+    if (!socket) throw new Error("socket did not open");
+    await socket.next(frame => frame.t === "hello", "hello");
+
+    socket.send({ t: "routine_delete", routineIds: ["rtn_sock"] });
+    const answered = await socket.next(frame => frame.t === "routines_deleted", "routines_deleted");
+    if (answered.t !== "routines_deleted") throw new Error("expected routines_deleted");
+    expect(answered.results).toEqual([{ routineId: "rtn_sock", deleted: true }]);
+    expect(called).toEqual(["rtn_sock"]);
+    expect(h.store.listAudit().filter(e => e.action === "routine.delete")).toHaveLength(1);
+    socket.close();
+  });
+
+  test("a socket without manage scope is refused and the attempt is audited", async () => {
+    const called: string[] = [];
+    const h = await harness({ routines: scriptedRunner([], called) });
+    const token = await h.pair("watcher", [SCOPE_READ]);
+    const socket = await connect(h.port, token);
+    if (!socket) throw new Error("socket did not open");
+    await socket.next(frame => frame.t === "hello", "hello");
+
+    socket.send({ t: "routine_delete", routineIds: ["rtn_sock"] });
+    const refused = await socket.next(
+      frame => frame.t === "error" && frame.code === "unauthorized",
+      "unauthorized error",
+    );
+    if (refused.t !== "error") throw new Error("expected error frame");
+    expect(refused.message).toContain("manage scope");
+    expect(called).toEqual([]);
+
+    const entries = h.store.listAudit().filter(e => e.action === "routine.delete");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ outcome: "denied", detail: { reason: "unauthorized" } });
+    socket.close();
+  });
+
+  test("a malformed delete frame is refused by name and audited, and the socket survives", async () => {
+    const called: string[] = [];
+    const h = await harness({ routines: scriptedRunner([{ routineId: "rtn_late", deleted: true }], called) });
+    const token = await h.pair("phone", [SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await connect(h.port, token);
+    if (!socket) throw new Error("socket did not open");
+    await socket.next(frame => frame.t === "hello", "hello");
+
+    socket.send({ t: "routine_delete", routineIds: [] });
+    const refused = await socket.next(frame => frame.t === "error" && frame.code === "bad_frame", "bad_frame error");
+    if (refused.t !== "error") throw new Error("expected error frame");
+    expect(refused.message).toContain("non-empty");
+    expect(called).toEqual([]);
+    expect(h.store.listAudit().filter(e => e.action === "routine.delete")).toHaveLength(1);
+
+    // The socket is still served afterwards; a denial is not a disconnect.
+    socket.send({ t: "routine_delete", routineIds: ["rtn_late"] });
+    const answered = await socket.next(frame => frame.t === "routines_deleted", "routines_deleted after bad frame");
+    if (answered.t !== "routines_deleted") throw new Error("expected routines_deleted");
+    expect(answered.results).toEqual([{ routineId: "rtn_late", deleted: true }]);
+    socket.close();
   });
 });
 
