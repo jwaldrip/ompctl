@@ -446,45 +446,32 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
     socket.close();
   });
 
-  test("/v1/health keeps being served while the index scans and counts", async () => {
+  test("/v1/health keeps being answered while the index scans and counts", async () => {
     const h = await corpusHarness();
-    // One transcript too large to count in a single event-loop slice. Size
-    // matters more than file count: the warm pass already yields between
-    // files, so only an indivisible count inside one file can hold the loop,
-    // which is the shape that wedged the daemon.
+    // One transcript too large to count in a single event-loop slice.
     writeCountedSessionFile(h.sessionsRoot, "aaaaaaaa-0000-7000-0000-000000000001", 20_000, 1100);
     const token = await h.pair([SCOPE_READ]);
     const socket = await h.connect(token);
     const healthUrl = `http://127.0.0.1:${h.port}/v1/health`;
 
-    const probeHealth = async (): Promise<number> => {
-      const started = performance.now();
-      const res = await fetch(healthUrl);
-      await res.arrayBuffer();
-      expect(res.status).toBe(200);
-      return performance.now() - started;
-    };
-
-    // Control, measured on this machine with the daemon idle: the assertion
-    // below is relative to this, because a shared runner's absolute latency
-    // is not a property of this daemon.
-    const idle: number[] = [];
-    for (let i = 0; i < 5; i++) idle.push(await probeHealth());
-    idle.sort((a, b) => a - b);
-    const baselineMs = idle[2] ?? 0;
-
-    // Probing starts before the request and runs to the upgraded frame, so
-    // it covers the scan and the count. The counting overlaps first paint, so
-    // a loop that started after that frame would measure a finished build.
+    // Deliberately no latency bound. The wedge this guards against parked the
+    // route forever, and that is what is asserted: answers keep coming for
+    // the whole build. Measured worst-probe latency was tried here and is not
+    // a usable signal -- a clean run spiked to 118ms while a blocking one sat
+    // between 145ms and 394ms, so the two ranges overlap and the check would
+    // fail on garbage collection rather than on blocking. The property that
+    // the counter actually hands the loop back is pinned deterministically in
+    // `sessions/scanner.test.ts` instead, by counting event-loop turns.
     let working = true;
-    const probing = (async (): Promise<{ worst: number; probes: number }> => {
-      let worst = 0;
-      let probes = 0;
+    const probing = (async (): Promise<number> => {
+      let answered = 0;
       while (working) {
-        worst = Math.max(worst, await probeHealth());
-        probes += 1;
+        const res = await fetch(healthUrl);
+        await res.arrayBuffer();
+        expect(res.status).toBe(200);
+        answered += 1;
       }
-      return { worst, probes };
+      return answered;
     })();
 
     socket.send({ t: "sessions" });
@@ -492,15 +479,12 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
     expect(isSessionsFrame(first) && first.sessions.every(s => s.messageCount === null)).toBe(true);
     const upgraded = await socket.next(isSessionsFrame, "upgraded sessions frame");
     working = false;
-    const { worst, probes } = await probing;
+    const answered = await probing;
 
-    // The count really did run inside the probed window.
+    // The count really did run inside the probed window, and the route was
+    // serving throughout it rather than parked behind the count.
     expect(isSessionsFrame(upgraded) && upgraded.sessions.every(s => s.messageCount === 20_000)).toBe(true);
-    expect(probes).toBeGreaterThan(3);
-    // A count that holds the loop parks every probe that lands inside it, so
-    // the worst answer rises to the length of the stall. The floor keeps a
-    // sub-millisecond baseline from making this unsatisfiable.
-    expect(worst).toBeLessThan(Math.max(baselineMs * 10, 15));
+    expect(answered).toBeGreaterThan(3);
     socket.close();
   });
 });
