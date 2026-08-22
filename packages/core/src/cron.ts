@@ -1,6 +1,11 @@
 /**
  * Cron expression evaluation against a named IANA timezone.
  *
+ * Lives in core rather than the daemon because two runtimes must agree on it:
+ * the daemon's scheduler arms the next fire, and the app's routine editor
+ * previews it for the operator before anything is saved. It is pure calendar
+ * arithmetic with no I/O, which is exactly what this package holds.
+ *
  * Standard five fields: `minute hour day-of-month month day-of-week`, each
  * accepting `*`, `a`, `a-b`, `a,b,c`, and a `/n` step on any of those.
  *

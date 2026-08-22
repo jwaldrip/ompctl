@@ -124,6 +124,40 @@ function forbidFetch(): void {
   }) as unknown as typeof fetch;
 }
 
+/**
+ * Type into a rendered `TextInput` by invoking the change handler React
+ * actually attached to it, the same way every other app suite does: setting
+ * `.value` and dispatching an input event never reaches React under
+ * happy-dom, so a gate tested that way can only ever see the empty string and
+ * cannot fail.
+ */
+function typeInto(input: HTMLElement, value: string): void {
+  const key = Object.keys(input).find(name => name.startsWith("__reactProps$"));
+  if (key === undefined) throw new Error("no React props on the rendered input: the change path cannot be driven");
+  const props = Reflect.get(input, key) as { onChange?: (event: unknown) => void };
+  if (typeof props.onChange !== "function") throw new Error("the rendered input has no onChange handler");
+  (input as HTMLInputElement).value = value;
+  props.onChange({
+    target: input,
+    currentTarget: input,
+    nativeEvent: { text: value },
+    preventDefault: () => {},
+    stopPropagation: () => {},
+  });
+}
+
+/** `aria-disabled` and a native `disabled` are both legitimate ways a control says it is off. */
+function readsDisabled(node: Element): boolean {
+  if (node.getAttribute("aria-disabled") === "true") return true;
+  return Reflect.get(node, "disabled") === true;
+}
+
+function field(host: HTMLElement, testID: string): HTMLElement {
+  const node = el(host, testID);
+  if (node === null) throw new Error(`no element rendered for ${testID}`);
+  return node;
+}
+
 describe("RoutinesScreen", () => {
   test("reads through the socket and renders each action outcome independently", async () => {
     forbidFetch();
@@ -184,6 +218,12 @@ describe("RoutinesScreen", () => {
     await settle();
     act(() => el(host, "routine-add-action")?.click());
     await settle();
+    // A fresh action arrives with no working directory, and the save gate
+    // refuses one: the cwd has to be filled before the routine can be written.
+    act(() => {
+      typeInto(field(host, "routine-action-2-cwd"), "/work");
+    });
+    await settle();
     act(() => el(host, "routine-save")?.click());
     await settle();
 
@@ -215,6 +255,195 @@ describe("RoutinesScreen", () => {
     await settle();
     expect(socket.framesOfType("routine_write")).toEqual([]);
     expect(socket.framesOfType("routine_run")).toEqual([]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("creates a cron routine, previewing its next fire before it is saved", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => el(host, "routines-new")?.click());
+    await settle();
+
+    expect(el(host, "routine-schedule-editor")).not.toBeNull();
+    // The default schedule is 09:00 UTC daily, so the preview must read 09:00
+    // and move with the expression the operator types.
+    expect(el(host, "routine-next-fire")?.textContent).toContain("09:00");
+
+    act(() => {
+      typeInto(field(host, "routine-cron-expression"), "30 8 * * *");
+      typeInto(field(host, "routine-action-0-cwd"), "/work");
+    });
+    await settle();
+    expect(el(host, "routine-next-fire")?.textContent).toContain("08:30");
+
+    act(() => el(host, "routine-save")?.click());
+    await settle();
+
+    const writes = socket.framesOfType("routine_write");
+    expect(writes).toHaveLength(1);
+    const write = writes[0];
+    if (write?.t !== "routine_write") throw new Error("expected routine_write");
+    expect(write.routine.trigger).toEqual({ kind: "cron", expression: "30 8 * * *", timezone: "UTC" });
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("creates an interval routine in human units, stored as seconds", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => el(host, "routines-new")?.click());
+    await settle();
+    act(() => el(host, "routine-schedule-interval")?.click());
+    await settle();
+
+    expect(el(host, "routine-next-fire")).not.toBeNull();
+
+    act(() => {
+      typeInto(field(host, "routine-interval-value"), "30");
+    });
+    await settle();
+    act(() => el(host, "routine-interval-unit-minutes")?.click());
+    await settle();
+    act(() => {
+      typeInto(field(host, "routine-action-0-cwd"), "/work");
+    });
+    await settle();
+
+    act(() => el(host, "routine-save")?.click());
+    await settle();
+
+    const writes = socket.framesOfType("routine_write");
+    expect(writes).toHaveLength(1);
+    const write = writes[0];
+    if (write?.t !== "routine_write") throw new Error("expected routine_write");
+    expect(write.routine.trigger).toEqual({ kind: "interval", seconds: 1800 });
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("an unparsable cron expression states its reason and blocks the save", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => el(host, "routines-new")?.click());
+    await settle();
+
+    act(() => {
+      typeInto(field(host, "routine-cron-expression"), "* * * *");
+    });
+    await settle();
+
+    expect(el(host, "routine-trigger-error")?.textContent).toContain("5 fields");
+    expect(el(host, "routine-next-fire")).toBeNull();
+    expect(readsDisabled(field(host, "routine-save"))).toBe(true);
+
+    act(() => el(host, "routine-save")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_write")).toEqual([]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a blank working directory states its reason and blocks the save until filled", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => el(host, "routines-new")?.click());
+    await settle();
+
+    expect(el(host, "routine-action-0-cwd-error")?.textContent).toContain("working directory");
+    expect(readsDisabled(field(host, "routine-save"))).toBe(true);
+
+    act(() => el(host, "routine-save")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_write")).toEqual([]);
+
+    act(() => {
+      typeInto(field(host, "routine-action-0-cwd"), "/work");
+    });
+    await settle();
+    expect(el(host, "routine-action-0-cwd-error")).toBeNull();
+    expect(readsDisabled(field(host, "routine-save"))).toBe(false);
+
+    act(() => el(host, "routine-save")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_write")).toHaveLength(1);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a webhook routine shows the post endpoint and the hub's no-HTTP limit plainly", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    act(() => el(host, "routine-rtn_calls-edit")?.click());
+    await settle();
+
+    expect(el(host, "routine-webhook-endpoint")?.textContent).toContain("/v1/webhooks/rtn_calls");
+    const notice = el(host, "routine-webhook-hub-notice");
+    expect(notice?.textContent).toContain("sealed socket");
+    expect(notice?.textContent).toContain("proxies no HTTP");
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("editing an existing routine can change its trigger kind", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    act(() => el(host, "routine-rtn_calls-edit")?.click());
+    await settle();
+    act(() => el(host, "routine-trigger-schedule")?.click());
+    await settle();
+
+    expect(el(host, "routine-cron-expression")).not.toBeNull();
+    // ROUTINE's actions already carry working directories, so save is open.
+    act(() => el(host, "routine-save")?.click());
+    await settle();
+
+    const writes = socket.framesOfType("routine_write");
+    expect(writes).toHaveLength(1);
+    const write = writes[0];
+    if (write?.t !== "routine_write") throw new Error("expected routine_write");
+    expect(write.routine.trigger).toEqual({ kind: "cron", expression: "0 9 * * *", timezone: "UTC" });
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a manual routine carries no schedule and saves as kind manual", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => el(host, "routines-new")?.click());
+    await settle();
+    act(() => el(host, "routine-trigger-manual")?.click());
+    await settle();
+
+    expect(el(host, "routine-manual-editor")).not.toBeNull();
+    expect(el(host, "routine-next-fire")).toBeNull();
+    expect(el(host, "routine-trigger-error")).toBeNull();
+
+    act(() => {
+      typeInto(field(host, "routine-action-0-cwd"), "/work");
+    });
+    await settle();
+    act(() => el(host, "routine-save")?.click());
+    await settle();
+
+    const writes = socket.framesOfType("routine_write");
+    expect(writes).toHaveLength(1);
+    const write = writes[0];
+    if (write?.t !== "routine_write") throw new Error("expected routine_write");
+    expect(write.routine.trigger).toEqual({ kind: "manual" });
 
     act(() => root.unmount());
     host.remove();
