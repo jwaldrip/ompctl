@@ -28,11 +28,9 @@
  *   the daemon's ordered `speech` segments ordered on the speaker.
  */
 
-import { NativeModules, Platform } from "react-native";
+import { NativeEventEmitter, type NativeModule, NativeModules, Platform } from "react-native";
 
-export type VoiceAvailability =
-  | { readonly available: true }
-  | { readonly available: false; readonly reason: string };
+export type VoiceAvailability = { readonly available: true } | { readonly available: false; readonly reason: string };
 
 /**
  * The rate every `audio` frame this app sends and every `speech` frame it
@@ -53,7 +51,7 @@ export interface OmpctlVoiceModule {
   playPcm(base64: string): Promise<void>;
   /** Stop any playing speech audio. */
   stopPlayback(): Promise<void>;
-  /** The event surface capture chunks arrive on, as `NativeEventEmitter` shapes it. */
+  /** The event surface capture chunks arrive on. The real module streams these as device events; see `withEventStream`. */
   addListener(eventName: "voice_chunk", listener: (event: { pcm: string }) => void): { remove(): void };
 }
 
@@ -212,12 +210,33 @@ function isVoiceModule(value: unknown): value is OmpctlVoiceModule {
     typeof candidate.startCapture === "function" &&
     typeof candidate.stopCapture === "function" &&
     typeof candidate.playPcm === "function" &&
-    typeof candidate.stopPlayback === "function" &&
-    typeof candidate.addListener === "function"
+    typeof candidate.stopPlayback === "function"
   );
 }
 
-const module = isVoiceModule(nativeVoice) ? nativeVoice : undefined;
+/**
+ * Chunks arrive as device events, not through the module's own `addListener`.
+ *
+ * A JS function handed to a bridged method crosses as a single-shot callback:
+ * React Native's `convertJSIFunctionToCallback` drops the callback after one
+ * call and `LOG(FATAL)`s on the second ("Callback arg cannot be called more
+ * than once"), and Android's `CallbackImpl` throws the same way. A stream of
+ * audio chunks through that hop would therefore hard-crash the app on chunk
+ * two. The event emitter is the one surface that streams, so the real module
+ * is wrapped here and the seam above keeps the injectable shape its tests use.
+ */
+function withEventStream(native: OmpctlVoiceModule): OmpctlVoiceModule {
+  const emitter = new NativeEventEmitter(native as unknown as NativeModule);
+  return {
+    startCapture: rate => native.startCapture(rate),
+    stopCapture: () => native.stopCapture(),
+    playPcm: pcm => native.playPcm(pcm),
+    stopPlayback: () => native.stopPlayback(),
+    addListener: (eventName, listener) => emitter.addListener(eventName, listener),
+  };
+}
+
+const module = isVoiceModule(nativeVoice) ? withEventStream(nativeVoice) : undefined;
 
 /** The pair every platform gets: live where the native module exists, named otherwise. */
 export const deviceMemoVoice: MemoVoice = {
