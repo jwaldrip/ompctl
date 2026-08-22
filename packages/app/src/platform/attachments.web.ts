@@ -15,16 +15,16 @@
  * never loads the native library at all.
  */
 
-import type { PromptImage } from "@ompd/core/contracts";
+import type { ImageAttachmentPicker, PickedAttachments } from "./attachments.ts";
 
-export type { AttachmentAvailability, ImageAttachmentPicker } from "./attachments.ts";
+export type { AttachmentAvailability, ImageAttachmentPicker, PickedAttachments } from "./attachments.ts";
 
 export const imageAttachmentPicker: ImageAttachmentPicker = {
   availability: {
     available: false,
     reason: "Image attachments are unavailable on the web build: no photo picker is wired for this target yet.",
   },
-  pick: async (): Promise<PromptImage[]> => {
+  pick: async (): Promise<PickedAttachments> => {
     throw new Error("no photo picker is available on this platform");
   },
 };

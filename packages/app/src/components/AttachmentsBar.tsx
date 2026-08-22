@@ -71,18 +71,27 @@ export function AttachmentsBar({ picker, images, onImages, enabled, prefix }: At
     setPicking(true);
     void picker
       .pick(MAX_PROMPT_IMAGES - images.length)
-      .then(picked => {
-        // Each candidate is checked against the merged set the wire would
-        // actually carry, so the count and total budgets bind here, before a
-        // frame is built, with the shared vocabulary rather than a local
-        // approximation of it.
+      .then(({ images: picked, refused }) => {
+        // Whatever the seam already refused by name comes first: it measured
+        // the image against the wire's own ceiling and knows why, which is
+        // more than this band can reconstruct from a missing chip.
+        const notices = [...refused];
+        // Each candidate is then checked against the merged set the wire
+        // would actually carry, so the count and total budgets bind here,
+        // before a frame is built, with the shared vocabulary rather than a
+        // local approximation of it.
         const accepted: PromptImage[] = [];
         for (const candidate of picked) {
           const merged = parsePromptImages([...images, ...accepted, candidate]);
           if (merged.ok) accepted.push(candidate);
-          else setNotice(`Image not attached: ${PROMPT_IMAGE_REFUSAL_REASONS[merged.refusal]}`);
+          else notices.push(`Image not attached: ${PROMPT_IMAGE_REFUSAL_REASONS[merged.refusal]}`);
         }
         if (accepted.length > 0) onImages([...images, ...accepted]);
+        // One live sentence is what a person standing in a composer reads, so
+        // the rest are counted rather than stacked into a wall of text that
+        // the two-line slot would clip anyway.
+        const [first, ...rest] = notices;
+        setNotice(first === undefined ? null : rest.length === 0 ? first : `${first} Plus ${rest.length} more.`);
         setPicking(false);
       })
       .catch((cause: unknown) => {

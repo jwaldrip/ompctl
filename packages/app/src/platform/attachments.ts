@@ -18,13 +18,39 @@
  * claim a module the next call would miss.
  *
  * `attachments.web.ts` is this file's counterpart for the web target; see
-import { MAX_PROMPT_IMAGES, parsePromptImages, type PromptImage } from "@ompd/core/contracts";
-import { launchImageLibrary, type ImageLibraryOptions, type ImagePickerResponse } from "react-native-image-picker";
+ * there for why the web build names its absence rather than shipping the
+ * library's DOM path.
+ */
+
+import {
+  MAX_PROMPT_IMAGE_BASE64_CHARS,
+  MAX_PROMPT_IMAGES,
+  PROMPT_IMAGE_REFUSAL_REASONS,
+  type PromptImage,
+  type PromptImageRefusal,
+  parsePromptImages,
+} from "@ompd/core/contracts";
+import { type ImageLibraryOptions, type ImagePickerResponse, launchImageLibrary } from "react-native-image-picker";
 
 /** Same shape as the memo voice seam: a named state, never a silent absence. */
 export type AttachmentAvailability =
   | { readonly available: true }
   | { readonly available: false; readonly reason: string };
+
+/**
+ * What one pick gesture produced.
+ *
+ * Two lists rather than one, because an image the wire cannot carry is not
+ * the same event as an image the operator did not choose. Dropping the
+ * refusals would leave a press that returns nothing and explains nothing,
+ * which reads as a broken button rather than as an image too big to send.
+ */
+export interface PickedAttachments {
+  /** The images that fit, in pick order. */
+  readonly images: PromptImage[];
+  /** One readable sentence per image that cannot ride, in pick order. */
+  readonly refused: string[];
+}
 
 /**
  * The one operation the composer needs: pick images from the device library.
@@ -33,29 +59,98 @@ export type AttachmentAvailability =
  */
 export interface ImageAttachmentPicker {
   readonly availability: AttachmentAvailability;
-  pick(room: number): Promise<PromptImage[]>;
+  pick(room: number): Promise<PickedAttachments>;
 }
 
 /** The library's launch function, injectable so tests never open a real picker. */
 export type LaunchImageLibrary = (options: ImageLibraryOptions) => Promise<ImagePickerResponse>;
 
 /**
- * Picking options chosen to land under the wire budgets on their own: a
- * 1600-pixel edge and 0.8 quality re-encodes a phone photo to a few hundred
- * kilobytes, well inside `MAX_PROMPT_IMAGE_BASE64_CHARS`. The ceiling is
- * still enforced by bytes on both ends, because "usually small enough" is
- * not a budget.
+ * What the picker is asked to produce, and what that does and does not
+ * guarantee.
+ *
+ * Two levers, and they are not equal. `maxWidth`/`maxHeight` always bite:
+ * both platforms scale an image to fit inside that box and never enlarge it
+ * (`ImagePickerUtils.mm`'s `resizeImage`, `Utils.java`'s
+ * `getImageDimensBasedOnConstraints`). `quality` bites for JPEG only. iOS
+ * re-encodes a jpg through `UIImageJPEGRepresentation(quality)` but a png
+ * through `UIImagePNGRepresentation`, which is lossless and ignores it
+ * (`ImagePickerManager.mm`'s `mapImageToAsset`); Android hands a png to
+ * `Bitmap.CompressFormat.PNG`, which ignores quality for the same reason;
+ * and a gif on iOS is neither resized nor re-encoded at all. A phone
+ * screenshot is a png, so for the most common attachment there is, dimension
+ * is the whole story and quality is inert.
+ *
+ * These numbers are measured, not hoped. Against a real 4032x4032 photograph
+ * and a real 1206x2622 iOS screenshot, 1400 pixels at quality 0.7 encodes to
+ * 157,344 and 169,996 base64 characters, both inside
+ * `MAX_PROMPT_IMAGE_BASE64_CHARS`. The 1600 and 0.8 this replaces measured
+ * 392,660 characters on a real screenshot, over the ceiling by 42,660, so
+ * the setting that was supposed to keep the common case safe was the one
+ * that refused it.
+ *
+ * None of that is a guarantee, and this file no longer claims one: a JPEG's
+ * size follows the picture rather than its dimensions, and the same
+ * screenshot kept as a png fits at no legible size. There is no second pass
+ * to fix that with. `launchCamera` and `launchImageLibrary` are the whole of
+ * the library's surface (`src/index.ts`, and its turbo spec has the same two
+ * methods), both present the OS picker, and both apply these options only to
+ * the pass they run, so re-encoding what came back would mean asking the
+ * operator to choose the photo a second time. So the budget is measured here
+ * against what actually arrived, and whatever still does not fit is refused
+ * by name.
  */
 const PICK_OPTIONS: ImageLibraryOptions = {
   mediaType: "photo",
   includeBase64: true,
-  maxWidth: 1600,
-  maxHeight: 1600,
-  quality: 0.8,
+  maxWidth: 1400,
+  maxHeight: 1400,
+  quality: 0.7,
   // HEIC is not a MIME the agent accepts; "compatible" asks iOS to hand back
-  // JPEG instead, so a default iPhone screenshot does not become a refusal.
+  // JPEG instead, and Android reads the same option to decide whether to keep
+  // its own HEIC conversion on, so a default iPhone photo does not become a
+  // refusal on either platform.
   assetRepresentationMode: "compatible",
 };
+
+/**
+ * The library's spelling of a format, in the wire's vocabulary.
+ *
+ * iOS names the type by sniffing the first byte and appending the extension
+ * it maps to, so every JPEG picked there arrives as `image/jpg`
+ * (`ImagePickerManager.mm` sets `image/` plus `ImagePickerUtils.getFileType`,
+ * which answers `jpg`). `PROMPT_IMAGE_MIME_TYPES` spells that format
+ * `image/jpeg` and the daemon refuses anything else, so before this map every
+ * photo picked on an iPhone was refused over the spelling of its name.
+ * Android reads the real type from the content resolver and already says
+ * `image/jpeg`. The quirk belongs at the platform seam, so that the wire's
+ * vocabulary can stay exact.
+ */
+const MIME_ALIASES: Readonly<Record<string, string>> = { "image/jpg": "image/jpeg" };
+
+/** base64 carries 3 bytes in every 4 characters, so this reads the wire's unit back as bytes. */
+function humanSize(base64Chars: number): string {
+  const bytes = (base64Chars * 3) / 4;
+  return bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.round(bytes / 1000)} KB`;
+}
+
+/**
+ * Why one image is not riding, in words an operator can act on.
+ *
+ * The size case gets the measurement rather than the rule, because "too
+ * large" without a number leaves nobody knowing whether to crop a little or
+ * give up. A png also gets told why the picker's quality setting did not
+ * save it, since that is the difference between an operator retrying with
+ * the same screenshot forever and one attaching a photo instead.
+ */
+function refusalSentence(name: string, mimeType: string, base64Chars: number, refusal: PromptImageRefusal): string {
+  if (refusal !== "too_large") return `${name} was not attached: ${PROMPT_IMAGE_REFUSAL_REASONS[refusal]}`;
+  const lossless =
+    mimeType === "image/png"
+      ? " A PNG is stored losslessly, so the picker's quality setting cannot shrink it: crop it, or attach a photo rather than a screenshot."
+      : "";
+  return `${name} was not attached: it is ${humanSize(base64Chars)} after resizing, and one image can carry at most ${humanSize(MAX_PROMPT_IMAGE_BASE64_CHARS)}.${lossless}`;
+}
 
 /**
  * Whether the picker's native module is linked. Every native target this app
@@ -67,7 +162,10 @@ const PICK_OPTIONS: ImageLibraryOptions = {
  * `undefined`, the named-unavailable state, not an error to guess about.
  */
 export function probeImagePickerModule(): unknown {
-  const proxy = (globalThis as { __turboModuleProxy?: (name: string) => unknown }).__turboModuleProxy;
+  // `globalThis` carries no type for React Native's turbo proxy, and a host
+  // without the new architecture has no such property at all.
+  const host = globalThis as { __turboModuleProxy?: (name: string) => unknown };
+  const proxy = host.__turboModuleProxy;
   try {
     const turbo = proxy?.("ImagePicker");
     if (turbo !== null && turbo !== undefined) return turbo;
@@ -102,21 +200,38 @@ export function createImageAttachmentPicker(launch: LaunchImageLibrary | undefin
     availability: { available: true },
     pick: async room => {
       const response = await launch({ ...PICK_OPTIONS, selectionLimit: Math.max(1, room) });
-      if (response.didCancel) return [];
+      if (response.didCancel) return { images: [], refused: [] };
       if (response.errorCode !== undefined) {
         throw new Error(`the photo picker refused: ${response.errorCode}`);
       }
-      // Assets without base64 (a video, a picker quirk) are skipped by name
-      // rather than sent as empty data: an empty image block is a turn the
-      // agent would spend on a decode error.
+
       const images: PromptImage[] = [];
+      const refused: string[] = [];
+      const seats = Math.max(0, Math.min(MAX_PROMPT_IMAGES, room));
       for (const asset of response.assets ?? []) {
-        if (typeof asset.base64 !== "string" || asset.base64.length === 0) continue;
-        const mimeType = (asset.type ?? "").toLowerCase();
+        const name = asset.fileName ?? "An image";
+        // An asset without base64 (a video, a picker quirk) cannot be sent as
+        // an empty block: that is a turn the agent would spend on a decode
+        // error. It is named here rather than skipped, because a chip that
+        // never appears is indistinguishable from a press that did nothing.
+        if (typeof asset.base64 !== "string" || asset.base64.length === 0) {
+          refused.push(`${name} was not attached: the picker returned no image data for it.`);
+          continue;
+        }
+        if (images.length >= seats) {
+          refused.push(`${name} was not attached: ${PROMPT_IMAGE_REFUSAL_REASONS.too_many}`);
+          continue;
+        }
+        const raw = (asset.type ?? "").toLowerCase();
+        const mimeType = MIME_ALIASES[raw] ?? raw;
         const checked = parsePromptImages([{ data: asset.base64, mimeType }]);
-        if (checked.ok) images.push(...checked.images);
+        if (checked.ok) {
+          images.push(...checked.images);
+          continue;
+        }
+        refused.push(refusalSentence(name, mimeType, asset.base64.length, checked.refusal));
       }
-      return images.slice(0, Math.max(0, Math.min(MAX_PROMPT_IMAGES, room)));
+      return { images, refused };
     },
   };
 }
