@@ -30,6 +30,8 @@ import {
   type EndpointOffer,
   type HostSpec,
   type PersistCollabVoiceNoteInput,
+  PROMPT_IMAGE_REFUSAL_REASONS,
+  parsePromptImages,
   type QueuedIntent,
   type Routine,
   type Run,
@@ -1538,19 +1540,35 @@ export class Gateway {
       // The same gate the socket's `prompt` frame passes, and the supervisor
       // re-authorizes from the device row behind it either way.
       if (!scopes.has(SCOPE_PROMPT)) return Response.json({ error: "forbidden" }, { status: 403 });
-      let body: { text?: unknown };
+      let body: { text?: unknown; images?: unknown };
       try {
         body = (await req.json()) as typeof body;
       } catch {
         return Response.json({ error: "bad_json" }, { status: 400 });
       }
-      if (typeof body.text !== "string" || body.text.length === 0) {
+      const images = parsePromptImages(body.images);
+      if (typeof body.text !== "string" || (body.text.length === 0 && !(images.ok && images.images.length > 0))) {
         return Response.json({ error: "text is required" }, { status: 400 });
+      }
+      if (!images.ok) {
+        // The same budgets and the same words as the socket frame, so a client
+        // meets one vocabulary whichever road it takes. Ignoring the field
+        // instead would be the one worse answer: a caller believing an image
+        // reached the agent that never did.
+        return Response.json(
+          { error: `attachment_${images.refusal}`, message: PROMPT_IMAGE_REFUSAL_REASONS[images.refusal] },
+          { status: 413 },
+        );
       }
 
       const agentId = promptRoute[1] ?? "";
       if (this.#queuesForDelegate(agentId)) {
-        const intent = this.#enqueueIntent(agentId, actor, "prompt", { text: body.text });
+        const intent = this.#enqueueIntent(
+          agentId,
+          actor,
+          "prompt",
+          images.images.length > 0 ? { text: body.text as string, images: images.images } : { text: body.text },
+        );
         return Response.json({ intent }, { status: 202 });
       }
 
@@ -1558,7 +1576,12 @@ export class Gateway {
         // Awaited, unlike the socket path: the whole point of this route is to
         // hand a script the stop reason, which does not exist until the turn
         // settles. The turn itself is identical either way.
-        const result = await this.#sup.prompt(promptRoute[1] ?? "", body.text, actor);
+        const result = await this.#sup.prompt(
+          agentId,
+          body.text as string,
+          actor,
+          images.images.length > 0 ? images.images : undefined,
+        );
         return Response.json({ agentId: promptRoute[1], stopReason: result.stopReason });
       } catch (err) {
         if (err instanceof UnauthorizedError) {
@@ -2737,17 +2760,33 @@ export class Gateway {
           });
           return;
         }
+        const images = parsePromptImages(frame.images);
         if (
           typeof frame.sessionId !== "string" ||
           frame.sessionId.length === 0 ||
           typeof frame.text !== "string" ||
-          frame.text.length === 0 ||
+          // An image-only prompt is a real prompt; emptiness only rules out a
+          // frame with no content of either kind.
+          (frame.text.length === 0 && images.ok && images.images.length === 0) ||
           (frame.deliverAs !== undefined && !isTuiSteerDelivery(frame.deliverAs))
         ) {
           // `nextTurn` lands here: `pi.sendUserMessage` has no such mode, and
           // refusing it is the honest answer, not downgrading it to a steer.
           audit("denied", { reason: "bad_frame" });
           this.#send(ws, { t: "error", code: "bad_frame", message: "invalid session prompt" });
+          return;
+        }
+        if (!images.ok) {
+          // The same budgets the agent prompt enforces, for the same reason:
+          // this frame also rides one relayed socket hop, and a refusal that
+          // names itself is the alternative to a disconnect the phone would
+          // read as a dead daemon.
+          audit("denied", { reason: `attachment_${images.refusal}`, sessionId: frame.sessionId });
+          this.#send(ws, {
+            t: "error",
+            code: `attachment_${images.refusal}`,
+            message: PROMPT_IMAGE_REFUSAL_REASONS[images.refusal],
+          });
           return;
         }
         const deliverAs: TuiSteerDelivery = frame.deliverAs ?? "steer";
@@ -2766,8 +2805,18 @@ export class Gateway {
           });
           return;
         }
-        audit("ok", { sessionId: frame.sessionId, deliverAs });
-        this.#send(owner, { t: "tui_steer", sessionId: frame.sessionId, text: frame.text, deliverAs });
+        audit("ok", {
+          sessionId: frame.sessionId,
+          deliverAs,
+          ...(images.images.length > 0 ? { images: images.images.length } : {}),
+        });
+        this.#send(owner, {
+          t: "tui_steer",
+          sessionId: frame.sessionId,
+          text: frame.text,
+          deliverAs,
+          ...(images.images.length > 0 ? { images: images.images } : {}),
+        });
         return;
       }
 
@@ -3485,24 +3534,45 @@ export class Gateway {
           });
           return;
         }
+        // The image budgets are enforced here rather than in the app: a phone
+        // is a peer on this socket, not a trusted client, and the hub's frame
+        // cap protects the relay, not the daemon. A refusal names itself so a
+        // client can say what to do about it instead of guessing.
+        const images = parsePromptImages(frame.images);
+        if (!images.ok) {
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code: `attachment_${images.refusal}`,
+            message: PROMPT_IMAGE_REFUSAL_REASONS[images.refusal],
+          });
+          return;
+        }
         // Announced before it is sent, so whoever is tracking how a device is
         // talking to an agent learns it typed even if the prompt then fails.
         this.#onTextPrompt?.(frame.agentId, this.#actorOf(ws));
         if (this.#queuesForDelegate(frame.agentId)) {
-          this.#enqueueIntent(frame.agentId, this.#actorOf(ws), "prompt", { text: frame.text });
+          this.#enqueueIntent(
+            frame.agentId,
+            this.#actorOf(ws),
+            "prompt",
+            images.images.length > 0 ? { text: frame.text, images: images.images } : { text: frame.text },
+          );
           return;
         }
 
         // Deliberately not awaited: a turn outlives the frame that started it,
         // and the socket has to stay responsive to `cancel` while it runs.
-        void this.#sup.prompt(frame.agentId, frame.text, this.#actorOf(ws)).catch((err: unknown) => {
-          this.#send(ws, {
-            t: "error",
-            agentId: frame.agentId,
-            code: err instanceof UnauthorizedError ? "unauthorized" : "prompt_failed",
-            message: err instanceof Error ? err.message : "prompt failed",
+        void this.#sup
+          .prompt(frame.agentId, frame.text, this.#actorOf(ws), images.images.length > 0 ? images.images : undefined)
+          .catch((err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              agentId: frame.agentId,
+              code: err instanceof UnauthorizedError ? "unauthorized" : "prompt_failed",
+              message: err instanceof Error ? err.message : "prompt failed",
+            });
           });
-        });
         return;
       }
 

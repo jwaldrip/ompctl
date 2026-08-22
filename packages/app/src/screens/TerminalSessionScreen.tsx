@@ -29,13 +29,13 @@
  * Send while the session is eligible, even when a turn is already running.
  */
 
-import type { SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
+import type { PromptImage, SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useRef, useState } from "react";
-import type { ListRenderItemInfo } from "react-native";
 import { FlatList, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AttachmentsBar } from "../components/AttachmentsBar.tsx";
 import type { TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -43,6 +43,7 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
+import { imageAttachmentPicker } from "../platform/attachments.ts";
 import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 
 export interface TerminalSessionScreenProps {
@@ -56,7 +57,7 @@ export interface TerminalSessionScreenProps {
   tui: TuiSessionState;
   connection: ConnectionState;
   onBack: () => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, images?: PromptImage[]) => void;
 }
 
 function notLiveGuidance(status: SessionLiveStatus | null): string {
@@ -118,10 +119,14 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   const rows = logRows(tui);
 
   const [text, setText] = useState("");
+  const [images, setImages] = useState<PromptImage[]>([]);
   const trimmed = text.trim();
   const connected = connection === "connected";
   const composerEnabled = connected && liveTerminal && promptAccess !== "missing" && tui.refusalKind !== "scope";
-  const canSend = composerEnabled && trimmed.length > 0;
+  // An image-only prompt steers as well as a text-only one; the daemon's own
+  // frame check is what says a prompt with neither is empty, and this screen
+  // refuses it here first so the operator never needs the round trip.
+  const canSend = composerEnabled && (trimmed.length > 0 || images.length > 0);
   const placeholder = !connected
     ? "No link"
     : !liveTerminal
@@ -132,8 +137,9 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
 
   const submit = (): void => {
     if (!canSend) return;
-    props.onSubmit(trimmed);
+    props.onSubmit(trimmed, images.length > 0 ? images : undefined);
     setText("");
+    setImages([]);
   };
 
   const log = useRef<FlatList<LogRow>>(null);
@@ -342,38 +348,54 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
       */}
       <View style={{ paddingBottom: bottomInsetFor(keyboardInset, insets.bottom) }} testID="terminal-composer-safe">
         <View style={styles.composer}>
-          <TextInput
-            testID="terminal-composer-input"
-            style={[styles.field, type.body, !composerEnabled && styles.fieldOff]}
-            value={text}
-            onChangeText={setText}
-            editable={composerEnabled}
-            multiline
-            placeholder={placeholder}
-            placeholderTextColor={ink.faint}
-            // Enter sends on a keyboard; Shift+Enter is a newline. Sending
-            // stays available mid-turn: a second prompt steers the running
-            // turn, which is the delivery the daemon defaults to.
-            submitBehavior="submit"
-            onSubmitEditing={submit}
+          {/*
+            The attachment band, inside the composer surface for the same
+            reason the agent composer carries it: the chips are part of the
+            turn being composed, and a steer can carry an image exactly as an
+            agent prompt can. The band renders its own named-unavailable
+            state, so a build with no picker says so instead of hiding.
+          */}
+          <AttachmentsBar
+            picker={imageAttachmentPicker}
+            images={images}
+            onImages={setImages}
+            enabled={composerEnabled}
+            prefix="terminal-composer"
           />
+          <View style={styles.composerRow}>
+            <TextInput
+              testID="terminal-composer-input"
+              style={[styles.field, type.body, !composerEnabled && styles.fieldOff]}
+              value={text}
+              onChangeText={setText}
+              editable={composerEnabled}
+              multiline
+              placeholder={placeholder}
+              placeholderTextColor={ink.faint}
+              // Enter sends on a keyboard; Shift+Enter is a newline. Sending
+              // stays available mid-turn: a second prompt steers the running
+              // turn, which is the delivery the daemon defaults to.
+              submitBehavior="submit"
+              onSubmitEditing={submit}
+            />
 
-          <Pressable
-            testID="terminal-composer-send"
-            accessibilityRole="button"
-            accessibilityLabel="Send to this terminal"
-            accessibilityState={{ disabled: !canSend }}
-            disabled={!canSend}
-            onPress={submit}
-            style={({ pressed }) => [
-              styles.action,
-              { borderColor: canSend ? signal.sage : ground.edge },
-              pressed && { backgroundColor: ground.active },
-            ]}
-          >
-            <Glyph name="send" size={14} color={canSend ? signal.sage : ink.faint} />
-            <Label color={canSend ? signal.sage : ink.faint}>Send</Label>
-          </Pressable>
+            <Pressable
+              testID="terminal-composer-send"
+              accessibilityRole="button"
+              accessibilityLabel="Send to this terminal"
+              accessibilityState={{ disabled: !canSend }}
+              disabled={!canSend}
+              onPress={submit}
+              style={({ pressed }) => [
+                styles.action,
+                { borderColor: canSend ? signal.sage : ground.edge },
+                pressed && { backgroundColor: ground.active },
+              ]}
+            >
+              <Glyph name="send" size={14} color={canSend ? signal.sage : ink.faint} />
+              <Label color={canSend ? signal.sage : ink.faint}>Send</Label>
+            </Pressable>
+          </View>
         </View>
       </View>
     </SafeScreen>
@@ -428,13 +450,19 @@ const styles = StyleSheet.create({
   refusalHead: { flexDirection: "row", alignItems: "center", gap: space.tight },
   boundary: { marginTop: "auto", paddingTop: space.snug },
   composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: space.snug,
+    gap: space.tight,
     padding: space.step,
     backgroundColor: ground.surface,
     borderTopWidth: stroke.hair,
     borderTopColor: ground.edge,
+  },
+  // The input and send sit in their own row inside the composer surface, so
+  // the attachment band can sit above them in the same surface without
+  // participating in the row's flex-end alignment.
+  composerRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.snug,
   },
   field: {
     flex: 1,

@@ -41,6 +41,7 @@ import {
   faGaugeHigh,
   faGlobe,
   faHand,
+  faImage,
   faLayerGroup,
   faLink,
   faListCheck,
@@ -118,6 +119,8 @@ export type GlyphName =
   | "browser"
   | "narration"
   | "mic"
+  /** An image being attached to a prompt; `attach` is this device joining a session. */
+  | "image"
   | "unknown";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
@@ -198,6 +201,9 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // Speech into this device, the microphone itself; narration is sound
   // leaving it, so the two never share a glyph.
   mic: faMicrophone,
+  // A picture riding a prompt, drawn as the picture itself rather than the
+  // paperclip, because what this control adds is an image, not a file.
+  image: faImage,
   unknown: faCircleQuestion,
 };
 

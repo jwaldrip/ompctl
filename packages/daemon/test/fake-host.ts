@@ -53,8 +53,12 @@ export interface FakeHostController {
   loads: string[];
   /** Full `session/load` params, used to prove restored tool mounts. */
   loadRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }>;
-  /** Every `session/prompt` the supervisor sent. */
-  prompts: Array<{ sessionId: string; text: string }>;
+  /**
+   * Every `session/prompt` the supervisor sent. `blocks` is the content-block
+   * array verbatim, so a test can prove an image reached the wire rather than
+   * infer it from a text field that happens to be non-empty.
+   */
+  prompts: Array<{ sessionId: string; text: string; blocks: unknown[] }>;
   /** Session ids the peer was told to cancel, in order. */
   cancels: string[];
   /** Current mode per session, as `session/set_mode` left it. */
@@ -243,9 +247,12 @@ export function createFakeHost(): FakeHostController {
 
     if (msg.method === "session/prompt") {
       const sessionId = String(msg.params?.sessionId);
-      const blocks = msg.params?.prompt as Array<{ text?: string }> | undefined;
-      const text = blocks?.[0]?.text ?? "";
-      prompts.push({ sessionId, text });
+      const blocks = (msg.params?.prompt as Array<{ text?: string }> | undefined) ?? [];
+      // A text block may sit anywhere in the array now that image blocks ride
+      // beside it; the first one is the prompt's words, as every earlier
+      // caller of this recorder already assumed.
+      const text = blocks.find(block => typeof block.text === "string")?.text ?? "";
+      prompts.push({ sessionId, text, blocks });
 
       // Raced against cancellation rather than simply awaited, because that is
       // the property under test: a cancel has to settle a turn that is still

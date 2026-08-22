@@ -76,9 +76,17 @@ export interface BridgeContext {
  * option shape -- the prompt flow takes `steer` or `followUp` and has no
  * `nextTurn`, and it takes no `triggerTurn`, because taking the turn when the
  * session is idle is what the prompt flow already does.
+ *
+ * `content` is omp's own union: a string, or content blocks. Images arrive as
+ * `{ type: "image", data, mimeType }` blocks, the same shape every multimodal
+ * provider takes, so a steered image lands in the transcript as the
+ * operator's own attached picture rather than as words about one.
  */
 export interface BridgePi {
-  sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
+  sendUserMessage(
+    content: string | Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>,
+    options?: { deliverAs?: "steer" | "followUp" },
+  ): void;
 }
 
 export interface BridgeDeps {
@@ -315,13 +323,33 @@ export class Bridge {
       return;
     }
     if (parsed === null || typeof parsed !== "object") return;
-    const frame = parsed as { t?: unknown; sessionId?: unknown; text?: unknown; deliverAs?: unknown };
+    const frame = parsed as { t?: unknown; sessionId?: unknown; text?: unknown; deliverAs?: unknown; images?: unknown };
     // Only a steer for the session this socket registered. The daemon
     // already routes by registration, so a mismatch here means the socket
     // outlived a switch, and delivering it would put a phone's words into
     // the wrong conversation.
     if (frame.t !== "tui_steer" || frame.sessionId !== this.#registered) return;
-    if (typeof frame.text !== "string" || frame.text.length === 0) return;
+    if (typeof frame.text !== "string") return;
+    // The daemon already validated and bounded the images it forwarded; this
+    // end only shapes them. Anything that is not the expected block shape is
+    // dropped rather than delivered, because a half-formed block forwarded to
+    // omp would become the operator's own turn in someone's transcript.
+    const images = Array.isArray(frame.images)
+      ? frame.images.flatMap(image => {
+          if (typeof image !== "object" || image === null) return [];
+          const { data, mimeType } = image as Record<string, unknown>;
+          return typeof data === "string" && typeof mimeType === "string"
+            ? [{ type: "image" as const, data, mimeType }]
+            : [];
+        })
+      : [];
+    if (frame.text.length === 0 && images.length === 0) return;
+    // An image rides as a content block array; text alone keeps the string
+    // call every earlier frame made, byte for byte.
+    const content =
+      images.length === 0
+        ? frame.text
+        : [...(frame.text.length > 0 ? [{ type: "text" as const, text: frame.text }] : []), ...images];
     // `followUp` waits for the running turn. Everything else is the default
     // prompt call with NO options, and that distinction is load-bearing:
     // omitting `deliverAs` takes the turn when the session is idle and steers
@@ -329,10 +357,10 @@ export class Bridge {
     // only queues, in either state. Passing it would mean a phone prompt to an
     // idle terminal sat in a queue and visibly did nothing.
     if (frame.deliverAs === "followUp") {
-      this.#pi.sendUserMessage(frame.text, { deliverAs: "followUp" });
+      this.#pi.sendUserMessage(content, { deliverAs: "followUp" });
       return;
     }
-    this.#pi.sendUserMessage(frame.text);
+    this.#pi.sendUserMessage(content);
   }
 
   #activity(kind: "assistant_text" | "turn_start" | "turn_end", text?: string): void {

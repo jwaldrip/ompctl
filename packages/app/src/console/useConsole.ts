@@ -30,7 +30,7 @@ export type { WebViewTarget } from "./webview.ts";
 export interface ConsoleActions {
   select: (agentId: AgentId) => void;
   back: () => void;
-  prompt: (agentId: AgentId, text: string) => void;
+  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => void;
   cancel: (agentId: AgentId) => void;
   decide: (agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   decidePlan: (agentId: AgentId, requestId: string, choice: PlanReviewChoice) => void;
@@ -47,7 +47,7 @@ export interface ConsoleActions {
    * terminal that owns the session; progress arrives as `tui_activity`, and a
    * terminal with no bridge answers `tui_unreachable` instead.
    */
-  promptTui: (sessionId: string, text: string) => void;
+  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => void;
   /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
@@ -335,9 +335,9 @@ export function useConsole(
       back() {
         dispatch({ t: "select", agentId: null });
       },
-      prompt(agentId, text) {
-        client.prompt(agentId, text);
-        dispatch({ t: "prompt", agentId, text });
+      prompt(agentId, text, images) {
+        client.prompt(agentId, text, images);
+        dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
       },
       cancel(agentId) {
         client.cancel(agentId);
@@ -402,9 +402,9 @@ export function useConsole(
             });
         }
       },
-      promptTui(sessionId, text) {
-        client.sessionPrompt(sessionId, text);
-        dispatch({ t: "tui_prompt", sessionId, text });
+      promptTui(sessionId, text, images) {
+        client.sessionPrompt(sessionId, text, undefined, images);
+        dispatch({ t: "tui_prompt", sessionId, text, imageCount: images?.length ?? 0 });
       },
       deleteSession(sessionId) {
         // The row renders the missing scope and offers no confirmation, but
