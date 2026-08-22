@@ -1,11 +1,11 @@
 import {
+  hubWebhookPath,
   type RemoteRoutine,
   ROUTINE_DELETE_REFUSAL_REASONS,
   type Run,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   type TriggerSpec,
-  hubWebhookPath,
   webhookPath,
 } from "@ompd/core/contracts";
 import { CronError, nextFireTime } from "@ompd/core/cron";

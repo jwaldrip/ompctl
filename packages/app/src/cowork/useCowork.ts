@@ -57,7 +57,6 @@ export function useCowork(
 ): [CoworkState, CoworkActions] {
   const [state, setState] = useState<CoworkState>(EMPTY_STATE);
 
-
   const ask = useCallback((): void => {
     // The cwd is passed through exactly, empty string included, the same way
     // the REST poll this replaced always sent `?cwd=`: the daemon resolves
