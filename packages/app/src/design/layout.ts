@@ -45,3 +45,50 @@ export function useSplitLayout(): boolean {
 export function useFormMaxWidth(): number {
   return useIsTablet() ? FORM_MAX_WIDTH.tablet : FORM_MAX_WIDTH.phone;
 }
+
+// ---------------------------------------------------------------------------
+// The fleet bay's width when the split is on
+// ---------------------------------------------------------------------------
+
+/**
+ * The fraction of the window the fleet bay asks for on a split screen: two
+ * fifths. The bay is the list an operator scans while the log pane beside it
+ * holds a conversation, and the log keeps the larger share because code
+ * blocks and diffs are the widest things either pane shows.
+ */
+export const SPLIT_BAY_FRACTION = 0.4;
+
+/**
+ * The bay's floor, and why 400: the bay's own chrome must fit whole. The
+ * sort bar measures 382 points at the default type size
+ * (`SORT_BAR_CONTENT_WIDTH` in components/SortBar.tsx), so the floor is the
+ * next four-point step with room to spare, and
+ * `test/no-hidden-content.test.ts` pins the relationship. A window whose
+ * two fifths fall short of this (an iPad mini in portrait) still grants it,
+ * because a column label cut at the pane edge is worse than a narrower log.
+ * At accessibility type sizes the bar can outgrow even this floor, and then
+ * it scrolls rather than clips.
+ */
+export const SPLIT_BAY_MIN = 400;
+
+/**
+ * The bay's ceiling, because a react-native-web window has no natural
+ * maximum width: past 560 the bay is dead air beside short titles while the
+ * log pane starves, so the fraction stops applying and the log takes the
+ * remainder.
+ */
+export const SPLIT_BAY_MAX = 560;
+
+/**
+ * The bay's width for a window `width` points wide: the fraction, clamped to
+ * the floor and the ceiling. Pure, so a test can walk it across every screen
+ * class without rendering.
+ */
+export function splitBayWidth(width: number): number {
+  return Math.min(SPLIT_BAY_MAX, Math.max(SPLIT_BAY_MIN, Math.round(width * SPLIT_BAY_FRACTION)));
+}
+
+/** The fleet bay's width for the current window. Read only when the split is on. */
+export function useSplitBayWidth(): number {
+  return splitBayWidth(useWindowDimensions().width);
+}
