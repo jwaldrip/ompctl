@@ -412,7 +412,7 @@ describe("starting the container", () => {
         id: "agt_test",
         name: "dev",
         state: "idle",
-        host: { kind: "container", id: "ctr_1" },
+        host: { kind: "container", id: "ctr_1", spec: { kind: "container" } },
         cwd: DEV,
         createdAt: "2026-02-01T00:00:00.000Z",
         lastActiveAt: "2026-02-01T00:00:00.000Z",

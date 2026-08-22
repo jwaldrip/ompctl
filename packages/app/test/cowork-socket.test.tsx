@@ -78,7 +78,7 @@ class FakeSocket implements SocketLike {
 
   drop(): void {
     this.readyState = 3;
-    this.onclose?.({ code: 1006, reason: "link lost", wasClean: false });
+    this.onclose?.({ code: 1006, reason: "link lost" });
   }
 
   framesOfType<T extends ClientFrame["t"]>(t: T): Extract<ClientFrame, { t: T }>[] {
