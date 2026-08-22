@@ -35,6 +35,7 @@ import {
   faClockRotateLeft,
   faCodeBranch,
   faCoins,
+  faCopy,
   faDiagramProject,
   faFileLines,
   faFolder,
@@ -118,7 +119,8 @@ export type GlyphName =
   | "browser"
   | "narration"
   | "mic"
-  | "unknown";
+  | "unknown"
+  | "copy";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
@@ -199,6 +201,9 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // leaving it, so the two never share a glyph.
   mic: faMicrophone,
   unknown: faCircleQuestion,
+  // Two sheets of paper, one lifted off the other: the one shape every
+  // platform's users already read as "duplicate this exactly".
+  copy: faCopy,
 };
 
 export interface GlyphProps {

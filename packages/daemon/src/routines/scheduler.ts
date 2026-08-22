@@ -26,6 +26,7 @@ import {
   nextFireTime,
   type Routine,
   type RoutineAction,
+  type RoutineDeleteResult,
   type Run,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
@@ -373,6 +374,56 @@ export class Scheduler {
       return { accepted: false, reason: "forbidden" };
     }
     return { accepted: true, run: await this.#execute(routine, this.#actor) };
+  }
+
+  /**
+   * Delete routines for good, on the runner rather than a bare store call,
+   * because the scheduler is the only party that knows whether a run is in
+   * flight: `#inflight` catches a run whose row is not written yet, and the
+   * store's `hasActiveRun` catches a row a previous process left behind.
+   *
+   * Refusals are per id and named, never boolean, so a surface can tell the
+   * operator what to do rather than that it simply cannot. Disarmament is
+   * eager (`#dueAt`, `#broken`) rather than left to the next tick's
+   * reconciliation. No fire can start mid-delete anyway: this method runs to
+   * completion without an await, so a scheduled fire either began before the
+   * inflight check (and refused the delete) or begins after the row is gone
+   * (and finds no routine). No re-check inside `#execute` is needed, and one
+   * would be dead code.
+   */
+  async deleteRoutines(routineIds: readonly string[]): Promise<RoutineDeleteResult[]> {
+    const results: RoutineDeleteResult[] = [];
+    const known = new Set(this.#store.listRoutines().map(routine => routine.id));
+
+    for (const routineId of routineIds) {
+      if (!known.has(routineId)) {
+        results.push({ routineId, deleted: false, refusal: "not_found" });
+        continue;
+      }
+      const inFlight = [...this.#inflight.values()].some(
+        entry => entry.run.routineId === routineId && (entry.run.state === "queued" || entry.run.state === "running"),
+      );
+      if (inFlight || this.#store.hasActiveRun(routineId)) {
+        results.push({ routineId, deleted: false, refusal: "running" });
+        continue;
+      }
+      try {
+        if (!this.#store.deleteRoutine(routineId)) {
+          // Vanished between the listing above and the delete; the honest
+          // answer is the same as never having been there.
+          results.push({ routineId, deleted: false, refusal: "not_found" });
+          continue;
+        }
+      } catch {
+        results.push({ routineId, deleted: false, refusal: "failed" });
+        continue;
+      }
+      this.#dueAt.delete(routineId);
+      this.#broken.delete(routineId);
+      results.push({ routineId, deleted: true });
+    }
+
+    return results;
   }
 
   /** Epoch ms of the next fire, or null for triggers the clock does not drive. */
