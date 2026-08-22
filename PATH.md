@@ -117,10 +117,9 @@ On the Pixel with Wi-Fi off, `wifi_on=0`, no `wlan0` address, over 5G:
 Captured frames, not code reading. These are visual truths with no home in a test yet:
 
 - A session with 1,103 messages, 429k context and $264.16 spend rendered an entirely black transcript for a full 90 second wait, then rendered normally about two minutes later. There is no spinner, skeleton, or loading text, so a slow first history page is indistinguishable from a broken screen. This is the same shape as the complaint that started this work.
-- The sessions pane clips its own columns: the `SIZE` header is cut mid-word and every size value is severed (`12.8`, `10.`, `2!`).
-- Text paints underneath the row action buttons; fragments bleed through the play and archive column.
+- **Fixed 2026-08-21.** A session row's readings ran underneath its own action buttons. The size reading read `10.` and then, in the gap between the two buttons, a stray `e`: the tail of the word `size`. The text was never truncated, it was overdrawn, which the visible sliver proves. The row's title line respected a content box that reserves the trailing action column and the readings line did not. The actions were already correct siblings; the body simply had no `minWidth: 0`, so the readings set a floor it could not shrink under, and React Native's default `overflow: visible` let the excess paint beneath the later-drawn buttons.
 - Titles truncate near 14 characters on a 1640pt display, and group paths truncate at both ends, losing the org and the repo at once.
-- The transcript's last line is clipped behind the LINKED / context / spend strip, which overlays the scroll content instead of insetting it.
+- **Withdrawn.** I recorded the LINKED / context / spend strip as overlaying the transcript. It does not: `StatusReadout` is a stacked sibling below the list, and what I saw was ordinary scroll clipping at the list's viewport edge. The claim was an overreach from a static frame.
 - Unknown metrics render as a bare `--`, which reads as failure rather than "not known yet".
 - A grey circle overlaps the system status bar in one frame; a light arc is clipped into the bottom-right corner of the pair and connections screens. Both are unexplained chrome.
 - The primary button has two identities: an outlined ghost on the pair screen that looks exactly like the text inputs above it, and a solid green fill on connections.
@@ -142,9 +141,8 @@ Everything Jason has asked for, in exactly one state. Parked is not dropped.
 - No way back to the session list from a session view, which makes the closed screen a dead end
 - Right align the folder and archive controls in the Sessions header to the trailing content edge
 - A large session can show a black transcript with no loading state while its first history page is fetched, for at least 90 seconds. Seen by eye on the iPad, 2026-08-21
-- The sessions pane clips its own `SIZE` column, and row text paints under the action buttons. Seen by eye on the iPad, 2026-08-21
 - Titles truncate near 14 characters and group paths truncate at both ends, on a display with room for both. Seen by eye on the iPad, 2026-08-21
-- The LINKED / context / spend strip overlays the transcript's last line instead of insetting the scroll content. Seen by eye on the iPad, 2026-08-21
+- The notice used to float over the console and once covered the reply it was reporting on. It is a band in the column now, and `packages/app/test/no-hidden-content.test.ts` gates the class: a row clips its own content, a flex item holding text can shrink, readings wrap, and a notice never positions absolutely. Done 2026-08-21
 - Two primary-button treatments and two content gutters across pair and connections; unknown metrics render as a bare `--`. Seen by eye on the iPad, 2026-08-21
 - Subagents never reach the daemon, so the Agent Hub cannot list them against a real omp host. Diagnosed 2026-08-21, see above
 

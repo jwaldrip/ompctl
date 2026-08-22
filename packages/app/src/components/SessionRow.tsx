@@ -187,14 +187,30 @@ const styles = StyleSheet.create({
     borderBottomWidth: stroke.hair,
     borderBottomColor: ground.line,
     minHeight: TOUCH_TARGET,
+    // Nothing in this row may paint outside its own box. The actions are
+    // siblings that reserve their width, so anything that overflows the body
+    // lands underneath them and is silently hidden: a size reading sliced in
+    // half by a button reads as a rendering fault, not as a narrow column.
+    overflow: "hidden",
   },
   bar: { width: 3 },
-  body: { flex: 1, paddingVertical: space.snug, paddingHorizontal: space.wide, gap: space.tight },
+  // `minWidth: 0` is what actually lets this shrink. A flex item's minimum is
+  // its content by default, so without it the readings below set a floor the
+  // body cannot go under, and the overflow is what collides with the actions.
+  body: { flex: 1, minWidth: 0, paddingVertical: space.snug, paddingHorizontal: space.wide, gap: space.tight },
   headline: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: space.snug },
   title: { flexShrink: 1 },
   cwdRow: { flexDirection: "row", alignItems: "center", gap: space.tight },
-  cwd: { flex: 1 },
-  readings: { flexDirection: "row", alignItems: "center", gap: space.wide, marginTop: space.hair },
+  cwd: { flex: 1, minWidth: 0 },
+  // Wrapping rather than truncating: these are four short facts, and a
+  // narrow pane should cost a second line, not a severed number.
+  readings: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: space.wide,
+    marginTop: space.hair,
+  },
   reading: { flexDirection: "row", alignItems: "baseline", gap: space.tight },
   readingLabel: { textTransform: "none" },
   actions: {

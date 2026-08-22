@@ -1,10 +1,12 @@
 /**
  * A transient message.
  *
- * Not a modal: an operator mid-turn must never have to dismiss something before
- * they can read their own log. It sits above the composer, takes a tap to
- * clear, and announces itself politely rather than interrupting whatever a
- * screen reader was already saying.
+ * Not a modal, and deliberately not a floating layer either: an operator
+ * mid-turn must never have to dismiss something before they can read their own
+ * log, and a notice that paints over the transcript hides the very thing it is
+ * reporting on. It occupies a band of the column above the composer, takes a
+ * tap to clear, and announces itself politely rather than interrupting
+ * whatever a screen reader was already saying.
  */
 
 import type { JSX } from "react";
@@ -38,10 +40,8 @@ export function Toast({
 
 const styles = StyleSheet.create({
   toast: {
-    position: "absolute",
-    left: space.wide,
-    right: space.wide,
-    bottom: space.gulf * 2.5,
+    marginHorizontal: space.wide,
+    marginBottom: space.wide,
     padding: space.step,
     backgroundColor: ground.active,
     borderLeftWidth: 2,

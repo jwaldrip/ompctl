@@ -406,7 +406,9 @@ export function Console({
 
   return (
     <View style={styles.position} testID="console">
-      <AppNavigator surfaces={surfaces} selection={selection} onLeaveSelection={actions.back} />
+      <View style={styles.shell}>
+        <AppNavigator surfaces={surfaces} selection={selection} onLeaveSelection={actions.back} />
+      </View>
       {state.notice === null ? null : (
         // A link notice is the connection's own claim, and it reports under
         // its own testID so a check can demand the screen carry no
@@ -535,6 +537,11 @@ function CoworkSurface({
 
 const styles = StyleSheet.create({
   position: { flex: 1, backgroundColor: ground.base },
+  // The notice is a band in the column, not a layer over it. Floating it once
+  // put a connectivity complaint physically on top of the reply it was
+  // complaining about not receiving; a notice that hides the thing it reports
+  // on is worse than no notice.
+  shell: { flex: 1 },
   singleLayout: { flex: 1 },
   splitLayout: { flex: 1, flexDirection: "row" },
   bay: { flex: 1 },
