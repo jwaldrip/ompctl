@@ -178,6 +178,28 @@ describe("picking images for a prompt", () => {
     // A pick that resolved empty here would look exactly like a cancel.
     expect(picker.pick(4)).rejects.toThrow("no photo picker is available on this platform");
   });
+
+  test("an iOS asset named by UUID is refused under a label a person can match", async () => {
+    // Verbatim from a real pick on an iPhone 17 simulator: PHPicker gives no
+    // original filename, so the library invents one. Reciting it would name
+    // nothing to the operator staring at the chips.
+    const { picker } = scripted({
+      assets: [
+        {
+          base64: "A".repeat(REAL_SCREENSHOT_PNG_CHARS),
+          type: "image/png",
+          fileName: "526F90EE-1BD6-48A8-B9FA-B468104A80D9.png",
+        },
+      ],
+    });
+
+    const picked = await picker.pick(4);
+
+    expect(picked.refused).toHaveLength(1);
+    const said = picked.refused[0] ?? "";
+    expect(said).not.toContain("526F90EE");
+    expect(said).toStartWith("That image was not attached:");
+  });
 });
 
 /**

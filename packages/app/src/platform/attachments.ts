@@ -128,6 +128,23 @@ const PICK_OPTIONS: ImageLibraryOptions = {
  */
 const MIME_ALIASES: Readonly<Record<string, string>> = { "image/jpg": "image/jpeg" };
 
+/**
+ * What to call one refused image, in a sentence a person reads.
+ *
+ * Android hands back the library's real display name, which is the best
+ * label there is. iOS hands back nothing of the sort: PHPicker gives no
+ * original filename, so the library invents one from a UUID
+ * (`getImageFileName` in `ImagePickerManager.mm`), and a device pick really
+ * does arrive as `526F90EE-1BD6-48A8-B9FA-B468104A80D9.png`. Reciting that
+ * at an operator names nothing. Position is what they can actually match
+ * against, because the chips beside this notice are positional too.
+ */
+function labelFor(fileName: string | undefined, position: number, picked: number): string {
+  const generated = fileName === undefined || /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\.\w+$/i.test(fileName);
+  if (!generated) return fileName;
+  return picked > 1 ? `Image ${position + 1}` : "That image";
+}
+
 /** base64 carries 3 bytes in every 4 characters, so this reads the wire's unit back as bytes. */
 function humanSize(base64Chars: number): string {
   const bytes = (base64Chars * 3) / 4;
@@ -236,8 +253,9 @@ export function createImageAttachmentPicker(launch: LaunchImageLibrary | undefin
       const images: PromptImage[] = [];
       const refused: string[] = [];
       const seats = Math.max(0, Math.min(MAX_PROMPT_IMAGES, room));
-      for (const asset of response.assets ?? []) {
-        const name = asset.fileName ?? "An image";
+      const assets = response.assets ?? [];
+      for (const [position, asset] of assets.entries()) {
+        const name = labelFor(asset.fileName, position, assets.length);
         // An asset without base64 (a video, a picker quirk) cannot be sent as
         // an empty block: that is a turn the agent would spend on a decode
         // error. It is named here rather than skipped, because a chip that
