@@ -84,6 +84,14 @@ Feature: What a paired device can do with its sessions
   # Model-independent half of the mobile continuity contract. The machine
   # may have no model quota at all; a paired read,prompt device must still be
   # able to wake a known durable session and reach its transcript/composer.
+  #
+  # Deliberately does not assert a prior assistant row: the row this opens is
+  # whichever real dormant session sorts first on the operator's machine, and
+  # a dormant session with no turns yet is a legitimate one whose transcript
+  # is genuinely empty. That the replayed history renders is asserted where
+  # the transcript is fixed rather than sampled, in the app's own resume test
+  # ("a stopped subagent keeps its transcript and can resume the same
+  # session"), which pins the rendered entry against a known payload.
   @dormant
   Scenario: A dormant session resumes into an interactive transcript
     When I select "sort-chip-status"
@@ -91,7 +99,6 @@ Feature: What a paired device can do with its sessions
     When I select "session-open-first"
     Then I can see "session"
     And I can see "transcript"
-    And I can see "entry-assistant"
     And I can see "composer-input"
     And I cannot see "toast"
     And I cannot see "toast-link"
