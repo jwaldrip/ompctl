@@ -13,13 +13,13 @@ import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { createOmpdClient } from "../console/useConsole.ts";
-import { restRoot } from "../cowork/useCowork.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Code, Display, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import { copyText } from "../platform/clipboard.ts";
 import type { Connection } from "../platform/connection.ts";
+import { restRoot } from "../platform/rest-root.ts";
 
 type RoutineStatus =
   | { kind: "loading" }

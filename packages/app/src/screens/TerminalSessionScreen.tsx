@@ -72,6 +72,20 @@ export interface TerminalSessionScreenProps {
   onSubmit: (text: string) => void;
 }
 
+/**
+ * The gutter's second line for a live hint, where a served turn shows its
+ * elapsed stamp. One word each, because the gutter leaves 66 points for text
+ * and `Sent to this terminal` needs 155.95 of them. Wrapping could not save
+ * it either: its longest word alone (TERMINAL, 65.00) outgrew the 58 points
+ * the old 68-point gutter left, so the column broke the word rather than the
+ * phrase. Cutting it back to one word loses nothing. The gutter's first line
+ * already says `you` or `agent`, the row's accessibility label repeats that
+ * attribution in front of the words, and the row's own testID names which
+ * kind this is. The phrase was saying the same thing a third time, in the
+ * narrowest column on the screen.
+ */
+export const HINT_WORDS = { sent: "sent", reply: "reply" } as const;
+
 function notLiveGuidance(status: SessionLiveStatus | null): string {
   switch (status) {
     case null:
@@ -192,7 +206,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           <Kicker color={ink.faint}>{elapsed(item.message.at)}</Kicker>
         )
       ) : (
-        <Kicker color={ink.faint}>{item.kind === "sent" ? "Sent to this terminal" : "Last reply"}</Kicker>
+        <Kicker color={ink.faint}>{item.kind === "sent" ? HINT_WORDS.sent : HINT_WORDS.reply}</Kicker>
       );
     // Gutter attribution rather than alternating bubbles, the same call
     // `Transcript` made: there are only ever two speakers and bubbles halve
@@ -489,7 +503,16 @@ const styles = StyleSheet.create({
   // testID can sit inside the row that carries the turn's positional one.
   hintSkin: { flex: 1, flexDirection: "row", gap: space.step },
   gutter: {
-    width: 68,
+    // 76 to match `Transcript`'s gutter exactly, which is the point: the
+    // module doc calls this the same gutter-and-prose language a served turn
+    // uses, and the two columns differing by 8 points was drift rather than a
+    // decision. The hairline and the padding leave 66 points for text, which
+    // fits every word this column holds: AGENT (43.96), REPLY (40.26), and
+    // the widest stamp `elapsed` can produce (365D 23H, 58.73, which the old
+    // 58 points cut in half). Measured with CoreText in the face `Kicker`
+    // renders; test/no-hidden-content.test.ts re-measures and fails if a word
+    // stops fitting.
+    width: 76,
     borderLeftWidth: stroke.heavy,
     paddingLeft: space.snug,
     gap: space.tight,
