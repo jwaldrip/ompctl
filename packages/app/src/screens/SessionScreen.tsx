@@ -11,6 +11,7 @@ import {
   type ApprovalChoice,
   type ApprovalScope,
   type PlanReviewChoice,
+  type PromptImage,
   TERMINAL_AGENT_STATES,
   type WebViewActionResult,
 } from "@ompd/core/contracts";
@@ -55,7 +56,7 @@ export interface SessionScreenProps {
   voice: SessionVoice;
   /** Open this agent's config surface: the mode it runs and the model it names. */
   onOpenConfig?: () => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, images?: PromptImage[]) => void;
   onCancel: () => void;
   /** Wake this exact durable session under a new live agent. */
   onResume?: () => void;

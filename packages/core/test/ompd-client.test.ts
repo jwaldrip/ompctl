@@ -17,6 +17,7 @@ import type {
   Agent,
   AgentId,
   ClientFrame,
+  PromptImage,
   ServerFrame,
   SessionDeleteResult,
   SessionSummary,
@@ -761,15 +762,20 @@ describe("outbound frames", () => {
     h.client.start();
     const socket = bringUp(h);
 
+    const png: PromptImage = { data: "iVBORw0KGgo=", mimeType: "image/png" };
     h.client.prompt(AGENT, "ship it");
-    h.client.prompt(AGENT, "look at this", ["data:image/png;base64,AAAA"]);
+    h.client.prompt(AGENT, "look at this", [png]);
+    h.client.sessionPrompt("s-tui", "steer this");
+    h.client.sessionPrompt("s-tui", "with a picture", "followUp", [png]);
     h.client.cancel(AGENT);
     h.client.decide(AGENT, "req_1", "allow", "always");
     h.client.decide(AGENT, "req_2", "deny");
 
     expect(socket.sent).toEqual([
       { t: "prompt", agentId: AGENT, text: "ship it" },
-      { t: "prompt", agentId: AGENT, text: "look at this", images: ["data:image/png;base64,AAAA"] },
+      { t: "prompt", agentId: AGENT, text: "look at this", images: [png] },
+      { t: "session_prompt", sessionId: "s-tui", text: "steer this" },
+      { t: "session_prompt", sessionId: "s-tui", text: "with a picture", deliverAs: "followUp", images: [png] },
       { t: "cancel", agentId: AGENT },
       { t: "decide", agentId: AGENT, requestId: "req_1", choice: "allow", scope: "always" },
       { t: "decide", agentId: AGENT, requestId: "req_2", choice: "deny" },
