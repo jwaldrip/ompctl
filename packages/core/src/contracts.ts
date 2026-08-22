@@ -626,8 +626,11 @@ export interface SyncSettings {
 //
 // A prompt can carry images alongside its text, on both delivery paths: the
 // agent prompt and the terminal steer. The bytes ride the same sealed socket
-// as every other frame -- the hub relays one websocket and proxies no HTTP,
-// so there is no upload endpoint a phone could reach even if we wanted one.
+// as every other frame. The hub does tunnel HTTP, but exactly one shape of it,
+// a webhook fire relayed as `webhook_request`, and no upload route exists for
+// a phone to post to. Wiring a general proxy would carry the device's bearer
+// token through the hub, which is the one thing keeping it a carrier of opaque
+// traffic rather than a credential path, so the socket is where these go.
 //
 // That relay hop is what sizes the ceiling, not the agent: the hub caps one
 // frame at 1,000,000 bytes (`MAX_FRAME_BYTES` in `packages/hub/src/hub.ts`),
