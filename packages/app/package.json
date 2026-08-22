@@ -31,6 +31,7 @@
     "@ompd/core": "workspace:*",
     "@ompd/tunnel": "workspace:*",
     "@react-native-async-storage/async-storage": "3.1.1",
+    "@react-native-clipboard/clipboard": "1.16.3",
     "@react-navigation/elements": "2.9.38",
     "@react-navigation/native": "7.3.16",
     "@react-navigation/native-stack": "7.18.8",
