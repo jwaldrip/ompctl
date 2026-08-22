@@ -45,6 +45,7 @@ import {
   faLink,
   faListCheck,
   faMagnifyingGlass,
+  faMicrophone,
   faPaperPlane,
   faPen,
   faPlay,
@@ -116,6 +117,7 @@ export type GlyphName =
   | "up"
   | "browser"
   | "narration"
+  | "mic"
   | "unknown";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
@@ -193,6 +195,9 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   browser: faWindowMaximize,
   // Narration is sound leaving this device, not microphone input from the operator.
   narration: faVolumeHigh,
+  // Speech into this device, the microphone itself; narration is sound
+  // leaving it, so the two never share a glyph.
+  mic: faMicrophone,
   unknown: faCircleQuestion,
 };
 

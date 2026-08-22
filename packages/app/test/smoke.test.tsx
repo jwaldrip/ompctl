@@ -117,6 +117,15 @@ describe("the transcript renders from canned frames", () => {
       connection={STATE.connection}
       attempt={STATE.attempt}
       canApprove
+      voice={{
+        access: "unknown",
+        mic: { available: false, reason: "no microphone in this test" },
+        speech: { available: false, reason: "no playback in this test" },
+        dictation: null,
+        capturing: false,
+        busyElsewhere: false,
+        onToggle: () => {},
+      }}
       spoken={STATE.spoken.get(OPEN.id)?.text ?? null}
       fleetClearances={fleetClearances(STATE)}
       onBack={() => {}}
@@ -192,6 +201,15 @@ describe("the transcript renders from canned frames", () => {
         attempt={0}
         canApprove
         spoken={null}
+        voice={{
+          access: "unknown",
+          mic: { available: false, reason: "no microphone in this test" },
+          speech: { available: false, reason: "no playback in this test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        }}
         fleetClearances={0}
         onBack={() => {}}
         onSubmit={() => {}}
@@ -214,6 +232,15 @@ describe("the transcript renders from canned frames", () => {
         attempt={4}
         canApprove
         spoken={null}
+        voice={{
+          access: "unknown",
+          mic: { available: false, reason: "no microphone in this test" },
+          speech: { available: false, reason: "no playback in this test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        }}
         fleetClearances={0}
         onBack={() => {}}
         onSubmit={() => {}}
@@ -237,6 +264,15 @@ describe("the transcript renders from canned frames", () => {
         attempt={0}
         canApprove={false}
         refusal="device may not approve. Sign this from a device holding the approve scope."
+        voice={{
+          access: "unknown",
+          mic: { available: false, reason: "no microphone in this test" },
+          speech: { available: false, reason: "no playback in this test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        }}
         spoken={null}
         fleetClearances={1}
         onBack={() => {}}

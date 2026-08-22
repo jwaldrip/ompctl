@@ -408,6 +408,15 @@ describe("the entry point", () => {
           session={EMPTY_SESSION}
           connection="connected"
           attempt={0}
+          voice={{
+            access: "unknown",
+            mic: { available: false, reason: "no microphone in this test" },
+            speech: { available: false, reason: "no playback in this test" },
+            dictation: null,
+            capturing: false,
+            busyElsewhere: false,
+            onToggle: () => {},
+          }}
           spoken={null}
           fleetClearances={0}
           canApprove

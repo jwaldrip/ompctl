@@ -50,6 +50,7 @@ import { SettingsScreen } from "../screens/SettingsScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
+import { deviceMemoVoice } from "../voice/memo.ts";
 import type { ConsoleState } from "./state.ts";
 import {
   agentFor,
@@ -57,6 +58,7 @@ import {
   canInvite,
   fleetClearances,
   openSessionTarget,
+  promptScopeAccess,
   sessionFor,
   tuiPromptAccess,
   tuiSessionFor,
@@ -90,7 +92,7 @@ export function Console({
   onUnpair,
   createClient = createOmpdClient,
 }: ConsoleProps): JSX.Element {
-  const [state, actions] = useConsole(connection, createClient);
+  const [state, actions] = useConsole(connection, createClient, deviceMemoVoice);
   const split = useSplitLayout();
   const [browser, dispatchBrowser] = useReducer(browserReduce, EMPTY_BROWSER);
 
@@ -218,6 +220,18 @@ export function Console({
         fleetClearances={clearances}
         onBack={back}
         onOpenConfig={openConfig}
+        voice={{
+          access: promptScopeAccess(state, connection.scopes),
+          mic: deviceMemoVoice.capture.availability,
+          speech: deviceMemoVoice.playback.availability,
+          dictation: state.dictation.get(agent.id) ?? null,
+          capturing: state.capturing === agent.id,
+          busyElsewhere: state.capturing !== null && state.capturing !== agent.id,
+          onToggle: () => {
+            if (state.capturing === agent.id) actions.stopVoice();
+            else actions.startVoice(agent.id);
+          },
+        }}
         onSubmit={text => {
           actions.prompt(agent.id, text);
         }}

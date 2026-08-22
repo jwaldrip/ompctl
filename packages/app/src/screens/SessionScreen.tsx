@@ -23,7 +23,7 @@ import { Composer } from "../components/Composer.tsx";
 import { PlanCard } from "../components/PlanCard.tsx";
 import { StatusReadout } from "../components/StatusReadout.tsx";
 import { Transcript } from "../components/Transcript.tsx";
-import type { PendingWebViewAction } from "../console/state.ts";
+import type { PendingWebViewAction, PromptScopeAccess } from "../console/state.ts";
 import type { WebViewTarget } from "../console/webview.ts";
 import { routeWebViewAction } from "../console/webview.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
@@ -33,6 +33,7 @@ import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { agentSignal, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import type { SessionState } from "../session/model.ts";
+import type { VoiceAvailability } from "../voice/memo.ts";
 import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
 
 export interface SessionScreenProps {
@@ -50,6 +51,8 @@ export interface SessionScreenProps {
   /** Pending clearances across the fleet, so the readout is not agent-local. */
   fleetClearances: number;
   onBack: () => void;
+  /** The composer's voice path: scope posture, capabilities, dictation, toggle. */
+  voice: SessionVoice;
   /** Open this agent's config surface: the mode it runs and the model it names. */
   onOpenConfig?: () => void;
   onSubmit: (text: string) => void;
@@ -70,6 +73,28 @@ export interface SessionScreenProps {
   /** Return the result for precisely the action request that produced it. */
   onWebViewResult?: (requestId: string, result: WebViewActionResult) => void;
   now?: number;
+}
+
+/**
+ * Everything the composer's voice path needs, built by the console from its
+ * own state and the device seam. One object rather than seven props, so a
+ * caller cannot wire half the microphone.
+ */
+export interface SessionVoice {
+  /** The console's three-way prompt scope posture; only `missing` refuses. */
+  readonly access: PromptScopeAccess;
+  /** Device capture capability, with its reason when absent. */
+  readonly mic: VoiceAvailability;
+  /** Device speech playback capability, with its reason when absent. */
+  readonly speech: VoiceAvailability;
+  /** The daemon's live decoding of this device's utterance, once it has one. */
+  readonly dictation: { readonly text: string; readonly final: boolean } | null;
+  /** True while this device's microphone is open for this agent. */
+  readonly capturing: boolean;
+  /** True while another session holds this device's single microphone. */
+  readonly busyElsewhere: boolean;
+  /** Toggle the microphone for this agent: one press opens or closes it. */
+  readonly onToggle: () => void;
 }
 
 export function SessionScreen(props: SessionScreenProps): JSX.Element {
@@ -108,6 +133,57 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
       onWebViewResult: props.onWebViewResult,
     };
   });
+  /**
+   * The microphone gate, cheapest refusal first: what this build can do,
+   * what this pairing may do, whether the one microphone is busy elsewhere,
+   * then the link. Every refusal is named in the row beside the button
+   * rather than taking the control away, because a missing button is read as
+   * a missing feature, and `unknown` scope stays pressable exactly as the
+   * three-way rule requires: the daemon's refusal, not a local guess, is
+   * what turns it off.
+   */
+  const voice = props.voice;
+  const micGate = !voice.mic.available
+    ? "unavailable"
+    : voice.access === "missing"
+      ? "scope"
+      : voice.busyElsewhere
+        ? "busy"
+        : connection !== "connected"
+          ? "offline"
+          : "ready";
+  const micDisabled = micGate !== "ready" && !voice.capturing;
+  // The same ladder as the gate, restated so each branch reads its own
+  // availability object and TypeScript can narrow it: a gate label cannot
+  // carry the reason, the object can.
+  const micStatus = !voice.mic.available
+    ? voice.mic.reason
+    : voice.access === "missing"
+      ? "This device does not hold the prompt scope. Pair it again with prompt access to speak to this agent."
+      : voice.busyElsewhere
+        ? "The microphone is already open in another session."
+        : connection !== "connected"
+          ? "No link"
+          : voice.capturing
+            ? "Recording"
+            : voice.speech.available
+              ? "Tap to speak; the agent answers out loud."
+              : voice.speech.reason;
+
+  /**
+   * Leaving this screen mid-recording is the one moment this cleanup may
+   * run, so the latest toggle is held in a ref rather than depended on: a
+   * re-render must not end a live utterance, and an unmount must not leave
+   * a microphone streaming with no control on screen to stop it.
+   */
+  const micRef = useRef({ capturing: voice.capturing, toggle: voice.onToggle });
+  micRef.current = { capturing: voice.capturing, toggle: voice.onToggle };
+  useEffect(
+    () => () => {
+      if (micRef.current.capturing) micRef.current.toggle();
+    },
+    [],
+  );
 
   /**
    * This is a capability registration, not a visibility preference. A
@@ -311,12 +387,54 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
               )}
             </View>
           ) : (
-            <Composer
-              enabled={connection === "connected"}
-              busy={busy}
-              onSubmit={props.onSubmit}
-              onCancel={props.onCancel}
-            />
+            <View testID="session-voice">
+              {/*
+                A band in the column, never a layer over it: the microphone
+                and its status occupy real space above the composer, so a
+                long refusal or a long dictation pushes the composer down
+                rather than painting across it.
+              */}
+              <View style={styles.micRow}>
+                <Pressable
+                  testID="composer-mic"
+                  accessibilityRole="button"
+                  accessibilityLabel={voice.capturing ? "Stop the microphone and send" : "Speak to this agent"}
+                  accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
+                  disabled={micDisabled}
+                  onPress={voice.onToggle}
+                  style={({ pressed }) => [
+                    styles.mic,
+                    voice.capturing && styles.micLive,
+                    micDisabled && styles.micOff,
+                    pressed && { backgroundColor: ground.active },
+                  ]}
+                >
+                  <Glyph
+                    name="mic"
+                    size={14}
+                    color={voice.capturing ? signal.amber : micDisabled ? ink.faint : ink.plain}
+                  />
+                </Pressable>
+                <Label
+                  color={micGate === "ready" && !voice.capturing ? ink.faint : ink.plain}
+                  style={styles.micStatus}
+                  testID="composer-mic-status"
+                >
+                  {micStatus}
+                </Label>
+              </View>
+              {voice.dictation === null ? null : (
+                <Label color={ink.bright} style={styles.dictation} testID="composer-dictation">
+                  {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
+                </Label>
+              )}
+              <Composer
+                enabled={connection === "connected"}
+                busy={busy}
+                onSubmit={props.onSubmit}
+                onCancel={props.onCancel}
+              />
+            </View>
           )}
         </View>
       </View>
@@ -387,6 +505,38 @@ const styles = StyleSheet.create({
     backgroundColor: ground.surface,
     borderTopWidth: stroke.heavy,
     borderTopColor: ground.edge,
+  },
+  // The microphone band sits above the composer and owns its space in the
+  // column: a refusal or a live dictation grows downward, never over the
+  // composer below it.
+  micRow: {
+    minHeight: TOUCH_TARGET,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    paddingHorizontal: space.step,
+    backgroundColor: ground.surface,
+    borderTopWidth: stroke.hair,
+    borderTopColor: ground.edge,
+  },
+  mic: {
+    width: TOUCH_TARGET,
+    height: TOUCH_TARGET,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+    backgroundColor: ground.base,
+  },
+  micLive: { borderColor: signal.amber },
+  micOff: { borderColor: ground.edge },
+  // Shrinkable on purpose: a flex item's minimum is its content by default,
+  // and an unshrinkable status is what paints over siblings.
+  micStatus: { flex: 1, minWidth: 0 },
+  dictation: {
+    paddingHorizontal: space.step,
+    paddingBottom: space.snug,
+    backgroundColor: ground.surface,
   },
   resumeButton: {
     minHeight: TOUCH_TARGET,

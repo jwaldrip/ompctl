@@ -19,8 +19,10 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { AppState } from "react-native";
 import type { Connection } from "../platform/connection.ts";
 import { createHubSocketFactory } from "../platform/socket.ts";
+import type { MemoVoice } from "../voice/memo.ts";
+import { deviceMemoVoice } from "../voice/memo.ts";
 import type { ConsoleState, SessionOpenTarget } from "./state.ts";
-import { apply, emptyConsole } from "./state.ts";
+import { apply, emptyConsole, promptScopeAccess } from "./state.ts";
 import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
 export type { WebViewTarget } from "./webview.ts";
@@ -52,6 +54,18 @@ export interface ConsoleActions {
   unmountWebView: (agentId: AgentId) => void;
   /** Deliver one matching driver result and clear its pending action. */
   webViewResult: (agentId: AgentId, requestId: string, result: WebViewActionResult) => void;
+  /**
+   * Open this device's microphone for one agent and stream it to the daemon
+   * as `audio` frames. Refused without frames when the pairing holds no
+   * prompt scope or the platform cannot capture, because a control that
+   * records nothing must never look like one that recorded.
+   */
+  startVoice: (agentId: AgentId) => void;
+  /**
+   * Close the microphone and end the utterance. The daemon answers with a
+   * `transcript` frame of what it heard.
+   */
+  stopVoice: () => void;
 }
 
 /**
@@ -73,6 +87,7 @@ export function createOmpdClient(connection: Connection): OmpdClient {
 export function useConsole(
   connection: Connection,
   createClient: (connection: Connection) => OmpdClient = createOmpdClient,
+  voice: MemoVoice = deviceMemoVoice,
 ): [ConsoleState, ConsoleActions] {
   const [state, dispatch] = useReducer(apply, connection.scopes, emptyConsole);
 
@@ -92,6 +107,14 @@ export function useConsole(
    */
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  /**
+   * Speech playback is a queue, not a fire-and-forget: the daemon
+   * synthesises a reply segment by segment and sends each as it renders,
+   * so chaining the plays is what keeps the speaker saying the segments in
+   * the order the agent wrote them.
+   */
+  const speechChain = useRef(Promise.resolve());
 
   /**
    * Whether this pairing has already asked for the machine's session index.
@@ -158,9 +181,30 @@ export function useConsole(
     [client, requestHistory],
   );
   useEffect(() => {
+    // The mic outlives this effect only when the link is alive; the cleanup
+    // releases it for a full unmount the same way a dropped link does below.
+    const releaseMic = (): void => {
+      if (stateRef.current.capturing === null) return;
+      voice.capture.cancel();
+      dispatch({ t: "voice_capture", agentId: null });
+    };
     const offs = [
       client.on("status", event => {
         dispatch({ t: "status", event });
+        // An utterance cannot survive its socket: the daemon drops the
+        // audio it buffered with the connection, so a microphone left open
+        // would stream chunks into a client that silently discards them.
+        // Closing here without `audio_end` is the honest shape, and the
+        // notice says what happened because an operator who keeps talking
+        // into a dead link believes they were heard.
+        if (event.state !== "connected" && stateRef.current.capturing !== null) {
+          voice.capture.cancel();
+          dispatch({ t: "voice_capture", agentId: null });
+          dispatch({
+            t: "error",
+            event: { message: "The link dropped while recording; that message was not delivered." },
+          });
+        }
         if (event.state !== "connected" || askedForSessionIndex.current) return;
         askedForSessionIndex.current = true;
         // Archived rows ride along and the browser owns their visibility, so
@@ -201,6 +245,22 @@ export function useConsole(
       client.on("say", event => {
         dispatch({ t: "say", event });
       }),
+      client.on("transcript", event => {
+        dispatch({ t: "transcript", event });
+      }),
+      client.on("speech", event => {
+        // The daemon speaks only to a device that spoke first, so a frame
+        // here was asked for. An unavailable playback seam never receives
+        // one it can act on, and the composer has already named the gap.
+        if (!voice.playback.availability.available) return;
+        speechChain.current = speechChain.current
+          .then(() => voice.playback.play(event.pcm))
+          .catch(() => {
+            // One failed chunk must not drop the queue behind it: the next
+            // segment still deserves the speaker, and the operator's remedy
+            // is the same for any chunk.
+          });
+      }),
       client.on("tui_activity", event => {
         dispatch({ t: "tui_activity", event });
       }),
@@ -231,10 +291,11 @@ export function useConsole(
     ];
     client.start();
     return () => {
+      releaseMic();
       for (const off of offs) off();
       client.close();
     };
-  }, [client, requestHistory, settleWebViewAction]);
+  }, [client, requestHistory, settleWebViewAction, voice]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -327,6 +388,56 @@ export function useConsole(
         client.sessionPrompt(sessionId, text);
         dispatch({ t: "tui_prompt", sessionId, text });
       },
+      startVoice(agentId) {
+        const current = stateRef.current;
+        // The composer renders the unavailable and scope states and never
+        // offers the press, but the daemon enforces the scope and the seam
+        // enforces the capability regardless: a recording that could never
+        // produce frames must not begin.
+        if (!voice.capture.availability.available) return;
+        if (current.capturing !== null) return;
+        if (promptScopeAccess(current, connection.scopes) === "missing") {
+          dispatch({
+            t: "error",
+            event: {
+              message: "This device does not hold the prompt scope. Pair it again with prompt access to speak.",
+            },
+          });
+          return;
+        }
+        dispatch({ t: "voice_capture", agentId });
+        voice
+          .capture
+          .start(chunk => {
+            client.sendAudio(agentId, chunk);
+          })
+          .catch(() => {
+            // A start that failed never opened the mic; release anything
+            // native code did grab and say so, because a control showing
+            // Recording with no frames flowing is a lie with a timer.
+            voice.capture.cancel();
+            dispatch({ t: "voice_capture", agentId: null });
+            dispatch({
+              t: "error",
+              event: { message: "The microphone did not open. Nothing was recorded." },
+            });
+          });
+      },
+      stopVoice() {
+        const agentId = stateRef.current.capturing;
+        if (agentId === null) return;
+        dispatch({ t: "voice_capture", agentId: null });
+        // `stop` resolves after the final chunk, so `audio_end` follows the
+        // last audio frame rather than racing it. A stop that fails still
+        // ends the utterance: the daemon flushes whatever it holds, and its
+        // empty-buffer error is more honest than a recording that never ends.
+        voice.capture
+          .stop()
+          .catch(() => {})
+          .then(() => {
+            client.endAudio(agentId);
+          });
+      },
       mountWebView(agentId) {
         if (mountedWebViews.current.has(agentId)) return;
         mountedWebViews.current.add(agentId);
@@ -344,7 +455,7 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [client, requestHistory, settleWebViewAction, selectAgent],
+    [client, connection.scopes, requestHistory, settleWebViewAction, selectAgent, voice],
   );
 
   return [state, actions];

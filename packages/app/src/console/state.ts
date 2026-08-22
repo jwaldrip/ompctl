@@ -33,6 +33,7 @@ import type {
   SessionHistoryEvent,
   SessionTailEvent,
   StatusEvent,
+  TranscriptEvent,
   TuiActivityEvent,
   UnauthorizedEvent,
   UpdateEvent,
@@ -130,6 +131,22 @@ export interface ConsoleState {
    */
   readonly rosterMisses: ReadonlyMap<AgentId, number>;
   /** Latest spoken summary per agent. Text only; this build has no voice. */
+  /**
+   * The daemon's live decoding of what this device is saying, per agent, as
+   * the `transcript` frames report it. Held beside the transcript proper
+   * because the two answer different questions: dictation is the
+   * composer's feedback about an utterance in flight, not part of the
+   * session's history. Replaced, never merged, because each frame is the
+   * daemon's newest word on one utterance.
+   */
+  readonly dictation: ReadonlyMap<AgentId, { readonly text: string; readonly final: boolean }>;
+  /**
+   * The agent whose microphone this device holds open, or null. One device
+   * carries one utterance at a time on the wire, so this is a single id
+   * rather than a set, and the composer's mic is a toggle rather than a
+   * per-session switch.
+   */
+  readonly capturing: AgentId | null;
   readonly spoken: ReadonlyMap<AgentId, { seq: number; text: string }>;
   /** Opaque byte cursor for the next older durable history page per agent. */
   readonly historyBefore: ReadonlyMap<AgentId, number | null>;
@@ -182,13 +199,21 @@ export interface ConsoleState {
 }
 
 /**
- * What this device knows about its right to steer a terminal session.
+ * What this device knows about its right to use the prompt scope, which is
+ * what speaking to an agent and steering a terminal both spend.
  *
  * `unknown` preserves compatibility with a pairing or daemon that never
  * reported scopes. Only `missing` is a refusal, because absence of evidence
  * from an older peer must not silently remove a control that may still work.
  */
-export type TuiPromptAccess = "granted" | "unknown" | "missing";
+export type PromptScopeAccess = "granted" | "unknown" | "missing";
+
+/**
+ * The same rule, under the name the terminal screen has always imported.
+ * Kept as an alias rather than inlined so the terminal's props stay stable
+ * while the microphone and any later prompt-gated control share one rule.
+ */
+export type TuiPromptAccess = PromptScopeAccess;
 
 /** The two prompt refusals this screen can repair differently. */
 export type TuiPromptRefusalKind = "owner-gone" | "scope";
@@ -273,6 +298,8 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     sessionIndex: [],
     watermarks: new Map(),
     rosterMisses: new Map(),
+    dictation: new Map(),
+    capturing: null,
     historyBefore: new Map(),
     historyLoading: new Set(),
     spoken: new Map(),
@@ -304,6 +331,10 @@ export type ConsoleEvent =
   | { t: "plan_review"; event: PlanReviewEvent }
   | { t: "error"; event: ClientErrorEvent }
   | { t: "say"; event: SayEvent }
+  /** Daemon: its decoding of what this device said into an open microphone. */
+  | { t: "transcript"; event: TranscriptEvent }
+  /** Local: this device opened the microphone for one agent, or closed it. */
+  | { t: "voice_capture"; agentId: AgentId | null }
   | { t: "unauthorized"; event: UnauthorizedEvent }
   /** Daemon: turn progress from a live terminal session this device can prompt. */
   | { t: "tui_activity"; event: TuiActivityEvent }
@@ -442,6 +473,30 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "say":
       return applySay(state, event.event);
+
+    case "transcript": {
+      // Each frame is the daemon's newest word on one utterance, so the
+      // entry is replaced rather than appended; the composer renders it as
+      // live dictation, and a `final` frame is what lets it stop moving.
+      const { agentId, text, final } = event.event;
+      const dictation = new Map(state.dictation);
+      dictation.set(agentId, { text, final });
+      return { ...state, dictation };
+    }
+
+    case "voice_capture": {
+      if (event.agentId === null) {
+        if (state.capturing === null) return state;
+        // Closing the mic keeps the last dictation on screen: it is the
+        // record of what was said, and the next open is what retires it.
+        return { ...state, capturing: null };
+      }
+      const dictation = new Map(state.dictation);
+      // A new utterance makes the previous one's words stale feedback, and
+      // keeping them would read as the daemon transcribing the wrong audio.
+      dictation.delete(event.agentId);
+      return { ...state, capturing: event.agentId, dictation };
+    }
 
     case "unauthorized":
       return { ...state, unauthorized: event.event.reason, connection: "offline" };
@@ -777,15 +832,21 @@ export function canInvite(state: ConsoleState, storedScopes: readonly string[]):
 }
 
 /**
- * Whether this device may steer a live terminal. The daemon's hello wins,
- * then the stored pairing hint. An empty stored grant means old or unknown,
- * not missing, so the terminal may still answer and name a real refusal.
+ * The three-way prompt scope rule every prompt-gated control follows: the
+ * daemon's hello wins once it has reported scopes, the stored pairing's
+ * claim stands in until then, and an empty stored grant means old or
+ * unknown rather than missing.
  */
-export function tuiPromptAccess(state: ConsoleState, storedScopes: readonly string[]): TuiPromptAccess {
+export function promptScopeAccess(state: ConsoleState, storedScopes: readonly string[]): PromptScopeAccess {
   const scopes = state.grantedScopes;
   if (scopes !== undefined) return scopes.includes(SCOPE_PROMPT) ? "granted" : "missing";
   if (storedScopes.length === 0) return "unknown";
   return storedScopes.includes(SCOPE_PROMPT) ? "granted" : "missing";
+}
+
+/** The same rule for the terminal steering surface, under its historic name. */
+export function tuiPromptAccess(state: ConsoleState, storedScopes: readonly string[]): TuiPromptAccess {
+  return promptScopeAccess(state, storedScopes);
 }
 
 /** Hints about one terminal session. A row never prompted is not missing, it is blank. */
