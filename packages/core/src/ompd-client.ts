@@ -36,6 +36,7 @@ import type {
   FsListing,
   HostSpec,
   PlanReviewChoice,
+  PromptImage,
   RemoteRoutine,
   RoutineDeleteResult,
   Run,
@@ -841,7 +842,13 @@ export class OmpdClient {
     this.send({ t: "webview_result", agentId, requestId, result });
   }
 
-  prompt(agentId: AgentId, text: string, images?: string[]): void {
+  /**
+   * Send a prompt, optionally with images. The wire budgets in
+   * `parsePromptImages` are enforced again by the daemon, so this method
+   * trusting its caller is not the boundary; it is a convenience that keeps
+   * the empty-images case byte-identical to the frame every older peer sends.
+   */
+  prompt(agentId: AgentId, text: string, images?: PromptImage[]): void {
     const frame: ClientFrame =
       images && images.length > 0 ? { t: "prompt", agentId, text, images } : { t: "prompt", agentId, text };
     this.send(frame);
@@ -1188,12 +1195,19 @@ export class OmpdClient {
    * Prompt a session a registered live TUI owns. The daemon answers with a
    * `tui_unreachable` error when no connected TUI holds that session, so a
    * dormant row in the index is an explicit refusal, never a silent drop.
+   * Images ride the steer as the same content blocks the agent prompt uses.
    */
-  sessionPrompt(sessionId: string, text: string, deliverAs?: TuiSteerDelivery): void {
+  sessionPrompt(sessionId: string, text: string, deliverAs?: TuiSteerDelivery, images?: PromptImage[]): void {
     const frame: ClientFrame =
-      deliverAs === undefined
+      deliverAs === undefined && (images === undefined || images.length === 0)
         ? { t: "session_prompt", sessionId, text }
-        : { t: "session_prompt", sessionId, text, deliverAs };
+        : {
+            t: "session_prompt",
+            sessionId,
+            text,
+            ...(deliverAs === undefined ? {} : { deliverAs }),
+            ...(images !== undefined && images.length > 0 ? { images } : {}),
+          };
     this.send(frame);
   }
 

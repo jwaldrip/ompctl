@@ -36,6 +36,7 @@ import {
   type PlanReviewRequest,
   type Policy,
   type PolicyDecision,
+  type PromptImage,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
@@ -589,9 +590,14 @@ export class Supervisor {
 
   /**
    * Send a prompt. Resolves when the turn settles, but the agent keeps running
-   * regardless of whether the caller is still listening.
+   * regardless of whether the caller is still listening. Images ride the same
+   * turn as ACP image blocks; the caller (the gateway for sockets, the queued
+   * intent replay for federation) has already validated them against the wire
+   * budgets, and the audit records their count rather than their bytes: an
+   * audit log is not a transcript, which is why the prompt's text is likewise
+   * only ever counted, never copied.
    */
-  async prompt(agentId: AgentId, text: string, actor: Actor): Promise<{ stopReason: string }> {
+  async prompt(agentId: AgentId, text: string, actor: Actor, images?: PromptImage[]): Promise<{ stopReason: string }> {
     const who = this.#authorize(actor, SCOPE_PROMPT, "agent.prompt", agentId);
     const { agent, entry } = this.#resolve(agentId);
     if (!agent.acpSessionId) throw new Error(`agent ${agentId} has no session`);
@@ -602,10 +608,10 @@ export class Supervisor {
       agentId,
       actorDeviceId: who.deviceId,
       outcome: "ok",
-      detail: { chars: text.length },
+      detail: { chars: text.length, ...(images?.length ? { images: images.length } : {}) },
     });
     try {
-      return await entry.host.client.prompt(agent.acpSessionId, text);
+      return await entry.host.client.prompt(agent.acpSessionId, text, images);
     } finally {
       // Only return to idle if the agent is still live. A turn can be
       // abandoned by stopAgent or by its host dying, and both write a terminal
