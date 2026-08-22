@@ -10,13 +10,17 @@
  * open a composer over an empty pane, which reads as a broken session rather
  * than as a surface that never had a transcript.
  *
- * Everything below the history is a hint rather than transcript, and the two
- * must not be conflated: the daemon delivers prompts to the terminal as the
- * operator's own turn and reports turn progress back as `tui_activity`, so
- * sent, working, the last reply, and the daemon's refusal when the terminal
- * has no bridge all continue below the tail as they arrive. The next open
- * re-reads the file, at which point today's hints are simply part of the
- * history.
+ * Sent and the last reply are turns of this conversation, not chrome: the
+ * daemon delivers prompts to the terminal as the operator's own turn and
+ * reports the answer back as `tui_activity`, so both render as rows
+ * continuing the tail, in the same gutter-and-prose language as a served
+ * turn. Only what is not a turn stays a band below the log: the busy kicker,
+ * the daemon's refusals, the explainer, and the boundary notice. The log
+ * itself pins to the bottom of the pane, so a short conversation sits
+ * against the composer instead of leaving a void under the operator's last
+ * words. The next open re-reads the file, at which point today's hints are
+ * simply part of the history, and `logRows` stands a hint down when the tail
+ * already ends with its words.
  *
  * The composer here is not `Composer`, on purpose. That control turns its
  * send button into an interrupt while a turn runs, because an agent's turn
@@ -70,6 +74,36 @@ function notLiveGuidance(status: SessionLiveStatus | null): string {
   }
 }
 
+/** One row of the conversation this screen renders: a served turn, or a live hint continuing it. */
+type LogRow =
+  | { kind: "turn"; message: TranscriptTailMessage }
+  | { kind: "sent"; text: string }
+  | { kind: "reply"; text: string };
+
+/**
+ * The conversation the log renders: the served tail, then this device's live
+ * hints continuing below it as they arrive.
+ *
+ * A hint whose words the tail already ends with stands down. The daemon
+ * re-reads the session file on every open, so once the terminal has written
+ * the turn the same words are on screen twice, once as history and once as
+ * the echo, and rendering both would read as a stutter. Only the tail's
+ * final turn is compared: a match deeper in the tail is not adjacent to the
+ * hint, and hiding the echo then would drop the only row saying what this
+ * device last said or heard.
+ */
+function logRows(tui: TuiSessionState): LogRow[] {
+  const rows: LogRow[] = tui.history.map(message => ({ kind: "turn", message }));
+  const tailEnd = tui.history.at(-1);
+  if (tui.sent !== null && !(tailEnd?.role === "user" && tailEnd.text === tui.sent)) {
+    rows.push({ kind: "sent", text: tui.sent });
+  }
+  if (tui.reply !== null && !(tailEnd?.role === "assistant" && tailEnd.text === tui.reply)) {
+    rows.push({ kind: "reply", text: tui.reply });
+  }
+  return rows;
+}
+
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
   const { tui, connection, status, promptAccess } = props;
   // The latest index row, not the row that opened this route, decides whether
@@ -81,6 +115,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   // The same mechanism the agent log uses: KeyboardAvoidingView is inert on an
   // iPad, so the keyboard's measured height is paid as padding instead.
   const keyboardInset = useKeyboardInset();
+  const rows = logRows(tui);
 
   const [text, setText] = useState("");
   const trimmed = text.trim();
@@ -101,7 +136,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
     setText("");
   };
 
-  const log = useRef<FlatList<TranscriptTailMessage>>(null);
+  const log = useRef<FlatList<LogRow>>(null);
   /**
    * The tail arrives oldest first, so the newest turn is the last row, and a
    * list left at the top would show the operator the oldest of the last
@@ -118,11 +153,33 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
     }
   }, []);
 
-  const renderTurn = useCallback(({ item, index }: ListRenderItemInfo<TranscriptTailMessage>): JSX.Element => {
-    const mine = item.role === "user";
+  const renderRow = useCallback(({ item, index }: ListRenderItemInfo<LogRow>): JSX.Element => {
+    const mine = item.kind === "turn" ? item.message.role === "user" : item.kind === "sent";
+    const words = item.kind === "turn" ? item.message.text : item.text;
+    // A live hint continues the conversation where a served turn shows its
+    // timestamp, so the gutter's second line names which one this row is.
+    const under =
+      item.kind === "turn" ? (
+        item.message.at === "" ? null : (
+          <Kicker color={ink.faint}>{elapsed(item.message.at)}</Kicker>
+        )
+      ) : (
+        <Kicker color={ink.faint}>{item.kind === "sent" ? "Sent to this terminal" : "Last reply"}</Kicker>
+      );
     // Gutter attribution rather than alternating bubbles, the same call
     // `Transcript` made: there are only ever two speakers and bubbles halve
     // the usable width on a phone.
+    const row = (
+      <>
+        <View style={[styles.gutter, { borderLeftColor: mine ? ink.faint : signal.sage }]}>
+          <Kicker color={mine ? ink.muted : signal.sage}>{mine ? "you" : "agent"}</Kicker>
+          {under}
+        </View>
+        <Body color={ink.bright} style={styles.prose}>
+          {words}
+        </Body>
+      </>
+    );
     return (
       <View
         style={styles.turn}
@@ -130,15 +187,17 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         // A nested Body is often invisible to an accessibility query even
         // when it is on screen, so the row carries the words itself.
         accessible
-        accessibilityLabel={`${mine ? "you" : "agent"}: ${item.text}`}
+        accessibilityLabel={`${mine ? "you" : "agent"}: ${words}`}
       >
-        <View style={[styles.gutter, { borderLeftColor: mine ? ink.faint : signal.sage }]}>
-          <Kicker color={mine ? ink.muted : signal.sage}>{mine ? "you" : "agent"}</Kicker>
-          {item.at === "" ? null : <Kicker color={ink.faint}>{elapsed(item.at)}</Kicker>}
-        </View>
-        <Body color={ink.bright} style={styles.prose}>
-          {item.text}
-        </Body>
+        {item.kind === "turn" ? (
+          row
+        ) : (
+          // The hint's own id sits one level in: the row is a row of this
+          // log like any other, and the hint identity is what queries read.
+          <View testID={item.kind === "sent" ? "terminal-sent" : "terminal-reply"} style={styles.hintSkin}>
+            {row}
+          </View>
+        )}
       </View>
     );
   }, []);
@@ -176,18 +235,21 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </Kicker>
       </View>
 
-      {tui.history.length === 0 ? null : (
+      {rows.length === 0 ? null : (
         <FlatList
           ref={log}
           testID="terminal-log"
           style={styles.log}
           contentContainerStyle={styles.logContent}
-          data={tui.history as TranscriptTailMessage[]}
+          data={rows}
           // Turns carry no id of their own: the daemon serves words, not
           // rows. Position plus timestamp is stable within one served tail,
-          // and a new tail replaces the list wholesale anyway.
-          keyExtractor={(message, index) => `${index}:${message.at}`}
-          renderItem={renderTurn}
+          // and a new tail replaces the list wholesale anyway. Hint rows
+          // have no position in the served tail and no timestamp, so theirs
+          // is position plus kind. Position alone is unique within this
+          // list, so no key can collide even when timestamps repeat.
+          keyExtractor={(row, index) => (row.kind === "turn" ? `${index}:${row.message.at}` : `${index}:${row.kind}`)}
+          renderItem={renderRow}
           ListHeaderComponent={
             tui.historyTruncated ? (
               <Kicker color={ink.faint} testID="terminal-log-truncated">
@@ -199,7 +261,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         />
       )}
 
-      <View style={[styles.hints, tui.history.length === 0 && styles.hintsFill]}>
+      <View style={[styles.hints, rows.length === 0 && styles.hintsFill]}>
         {liveTerminal ? null : (
           <View testID="terminal-not-live-tui" style={styles.refusal}>
             <View style={styles.refusalHead}>
@@ -252,20 +314,6 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             Working in the terminal
           </Kicker>
         ) : null}
-
-        {tui.sent === null ? null : (
-          <View testID="terminal-sent">
-            <Label color={ink.muted}>Sent to this terminal</Label>
-            <Body color={ink.bright}>{tui.sent}</Body>
-          </View>
-        )}
-
-        {tui.reply === null ? null : (
-          <View testID="terminal-reply">
-            <Label color={ink.muted}>Last reply</Label>
-            <Body color={ink.bright}>{tui.reply}</Body>
-          </View>
-        )}
 
         {liveTerminal &&
         tui.history.length === 0 &&
@@ -352,8 +400,15 @@ const styles = StyleSheet.create({
   meta: { flexDirection: "row", alignItems: "center", gap: space.tight },
   origin: { flexShrink: 1 },
   log: { flex: 1, backgroundColor: ground.base },
-  logContent: { padding: space.step, gap: space.step },
+  // The content container grows to fill the pane and packs its rows at the
+  // end, so a short conversation sits at the bottom against the composer
+  // instead of leaving a void under the operator's last words. Once the tail
+  // outgrows the pane both declarations are inert and the list just scrolls.
+  logContent: { padding: space.step, gap: space.step, flexGrow: 1, justifyContent: "flex-end" },
   turn: { flexDirection: "row", gap: space.step },
+  // A hint row wraps its gutter and prose once more so the hint's own
+  // testID can sit inside the row that carries the turn's positional one.
+  hintSkin: { flex: 1, flexDirection: "row", gap: space.step },
   gutter: {
     width: 68,
     borderLeftWidth: stroke.heavy,
@@ -362,10 +417,11 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
   },
   prose: { flex: 1 },
-  // The hints sit under the history, so they claim only what they need. With
-  // no history there is nothing above them, and filling the pane is what puts
-  // the explainer where the transcript would have been rather than crushing
-  // it against the composer.
+  // Only non-turns live here: the busy kicker, refusals, the explainer, and
+  // the boundary. The bands claim just what they need under the log. With no
+  // rows at all there is nothing above them, and filling the pane is what
+  // puts the explainer where the transcript would have been rather than
+  // crushing it against the composer.
   hints: { gap: space.step, padding: space.step },
   hintsFill: { flex: 1 },
   refusal: { gap: space.snug, borderWidth: stroke.hair, borderColor: signal.oxide, padding: space.step },

@@ -14,7 +14,7 @@ import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ConsoleEvent, ConsoleState } from "../src/console/state.ts";
 import { apply, emptyConsole, tuiSessionFor } from "../src/console/state.ts";
@@ -23,6 +23,7 @@ import { apply, emptyConsole, tuiSessionFor } from "../src/console/state.ts";
 // import "react-native", which would resolve before `./rnw.ts`'s
 // `mock.module` call could substitute it.
 const { TerminalSessionScreen } = await import("../src/screens/TerminalSessionScreen.tsx");
+const { StyleSheet } = await import("react-native");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -50,6 +51,64 @@ function renderScreen(state: ConsoleState): string {
       onSubmit={() => {}}
     />,
   );
+}
+
+/** One `session_tail` frame, as the daemon sends it: oldest first. */
+const served = (truncated: boolean): ConsoleEvent => ({
+  t: "session_tail",
+  event: {
+    sessionId: SESSION,
+    messages: [
+      { role: "user", text: "run the deploy checks", at: "2026-08-13T00:00:01.000Z" },
+      { role: "assistant", text: "all four suites are green", at: "2026-08-13T00:00:02.000Z" },
+    ],
+    truncated,
+  },
+});
+
+/** Mounted, because containment and layout questions are tree questions. */
+function mountScreen(state: ConsoleState): { host: HTMLDivElement; root: Root } {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  act(() => {
+    root.render(
+      <TerminalSessionScreen
+        title="session s-tui"
+        cwd="/alpha"
+        status="live-tui"
+        promptAccess="granted"
+        tui={tuiSessionFor(state, SESSION)}
+        connection="connected"
+        onBack={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+  });
+  return { host, root };
+}
+
+function unmountScreen(host: HTMLDivElement, root: Root): void {
+  act(() => {
+    root.unmount();
+  });
+  host.remove();
+}
+
+/**
+ * `getSheet` is a react-native-web extension, the same unchecked cast
+ * `fleet-screen.test.tsx` makes: static StyleSheet values compile to atomic
+ * classes whose declarations live here rather than in the markup.
+ */
+const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
+
+/** The sheet rules addressing any of these classes, scoped so a declaration on some other element cannot satisfy a layout assertion. */
+function sheetRulesFor(classes: readonly string[]): string {
+  return rnwStyleSheet
+    .getSheet()
+    .textContent.split("\n")
+    .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
+    .join("\n");
 }
 
 function typeInto(input: HTMLElement, value: string): void {
@@ -253,19 +312,6 @@ describe("an unreachable terminal is told how to fix itself", () => {
 // ---------------------------------------------------------------------------
 
 describe("a terminal session renders the transcript the daemon served", () => {
-  /** One `session_tail` frame, as the daemon sends it: oldest first. */
-  const served = (truncated: boolean): ConsoleEvent => ({
-    t: "session_tail",
-    event: {
-      sessionId: SESSION,
-      messages: [
-        { role: "user", text: "run the deploy checks", at: "2026-08-13T00:00:01.000Z" },
-        { role: "assistant", text: "all four suites are green", at: "2026-08-13T00:00:02.000Z" },
-      ],
-      truncated,
-    },
-  });
-
   test("the served turns are rendered in order, newest last, above the composer", () => {
     const html = renderScreen(drive([{ t: "tui_select", sessionId: SESSION }, served(false)]));
 
@@ -383,5 +429,114 @@ describe("a terminal session renders the transcript the daemon served", () => {
       root.unmount();
     });
     host.remove();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The conversation: live hints continue the tail, and the log pins to the
+// bottom of the pane
+// ---------------------------------------------------------------------------
+
+describe("live hints continue the conversation rather than detaching from it", () => {
+  test("a live reply renders as a turn below the served tail, inside the log", () => {
+    // The iPad frame showed the only agent words on screen stranded in a band
+    // under a void. The contract now: the reply is a row of the log, below
+    // the tail, answering to the same attribution contract as a served turn.
+    const state = drive([
+      served(false),
+      { t: "tui_prompt", sessionId: SESSION, text: "and the migration?" },
+      { t: "tui_activity", event: { sessionId: SESSION, kind: "turn_start" } },
+      { t: "tui_activity", event: { sessionId: SESSION, kind: "assistant_text", text: "migration applied" } },
+    ]);
+    const { host, root } = mountScreen(state);
+    const log = host.querySelector('[data-testid="terminal-log"]');
+    const reply = host.querySelector('[data-testid="terminal-reply"]');
+    expect(log).not.toBeNull();
+    expect(reply).not.toBeNull();
+    expect(log?.contains(reply!)).toBe(true);
+    expect(reply?.closest('[data-testid^="terminal-turn-"]')?.getAttribute("aria-label")).toBe(
+      "agent: migration applied",
+    );
+    expect(
+      [...host.querySelectorAll('[data-testid^="terminal-turn-"]')].map(row => row.getAttribute("aria-label")),
+    ).toEqual(["you: run the deploy checks", "agent: all four suites are green", "agent: migration applied"]);
+    // The boundary notice is not a turn, so it stays a band outside the log.
+    expect(log?.contains(host.querySelector('[data-testid="terminal-transcript-limit"]')!)).toBe(false);
+    unmountScreen(host, root);
+  });
+
+  test("a short conversation sits at the bottom of the pane, not top-aligned with a void", () => {
+    // Same discipline as `fleet-screen.test.tsx`: static StyleSheet values
+    // compile to atomic classes whose declarations live in the sheet, so the
+    // proof is what the content container's classes declare. Growing to fill
+    // the pane and packing rows at the end is what puts the newest turn
+    // against the bands and the composer; without both declarations the list
+    // starts at the top and leaves the void the iPad showed.
+    const { host, root } = mountScreen(drive([served(false)]));
+    const log = host.querySelector('[data-testid="terminal-log"]');
+    // RNW's ScrollView renders exactly one content container child, and it
+    // is where contentContainerStyle lands.
+    const content = log?.children[0] ?? null;
+    expect(content).not.toBeNull();
+    const rules = sheetRulesFor([...(content?.classList ?? [])]);
+    expect(rules).toMatch(/flex-grow:\s*1/);
+    expect(rules).toMatch(/justify-content:\s*flex-end/);
+    unmountScreen(host, root);
+  });
+
+  test("a sent prompt with no served tail renders as the log's first turn, not as a band", () => {
+    // The reducer keeps the sent echo until the terminal takes the turn, so
+    // a prompt sent before any tail exists must still have a log to live in:
+    // not rendering the list at all was the defect that left the words in a
+    // detached band.
+    const { host, root } = mountScreen(drive([{ t: "tui_prompt", sessionId: SESSION, text: "status of the deploy?" }]));
+    const log = host.querySelector('[data-testid="terminal-log"]');
+    const sent = host.querySelector('[data-testid="terminal-sent"]');
+    expect(log).not.toBeNull();
+    expect(sent).not.toBeNull();
+    expect(log?.contains(sent!)).toBe(true);
+    expect(sent?.closest('[data-testid^="terminal-turn-"]')?.getAttribute("aria-label")).toBe(
+      "you: status of the deploy?",
+    );
+    unmountScreen(host, root);
+  });
+
+  test("a reply whose words the tail already ends with stands down instead of repeating", () => {
+    // Re-opening re-serves the tail after the terminal wrote the turn, so
+    // the same words arrive once as history and once as the live echo. The
+    // history is the file's truth; the echo must not render the row twice.
+    // Counted by row, because a row carries its words twice over: once as
+    // its accessibility label and once as its text.
+    const state = drive([
+      served(false),
+      { t: "tui_prompt", sessionId: SESSION, text: "and the migration?" },
+      { t: "tui_activity", event: { sessionId: SESSION, kind: "turn_start" } },
+      { t: "tui_activity", event: { sessionId: SESSION, kind: "assistant_text", text: "all four suites are green" } },
+      served(false),
+    ]);
+    const { host, root } = mountScreen(state);
+    expect([...host.querySelectorAll('[aria-label="agent: all four suites are green"]')]).toHaveLength(1);
+    expect(host.querySelector('[data-testid="terminal-reply"]')).toBeNull();
+    unmountScreen(host, root);
+  });
+
+  test("a sent prompt the tail already ends with stands down as well", () => {
+    const tailEndsOnPrompt: ConsoleEvent = {
+      t: "session_tail",
+      event: {
+        sessionId: SESSION,
+        messages: [
+          { role: "assistant", text: "all four suites are green", at: "2026-08-13T00:00:02.000Z" },
+          { role: "user", text: "re-run the deploy checks", at: "2026-08-13T00:00:03.000Z" },
+        ],
+        truncated: false,
+      },
+    };
+    const { host, root } = mountScreen(
+      drive([tailEndsOnPrompt, { t: "tui_prompt", sessionId: SESSION, text: "re-run the deploy checks" }]),
+    );
+    expect([...host.querySelectorAll('[aria-label="you: re-run the deploy checks"]')]).toHaveLength(1);
+    expect(host.querySelector('[data-testid="terminal-sent"]')).toBeNull();
+    unmountScreen(host, root);
   });
 });
