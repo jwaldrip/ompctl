@@ -1051,6 +1051,15 @@ export class Gateway {
       port: this.#port,
       fetch: (req, server) => this.#fetch(req, server),
       /**
+       * 255, Bun's ceiling. The default 10s kills any request whose handler
+       * legitimately waits out an agent turn before answering, which is what
+       * the webhook route and `POST /v1/routines/:id/run` both do: a fire
+       * observed live died at exactly 10s while its turn kept running. A turn
+       * longer than the ceiling still loses its response (the run itself
+       * completes); no larger value exists to hold it for.
+       */
+      idleTimeout: 255,
+      /**
        * A request handler that throws is a bug in this daemon, and Bun's own
        * 500 body says only "Internal error" with the stack going nowhere. That
        * is indistinguishable from a route that deliberately answered 500,
