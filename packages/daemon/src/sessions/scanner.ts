@@ -350,11 +350,34 @@ export function* countMessagesChunks(fd: number): Generator<void, number> {
   return counter.finish();
 }
 
-/** Count turns without opening or reading the transcript on the daemon's event-loop thread. */
+/**
+ * Yield cadence inside one file's count, in bytes. Reading off the loop is
+ * only half the problem: parsing a chunk is CPU-bound, so a stream that
+ * handed back multi-megabyte chunks would still hold the loop for the whole
+ * burst. Bounded here so a ping, a relay ack, or `/v1/health` waits at most
+ * one slice even inside a transcript of tens of megabytes.
+ */
+const COUNT_YIELD_INTERVAL_BYTES = 256 * 1024;
+
+/** Hand the event loop to whatever else is waiting: I/O callbacks, timers, sockets. Microtasks do not qualify -- they run before the loop moves on. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>(resolve => setImmediate(resolve));
+}
+
+/**
+ * Count turns without opening or reading the transcript on the daemon's
+ * event-loop thread, and without parsing more than one bounded slice of it
+ * between yields.
+ */
 export async function countMessagesAsync(path: string): Promise<number> {
   try {
     const counter = new TurnCounter();
-    for await (const chunk of Bun.file(path).stream()) counter.push(chunk);
+    for await (const chunk of Bun.file(path).stream()) {
+      for (let offset = 0; offset < chunk.byteLength; offset += COUNT_YIELD_INTERVAL_BYTES) {
+        counter.push(chunk.subarray(offset, Math.min(offset + COUNT_YIELD_INTERVAL_BYTES, chunk.byteLength)));
+        await yieldToEventLoop();
+      }
+    }
     return counter.finish();
   } catch {
     return 0;
