@@ -719,6 +719,13 @@ export type ClientFrame =
   /** Rotate a webhook routine's one-time secret. Requires manage scope. */
   | { t: "routine_secret_rotate"; routineId: string }
   /**
+   * Delete routines for good. Requires manage scope, and refuses per id rather
+   * than failing the batch. The one irreversible operation on the routine
+   * catalog, so it is armed behind an explicit confirm on every surface that
+   * offers it.
+   */
+  | { t: "routine_delete"; routineIds: string[] }
+  /**
    * The tail of a session's transcript, read straight from its file, and the
    * pages of it older than that.
    *
@@ -858,6 +865,13 @@ export type ServerFrame =
   /** One-time webhook secret returned only to the socket that rotated it. */
   | { t: "routine_secret"; routineId: string; secret: string }
   /**
+   * What a `routine_delete` did, one result per id asked for, sent only to the
+   * socket that asked. Beside `sessions_deleted` rather than an error frame,
+   * for the same reason: a mixed batch has both answers and an error frame
+   * cannot say which ids it covers.
+   */
+  | { t: "routines_deleted"; results: RoutineDeleteResult[] }
+  /**
    * The answer to a `device_invite`: the one-time view of a credential just
    * minted, sent only to the socket that asked. Never broadcast, never
    * replayed after a reconnect -- a credential delivered twice is a second
@@ -968,6 +982,14 @@ export type AuditAction =
    * and, on a refusal, which refusal it was.
    */
   | "session.delete"
+  /**
+   * A device deleted one routine and its runs and webhook credential, or was
+   * refused. One record per id, whichever way it went, for the same reason as
+   * `session.delete`: the log has to answer "who removed that routine" for
+   * every id anyone ever named, not only the ones that succeeded. `detail`
+   * carries the routine id and, on a refusal, which refusal it was.
+   */
+  | "routine.delete"
   /**
    * A device cloned a repository onto this machine, or was refused. `detail`
    * carries the url and the destination; a url carrying a credential is
@@ -1294,6 +1316,45 @@ export const SESSION_DELETE_REFUSAL_REASONS: Record<SessionDeleteRefusal, string
   not_found: "this machine has no session with that id",
   failed: "the transcript could not be removed from disk",
 };
+
+/**
+ * Why one id in a routine delete request was refused. Named rather than
+ * boolean for the same reason as `SessionDeleteRefusal`: each answer calls
+ * for something different from an operator.
+ *
+ * - `running`: a run of this routine is in flight right now. Deleting the
+ *   definition under a live run would orphan a record still being written,
+ *   so the operator lets the run finish (or stops it) and deletes then.
+ * - `not_found`: this daemon holds no routine with that id. Reported rather
+ *   than treated as already gone, because the usual cause is a typo or a
+ *   stale list, and silence there reads as a successful delete.
+ * - `failed`: the definition was there and the removal did not succeed. The
+ *   routine is intact; the cause is on the machine.
+ */
+export type RoutineDeleteRefusal = "running" | "not_found" | "failed";
+
+/** One id's outcome, mirroring `SessionDeleteResult` for the same reasons. */
+export type RoutineDeleteResult =
+  | { routineId: string; deleted: true }
+  | { routineId: string; deleted: false; refusal: RoutineDeleteRefusal };
+
+/** The wording for each refusal, shared by every surface for the same reason. */
+export const ROUTINE_DELETE_REFUSAL_REASONS: Record<RoutineDeleteRefusal, string> = {
+  running: "a run of this routine is in flight; let it finish or stop it first",
+  not_found: "this daemon holds no routine with that id",
+  failed: "the routine could not be removed from the store",
+};
+
+/**
+ * The public route a webhook routine's caller POSTs to. One copy of the path
+ * shape, because the gateway matches it and the app renders it: two copies
+ * would drift, and instructions that name a route the daemon no longer serves
+ * are worse than none. The id is encoded, so a caller can hand this the exact
+ * id the daemon minted without thinking about URL syntax.
+ */
+export function webhookPath(routineId: string): string {
+  return `/v1/webhooks/${encodeURIComponent(routineId)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Browsing the machine, and starting work on it

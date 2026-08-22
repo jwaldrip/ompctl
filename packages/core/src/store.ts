@@ -702,6 +702,56 @@ export class Store {
       createdAt: row.created_at as string,
     }));
   }
+  /**
+   * Remove a routine for good: its definition, every run recorded against it,
+   * and the webhook credential row its trigger names.
+   *
+   * One transaction, because half of this is worse than neither: a run row
+   * without its routine can never be read again but still answers
+   * `hasActiveRun`, and a secret row without its routine is a credential the
+   * public route no longer names yet the store still hashes against.
+   *
+   * Run history goes with the definition deliberately: a run exists to be read
+   * against its routine, and the audit log, not the runs table, is the durable
+   * record of what ran and who asked it to. Deleting the credential is the
+   * point of deleting a webhook routine: what the operator wants gone is the
+   * capability, not only the listing.
+   *
+   * Deliberately not named `deleteRoutineRecords`: unlike the session
+   * counterpart, there is no file on disk that belongs to someone else. This
+   * one row set is the whole routine, so the name claims the whole deletion.
+   *
+   * Returns false for an unknown id so a caller refuses rather than reporting
+   * a deletion that deleted nothing.
+   */
+  deleteRoutine(routineId: string): boolean {
+    // `get()` answers null, not undefined, when the id matches no row; the
+    // undefined check this replaced never fired, so an unknown id fell through
+    // to the unparsable-trigger catch and reported a deletion that deleted
+    // nothing.
+    const row = this.#db.query(`SELECT trigger_json FROM routines WHERE id=?`).get(routineId) as {
+      trigger_json: string;
+    } | null;
+    if (row === null) return false;
+
+    let secretRef: string | undefined;
+    try {
+      const trigger = JSON.parse(row.trigger_json) as Routine["trigger"];
+      if (trigger.kind === "webhook") secretRef = trigger.secretRef;
+    } catch {
+      // A trigger that cannot parse cannot name a secret row. The definition
+      // is deleted regardless: this row is being destroyed either way.
+    }
+
+    this.#db.transaction(() => {
+      this.#db.query(`DELETE FROM routines WHERE id=?`).run(routineId);
+      this.#db.query(`DELETE FROM runs WHERE routine_id=?`).run(routineId);
+      if (secretRef !== undefined) {
+        this.#db.query(`DELETE FROM webhook_secrets WHERE secret_ref=?`).run(secretRef);
+      }
+    })();
+    return true;
+  }
 
   /**
    * Replace the credential for a webhook trigger. `secretRef` belongs to the

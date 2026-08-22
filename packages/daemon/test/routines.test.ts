@@ -614,6 +614,97 @@ describe("Scheduler execution", () => {
   });
 });
 
+describe("Scheduler deleteRoutines", () => {
+  test("a run in flight is refused by name, and the routine survives it", async () => {
+    const h = harness();
+    const held = holdTurns(h.fake);
+    const routine = defineRoutine(h.store);
+    const firing = h.scheduler.runNow(routine.id, h.actor);
+    // Wait on arrival, not on a delay: the refusal is only honest once the
+    // run is genuinely inside the agent turn.
+    await held.reached(1);
+
+    const refused = await h.scheduler.deleteRoutines([routine.id]);
+    expect(refused).toEqual([{ routineId: routine.id, deleted: false, refusal: "running" }]);
+    expect(h.store.listRoutines().map(r => r.id)).toEqual([routine.id]);
+
+    held.release();
+    const settled = await firing;
+    expect(settled.state).toBe("succeeded");
+
+    // The refusal is a state, not a sentence: once nothing is in flight the
+    // same id deletes.
+    const deleted = await h.scheduler.deleteRoutines([routine.id]);
+    expect(deleted).toEqual([{ routineId: routine.id, deleted: true }]);
+    expect(h.store.listRoutines()).toEqual([]);
+  });
+
+  test("a run row a killed process left behind refuses the delete too", async () => {
+    // The inflight map dies with the scheduler; only the store's row survives
+    // a kill -9. That row is the whole difference between this test and the
+    // one above, which is why it seeds the row directly and never fires.
+    const h = harness();
+    const routine = defineRoutine(h.store);
+    h.store.upsertRun({
+      id: "run_orphan",
+      routineId: routine.id,
+      state: "running",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      actions: [
+        {
+          actionId: "act_primary",
+          actionName: "Primary",
+          index: 0,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const refused = await h.scheduler.deleteRoutines([routine.id]);
+    expect(refused).toEqual([{ routineId: routine.id, deleted: false, refusal: "running" }]);
+    expect(h.store.listRoutines().map(r => r.id)).toEqual([routine.id]);
+  });
+
+  test("an id this daemon does not hold is reported, not answered with success", async () => {
+    const h = harness();
+    const results = await h.scheduler.deleteRoutines(["rtn_nope"]);
+    expect(results).toEqual([{ routineId: "rtn_nope", deleted: false, refusal: "not_found" }]);
+  });
+
+  test("a store that throws mid-delete is reported as failed and the routine survives", async () => {
+    const h = harness();
+    const routine = defineRoutine(h.store);
+    // The seam under test is "the store threw", whatever the machine-level
+    // cause; overriding the method is the one way to produce it determinately.
+    // It throws before touching the rows so the survival assertion below is
+    // about the scheduler's refusal, not about a half-deleted fixture.
+    h.store.deleteRoutine = () => {
+      throw new Error("simulated store failure");
+    };
+
+    const results = await h.scheduler.deleteRoutines([routine.id]);
+    expect(results).toEqual([{ routineId: routine.id, deleted: false, refusal: "failed" }]);
+    expect(h.store.listRoutines().map(r => r.id)).toEqual([routine.id]);
+  });
+
+  test("a mixed batch answers each id for itself", async () => {
+    const h = harness();
+    h.fake.onPrompt(() => ({ stopReason: "end_turn" }));
+    const first = defineRoutine(h.store);
+    const second = defineRoutine(h.store);
+    expect(first.id).not.toBe(second.id);
+
+    const results = await h.scheduler.deleteRoutines([first.id, "rtn_nope", second.id]);
+    expect(results).toEqual([
+      { routineId: first.id, deleted: true },
+      { routineId: "rtn_nope", deleted: false, refusal: "not_found" },
+      { routineId: second.id, deleted: true },
+    ]);
+    expect(h.store.listRoutines()).toEqual([]);
+  });
+});
+
 describe("Scheduler ticks", () => {
   test("a newly seen routine is armed, not fired immediately", async () => {
     const h = harness();
