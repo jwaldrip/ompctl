@@ -32,6 +32,7 @@
 
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
+import { getSessionsDir } from "@oh-my-pi/pi-utils";
 import type { SessionScanCacheEntry, Store } from "@ompd/core";
 import type {
   AgentId,
@@ -54,7 +55,6 @@ import {
 } from "./scanner.ts";
 import type { SessionWatch, SessionWatchOptions } from "./watcher.ts";
 import { watchSessionFiles } from "./watcher.ts";
-import { getSessionsDir } from "@oh-my-pi/pi-utils";
 
 export interface SessionIndexOptions {
   store: Store;

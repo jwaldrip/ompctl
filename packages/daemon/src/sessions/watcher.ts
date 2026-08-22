@@ -22,8 +22,8 @@
  * keeps a never-quiet tree from starving the watcher.
  */
 
-import { statSync, watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
+import { statSync, watch } from "node:fs";
 import { basename, join, sep } from "node:path";
 import { SESSION_FILE_RE } from "./scanner.ts";
 

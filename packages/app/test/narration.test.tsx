@@ -231,15 +231,15 @@ describe("session narration", () => {
             fleetClearances={0}
             onBack={() => {}}
             onSubmit={() => {}}
-          voice={{
-            access: "unknown",
-            mic: { available: false, reason: "no microphone in this test" },
-            speech: { available: false, reason: "no playback in this test" },
-            dictation: null,
-            capturing: false,
-            busyElsewhere: false,
-            onToggle: () => {},
-          }}
+            voice={{
+              access: "unknown",
+              mic: { available: false, reason: "no microphone in this test" },
+              speech: { available: false, reason: "no playback in this test" },
+              dictation: null,
+              capturing: false,
+              busyElsewhere: false,
+              onToggle: () => {},
+            }}
             onCancel={() => {}}
             onDecide={() => {}}
             onDecidePlan={() => {}}

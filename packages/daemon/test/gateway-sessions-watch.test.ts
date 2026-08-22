@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { type ClientFrame, DefaultPolicy, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
-import { SessionIndex, SESSION_WATCH_QUIET_MS } from "../src/sessions/index.ts";
+import { SESSION_WATCH_QUIET_MS, SessionIndex } from "../src/sessions/index.ts";
 import { Supervisor } from "../src/supervisor.ts";
 import { createFakeHost } from "./fake-host.ts";
 
@@ -257,7 +257,9 @@ describe("the watcher-driven sessions push", () => {
       f => isSessionsFrame(f) && f.sessions.some(s => s.id === SESSION_LATE),
       "a push carrying the new session",
     );
-    expect(isSessionsFrame(pushed) && pushed.sessions.some(s => s.id === SESSION_LATE && s.title === "appeared later")).toBe(true);
+    expect(
+      isSessionsFrame(pushed) && pushed.sessions.some(s => s.id === SESSION_LATE && s.title === "appeared later"),
+    ).toBe(true);
 
     // A wrongly-broadcast push would have been sent in the same synchronous
     // fan-out as the frame `asked` just received; a margin wider than the

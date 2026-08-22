@@ -30,9 +30,7 @@ import type { MemoVoice, OmpctlVoiceModule } from "../src/voice/memo.ts";
 // code, which is why the imports below are dynamic despite being literal
 // paths: the ordering is the fixture.
 
-const { createDeviceSpeechPlayback, createDeviceVoiceCapture, WIRE_SAMPLE_RATE } = await import(
-  "../src/voice/memo.ts"
-);
+const { createDeviceSpeechPlayback, createDeviceVoiceCapture, WIRE_SAMPLE_RATE } = await import("../src/voice/memo.ts");
 const { apply, emptyConsole, promptScopeAccess, tuiPromptAccess } = await import("../src/console/state.ts");
 const { useConsole } = await import("../src/console/useConsole.ts");
 const { SessionScreen } = await import("../src/screens/SessionScreen.tsx");
@@ -181,9 +179,11 @@ describe("the device voice seam", () => {
   test("an unavailable capture rejects a start rather than hanging as a recording", async () => {
     const capture = createDeviceVoiceCapture("web", undefined);
     let rejected: string | null = null;
-    await capture.start(() => {}).catch((cause: unknown) => {
-      rejected = String(cause);
-    });
+    await capture
+      .start(() => {})
+      .catch((cause: unknown) => {
+        rejected = String(cause);
+      });
     expect(rejected).not.toBeNull();
   });
 });
@@ -224,7 +224,10 @@ describe("dictation and capture state", () => {
   });
 
   test("one microphone: a second agent's open replaces the first, and closing when closed changes nothing", () => {
-    const state = drive([{ t: "voice_capture", agentId: "a1" }, { t: "voice_capture", agentId: "a2" }]);
+    const state = drive([
+      { t: "voice_capture", agentId: "a1" },
+      { t: "voice_capture", agentId: "a2" },
+    ]);
     expect(state.capturing).toBe("a2");
     const closed = apply(state, { t: "voice_capture", agentId: null });
     expect(apply(closed, { t: "voice_capture", agentId: null })).toBe(closed);
@@ -634,9 +637,7 @@ describe("the composer microphone control", () => {
   });
 
   test("recording shows a clear recording state and the live dictation beneath it", () => {
-    const mounted = mountSession(
-      voiceProps({ capturing: true, dictation: { text: "run the tests", final: false } }),
-    );
+    const mounted = mountSession(voiceProps({ capturing: true, dictation: { text: "run the tests", final: false } }));
     try {
       expect(mounted.attr("composer-mic", "aria-disabled")).not.toBe("true");
       expect(mounted.text("composer-mic-status")).toContain("Recording");

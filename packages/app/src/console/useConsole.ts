@@ -406,8 +406,7 @@ export function useConsole(
           return;
         }
         dispatch({ t: "voice_capture", agentId });
-        voice
-          .capture
+        voice.capture
           .start(chunk => {
             client.sendAudio(agentId, chunk);
           })
