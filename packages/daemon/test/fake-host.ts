@@ -87,7 +87,7 @@ export function createFakeHost(): FakeHostController {
   const newRequests: Array<{ cwd: string; mcpServers: unknown[] }> = [];
   const loads: string[] = [];
   const loadRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }> = [];
-  const prompts: Array<{ sessionId: string; text: string }> = [];
+  const prompts: Array<{ sessionId: string; text: string; blocks: unknown[] }> = [];
   let loadReplay: unknown[] = [];
   const waiters = new Map<number | string, (result: unknown) => void>();
   /** Which host serves each session, so a frame reaches the right transport. */

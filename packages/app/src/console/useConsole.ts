@@ -12,6 +12,7 @@ import type {
   ApprovalChoice,
   ApprovalScope,
   PlanReviewChoice,
+  PromptImage,
   WebViewActionResult,
 } from "@ompd/core/contracts";
 import { OmpdClient } from "@ompd/core/ompd-client";

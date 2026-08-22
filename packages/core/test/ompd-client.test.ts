@@ -22,6 +22,8 @@ import type {
   SessionDeleteResult,
   SessionSummary,
   TranscriptTailMessage,
+  WebViewAction,
+  WebViewActionResult,
 } from "../src/contracts.ts";
 import {
   type AgentsEvent,

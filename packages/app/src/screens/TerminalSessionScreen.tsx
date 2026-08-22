@@ -33,7 +33,7 @@ import type { PromptImage, SessionLiveStatus, TranscriptTailMessage } from "@omp
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useRef, useState } from "react";
-import { FlatList, Pressable, StyleSheet, TextInput, View } from "react-native";
+import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AttachmentsBar } from "../components/AttachmentsBar.tsx";
 import type { TuiPromptAccess, TuiSessionState } from "../console/state.ts";

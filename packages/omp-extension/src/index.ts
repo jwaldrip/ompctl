@@ -68,6 +68,17 @@ export interface BridgeContext {
 }
 
 /**
+ * What a user turn can carry: omp's own union of a string or content blocks.
+ *
+ * Images arrive as `{ type: "image", data, mimeType }` blocks, the same shape
+ * every multimodal provider takes, so a steered image lands in the transcript
+ * as the operator's own attached picture rather than as words about one.
+ */
+export type UserMessageContent =
+  | string
+  | Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
+
+/**
  * The slice of `ExtensionAPI` the bridge drives a session through.
  *
  * `sendUserMessage`, not `sendMessage`: a phone driving this terminal is the
@@ -76,17 +87,9 @@ export interface BridgeContext {
  * option shape -- the prompt flow takes `steer` or `followUp` and has no
  * `nextTurn`, and it takes no `triggerTurn`, because taking the turn when the
  * session is idle is what the prompt flow already does.
- *
- * `content` is omp's own union: a string, or content blocks. Images arrive as
- * `{ type: "image", data, mimeType }` blocks, the same shape every multimodal
- * provider takes, so a steered image lands in the transcript as the
- * operator's own attached picture rather than as words about one.
  */
 export interface BridgePi {
-  sendUserMessage(
-    content: string | Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>,
-    options?: { deliverAs?: "steer" | "followUp" },
-  ): void;
+  sendUserMessage(content: UserMessageContent, options?: { deliverAs?: "steer" | "followUp" }): void;
 }
 
 export interface BridgeDeps {

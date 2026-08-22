@@ -25,6 +25,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/** A JSON-RPC correlation id, which the spec allows to be either shape. */
+export type JsonRpcId = number | string;
+
 /**
  * An image riding a prompt, structurally identical to `@ompd/core`'s
  * `PromptImage`. This package is deliberately dependency-free -- it must spawn
