@@ -376,7 +376,7 @@ describe("RoutinesScreen", () => {
     host.remove();
   });
 
-  test("a webhook routine shows the post endpoint and the hub's no-HTTP limit plainly", async () => {
+  test("a webhook routine behind the hub shows the hub's own firable address", async () => {
     forbidFetch();
     const { socket, host, root } = await mounted(MANAGER);
     act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
@@ -385,10 +385,19 @@ describe("RoutinesScreen", () => {
     act(() => el(host, "routine-rtn_calls-edit")?.click());
     await settle();
 
-    expect(el(host, "routine-webhook-endpoint")?.textContent).toContain("/v1/webhooks/rtn_calls");
-    const notice = el(host, "routine-webhook-hub-notice");
-    expect(notice?.textContent).toContain("sealed socket");
-    expect(notice?.textContent).toContain("proxies no HTTP");
+    // The hub tunnels this exact shape: two segments, daemon then routine.
+    // `packages/hub/test/tunnel.test.ts` proves the round trip end to end.
+    expect(el(host, "routine-webhook-endpoint")?.textContent).toBe(
+      "POST https://hub.ompctl.ai/v1/webhooks/dae_0123456789abcdef/rtn_calls",
+    );
+
+    // The notice has to tell the operator the address works and that the
+    // secret is the gate, not that the endpoint is out of reach.
+    const notice = el(host, "routine-webhook-hub-notice")?.textContent ?? "";
+    expect(notice).toContain("it works");
+    expect(notice).toContain("current secret");
+    expect(notice).not.toContain("cannot reach");
+    expect(notice).not.toContain("proxies no HTTP");
 
     act(() => root.unmount());
     host.remove();

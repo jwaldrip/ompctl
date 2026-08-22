@@ -652,18 +652,22 @@ export type ClientFrame =
   /** A registered live TUI reporting turn progress back to the daemon. */
   | { t: "tui_activity"; sessionId: string; kind: TuiActivityKind; text?: string }
   /**
-   * Ask for the session index over this socket. A hub-relayed phone cannot
-   * reach the daemon's HTTP surface at all -- the relay carries sealed
-   * websocket frames only, never daemon HTTP paths -- so for that client
-   * this frame is not a convenience beside `GET /v1/sessions`; it is the
-   * only road the index can take.
+   * Ask for the session index over this socket. A hub-relayed phone has no
+   * road to `GET /v1/sessions`: the hub tunnels exactly one request shape,
+   * a webhook fire, and no tunnel is wired for this route. So for that
+   * client this frame is not a convenience beside the route; it is the only
+   * road the index can take.
    */
   | { t: "sessions"; query?: SessionQuery }
   /**
-   * Take over a `live-tui` session through this socket. The hub relay
-   * carries one sealed websocket and proxies no daemon HTTP, so `POST
-   * /v1/sessions/:id/takeover` is a road a relayed phone cannot take; this
-   * frame is the only one it can. `cwd` and `pid` are the index row's own
+   * Take over a `live-tui` session through this socket. `POST
+   * /v1/sessions/:id/takeover` is a road a relayed phone cannot take, because
+   * the hub tunnels only a webhook fire and no tunnel is wired for this
+   * route; this frame is the only one it can take. Wiring a general request
+   * tunnel instead would have handed the hub the device's bearer token to
+   * forward, and the hub is built to carry traffic it cannot read.
+   *
+   * `cwd` and `pid` are the index row's own
    * values echoed back, and the daemon verifies them against its index
    * rather than trusting them: a stale row on the phone must refuse naming
    * the mismatch, never open a different session than the one was tapped.
@@ -701,15 +705,16 @@ export type ClientFrame =
    * request. The two HTTP steps this replaces -- an unauthenticated
    * `POST /v1/pair` that records an intent, then an approve-scoped
    * `POST /v1/pairings/approve` that spends it -- are internal detail to a
-   * caller that is already authenticated, and a hub relay carries frames
-   * only, never daemon HTTP, so neither step can ride one. Requires
+   * caller that is already authenticated, and the hub has no tunnel wired
+   * for either route, so neither step can ride one. Requires
    * `approve`, and may not grant a scope the asking device does not hold.
    */
   | { t: "device_invite"; name: string; scopes: string[] }
   | RemoteStartClientFrame
   /**
    * Read every routine and its recent event outcomes through the sealed socket.
-   * A hub-relayed phone has no route to the daemon's HTTP API.
+   * A hub-relayed phone has no route to the daemon's HTTP API: the hub's one
+   * tunnel fires a webhook and carries nothing else.
    */
   | { t: "routines_read" }
   /** Replace one complete routine definition. Requires manage scope. */
@@ -735,9 +740,9 @@ export type ClientFrame =
   | { t: "session_history"; agentId: AgentId; sessionId: string; before?: number; limit?: number }
   /**
    * Ask what the daemon's two persisted settings hold right now. The hub
-   * relay carries one sealed websocket and proxies no daemon HTTP, so a phone
-   * reads these through this frame rather than `GET /v1/sync-settings`.
-   * Answered by `settings`, to the asking socket only.
+   * tunnels only a webhook fire and no tunnel is wired for
+   * `GET /v1/sync-settings`, so a phone reads these through this frame
+   * instead. Answered by `settings`, to the asking socket only.
    */
   | { t: "settings_read" }
   /**
@@ -750,9 +755,9 @@ export type ClientFrame =
   | ({ t: "settings_write" } & SyncSettings)
   /**
    * Ask what config options one agent's live session holds right now, the
-   * mode among them. The hub relay carries one sealed websocket and proxies
-   * no daemon HTTP, so a phone reads this through this frame rather than
-   * `GET /v1/agents/:id/config`. Answered by `agent_config`, to the asking
+   * mode among them. The hub tunnels only a webhook fire and no tunnel is
+   * wired for `GET /v1/agents/:id/config`, so a phone reads this through
+   * this frame instead. Answered by `agent_config`, to the asking
    * socket only.
    */
   | { t: "agent_config_read"; agentId: AgentId }

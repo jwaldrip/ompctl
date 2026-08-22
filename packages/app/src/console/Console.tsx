@@ -397,13 +397,14 @@ export function Console({
       />
     ),
     // Two things this route can honestly be, decided by the pairing rather than
-    // by a fetch that failed. Cowork reads the daemon's own HTTP routes, and a
-    // hub relay carries one sealed websocket and no HTTP at all, which is why
-    // `cowork/useCowork.ts` has no root to hang a request off a hub connection
-    // and fails every one closed. Left to that, the screen would render four
-    // empty catalogues and read as a daemon with nothing on it, so the limit is
-    // named here instead. The branch sits above `CoworkSurface` so a hub pairing
-    // never starts a poll it cannot answer.
+    // by a fetch that failed. Cowork reads the daemon's own HTTP routes, and the
+    // hub tunnels exactly one request shape today, a webhook fire, with no
+    // tunnel wired for any other daemon route. So `cowork/useCowork.ts` has no
+    // root to hang a request off a hub connection and fails every one closed.
+    // Left to that, the screen would render four empty catalogues and read as a
+    // daemon with nothing on it, so the limit is named here instead. The branch
+    // sits above `CoworkSurface` so a hub pairing never starts a poll it cannot
+    // answer.
     cowork: done =>
       connection.transport === "direct" ? (
         <CoworkSurface
@@ -422,9 +423,9 @@ export function Console({
         <SafeScreen style={styles.limit} testID="cowork-unreachable">
           <Body color={signal.ochre}>Cowork is unreachable from this pairing.</Body>
           <Body color={ink.muted}>
-            Tasks, skills, and connectors are read over the daemon's own HTTP routes. This device is paired through the
-            hub, which relays one sealed socket and no HTTP, so there is nothing behind it to ask. Attach on the
-            daemon's own network to use this surface.
+            Tasks, skills, and connectors are read over the daemon's own HTTP routes, and this pairing reaches the
+            daemon through the hub, which carries no route for them. Attach on the daemon's own network to use this
+            surface.
           </Body>
         </SafeScreen>
       ),

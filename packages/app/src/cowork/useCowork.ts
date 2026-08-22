@@ -69,10 +69,10 @@ export function useCowork(
   defaultAgentId: string | null,
 ): [CoworkState, CoworkActions] {
   const [state, setState] = useState<CoworkState>(EMPTY_STATE);
-  // Cowork's routes are plain REST, and a hub is a relay for the socket
-  // protocol only: there is no HTTP surface behind it to hang these on, so a
-  // hub connection has no root and every fetch below fails closed instead of
-  // guessing at one.
+  // Cowork's routes are plain REST, and the hub tunnels exactly one request
+  // shape today, a webhook fire: no tunnel is wired for `/v1/tasks`,
+  // `/v1/skills` or `/v1/connectors`, so a hub connection has no root and
+  // every fetch below fails closed instead of guessing at one.
   const root = connection.transport === "direct" ? restRoot(connection.url) : null;
 
   const authFetch = useCallback(

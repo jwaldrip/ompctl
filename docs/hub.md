@@ -53,6 +53,21 @@ exchange between the client and the daemon. The hub is not a party to it.
 never a token or a token hash. There is no credential in its database to steal
 and none to mint.
 
+**One thing does cross it in the clear: a webhook fire.** `POST
+/v1/webhooks/<daemonId>/<routineId>` is a real tunnel. The hub takes the
+request, gives it an id, sends it down the already-open sealed socket as a
+`webhook_request`, waits for the daemon's `webhook_response`, and replays that
+as an HTTP response, routing across instances through the backplane and giving
+up after 30 seconds. It is what makes a routine on a laptop behind NAT firable
+from anywhere. The cost is that the routine's trigger secret and the request
+body are handed to the hub as plaintext fields, because the hub has to read the
+secret in order to forward it. That is defensible only because a per-routine
+trigger secret is narrow: it fires one routine on one daemon and grants nothing
+else. It is not a device credential, and it is the reason the tunnel was not
+generalised. A general proxy for the daemon's other routes would carry a device
+bearer token through the hub, which would make the hub a credential path rather
+than a carrier of traffic it cannot read.
+
 **A fully compromised hub can deny service and lie about who is online.** It
 can also refuse to route, route you to nothing, or drop frames. What it cannot
 do is decrypt or impersonate: a client pins `daemonId`, which is the full

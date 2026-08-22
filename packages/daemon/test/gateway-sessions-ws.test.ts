@@ -505,9 +505,9 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
 });
 
 /**
- * The delete frame, which is the road a hub-relayed phone must take: the
- * relay carries sealed websocket frames and no daemon HTTP at all, so
- * `POST /v1/sessions/delete` is a route that phone cannot reach.
+ * The delete frame, which is the road a hub-relayed phone must take: the hub
+ * tunnels one request shape, a webhook fire, and no tunnel is wired for
+ * `POST /v1/sessions/delete`, so that route is one the phone cannot reach.
  */
 describe("the session_delete websocket frame", () => {
   const dormantPath = (sessionsRoot: string): string =>

@@ -88,6 +88,30 @@ function describeTrigger(trigger: TriggerSpec): string {
 }
 
 /**
+ * The address a caller actually POSTs to fire this routine.
+ *
+ * A hub pairing has a real answer here, which is why this is not a shrug at
+ * the operator. The hub tunnels `POST /v1/webhooks/<daemonId>/<routineId>`
+ * down the daemon's already-open sealed socket as a `webhook_request`, waits
+ * for the daemon's `webhook_response`, and replays it as a real HTTP
+ * response, routing across hub instances on the way. So a routine on a
+ * laptop behind NAT is firable from anywhere without that laptop publishing
+ * a port, and the phone holds both halves of the address already.
+ *
+ * The daemon's own route takes one segment because it serves exactly one
+ * daemon. The hub's takes two because it has to be told which.
+ */
+function webhookEndpoint(connection: Connection, routineId: string): string {
+  if (connection.transport === "hub") {
+    const hub = restRoot(connection.hubUrl);
+    const authority = hub ?? "{hub address}";
+    return `POST ${authority}/v1/webhooks/${connection.daemonId}/${routineId}`;
+  }
+  const root = restRoot(connection.url);
+  return `POST ${root ?? "{daemon address}"}/v1/webhooks/${routineId}`;
+}
+
+/**
  * The interval editor holds text a person is still typing, not the number the
  * contract wants, so a half-typed value never snaps to something else. This is
  * the read-back: the largest unit that divides the stored seconds exactly.
@@ -654,16 +678,14 @@ export function RoutinesScreen({
           {draft.trigger.kind === "webhook" ? (
             <View style={styles.triggerSection} testID="routine-webhook-editor">
               <Kicker color={ink.muted}>Endpoint</Kicker>
-              <Code testID="routine-webhook-endpoint">
-                {connection.transport === "direct" && restRoot(connection.url) !== null
-                  ? `POST ${restRoot(connection.url)}/v1/webhooks/${draft.id}`
-                  : `POST {daemon address}/v1/webhooks/${draft.id}`}
-              </Code>
+              <Code testID="routine-webhook-endpoint">{webhookEndpoint(connection, draft.id)}</Code>
               {connection.transport === "hub" ? (
                 <Body color={ink.muted} testID="routine-webhook-hub-notice">
-                  This phone cannot reach that endpoint itself: it is paired through the hub, which relays one sealed
-                  socket and proxies no HTTP. An outside caller posts from any machine that can reach the daemon's own
-                  address, bearing the current secret.
+                  That address is the hub's, and it works: the hub relays the fire down this daemon's sealed socket and
+                  answers with the daemon's own reply, so nothing has to reach the daemon's network and the daemon needs
+                  no open port. Any caller holding the current secret can POST there. The hub reads that secret in order
+                  to forward it, so it is the one credential this routine hands out; rotate it from this routine's card
+                  after saving.
                 </Body>
               ) : (
                 <Body color={ink.muted}>

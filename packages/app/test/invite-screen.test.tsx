@@ -32,7 +32,7 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-/** The transport that used to fail closed: a relay with no daemon HTTP behind it. */
+/** The transport that used to fail closed: a relay with no tunnel to the pairing routes behind it. */
 const HUB_CONNECTION: Connection = {
   transport: "hub",
   hubUrl: "wss://hub.ompctl.ai/relay",

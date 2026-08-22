@@ -82,9 +82,10 @@ export function useCoworkFolders(connection: Connection | undefined): [CoworkFol
   const [folders, setFolders] = useState<BoundFolder[]>([]);
   const [start, setStart] = useState<ContainerStart>({ status: "idle" });
 
-  // Cowork's routes are plain REST and a hub relay carries no HTTP surface to
-  // hang them on, so a hub connection has no root and the start below fails
-  // closed with its reason -- the same rule `useCowork` already draws.
+  // Cowork's routes are plain REST and the hub has no tunnel wired for them:
+  // a webhook fire is the one request shape it carries. So a hub connection
+  // has no root and the start below fails closed with its reason, the same
+  // rule `useCowork` already draws.
   const root = connection?.transport === "direct" ? restRoot(connection.url) : null;
 
   const bind = useCallback((hostPath: string) => {
@@ -110,7 +111,7 @@ export function useCoworkFolders(connection: Connection | undefined): [CoworkFol
         status: "refused",
         reason:
           root === null
-            ? "A hub relay carries no HTTP routes; starting a container needs a direct daemon connection."
+            ? "The hub carries no route for starting a container; that needs a direct daemon connection."
             : "Bind a folder first: a container with nothing bound has nothing to scope.",
         retryable: false,
       });

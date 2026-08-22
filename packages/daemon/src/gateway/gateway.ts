@@ -1745,10 +1745,12 @@ export class Gateway {
 
     if (path === "/v1/sync-settings" && (req.method === "GET" || req.method === "POST")) {
       // This is the CLI, curl, and direct-LAN door: the app never calls it,
-      // because a hub relay carries one sealed websocket and proxies no daemon
-      // HTTP, so the phone reaches the same two settings through the
-      // `settings_read`/`settings_write` frames instead. Same seam, same
-      // gates, two doors by transport.
+      // because the hub has no tunnel wired for this route. The one request
+      // shape the hub does tunnel is a webhook fire, gated by a per-routine
+      // secret; generalising that into a proxy for routes like this one would
+      // mean the hub forwarding a device bearer token, so the phone reaches
+      // the same two settings through the `settings_read`/`settings_write`
+      // frames instead. Same seam, same gates, two doors by transport.
       //
       // Reading the daemon's policy is watching; changing it moves the bar
       // every other scope is measured against, which is `manage`'s job alone.
@@ -2212,8 +2214,8 @@ export class Gateway {
    * Open one index session under the daemon for a socket client: take over
    * the TUI holding it, or resume it from disk. The sealed-socket
    * counterpart of `POST /v1/sessions/:id/takeover`, which a hub-relayed
-   * phone cannot reach because the relay carries frames only, never daemon
-   * HTTP paths.
+   * phone cannot reach because the hub carries no tunnel for it: a webhook
+   * fire is the one request shape it does tunnel.
    *
    * Reuses the same helpers the HTTP paths use rather than a parallel
    * implementation: takeover goes through `#takeOverLiveTui`, and resume
@@ -3553,12 +3555,12 @@ export class Gateway {
       }
 
       case "device_invite": {
-        // The sealed-socket counterpart of the two HTTP pairing routes: a
-        // hub relay carries frames only, never daemon HTTP paths, so from
-        // anywhere but the daemon's own network this frame is the only road
-        // to inviting a device that exists at all. The same approve gate
-        // and the same ceiling the route runs, because a weaker door on the
-        // socket would be a stronger door in disguise.
+        // The sealed-socket counterpart of the two HTTP pairing routes: the
+        // hub has no tunnel wired for either of them, so from anywhere but
+        // the daemon's own network this frame is the only road to inviting a
+        // device that exists at all. The same approve gate and the same
+        // ceiling the route runs, because a weaker door on the socket would
+        // be a stronger door in disguise.
         if (!ws.data.scopes.has(SCOPE_APPROVE)) {
           this.#send(ws, { t: "error", code: "unauthorized", message: "device invite requires approve scope" });
           return;

@@ -363,7 +363,9 @@ export function useConsole(
       },
       openSession(target) {
         // The resume claim rides the sealed socket rather than the daemon's
-        // HTTP routes, because a hub relay carries one websocket and no HTTP.
+        // HTTP routes, because the hub tunnels only a webhook fire and has no
+        // tunnel wired for `POST /v1/sessions/:id/resume`, so a relayed phone
+        // has no road to it.
         // The daemon answers `session_opened` with the agent that now holds
         // the session, and a session already held answers with the one
         // holding it, so a double tap cannot make a second holder. Selecting

@@ -43,7 +43,7 @@ const DIRECT: Connection = {
   scopes: ["read", "approve", "manage"],
 };
 
-/** The transport Jason's phone actually holds: a relay for one sealed socket, and no daemon HTTP behind it. */
+/** The transport Jason's phone actually holds: a relay whose one tunnel fires a webhook, with no route to Cowork's. */
 const HUB: Connection = {
   transport: "hub",
   hubUrl: "wss://hub.ompctl.ai/relay",
@@ -146,7 +146,7 @@ function cannedDaemon(): void {
   }) as unknown as typeof fetch;
 }
 
-/** Refuses any HTTP at all: the hub path must not reach for a route no relay carries. */
+/** Refuses any HTTP at all: the hub path must not reach for a route the hub has no tunnel for. */
 function forbidFetch(): void {
   globalThis.fetch = ((input: RequestInfo | URL) => {
     requests.push({ url: String(input), authorization: null });

@@ -2,11 +2,15 @@
  * The daemon's own settings: its policy posture and whether it keeps its host
  * awake, read and changed over the socket this connection already holds.
  *
- * The ask rides the client rather than HTTP on purpose. A hub relay carries
- * one sealed websocket and proxies no daemon HTTP, so a phone paired through
- * the hub has no road to `GET /v1/sync-settings` at all; `readSettings` and
- * `writeSettings` hide that choice, and this screen only knows that it asked,
- * was answered, or was refused by name.
+ * The ask rides the client rather than HTTP on purpose. The hub tunnels
+ * exactly one request shape today, a webhook fire, and no tunnel is wired for
+ * `GET /v1/sync-settings`, so a phone paired through the hub has no road to
+ * that route at all. Wiring a general one is the road not taken, and not
+ * because the hub could not carry it: a proxied read would put this device's
+ * bearer token in the hub's hands, and the hub is meant to carry sealed
+ * traffic it cannot read. `readSettings` and `writeSettings` hide that
+ * choice, and this screen only knows that it asked, was answered, or was
+ * refused by name.
  *
  * Confirmed state is rendered, never intent. The daemon answers a write with
  * what it reads back after applying, so a tapped option shows as current only

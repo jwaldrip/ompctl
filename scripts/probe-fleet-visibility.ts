@@ -65,7 +65,8 @@ client.on("error", event => {
 
 client.start();
 // The whole point: a relayed client asking for every session on the machine,
-// which no HTTP route can answer through a hub.
+// which no HTTP route can answer through a hub, because the hub's one tunnel
+// fires a webhook and none is wired for `GET /v1/sessions`.
 client.listSessions();
 await new Promise(resolve => setTimeout(resolve, WINDOW_MS));
 client.close();

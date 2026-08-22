@@ -1,7 +1,8 @@
 /**
  * The `device_invite` websocket frame from the wire: the sealed-socket road
  * to minting a device credential, which is the only road that exists behind
- * a hub relay because the relay carries frames and never daemon HTTP.
+ * a hub relay because the hub carries no tunnel for the pairing routes and
+ * would have to be handed a bearer token to forward if it did.
  *
  * Everything here runs against a real gateway with a real store: the frame
  * is sent over a real websocket, the answer is read off the same wire, and
