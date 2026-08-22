@@ -1,5 +1,6 @@
 package ai.ompctl.app
 
+import ai.ompctl.app.narration.OmpctlNarrationPackage
 import android.app.Application
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -18,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
             PackageList(this).packages.apply {
               // Packages that cannot be autolinked yet can be added manually here, for example:
               // add(MyReactNativePackage())
+              add(OmpctlNarrationPackage())
             }
 
         override fun getJSMainModuleName(): String = "index"
