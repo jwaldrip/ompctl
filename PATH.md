@@ -117,10 +117,9 @@ On the Pixel with Wi-Fi off, `wifi_on=0`, no `wlan0` address, over 5G:
 Captured frames, not code reading. These are visual truths with no home in a test yet:
 
 - A session with 1,103 messages, 429k context and $264.16 spend rendered an entirely black transcript for a full 90 second wait, then rendered normally about two minutes later. There is no spinner, skeleton, or loading text, so a slow first history page is indistinguishable from a broken screen. This is the same shape as the complaint that started this work.
-- The sessions pane clips its own columns: the `SIZE` header is cut mid-word and every size value is severed (`12.8`, `10.`, `2!`).
-- Text paints underneath the row action buttons; fragments bleed through the play and archive column.
+- **Fixed 2026-08-21.** A session row's readings ran underneath its own action buttons. The size reading read `10.` and then, in the gap between the two buttons, a stray `e`: the tail of the word `size`. The text was never truncated, it was overdrawn, which the visible sliver proves. The row's title line respected a content box that reserves the trailing action column and the readings line did not. The actions were already correct siblings; the body simply had no `minWidth: 0`, so the readings set a floor it could not shrink under, and React Native's default `overflow: visible` let the excess paint beneath the later-drawn buttons.
 - Titles truncate near 14 characters on a 1640pt display, and group paths truncate at both ends, losing the org and the repo at once.
-- The transcript's last line is clipped behind the LINKED / context / spend strip, which overlays the scroll content instead of insetting it.
+- **Withdrawn.** I recorded the LINKED / context / spend strip as overlaying the transcript. It does not: `StatusReadout` is a stacked sibling below the list, and what I saw was ordinary scroll clipping at the list's viewport edge. The claim was an overreach from a static frame.
 - Unknown metrics render as a bare `--`, which reads as failure rather than "not known yet".
 - A grey circle overlaps the system status bar in one frame; a light arc is clipped into the bottom-right corner of the pair and connections screens. Both are unexplained chrome.
 - The primary button has two identities: an outlined ghost on the pair screen that looks exactly like the text inputs above it, and a solid green fill on connections.
@@ -129,6 +128,20 @@ Captured frames, not code reading. These are visual truths with no home in a tes
 ### Blocked on 2026-08-21: subagents never reach the daemon
 
 A real omp host never sends `notifications/agent_registry`. Instrumentation placed above every early return in the handler logged zero calls while a real subagent ran to completion and returned its token in 4.7 seconds, and subagents write no separate session file. The Agent Hub's tree, its tests, and the daemon's handler are correct code fed by a source that never speaks, so "list every dispatched subagent" cannot hold against a real omp host. The daemon's subagent support is only ever exercised against a fake host that does emit the notification.
+
+### Landed on 2026-08-22: sessions appear by themselves, narration and the mic are real
+
+All four verified on the running daemon and by eye on the iPad simulator, not from a report.
+
+- **A new local session pops.** The daemon watches the sessions root, coalesces the constant appends an agent makes while it works, joins the index's in-flight build rather than queueing another, and pushes only to sockets that already asked and hold read scope. Proven live: a client asked once, `ompd new` created a session, and an unsolicited frame arrived carrying it, 616 to 617, with no second request. The app's own fleet then read `617 SESSIONS`.
+- **Narration speaks.** `OmpctlNarration` now exists natively: `AVSpeechSynthesizer` on iOS with the audio session category chosen so the ring/silent switch cannot mute it, `TextToSpeech` on Android with the asynchronous engine init handled so a speak before init never resolves while saying nothing. The session screen used to read "this build has no OmpctlNarration text-to-speech module"; it now reads "Narration off, read new agent prose aloud as it arrives".
+- **The microphone is wired.** `OmpctlVoice` captures 16 kHz mono PCM16 and plays the daemon's `speech` frames back, against the voice bridge that already existed. The composer reads "Tap to speak; the agent answers out loud" where it used to name the missing module. Audio was never heard on hardware, so the wire is proven and the acoustics are not.
+- **Live speech is a decision, not a build.** OMP `/live` is a Codex realtime WebRTC call owned by the TUI process: SDP POST to the Codex endpoint, a sideband websocket to OpenAI, `gpt-live-1-codex`, and the operator's own Codex credential on the machine that opens the call. The hub carries exactly one sealed websocket and proxies no HTTP, so neither leg can be tunneled without changing what the hub is. The honest first slice is live duplex over the voice bridge already present, with turn taking rather than barge-in, and it needs no new dependency. True live voice needs `react-native-webrtc`, a WebRTC peer inside ompd, and eventually a TURN service. That is named rather than implied.
+
+Two defects were found by looking at the frames rather than the code:
+
+- Detox had been launching a stale simulator binary from the previous day, which is why both native modules still reported missing after they were built. The banners only changed once the build went to the path Detox actually launches. A screenshot of an app nobody rebuilt is not evidence about the code.
+- Repeated rich blocks collided on their keys. React reported `Encountered two children with the same key, list:1:true` on the device. The renderer keyed blocks by content, so two rules both keyed to `rule` and two identical paragraphs collided the same way. Keys are position-prefixed now, and `packages/app/test/rich-text.test.tsx` reproduces the exact device complaint when the fix is reverted.
 
 ## Queue
 
@@ -142,11 +155,13 @@ Everything Jason has asked for, in exactly one state. Parked is not dropped.
 - No way back to the session list from a session view, which makes the closed screen a dead end
 - Right align the folder and archive controls in the Sessions header to the trailing content edge
 - A large session can show a black transcript with no loading state while its first history page is fetched, for at least 90 seconds. Seen by eye on the iPad, 2026-08-21
-- The sessions pane clips its own `SIZE` column, and row text paints under the action buttons. Seen by eye on the iPad, 2026-08-21
 - Titles truncate near 14 characters and group paths truncate at both ends, on a display with room for both. Seen by eye on the iPad, 2026-08-21
-- The LINKED / context / spend strip overlays the transcript's last line instead of insetting the scroll content. Seen by eye on the iPad, 2026-08-21
+- The notice used to float over the console and once covered the reply it was reporting on. It is a band in the column now, and `packages/app/test/no-hidden-content.test.ts` gates the class: a row clips its own content, a flex item holding text can shrink, readings wrap, and a notice never positions absolutely. Done 2026-08-21
 - Two primary-button treatments and two content gutters across pair and connections; unknown metrics render as a bare `--`. Seen by eye on the iPad, 2026-08-21
 - Subagents never reach the daemon, so the Agent Hub cannot list them against a real omp host. Diagnosed 2026-08-21, see above
+- Live speech, slice A: live duplex over the voice bridge, turn taking, no WebRTC. Decided 2026-08-22, not started
+- Live speech, slice B: true realtime voice, needs `react-native-webrtc`, a daemon WebRTC peer, and a TURN story. Open only if slice A's turn latency is not good enough to talk to
+- Audio was never heard on hardware: narration and the mic are proven to the wire and to the UI, not to the speaker
 
 **parked** (starts only after `PATH GREEN`)
 - BushidoPhone, Jason's iPad, Test iPhone, Apple Watch

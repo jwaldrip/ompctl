@@ -4,3 +4,4 @@ export * from "./liveness.ts";
 export * from "./scanner.ts";
 export * from "./session-index.ts";
 export * from "./tail.ts";
+export * from "./watcher.ts";

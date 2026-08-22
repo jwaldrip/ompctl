@@ -755,6 +755,31 @@ export class OmpdClient {
     this.send({ t: "cancel", agentId });
   }
 
+  /**
+   * Stream one chunk of the operator's speech: base64 16kHz mono PCM16, the
+   * wire format the daemon's voice bridge decodes. One utterance is many
+   * chunks followed by one `endAudio`, and the daemon answers the end with
+   * a `transcript` frame, never a return value.
+   *
+   * Not remembered across a reconnect and not a visible loss when the socket
+   * is down: an utterance is live audio rather than an instruction, and the
+   * daemon drops its buffers with the socket they arrived on. The caller
+   * that owns the microphone hears the disconnect and ends the utterance
+   * itself.
+   */
+  sendAudio(agentId: AgentId, pcm: string): void {
+    this.send({ t: "audio", agentId, pcm });
+  }
+
+  /**
+   * Finish one utterance. The daemon transcribes what it buffered and sends
+   * the text back as a `transcript` frame; the prompt it becomes is the
+   * daemon's own authorization decision, not this method's.
+   */
+  endAudio(agentId: AgentId): void {
+    this.send({ t: "audio_end", agentId });
+  }
+
   decide(agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope): void {
     const frame: ClientFrame =
       scope === undefined

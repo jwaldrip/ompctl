@@ -69,6 +69,8 @@
 	<string>ompctl reads a QR code to pair with a daemon or another paired device. No photo or video is stored.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>ompctl connects to the ompd daemon running on your own computer, over your local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ompctl records your voice to send memo speech to your agent. Audio is streamed to your own daemon and is not stored on the device.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

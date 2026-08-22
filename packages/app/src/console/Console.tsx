@@ -50,6 +50,7 @@ import { SettingsScreen } from "../screens/SettingsScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
+import { deviceMemoVoice } from "../voice/memo.ts";
 import type { ConsoleState } from "./state.ts";
 import {
   agentFor,
@@ -57,6 +58,7 @@ import {
   canInvite,
   fleetClearances,
   openSessionTarget,
+  promptScopeAccess,
   sessionFor,
   tuiPromptAccess,
   tuiSessionFor,
@@ -90,7 +92,7 @@ export function Console({
   onUnpair,
   createClient = createOmpdClient,
 }: ConsoleProps): JSX.Element {
-  const [state, actions] = useConsole(connection, createClient);
+  const [state, actions] = useConsole(connection, createClient, deviceMemoVoice);
   const split = useSplitLayout();
   const [browser, dispatchBrowser] = useReducer(browserReduce, EMPTY_BROWSER);
 
@@ -218,6 +220,18 @@ export function Console({
         fleetClearances={clearances}
         onBack={back}
         onOpenConfig={openConfig}
+        voice={{
+          access: promptScopeAccess(state, connection.scopes),
+          mic: deviceMemoVoice.capture.availability,
+          speech: deviceMemoVoice.playback.availability,
+          dictation: state.dictation.get(agent.id) ?? null,
+          capturing: state.capturing === agent.id,
+          busyElsewhere: state.capturing !== null && state.capturing !== agent.id,
+          onToggle: () => {
+            if (state.capturing === agent.id) actions.stopVoice();
+            else actions.startVoice(agent.id);
+          },
+        }}
         onSubmit={text => {
           actions.prompt(agent.id, text);
         }}
@@ -406,7 +420,9 @@ export function Console({
 
   return (
     <View style={styles.position} testID="console">
-      <AppNavigator surfaces={surfaces} selection={selection} onLeaveSelection={actions.back} />
+      <View style={styles.shell}>
+        <AppNavigator surfaces={surfaces} selection={selection} onLeaveSelection={actions.back} />
+      </View>
       {state.notice === null ? null : (
         // A link notice is the connection's own claim, and it reports under
         // its own testID so a check can demand the screen carry no
@@ -535,6 +551,11 @@ function CoworkSurface({
 
 const styles = StyleSheet.create({
   position: { flex: 1, backgroundColor: ground.base },
+  // The notice is a band in the column, not a layer over it. Floating it once
+  // put a connectivity complaint physically on top of the reply it was
+  // complaining about not receiving; a notice that hides the thing it reports
+  // on is worse than no notice.
+  shell: { flex: 1 },
   singleLayout: { flex: 1 },
   splitLayout: { flex: 1, flexDirection: "row" },
   bay: { flex: 1 },

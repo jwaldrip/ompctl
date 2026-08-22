@@ -140,6 +140,55 @@ describe("scanSessionFiles", () => {
   });
 });
 
+describe("counting a large transcript hands the event loop back", () => {
+  /**
+   * Scheduling, not wall-clock. Counting a transcript is CPU-bound JSON
+   * parsing, so reading it off the main thread is only half the fix: without
+   * a yield between slices the parse still holds the loop for the whole file
+   * and the daemon answers nothing until it finishes. That is what wedged it.
+   *
+   * A `setImmediate` ticker advances once per loop turn, so its count is a
+   * direct measure of how many times the counter let the loop run. No
+   * duration is asserted, so this cannot flake on a slow or busy machine: a
+   * synchronous counter yields zero turns however long it takes, and a
+   * cooperative one yields many however fast it is.
+   */
+  test("many event-loop turns pass while a multi-megabyte file is counted", async () => {
+    const root = tempRoot("scanner-yield-");
+    const groupDir = join(root, "-x");
+    mkdirSync(groupDir, { recursive: true });
+    const lines: string[] = [JSON.stringify({ type: "title", v: 1, title: "big" })];
+    for (let i = 0; i < 4000; i++) {
+      lines.push(
+        JSON.stringify({
+          type: "message",
+          id: `m${i}`,
+          message: { role: i % 2 ? "user" : "assistant", content: [{ type: "text", text: "x".repeat(1100) }] },
+        }),
+      );
+    }
+    const path = join(groupDir, `2026-08-11T01-11-48-090Z_${SESSION_ID_A}.jsonl`);
+    writeFileSync(path, `${lines.join("\n")}\n`);
+
+    let turns = 0;
+    let ticking = true;
+    const tick = (): void => {
+      if (!ticking) return;
+      turns += 1;
+      setImmediate(tick);
+    };
+    setImmediate(tick);
+
+    const counted = await countMessagesAsync(path);
+    ticking = false;
+
+    expect(counted).toBe(4000);
+    // One turn per 256KiB slice at minimum; the floor is far below that so a
+    // change in slice size is not a failure, while a synchronous count is.
+    expect(turns).toBeGreaterThan(5);
+  });
+});
+
 describe("countMessages", () => {
   test("counts user and assistant turns, excluding tool results and bookkeeping events", () => {
     const root = tempRoot("scanner-count-");
