@@ -37,6 +37,7 @@ import type {
   HostSpec,
   PlanReviewChoice,
   RemoteRoutine,
+  RoutineDeleteResult,
   Run,
   ServerFrame,
   SessionDeleteResult,
@@ -206,6 +207,11 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   routine_run: true,
   routine_secret_rotate: true,
   routines_read: false,
+  // Irreversible and never replayed, exactly `session_delete`'s class: a
+  // delete that never left leaves an operator believing a routine is gone
+  // while its schedule still fires; re-sending after they may have changed
+  // their mind would be worse.
+  routine_delete: true,
   // Snapshot asks, same class as `settings_read`: nothing on the machine
   // changes, and the Cowork surface polls on an interval and re-asks on every
   // reconnect, so reporting the loss would only echo the reconnect.
@@ -524,6 +530,16 @@ export interface RoutineSecretEvent {
 }
 
 /**
+ * What a `deleteRoutines` did, one result per id asked for. Delivered to the
+ * socket that asked; the refreshed catalogue arrives separately as a
+ * `routines` snapshot, so a surface listening only to this event learns the
+ * refusal without waiting on a refresh it may never get.
+ */
+export interface RoutinesDeletedEvent {
+  results: RoutineDeleteResult[];
+}
+
+/**
  * One agent's session config as the daemon holds it now, answering
  * `readAgentConfig` or `writeAgentConfig`. Confirmation rather than echo:
  * after a write it carries what the daemon read back from the session, so a
@@ -597,6 +613,7 @@ export interface ClientEventMap {
   settings: SettingsEvent;
   routines: RoutinesEvent;
   routine_ran: RoutineRanEvent;
+  routines_deleted: RoutinesDeletedEvent;
   routine_secret: RoutineSecretEvent;
   session_tail: SessionTailEvent;
   session_history: SessionHistoryEvent;
@@ -1027,6 +1044,15 @@ export class OmpdClient {
   /** Rotate a webhook secret. The plaintext arrives once as `routine_secret`. */
   rotateRoutineSecret(routineId: string): void {
     this.send({ t: "routine_secret_rotate", routineId });
+  }
+
+  /**
+   * Delete routines for good. Per-id outcomes arrive as `routines_deleted`;
+   * a refusal names itself, so a surface can say what to do next rather than
+   * that it simply cannot.
+   */
+  deleteRoutines(routineIds: readonly string[]): void {
+    this.send({ t: "routine_delete", routineIds: [...routineIds] });
   }
 
   /**
@@ -1533,6 +1559,9 @@ export class OmpdClient {
         return;
       case "routine_secret":
         this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });
+        return;
+      case "routines_deleted":
+        this.emit("routines_deleted", { results: frame.results });
         return;
       case "agent_config":
         this.emit("agent_config", {

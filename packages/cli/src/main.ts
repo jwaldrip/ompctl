@@ -27,7 +27,7 @@ import {
 } from "./commands/devices.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { openCommand } from "./commands/open.ts";
-import { routinesCommand, runCommand, webhookSecretCommand } from "./commands/routines.ts";
+import { routineDeleteCommand, routinesCommand, runCommand, webhookSecretCommand } from "./commands/routines.ts";
 import { selfInstallCommand } from "./commands/self-install.ts";
 import { installCommand, uninstallCommand } from "./commands/service.ts";
 import { syncConfigCommand } from "./commands/sync.ts";
@@ -104,6 +104,8 @@ export async function run(argv: string[], ctx: CliContext = defaultContext()): P
         return await runCommand(ctx, command);
       case "webhook-secret":
         return await webhookSecretCommand(ctx, command);
+      case "routine-delete":
+        return await routineDeleteCommand(ctx, command);
       case "sync-config":
         return await syncConfigCommand(ctx, command);
       case "audit":

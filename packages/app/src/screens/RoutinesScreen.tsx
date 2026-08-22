@@ -1,4 +1,12 @@
-import { type RemoteRoutine, type Run, SCOPE_MANAGE, SCOPE_PROMPT, type TriggerSpec } from "@ompd/core/contracts";
+import {
+  type RemoteRoutine,
+  ROUTINE_DELETE_REFUSAL_REASONS,
+  type Run,
+  SCOPE_MANAGE,
+  SCOPE_PROMPT,
+  type TriggerSpec,
+  webhookPath,
+} from "@ompd/core/contracts";
 import { CronError, nextFireTime } from "@ompd/core/cron";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
@@ -9,6 +17,7 @@ import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Code, Display, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+import { copyText } from "../platform/clipboard.ts";
 import type { Connection } from "../platform/connection.ts";
 import { restRoot } from "../platform/rest-root.ts";
 
@@ -141,6 +150,7 @@ function nextFirePreview(trigger: TriggerSpec, now: Date): NextFirePreview {
       return { error: cause instanceof CronError ? cause.message : String(cause) };
     }
   }
+
   if (trigger.kind === "interval" && Number.isFinite(trigger.seconds) && trigger.seconds > 0) {
     return {
       fire: new Date(now.getTime() + trigger.seconds * 1000),
@@ -149,6 +159,18 @@ function nextFirePreview(trigger: TriggerSpec, now: Date): NextFirePreview {
     };
   }
   return null;
+}
+
+/**
+ * The exact URL a caller POSTs to, with no method prefix: this string is the
+ * one the copy control lifts into a shell, so it must paste clean. Built from
+ * the one path helper the daemon side also tests against, so the instructions
+ * cannot drift from the route. A hub-relayed phone names the daemon address as
+ * a placeholder because the hub carries no HTTP to read a root from.
+ */
+function webhookUrl(routineId: string, connection: Connection): string {
+  const root = connection.transport === "direct" ? restRoot(connection.url) : null;
+  return `${root ?? "{daemon address}"}${webhookPath(routineId)}`;
 }
 
 export function RoutinesScreen({
@@ -166,7 +188,13 @@ export function RoutinesScreen({
   const [draft, setDraft] = useState<RemoteRoutine | null>(null);
   const [intervalEdit, setIntervalEdit] = useState(() => deriveInterval(DEFAULT_INTERVAL_SECONDS));
   const [pending, setPending] = useState<string | null>(null);
+  /** The routine whose delete control is armed, so the confirm names it and sits nowhere near Edit or Run. */
+  const [arming, setArming] = useState<string | null>(null);
+  /** A named refusal from the daemon, shown on the routine it names. */
+  const [refusal, setRefusal] = useState<{ routineId: string; reason: string } | null>(null);
   const [secret, setSecret] = useState<{ routineId: string; value: string } | null>(null);
+  /** Which routine's copy control last fired, so its label can say what happened. */
+  const [copied, setCopied] = useState<string | null>(null);
   const clientRef = useRef<OmpdClient | null>(null);
   if (clientRef.current === null) clientRef.current = createClient(connection);
   const client = clientRef.current;
@@ -194,17 +222,56 @@ export function RoutinesScreen({
         setPending(null);
         setSecret({ routineId: event.routineId, value: event.secret });
       }),
+      client.on("routines_deleted", event => {
+        setPending(null);
+        // Every id answers for itself, so a batch that refused some and
+        // deleted the rest reports precisely which: the first refusal names
+        // itself on its own card, and deletions drop out of the local view
+        // rather than waiting on a snapshot the daemon does not push.
+        const refused = event.results.find(result => !result.deleted);
+        setRefusal(
+          refused === undefined
+            ? null
+            : { routineId: refused.routineId, reason: ROUTINE_DELETE_REFUSAL_REASONS[refused.refusal] },
+        );
+        const deletedIds = new Set(event.results.filter(result => result.deleted).map(result => result.routineId));
+        if (deletedIds.size > 0) {
+          setArming(current => (current !== null && deletedIds.has(current) ? null : current));
+          setStatus(current =>
+            current.kind !== "ready"
+              ? current
+              : {
+                  ...current,
+                  routines: current.routines.filter(routine => !deletedIds.has(routine.id)),
+                  runs: current.runs.filter(run => !deletedIds.has(run.routineId)),
+                },
+          );
+          // The daemon is authoritative; a re-read resyncs anything the local
+          // filter could not know, like a routine renamed elsewhere mid-delete.
+          client.readRoutines();
+        }
+      }),
       client.on("error", event => {
         setPending(null);
         setStatus(current => (current.kind === "loading" ? { kind: "failed", message: event.message } : current));
       }),
     ];
+
     client.start();
     return () => {
       for (const off of offs) off();
       client.close();
     };
   }, [client]);
+
+  const deleteRoutine = useCallback(
+    (routineId: string) => {
+      if (!canManage) return;
+      setPending(`delete:${routineId}`);
+      client.deleteRoutines([routineId]);
+    },
+    [canManage, client],
+  );
 
   const retry = useCallback(() => {
     setStatus({ kind: "loading" });
@@ -432,6 +499,29 @@ export function RoutinesScreen({
                   );
                 })}
 
+                {routine.trigger.kind === "webhook" ? (
+                  <View style={styles.webhookBlock} testID={`routine-${routine.id}-webhook`}>
+                    <Kicker color={ink.muted}>Endpoint</Kicker>
+                    <Code selectable testID={`routine-${routine.id}-endpoint`}>
+                      {`POST ${webhookUrl(routine.id, connection)}`}
+                    </Code>
+                    <Body color={ink.muted} testID={`routine-${routine.id}-webhook-how`}>
+                      POST with the secret in the x-webhook-secret header, or as ?token= in the query. The request body
+                      is ignored: the routine runs its configured prompt, not anything the caller sends.
+                    </Body>
+                    {connection.transport === "hub" ? (
+                      <Body color={ink.muted}>
+                        This phone cannot reach that endpoint itself: it is paired through the hub, which relays one
+                        sealed socket and proxies no HTTP. An outside caller posts from any machine that can reach the
+                        daemon's own address.
+                      </Body>
+                    ) : (
+                      <Body color={ink.muted}>
+                        The secret is shown once when rotated and cannot be read back; the daemon keeps only its hash.
+                      </Body>
+                    )}
+                  </View>
+                ) : null}
                 <View style={styles.controls}>
                   <Pressable
                     accessibilityRole="button"
@@ -478,11 +568,87 @@ export function RoutinesScreen({
                 </View>
 
                 {secret?.routineId === routine.id ? (
-                  <View style={styles.secret} testID="routine-secret-value">
+                  <View style={styles.secret}>
                     <Kicker color={signal.ochre}>Shown once</Kicker>
-                    <Body color={ink.plain}>{secret.value}</Body>
+                    <Code color={ink.plain} selectable testID="routine-secret-value">
+                      {secret.value}
+                    </Code>
+                    <Code selectable testID={`routine-${routine.id}-secret-url`}>
+                      {`${webhookUrl(routine.id, connection)}?token=${encodeURIComponent(secret.value)}`}
+                    </Code>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: !canManage }}
+                      disabled={!canManage}
+                      onPress={() => {
+                        copyText(`${webhookUrl(routine.id, connection)}?token=${encodeURIComponent(secret.value)}`);
+                        setCopied(routine.id);
+                      }}
+                      style={styles.smallButton}
+                      testID="routine-secret-copy"
+                    >
+                      <Glyph name="copy" size={13} color={canManage ? ink.plain : ink.faint} />
+                      <Label color={canManage ? ink.plain : ink.faint}>
+                        {copied === routine.id ? "Copied the URL with its token" : "Copy the URL with its token"}
+                      </Label>
+                    </Pressable>
+                    <Body color={ink.muted}>
+                      Shown once and never again: the daemon keeps only a hash, so this value cannot be retrieved later.
+                      Rotating replaced the previous secret; the old one no longer authenticates.
+                    </Body>
                   </View>
                 ) : null}
+
+                <View style={styles.danger}>
+                  {arming === routine.id ? (
+                    <View style={styles.confirmDelete} testID={`routine-${routine.id}-confirm-delete`}>
+                      <Label color={signal.oxide}>
+                        {`Delete "${routine.name}" for good? Its runs and its webhook secret go with it.`}
+                      </Label>
+                      <View style={styles.controls}>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => setArming(null)}
+                          style={styles.smallButton}
+                          testID={`routine-${routine.id}-confirm-cancel`}
+                        >
+                          <Label color={ink.plain}>Keep it</Label>
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: !canManage || pending !== null }}
+                          disabled={!canManage || pending !== null}
+                          onPress={() => deleteRoutine(routine.id)}
+                          style={styles.smallButton}
+                          testID={`routine-${routine.id}-confirm-yes`}
+                        >
+                          <Glyph name="delete" size={13} color={canManage ? signal.oxide : ink.faint} />
+                          <Label color={canManage ? signal.oxide : ink.faint}>Delete for good</Label>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: !canManage }}
+                      disabled={!canManage}
+                      onPress={() => {
+                        setArming(routine.id);
+                        setRefusal(null);
+                      }}
+                      style={styles.smallButton}
+                      testID={`routine-${routine.id}-delete`}
+                    >
+                      <Glyph name="delete" size={13} color={canManage ? ink.muted : ink.faint} />
+                      <Label color={canManage ? ink.muted : ink.faint}>Delete</Label>
+                    </Pressable>
+                  )}
+                  {refusal?.routineId === routine.id ? (
+                    <Label color={signal.oxide} testID={`routine-${routine.id}-delete-refused`}>
+                      {refusal.reason}
+                    </Label>
+                  ) : null}
+                </View>
               </View>
             );
           })}
@@ -654,10 +820,8 @@ export function RoutinesScreen({
           {draft.trigger.kind === "webhook" ? (
             <View style={styles.triggerSection} testID="routine-webhook-editor">
               <Kicker color={ink.muted}>Endpoint</Kicker>
-              <Code testID="routine-webhook-endpoint">
-                {connection.transport === "direct" && restRoot(connection.url) !== null
-                  ? `POST ${restRoot(connection.url)}/v1/webhooks/${draft.id}`
-                  : `POST {daemon address}/v1/webhooks/${draft.id}`}
+              <Code selectable testID="routine-webhook-endpoint">
+                {`POST ${webhookUrl(draft.id, connection)}`}
               </Code>
               {connection.transport === "hub" ? (
                 <Body color={ink.muted} testID="routine-webhook-hub-notice">
@@ -858,6 +1022,17 @@ const styles = StyleSheet.create({
     gap: space.hair,
     backgroundColor: signal.sage,
   },
+  webhookBlock: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },
+  /** Its own row at the card's bottom edge, so a thumb reaching for Edit or
+   * Run cannot land on the irreversible control. */
+  danger: {
+    gap: space.hair,
+    marginTop: space.hair,
+    paddingTop: space.step,
+    borderTopWidth: stroke.hair,
+    borderTopColor: ground.edge,
+  },
+  confirmDelete: { gap: space.hair, padding: space.step, backgroundColor: signalWash.oxide },
   secret: { gap: space.hair, padding: space.step, backgroundColor: ground.active },
   editor: { gap: space.step, paddingHorizontal: space.wide, paddingBottom: space.wide },
   editorAction: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },

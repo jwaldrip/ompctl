@@ -42,3 +42,15 @@ mockAppAndWorkspace("react/jsx-dev-runtime", jsxDevRuntime);
 mockAppAndWorkspace("react-dom", reactDom);
 mockAppAndWorkspace("react-dom/server", reactDomServer);
 mockAppAndWorkspace("react-dom/client", reactDomClient);
+
+// The clipboard package resolves its TurboModule at import time, which no bun
+// target survives; the render tests only need the seam to exist.
+mockAppAndWorkspace("@react-native-clipboard/clipboard", {
+  setString: (value: string) => {
+    // Recording rather than a bare no-op lets a render test assert exactly
+    // what a copy control lifted into the pasteboard, which is the whole
+    // contract of the control.
+    (globalThis as { __clipboardWrites?: string[] }).__clipboardWrites ??= [];
+    (globalThis as { __clipboardWrites?: string[] }).__clipboardWrites?.push(value);
+  },
+});

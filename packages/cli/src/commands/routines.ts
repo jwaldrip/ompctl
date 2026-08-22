@@ -6,7 +6,13 @@
  * that normally runs nightly.
  */
 
-import type { Routine, Run, TriggerSpec } from "@ompd/core";
+import {
+  ROUTINE_DELETE_REFUSAL_REASONS,
+  type Routine,
+  type RoutineDeleteResult,
+  type Run,
+  type TriggerSpec,
+} from "@ompd/core";
 import type { Command } from "../args.ts";
 import { api, type CliContext } from "../client.ts";
 import { table } from "../format.ts";
@@ -110,5 +116,31 @@ export async function webhookSecretCommand(
   ctx.out("");
   ctx.out("  This secret is shown once and is not recoverable. The daemon keeps only its");
   ctx.out("  hash. Copy it now; mint another one if you lose it.");
+  return 0;
+}
+
+/**
+ * Delete one routine for good, reporting the named refusal rather than a
+ * bare failure. The daemon's wording is used verbatim because it is the one
+ * copy the operator's other surfaces also show.
+ */
+export async function routineDeleteCommand(
+  ctx: CliContext,
+  cmd: Extract<Command, { kind: "routine-delete" }>,
+): Promise<number> {
+  const response = await api<{ results?: RoutineDeleteResult[] }>(ctx, "/v1/routines/delete", {
+    method: "POST",
+    body: { routineIds: [cmd.routineId] },
+  });
+  const result = response.results?.[0];
+  if (result === undefined) {
+    ctx.err("the daemon answered a delete with no result");
+    return 1;
+  }
+  if (!result.deleted) {
+    ctx.err(`${cmd.routineId} was not deleted: ${ROUTINE_DELETE_REFUSAL_REASONS[result.refusal]}`);
+    return 1;
+  }
+  ctx.out(`${cmd.routineId} deleted, with its runs and its webhook secret`);
   return 0;
 }
