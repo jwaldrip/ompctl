@@ -283,7 +283,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             onPress={props.onOpenConfig}
             style={({ pressed }) => [styles.headAction, pressed && { backgroundColor: ground.active }]}
           >
-            <Glyph name="commands" size={14} color={ink.muted} />
+            <Glyph name="config" size={14} color={ink.muted} />
             <Label color={ink.muted}>Config</Label>
           </Pressable>
         )}
