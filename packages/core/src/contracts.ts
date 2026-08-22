@@ -621,10 +621,93 @@ export interface SyncSettings {
   keepAwake: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Prompt attachments
+//
+// A prompt can carry images alongside its text, on both delivery paths: the
+// agent prompt and the terminal steer. The bytes ride the same sealed socket
+// as every other frame -- the hub relays one websocket and proxies no HTTP,
+// so there is no upload endpoint a phone could reach even if we wanted one.
+//
+// That relay hop is what sizes the ceiling, not the agent: the hub caps one
+// frame at 1,000,000 bytes (`MAX_FRAME_BYTES` in `packages/hub/src/hub.ts`),
+// and a frame the hub refuses to carry is a disconnect the phone cannot tell
+// apart from a dead daemon. The budgets below keep the worst case -- four
+// images plus a normal prompt's text and JSON envelope -- under that cap with
+// headroom. The ACP client's own 32 MiB line limit is never the binding
+// constraint.
+//
+// A phone is not a trusted client, so the daemon enforces the same budgets at
+// its socket boundary rather than trusting the app's picker: exceeding them
+// is a named refusal, never a crash, a truncation, or a silent drop.
+// ---------------------------------------------------------------------------
+
+/** One image riding a prompt. `data` is base64-encoded bytes, no data: URL wrapper. */
+export interface PromptImage {
+  data: string;
+  mimeType: string;
+}
+
+/** At most this many images per prompt. */
+export const MAX_PROMPT_IMAGES = 4;
+
+/** One image's base64 may be at most this many characters (about 256 KiB decoded). */
+export const MAX_PROMPT_IMAGE_BASE64_CHARS = 350_000;
+
+/** Every image on one prompt together may be at most this many base64 characters. */
+export const MAX_PROMPT_IMAGES_BASE64_CHARS = 700_000;
+
+/** The image types an agent's `image` prompt capability covers, and nothing else. */
+export const PROMPT_IMAGE_MIME_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/** Why a prompt's images were refused. Named so the app and the daemon say the same words. */
+export type PromptImageRefusal = "too_many" | "too_large" | "bad_mime" | "bad_data";
+
+/** The wording for each refusal, shared by every surface that has to say why. */
+export const PROMPT_IMAGE_REFUSAL_REASONS: Readonly<Record<PromptImageRefusal, string>> = {
+  too_many: `A prompt can carry at most ${MAX_PROMPT_IMAGES} images.`,
+  too_large: `Images must stay small enough for one relayed prompt frame: at most ${MAX_PROMPT_IMAGE_BASE64_CHARS.toLocaleString("en-US")} base64 characters each and ${MAX_PROMPT_IMAGES_BASE64_CHARS.toLocaleString("en-US")} together. Resize before attaching.`,
+  bad_mime: `Only ${PROMPT_IMAGE_MIME_TYPES.join(", ")} can ride a prompt.`,
+  bad_data: "An attachment was not readable base64 image data.",
+};
+
+/**
+ * Validate untrusted prompt images against the wire budgets. Returns the
+ * parsed images, or the first named refusal. Both ends of the wire call this:
+ * the app before it sends, the daemon before it accepts, so a client cannot
+ * smuggle an unbounded base64 blob past a boundary that only one of them
+ * checks.
+ */
+export function parsePromptImages(
+  value: unknown,
+): { ok: true; images: PromptImage[] } | { ok: false; refusal: PromptImageRefusal } {
+  if (value === undefined) return { ok: true, images: [] };
+  if (!Array.isArray(value) || value.length === 0) return { ok: false, refusal: "bad_data" };
+  if (value.length > MAX_PROMPT_IMAGES) return { ok: false, refusal: "too_many" };
+
+  const images: PromptImage[] = [];
+  let total = 0;
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) return { ok: false, refusal: "bad_data" };
+    const { data, mimeType } = raw as Record<string, unknown>;
+    if (typeof data !== "string" || typeof mimeType !== "string") return { ok: false, refusal: "bad_data" };
+    // Padding at the end, base64 alphabet everywhere else, and at least one
+    // character of payload: this is what keeps "base64" from being a label on
+    // an arbitrary string the daemon would then relay verbatim.
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return { ok: false, refusal: "bad_data" };
+    if (data.length > MAX_PROMPT_IMAGE_BASE64_CHARS) return { ok: false, refusal: "too_large" };
+    if (!PROMPT_IMAGE_MIME_TYPES.includes(mimeType.toLowerCase())) return { ok: false, refusal: "bad_mime" };
+    total += data.length;
+    images.push({ data, mimeType: mimeType.toLowerCase() });
+  }
+  if (total > MAX_PROMPT_IMAGES_BASE64_CHARS) return { ok: false, refusal: "too_large" };
+  return { ok: true, images };
+}
+
 export type ClientFrame =
   | { t: "attach"; agentId: AgentId; sinceSeq?: number }
   | { t: "detach"; agentId: AgentId }
-  | { t: "prompt"; agentId: AgentId; text: string; images?: string[] }
+  | { t: "prompt"; agentId: AgentId; text: string; images?: PromptImage[] }
   | { t: "cancel"; agentId: AgentId }
   | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice; scope?: ApprovalScope }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
@@ -648,7 +731,7 @@ export type ClientFrame =
    * the daemon routes the text to that TUI as a `tui_steer`. `deliverAs`
    * defaults to `steer` server-side, matching omp's own `sendMessage` default.
    */
-  | { t: "session_prompt"; sessionId: string; text: string; deliverAs?: TuiSteerDelivery }
+  | { t: "session_prompt"; sessionId: string; text: string; deliverAs?: TuiSteerDelivery; images?: PromptImage[] }
   /** A registered live TUI reporting turn progress back to the daemon. */
   | { t: "tui_activity"; sessionId: string; kind: TuiActivityKind; text?: string }
   /**
@@ -826,9 +909,11 @@ export type ServerFrame =
   /**
    * Deliver a message into a session a registered live TUI owns. The daemon
    * sends this only in answer to a prompt-scoped `session_prompt`, and only to
-   * the socket that registered the session.
+   * the socket that registered the session. Images ride the steer as omp's own
+   * `sendUserMessage` content blocks, the same vocabulary the agent prompt
+   * uses, so a terminal turn and an agent turn can carry the same attachment.
    */
-  | { t: "tui_steer"; sessionId: string; text: string; deliverAs: TuiSteerDelivery }
+  | { t: "tui_steer"; sessionId: string; text: string; deliverAs: TuiSteerDelivery; images?: PromptImage[] }
   /**
    * Turn progress from a registered live TUI, forwarded by the daemon to
    * clients that asked for the session index. Keyed by session id, not agent
