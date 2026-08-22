@@ -241,3 +241,46 @@ describe("the transcript seam", () => {
     dispose();
   });
 });
+
+describe("repeated blocks keep distinct keys", () => {
+  /**
+   * A real reply contained two single-item numbered lists and two rules, and
+   * React reported `Encountered two children with the same key, list:1:true`
+   * on the device. Content is not an identity here: two rules both key to
+   * "rule", and two identical paragraphs or lists collide the same way, which
+   * React resolves by remounting rows rather than updating them.
+   *
+   * The renderer's own complaint is the assertion, because that is exactly
+   * what a person saw: React writes duplicate keys to `console.error`.
+   */
+  test("a reply with repeated rules and identical lists draws no duplicate-key complaint", () => {
+    const repeated = ["1. only", "", "---", "", "1. only", "", "---", "", "same line", "", "same line"].join("\n");
+    const entries: readonly Entry[] = [
+      { kind: "assistant", id: "r1", text: repeated, streaming: false, thought: false },
+    ];
+
+    const complaints: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      complaints.push(args.map(String).join(" "));
+    };
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      act(() => {
+        root.render(<Transcript entries={entries} canApprove onDecide={() => {}} spoken={null} />);
+      });
+    } finally {
+      console.error = original;
+    }
+
+    expect(complaints.filter(line => line.includes("same key"))).toEqual([]);
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+});

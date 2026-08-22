@@ -163,14 +163,22 @@ function RichTextBase({ text, muted = false }: { text: string; muted?: boolean }
   const blocks = parseRich(text);
   return (
     <View style={styles.stack}>
-      {blocks.map(block => (
-        <BlockView key={blockKeyOf(block)} block={block} muted={muted} />
+      {blocks.map((block, index) => (
+        // Position, then content. Content alone is not an identity: two rules
+        // in one message both key to "rule", and two identical lists or
+        // paragraphs collide the same way, which React reports as duplicate
+        // keys and then renders by remounting rows. Blocks are re-derived
+        // from one string that is replaced wholesale and never reordered, so
+        // the index is stable for stable input, and the content suffix keeps
+        // the key readable when debugging a stream.
+        // biome-ignore lint/suspicious/noArrayIndexKey: see above, position is the identity here.
+        <BlockView key={`${index}:${blockKeyOf(block)}`} block={block} muted={muted} />
       ))}
     </View>
   );
 }
 
-/** A block's identity is its rendered text, which is stable for stable input. */
+/** A block's readable suffix. Not unique on its own: see the call site. */
 function blockKeyOf(block: RichBlock): string {
   if (block.kind === "rule") return "rule";
   if (block.kind === "attachment") return `att:${block.ref.uri}`;
