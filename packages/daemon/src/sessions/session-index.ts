@@ -52,6 +52,9 @@ import {
   type RawSessionFile,
   scanSessionFilesIter,
 } from "./scanner.ts";
+import type { SessionWatch, SessionWatchOptions } from "./watcher.ts";
+import { watchSessionFiles } from "./watcher.ts";
+import { getSessionsDir } from "@oh-my-pi/pi-utils";
 
 export interface SessionIndexOptions {
   store: Store;
@@ -466,6 +469,23 @@ export class SessionIndex {
 
   unarchive(sessionId: string): void {
     this.#store.unarchiveSession(sessionId);
+  }
+
+  /**
+   * Watch the sessions root for the filesystem events that change this
+   * catalog: a session file appearing, changing, or going away, folded into
+   * debounced single notifications. The gateway uses this to push refreshed
+   * `sessions` frames at sockets that already asked for the index, so a
+   * session created by any local `omp` run reaches the phone without a
+   * manual refresh.
+   *
+   * Returns null when the root does not exist yet; see `watchSessionFiles`
+   * for why that is a retry rather than a standing error. The root resolved
+   * here is the same one the scan walks, so a watcher can never report on a
+   * tree the catalog does not read.
+   */
+  watch(onChange: () => void, opts?: SessionWatchOptions): SessionWatch | null {
+    return watchSessionFiles(this.#sessionsRoot ?? getSessionsDir(), onChange, opts);
   }
 }
 

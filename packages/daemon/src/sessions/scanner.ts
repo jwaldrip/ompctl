@@ -21,8 +21,8 @@ import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 
-/** `<ISO-with-dashes-for-colons>_<uuid>.jsonl`, e.g. `2026-08-11T01-11-48-090Z_019fee60-2c7a-7000-9fd5-7439c7bf3dd2.jsonl`. */
-const SESSION_FILE_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)_([0-9a-f-]{36})\.jsonl$/;
+/** `<ISO-with-dashes-for-colons>_<uuid>.jsonl`, e.g. `2026-08-11T01-11-48-090Z_019fee60-2c7a-7000-9fd5-7439c7bf3dd2.jsonl`. Exported because the sessions-root watcher filters raw filesystem event names with the same scheme the scan trusts, and a second copy of the pattern is how the two would drift into disagreeing about what a session file is. */
+export const SESSION_FILE_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)_([0-9a-f-]{36})\.jsonl$/;
 
 export interface RawSessionFile {
   id: string;

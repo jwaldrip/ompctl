@@ -59,6 +59,7 @@ import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
 import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
+import type { SessionWatch } from "../sessions/watcher.ts";
 import {
   createAgentId,
   type PendingApproval,
@@ -840,6 +841,14 @@ interface SocketState {
    * `#sockets`.
    */
   watchingSessions: boolean;
+  /**
+   * The session query this socket last asked with, so a watcher-driven push
+   * re-serves the view it asked for instead of the unfiltered catalog.
+   * Paired with `watchingSessions`: `{}` means asked-with-no-query, which is
+   * a real ask and must still be pushed to, exactly as the client's replay
+   * contract distinguishes it from never-asked.
+   */
+  sessionQuery: SessionQuery;
 }
 
 /**
@@ -897,6 +906,14 @@ export class Gateway {
   #syncConfig: SyncConfig | undefined;
   #tasks: TaskCatalog | undefined;
   #sessionIndex: SessionIndex | undefined;
+  /**
+   * The sessions-root watcher, running only while at least one socket has
+   * asked for the index. Started lazily by the first `sessions` ask and
+   * stopped when the last watcher disconnects or the gateway closes, so a
+   * daemon nobody is listing sessions on holds no filesystem watch handle
+   * at all.
+   */
+  #sessionWatch: SessionWatch | undefined;
   #endpoints: (() => EndpointOffer[]) | undefined;
   #filesystem: FilesystemSurface | undefined;
   /**
@@ -1056,6 +1073,7 @@ export class Gateway {
     this.#unsubscribeSay = undefined;
     this.#unsubscribeRevoked?.();
     this.#unsubscribeRevoked = undefined;
+    this.#disarmSessionWatcher();
     for (const ws of [...this.#sockets]) this.#close(ws);
     // `stop(true)` closes live connections itself. Closing each socket here
     // first and then awaiting it deadlocks on Bun 1.3.4: the promise never
@@ -1143,6 +1161,7 @@ export class Gateway {
       scopes: new Set(actor.scopes),
       attached: new Set(),
       watchingSessions: false,
+      sessionQuery: {},
       delivered: new Map(),
       approvals: new Map(),
       planReviews: new Map(),
@@ -2518,6 +2537,10 @@ export class Gateway {
     closeAcp?.();
     void ws.data.voice?.close();
     ws.data.voice = null;
+    // The sessions watcher exists for sockets still watching the index; the
+    // last one out releases the filesystem handle (the next `sessions` ask
+    // restarts it), so an idle daemon watches nothing.
+    if (ws.data.watchingSessions && !this.#hasSessionWatchers()) this.#disarmSessionWatcher();
   }
 
   #unregisterWebView(agentId: AgentId, ws: GatewaySocket): void {
@@ -2892,6 +2915,17 @@ export class Gateway {
         // Armed after validation, not before: a query the daemon refused must
         // not buy a subscription.
         ws.data.watchingSessions = true;
+        // The last query this socket asked with, re-served on every
+        // watcher-driven push below: a socket filtering to one project keeps
+        // seeing that project's rows, and a query-less ask (a real ask, per
+        // the client's replay contract) keeps seeing the whole catalog.
+        ws.data.sessionQuery = parsed.query;
+        // Armed before the reply is served, for the same reason `attach`
+        // registers before its replay: once this socket is counted as a
+        // watcher, a filesystem event racing the reply joins the same
+        // in-flight index build instead of slipping between the ask and the
+        // subscription that lets disk changes reach this socket.
+        this.#armSessionWatcher();
         // Deliberately detached, following the prompt case: the index build
         // is cooperative but its reply is still an async answer, and this
         // socket (and every other) must keep being served while it is
@@ -3654,6 +3688,70 @@ export class Gateway {
       message: review.message,
       choices: review.choices,
     });
+  }
+
+  #hasSessionWatchers(): boolean {
+    for (const other of this.#sockets) {
+      if (other.data.watchingSessions && !other.data.revoked) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Start the sessions-root watcher unless one is already running. Called
+   * from the `sessions` frame because the ask is the opt-in: watching the
+   * filesystem is something a listing socket buys, not a daemon-wide
+   * default. A null start (no sessions root on this machine yet) is not
+   * memoized, so the next ask retries and picks the root up once the first
+   * local session creates it.
+   */
+  #armSessionWatcher(): void {
+    if (this.#sessionWatch !== undefined) return;
+    const index = this.#sessionIndex;
+    if (!index) return;
+    const handle = index.watch(() => this.#pushSessionsToWatchers(), {
+      onError: err => {
+        this.#onError?.(err instanceof Error ? err : new Error(String(err)));
+        // A failed watch degrades this daemon to pull-only: every `sessions`
+        // ask still rebuilds from disk, so the failure is reported and the
+        // handle forgotten rather than retried in a loop.
+        if (this.#sessionWatch === handle) this.#sessionWatch = undefined;
+      },
+    });
+    if (handle === null) return;
+    this.#sessionWatch = handle;
+  }
+
+  #disarmSessionWatcher(): void {
+    this.#sessionWatch?.stop();
+    this.#sessionWatch = undefined;
+  }
+
+  /**
+   * One debounced filesystem change, fanned out to the sockets that asked
+   * for the index and may still read it: the same gate per socket as
+   * `tui_activity` (asked, read scope, not revoked), because iterating
+   * `#sockets` is half the guarantee and the per-socket checks are the
+   * other half. Never a broadcast: a socket that never asked is pushed
+   * nothing, the same line the asking reply already draws.
+   *
+   * Every push runs through `#serveSessionsFrame`, whose `queryWithWarm`
+   * joins any in-flight build rather than queueing a second scan behind it,
+   * so a filesystem change landing mid-build costs one shared build, not
+   * two.
+   */
+  #pushSessionsToWatchers(): void {
+    const index = this.#sessionIndex;
+    if (!index) return;
+    let watchers = 0;
+    for (const ws of this.#sockets) {
+      if (!ws.data.watchingSessions) continue;
+      if (!ws.data.scopes.has(SCOPE_READ)) continue;
+      if (ws.data.revoked) continue;
+      watchers += 1;
+      void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery);
+    }
+    if (watchers === 0) this.#disarmSessionWatcher();
   }
 
   /**
