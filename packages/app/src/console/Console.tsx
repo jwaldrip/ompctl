@@ -32,7 +32,7 @@ import { skillInvocation } from "../cowork/catalog.ts";
 import type { NewTaskInput } from "../cowork/tasks.ts";
 import { useCowork } from "../cowork/useCowork.ts";
 import { useSplitBayWidth, useSplitLayout } from "../design/layout.ts";
-import { SafeScreen } from "../design/SafeScreen.tsx";
+import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
@@ -100,6 +100,12 @@ export function Console({
   // tablet whatever the screen is the defect this replaces; the numbers and
   // their reasons live with the other layout rules in design/layout.ts.
   const bayWidth = useSplitBayWidth();
+  // The bay's own bottom edge, paid only in the split: the shell declines
+  // the bottom edge there so the detail pane's composer can run its surface
+  // colour to the screen edge, and the list pads itself instead. Read here
+  // rather than in the fleet closure because the console is the outermost
+  // shell; nothing above it pays an inset this could double count.
+  const bayBottom = useOwnedBottomInset();
   const [browser, dispatchBrowser] = useReducer(browserReduce, EMPTY_BROWSER);
 
   useEffect(() => {
@@ -338,12 +344,17 @@ export function Console({
     daemonLabel,
     canInvite: canInvite(state, connection.scopes),
     fleet: () => (
-      // One inset owner per route: the shell pads the screen's edges, so the
-      // agent hub sits inside the safe area with the list rather than under the
-      // status bar while the list pads itself in the middle of the screen.
-      <SafeScreen testID="fleet-surface">
+      // One inset owner per column, not one per screen. The shell always
+      // owns the top edge, so the agent hub and the list sit inside the safe
+      // area rather than under the status bar. In the split the detail pane
+      // holds screens whose composers own the bottom edge, and a child
+      // cannot paint a parent's padding, so the shell declines the bottom
+      // edge there and each pane pays for itself: the bay below, the
+      // composer in the pane beside it. On a phone the surface is one column
+      // with no composer under it, so the shell pays as usual.
+      <SafeScreen testID="fleet-surface" edges={{ bottom: !split }}>
         <View style={split ? styles.splitLayout : styles.singleLayout}>
-          <View style={split ? [styles.splitBay, { width: bayWidth }] : styles.bay}>
+          <View style={split ? [styles.splitBay, { width: bayWidth, paddingBottom: bayBottom }] : styles.bay}>
             <AgentHub
               agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)}
               onOpen={onOpenAgent}
