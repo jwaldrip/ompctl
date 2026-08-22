@@ -101,6 +101,35 @@ Two things this run also settled, and neither is cosmetic:
 - The persistent `websocket error` toast was on screen the entire time, while 546 sessions loaded and a round trip completed. In the final frame it is physically covering the reply it was reporting a failure to receive. That is the notice outliving its condition, exactly as diagnosed, and the fix for it is in this branch.
 - Tapping a row by screen coordinate is unreliable here. The list is live and status-sorted, so it re-sorted between a screenshot and a tap and opened a different project's session. The `session-open-first` marker exists for this reason, and any check that taps by coordinate instead of by testID is measuring luck.
 
+### Proven on 2026-08-21: the sentence again, after the daemon stopped wedging
+
+The session list was not slow, it was wedging the daemon. Three independent causes, each measured rather than guessed: synchronous `open`/`readdir`/`stat` on the event-loop thread (a process sample caught the main thread parked in `openat$NOCANCEL` while local `/v1/health` timed out); the cwd decoder walking the real filesystem recursively to reverse a lossy directory name; and SQLite returning `mtime_ms` with sub-microsecond drift, which turned 163 of 611 cache rows into false misses on every request. A fourth was self-inflicted: the streamed counter dropped the in-count yielding, so a 23MB transcript still stalled the loop for about 45ms. The mutation test caught that one, not review.
+
+Live daemon after the fix: 611 sessions returned while 60 concurrent health probes all completed, worst 3.8ms. Before it, the same request hung indefinitely.
+
+On the Pixel with Wi-Fi off, `wifi_on=0`, no `wlan0` address, over 5G:
+
+- `@dormant`, 17 of 17 steps, exit 0, three consecutive runs.
+- `@path`, 20 of 20 steps, exit 0, 611 sessions listed, the agent's reply matching the run's nonce exactly.
+
+### Open defects seen by eye on the iPad, 2026-08-21
+
+Captured frames, not code reading. These are visual truths with no home in a test yet:
+
+- A session with 1,103 messages, 429k context and $264.16 spend rendered an entirely black transcript for a full 90 second wait, then rendered normally about two minutes later. There is no spinner, skeleton, or loading text, so a slow first history page is indistinguishable from a broken screen. This is the same shape as the complaint that started this work.
+- The sessions pane clips its own columns: the `SIZE` header is cut mid-word and every size value is severed (`12.8`, `10.`, `2!`).
+- Text paints underneath the row action buttons; fragments bleed through the play and archive column.
+- Titles truncate near 14 characters on a 1640pt display, and group paths truncate at both ends, losing the org and the repo at once.
+- The transcript's last line is clipped behind the LINKED / context / spend strip, which overlays the scroll content instead of insetting it.
+- Unknown metrics render as a bare `--`, which reads as failure rather than "not known yet".
+- A grey circle overlaps the system status bar in one frame; a light arc is clipped into the bottom-right corner of the pair and connections screens. Both are unexplained chrome.
+- The primary button has two identities: an outlined ghost on the pair screen that looks exactly like the text inputs above it, and a solid green fill on connections.
+- Gutters disagree between screens, about 120px on pair against about 20px edge-to-edge on connections, with `Active` flush to the boundary.
+
+### Blocked on 2026-08-21: subagents never reach the daemon
+
+A real omp host never sends `notifications/agent_registry`. Instrumentation placed above every early return in the handler logged zero calls while a real subagent ran to completion and returned its token in 4.7 seconds, and subagents write no separate session file. The Agent Hub's tree, its tests, and the daemon's handler are correct code fed by a source that never speaks, so "list every dispatched subagent" cannot hold against a real omp host. The daemon's subagent support is only ever exercised against a fake host that does emit the notification.
+
 ## Queue
 
 Everything Jason has asked for, in exactly one state. Parked is not dropped.
@@ -112,6 +141,12 @@ Everything Jason has asked for, in exactly one state. Parked is not dropped.
 - A persistent websocket error sits at the bottom of the screen while messages still arrive
 - No way back to the session list from a session view, which makes the closed screen a dead end
 - Right align the folder and archive controls in the Sessions header to the trailing content edge
+- A large session can show a black transcript with no loading state while its first history page is fetched, for at least 90 seconds. Seen by eye on the iPad, 2026-08-21
+- The sessions pane clips its own `SIZE` column, and row text paints under the action buttons. Seen by eye on the iPad, 2026-08-21
+- Titles truncate near 14 characters and group paths truncate at both ends, on a display with room for both. Seen by eye on the iPad, 2026-08-21
+- The LINKED / context / spend strip overlays the transcript's last line instead of insetting the scroll content. Seen by eye on the iPad, 2026-08-21
+- Two primary-button treatments and two content gutters across pair and connections; unknown metrics render as a bare `--`. Seen by eye on the iPad, 2026-08-21
+- Subagents never reach the daemon, so the Agent Hub cannot list them against a real omp host. Diagnosed 2026-08-21, see above
 
 **parked** (starts only after `PATH GREEN`)
 - BushidoPhone, Jason's iPad, Test iPhone, Apple Watch

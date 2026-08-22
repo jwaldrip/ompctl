@@ -49,22 +49,11 @@ export function Transcript({
   loadingEarlier,
   onLoadEarlier,
 }: TranscriptProps): JSX.Element {
-  const firstUserIndex = entries.findIndex(entry => entry.kind === "user");
-  const firstAssistantIndex = entries.findIndex(entry => entry.kind === "assistant");
   const renderItem = useCallback(
-    ({ item, index }: ListRenderItemInfo<Entry>) => (
-      <EntryRow
-        entry={item}
-        canApprove={canApprove}
-        refusal={refusal}
-        onDecide={onDecide}
-        firstOfKind={
-          (item.kind === "user" && index === firstUserIndex) ||
-          (item.kind === "assistant" && index === firstAssistantIndex)
-        }
-      />
+    ({ item }: ListRenderItemInfo<Entry>) => (
+      <EntryRow entry={item} canApprove={canApprove} refusal={refusal} onDecide={onDecide} />
     ),
-    [canApprove, refusal, onDecide, firstUserIndex, firstAssistantIndex],
+    [canApprove, refusal, onDecide],
   );
 
   return (
@@ -110,23 +99,26 @@ function EntryRow({
   canApprove,
   refusal,
   onDecide,
-  firstOfKind,
 }: {
   entry: Entry;
   canApprove: boolean;
   refusal?: string;
   onDecide: (requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
-  firstOfKind: boolean;
 }): JSX.Element {
   switch (entry.kind) {
     case "user":
       return (
         <View
           style={styles.row}
-          // The first user row keeps the stable e2e id; every later row is
-          // keyed by its durable entry id so native automation never receives
-          // an ambiguous matcher when a resumed transcript contains history.
-          testID={firstOfKind ? "entry-user" : `entry-user-${entry.id}`}
+          // Constant across every row of this kind, and it must stay that
+          // way: the path scenario finds the agent's reply by enumerating
+          // every row carrying this exact id (`labelsOf("entry-assistant")`)
+          // and comparing labels, so keying rows by entry id would hide the
+          // one row the round trip exists to prove. List identity already
+          // comes from keyExtractor. A driver that cannot tolerate several
+          // matches must enumerate or index, never assert single-match
+          // visibility on this id.
+          testID="entry-user"
           accessible
           accessibilityLabel={`you: ${entry.text}`}
         >
@@ -141,10 +133,11 @@ function EntryRow({
       return (
         <View
           style={styles.row}
-          // The first assistant row keeps the stable e2e id; every later row
-          // is keyed by its durable entry id so native automation never
-          // receives an ambiguous matcher for a multi-turn history page.
-          testID={firstOfKind ? "entry-assistant" : `entry-assistant-${entry.id}`}
+          // Constant, for the same reason as the user row above: the path
+          // scenario enumerates every row carrying this id to find the reply
+          // that echoes its nonce. Uniquifying these once broke that step
+          // while the product was demonstrably correct on device.
+          testID="entry-assistant"
           accessible
           accessibilityLabel={`${entry.thought ? "thinking" : "agent"}: ${entry.text}`}
         >
