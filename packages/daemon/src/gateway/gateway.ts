@@ -3298,12 +3298,14 @@ export class Gateway {
         if (
           typeof frame.sessionId !== "string" ||
           frame.sessionId.length === 0 ||
-          (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0))
+          (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0)) ||
+          (frame.cursor !== undefined && (!Number.isSafeInteger(frame.cursor) || frame.cursor < 0))
         ) {
           this.#send(ws, {
             t: "error",
             code: "bad_frame",
-            message: "session tail needs a sessionId and a positive integer limit when given",
+            message:
+              "session tail needs a sessionId, a positive integer limit when given, and a non-negative integer cursor when given",
           });
           return;
         }
@@ -3319,7 +3321,7 @@ export class Gateway {
         // Detached like the index reply, and for the same reason: resolving
         // the file and reading its tail are async, and every socket must keep
         // being served while one client's transcript is read.
-        void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit);
+        void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit, frame.cursor);
         return;
       }
 
@@ -4460,18 +4462,21 @@ export class Gateway {
   /**
    * One socket `session_tail` request: the session's file located through the
    * index (which refuses an id the catalog does not hold, so a client cannot
-   * name an arbitrary path), then its last turns read from the end.
+   * name an arbitrary path), then one page of its turns read from the end,
+   * or from the cursor an earlier page handed the client.
    *
    * The limit is clamped here as well as in the reader, because the gateway
    * is the door: a client asking for a million turns gets the ceiling, not a
    * refusal, since the honest answer to "show me more" is as much as a frame
-   * can carry.
+   * can carry. The cursor is not clamped here: only the reader knows the
+   * file's size, and it answers an offset past the end as exhaustion.
    */
   async #serveSessionTailFrame(
     ws: GatewaySocket,
     index: SessionIndex,
     sessionId: string,
     limit: number | undefined,
+    cursor: number | undefined,
   ): Promise<void> {
     try {
       const path = await index.pathFor(sessionId);
@@ -4485,12 +4490,18 @@ export class Gateway {
       }
       const tail = await readSessionTail(path, {
         ...(limit === undefined ? {} : { limit: Math.min(limit, TAIL_MAX_MESSAGES) }),
+        ...(cursor === undefined ? {} : { cursor }),
       });
       this.#send(ws, {
         t: "session_tail",
         sessionId,
         messages: tail.messages,
         truncated: tail.truncated,
+        nextCursor: tail.nextCursor,
+        // Echoed so the asking client can tell this page's place in the file
+        // without inferring it from the turns, which a first page and an
+        // older page can both leave ambiguous.
+        ...(cursor === undefined ? {} : { cursor }),
       });
     } catch (err) {
       // Detached from `#handle`, so its last-line-of-defence try/catch no

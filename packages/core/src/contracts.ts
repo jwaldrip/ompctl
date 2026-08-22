@@ -726,7 +726,8 @@ export type ClientFrame =
    */
   | { t: "routine_delete"; routineIds: string[] }
   /**
-   * The tail of a session's transcript, read straight from its file.
+   * The tail of a session's transcript, read straight from its file, and the
+   * pages of it older than that.
    *
    * Read scope, not manage: this is reading a transcript, which a read-only
    * device is already entitled to for its own agents, and it changes nothing
@@ -734,11 +735,18 @@ export type ClientFrame =
    * turns; the daemon defaults it and caps it, so a client cannot ask for a
    * whole 10MB transcript in one frame.
    *
+   * `cursor` is how the rest of the conversation is reached: every answer
+   * carries the byte offset the next older page starts from, and sending it
+   * back asks for that page. Absent means the newest turns. Paging rides
+   * this frame rather than `session_history` because that one is keyed by
+   * agent id, and a live terminal session has no agent row to key on, which
+   * is the whole reason this frame exists.
+   *
    * A live terminal session has no agent row, so `attach` and its `update`
    * stream cannot reach it. Without this frame, tapping a session with a
    * thousand messages in it shows a composer and nothing else.
    */
-  | { t: "session_tail"; sessionId: string; limit?: number }
+  | { t: "session_tail"; sessionId: string; limit?: number; cursor?: number }
   | { t: "session_history"; agentId: AgentId; sessionId: string; before?: number; limit?: number }
   /**
    * Ask what the daemon's two persisted settings hold right now. The hub
@@ -936,13 +944,32 @@ export type ServerFrame =
   | { t: "device_invited"; token: string; name: string; scopes: string[] }
   | RemoteStartServerFrame
   /**
-   * The transcript tail answering a `session_tail` frame, sent only to the
-   * socket that asked. Oldest first, so a client appends live activity below
-   * it without reordering. `truncated` says the tail is not the whole
+   * One page of a transcript answering a `session_tail` frame, sent only to
+   * the socket that asked. Oldest first, so a client appends live activity
+   * below it without reordering. `truncated` says this page is not the whole
    * transcript: either an older turn exists past the ones returned, or the
    * reader stopped at its byte budget with unread bytes behind it.
+   *
+   * `nextCursor` is the byte offset the next older page starts from, or null
+   * when this page reached the start of the file. It is a cursor, not a
+   * promise of words: a page can arrive empty with a non-null cursor,
+   * because a long run of tool traffic says nothing and the reader stopped
+   * at its budget inside one. A client keeps asking from the cursor rather
+   * than treating an empty page as the end.
+   *
+   * `cursor` echoes the offset this page was read from, and is absent on the
+   * answer to a cursorless ask. A client needs it to tell a first page from
+   * an older one without guessing from timestamps, and to drop a page that
+   * answers an ask its surface has already replaced.
    */
-  | { t: "session_tail"; sessionId: string; messages: TranscriptTailMessage[]; truncated: boolean }
+  | {
+      t: "session_tail";
+      sessionId: string;
+      messages: TranscriptTailMessage[];
+      truncated: boolean;
+      nextCursor: number | null;
+      cursor?: number;
+    }
   | {
       t: "session_history";
       agentId: AgentId;
