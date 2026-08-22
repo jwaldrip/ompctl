@@ -8,12 +8,11 @@
  * it did not create.
  */
 
-import { rmSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ClientFrame, ServerFrame } from "@ompd/core/contracts";
 import { DefaultPolicy, Store } from "@ompd/core";
+import type { ClientFrame, ServerFrame } from "@ompd/core/contracts";
 import { Gateway, GatewayEvents } from "../packages/daemon/src/gateway/index.ts";
 import { HostRegistry } from "../packages/daemon/src/hosts.ts";
 import { Supervisor } from "../packages/daemon/src/supervisor.ts";
@@ -24,7 +23,12 @@ const dbPath = join(home, "ompd.db");
 const store = new Store(dbPath);
 const events = new GatewayEvents();
 const hosts = new HostRegistry({});
-const supervisor = new Supervisor({ store, policy: new DefaultPolicy({ mode: "standard" }), spawnHost: hosts.spawn, events });
+const supervisor = new Supervisor({
+  store,
+  policy: new DefaultPolicy({ mode: "standard" }),
+  spawnHost: hosts.spawn,
+  events,
+});
 const gateway = new Gateway({
   store,
   supervisor,
