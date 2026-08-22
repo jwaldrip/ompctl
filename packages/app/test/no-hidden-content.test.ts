@@ -26,6 +26,14 @@
  * - a row of column labels is never wider than its container lets it be
  *   seen: the container either fits it, scrolls it, or the bay is wide
  *   enough at its floor that neither is needed.
+ *
+ * A fourth, the same day, on the tablet: the composer's surface colour
+ * stopped one inset short of the screen edge, because the view paying the
+ * bottom inset was transparent and the shell's base colour showed through
+ * the gap below the message box. So the class gains its fourth rule:
+ *
+ * - the view that pays a composer's bottom inset paints the composer's
+ *   surface, because no child can paint a parent's padding.
  */
 
 import "./rnw.ts";
@@ -113,5 +121,19 @@ describe("a column label cannot be cut at its container's edge", () => {
     // would fail it.
     expect(styleBlock(text, "splitBay")).not.toMatch(/(?<![A-Za-z])width\s*:/);
     expect(text).toContain("useSplitBayWidth()");
+  });
+});
+
+describe("a composer's surface reaches the edge it pads to", () => {
+  test("the view paying the inset below a composer paints the composer's surface", async () => {
+    for (const file of ["src/screens/SessionScreen.tsx", "src/screens/TerminalSessionScreen.tsx"]) {
+      const text = await source(file);
+      expect(styleBlock(text, "composerSafe")).toContain("backgroundColor: ground.surface");
+      // The colour and the pad must be one view: a parent's padding is
+      // outside every child, so a pad sitting on a transparent wrapper is
+      // exactly the strip of base colour below the message box the operator
+      // reported on the tablet.
+      expect(text).toMatch(/styles\.composerSafe,\s*\{\s*paddingBottom: bottomInsetFor\(/);
+    }
   });
 });

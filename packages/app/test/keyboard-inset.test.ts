@@ -54,3 +54,22 @@ describe("the construct that does not work is gone", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe("the inset below a composer is owned, not borrowed from the screen", () => {
+  test("every payer of a bottom inset asks the shell mechanism, not the raw screen insets", async () => {
+    // A screen nested in a shell that already paid reads the same raw
+    // insets as the shell did, so paying them again is the double count
+    // that floated the tablet's composer an inset above the list beside
+    // it. `useOwnedBottomInset` is the one read that knows what an
+    // ancestor already paid, so it is the only value a payer may pass.
+    const offenders: string[] = [];
+    for await (const file of new Glob("src/**/*.{ts,tsx}").scan({ cwd: `${import.meta.dir}/..` })) {
+      // The definition file names the function, it does not call it.
+      if (file === "src/design/useKeyboardInset.ts") continue;
+      const source = await Bun.file(`${import.meta.dir}/../${file}`).text();
+      if (!source.includes("bottomInsetFor(")) continue;
+      if (source.includes("useSafeAreaInsets") || !source.includes("useOwnedBottomInset")) offenders.push(file);
+    }
+    expect(offenders).toEqual([]);
+  });
+});
