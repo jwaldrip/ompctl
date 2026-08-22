@@ -13,11 +13,10 @@
  *
  * The build never blocks the event loop for long and never blocks first
  * paint on a count:
- * - `build()` is async and cooperative: it yields while scanning (every
- *   `SCAN_YIELD_EVERY_FILES` files) and the background warm pass yields
- *   inside long counts (every `COUNT_YIELD_INTERVAL_BYTES` bytes) and
- *   between files, so HTTP routes, websocket pings, and relay acks keep
- *   being served mid-build. A hub client's reconnect replay used to restart
+ * - `build()` is async and cooperative: it yields while scanning, and the
+ *   background warm pass streams transcript bytes off the event-loop thread
+ *   and yields between files, so HTTP routes, websocket pings, and relay acks
+ *   keep being served mid-build. A hub client's reconnect replay used to restart
  *   a multi-minute synchronous scan and starve even `/v1/health`; that
  *   failure mode is the reason this file is async at all.
  * - First paint serves every row immediately, with counts from the durable
@@ -31,7 +30,8 @@
  *   multiply the work it is reconnecting because of.
  */
 
-import { closeSync, openSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { SessionScanCacheEntry, Store } from "@ompd/core";
 import type {
   AgentId,
@@ -44,11 +44,9 @@ import type {
   SessionSummary,
 } from "@ompd/core/contracts";
 import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
-import { type DecodedCwd, decodeSessionDirName } from "./cwd-codec.ts";
 import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
 import {
-  COUNT_CHUNK_BYTES,
-  countMessagesChunks,
+  countMessagesAsync,
   findSessionFileIter,
   MESSAGE_COUNT_SIZE_CEILING_BYTES,
   type RawSessionFile,
@@ -103,15 +101,6 @@ interface BuildOutcome {
 const SCAN_YIELD_EVERY_FILES = 8;
 
 /**
- * Yield cadence inside one file's count, in bytes. Measured here: streamed
- * counting runs 0.746MB/ms, so 2MiB of work is a ~2.8ms slice between
- * yields. Long enough that yielding costs nothing measurable against the
- * count itself, short enough that a ping or relay ack waits at most a few
- * milliseconds even inside a 50MB transcript.
- */
-const COUNT_YIELD_INTERVAL_BYTES = 2 * 1024 * 1024;
-
-/**
  * Cache-write batch size, in files. One transaction per batch instead of
  * one per row: an unbatched row was its own implicit transaction -- one WAL
  * commit and one fsync at SQLite's default synchronous=FULL -- and a cold
@@ -135,6 +124,21 @@ const STATUS_RANK: Record<SessionLiveStatus, number> = {
   archived: 3,
 };
 
+function cwdScopeFor(cwd: string, homeDir: string, tempDir: string): SessionCwdScope {
+  const resolved = resolve(cwd);
+  const within = (root: string): boolean => {
+    const rel = relative(resolve(root), resolved);
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  if (within(homeDir)) return "home";
+  if (within(tempDir)) return "tmp";
+  return "abs";
+}
+
+function cacheMatches(cached: SessionScanCacheEntry | null, file: RawSessionFile): cached is SessionScanCacheEntry {
+  return cached !== null && Math.abs(cached.mtimeMs - file.mtimeMs) < 0.001 && cached.sizeBytes === file.sizeBytes;
+}
+
 export class SessionIndex {
   #store: Store;
   #sessionsRoot: string | undefined;
@@ -142,8 +146,6 @@ export class SessionIndex {
   #homeDir: string | undefined;
   #tmpDir: string | undefined;
   #scan: NonNullable<SessionIndexOptions["scan"]>;
-  /** Decoded cwd, keyed by flattened dir name: many sessions share one directory, so this decodes each name once per build instead of once per session. */
-  #cwdCache = new Map<string, DecodedCwd>();
   /**
    * The in-flight build. Concurrent requests share it rather than each
    * paying their own scan -- one phone's refresh racing another's reconnect
@@ -166,14 +168,6 @@ export class SessionIndex {
     this.#scan = opts.scan ?? scanSessionFilesIter;
   }
 
-  #decodeCwd(flattenedDir: string): DecodedCwd {
-    const cached = this.#cwdCache.get(flattenedDir);
-    if (cached) return cached;
-    const decoded = decodeSessionDirName(flattenedDir, this.#homeDir, this.#tmpDir);
-    this.#cwdCache.set(flattenedDir, decoded);
-    return decoded;
-  }
-
   /**
    * First-paint message count for one file: the durable cache's number when
    * mtime+size still match, and null otherwise -- over the size ceiling
@@ -184,7 +178,7 @@ export class SessionIndex {
   #firstPaintCountFor(file: RawSessionFile, misses: RawSessionFile[]): number | null {
     if (file.sizeBytes > MESSAGE_COUNT_SIZE_CEILING_BYTES) return null;
     const cached = this.#store.getSessionScanCache(file.id);
-    if (cached && cached.mtimeMs === file.mtimeMs && cached.sizeBytes === file.sizeBytes) {
+    if (cacheMatches(cached, file)) {
       return cached.messageCount;
     }
     misses.push(file);
@@ -216,7 +210,6 @@ export class SessionIndex {
    * can await it.
    */
   async #buildNow(): Promise<BuildOutcome> {
-    this.#cwdCache.clear();
     const files: RawSessionFile[] = [];
     let sinceYield = 0;
     for await (const file of this.#scan(this.#sessionsRoot)) {
@@ -228,7 +221,7 @@ export class SessionIndex {
     }
     const misses: RawSessionFile[] = [];
     const archived = this.#store.listArchivedSessionIds();
-    const liveClients = listLiveClientPresences(this.#runDaemonsRoot ?? runDaemonsRoot());
+    const liveClients = await listLiveClientPresences(this.#runDaemonsRoot ?? runDaemonsRoot());
     const liveClientBySessionId = new Map<string, (typeof liveClients)[number]>();
     for (const client of liveClients) {
       if (client.sessionId) liveClientBySessionId.set(client.sessionId, client);
@@ -255,8 +248,7 @@ export class SessionIndex {
         const candidates = files.filter(file => {
           if (liveAgentBySessionId.has(file.id)) return false;
           if (liveClientBySessionId.has(file.id)) return false;
-          const decoded = this.#decodeCwd(file.flattenedDir);
-          if (decoded.status !== "ok" || decoded.cwd !== client.projectDir) return false;
+          if (file.cwd === null || resolve(file.cwd) !== resolve(client.projectDir)) return false;
           return file.mtimeMs >= client.registeredAtMs;
         });
         if (candidates.length === 1) {
@@ -268,7 +260,8 @@ export class SessionIndex {
 
     const summaries: SessionSummary[] = [];
     for (const file of files) {
-      const decoded = this.#decodeCwd(file.flattenedDir);
+      const cwdScope: SessionCwdScope =
+        file.cwd === null ? "unknown" : cwdScopeFor(file.cwd, this.#homeDir ?? homedir(), this.#tmpDir ?? tmpdir());
       const isArchived = archived.has(file.id);
       const agentId = liveAgentBySessionId.get(file.id);
       const liveClient = liveClientBySessionId.get(file.id);
@@ -297,12 +290,11 @@ export class SessionIndex {
         status = "dormant";
       }
 
-      const cwdScope: SessionCwdScope = decoded.status === "ok" ? decoded.scope : "unknown";
       summaries.push({
         id: file.id,
-        cwd: decoded.status === "ok" ? decoded.cwd : null,
+        cwd: file.cwd,
         cwdScope,
-        ...(decoded.status === "unknown" ? { cwdDecodeReason: decoded.reason } : {}),
+        ...(file.cwd === null ? { cwdDecodeReason: "no_match" as const } : {}),
         flattenedDir: file.flattenedDir,
         title: file.title,
         createdAt: file.createdAt,
@@ -360,10 +352,10 @@ export class SessionIndex {
       // re-reading it would be the duplicated work the single-flight exists
       // to prevent.
       const cached = this.#store.getSessionScanCache(file.id);
-      if (cached && cached.mtimeMs === file.mtimeMs && cached.sizeBytes === file.sizeBytes) {
+      if (cacheMatches(cached, file)) {
         continue;
       }
-      const count = await this.#countFileCooperatively(file.path);
+      const count = await countMessagesAsync(file.path);
       batch.push({ sessionId: file.id, mtimeMs: file.mtimeMs, sizeBytes: file.sizeBytes, messageCount: count });
       await yieldToEventLoop(); // Between files, so a corpus of tiny files cannot chain into one long sync run either.
       if (batch.length >= WARM_CACHE_BATCH_ROWS) {
@@ -373,32 +365,6 @@ export class SessionIndex {
       }
     }
     if (batch.length > 0) this.#store.setSessionScanCacheBatch(batch);
-  }
-
-  /** The same streamed counting as `countMessages`, driven with periodic event-loop yields. */
-  async #countFileCooperatively(path: string): Promise<number> {
-    let fd: number;
-    try {
-      fd = openSync(path, "r");
-    } catch {
-      return 0;
-    }
-    try {
-      const steps = countMessagesChunks(fd);
-      let sinceYield = 0;
-      let step = steps.next();
-      while (!step.done) {
-        sinceYield += COUNT_CHUNK_BYTES;
-        if (sinceYield >= COUNT_YIELD_INTERVAL_BYTES) {
-          sinceYield = 0;
-          await yieldToEventLoop();
-        }
-        step = steps.next();
-      }
-      return step.value;
-    } finally {
-      closeSync(fd);
-    }
   }
 
   /** The first-paint rows of one shared build, without a query applied. */

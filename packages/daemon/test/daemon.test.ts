@@ -317,6 +317,41 @@ describe("lifecycle", () => {
     await daemon.stop();
     await expect(fetch(`${info.url}/v1/agents`)).rejects.toThrow();
   });
+
+  test("restart demotes persisted agents whose ACP hosts died with the previous daemon", async () => {
+    // The real failure: a two-day-old row stayed `idle` after its host pid was
+    // gone. Mobile rendered LIVE (AGENT), sent a prompt, and got
+    // `agent ... has no live host`. A new daemon owns no hosts from the old
+    // process, so every non-terminal local row is dormant before it advertises
+    // its first roster.
+    const home = tempDir("ompd-daemon-");
+    const first = build(home);
+    const info = await first.start();
+    const created = await fetch(`${info.url}/v1/agents`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${await tokenOf(home)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "stale", cwd: home }),
+    });
+    expect(created.status).toBe(201);
+    const id = first.supervisor.listAgents()[0]?.id;
+    expect(id).toBeDefined();
+    expect(first.store.getAgent(id ?? "")?.state).toBe("idle");
+
+    await first.stop();
+    const afterShutdown = new Store(join(home, "ompd.db"));
+    expect(afterShutdown.getAgent(id ?? "")?.state).toBe("stopped");
+    // Simulate a killed old daemon that never ran shutdown: its last durable
+    // write still says idle. Startup owns this second boundary.
+    afterShutdown.setAgentState(id ?? "", "idle");
+    afterShutdown.close();
+
+    const second = build(home);
+    await second.start();
+    expect(second.store.getAgent(id ?? "")?.state).toBe("stopped");
+  });
 });
 
 describe("local operator bootstrap", () => {

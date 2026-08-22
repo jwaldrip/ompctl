@@ -539,6 +539,39 @@ export interface TranscriptTailMessage {
   at: string;
 }
 
+export type SessionHistoryToolKind =
+  | "think"
+  | "read"
+  | "execute"
+  | "search"
+  | "edit"
+  | "fetch"
+  | "move"
+  | "delete"
+  | "other";
+export type SessionHistoryToolStatus = "pending" | "in_progress" | "completed" | "failed";
+
+/**
+ * One durable transcript block recovered from an OMP session JSONL.
+ *
+ * Unlike TranscriptTailMessage this preserves thinking and tool activity.
+ * Pages are oldest-first and merge with live ACP updates in the app.
+ */
+export type SessionHistoryEntry =
+  | { kind: "user"; id: string; text: string; at: string }
+  | { kind: "assistant"; id: string; text: string; thought: boolean; at: string }
+  | {
+      kind: "tool";
+      id: string;
+      toolKind: SessionHistoryToolKind;
+      title: string;
+      status: SessionHistoryToolStatus;
+      input: unknown;
+      output: string | null;
+      locations: string[];
+      at: string;
+    };
+
 // ---------------------------------------------------------------------------
 // Client wire protocol
 // ---------------------------------------------------------------------------
@@ -681,6 +714,7 @@ export type ClientFrame =
    * thousand messages in it shows a composer and nothing else.
    */
   | { t: "session_tail"; sessionId: string; limit?: number }
+  | { t: "session_history"; agentId: AgentId; sessionId: string; before?: number; limit?: number }
   /**
    * Ask what the daemon's two persisted settings hold right now. The hub
    * relay carries one sealed websocket and proxies no daemon HTTP, so a phone
@@ -806,6 +840,13 @@ export type ServerFrame =
    * reader stopped at its byte budget with unread bytes behind it.
    */
   | { t: "session_tail"; sessionId: string; messages: TranscriptTailMessage[]; truncated: boolean }
+  | {
+      t: "session_history";
+      agentId: AgentId;
+      sessionId: string;
+      entries: SessionHistoryEntry[];
+      nextBefore: number | null;
+    }
   /**
    * The daemon's settings as it holds them now, answering `settings_read` or
    * `settings_write` and sent only to the socket that asked. Read back after

@@ -16,7 +16,8 @@
  * served while both run.
  */
 
-import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 
@@ -30,6 +31,8 @@ export interface RawSessionFile {
   /** ISO timestamp, reconstructed from the filename. */
   createdAt: string;
   title: string;
+  /** Exact cwd from the session header, or null when the bounded header is absent or malformed. */
+  cwd: string | null;
   mtimeMs: number;
   sizeBytes: number;
 }
@@ -58,53 +61,35 @@ function isoFromFilenameTimestamp(raw: string): string {
   return `${date}T${hh}:${mm}:${ss}.${ms}Z`;
 }
 
-/**
- * Read only the first line of a file, bounded to `maxBytes` regardless of the
- * file's total size. A session file can grow past ten megabytes; loading the
- * whole thing to read a title that lives in its first 200 bytes is exactly
- * the I/O this scanner exists to avoid.
- */
-function readFirstLine(path: string, maxBytes = 65_536): string | null {
-  let fd: number;
-  try {
-    fd = openSync(path, "r");
-  } catch {
-    return null;
-  }
-  try {
-    const chunkSize = 4096;
-    const chunk = Buffer.alloc(chunkSize);
-    const collected: Buffer[] = [];
-    let collectedLength = 0;
-    let position = 0;
-    while (collectedLength < maxBytes) {
-      const bytesRead = readSync(fd, chunk, 0, chunkSize, position);
-      if (bytesRead === 0) break;
-      const newlineIdx = chunk.subarray(0, bytesRead).indexOf(0x0a);
-      if (newlineIdx !== -1) {
-        collected.push(chunk.subarray(0, newlineIdx));
-        return Buffer.concat(collected).toString("utf8");
-      }
-      collected.push(Buffer.from(chunk.subarray(0, bytesRead)));
-      collectedLength += bytesRead;
-      position += bytesRead;
-    }
-    return collectedLength > 0 ? Buffer.concat(collected).toString("utf8") : null;
-  } finally {
-    closeSync(fd);
-  }
+interface SessionHeader {
+  title: string;
+  cwd: string | null;
 }
 
-/** The header line's `title`, or "" for a malformed, absent, or genuinely empty header. Never throws: a scan of 305 files cannot fail wholesale because one has a corrupt first line. */
-function extractTitle(firstLine: string | null): string {
-  if (!firstLine) return "";
+/**
+ * Read the bounded JSONL header. OMP records the display title first and the
+ * exact cwd in the following `session` row, so the index never needs to
+ * reverse the intentionally lossy flattened directory name by walking disk.
+ */
+async function readSessionHeader(path: string, maxBytes = 65_536): Promise<SessionHeader> {
+  const header: SessionHeader = { title: "", cwd: null };
   try {
-    const parsed = JSON.parse(firstLine) as { title?: unknown };
-    if (typeof parsed.title === "string") return parsed.title;
+    const text = await Bun.file(path).slice(0, maxBytes).text();
+    for (const line of text.split("\n")) {
+      if (line.length === 0) continue;
+      try {
+        const record = JSON.parse(line) as { type?: unknown; title?: unknown; cwd?: unknown };
+        if (header.title.length === 0 && typeof record.title === "string") header.title = record.title;
+        if (record.type === "session" && typeof record.cwd === "string") header.cwd = record.cwd;
+        if (header.title.length > 0 && header.cwd !== null) break;
+      } catch {
+        // A malformed row proves nothing about the other bounded header rows.
+      }
+    }
   } catch {
-    // Malformed header; an empty title is the honest answer, not a thrown scan.
+    // One unreadable transcript cannot fail the whole catalog.
   }
-  return "";
+  return header;
 }
 
 /**
@@ -116,10 +101,12 @@ function extractTitle(firstLine: string | null): string {
  * that entry to "no sessions" rather than failing the whole scan -- the
  * filesystem can change under a background index build at any time.
  */
-export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSessionsDir()): Generator<RawSessionFile> {
+export async function* scanSessionFilesIter(
+  sessionsRoot: string | undefined = getSessionsDir(),
+): AsyncGenerator<RawSessionFile> {
   let groupDirs: string[];
   try {
-    groupDirs = readdirSync(sessionsRoot, { withFileTypes: true })
+    groupDirs = (await readdir(sessionsRoot, { withFileTypes: true }))
       .filter(entry => entry.isDirectory())
       .map(entry => entry.name);
   } catch {
@@ -130,7 +117,7 @@ export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSess
     const groupPath = join(sessionsRoot, flattenedDir);
     let fileNames: string[];
     try {
-      fileNames = readdirSync(groupPath, { withFileTypes: true })
+      fileNames = (await readdir(groupPath, { withFileTypes: true }))
         .filter(entry => entry.isFile() && entry.name.endsWith(".jsonl"))
         .map(entry => entry.name);
     } catch {
@@ -146,18 +133,20 @@ export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSess
       let mtimeMs: number;
       let sizeBytes: number;
       try {
-        const stat = statSync(filePath);
-        mtimeMs = stat.mtimeMs;
-        sizeBytes = stat.size;
+        const fileStat = await stat(filePath);
+        mtimeMs = fileStat.mtimeMs;
+        sizeBytes = fileStat.size;
       } catch {
         continue; // Vanished between readdir and stat.
       }
+      const header = await readSessionHeader(filePath);
       yield {
         id,
         path: filePath,
         flattenedDir,
         createdAt: isoFromFilenameTimestamp(tsRaw),
-        title: extractTitle(readFirstLine(filePath)),
+        title: header.title,
+        cwd: header.cwd,
         mtimeMs,
         sizeBytes,
       };
@@ -166,8 +155,10 @@ export function* scanSessionFilesIter(sessionsRoot: string | undefined = getSess
 }
 
 /** The whole scan in one array; `SessionIndex` streams the iterator instead so it can yield. */
-export function scanSessionFiles(sessionsRoot?: string): RawSessionFile[] {
-  return [...scanSessionFilesIter(sessionsRoot)];
+export async function scanSessionFiles(sessionsRoot?: string): Promise<RawSessionFile[]> {
+  const files: RawSessionFile[] = [];
+  for await (const file of scanSessionFilesIter(sessionsRoot)) files.push(file);
+  return files;
 }
 
 /**
@@ -310,14 +301,39 @@ export function parseTurnLine(text: string): SessionTurnLine | null {
  * `session_scan_cache` table, which makes every build after the first one a
  * cache hit for message counts instead of a re-read.
  */
+class TurnCounter {
+  #carry: Buffer[] = [];
+  #count = 0;
+
+  push(chunk: Uint8Array): void {
+    const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    let lineStart = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] !== 0x0a) continue;
+      const text =
+        this.#carry.length > 0
+          ? Buffer.concat([...this.#carry, bytes.subarray(lineStart, i)]).toString("utf8")
+          : bytes.toString("utf8", lineStart, i);
+      this.#carry = [];
+      if (parseTurnLine(text) !== null) this.#count++;
+      lineStart = i + 1;
+    }
+    if (lineStart < bytes.length) {
+      this.#carry.push(Buffer.from(bytes.subarray(lineStart)));
+    }
+  }
+
+  finish(): number {
+    if (this.#carry.length > 0 && parseTurnLine(Buffer.concat(this.#carry).toString("utf8")) !== null) {
+      this.#count++;
+    }
+    return this.#count;
+  }
+}
+
 export function* countMessagesChunks(fd: number): Generator<void, number> {
   const chunk = Buffer.allocUnsafe(COUNT_CHUNK_BYTES);
-  // Bytes of the line still unterminated at the end of the last chunk. A
-  // list, not one Buffer: a pathological single line spanning many chunks
-  // must concatenate once at its newline, not copy its whole prefix every
-  // chunk.
-  let carry: Buffer[] = [];
-  let count = 0;
+  const counter = new TurnCounter();
   let position = 0;
   for (;;) {
     let bytesRead: number;
@@ -328,27 +344,44 @@ export function* countMessagesChunks(fd: number): Generator<void, number> {
     }
     if (bytesRead === 0) break;
     position += bytesRead;
-
-    let lineStart = 0;
-    for (let i = 0; i < bytesRead; i++) {
-      if (chunk[i] !== 0x0a) continue;
-      const text =
-        carry.length > 0
-          ? Buffer.concat([...carry, chunk.subarray(lineStart, i)]).toString("utf8")
-          : chunk.toString("utf8", lineStart, i);
-      carry = [];
-      if (parseTurnLine(text) !== null) count++;
-      lineStart = i + 1;
-    }
-    if (lineStart < bytesRead) {
-      carry.push(Buffer.from(chunk.subarray(lineStart, bytesRead)));
-    }
+    counter.push(chunk.subarray(0, bytesRead));
     yield; // One chunk per cooperative step.
   }
-  // The trailing line after the last newline, if any: the old whole-file
-  // split counted it too, so it is counted here as well.
-  if (carry.length > 0 && parseTurnLine(Buffer.concat(carry).toString("utf8")) !== null) count++;
-  return count;
+  return counter.finish();
+}
+
+/**
+ * Yield cadence inside one file's count, in bytes. Reading off the loop is
+ * only half the problem: parsing a chunk is CPU-bound, so a stream that
+ * handed back multi-megabyte chunks would still hold the loop for the whole
+ * burst. Bounded here so a ping, a relay ack, or `/v1/health` waits at most
+ * one slice even inside a transcript of tens of megabytes.
+ */
+const COUNT_YIELD_INTERVAL_BYTES = 256 * 1024;
+
+/** Hand the event loop to whatever else is waiting: I/O callbacks, timers, sockets. Microtasks do not qualify -- they run before the loop moves on. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>(resolve => setImmediate(resolve));
+}
+
+/**
+ * Count turns without opening or reading the transcript on the daemon's
+ * event-loop thread, and without parsing more than one bounded slice of it
+ * between yields.
+ */
+export async function countMessagesAsync(path: string): Promise<number> {
+  try {
+    const counter = new TurnCounter();
+    for await (const chunk of Bun.file(path).stream()) {
+      for (let offset = 0; offset < chunk.byteLength; offset += COUNT_YIELD_INTERVAL_BYTES) {
+        counter.push(chunk.subarray(offset, Math.min(offset + COUNT_YIELD_INTERVAL_BYTES, chunk.byteLength)));
+        await yieldToEventLoop();
+      }
+    }
+    return counter.finish();
+  } catch {
+    return 0;
+  }
 }
 
 /**

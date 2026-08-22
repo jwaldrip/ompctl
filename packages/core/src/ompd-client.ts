@@ -37,6 +37,7 @@ import type {
   RemoteRoutine,
   Run,
   ServerFrame,
+  SessionHistoryEntry,
   SessionQuery,
   SessionSummary,
   SyncSettings,
@@ -172,6 +173,7 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // asks again the next time it opens. Reporting it would put an error in
   // front of an operator whose only remedy is the reconnect already running.
   session_tail: false,
+  session_history: false,
   // A snapshot ask, same class as `session_tail`: nothing on the machine
   // changes, and the surface that asked asks again the next time it opens.
   settings_read: false,
@@ -447,6 +449,14 @@ export interface SessionTailEvent {
   truncated: boolean;
 }
 
+/** One structured page of durable session history. */
+export interface SessionHistoryEvent {
+  agentId: AgentId;
+  sessionId: string;
+  entries: SessionHistoryEntry[];
+  nextBefore: number | null;
+}
+
 /**
  * The daemon's settings as it holds them now, answering `readSettings` or
  * `writeSettings`. Confirmation rather than echo: after a write it carries
@@ -519,6 +529,7 @@ export interface ClientEventMap {
   routine_ran: RoutineRanEvent;
   routine_secret: RoutineSecretEvent;
   session_tail: SessionTailEvent;
+  session_history: SessionHistoryEvent;
   agent_config: AgentConfigEvent;
 }
 
@@ -847,6 +858,17 @@ export class OmpdClient {
     const frame: ClientFrame =
       limit === undefined ? { t: "session_tail", sessionId } : { t: "session_tail", sessionId, limit };
     this.send(frame);
+  }
+
+  /** Read one structured page of a root or subagent's durable transcript. */
+  sessionHistory(agentId: AgentId, sessionId: string, before?: number, limit?: number): void {
+    this.send({
+      t: "session_history",
+      agentId,
+      sessionId,
+      ...(before === undefined ? {} : { before }),
+      ...(limit === undefined ? {} : { limit }),
+    });
   }
 
   /**
@@ -1274,6 +1296,14 @@ export class OmpdClient {
           sessionId: frame.sessionId,
           messages: frame.messages,
           truncated: frame.truncated,
+        });
+        return;
+      case "session_history":
+        this.emit("session_history", {
+          agentId: frame.agentId,
+          sessionId: frame.sessionId,
+          entries: frame.entries,
+          nextBefore: frame.nextBefore,
         });
         return;
       case "settings":

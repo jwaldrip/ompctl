@@ -179,6 +179,73 @@ describe("browser actions", () => {
   });
 });
 
+describe("durable session history", () => {
+  test("older structured blocks prepend once and live updates stay last", () => {
+    const live = drive([
+      {
+        t: "update",
+        event: {
+          agentId: "a1",
+          seq: 9,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "m-live",
+            content: { type: "text", text: "Live tail." },
+          },
+        },
+      },
+    ]);
+    const withHistory = apply(live, {
+      t: "session_history",
+      event: {
+        agentId: "a1",
+        sessionId: "s1",
+        nextBefore: 123,
+        entries: [
+          { kind: "user", id: "u1", text: "Earlier ask.", at: "" },
+          { kind: "assistant", id: "m1", text: "Earlier thought.", thought: true, at: "" },
+          {
+            kind: "tool",
+            id: "tc1",
+            toolKind: "read",
+            title: "Read policy",
+            status: "completed",
+            input: { path: "policy.ts" },
+            output: "policy body",
+            locations: ["policy.ts"],
+            at: "",
+          },
+          { kind: "assistant", id: "m-live", text: "Live tail.", thought: false, at: "" },
+        ],
+      },
+    });
+    const entries = sessionFor(withHistory, "a1").entries;
+    expect(entries.map(entry => entry.id)).toEqual(["u1", "m1", "tc1", "m-live"]);
+    expect(withHistory.historyBefore.get("a1")).toBe(123);
+
+    const repeated = apply(withHistory, {
+      t: "session_history",
+      event: {
+        agentId: "a1",
+        sessionId: "s1",
+        nextBefore: null,
+        entries: withHistory.sessions.get("a1")?.entries as never,
+      },
+    });
+    expect(sessionFor(repeated, "a1").entries).toHaveLength(4);
+  });
+
+  test("history request marks loading until its page arrives", () => {
+    const loading = apply(emptyConsole([]), { t: "history_request", agentId: "a1" });
+    expect(loading.historyLoading.has("a1")).toBe(true);
+    const settled = apply(loading, {
+      t: "session_history",
+      event: { agentId: "a1", sessionId: "s1", entries: [], nextBefore: null },
+    });
+    expect(settled.historyLoading.has("a1")).toBe(false);
+  });
+});
+
 describe("the roster is the authority", () => {
   test("one snapshot without the open agent keeps the session it just opened", () => {
     const state = drive([
@@ -196,31 +263,39 @@ describe("the roster is the authority", () => {
     expect(state.notice).toBeNull();
   });
 
-  test("a second agreeing snapshot takes the transcript with it", () => {
+  test("repeated roster misses mark the agent stopped but keep its transcript selected", () => {
     const state = drive([
-      { t: "agents", event: { agents: [agent("a1"), agent("a2")] } },
+      { t: "agents", event: { agents: [agent("a1"), agent("a2", { acpSessionId: "s2", parentAgentId: "a1" })] } },
       { t: "select", agentId: "a2" },
       ...turn("a2"),
       { t: "agents", event: { agents: [agent("a1")] } },
       { t: "agents", event: { agents: [agent("a1")] } },
     ]);
 
-    expect(state.sessions.has("a2")).toBe(false);
-    expect(state.watermarks.has("a2")).toBe(false);
-    expect(state.selected).toBeNull();
-    expect(state.notice).toBe("That agent is gone.");
+    expect(state.sessions.has("a2")).toBe(true);
+    expect(state.watermarks.has("a2")).toBe(true);
+    expect(state.selected).toBe("a2");
+    expect(state.notice).toBeNull();
+    expect(agentFor(state, "a2")?.state).toBe("stopped");
+    expect(agentFor(state, "a2")).toMatchObject({ acpSessionId: "s2", parentAgentId: "a1" });
   });
 
-  test("a terminal agent is reaped by the first snapshot without it", () => {
+  test("a terminal agent leaving the roster keeps its complete transcript viewable", () => {
     const state = drive([
-      { t: "agents", event: { agents: [agent("a1"), agent("a2", { state: "stopped" })] } },
+      {
+        t: "agents",
+        event: { agents: [agent("a1"), agent("a2", { state: "stopped", acpSessionId: "s2", parentAgentId: "a1" })] },
+      },
       { t: "select", agentId: "a2" },
       ...turn("a2"),
       { t: "agents", event: { agents: [agent("a1")] } },
     ]);
 
-    expect(state.sessions.has("a2")).toBe(false);
-    expect(state.selected).toBeNull();
+    expect(state.sessions.has("a2")).toBe(true);
+    expect(sessionFor(state, "a2").entries.length).toBeGreaterThan(0);
+    expect(state.selected).toBe("a2");
+    expect(agentFor(state, "a2")?.state).toBe("stopped");
+    expect(agentFor(state, "a2")).toMatchObject({ acpSessionId: "s2", parentAgentId: "a1" });
   });
 
   test("an update retires the absence streak, so a streaming agent survives stale rosters", () => {

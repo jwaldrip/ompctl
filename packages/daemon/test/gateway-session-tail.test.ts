@@ -17,7 +17,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ClientFrame, DefaultPolicy, SCOPE_PROMPT, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
+import {
+  type AgentId,
+  type ClientFrame,
+  DefaultPolicy,
+  SCOPE_PROMPT,
+  SCOPE_READ,
+  type ServerFrame,
+  Store,
+} from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { SessionIndex } from "../src/sessions/index.ts";
@@ -35,6 +43,7 @@ const SIGNAL_DEADLINE_MS = 5000;
 
 const SESSION = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
 const SESSION_BIG = "019feebf-6449-7000-9474-a2ae1f871930";
+const HISTORY_AGENT = "agt_history0000001" as AgentId;
 
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -192,6 +201,17 @@ async function harness(opts: { withSessionIndex?: boolean } = {}): Promise<Harne
     },
     turn("user", "three", "2026-08-13T00:00:05.000Z"),
   ]);
+  store.upsertAgent({
+    id: HISTORY_AGENT,
+    name: "history",
+    state: "stopped",
+    acpSessionId: SESSION,
+    host: { kind: "local", id: "dead", spec: { kind: "local" } },
+    cwd: "/work",
+    createdAt: "2026-08-13T00:00:00.000Z",
+    lastActiveAt: "2026-08-13T00:00:05.000Z",
+    labels: {},
+  });
 
   // A session far larger than a tail, whose newest turn is at the very end:
   // the phone must get that turn without the daemon reading megabytes.
@@ -232,6 +252,40 @@ async function harness(opts: { withSessionIndex?: boolean } = {}): Promise<Harne
 function isTailFrame(frame: ServerFrame): frame is Extract<ServerFrame, { t: "session_tail" }> {
   return frame.t === "session_tail";
 }
+
+function isHistoryFrame(frame: ServerFrame): frame is Extract<ServerFrame, { t: "session_history" }> {
+  return frame.t === "session_history";
+}
+
+describe("the structured session history websocket frame", () => {
+  test("returns thinking, tools and text for the requested agent session only", async () => {
+    const h = await harness();
+    const socket = await h.connect(await h.pair([SCOPE_READ]));
+    socket.send({ t: "session_history", agentId: HISTORY_AGENT, sessionId: SESSION });
+    const reply = await socket.next(isHistoryFrame, "structured history frame");
+    if (!isHistoryFrame(reply)) throw new Error("expected session_history");
+    expect(reply.agentId).toBe(HISTORY_AGENT);
+    expect(reply.entries.some(entry => entry.kind === "user" && entry.text === "one")).toBe(true);
+    expect(reply.entries.some(entry => entry.kind === "assistant" && entry.text === "two")).toBe(true);
+    expect(reply.nextBefore).toBeNull();
+    socket.close();
+  });
+
+  test("refuses missing read scope and agent/session mismatch", async () => {
+    const h = await harness();
+    const noRead = await h.connect(await h.pair([SCOPE_PROMPT]));
+    noRead.send({ t: "session_history", agentId: HISTORY_AGENT, sessionId: SESSION });
+    const scope = await noRead.next(frame => frame.t === "error", "history scope refusal");
+    expect(scope.t === "error" ? scope.code : "").toBe("unauthorized");
+    noRead.close();
+
+    const reader = await h.connect(await h.pair([SCOPE_READ]));
+    reader.send({ t: "session_history", agentId: HISTORY_AGENT, sessionId: SESSION_BIG });
+    const mismatch = await reader.next(frame => frame.t === "error", "history identity refusal");
+    expect(mismatch.t === "error" ? mismatch.code : "").toBe("unknown_session");
+    reader.close();
+  });
+});
 
 describe("the session tail websocket frame", () => {
   test("answers a read-scoped client with the session's own turns, oldest first", async () => {

@@ -45,6 +45,7 @@ import {
   SCOPE_READ,
   type ServerFrame,
   Store,
+  TERMINAL_AGENT_STATES,
 } from "@ompd/core";
 import type { TunnelDaemon } from "@ompd/tunnel";
 import { type AwakeProcess, SleepGuard } from "./awake.ts";
@@ -853,6 +854,23 @@ export class Ompd {
     // the CLI's own checks) otherwise reaches this method with no guard at
     // all. Throws before any state is opened or written.
     await assertSoleDaemon({ home: this.#home, host: this.#config.host, port: this.#config.port });
+    // No ACP host survives a daemon process. Durable `idle`/`busy` rows from
+    // the previous process are therefore not live agents, even if shutdown
+    // never ran (power loss, SIGKILL, old versions that failed to settle
+    // them). Advertising one as live sends a phone to a host pid that does not
+    // exist. A replica keeps mirrored remote rows by design; only the owning
+    // daemon can make this local-host assertion.
+    if (!this.#config.replica) {
+      let interruptedAgents = 0;
+      for (const agent of this.#store.listAgents()) {
+        if (TERMINAL_AGENT_STATES.includes(agent.state)) continue;
+        this.#store.setAgentState(agent.id, "stopped");
+        interruptedAgents += 1;
+      }
+      if (interruptedAgents > 0) {
+        this.#onLog?.(`settled ${interruptedAgents} agent(s) whose ACP hosts belonged to a previous daemon`);
+      }
+    }
 
     if (this.#voiceEnabled && (this.#stt === undefined || this.#tts === undefined)) {
       // Probed once here rather than per socket: selection shells out to find

@@ -446,39 +446,61 @@ describe("the sessions frame's first paint, upgrade, and liveness", () => {
     socket.close();
   });
 
-  test("/v1/health answers promptly while a cold warm pass is still counting", async () => {
+  test("/v1/health keeps being served while the index scans and counts", async () => {
     const h = await corpusHarness();
-    // Twelve multi-megabyte transcripts: ~65ms of counting on this machine
-    // (measured ~0.75MB/ms streamed), an order of magnitude past the 25ms
-    // health bound below.
-    for (let i = 0; i < 12; i++) {
-      writeCountedSessionFile(h.sessionsRoot, `aaaaaaaa-0000-7000-0000-${String(i).padStart(12, "0")}`, 3600, 1100);
-    }
+    // One transcript too large to count in a single event-loop slice. Size
+    // matters more than file count: the warm pass already yields between
+    // files, so only an indivisible count inside one file can hold the loop,
+    // which is the shape that wedged the daemon.
+    writeCountedSessionFile(h.sessionsRoot, "aaaaaaaa-0000-7000-0000-000000000001", 20_000, 1100);
     const token = await h.pair([SCOPE_READ]);
     const socket = await h.connect(token);
+    const healthUrl = `http://127.0.0.1:${h.port}/v1/health`;
 
-    const t0 = performance.now();
+    const probeHealth = async (): Promise<number> => {
+      const started = performance.now();
+      const res = await fetch(healthUrl);
+      await res.arrayBuffer();
+      expect(res.status).toBe(200);
+      return performance.now() - started;
+    };
+
+    // Control, measured on this machine with the daemon idle: the assertion
+    // below is relative to this, because a shared runner's absolute latency
+    // is not a property of this daemon.
+    const idle: number[] = [];
+    for (let i = 0; i < 5; i++) idle.push(await probeHealth());
+    idle.sort((a, b) => a - b);
+    const baselineMs = idle[2] ?? 0;
+
+    // Probing starts before the request and runs to the upgraded frame, so
+    // it covers the scan and the count. The counting overlaps first paint, so
+    // a loop that started after that frame would measure a finished build.
+    let working = true;
+    const probing = (async (): Promise<{ worst: number; probes: number }> => {
+      let worst = 0;
+      let probes = 0;
+      while (working) {
+        worst = Math.max(worst, await probeHealth());
+        probes += 1;
+      }
+      return { worst, probes };
+    })();
+
     socket.send({ t: "sessions" });
-    // First paint answers fast: no count is read on the request path, and
-    // the scan yields while it works. A build or warm pass that blocked the
-    // loop would delay this frame itself past the bound below.
     const first = await socket.next(isSessionsFrame, "first-paint sessions frame");
-    expect(performance.now() - t0).toBeLessThan(35);
     expect(isSessionsFrame(first) && first.sessions.every(s => s.messageCount === null)).toBe(true);
-
-    // The warm pass is now counting in the background; health must answer
-    // promptly throughout. A synchronous warm pass would hold the loop (and
-    // the health route) hostage for the whole count.
-    const t1 = performance.now();
-    const health = await fetch(`http://127.0.0.1:${h.port}/v1/health`);
-    const healthMs = performance.now() - t1;
-    expect(health.status).toBe(200);
-    expect(healthMs).toBeLessThan(25);
-    await health.arrayBuffer();
-
-    // And the upgraded frame still arrives with every count filled in.
     const upgraded = await socket.next(isSessionsFrame, "upgraded sessions frame");
-    expect(isSessionsFrame(upgraded) && upgraded.sessions.every(s => s.messageCount === 3600)).toBe(true);
+    working = false;
+    const { worst, probes } = await probing;
+
+    // The count really did run inside the probed window.
+    expect(isSessionsFrame(upgraded) && upgraded.sessions.every(s => s.messageCount === 20_000)).toBe(true);
+    expect(probes).toBeGreaterThan(3);
+    // A count that holds the loop parks every probe that lands inside it, so
+    // the worst answer rises to the length of the stall. The floor keeps a
+    // sub-millisecond baseline from making this unsatisfiable.
+    expect(worst).toBeLessThan(Math.max(baselineMs * 10, 15));
     socket.close();
   });
 });

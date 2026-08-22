@@ -177,6 +177,7 @@ const CONNECTIONS: ConnectionList = {
 class CannedClient {
   readonly indexAsks: unknown[] = [];
   readonly tails: Array<{ sessionId: string; limit?: number }> = [];
+  readonly histories: Array<{ agentId: string; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -202,6 +203,9 @@ class CannedClient {
   }
   sessionTail(sessionId: string, limit?: number): void {
     this.tails.push({ sessionId, limit });
+  }
+  sessionHistory(agentId: string, sessionId: string, before?: number): void {
+    this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
   }
   sessionPrompt(): void {}
   resumeSession(): void {}

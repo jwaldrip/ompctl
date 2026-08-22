@@ -279,6 +279,24 @@ describe("opening a row resolves to a holder, a claim, or the terminal prompt su
     expect(target).toEqual({ kind: "dormant", sessionId: "s-dormant", cwd: DIR_B });
   });
 
+  test("a stopped roster holder resumes with the index's canonical cwd, not its stale alias", () => {
+    const state = drive([
+      { t: "sessions", event: { sessions: INDEX } },
+      {
+        t: "agents",
+        event: {
+          // macOS: an agent created in /tmp is indexed under /private/tmp.
+          agents: [agent("agt_stopped", { state: "stopped", acpSessionId: "s-dormant", cwd: "/tmp/alias" })],
+        },
+      },
+    ]);
+    expect(openSessionTarget(state, "s-dormant")).toEqual({
+      kind: "dormant",
+      sessionId: "s-dormant",
+      cwd: DIR_B,
+    });
+  });
+
   test("a row the index dropped, or whose cwd it could not decode, is unopenable", () => {
     const state = drive([{ t: "sessions", event: { sessions: INDEX } }]);
     // A stale row a newer index dropped: no echo exists, so no claim does.
@@ -304,6 +322,7 @@ class CannedClient {
   readonly sessionPrompts: Array<{ sessionId: string; text: string }> = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly tails: Array<{ sessionId: string; limit: number | undefined }> = [];
+  readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -340,6 +359,9 @@ class CannedClient {
   }
   sessionTail(sessionId: string, limit?: number): void {
     this.tails.push({ sessionId, limit });
+  }
+  sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
+    this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
   }
   prompt(): void {}
   cancel(): void {}
@@ -526,6 +548,7 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
       });
       expect(mounted.state().selected).toBe("agt_adopted");
       expect(mounted.client.attached).toEqual([{ agentId: "agt_adopted", options: { sinceSeq: 0 } }]);
+      expect(mounted.client.histories).toEqual([{ agentId: "agt_adopted", sessionId: "s-tui" }]);
     } finally {
       mounted.unmount();
     }

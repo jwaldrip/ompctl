@@ -17,7 +17,7 @@ import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useCallback } from "react";
 import type { ListRenderItemInfo } from "react-native";
-import { FlatList, StyleSheet, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
@@ -34,14 +34,37 @@ export interface TranscriptProps {
   onDecide: (requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   /** The daemon's prose summary of the last settled turn, when there is one. */
   spoken?: string | null;
+  canLoadEarlier?: boolean;
+  loadingEarlier?: boolean;
+  onLoadEarlier?: () => void;
 }
 
-export function Transcript({ entries, canApprove, refusal, onDecide, spoken }: TranscriptProps): JSX.Element {
+export function Transcript({
+  entries,
+  canApprove,
+  refusal,
+  onDecide,
+  spoken,
+  canLoadEarlier,
+  loadingEarlier,
+  onLoadEarlier,
+}: TranscriptProps): JSX.Element {
+  const firstUserIndex = entries.findIndex(entry => entry.kind === "user");
+  const firstAssistantIndex = entries.findIndex(entry => entry.kind === "assistant");
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<Entry>) => (
-      <EntryRow entry={item} canApprove={canApprove} refusal={refusal} onDecide={onDecide} />
+    ({ item, index }: ListRenderItemInfo<Entry>) => (
+      <EntryRow
+        entry={item}
+        canApprove={canApprove}
+        refusal={refusal}
+        onDecide={onDecide}
+        firstOfKind={
+          (item.kind === "user" && index === firstUserIndex) ||
+          (item.kind === "assistant" && index === firstAssistantIndex)
+        }
+      />
     ),
-    [canApprove, refusal, onDecide],
+    [canApprove, refusal, onDecide, firstUserIndex, firstAssistantIndex],
   );
 
   return (
@@ -59,6 +82,21 @@ export function Transcript({ entries, canApprove, refusal, onDecide, spoken }: T
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
       automaticallyAdjustKeyboardInsets
+      ListHeaderComponent={
+        canLoadEarlier && onLoadEarlier !== undefined ? (
+          <Pressable
+            testID="history-load-earlier"
+            accessibilityRole="button"
+            accessibilityLabel="Load earlier transcript entries"
+            disabled={loadingEarlier}
+            onPress={onLoadEarlier}
+            style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
+          >
+            <Glyph name="resume" size={11} color={ink.muted} />
+            <Label color={ink.muted}>{loadingEarlier ? "Loading earlier…" : "Load earlier"}</Label>
+          </Pressable>
+        ) : null
+      }
       ListFooterComponent={
         spoken === null || spoken === undefined || spoken.length === 0 ? null : <Spoken text={spoken} />
       }
@@ -72,25 +110,23 @@ function EntryRow({
   canApprove,
   refusal,
   onDecide,
+  firstOfKind,
 }: {
   entry: Entry;
   canApprove: boolean;
   refusal?: string;
   onDecide: (requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
+  firstOfKind: boolean;
 }): JSX.Element {
   switch (entry.kind) {
     case "user":
       return (
         <View
           style={styles.row}
-          // Constant, like the assistant row below: both e2e drivers match
-          // testIDs exactly, so a check enumerates the rows carrying this id
-          // and matches the accessibility label, whose speaker prefix keeps
-          // the sent-message assertion on the operator. List identity already
-          // comes from keyExtractor. This is also the pair a round-trip check
-          // asserts together: the sent prompt beside the reply that answered
-          // it, which is what proves history landed rather than a lone tail.
-          testID="entry-user"
+          // The first user row keeps the stable e2e id; every later row is
+          // keyed by its durable entry id so native automation never receives
+          // an ambiguous matcher when a resumed transcript contains history.
+          testID={firstOfKind ? "entry-user" : `entry-user-${entry.id}`}
           accessible
           accessibilityLabel={`you: ${entry.text}`}
         >
@@ -105,12 +141,10 @@ function EntryRow({
       return (
         <View
           style={styles.row}
-          // Constant, not per-entry: a feature file cannot interpolate an
-          // entry id and both e2e drivers match testIDs exactly, so the path
-          // scenario enumerates the rows carrying this id and matches the
-          // label, whose speaker prefix keeps the reply assertion on the
-          // agent. List identity already comes from keyExtractor above.
-          testID="entry-assistant"
+          // The first assistant row keeps the stable e2e id; every later row
+          // is keyed by its durable entry id so native automation never
+          // receives an ambiguous matcher for a multi-turn history page.
+          testID={firstOfKind ? "entry-assistant" : `entry-assistant-${entry.id}`}
           accessible
           accessibilityLabel={`${entry.thought ? "thinking" : "agent"}: ${entry.text}`}
         >
@@ -180,6 +214,14 @@ function Empty(): JSX.Element {
 const styles = StyleSheet.create({
   list: { flex: 1, backgroundColor: ground.base },
   content: { padding: space.wide, gap: space.step },
+  earlier: {
+    minHeight: 44,
+    alignSelf: "center",
+    paddingHorizontal: space.step,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
   row: { flexDirection: "row", gap: space.step },
   gutter: {
     width: 76,

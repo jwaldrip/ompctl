@@ -30,6 +30,7 @@ import type {
   ConnectionState,
   PlanReviewEvent,
   SayEvent,
+  SessionHistoryEvent,
   SessionTailEvent,
   StatusEvent,
   TuiActivityEvent,
@@ -43,6 +44,7 @@ import {
   appendPrompt,
   EMPTY_SESSION,
   endTurn,
+  mergeSessionHistory,
   reduce,
   resolveApproval,
   resolvePlanReview,
@@ -129,6 +131,9 @@ export interface ConsoleState {
   readonly rosterMisses: ReadonlyMap<AgentId, number>;
   /** Latest spoken summary per agent. Text only; this build has no voice. */
   readonly spoken: ReadonlyMap<AgentId, { seq: number; text: string }>;
+  /** Opaque byte cursor for the next older durable history page per agent. */
+  readonly historyBefore: ReadonlyMap<AgentId, number | null>;
+  readonly historyLoading: ReadonlySet<AgentId>;
   readonly connection: ConnectionState;
   readonly attempt: number;
   readonly delayMs: number | undefined;
@@ -268,6 +273,8 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     sessionIndex: [],
     watermarks: new Map(),
     rosterMisses: new Map(),
+    historyBefore: new Map(),
+    historyLoading: new Set(),
     spoken: new Map(),
     connection: "connecting",
     attempt: 0,
@@ -302,6 +309,8 @@ export type ConsoleEvent =
   | { t: "tui_activity"; event: TuiActivityEvent }
   /** Daemon: the tail of a terminal session's transcript, answering this device's ask. */
   | { t: "session_tail"; event: SessionTailEvent }
+  | { t: "session_history"; event: SessionHistoryEvent }
+  | { t: "history_request"; agentId: AgentId }
   /** Local: the operator opened a terminal session's prompt surface, or went back to the bay. */
   | { t: "tui_select"; sessionId: string | null }
   /** Local: echo of a prompt this device just sent to a terminal session. */
@@ -488,6 +497,22 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
         historyTruncated: event.event.truncated,
       }));
 
+    case "history_request": {
+      const historyLoading = new Set(state.historyLoading);
+      historyLoading.add(event.agentId);
+      return { ...state, historyLoading };
+    }
+
+    case "session_history": {
+      const { agentId, entries, nextBefore } = event.event;
+      const next = withSession(state, agentId, session => mergeSessionHistory(session, entries));
+      const historyBefore = new Map(next.historyBefore);
+      historyBefore.set(agentId, nextBefore);
+      const historyLoading = new Set(next.historyLoading);
+      historyLoading.delete(agentId);
+      return { ...next, historyBefore, historyLoading };
+    }
+
     case "prompt":
       return withSession(state, event.agentId, session => appendPrompt(session, event.text));
 
@@ -531,16 +556,26 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
  * So an absent agent is deleted only on corroborated absence: a second
  * consecutive snapshot without it, or a single one after the previous roster
  * showed it stopped or failed. A terminal agent is never coming back on that
- * id, and the daemon keeps terminal agents listed while their transcript is
- * retained, so its disappearance from a later snapshot is the reap. Updates
- * and selections reset the streak elsewhere in this file, which is what makes
- * the tolerance safe in both directions: an agent still streaming can never
- * be reaped by a stale roster, and an agent that has really gone silent is
- * cleaned up once two snapshots agree it is gone.
+ * id. Its disappearance from a later snapshot changes liveness, never
+ * history: the transcript is durable and must remain viewable after its
+ * process exits. Updates and selections reset the streak elsewhere in this
+ * file, which keeps the resume race honest; two misses only make the stand-in
+ * terminal and retire actions that need a live host.
  */
 function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleState {
   const before = new Map(state.agents.map(agent => [agent.id, agent]));
   const live = new Set(agents.map(agent => agent.id));
+
+  // The daemon roster is liveness, not the only copy of identity. Keep rows
+  // it drops as stopped so transcripts do not lose their title, cwd, session
+  // id, or parentAgentId. That metadata is what makes a stopped subagent both
+  // navigable and resumable; replacing it with an anonymous stand-in is the
+  // same blink-out in a quieter form.
+  const retainedAgents: Agent[] = [...agents];
+  for (const previous of state.agents) {
+    if (live.has(previous.id)) continue;
+    retainedAgents.push(TERMINAL_AGENT_STATES.includes(previous.state) ? previous : { ...previous, state: "stopped" });
+  }
 
   const sessions = new Map(state.sessions);
   for (const agent of agents) {
@@ -552,44 +587,32 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
     }
   }
 
-  const watermarks = new Map(state.watermarks);
-  const spoken = new Map(state.spoken);
   const pendingWebViewActions = new Map(state.pendingWebViewActions);
   const rosterMisses = new Map(state.rosterMisses);
-  let lost = false;
-  for (const agentId of [...sessions.keys()]) {
+  for (const agentId of sessions.keys()) {
     if (live.has(agentId)) {
       rosterMisses.delete(agentId);
       continue;
     }
-    const misses = (rosterMisses.get(agentId) ?? 0) + 1;
     const previous = before.get(agentId);
     const wasTerminal = previous !== undefined && TERMINAL_AGENT_STATES.includes(previous.state);
-    if (misses >= 2 || wasTerminal) {
-      sessions.delete(agentId);
-      watermarks.delete(agentId);
-      spoken.delete(agentId);
-      pendingWebViewActions.delete(agentId);
-      rosterMisses.delete(agentId);
-      if (state.selected === agentId) lost = true;
-      continue;
-    }
+    const misses = wasTerminal ? 2 : Math.min(2, (rosterMisses.get(agentId) ?? 0) + 1);
     rosterMisses.set(agentId, misses);
-  }
+    if (misses < 2) continue;
 
-  const selected = lost ? null : state.selected;
+    // No host can settle these after two agreeing roster misses. Transcript,
+    // watermarks and spoken output stay: they are history, not liveness.
+    pendingWebViewActions.delete(agentId);
+    const session = sessions.get(agentId);
+    if (session !== undefined) sessions.set(agentId, endTurn(session));
+  }
 
   return {
     ...state,
-    agents,
+    agents: retainedAgents,
     sessions,
-    watermarks,
-    spoken,
     pendingWebViewActions,
     rosterMisses,
-    selected,
-    notice: lost ? "That agent is gone." : state.notice,
-    noticeAboutLink: lost ? false : state.noticeAboutLink,
   };
 }
 
@@ -723,10 +746,13 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   if (roster !== undefined) return roster;
   const session = state.sessions.get(agentId);
   if (session === undefined) return null;
+  const gone = (state.rosterMisses.get(agentId) ?? 0) >= 2;
   return {
     id: agentId,
     name: session.info.title ?? "Session",
-    state: "idle",
+    // One missing roster may race a resume replay. Two means the host is gone:
+    // keep the transcript selected, but do not offer controls that send to it.
+    state: gone ? "stopped" : "idle",
     // Inert: nothing renders host data on a session screen, and the roster
     // entry replaces this whole object on arrival.
     host: { kind: "local", id: "0", spec: { kind: "local" } },
@@ -917,15 +943,26 @@ export type SessionOpenTarget =
   | { readonly kind: "unopenable"; readonly sessionId: string };
 
 export function openSessionTarget(state: ConsoleState, rowId: string): SessionOpenTarget {
-  // The roster first: it is fresher than the snapshot, and a synthesized row
-  // carries an agent id directly. Attaching to a terminal agent is still the
-  // right open; it opens the transcript the operator tapped.
+  const summary = state.sessionIndex.find(row => row.id === rowId);
+  // The roster is fresher than the index for a live holder. A terminal holder
+  // is different: Fleet labels its row Resume, so attaching to the dead agent
+  // id would open history but leave interaction impossible. Agent Hub opens
+  // that durable history explicitly; Fleet wakes the same ACP session.
   const holder = state.agents.find(agent => agent.acpSessionId === rowId || agent.id === rowId);
   if (holder !== undefined) {
+    if (TERMINAL_AGENT_STATES.includes(holder.state)) {
+      // The index owns the canonical cwd the daemon verifies. Agent rows may
+      // hold a filesystem alias (`/tmp`) for the same directory the scanner
+      // reports as `/private/tmp`; echoing the agent's copy is a guaranteed
+      // cwd_mismatch.
+      if (holder.acpSessionId === undefined || summary?.cwd == null) {
+        return { kind: "unopenable", sessionId: rowId };
+      }
+      return { kind: "dormant", sessionId: holder.acpSessionId, cwd: summary.cwd };
+    }
     return { kind: "agent", sessionId: rowId, agentId: holder.id };
   }
 
-  const summary = state.sessionIndex.find(row => row.id === rowId);
   // A stale row: a newer index dropped it, and the roster never held it.
   if (summary === undefined) {
     return { kind: "unopenable", sessionId: rowId };

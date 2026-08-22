@@ -43,7 +43,7 @@ describe("isPidAlive", () => {
 });
 
 describe("listLiveClientPresences", () => {
-  test("a record naming a genuinely running process is reported live", () => {
+  test("a record naming a genuinely running process is reported live", async () => {
     const root = tempRoot("liveness-real-");
     writeClientRecord(root, "hash1", "record.json", {
       pid: process.pid,
@@ -51,12 +51,12 @@ describe("listLiveClientPresences", () => {
       projectDir: "/some/project",
       sessionId: "session-a",
     });
-    const live = listLiveClientPresences(root);
+    const live = await listLiveClientPresences(root);
     expect(live).toHaveLength(1);
     expect(live[0]!.sessionId).toBe("session-a");
   });
 
-  test("a stale record naming a dead pid is excluded, not reported live", () => {
+  test("a stale record naming a dead pid is excluded, not reported live", async () => {
     const root = tempRoot("liveness-stale-");
     writeClientRecord(root, "hash1", "record.json", {
       pid: 2_147_483_647,
@@ -64,10 +64,10 @@ describe("listLiveClientPresences", () => {
       projectDir: "/some/project",
       sessionId: "session-dead",
     });
-    expect(listLiveClientPresences(root)).toEqual([]);
+    expect(await listLiveClientPresences(root)).toEqual([]);
   });
 
-  test("live and stale records both present: only the live one is reported", () => {
+  test("live and stale records both present: only the live one is reported", async () => {
     const root = tempRoot("liveness-mixed-");
     writeClientRecord(root, "hash1", "live.json", {
       pid: process.pid,
@@ -81,20 +81,20 @@ describe("listLiveClientPresences", () => {
       projectDir: "/b",
       sessionId: "session-dead",
     });
-    const live = listLiveClientPresences(root);
+    const live = await listLiveClientPresences(root);
     expect(live).toHaveLength(1);
     expect(live[0]!.sessionId).toBe("session-live");
   });
 
-  test("a malformed record file is dropped rather than treated as evidence of liveness", () => {
+  test("a malformed record file is dropped rather than treated as evidence of liveness", async () => {
     const root = tempRoot("liveness-malformed-");
     const clientsDir = join(root, "hash1", "clients");
     mkdirSync(clientsDir, { recursive: true });
     writeFileSync(join(clientsDir, "broken.json"), "not json");
-    expect(listLiveClientPresences(root)).toEqual([]);
+    expect(await listLiveClientPresences(root)).toEqual([]);
   });
 
-  test("scans across multiple project hash directories", () => {
+  test("scans across multiple project hash directories", async () => {
     const root = tempRoot("liveness-multi-project-");
     writeClientRecord(root, "hashA", "a.json", {
       pid: process.pid,
@@ -108,13 +108,13 @@ describe("listLiveClientPresences", () => {
       projectDir: "/project-b",
       sessionId: "session-b",
     });
-    const live = listLiveClientPresences(root);
+    const live = await listLiveClientPresences(root);
     expect(live).toHaveLength(2);
     expect(new Set(live.map(r => r.sessionId))).toEqual(new Set(["session-a", "session-b"]));
   });
 
-  test("a missing run/daemons root returns an empty list rather than throwing", () => {
-    expect(listLiveClientPresences("/no/such/run/daemons/root")).toEqual([]);
+  test("a missing run/daemons root returns an empty list rather than throwing", async () => {
+    expect(await listLiveClientPresences("/no/such/run/daemons/root")).toEqual([]);
   });
 });
 

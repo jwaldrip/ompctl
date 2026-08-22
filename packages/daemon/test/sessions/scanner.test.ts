@@ -19,9 +19,11 @@ import { join } from "node:path";
 import {
   COUNT_CHUNK_BYTES,
   countMessages,
+  countMessagesAsync,
   findSessionFile,
   findSessionFileIter,
   scanSessionFiles,
+  scanSessionFilesIter,
 } from "../../src/sessions/scanner.ts";
 
 const scratch: string[] = [];
@@ -43,7 +45,7 @@ const SESSION_ID_A = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
 const SESSION_ID_B = "019feebf-6449-7000-9474-a2ae1f871930";
 
 describe("scanSessionFiles", () => {
-  test("finds sessions across multiple cwd-group directories", () => {
+  test("finds sessions across multiple cwd-group directories", async () => {
     const root = tempRoot("scanner-multi-group-");
     writeSessionFile(join(root, "-Downloads"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
       { type: "title", v: 1, title: "Manuscript" },
@@ -52,66 +54,68 @@ describe("scanSessionFiles", () => {
       { type: "title", v: 1, title: "Scratch" },
     ]);
 
-    const files = scanSessionFiles(root);
+    const files = await scanSessionFiles(root);
     expect(files).toHaveLength(2);
     const groups = new Set(files.map(f => f.flattenedDir));
     expect(groups).toEqual(new Set(["-Downloads", "--private-tmp--"]));
   });
 
-  test("derives id and createdAt from the filename alone, not file contents", () => {
+  test("derives id and createdAt from the filename alone, not file contents", async () => {
     const root = tempRoot("scanner-filename-");
     writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
       { type: "title", v: 1, title: "Build the thing" },
     ]);
 
-    const [file] = scanSessionFiles(root);
+    const [file] = await scanSessionFiles(root);
     expect(file).toBeDefined();
     expect(file!.id).toBe(SESSION_ID_A);
     expect(file!.createdAt).toBe("2026-08-11T01:11:48.090Z");
   });
 
-  test("reads title from the header line without a message line present", () => {
+  test("reads title and exact cwd from the bounded JSONL header", async () => {
     const root = tempRoot("scanner-title-");
     writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
       { type: "title", v: 1, title: "Build the thing" },
+      { type: "session", version: 3, id: SESSION_ID_A, timestamp: "t", cwd: "/exact/project" },
     ]);
 
-    const [file] = scanSessionFiles(root);
+    const [file] = await scanSessionFiles(root);
     expect(file!.title).toBe("Build the thing");
+    expect(file!.cwd).toBe("/exact/project");
   });
 
-  test("an empty title header degrades to an empty string, not a throw", () => {
+  test("an empty title header degrades to an empty string, not a throw", async () => {
     const root = tempRoot("scanner-empty-title-");
     writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [{ type: "title", v: 1, title: "" }]);
 
-    const files = scanSessionFiles(root);
+    const files = await scanSessionFiles(root);
     expect(files).toHaveLength(1);
     expect(files[0]!.title).toBe("");
   });
 
-  test("a malformed header line degrades to an empty title instead of failing the scan", () => {
+  test("a malformed header line degrades to an empty title instead of failing the scan", async () => {
     const root = tempRoot("scanner-bad-header-");
     const groupDir = join(root, "-x");
     mkdirSync(groupDir, { recursive: true });
     writeFileSync(join(groupDir, `2026-08-11T01-11-48-090Z_${SESSION_ID_A}.jsonl`), "not json\nmore\n");
 
-    const files = scanSessionFiles(root);
+    const files = await scanSessionFiles(root);
     expect(files).toHaveLength(1);
     expect(files[0]!.title).toBe("");
   });
 
-  test("ignores non-jsonl entries and the per-session artifact subdirectories real OMP writes alongside a transcript", () => {
+  test("ignores non-jsonl entries and the per-session artifact subdirectories real OMP writes alongside a transcript", async () => {
     const root = tempRoot("scanner-non-jsonl-");
     const groupDir = join(root, "-x");
     writeSessionFile(groupDir, "2026-08-11T01-11-48-090Z", SESSION_ID_A, [{ type: "title", v: 1, title: "t" }]);
     mkdirSync(join(groupDir, "subdir"), { recursive: true });
     writeFileSync(join(groupDir, "not-a-session.txt"), "junk");
 
-    const files = scanSessionFiles(root);
+    const files = await scanSessionFiles(root);
     expect(files).toHaveLength(1);
   });
 
-  test("byte size and mtime come from stat, matching the real file", () => {
+  test("byte size and mtime come from stat, matching the real file", async () => {
     const root = tempRoot("scanner-stat-");
     const path = writeSessionFile(join(root, "-x"), "2026-08-11T01-11-48-090Z", SESSION_ID_A, [
       { type: "title", v: 1, title: "t" },
@@ -119,13 +123,20 @@ describe("scanSessionFiles", () => {
     const mtime = new Date("2026-08-12T00:00:00.000Z");
     utimesSync(path, mtime, mtime);
 
-    const [file] = scanSessionFiles(root);
+    const [file] = await scanSessionFiles(root);
     expect(file!.sizeBytes).toBeGreaterThan(0);
     expect(Math.abs(file!.mtimeMs - mtime.getTime())).toBeLessThan(1000);
   });
 
-  test("a missing sessions root returns an empty list rather than throwing", () => {
-    expect(scanSessionFiles("/no/such/sessions/root/anywhere")).toEqual([]);
+  test("a missing sessions root returns an empty list rather than throwing", async () => {
+    expect(await scanSessionFiles("/no/such/sessions/root/anywhere")).toEqual([]);
+  });
+
+  test("exposes only an async iterator so filesystem work cannot run synchronously", () => {
+    const root = tempRoot("scanner-async-");
+    const scan = scanSessionFilesIter(root);
+    expect(Symbol.asyncIterator in scan).toBe(true);
+    expect(Symbol.iterator in scan).toBe(false);
   });
 });
 
@@ -221,7 +232,7 @@ function writeRaw(name: string, content: string): string {
 describe("countMessages streaming equivalence", () => {
   const C = COUNT_CHUNK_BYTES;
 
-  test("table: every fixture agrees with the whole-file oracle", () => {
+  test("table: every fixture agrees with the whole-file oracle", async () => {
     const title = JSON.stringify({ type: "title", v: 1, title: "t", updatedAt: "t" });
     const userLine = JSON.stringify({ type: "message", id: "a", message: { role: "user", content: [] } });
     const noiseLine = JSON.stringify({ type: "model_change", id: "n", model: "m" });
@@ -308,6 +319,7 @@ describe("countMessages streaming equivalence", () => {
       const path = writeRaw(`${name.replace(/[^a-z0-9]+/gi, "-")}.jsonl`, content);
       expect(countMessages(path), name).toBe(expected);
       expect(countMessages(path), name).toBe(legacyCountMessages(path));
+      expect(await countMessagesAsync(path), `${name} async`).toBe(expected);
     }
   });
 

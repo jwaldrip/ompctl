@@ -21,7 +21,7 @@
  * is the same cost as never having windowed the list.
  */
 
-import type { AgentId } from "@ompd/core/contracts";
+import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -169,6 +169,9 @@ export function Console({
     const current = latest.current;
     current.actions.openSession(openSessionTarget(current.state, session.id));
   }, []);
+  const onOpenAgent = useCallback((agent: Agent) => {
+    latest.current.actions.select(agent.id);
+  }, []);
 
   const log = (agentId: AgentId, back: () => void, openConfig: () => void): JSX.Element => {
     // `agentFor`, not a raw roster lookup: a resumed session starts streaming
@@ -187,6 +190,12 @@ export function Console({
         </SafeScreen>
       );
     }
+    const resumeSummary =
+      agent.acpSessionId === undefined ? undefined : state.sessionIndex.find(row => row.id === agent.acpSessionId);
+    const resumeTarget =
+      agent.acpSessionId === undefined || resumeSummary?.cwd == null
+        ? undefined
+        : { kind: "dormant" as const, sessionId: agent.acpSessionId, cwd: resumeSummary.cwd };
     return (
       // Keyed, so selecting a different agent builds a new screen rather than
       // re-rendering one with a different target. Registration follows that
@@ -203,6 +212,9 @@ export function Console({
         canApprove={state.canApprove}
         refusal={state.refusal}
         spoken={state.spoken.get(agent.id)?.text ?? null}
+        historyBefore={state.historyBefore.get(agent.id)}
+        historyLoading={state.historyLoading.has(agent.id)}
+        onLoadEarlier={() => actions.loadEarlier(agent.id)}
         fleetClearances={clearances}
         onBack={back}
         onOpenConfig={openConfig}
@@ -212,6 +224,13 @@ export function Console({
         onCancel={() => {
           actions.cancel(agent.id);
         }}
+        onResume={
+          resumeTarget === undefined
+            ? undefined
+            : () => {
+                actions.openSession(resumeTarget);
+              }
+        }
         onDecide={(requestId, choice, scope) => {
           actions.decide(agent.id, requestId, choice, scope);
         }}
@@ -290,7 +309,10 @@ export function Console({
       <SafeScreen testID="fleet-surface">
         <View style={split ? styles.splitLayout : styles.singleLayout}>
           <View style={split ? styles.splitBay : styles.bay}>
-            <AgentHub agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)} />
+            <AgentHub
+              agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)}
+              onOpen={onOpenAgent}
+            />
             <FleetScreen
               browser={browser}
               onSort={onSort}

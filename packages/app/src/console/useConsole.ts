@@ -33,6 +33,7 @@ export interface ConsoleActions {
   decide: (agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   decidePlan: (agentId: AgentId, requestId: string, choice: PlanReviewChoice) => void;
   dismiss: () => void;
+  loadEarlier: (agentId: AgentId) => void;
   /**
    * Open one browser row. A row whose session an agent already holds opens
    * that agent's log; a live terminal session opens its prompt surface; the
@@ -124,6 +125,15 @@ export function useConsole(
     [client],
   );
 
+  const requestHistory = useCallback(
+    (agentId: AgentId, sessionId: string, before?: number): void => {
+      if (stateRef.current.historyLoading.has(agentId)) return;
+      dispatch({ t: "history_request", agentId });
+      client.sessionHistory(agentId, sessionId, before);
+    },
+    [client],
+  );
+
   /**
    * Select and attach in one step, the way every open lands. The attach shape
    * is derived from state, not from a memo of past attaches: a session this
@@ -137,10 +147,15 @@ export function useConsole(
    */
   const selectAgent = useCallback(
     (agentId: AgentId): void => {
+      const current = stateRef.current;
       dispatch({ t: "select", agentId });
-      client.attach(agentId, stateRef.current.watermarks.has(agentId) ? {} : { sinceSeq: 0 });
+      client.attach(agentId, current.watermarks.has(agentId) ? {} : { sinceSeq: 0 });
+      const agent = current.agents.find(candidate => candidate.id === agentId);
+      if (agent?.acpSessionId !== undefined && !current.historyBefore.has(agentId)) {
+        requestHistory(agentId, agent.acpSessionId);
+      }
     },
-    [client],
+    [client, requestHistory],
   );
   useEffect(() => {
     const offs = [
@@ -157,16 +172,19 @@ export function useConsole(
         dispatch({ t: "agents", event });
       }),
       client.on("session_opened", event => {
-        // The only answer a resume claim gets: the agent that now
-        // holds the session, or the one that already did. Selecting it is
-        // what makes the tap land, and selecting is also attaching, so this
-        // socket starts receiving the roster pushes that carry the agent the
-        // daemon just made -- no admission by hand, which the roster would
-        // only have to reconcile anyway.
-        selectAgent(event.agentId);
+        // The resume answer may arrive before the roster's new agent row. The
+        // frame already carries both identities needed for attach + history,
+        // so do both once rather than calling selectAgent and racing a second
+        // initial history request before React commits `history_request`.
+        dispatch({ t: "select", agentId: event.agentId });
+        client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
+        requestHistory(event.agentId, event.sessionId);
       }),
       client.on("sessions", event => {
         dispatch({ t: "sessions", event });
+      }),
+      client.on("session_history", event => {
+        dispatch({ t: "session_history", event });
       }),
       client.on("update", event => {
         dispatch({ t: "update", event });
@@ -216,7 +234,7 @@ export function useConsole(
       for (const off of offs) off();
       client.close();
     };
-  }, [client, settleWebViewAction, selectAgent]);
+  }, [client, requestHistory, settleWebViewAction]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -252,6 +270,14 @@ export function useConsole(
       decidePlan(agentId, requestId, choice) {
         client.decidePlan(agentId, requestId, choice);
         dispatch({ t: "plan_decide", agentId, requestId, choice });
+      },
+      loadEarlier(agentId) {
+        const current = stateRef.current;
+        const before = current.historyBefore.get(agentId);
+        if (before === undefined || before === null) return;
+        const agent = current.agents.find(candidate => candidate.id === agentId);
+        if (agent?.acpSessionId === undefined) return;
+        requestHistory(agentId, agent.acpSessionId, before);
       },
       dismiss() {
         dispatch({ t: "dismiss" });
@@ -318,7 +344,7 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [client, settleWebViewAction, selectAgent],
+    [client, requestHistory, settleWebViewAction, selectAgent],
   );
 
   return [state, actions];

@@ -66,13 +66,15 @@ function writeSessionFile(
   filenameTimestamp: string,
   id: string,
   title: string,
+  cwd: string,
   mtime: Date,
 ): void {
   const groupDir = join(sessionsRoot, flattenedDir);
   mkdirSync(groupDir, { recursive: true });
-  const line = JSON.stringify({ type: "title", v: 1, title, updatedAt: new Date().toISOString() });
+  const titleLine = JSON.stringify({ type: "title", v: 1, title, updatedAt: new Date().toISOString() });
+  const sessionLine = JSON.stringify({ type: "session", version: 3, id, timestamp: "t", cwd });
   const filePath = join(groupDir, `${filenameTimestamp}_${id}.jsonl`);
-  writeFileSync(filePath, `${line}\n`);
+  writeFileSync(filePath, `${titleLine}\n${sessionLine}\n`);
   // Explicit, deterministic mtime, so ordering never depends on the
   // filesystem clock landing two writes on the same tick under load.
   utimesSync(filePath, mtime, mtime);
@@ -249,15 +251,15 @@ async function harness(): Promise<Harness> {
   const port = await gw.listen();
 
   const mtimeBase = new Date("2026-08-13T00:00:00.000Z").getTime();
-  // The flattened names are the ones OMP itself would write for these real
-  // directories, so the index decodes both rows' cwd back with confidence
-  // and a frame has the exact value the daemon expects to see echoed.
+  // The JSONL session header is the cwd source of truth; its flattened
+  // directory remains only the durable grouping key OMP writes on disk.
   writeSessionFile(
     sessionsRoot,
     encodeSessionDirName(liveDir),
     "2026-08-10T00-00-00-000Z",
     SESSION_LIVE,
     "held by a TUI",
+    liveDir,
     new Date(mtimeBase),
   );
   writeSessionFile(
@@ -266,6 +268,7 @@ async function harness(): Promise<Harness> {
     "2026-08-12T00-00-00-000Z",
     SESSION_DORMANT,
     "on disk only",
+    dormantDir,
     new Date(mtimeBase + 1000),
   );
   writeLiveTuiPresence(runRoot, liveDir);
@@ -399,7 +402,7 @@ describe("the session_takeover websocket frame", () => {
 
   test("refuses an unknown session id on both frames and creates nothing", async () => {
     const h = await harness();
-    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE]);
     const phone = await h.connect(token);
 
     phone.send(takeoverRequest(h, { sessionId: SESSION_UNKNOWN }));
@@ -417,24 +420,23 @@ describe("the session_takeover websocket frame", () => {
     phone.close();
   });
 
-  test("refuses a client without the manage scope the HTTP takeover requires", async () => {
+  test("prompt scope may resume a dormant session but still cannot take over a live TUI", async () => {
     const h = await harness();
     await registerTui(h, SESSION_LIVE, h.liveDir, process.pid);
-    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]); // can watch and type, not take over
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
     const phone = await h.connect(token);
 
     phone.send(takeoverRequest(h));
     const takeoverReply = await phone.next(f => f.t === "error", "takeover scope refusal");
-    phone.send({ t: "session_resume", sessionId: SESSION_DORMANT, cwd: h.dormantDir });
-    const resumeReply = await phone.next(f => f.t === "error", "resume scope refusal");
+    if (takeoverReply.t !== "error") throw new Error("expected an error frame");
+    expect(takeoverReply.code).toBe("unauthorized");
+    expect(takeoverReply.message).toContain("manage scope");
 
-    for (const reply of [takeoverReply, resumeReply]) {
-      if (reply.t !== "error") throw new Error("expected an error frame");
-      expect(reply.code).toBe("unauthorized");
-      expect(reply.message).toContain("manage scope");
-    }
-    expect(h.store.listAgents()).toEqual([]);
-    expect(h.fake.loads).toEqual([]);
+    phone.send({ t: "session_resume", sessionId: SESSION_DORMANT, cwd: h.dormantDir });
+    const opened = await phone.next(isOpenedFrame, "prompt-scoped dormant resume");
+    if (!isOpenedFrame(opened)) throw new Error("expected a session_opened frame");
+    expect(opened.sessionId).toBe(SESSION_DORMANT);
+    expect(h.fake.loads).toEqual([SESSION_DORMANT]);
     phone.close();
   });
 
@@ -475,7 +477,7 @@ describe("the session_takeover websocket frame", () => {
 describe("the session_resume websocket frame", () => {
   test("resumes a dormant session and answers session_opened with the loaded id", async () => {
     const h = await harness();
-    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
     const phone = await h.connect(token);
 
     phone.send({ t: "session_resume", sessionId: SESSION_DORMANT, cwd: h.dormantDir });
@@ -493,7 +495,7 @@ describe("the session_resume websocket frame", () => {
 
   test("resuming the held session again answers the same agent id and loads nothing a second time", async () => {
     const h = await harness();
-    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
     const phone = await h.connect(token);
 
     phone.send({ t: "session_resume", sessionId: SESSION_DORMANT, cwd: h.dormantDir });
@@ -512,7 +514,7 @@ describe("the session_resume websocket frame", () => {
 
   test("refuses a cwd that disagrees with the index and loads nothing", async () => {
     const h = await harness();
-    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
     const phone = await h.connect(token);
 
     phone.send({ t: "session_resume", sessionId: SESSION_DORMANT, cwd: "/somewhere-else" });
@@ -528,7 +530,7 @@ describe("the session_resume websocket frame", () => {
 
   test("refuses a resume of a session a live TUI holds, naming the hazard", async () => {
     const h = await harness();
-    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
     const phone = await h.connect(token);
 
     // Resuming a session live in a terminal is the two-writers-on-one-file

@@ -89,6 +89,33 @@ describe("resumeAgent", () => {
     expect(h.fake.sessions).toEqual([]);
   });
 
+  test("captures history notifications emitted during session/load under the resumed agent id", async () => {
+    const h = harness();
+    const prompter = h.pair("prompter", [SCOPE_READ, SCOPE_PROMPT]);
+    const sessionId = "durable-session";
+    const replay = [
+      {
+        sessionUpdate: "agent_thought_chunk",
+        messageId: "m1",
+        content: { type: "text", text: "Thinking." },
+      },
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "m1",
+        content: { type: "text", text: "Finding." },
+      },
+    ];
+    // Real omp acp emits these before session/load returns. This is the race
+    // the old post-resume emit test could never detect.
+    h.fake.replayOnLoad(replay);
+
+    const resumed = await h.sup.resumeAgent({ name: "resumed", cwd: "/work", sessionId }, prompter);
+    expect(h.updates.map(update => ({ agentId: update.agentId, update: update.update }))).toEqual(
+      replay.map(update => ({ agentId: resumed.id, update })),
+    );
+    expect(h.store.updatesSince(resumed.id, 0).map(record => record.payload)).toEqual(replay);
+  });
+
   test("restores the daemon MCP mounts when loading an existing session", async () => {
     const descriptors: Array<{ name: string; url: string }> = [];
     const h = harness({
@@ -182,21 +209,18 @@ describe("resumeAgent", () => {
     expect(h.fake.loads).toEqual([priorSessionId]);
   });
 
-  test("refuses to resume without manage scope, before touching a host or the peer", async () => {
+  test("prompt scope may resume a known session; read alone is refused before touching a host", async () => {
     const h = harness();
-    const noManage: Actor = { deviceId: "no-manage", scopes: [SCOPE_READ] };
-    h.store.addDevice({
-      id: "no-manage",
-      name: "no-manage",
-      publicKey: "pk",
-      scopes: [SCOPE_READ],
-      createdAt: new Date().toISOString(),
-    });
+    const prompter = h.pair("prompter", [SCOPE_READ, SCOPE_PROMPT]);
+    const resumed = await h.sup.resumeAgent({ name: "r", cwd: "/work", sessionId: "known" }, prompter);
+    expect(resumed.acpSessionId).toBe("known");
+    expect(h.fake.loads).toEqual(["known"]);
 
-    await expect(h.sup.resumeAgent({ name: "r", cwd: "/work", sessionId: "x" }, noManage)).rejects.toThrow(
-      /missing manage scope/,
+    const reader = h.pair("reader", [SCOPE_READ]);
+    await expect(h.sup.resumeAgent({ name: "r", cwd: "/work", sessionId: "other" }, reader)).rejects.toThrow(
+      /missing prompt scope/,
     );
-    expect(h.fake.loads).toEqual([]);
+    expect(h.fake.loads).toEqual(["known"]);
   });
 
   test("lastActiveAt-bearing agent row exists immediately, before the load resolves, same lifecycle createAgent has", async () => {
