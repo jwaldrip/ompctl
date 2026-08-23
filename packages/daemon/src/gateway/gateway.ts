@@ -24,6 +24,8 @@ import {
   type Agent,
   type AgentId,
   type ClientFrame,
+  COLLAB_REFUSAL_REASONS,
+  type CollabRefusal,
   type CollabVoiceNoteFrame,
   type CollabVoiceParticipant,
   type ConnectorSummary,
@@ -59,6 +61,8 @@ import {
   type WebViewActionResult,
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
+import { CollabGuests } from "../collab/guests.ts";
+import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData } from "../collab/relay.ts";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
@@ -343,6 +347,13 @@ const MAX_TUI_ACP_FRAME_BYTES = 32 * 1024 * 1024;
  * what makes that misuse cost one refused frame instead of a flooded client.
  */
 const MAX_TUI_ACTIVITY_TEXT_BYTES = 64 * 1024;
+
+/**
+ * How long a `tui_takeover` request waits for the terminal to release its
+ * renderer. Generous for a terminal that is mid-turn and answers late, short
+ * enough that a build with no takeover support refuses instead of hanging.
+ */
+const TAKEOVER_ACK_TIMEOUT_MS = 15_000;
 
 /**
  * Clones one socket may have running at once.
@@ -739,6 +750,11 @@ export interface GatewayOptions {
   homeId?: string;
   /** How long an unapproved pairing stays claimable. */
   pairingTtlMs?: number;
+  /**
+   * How long a `tui_takeover` waits for the terminal to release its renderer.
+   * Injectable so a test can assert the refusal without waiting out a clock.
+   */
+  takeoverAckTimeoutMs?: number;
   voice?: VoiceHandlerFactory;
   /**
    * Called when a device sends a typed prompt.
@@ -912,6 +928,13 @@ interface SocketState {
    */
   sessionQuery: SessionQuery;
 }
+/**
+ * Every shape an upgraded socket on this server may carry: an authenticated
+ * gateway connection, or one leg of the content-blind collab relay. The two
+ * never mix after upgrade, and the discriminant check at each websocket
+ * handler is the only place they meet.
+ */
+type GatewaySocketData = SocketState | RelaySocketData;
 
 /**
  * What the frame handler needs from a connection.
@@ -992,15 +1015,24 @@ export class Gateway {
   #staticRoot: string | undefined;
   #onError: GatewayOptions["onError"];
   #collab: CollabRooms;
+  /**
+   * Guest legs into omp collab rooms. A different thing from `#collab`
+   * above despite the neighbourly naming: that one is the daemon's own
+   * voice-note rooms (the daemon as hub), this one is the daemon joining
+   * rooms other terminals host. See `collab/guests.ts`.
+   */
+  #collabGuests: CollabGuests;
+  #collabRelay = new CollabRelay();
 
   /** Set by `listen`, so uptime measures serving rather than construction. */
   #startedAtMs: number | undefined;
 
-  #server: Server<SocketState> | undefined;
+  #server: Server<GatewaySocketData> | undefined;
   #sockets = new Set<GatewaySocket>();
   /** Most recently registered live WebView socket for each agent. */
   #webviews = new Map<AgentId, GatewaySocket>();
   #tuiTakeovers = new Map<string, PendingTuiTakeover>();
+  #takeoverAckTimeoutMs: number;
   #unsubscribeSay: (() => void) | undefined;
   #unsubscribeRevoked: (() => void) | undefined;
   #unsubscribe: (() => void) | undefined;
@@ -1009,9 +1041,39 @@ export class Gateway {
     this.#sup = opts.supervisor;
     this.#store = opts.store;
     this.#collab = new CollabRooms(this.#store);
+    this.#collabGuests = new CollabGuests({
+      store: opts.store,
+      authorize: (actor, scope, action, agentId) => this.#sup.authorize(actor, scope, action, agentId),
+      // The same fan-out the supervisor's events ride, so guest-agent
+      // updates reach attached sockets through the identical choke point.
+      events: opts.events ?? { onUpdate: () => undefined, onAgentsChanged: () => undefined },
+      sendToHostingTui: (sessionId, frame) => {
+        const owner = [...this.#sockets].find(socket => socket.data.tui?.sessionId === sessionId);
+        if (owner === undefined) return false;
+        this.#send(owner, frame);
+        return true;
+      },
+      sessionKnown: async sessionId => {
+        const index = this.#sessionIndex;
+        // Without an index the daemon cannot prove a session unknown, so it
+        // falls through to `not_hosted`, which is true of every session no
+        // registered TUI holds.
+        if (index === undefined) return true;
+        return (await index.get(sessionId)) != null;
+      },
+      // The daemon's own relay rides this same server (the /r/<roomId>
+      // routes), so the loopback URL rooms are asked to live on is simply
+      // this server's bound address. Null before listen(): a room cannot
+      // be opened before the relay exists to host it.
+      relayUrl: () => {
+        const port = this.#server?.port;
+        return port === undefined ? null : `ws://127.0.0.1:${port}`;
+      },
+    });
     if (opts.federation?.syncToken.trim() === "") throw new Error("federation sync token is required");
     this.#federation = opts.federation;
     this.#auth = new DeviceAuth({ store: opts.store, pairingTtlMs: opts.pairingTtlMs });
+    this.#takeoverAckTimeoutMs = opts.takeoverAckTimeoutMs ?? TAKEOVER_ACK_TIMEOUT_MS;
     this.#events = opts.events;
     this.#host = opts.host ?? DEFAULT_HOST;
     this.#port = opts.port ?? 0;
@@ -1123,9 +1185,18 @@ export class Gateway {
         return Response.json({ error: "internal_error" }, { status: 500 });
       },
       websocket: {
-        open: (ws: ServerWebSocket<SocketState>) => this.#open(ws),
-        message: (ws: ServerWebSocket<SocketState>, message: string | Buffer) => this.#message(ws, message),
-        close: (ws: ServerWebSocket<SocketState>) => this.#close(ws),
+        open: (ws: ServerWebSocket<GatewaySocketData>) => {
+          if (isRelaySocketData(ws.data)) return this.#collabRelay.open(this.#relaySocket(ws));
+          this.#open(ws as ServerWebSocket<SocketState>);
+        },
+        message: (ws: ServerWebSocket<GatewaySocketData>, message: string | Buffer) => {
+          if (isRelaySocketData(ws.data)) return this.#collabRelay.message(this.#relaySocket(ws), message);
+          this.#message(ws as ServerWebSocket<SocketState>, message);
+        },
+        close: (ws: ServerWebSocket<GatewaySocketData>) => {
+          if (isRelaySocketData(ws.data)) return this.#collabRelay.close(this.#relaySocket(ws));
+          this.#close(ws as ServerWebSocket<SocketState>);
+        },
       },
     });
     this.#startedAtMs ??= Date.now();
@@ -1137,6 +1208,21 @@ export class Gateway {
     return port;
   }
 
+  /**
+   * The relay origin a collab host on this machine points at so the room
+   * stays on it, in the shape omp's `CollabHost.start(relayUrl)` expects: a
+   * bare origin it appends `/r/<roomId>` to itself. `ws://` rather than
+   * `wss://`: omp's link grammar accepts plain ws only for local hosts, and
+   * this daemon binds loopback unless the operator deliberately rebinds. A
+   * wildcard bind still answers on loopback, so the URL names that.
+   */
+  get collabRelayUrl(): string {
+    const port = this.#server?.port;
+    if (port === undefined) throw new Error("gateway is not listening");
+    const host = this.#host === "0.0.0.0" || this.#host === "::" ? "127.0.0.1" : this.#host;
+    return `ws://${host}:${port}`;
+  }
+
   async close(): Promise<void> {
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
@@ -1146,12 +1232,22 @@ export class Gateway {
     this.#unsubscribeRevoked = undefined;
     this.#disarmSessionWatcher();
     for (const ws of [...this.#sockets]) this.#close(ws);
+    // Relay legs are not in `#sockets`; `stop(true)` tears them down with
+    // everything else, and the room state dies with the server.
     // `stop(true)` closes live connections itself. Closing each socket here
     // first and then awaiting it deadlocks on Bun 1.3.4: the promise never
     // settles. Measured, not guessed. Clients therefore see an abnormal close
     // rather than a 1001, which is the right trade for a shutdown path that
     // actually returns.
-    await this.#server?.stop(true);
+    //
+    // The same poison applies when a socket was closed server-side at ANY
+    // point in the server's life, which the collab relay's refusals do by
+    // design (4004/4009/4001 are its protocol). Reproduced on 1.3.14: the
+    // await never settles, though the listen port is released synchronously
+    // either way, so skipping the await costs nothing the shutdown order
+    // relies on.
+    const stopping = this.#server?.stop(true);
+    if (!this.#collabRelay.hasClosedLegs) await stopping;
     this.#server = undefined;
     this.#startedAtMs = undefined;
   }
@@ -1385,7 +1481,7 @@ export class Gateway {
 
   // -- http ------------------------------------------------------------------
 
-  async #fetch(req: Request, server: Server<SocketState>): Promise<Response | undefined> {
+  async #fetch(req: Request, server: Server<GatewaySocketData>): Promise<Response | undefined> {
     // `req.url` is absolute only when the request carried a Host header, and
     // HTTP/1.0 does not require one. Parsed bare, such a request threw here,
     // before any authentication ran, so anything able to open the port could
@@ -1441,6 +1537,20 @@ export class Gateway {
       const secret = req.headers.get("x-webhook-secret") ?? url.searchParams.get("token") ?? "";
       const body = new Uint8Array(await req.arrayBuffer());
       return await this.fireWebhook(webhook[1] ?? "", secret, body, req.headers.get("content-type") ?? undefined);
+    }
+    // The collab relay: unauthenticated by design, because possession of the
+    // link is the trust boundary and every frame is sealed before it reaches
+    // the socket, so the relay forwards ciphertext it cannot read either way.
+    // omp's CollabSocket presents no credential on this leg, so a token gate
+    // would break `/collab ws://127.0.0.1:<port>` without protecting
+    // anything. Exposure is the daemon's bind, loopback unless the operator
+    // deliberately rebinds; what a relay leg can do is bounded there. The
+    // reasoning lives in full in collab/relay.ts.
+    const relayUpgrade = this.#collabRelay.upgradeData(url);
+    if (relayUpgrade !== null) {
+      if (relayUpgrade instanceof Response) return relayUpgrade;
+      if (server.upgrade(req, { data: relayUpgrade })) return undefined;
+      return new Response("expected a websocket upgrade", { status: 426 });
     }
 
     // Everything outside `/v1` is the web client, and it is terminal: a path
@@ -2514,7 +2624,30 @@ export class Gateway {
     }
 
     return await new Promise<Agent>((resolve, reject) => {
-      this.#tuiTakeovers.set(sessionId, { socket, actor, resolve, reject });
+      // Bounded, because the other half of this handshake may not exist.
+      // `tui_takeover` asks a terminal to stop rendering and host an ACP
+      // server, which only omp itself can do; the bridge extension that
+      // registers these sessions deliberately implements steering and not
+      // this. So a build without takeover support answers nothing, and an
+      // unbounded wait leaves the operator looking at a screen that never
+      // resolves until they quit the terminal. A refusal by name is the
+      // honest answer to a door that is not there.
+      const timer = setTimeout(() => {
+        this.#tuiTakeovers.delete(sessionId);
+        reject(
+          new TakeoverRefusal(
+            `the terminal holding session ${sessionId} did not release its renderer; its omp build may not support takeover`,
+            "tui_no_takeover",
+          ),
+        );
+      }, this.#takeoverAckTimeoutMs);
+      const settle = <T>(finish: (value: T) => void) => {
+        return (value: T): void => {
+          clearTimeout(timer);
+          finish(value);
+        };
+      };
+      this.#tuiTakeovers.set(sessionId, { socket, actor, resolve: settle(resolve), reject: settle(reject) });
       this.#send(socket, { t: "tui_takeover", sessionId });
     });
   }
@@ -2869,6 +3002,15 @@ export class Gateway {
 
   // -- websocket -------------------------------------------------------------
 
+  /**
+   * Narrow a socket the discriminant already identified as a relay leg.
+   * Sound because `data` is pinned at upgrade and never reassigned; this is
+   * the one place the union is resolved by anything but the check itself.
+   */
+  #relaySocket(ws: ServerWebSocket<GatewaySocketData>): RelaySocket {
+    return ws as RelaySocket;
+  }
+
   #open(ws: GatewaySocket): void {
     this.#sockets.add(ws);
     ws.data.collab = {
@@ -2906,6 +3048,10 @@ export class Gateway {
     ws.data.tui = null;
     const closeAcp = tui?.onAcpClose;
     if (tui) {
+      // A hosting terminal dying fails any collab open still waiting on its
+      // bridge. Live guest legs observe the room's death through their own
+      // socket, so they need nothing here.
+      this.#collabGuests.onHostTuiGone(tui.sessionId);
       tui.onAcpClose = undefined;
       tui.onAcpMessage = undefined;
     }
@@ -3893,6 +4039,74 @@ export class Gateway {
         return;
       }
 
+      case "collab_open": {
+        // Read is the floor, matching `attach`: opening buys watching, and
+        // every write that may follow is gated again at prompt scope. The
+        // registry re-resolves the device row itself, the same defense the
+        // supervisor runs.
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "collab open requires read scope" });
+          return;
+        }
+        if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "collab_open needs a sessionId" });
+          return;
+        }
+        // Deliberately not awaited: the join walks a bridge round trip and a
+        // relay handshake, and the socket must stay responsive to `collab_leave`
+        // while it runs.
+        void this.#collabGuests
+          .openCollab(frame.sessionId, this.#actorOf(ws))
+          .then(outcome => this.#answerCollabOpen(ws, frame.sessionId, outcome))
+          .catch((err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              sessionId: frame.sessionId,
+              code: err instanceof UnauthorizedError ? "unauthorized" : "collab_unavailable",
+              message: err instanceof Error ? err.message : "collab open failed",
+            });
+          });
+        return;
+      }
+
+      case "collab_leave": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "collab leave requires read scope" });
+          return;
+        }
+        if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "collab_leave needs a sessionId" });
+          return;
+        }
+        // Success needs no ack frame: the agent row goes terminal and every
+        // attached socket is told through the ordinary `agents` push, which
+        // is the same shape a stopped owned agent produces.
+        const outcome = this.#collabGuests.leaveCollab(frame.sessionId, this.#actorOf(ws));
+        if ("refused" in outcome) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: frame.sessionId,
+            code: "collab_refused",
+            reason: outcome.refused,
+            message: COLLAB_REFUSAL_REASONS[outcome.refused],
+          });
+        }
+        return;
+      }
+
+      case "tui_collab_opened":
+      case "tui_collab_error":
+      case "tui_collab_closed": {
+        // Bridge answers ride the registered TUI socket; from any other
+        // socket the frame names a request that was never made.
+        if (!ws.data.tui) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "collab bridge frame has no registered TUI" });
+          return;
+        }
+        this.#collabGuests.onBridgeFrame(frame);
+        return;
+      }
+
       case "session_delete": {
         // Manage, the same gate archiving takes, and the same one takeover
         // takes: this is the operator's own record of their work being
@@ -4034,7 +4248,6 @@ export class Gateway {
         void this.#startCloneOverSocket(ws, frame);
         return;
       }
-
       case "prompt": {
         if (!ws.data.scopes.has(SCOPE_PROMPT)) {
           this.#send(ws, {
@@ -4062,6 +4275,36 @@ export class Gateway {
         // Announced before it is sent, so whoever is tracking how a device is
         // talking to an agent learns it typed even if the prompt then fails.
         this.#onTextPrompt?.(frame.agentId, this.#actorOf(ws));
+        // A guest agent is steered through its collab leg, not an ACP
+        // session: same frame, same scope, different road. Checked before
+        // the federation queue so a live local leg is never parked as an
+        // intent for a delegate that cannot hold it.
+        if (this.#collabGuests.holds(frame.agentId)) {
+          try {
+            const outcome = this.#collabGuests.prompt(
+              frame.agentId,
+              frame.text,
+              images.images.length > 0 ? images.images : undefined,
+              this.#actorOf(ws),
+            );
+            if ("sent" in outcome) return;
+            this.#send(ws, {
+              t: "error",
+              agentId: frame.agentId,
+              code: "collab_refused",
+              reason: outcome.refused,
+              message: COLLAB_REFUSAL_REASONS[outcome.refused],
+            });
+          } catch (err) {
+            this.#send(ws, {
+              t: "error",
+              agentId: frame.agentId,
+              code: err instanceof UnauthorizedError ? "unauthorized" : "prompt_failed",
+              message: err instanceof Error ? err.message : "prompt failed",
+            });
+          }
+          return;
+        }
         if (this.#queuesForDelegate(frame.agentId)) {
           this.#enqueueIntent(
             frame.agentId,
@@ -4095,6 +4338,30 @@ export class Gateway {
             code: "unauthorized",
             message: "cancel requires prompt scope",
           });
+          return;
+        }
+        // A guest agent's interrupt is the collab `abort` frame, same scope
+        // gate, placed before the federation queue for the same reason the
+        // prompt interception is.
+        if (this.#collabGuests.holds(frame.agentId)) {
+          try {
+            const outcome = this.#collabGuests.abort(frame.agentId, this.#actorOf(ws));
+            if ("sent" in outcome) return;
+            this.#send(ws, {
+              t: "error",
+              agentId: frame.agentId,
+              code: "collab_refused",
+              reason: outcome.refused,
+              message: COLLAB_REFUSAL_REASONS[outcome.refused],
+            });
+          } catch (err) {
+            this.#send(ws, {
+              t: "error",
+              agentId: frame.agentId,
+              code: err instanceof UnauthorizedError ? "unauthorized" : "cancel_failed",
+              message: err instanceof Error ? err.message : "cancel failed",
+            });
+          }
           return;
         }
         if (this.#queuesForDelegate(frame.agentId)) {
@@ -4312,6 +4579,35 @@ export class Gateway {
   #collabConnection(ws: GatewaySocket): CollabConnection {
     if (ws.data.collab === null) throw new Error("collaboration connection was not initialised");
     return ws.data.collab;
+  }
+
+  /** Translate one `collab_open` outcome into the frames a phone expects: success, a named refusal, or the wire failure. */
+  #answerCollabOpen(
+    ws: GatewaySocket,
+    sessionId: string,
+    outcome: Awaited<ReturnType<CollabGuests["openCollab"]>>,
+  ): void {
+    if ("opened" in outcome) {
+      this.#send(ws, {
+        t: "collab_opened",
+        sessionId,
+        agentId: outcome.agentId,
+        readOnly: outcome.readOnly,
+      });
+      return;
+    }
+    if ("refused" in outcome) {
+      const refusal: CollabRefusal = outcome.refused;
+      this.#send(ws, {
+        t: "error",
+        sessionId,
+        code: "collab_refused",
+        reason: refusal,
+        message: COLLAB_REFUSAL_REASONS[refusal],
+      });
+      return;
+    }
+    this.#send(ws, { t: "error", sessionId, code: "collab_unavailable", message: outcome.unavailable });
   }
 
   #deliverUpdate(ws: GatewaySocket, agentId: AgentId, seq: number, update: unknown): void {

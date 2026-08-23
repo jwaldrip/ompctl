@@ -79,6 +79,16 @@ export type UserMessageContent =
   | Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 
 /**
+ * What omp answers when a room starts. `link` is the full-strength link when
+ * the room is writable, so a daemon holding it may prompt and interrupt;
+ * `viewLink` is the same room at read-only strength. Both are secrets.
+ */
+export interface CollabLinks {
+  link: string;
+  viewLink: string;
+}
+
+/**
  * The slice of `ExtensionAPI` the bridge drives a session through.
  *
  * `sendUserMessage`, not `sendMessage`: a phone driving this terminal is the
@@ -90,6 +100,21 @@ export type UserMessageContent =
  */
 export interface BridgePi {
   sendUserMessage(content: UserMessageContent, options?: { deliverAs?: "steer" | "followUp" }): void;
+  /**
+   * Start hosting a collab room on the relay the daemon named, returning the
+   * room's links. Optional because it is newer than this bridge: an omp
+   * without it answers `unavailable` by name rather than appearing broken,
+   * which is the honest state of every build before `pi.startCollab` shipped.
+   *
+   * The links are credentials. They go to the daemon over the socket the
+   * operator already authenticated and nowhere else, never to a log or a
+   * trace.
+   */
+  startCollab?(options: { relayUrl?: string }): Promise<CollabLinks>;
+  /** The links of the room this session is already hosting, if any. */
+  getCollabLinks?(): CollabLinks | undefined;
+  /** Stop hosting. Only ever called for a room this bridge started. */
+  stopCollab?(): Promise<void> | void;
 }
 
 export interface BridgeDeps {
@@ -191,6 +216,12 @@ export class Bridge {
    * addressed to a session the terminal has already left.
    */
   #registered = "";
+  /**
+   * Whether this bridge started the room this session is sharing. An operator
+   * who typed `/collab` themselves owns that room, and a phone leaving is not
+   * a reason to stop their sharing.
+   */
+  #hostedRoom = false;
   #attempt = 0;
   #timer: unknown = null;
   #stopped = false;
@@ -317,6 +348,91 @@ export class Bridge {
     this.#activity("turn_end");
   }
 
+  /**
+   * The daemon asking this terminal to share its session, and to stop.
+   *
+   * Hosting is omp's own `pi.startCollab`, which is newer than most installed
+   * builds. Its absence is a first-class answer here rather than a crash: a
+   * daemon that hears `unavailable` can fall back to steering, which every
+   * build supports, and the operator reads why instead of watching a control
+   * do nothing.
+   *
+   * Only a room this bridge started is ever stopped. An operator who typed
+   * `/collab` themselves owns that room, and a phone leaving a session is not
+   * a reason to take their sharing away.
+   */
+  async #handleCollab(
+    kind: "tui_collab_open" | "tui_collab_close",
+    requestId: string,
+    relayUrl?: string,
+  ): Promise<void> {
+    const sessionId = this.#registered;
+    if (sessionId === "") return;
+    if (kind === "tui_collab_close") {
+      if (this.#hostedRoom && this.#pi.stopCollab !== undefined) {
+        try {
+          await this.#pi.stopCollab();
+        } catch {
+          // A room that will not stop is still a room the daemon has left;
+          // reporting closed is the truth about the guest leg either way.
+        }
+        this.#hostedRoom = false;
+      }
+      this.#answer({ t: "tui_collab_closed", sessionId, requestId });
+      return;
+    }
+    const start = this.#pi.startCollab;
+    if (start === undefined) {
+      this.#answer({
+        t: "tui_collab_error",
+        sessionId,
+        requestId,
+        reason: "unavailable",
+        detail: "this omp build cannot start a collab room from an extension; steering still works",
+      });
+      return;
+    }
+    try {
+      const links = await start.call(this.#pi, relayUrl === undefined ? {} : { relayUrl });
+      this.#hostedRoom = true;
+      // Never traced and never logged: `link` grants prompting and
+      // interrupting to anyone holding it.
+      this.#answer({
+        t: "tui_collab_opened",
+        sessionId,
+        requestId,
+        link: links.link,
+        viewLink: links.viewLink,
+        writable: true,
+      });
+    } catch (err) {
+      // omp refuses for reasons the operator can act on, hosting on another
+      // relay among them, so its own words travel rather than a summary.
+      this.#answer({
+        t: "tui_collab_error",
+        sessionId,
+        requestId,
+        reason: "refused",
+        detail: err instanceof Error ? err.message : "collab hosting refused",
+      });
+    }
+  }
+
+  /**
+   * Answer the daemon, tolerating a socket that went away mid-request.
+   * `#write` throws on a closed socket, which is right for a registration the
+   * caller can retry and wrong here: this runs from a floating promise in a
+   * session someone is typing in, where an escaping throw is fatal.
+   */
+  #answer(frame: Record<string, unknown>): void {
+    try {
+      this.#write(frame);
+    } catch {
+      // The daemon's own request times out and it tells the phone. Nothing
+      // here can reach a socket that is gone.
+    }
+  }
+
   #handleMessage(data: unknown): void {
     if (typeof data !== "string") return;
     let parsed: unknown;
@@ -326,7 +442,27 @@ export class Bridge {
       return;
     }
     if (parsed === null || typeof parsed !== "object") return;
-    const frame = parsed as { t?: unknown; sessionId?: unknown; text?: unknown; deliverAs?: unknown; images?: unknown };
+    const frame = parsed as {
+      t?: unknown;
+      sessionId?: unknown;
+      requestId?: unknown;
+      relayUrl?: unknown;
+      text?: unknown;
+      deliverAs?: unknown;
+      images?: unknown;
+    };
+    // Collab first: it is the road a phone takes to co-drive this terminal
+    // rather than to push one turn into it, and it answers by request id
+    // because hosting starts asynchronously.
+    if (frame.t === "tui_collab_open" || frame.t === "tui_collab_close") {
+      if (frame.sessionId !== this.#registered || typeof frame.requestId !== "string") return;
+      void this.#handleCollab(
+        frame.t,
+        frame.requestId,
+        typeof frame.relayUrl === "string" ? frame.relayUrl : undefined,
+      );
+      return;
+    }
     // Only a steer for the session this socket registered. The daemon
     // already routes by registration, so a mismatch here means the socket
     // outlived a switch, and delivering it would put a phone's words into
