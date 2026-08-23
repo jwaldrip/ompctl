@@ -218,7 +218,7 @@ interface Harness {
   connect(token: string): Promise<SocketClient>;
 }
 
-async function harness(): Promise<Harness> {
+async function harness(opts: { takeoverAckTimeoutMs?: number } = {}): Promise<Harness> {
   const dbPath = join(tempDir("gw-open-db-"), "ompd.db");
   paths.push(dbPath);
   const store = new Store(dbPath);
@@ -247,6 +247,7 @@ async function harness(): Promise<Harness> {
     port: 0,
     sessions: hosts,
     sessionIndex,
+    ...(opts.takeoverAckTimeoutMs === undefined ? {} : { takeoverAckTimeoutMs: opts.takeoverAckTimeoutMs }),
   });
   gateways.push(gw);
   const port = await gw.listen();
@@ -455,6 +456,39 @@ describe("the session_takeover websocket frame", () => {
     expect(reply.code).toBe("not_live_tui");
     expect(reply.message).toContain("dormant");
     expect(h.store.listAgents()).toEqual([]);
+    phone.close();
+  });
+
+  test("refuses a takeover the terminal never acknowledges rather than waiting on it forever", async () => {
+    // The other half of this handshake does not exist in any shipping
+    // terminal: `tui_takeover` asks omp to stop rendering and host an ACP
+    // server, and the bridge extension that registers these sessions
+    // implements steering instead and leaves the frame alone. Unbounded, the
+    // operator taps takeover and watches a screen that resolves only when
+    // they quit the terminal.
+    const h = await harness({ takeoverAckTimeoutMs: 25 });
+    const tui = await registerTui(h, SESSION_LIVE, h.liveDir, process.pid);
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const phone = await h.connect(token);
+
+    phone.send(takeoverRequest(h));
+    // The command reached the terminal; what never comes is its answer.
+    await tui.requested.promise;
+    const reply = await phone.next(f => f.t === "error", "unacknowledged takeover refusal");
+    if (reply.t !== "error") throw new Error("expected an error frame");
+
+    expect(reply.code).toBe("tui_no_takeover");
+    expect(reply.message).toContain("did not release its renderer");
+    // Nothing was bound: a refused takeover must not leave a half-adopted
+    // session behind for the next attempt to trip over.
+    expect(h.store.listAgents()).toEqual([]);
+
+    // And the refusal clears the pending slot, so a terminal that gains
+    // takeover support later is not locked out by `takeover_pending`.
+    phone.send(takeoverRequest(h));
+    const second = await phone.next(f => f.t === "error", "second refusal");
+    if (second.t !== "error") throw new Error("expected an error frame");
+    expect(second.code).toBe("tui_no_takeover");
     phone.close();
   });
 

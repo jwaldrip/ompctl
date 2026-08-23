@@ -345,6 +345,13 @@ const MAX_TUI_ACP_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_TUI_ACTIVITY_TEXT_BYTES = 64 * 1024;
 
 /**
+ * How long a `tui_takeover` request waits for the terminal to release its
+ * renderer. Generous for a terminal that is mid-turn and answers late, short
+ * enough that a build with no takeover support refuses instead of hanging.
+ */
+const TAKEOVER_ACK_TIMEOUT_MS = 15_000;
+
+/**
  * Clones one socket may have running at once.
  *
  * A clone is the one frame here that spends minutes of disk and network on a
@@ -739,6 +746,11 @@ export interface GatewayOptions {
   homeId?: string;
   /** How long an unapproved pairing stays claimable. */
   pairingTtlMs?: number;
+  /**
+   * How long a `tui_takeover` waits for the terminal to release its renderer.
+   * Injectable so a test can assert the refusal without waiting out a clock.
+   */
+  takeoverAckTimeoutMs?: number;
   voice?: VoiceHandlerFactory;
   /**
    * Called when a device sends a typed prompt.
@@ -1001,6 +1013,7 @@ export class Gateway {
   /** Most recently registered live WebView socket for each agent. */
   #webviews = new Map<AgentId, GatewaySocket>();
   #tuiTakeovers = new Map<string, PendingTuiTakeover>();
+  #takeoverAckTimeoutMs: number;
   #unsubscribeSay: (() => void) | undefined;
   #unsubscribeRevoked: (() => void) | undefined;
   #unsubscribe: (() => void) | undefined;
@@ -1012,6 +1025,7 @@ export class Gateway {
     if (opts.federation?.syncToken.trim() === "") throw new Error("federation sync token is required");
     this.#federation = opts.federation;
     this.#auth = new DeviceAuth({ store: opts.store, pairingTtlMs: opts.pairingTtlMs });
+    this.#takeoverAckTimeoutMs = opts.takeoverAckTimeoutMs ?? TAKEOVER_ACK_TIMEOUT_MS;
     this.#events = opts.events;
     this.#host = opts.host ?? DEFAULT_HOST;
     this.#port = opts.port ?? 0;
@@ -2514,7 +2528,30 @@ export class Gateway {
     }
 
     return await new Promise<Agent>((resolve, reject) => {
-      this.#tuiTakeovers.set(sessionId, { socket, actor, resolve, reject });
+      // Bounded, because the other half of this handshake may not exist.
+      // `tui_takeover` asks a terminal to stop rendering and host an ACP
+      // server, which only omp itself can do; the bridge extension that
+      // registers these sessions deliberately implements steering and not
+      // this. So a build without takeover support answers nothing, and an
+      // unbounded wait leaves the operator looking at a screen that never
+      // resolves until they quit the terminal. A refusal by name is the
+      // honest answer to a door that is not there.
+      const timer = setTimeout(() => {
+        this.#tuiTakeovers.delete(sessionId);
+        reject(
+          new TakeoverRefusal(
+            `the terminal holding session ${sessionId} did not release its renderer; its omp build may not support takeover`,
+            "tui_no_takeover",
+          ),
+        );
+      }, this.#takeoverAckTimeoutMs);
+      const settle = <T>(finish: (value: T) => void) => {
+        return (value: T): void => {
+          clearTimeout(timer);
+          finish(value);
+        };
+      };
+      this.#tuiTakeovers.set(sessionId, { socket, actor, resolve: settle(resolve), reject: settle(reject) });
       this.#send(socket, { t: "tui_takeover", sessionId });
     });
   }
