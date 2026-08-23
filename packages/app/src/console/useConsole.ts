@@ -28,6 +28,7 @@ import {
   emptyConsole,
   manageScopeAccess,
   promptScopeAccess,
+  readScopeAccess,
   sessionDeleteNotice,
   tuiPageToAskFor,
   tuiSessionFor,
@@ -47,8 +48,9 @@ export interface ConsoleActions {
   loadEarlier: (agentId: AgentId) => void;
   /**
    * Open one browser row. A row whose session an agent already holds opens
-   * that agent's log; a live terminal session opens its prompt surface; the
-   * rest claim through the daemon.
+   * that agent's log; a live terminal session is asked for as a collab guest
+   * first and falls back to the steer surface when the terminal's omp cannot
+   * host; the rest claim through the daemon.
    */
   openSession: (target: SessionOpenTarget) => void;
   /**
@@ -181,6 +183,21 @@ export function useConsole(
     },
     [client],
   );
+  /**
+   * Tell the daemon to leave the room when the operator walks away from a
+   * co-driven session, whether the way out is back or the opening of another
+   * session. The daemon's guest outlives this socket by design, so a leave
+   * nobody sends keeps the daemon co-driving a session nobody here is
+   * watching. Re-selecting the session already on screen is not a leave.
+   */
+  const leaveCollab = useCallback(
+    (leaving: AgentId | null, next?: AgentId): void => {
+      if (leaving === null || leaving === next) return;
+      const join = stateRef.current.collabAgents.get(leaving);
+      if (join !== undefined) client.leaveCollab(join.sessionId);
+    },
+    [client],
+  );
 
   /**
    * Ask one terminal session for the page older than `cursor`.
@@ -212,6 +229,7 @@ export function useConsole(
   const selectAgent = useCallback(
     (agentId: AgentId): void => {
       const current = stateRef.current;
+      leaveCollab(current.selected, agentId);
       dispatch({ t: "select", agentId });
       client.attach(agentId, current.watermarks.has(agentId) ? {} : { sinceSeq: 0 });
       const agent = current.agents.find(candidate => candidate.id === agentId);
@@ -219,7 +237,7 @@ export function useConsole(
         requestHistory(agentId, agent.acpSessionId);
       }
     },
-    [client, requestHistory],
+    [client, leaveCollab, requestHistory],
   );
   useEffect(() => {
     // The mic outlives this effect only when the link is alive; the cleanup
@@ -265,6 +283,22 @@ export function useConsole(
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
       }),
+      client.on("collab_opened", event => {
+        // The join's answer lands exactly like a resume's: it may arrive
+        // before the roster lists the guest agent, and it carries both
+        // identities attach and history need. A re-open of a session the
+        // daemon already co-drives answers with the same agentId, which the
+        // reducer folds to no change; the attach below then resumes from the
+        // watermark rather than replaying, and the history guard keeps the
+        // first page from being asked for twice.
+        const current = stateRef.current;
+        leaveCollab(current.selected, event.agentId);
+        dispatch({ t: "collab_opened", event });
+        client.attach(event.agentId, current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
+        if (!current.historyBefore.has(event.agentId)) {
+          requestHistory(event.agentId, event.sessionId);
+        }
+      }),
       client.on("sessions", event => {
         dispatch({ t: "sessions", event });
       }),
@@ -289,6 +323,28 @@ export function useConsole(
         dispatch({ t: "plan_review", event });
       }),
       client.on("error", event => {
+        // The steer-surface fallback. `collab_unavailable` is the daemon
+        // saying this terminal's omp has no collab API to answer with, which
+        // is every omp build before `pi.startCollab` ships. That is not a
+        // refusal the operator must act on: the steer surface drives the
+        // same terminal today, so the open lands there instead of dying as
+        // a toast, and the tail ask is repeated because the join never
+        // started streaming. A `collab_refused` answer is the opposite case:
+        // a decision only the operator can make, so it states itself through
+        // the reducer and never silently falls back.
+        //
+        // This branch dies when `pi.startCollab` ships and the daemon stops
+        // answering `collab_unavailable`: with every terminal able to host,
+        // the fallback is dead code and can be deleted with evidence.
+        if (event.code === "collab_unavailable" && event.sessionId !== undefined) {
+          // Landing on the terminal surface is walking away from whatever
+          // co-driven session was on screen, exactly as a join's answer is,
+          // so the leave reaches the daemon through the same call.
+          leaveCollab(stateRef.current.selected);
+          dispatch({ t: "tui_select", sessionId: event.sessionId });
+          client.sessionTail(event.sessionId);
+          return;
+        }
         dispatch({ t: "error", event });
       }),
       client.on("say", event => {
@@ -350,7 +406,7 @@ export function useConsole(
       for (const off of offs) off();
       client.close();
     };
-  }, [askOlderTui, client, requestHistory, settleWebViewAction, voice]);
+  }, [askOlderTui, client, leaveCollab, requestHistory, settleWebViewAction, voice]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -370,9 +426,26 @@ export function useConsole(
         selectAgent(agentId);
       },
       back() {
+        leaveCollab(stateRef.current.selected);
         dispatch({ t: "select", agentId: null });
       },
       prompt(agentId, text, images) {
+        // The three-way rule, the same one the microphone follows: a pairing
+        // that provably holds no prompt scope gets the reason stated rather
+        // than a frame the daemon must refuse, and an unknown one sends
+        // optimistically so an older daemon never loses a working control.
+        // Steering a co-driven terminal spends this scope exactly as
+        // prompting an owned agent does, so one gate covers both.
+        if (promptScopeAccess(stateRef.current, connection.scopes) === "missing") {
+          dispatch({
+            t: "error",
+            event: {
+              message:
+                "This device does not hold the prompt scope. Pair it again with prompt access to steer this session.",
+            },
+          });
+          return;
+        }
         client.prompt(agentId, text, images);
         dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
       },
@@ -409,24 +482,37 @@ export function useConsole(
         // waits for that answer; the reply, not this dispatch, is what opens
         // the screen.
         //
-        // A live terminal session never claims anything: the terminal cannot
-        // hand its renderer over, so the open is the local prompt surface and
-        // nothing crosses the wire until the operator sends from it.
+        // A live terminal session is joined before it is steered: the daemon
+        // co-drives it as a collab guest and answers `collab_opened` with an
+        // ordinary agent to select, which is the richer surface whenever the
+        // terminal's omp can host. When it cannot, the daemon's
+        // `collab_unavailable` answer falls back to the local prompt surface
+        // (see the error handler), so no omp build is left without a way in.
         switch (target.kind) {
           case "agent":
             selectAgent(target.agentId);
             return;
-          case "live-tui":
-            dispatch({ t: "tui_select", sessionId: target.sessionId });
-            // The one thing that does cross the wire on open: the session's
-            // own transcript tail. A terminal session has no agent row, so
-            // `attach` and its update stream cannot reach it, and without this
-            // a session with a thousand messages in it opens as a composer
-            // over an empty pane. Asked per open rather than held across
-            // reconnects, because the daemon reads the file's end each time
-            // and the answer is only wanted while this surface is on screen.
-            client.sessionTail(target.sessionId);
+          case "live-tui": {
+            // A live terminal is joined, never taken over: nothing here
+            // claims the renderer, and the transcript arrives through the
+            // same frames an owned agent uses. Watching spends the read
+            // scope, so a pairing that provably lacks it gets the reason
+            // stated rather than a frame the daemon must refuse; an unknown
+            // one asks optimistically, and the daemon's refusal arrives
+            // named.
+            if (readScopeAccess(stateRef.current, connection.scopes) === "missing") {
+              dispatch({
+                t: "error",
+                event: {
+                  message:
+                    "This device does not hold the read scope. Pair it again with read access to watch this terminal.",
+                },
+              });
+              return;
+            }
+            client.openCollab(target.sessionId);
             return;
+          }
           case "dormant":
             client.resumeSession(target.sessionId, target.cwd);
             return;
@@ -535,7 +621,7 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [askOlderTui, client, connection.scopes, requestHistory, settleWebViewAction, selectAgent, voice],
+    [askOlderTui, client, connection.scopes, leaveCollab, requestHistory, settleWebViewAction, selectAgent, voice],
   );
 
   return [state, actions];

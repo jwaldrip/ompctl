@@ -1,7 +1,8 @@
 /**
  * The Fleet index wiring: canned `sessions` frames becoming rendered rows,
- * the live roster overlaid onto them, and a live-tui row's open landing on
- * the prompt surface that steers the terminal instead of claiming it.
+ * the live roster overlaid onto them, and a live-tui row's open asking the
+ * daemon to co-drive the session through its collab guest, with the steer
+ * surface as the fallback when that terminal's omp cannot host a room.
  *
  * The exact bug this file pins: a daemon with hundreds of sessions and a
  * phone showing "No sessions.", because Fleet rows were derived from the
@@ -18,12 +19,20 @@ import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import type { Agent, AgentId, SessionSummary } from "@ompd/core/contracts";
+import { COLLAB_REFUSAL_REASONS } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ConsoleEvent, ConsoleState, SessionOpenTarget } from "../src/console/state.ts";
-import { apply, browserSessionsOf, emptyConsole, openSessionTarget, tuiSessionFor } from "../src/console/state.ts";
+import {
+  apply,
+  browserSessionsOf,
+  COLLAB_WATCH_ONLY,
+  emptyConsole,
+  openSessionTarget,
+  tuiSessionFor,
+} from "../src/console/state.ts";
 import type { ConsoleActions } from "../src/console/useConsole.ts";
 import type { Connection } from "../src/platform/connection.ts";
 import type { BrowserState } from "../src/session/browser.ts";
@@ -321,6 +330,8 @@ describe("opening a row resolves to a holder, a claim, or the terminal prompt su
 class CannedClient {
   readonly askedIndex: unknown[] = [];
   readonly attached: Array<{ agentId: AgentId; options: unknown }> = [];
+  readonly collabOpens: string[] = [];
+  readonly collabLeaves: string[] = [];
   readonly sessionPrompts: Array<{ sessionId: string; text: string }> = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly tails: Array<{ sessionId: string; limit: number | undefined; cursor?: number }> = [];
@@ -353,6 +364,12 @@ class CannedClient {
   listSessions(query?: unknown): void {
     this.askedIndex.push(query);
   }
+  openCollab(sessionId: string): void {
+    this.collabOpens.push(sessionId);
+  }
+  leaveCollab(sessionId: string): void {
+    this.collabLeaves.push(sessionId);
+  }
   sessionPrompt(sessionId: string, text: string): void {
     this.sessionPrompts.push({ sessionId, text });
   }
@@ -378,7 +395,9 @@ const CONNECTION: Connection = {
   transport: "direct",
   url: "ws://127.0.0.1:7777/v1/socket",
   token: "tok_1",
-  scopes: ["read", "approve", "manage"],
+  // A pairing that can both watch and steer, which is what a live-tui row's
+  // open and the prompts that follow it spend.
+  scopes: ["read", "prompt", "approve", "manage"],
 };
 
 interface Mounted {
@@ -388,7 +407,7 @@ interface Mounted {
   unmount: () => void;
 }
 
-function mountConsole(): Mounted {
+function mountConsole(connection: Connection = CONNECTION): Mounted {
   const client = new CannedClient();
   let latest: [ConsoleState, ConsoleActions] | null = null;
   function Probe(props: { connection: Connection }): null {
@@ -399,7 +418,7 @@ function mountConsole(): Mounted {
   document.body.appendChild(host);
   const root = createRoot(host);
   act(() => {
-    root.render(createElement(Probe, { connection: CONNECTION }));
+    root.render(createElement(Probe, { connection }));
   });
   return {
     client,
@@ -453,6 +472,25 @@ describe("useConsole asks for the index once and folds the answer", () => {
   });
 });
 
+/**
+ * Open a live-tui row the way every omp before `pi.startCollab` resolves it:
+ * the join ask, the daemon's `collab_unavailable` answer, and the fallback
+ * that lands the operator on the steer surface. The steer tests open through
+ * here because that answer is what the terminals in the field give today.
+ */
+function openTuiByFallback(mounted: Mounted, sessionId: string): void {
+  act(() => {
+    mounted.actions().openSession({ kind: "live-tui", sessionId });
+  });
+  act(() => {
+    mounted.client.emit("error", {
+      code: "collab_unavailable",
+      sessionId,
+      message: "this omp build cannot host a collab room",
+    });
+  });
+}
+
 describe("useConsole opens a row through its holder or a claim on the socket", () => {
   test("a row with a holder attaches to that agent, the live-ompd open", () => {
     const mounted = mountConsole();
@@ -468,25 +506,32 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
     }
   });
 
-  test("a live-tui row opens the prompt surface and asks for its transcript, claiming nothing", () => {
+  test("a live-tui row asks the daemon to co-drive, claiming nothing until the join answers", () => {
     const mounted = mountConsole();
     try {
       const target: SessionOpenTarget = { kind: "live-tui", sessionId: "s-tui" };
       act(() => {
         mounted.actions().openSession(target);
       });
-      expect(mounted.state().selectedTui).toBe("s-tui");
-      // The one frame the open does send: this session's own transcript tail.
-      // A terminal session has no agent row to attach to, so without it the
-      // surface opens as a composer over an empty pane.
-      expect(mounted.client.tails).toEqual([{ sessionId: "s-tui", limit: undefined }]);
-      // And it claims nothing: no takeover, no resume, no attach. A terminal
-      // cannot be taken over from here, and reading a transcript is not
-      // pretending the daemon agreed to something it was never asked.
-      expect(mounted.client.sessionPrompts).toHaveLength(0);
+      // The one frame the open sends is the join. Nothing is selected yet:
+      // the screen that renders a co-driven terminal is the ordinary session
+      // screen, and its agent exists only once `collab_opened` names one.
+      expect(mounted.client.collabOpens).toEqual(["s-tui"]);
+      expect(mounted.client.tails).toHaveLength(0);
       expect(mounted.client.resumes).toHaveLength(0);
       expect(mounted.client.attached).toHaveLength(0);
       expect(mounted.state().selected).toBeNull();
+      expect(mounted.state().selectedTui).toBeNull();
+
+      // The join's answer is the landing: the agent it names is selected and
+      // attached exactly as a resume's answer would be, which is the whole
+      // point of presenting a joined terminal as an ordinary agent.
+      act(() => {
+        mounted.client.emit("collab_opened", { sessionId: "s-tui", agentId: "agt_guest", readOnly: false });
+      });
+      expect(mounted.state().selected).toBe("agt_guest");
+      expect(mounted.client.attached).toEqual([{ agentId: "agt_guest", options: { sinceSeq: 0 } }]);
+      expect(mounted.client.histories).toEqual([{ agentId: "agt_guest", sessionId: "s-tui" }]);
     } finally {
       mounted.unmount();
     }
@@ -495,9 +540,7 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
   test("loading earlier asks from the cursor the daemon handed back, and only once per page", () => {
     const mounted = mountConsole();
     try {
-      act(() => {
-        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
-      });
+      openTuiByFallback(mounted, "s-tui");
       act(() => {
         mounted.client.emit("session_tail", {
           sessionId: "s-tui",
@@ -552,9 +595,7 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
     // calls, and the file still holds plenty behind it.
     const mounted = mountConsole();
     try {
-      act(() => {
-        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
-      });
+      openTuiByFallback(mounted, "s-tui");
       act(() => {
         mounted.client.emit("session_tail", { sessionId: "s-tui", messages: [], truncated: true, nextCursor: 9000 });
       });
@@ -601,9 +642,7 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
   test("prompting the open terminal sends sessionPrompt with that row's id and the text", () => {
     const mounted = mountConsole();
     try {
-      act(() => {
-        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
-      });
+      openTuiByFallback(mounted, "s-tui");
       act(() => {
         mounted.actions().promptTui("s-tui", "Reply with exactly: phone-turn-ok");
       });
@@ -756,5 +795,192 @@ describe("a prompted terminal reports progress as hints, never a transcript", ()
       { t: "select", agentId: null },
     ]);
     expect(state.selectedTui).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Co-driving a terminal: the join, its refusals, and what a second tap costs
+// ---------------------------------------------------------------------------
+
+describe("a co-drive join is idempotent and states every refusal", () => {
+  const joined = (readOnly: boolean): ConsoleEvent => ({
+    t: "collab_opened",
+    event: { sessionId: "s-tui", agentId: "agt_guest", readOnly },
+  });
+
+  test("a second answer for a session already joined folds to no change at all", () => {
+    // The daemon answers a re-open with the agent it already holds rather
+    // than joining twice, so the frame must cost this device nothing: same
+    // state by reference means React skips the render, and a double tap on a
+    // row cannot make a second screen or a second guest.
+    const once = drive([joined(false)]);
+    expect(once.selected).toBe("agt_guest");
+    expect(once.collabAgents.get("agt_guest")).toEqual({ sessionId: "s-tui", readOnly: false });
+
+    expect(apply(once, joined(false))).toBe(once);
+  });
+
+  test("a view-only join is recorded as such, so the screen can say so before a prompt is typed", () => {
+    const state = drive([joined(true)]);
+    expect(state.collabAgents.get("agt_guest")?.readOnly).toBe(true);
+    // And the wording the screen carries is the daemon's own vocabulary for
+    // that refusal rather than a second phrasing of it.
+    expect(COLLAB_WATCH_ONLY).toContain("view-only");
+  });
+
+  test("a refused join is named on screen, in the daemon's own reason", () => {
+    const state = drive([
+      {
+        t: "error",
+        event: {
+          message: COLLAB_REFUSAL_REASONS.not_hosted,
+          code: "collab_refused",
+          reason: "not_hosted",
+          sessionId: "s-tui",
+        },
+      },
+    ]);
+    expect(state.notice).toBe(`Co-driving was refused: ${COLLAB_REFUSAL_REASONS.not_hosted}`);
+    // A refusal is not a broken link: a reconnect must not clear it, because
+    // reconnecting says nothing about whether that terminal hosts a room.
+    expect(state.noticeAboutLink).toBe(false);
+  });
+
+  test("a pairing that cannot watch is told why, and no frame is sent", () => {
+    // The three-way scope rule at the open: `missing` states the reason,
+    // rather than spending a round trip on a frame the daemon must refuse
+    // and whose refusal would arrive wearing another scope's wording. It
+    // does not fall back either: a pairing is the operator's own grant, so
+    // widening it is their call, never the surface's to route around.
+    const mounted = mountConsole({ ...CONNECTION, scopes: ["prompt"] });
+    try {
+      act(() => {
+        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
+      });
+      expect(mounted.client.collabOpens).toHaveLength(0);
+      expect(mounted.state().notice).toContain("read scope");
+      expect(mounted.state().selected).toBeNull();
+      expect(mounted.state().selectedTui).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a pairing that cannot steer is told why, and the prompt never leaves the device", () => {
+    const mounted = mountConsole({ ...CONNECTION, scopes: ["read"] });
+    try {
+      act(() => {
+        mounted.client.emit("collab_opened", { sessionId: "s-tui", agentId: "agt_guest", readOnly: false });
+      });
+      act(() => {
+        mounted.actions().prompt("agt_guest", "take the wheel");
+      });
+      expect(mounted.state().notice).toContain("prompt scope");
+      // The echo is what makes a sent prompt visible, so its absence is the
+      // proof nothing was sent: a refused steer must not look delivered.
+      expect(mounted.state().sessions.get("agt_guest")).toBeUndefined();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("leaving a co-driven session tells the daemon to leave the room", () => {
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.client.emit("collab_opened", { sessionId: "s-tui", agentId: "agt_guest", readOnly: false });
+      });
+      act(() => {
+        mounted.actions().back();
+      });
+      expect(mounted.client.collabLeaves).toEqual(["s-tui"]);
+      expect(mounted.state().selected).toBeNull();
+
+      // Opening another session is leaving this one too, and the daemon hears
+      // about it exactly once rather than on every re-select.
+      act(() => {
+        mounted.client.emit("collab_opened", { sessionId: "s-tui", agentId: "agt_guest", readOnly: false });
+      });
+      act(() => {
+        mounted.actions().select("agt_other");
+      });
+      expect(mounted.client.collabLeaves).toEqual(["s-tui", "s-tui"]);
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The fallback: an omp without the collab API keeps its steer surface
+// ---------------------------------------------------------------------------
+
+describe("an omp without the collab API still gets its terminal steered", () => {
+  test("collab_unavailable lands the open on the steer surface, and the operator can still prompt", () => {
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
+      });
+      // The join was asked for first: collab stays the preferred path.
+      expect(mounted.client.collabOpens).toEqual(["s-tui"]);
+      expect(mounted.state().selectedTui).toBeNull();
+
+      act(() => {
+        mounted.client.emit("error", {
+          code: "collab_unavailable",
+          sessionId: "s-tui",
+          message: "this omp build cannot host a collab room",
+        });
+      });
+
+      // The fallback, not a notice: the terminal surface opens with its
+      // transcript tail asked for, and nothing reports a working screen as
+      // a failure.
+      expect(mounted.state().selectedTui).toBe("s-tui");
+      expect(mounted.client.tails).toEqual([{ sessionId: "s-tui", limit: undefined }]);
+      expect(mounted.state().notice).toBeNull();
+
+      // And the surface is a working one: a steer rides the same
+      // session_prompt frame it always did, with the sent echo on screen
+      // before the daemon answers.
+      act(() => {
+        mounted.actions().promptTui("s-tui", "Reply with exactly: phone-turn-ok");
+      });
+      expect(mounted.client.sessionPrompts).toEqual([
+        { sessionId: "s-tui", text: "Reply with exactly: phone-turn-ok" },
+      ]);
+      expect(tuiSessionFor(mounted.state(), "s-tui").sent).toBe("Reply with exactly: phone-turn-ok");
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a refused co-drive does not fall back: it states itself", () => {
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
+      });
+      act(() => {
+        mounted.client.emit("error", {
+          code: "collab_refused",
+          reason: "not_hosted",
+          sessionId: "s-tui",
+          message: COLLAB_REFUSAL_REASONS.not_hosted,
+        });
+      });
+
+      // A refusal is a decision the operator must make, so the surface
+      // stays closed: no fallback opens, no tail is asked for, and the
+      // refusal names itself in the daemon's own words.
+      expect(mounted.state().selectedTui).toBeNull();
+      expect(mounted.client.tails).toHaveLength(0);
+      expect(mounted.state().notice).toBe(`Co-driving was refused: ${COLLAB_REFUSAL_REASONS.not_hosted}`);
+      // And no steer leaves the device for a session nobody opened.
+      expect(mounted.client.sessionPrompts).toHaveLength(0);
+    } finally {
+      mounted.unmount();
+    }
   });
 });

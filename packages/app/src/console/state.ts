@@ -27,6 +27,7 @@ import {
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
+  SCOPE_READ,
   SESSION_DELETE_REFUSAL_REASONS,
   TERMINAL_AGENT_STATES,
 } from "@ompd/core/contracts";
@@ -34,6 +35,7 @@ import type {
   AgentsEvent,
   ApprovalEvent,
   ClientErrorEvent,
+  CollabOpenedEvent,
   ConnectionState,
   PlanReviewEvent,
   SayEvent,
@@ -174,6 +176,18 @@ export interface ConsoleState {
   readonly selectedTui: string | null;
   /** Hints about terminal sessions this device has prompted. Keyed by session id. */
   readonly tuiSessions: ReadonlyMap<string, TuiSessionState>;
+  /**
+   * The live terminal sessions this device co-drives, keyed by the agent the
+   * daemon presented for each join.
+   *
+   * A joined terminal is an ordinary agent in every other slice: selected
+   * through `selected`, streamed through `sessions`, listed by the roster.
+   * This map holds what those cannot say: which session the agent co-drives,
+   * and whether the daemon's link to it is view-only. It stays empty on a
+   * machine whose omp cannot host a room, which is why the hints above are
+   * still the fallback rather than dead weight.
+   */
+  readonly collabAgents: ReadonlyMap<AgentId, CollabJoin>;
   /** At most one browser action per agent. Completion is correlated by request id. */
   readonly pendingWebViewActions: ReadonlyMap<AgentId, PendingWebViewAction>;
   /**
@@ -290,6 +304,27 @@ export interface TuiSessionState {
   readonly historyLoadingEarlier: boolean;
 }
 
+/**
+ * One live terminal session this device co-drives, keyed by the agent the
+ * daemon presented for the join.
+ *
+ * Only the join lives here, never the transcript: a joined session streams
+ * through the same update and history frames an owned agent uses, so the
+ * co-driven screen is the ordinary session screen rather than a second
+ * transcript shape. The hints above stay the surface for a terminal whose
+ * omp cannot host a room at all.
+ */
+export interface CollabJoin {
+  /** The session on the machine this agent co-drives. */
+  readonly sessionId: string;
+  /**
+   * True when the daemon holds a view-only link to the terminal. A steer
+   * would be refused, so the session screen names that instead of offering
+   * a composer whose prompts cannot land.
+   */
+  readonly readOnly: boolean;
+}
+
 const EMPTY_TUI_SESSION: TuiSessionState = {
   sent: null,
   busy: false,
@@ -333,6 +368,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     selected: null,
     selectedTui: null,
     tuiSessions: new Map(),
+    collabAgents: new Map(),
     pendingWebViewActions: new Map(),
     // A pairing that did not declare its scopes stays optimistic; the daemon's
     // first refusal is what downgrades it.
@@ -372,6 +408,12 @@ export type ConsoleEvent =
   | { t: "tui_select"; sessionId: string | null }
   /** Local: echo of a prompt this device just sent to a terminal session. */
   | { t: "tui_prompt"; sessionId: string; text: string; imageCount?: number }
+  /**
+   * Daemon: a live terminal session this device asked to co-drive is now
+   * presented as the named agent. The ordinary session screen renders it,
+   * and everything after arrives as the frames any agent produces.
+   */
+  | { t: "collab_opened"; event: CollabOpenedEvent }
   /** Local: the operator opened a strip, or went back to the bay. */
   | { t: "select"; agentId: AgentId | null }
   /** Local: echo of a prompt this device just sent. */
@@ -472,6 +514,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
           refusalKind: "owner-gone",
         }));
       }
+      // A refused co-drive has no screen of its own to land on: the tap came
+      // from a fleet row, and a join that never happened has no agent. So it
+      // is a notice, worded from the daemon's own reason.
+      const collabNotice = collabOpenNotice(event.event);
+      if (collabNotice !== null) {
+        return { ...state, notice: collabNotice, noticeAboutLink: false };
+      }
       if (code !== undefined && SCOPE_CODES[code] && promptPending && selectedTui !== null) {
         return withTuiSession(state, selectedTui, tui => ({
           ...tui,
@@ -555,6 +604,27 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       }
       if (state.selectedTui === event.sessionId && state.selected === null) return state;
       return { ...state, selectedTui: event.sessionId, selected: null };
+    }
+
+    case "collab_opened": {
+      const { sessionId, agentId, readOnly } = event.event;
+      // The daemon's answer is newer than any roster snapshot in flight over
+      // the relay, so it retires a pending absence streak for the agent it
+      // names, exactly as a `session_opened`-driven select does.
+      const rosterMisses = clearMiss(state.rosterMisses, agentId);
+      // A second open of a session the daemon already co-drives answers with
+      // the agent it already holds, so the frame folds to no change and no
+      // re-render. That is what makes a double tap on a row free.
+      const existing = state.collabAgents.get(agentId);
+      if (state.selected === agentId && existing?.sessionId === sessionId && existing.readOnly === readOnly) {
+        return rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses };
+      }
+      const collabAgents = new Map(state.collabAgents);
+      collabAgents.set(agentId, { sessionId, readOnly });
+      // Selecting closes the terminal surface for the same reason a resume's
+      // answer does: the two detail panes are exclusive, and this session is
+      // now an agent's rather than a steer target.
+      return { ...state, selected: agentId, selectedTui: null, collabAgents, rosterMisses };
     }
 
     case "tui_prompt":
@@ -671,7 +741,11 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
 
   const pendingWebViewActions = new Map(state.pendingWebViewActions);
   const rosterMisses = new Map(state.rosterMisses);
-  for (const agentId of sessions.keys()) {
+  const collabAgents = new Map(state.collabAgents);
+  // A joined agent that never streamed an update holds no `sessions` entry,
+  // so the absence rule walks the union: a join the roster drops must be
+  // reaped by the same corroboration a streamed session gets.
+  for (const agentId of new Set([...sessions.keys(), ...collabAgents.keys()])) {
     if (live.has(agentId)) {
       rosterMisses.delete(agentId);
       continue;
@@ -685,6 +759,10 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
     // No host can settle these after two agreeing roster misses. Transcript,
     // watermarks and spoken output stay: they are history, not liveness.
     pendingWebViewActions.delete(agentId);
+    // A join is liveness too: the guest went terminal when it left the room,
+    // so keeping the mapping would paint a view-only band over a transcript
+    // nobody can steer either way.
+    collabAgents.delete(agentId);
     const session = sessions.get(agentId);
     if (session !== undefined) sessions.set(agentId, endTurn(session));
   }
@@ -695,6 +773,7 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
     sessions,
     pendingWebViewActions,
     rosterMisses,
+    collabAgents,
   };
 }
 
@@ -982,6 +1061,41 @@ export function tuiPromptAccess(state: ConsoleState, storedScopes: readonly stri
 /** Hints about one terminal session. A row never prompted is not missing, it is blank. */
 export function tuiSessionFor(state: ConsoleState, sessionId: string): TuiSessionState {
   return state.tuiSessions.get(sessionId) ?? EMPTY_TUI_SESSION;
+}
+
+/**
+ * The band a view-only join's session screen carries in place of its
+ * composer. Same vocabulary as the daemon's `view_only` refusal, so the band
+ * a screen paints before a refused prompt and the notice after one read as
+ * one rule rather than two.
+ */
+export const COLLAB_WATCH_ONLY =
+  "Watching only. This terminal is shared view-only, so a steer from here would be refused.";
+
+/**
+ * The read scope's posture: what watching a session spends, owned or
+ * co-driven. Joining a terminal as a viewer is the one open that spends it,
+ * which is why it never needed its own gate before.
+ */
+export function readScopeAccess(state: ConsoleState, storedScopes: readonly string[]): ScopeAccess {
+  return scopeAccess(state, storedScopes, SCOPE_READ);
+}
+
+/**
+ * What to tell the operator about a co-drive the daemon refused, or null when
+ * the error is not one of those.
+ *
+ * `collab_unavailable` is deliberately absent: that is the answer an omp
+ * without the hosting API gives, and the error handler in `useConsole` falls
+ * the open back to the steer surface instead of refusing, so a toast on every
+ * open would report a working screen as a failure. That fallback, and this
+ * gap, die together when `pi.startCollab` ships. A real refusal is the
+ * opposite case, and its message is the refusal record's own wording,
+ * rendered verbatim after a prefix naming the act that failed.
+ */
+export function collabOpenNotice(event: ClientErrorEvent): string | null {
+  if (event.code !== "collab_refused") return null;
+  return `Co-driving was refused: ${event.message}`;
 }
 
 /** What a strip shows. Derived rather than stored, so it cannot go stale. */

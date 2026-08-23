@@ -62,6 +62,7 @@ const CONNECTIONS: ConnectionList = {
 class CannedClient {
   readonly prompts: Array<{ sessionId: string; text: string }> = [];
   readonly tails: Array<{ sessionId: string; limit?: number }> = [];
+  readonly collabOpens: string[] = [];
   readonly attached: AgentId[] = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly agentPrompts: Array<{ agentId: AgentId; text: string }> = [];
@@ -90,6 +91,21 @@ class CannedClient {
     this.attached.push(agentId);
   }
   listSessions(): void {}
+  /**
+   * Answered rather than ignored: this canned daemon is an omp without the
+   * collab API, so every join ask gets the `collab_unavailable` answer and
+   * the open falls back to the terminal route these tests drive. Recorded
+   * so a test can still prove the ask went out first.
+   */
+  openCollab(sessionId: string): void {
+    this.collabOpens.push(sessionId);
+    this.emit("error", {
+      code: "collab_unavailable",
+      sessionId,
+      message: "this omp build cannot host a collab room",
+    });
+  }
+  leaveCollab(): void {}
   /**
    * Recorded rather than ignored: opening a terminal route asks for the
    * session's transcript tail, so a double that lacked this method turned a

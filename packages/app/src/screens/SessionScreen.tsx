@@ -59,6 +59,13 @@ export interface SessionScreenProps {
   onCancel: () => void;
   /** Wake this exact durable session under a new live agent. */
   onResume?: () => void;
+  /**
+   * Present when this agent is a co-driven terminal joined through a
+   * view-only link. The composer is replaced by the band, because every
+   * steer from a view-only guest is refused and a control that can only
+   * fail is a refusal with extra steps.
+   */
+  watchOnly?: string;
   historyBefore?: number | null;
   historyLoading?: boolean;
   onLoadEarlier?: () => void;
@@ -381,7 +388,14 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
           testID="session-composer-safe"
         >
-          {terminal ? (
+          {props.watchOnly !== undefined ? (
+            // The band takes the composer's place rather than sitting above
+            // it: every steer from a view-only guest is refused, and a
+            // control that can only fail is a refusal with extra steps.
+            <View style={styles.resume} testID="session-watch-only">
+              <Label color={ink.muted}>{props.watchOnly}</Label>
+            </View>
+          ) : terminal ? (
             <View style={styles.resume}>
               <Label color={ink.muted}>This agent stopped. Its complete transcript stays available.</Label>
               {props.onResume === undefined ? null : (

@@ -55,6 +55,7 @@ import type { ConsoleState } from "./state.ts";
 import {
   agentFor,
   browserSessionsOf,
+  COLLAB_WATCH_ONLY,
   canInvite,
   fleetClearances,
   manageScopeAccess,
@@ -234,6 +235,11 @@ export function Console({
         delayMs={state.delayMs}
         canApprove={state.canApprove}
         refusal={state.refusal}
+        // A view-only join is stated on the screen rather than discovered by
+        // sending a prompt the daemon must refuse: the band names the exact
+        // strength of the link while the operator still has the keyboard
+        // closed.
+        watchOnly={state.collabAgents.get(agent.id)?.readOnly ? COLLAB_WATCH_ONLY : undefined}
         spoken={state.spoken.get(agent.id)?.text ?? null}
         historyBefore={state.historyBefore.get(agent.id)}
         historyLoading={state.historyLoading.has(agent.id)}

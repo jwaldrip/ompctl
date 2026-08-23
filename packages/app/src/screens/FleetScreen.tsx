@@ -59,17 +59,19 @@ export interface FleetScreenProps {
 
 /**
  * Whether this row's open lands on the agent transcript (SessionScreen,
- * composer and all) rather than the terminal prompt surface. Mirrors the
- * ladder in `console/state.ts`: `live-ompd` attaches to its agent and
- * `dormant` rides the resume claim, both of which end on SessionScreen,
- * while `live-tui` is routed to TerminalSessionScreen, a screen with no
- * composer to drive. That distinction matters here because the status sort
- * puts live-tui rows FIRST (`STATUS_SEVERITY` ranks it 0 and `DEFAULT_SORT`
- * is status ascending), so the naive first row is exactly the row the path
- * scenario cannot use: it would open a terminal and then fail hunting for a
- * composer that screen never has. Archived rows are excluded too: they ride
- * the same resume claim, but the daemon's verifier refuses them, so their
- * open never reaches a transcript either.
+ * composer and all) with certainty. Mirrors the ladder in
+ * `console/state.ts`: `live-ompd` attaches to its agent and `dormant` rides
+ * the resume claim, both of which end on SessionScreen. A `live-tui` row
+ * asks for the collab guest first and lands on SessionScreen only when that
+ * terminal's omp can host; when it cannot, the open falls back to
+ * TerminalSessionScreen, a screen with no composer to drive. That
+ * distinction matters here because the status sort puts live-tui rows FIRST
+ * (`STATUS_SEVERITY` ranks it 0 and `DEFAULT_SORT` is status ascending), so
+ * the naive first row is exactly the row the path scenario cannot use:
+ * which surface it lands on depends on a build the phone cannot see from
+ * the row. Archived rows are excluded too: they ride the same resume claim,
+ * but the daemon's verifier refuses them, so their open never reaches a
+ * transcript either.
  */
 function opensAgentTranscript(session: BrowserSession): boolean {
   return session.status === "live-ompd" || session.status === "dormant";

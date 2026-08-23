@@ -177,6 +177,7 @@ const CONNECTIONS: ConnectionList = {
 class CannedClient {
   readonly indexAsks: unknown[] = [];
   readonly tails: Array<{ sessionId: string; limit?: number }> = [];
+  readonly collabOpens: string[] = [];
   readonly histories: Array<{ agentId: string; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
@@ -201,6 +202,21 @@ class CannedClient {
   listSessions(query?: unknown): void {
     this.indexAsks.push(query ?? null);
   }
+  /**
+   * Answered rather than ignored: this canned daemon is an omp without the
+   * collab API, so every join ask gets the `collab_unavailable` answer and
+   * the open falls back to the terminal route these tests drive. Recorded
+   * so a test can still prove the ask went out first.
+   */
+  openCollab(sessionId: string): void {
+    this.collabOpens.push(sessionId);
+    this.emit("error", {
+      code: "collab_unavailable",
+      sessionId,
+      message: "this omp build cannot host a collab room",
+    });
+  }
+  leaveCollab(): void {}
   sessionTail(sessionId: string, limit?: number): void {
     this.tails.push({ sessionId, limit });
   }
