@@ -40,9 +40,10 @@
 import type { PromptImage, SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { AttachmentsBar } from "../components/AttachmentsBar.tsx";
+import { useFollowNewest } from "../components/useFollowNewest.ts";
 import type { TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -184,22 +185,17 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
     setImages([]);
   };
 
-  const log = useRef<FlatList<LogRow>>(null);
   /**
    * The tail arrives oldest first, so the newest turn is the last row, and a
    * list left at the top would show the operator the oldest of the last
    * thirty turns. Driven by content size rather than by mount, because rows
    * measure after layout and a scroll issued before that lands nowhere.
+   *
+   * Conditional on position, which is what `Load earlier` needs: an older
+   * page also grows the content, and pinning to the end there would drop the
+   * operator at the bottom of the history they just asked for.
    */
-  const showNewest = useCallback((): void => {
-    try {
-      log.current?.scrollToEnd({ animated: false });
-    } catch {
-      // A host with no real scroller has nothing to scroll. The tail is
-      // already correct without the courtesy, so a missing scroller must not
-      // take the screen down with it.
-    }
-  }, []);
+  const follow = useFollowNewest<LogRow>();
 
   const renderRow = useCallback(({ item, index }: ListRenderItemInfo<LogRow>): JSX.Element => {
     const mine = item.kind === "turn" ? item.message.role === "user" : item.kind === "sent";
@@ -316,7 +312,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         )
       ) : (
         <FlatList
-          ref={log}
+          ref={follow.ref}
           testID="terminal-log"
           style={styles.log}
           contentContainerStyle={styles.logContent}
@@ -327,7 +323,9 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           keyExtractor={row => row.key}
           renderItem={renderRow}
           ListHeaderComponent={earlier}
-          onContentSizeChange={showNewest}
+          onContentSizeChange={follow.onContentSizeChange}
+          onScroll={follow.onScroll}
+          scrollEventThrottle={follow.scrollEventThrottle}
         />
       )}
 
