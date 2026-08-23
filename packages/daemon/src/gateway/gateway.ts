@@ -24,6 +24,8 @@ import {
   type Agent,
   type AgentId,
   type ClientFrame,
+  COLLAB_REFUSAL_REASONS,
+  type CollabRefusal,
   type CollabVoiceNoteFrame,
   type CollabVoiceParticipant,
   type ConnectorSummary,
@@ -42,11 +44,9 @@ import {
   SCOPE_PROMPT,
   SCOPE_READ,
   SESSION_DELETE_REFUSAL_REASONS,
-  COLLAB_REFUSAL_REASONS,
-  type CollabRefusal,
+  type ServerFrame,
   type SessionDeleteResult,
   type SessionLiveStatus,
-  type ServerFrame,
   type SessionQuery,
   type SessionSortDir,
   type SessionSortKey,
@@ -61,11 +61,11 @@ import {
   type WebViewActionResult,
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
+import { CollabGuests } from "../collab/guests.ts";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
 import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
-import { CollabGuests } from "../collab/guests.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
@@ -1024,8 +1024,7 @@ export class Gateway {
       authorize: (actor, scope, action, agentId) => this.#sup.authorize(actor, scope, action, agentId),
       // The same fan-out the supervisor's events ride, so guest-agent
       // updates reach attached sockets through the identical choke point.
-      events:
-        opts.events ?? { onUpdate: () => undefined, onAgentsChanged: () => undefined },
+      events: opts.events ?? { onUpdate: () => undefined, onAgentsChanged: () => undefined },
       sendToHostingTui: (sessionId, frame) => {
         const owner = [...this.#sockets].find(socket => socket.data.tui?.sessionId === sessionId);
         if (owner === undefined) return false;
@@ -1038,7 +1037,7 @@ export class Gateway {
         // falls through to `not_hosted`, which is true of every session no
         // registered TUI holds.
         if (index === undefined) return true;
-        return (await index.get(sessionId)) !== null;
+        return (await index.get(sessionId)) != null;
       },
       // The daemon's own relay rides this same server (the /r/<roomId>
       // routes), so the loopback URL rooms are asked to live on is simply
@@ -4480,7 +4479,11 @@ export class Gateway {
   }
 
   /** Translate one `collab_open` outcome into the frames a phone expects: success, a named refusal, or the wire failure. */
-  #answerCollabOpen(ws: GatewaySocket, sessionId: string, outcome: Awaited<ReturnType<CollabGuests["openCollab"]>>): void {
+  #answerCollabOpen(
+    ws: GatewaySocket,
+    sessionId: string,
+    outcome: Awaited<ReturnType<CollabGuests["openCollab"]>>,
+  ): void {
     if ("opened" in outcome) {
       this.#send(ws, {
         t: "collab_opened",

@@ -39,7 +39,11 @@ export interface ToolCallContent {
   arguments: Record<string, unknown>;
 }
 
-export type AssistantContent = TextContent | ThinkingContent | { type: "redactedThinking"; data: string } | ToolCallContent;
+export type AssistantContent =
+  | TextContent
+  | ThinkingContent
+  | { type: "redactedThinking"; data: string }
+  | ToolCallContent;
 
 export interface WireUsage {
   input: number;
@@ -119,8 +123,7 @@ export type AgentEvent =
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown; intent?: string }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: unknown; partialResult: unknown }
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError?: boolean }
-  | { type: "notice"; level: "info" | "warning" | "error"; message: string }
-
+  | { type: "notice"; level: "info" | "warning" | "error"; message: string };
 
 // -- host state -------------------------------------------------------------
 
@@ -164,14 +167,26 @@ export type CollabHostFrame =
       entryCount: number;
       /** True when this peer joined through a read-only (view) link. */
       readOnly?: boolean;
+      /**
+       * The host's subagent registry snapshot. Carried on the wire and
+       * deliberately ignored here: the phone renders one transcript, and the
+       * task tool calls that spawn subagents already appear in it.
+       */
+      agents?: unknown[];
     }
   | { t: "snapshot-chunk"; entries: SessionEntry[]; final: boolean }
   | { t: "entry"; entry: SessionEntry }
   | { t: "event"; event: AgentEvent }
   | { t: "state"; state: SessionState }
   | { t: "bye"; reason: string }
-  | { t: "error"; message: string }
-
+  | { t: "error"; message: string };
 
 /** Relay → guest control message, sent as unencrypted TEXT JSON. */
 export type RelayControlToGuest = { t: "room-closed" };
+
+/**
+ * Either direction's frame. The codec seals whatever the caller hands it;
+ * which side may legitimately send which frame is the guest leg's business,
+ * not the seal's, exactly as in omp's own browser guest codec.
+ */
+export type CollabWireFrame = CollabGuestFrame | CollabHostFrame;

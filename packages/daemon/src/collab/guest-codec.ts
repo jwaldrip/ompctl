@@ -12,7 +12,7 @@
  * peerId 0; the relay rewrites it to the sender's id.
  */
 
-import type { CollabGuestFrame, CollabHostFrame } from "./guest-frames.ts";
+import type { CollabHostFrame, CollabWireFrame } from "./guest-frames.ts";
 
 const AES_ALGORITHM = "AES-GCM";
 const IV_LENGTH = 12;
@@ -30,7 +30,7 @@ export function importRoomKey(raw: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", asStrict(raw), AES_ALGORITHM, false, ["encrypt", "decrypt"]);
 }
 
-export async function seal(key: CryptoKey, frame: CollabGuestFrame): Promise<Uint8Array> {
+export async function seal(key: CryptoKey, frame: CollabWireFrame): Promise<Uint8Array> {
   const iv = new Uint8Array(IV_LENGTH);
   crypto.getRandomValues(iv);
   const plaintext = TEXT_ENCODER.encode(JSON.stringify(frame));

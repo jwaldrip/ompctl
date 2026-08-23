@@ -117,7 +117,8 @@ export function parseCollabLink(link: string): ParsedCollabLink | { error: strin
   const secret = B64URL_RE.test(fragment) ? new Uint8Array(Buffer.from(fragment, "base64url")) : null;
   if (
     !secret ||
-    (secret.byteLength !== COLLAB_ROOM_KEY_BYTES && secret.byteLength !== COLLAB_ROOM_KEY_BYTES + COLLAB_WRITE_TOKEN_BYTES)
+    (secret.byteLength !== COLLAB_ROOM_KEY_BYTES &&
+      secret.byteLength !== COLLAB_ROOM_KEY_BYTES + COLLAB_WRITE_TOKEN_BYTES)
   ) {
     return { error: "Collab link key must be 32 (view) or 48 (full) base64url bytes" };
   }

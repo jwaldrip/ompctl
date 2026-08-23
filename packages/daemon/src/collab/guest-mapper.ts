@@ -33,9 +33,9 @@
  */
 
 import {
-  COLLAB_PROMPT_MESSAGE_TYPE,
   type AgentEvent,
   type AssistantContent,
+  COLLAB_PROMPT_MESSAGE_TYPE,
   type CollabHostFrame,
   type SessionEntry,
   type SessionHeader,
@@ -90,9 +90,9 @@ export interface CollabFrameMapping {
 
 /** Progress through the in-flight assistant message. */
 interface StreamState {
-  /** Number of content blocks fully walked; the block at this index may be partial. */
+  /** Content blocks walked so far; the last of them may still be growing and is re-examined on every update. */
   blocks: number;
-  /** The partially emitted block, if the walk stopped mid-block. */
+  /** The state of the last walked block: how far its text has been emitted, or which toolCall it was. */
   last: { kind: "text" | "thinking" | "toolCall" | "other"; emitted: number; toolCallId?: string } | null;
 }
 
@@ -211,7 +211,13 @@ export class CollabStreamMapper {
       // rendering them again would duplicate the transcript.
       return;
     }
-    const custom = entry as { type?: string; customType?: string; content?: unknown; details?: unknown; display?: boolean };
+    const custom = entry as {
+      type?: string;
+      customType?: string;
+      content?: unknown;
+      details?: unknown;
+      display?: boolean;
+    };
     if (custom.type === "custom_message") {
       if (custom.display !== true) return;
       if (custom.customType === COLLAB_PROMPT_MESSAGE_TYPE) {
@@ -264,6 +270,10 @@ export class CollabStreamMapper {
         const message = event.message as WireMessage | undefined;
         if (message == null) return;
         if (message.role === "assistant") {
+          // `message_start` announces a NEW message: drop the in-flight
+          // stream so the next chunks open their own row instead of reading
+          // as growth of the message that just ended.
+          if (event.type === "message_start") this.#stream = null;
           this.#diffAssistant(message, updates);
           if (event.type === "message_end") this.#accumulateUsage(message);
           return;
@@ -327,7 +337,10 @@ export class CollabStreamMapper {
     }
     const live = this.#stream!;
     const messageId = `collab-m${this.#messageSeq}`;
-    for (let index = live.blocks; index < content.length; index++) {
+    // The walk restarts at the last walked block, not after it: that block
+    // may still be growing, and re-walking it is idempotent (nothing is
+    // emitted when its text has not grown).
+    for (let index = Math.max(0, live.blocks - 1); index < content.length; index++) {
       const block = content[index]!;
       if (block.type === "text") {
         const base = live.last !== null && live.last.kind === "text" ? live.last.emitted : 0;

@@ -26,11 +26,11 @@
  */
 
 import {
-  COLLAB_GUEST_SESSION_LABEL,
   type Actor,
   type Agent,
   type AgentId,
   type AgentState,
+  COLLAB_GUEST_SESSION_LABEL,
   type CollabRefusal,
   type PromptImage,
   SCOPE_PROMPT,
@@ -39,13 +39,13 @@ import {
   type TuiCollabClientFrame,
   type TuiCollabServerFrame,
 } from "@ompd/core";
-import { parseCollabLink } from "./guest-link.ts";
+import { createAgentId } from "../supervisor.ts";
 import { importRoomKey } from "./guest-codec.ts";
 import type { CollabHostFrame } from "./guest-frames.ts";
+import { parseCollabLink } from "./guest-link.ts";
 import type { CollabFrameMapping } from "./guest-mapper.ts";
-import { CollabGuestSocket } from "./guest-socket.ts";
 import { CollabStreamMapper } from "./guest-mapper.ts";
-import { createAgentId } from "../supervisor.ts";
+import { CollabGuestSocket } from "./guest-socket.ts";
 
 /** The bridge must answer an open within this budget or the join fails. */
 const BRIDGE_TIMEOUT_MS = 15_000;
@@ -342,7 +342,8 @@ export class CollabGuests {
     const agentId = createAgentId();
     const mapper = new CollabStreamMapper({ ownName: this.#displayName });
     const socket = new CollabGuestSocket({ wsUrl: parsed.wsUrl, key: importRoomKey(parsed.key) });
-    const writeToken = writable && parsed.writeToken !== undefined ? Buffer.from(parsed.writeToken).toString("base64url") : undefined;
+    const writeToken =
+      writable && parsed.writeToken !== undefined ? Buffer.from(parsed.writeToken).toString("base64url") : undefined;
     // The join settles (or fails) through these; everything after runs on
     // socket frames, not on this call's stack.
     const joined = Promise.withResolvers<void>();
@@ -413,7 +414,10 @@ export class CollabGuests {
           // Every non-final chunk must make progress; a stalled snapshot
           // ends the join rather than hanging the phone's open.
           if (snapshotTimer !== null) clearTimeout(snapshotTimer);
-          snapshotTimer = setTimeout(() => fail("the session snapshot never finished arriving"), this.#snapshotTimeoutMs);
+          snapshotTimer = setTimeout(
+            () => fail("the session snapshot never finished arriving"),
+            this.#snapshotTimeoutMs,
+          );
         }
       }
       if (welcomed && snapshotDone) {
@@ -459,13 +463,22 @@ export class CollabGuests {
     }
     if (mapping.state !== undefined || mapping.header !== undefined) {
       const state: AgentState =
-        mapping.state !== undefined ? (mapping.state.isStreaming ? "busy" : "idle") : (this.#store.getAgent(leg.agentId)?.state ?? "idle");
+        mapping.state !== undefined
+          ? mapping.state.isStreaming
+            ? "busy"
+            : "idle"
+          : (this.#store.getAgent(leg.agentId)?.state ?? "idle");
       this.#upsertLegRow(leg, state, mapping.header, mapping.state);
     }
     return mapping;
   }
 
-  #upsertLegRow(leg: GuestLeg, state: AgentState, header: CollabFrameMapping["header"], live: CollabFrameMapping["state"]): void {
+  #upsertLegRow(
+    leg: GuestLeg,
+    state: AgentState,
+    header: CollabFrameMapping["header"],
+    live: CollabFrameMapping["state"],
+  ): void {
     const existing = this.#store.getAgent(leg.agentId);
     const now = new Date().toISOString();
     const metrics = leg.mapper.metrics();
@@ -479,7 +492,11 @@ export class CollabGuests {
       lastActiveAt: now,
       parentAgentId: existing?.parentAgentId,
       model: live?.model !== undefined ? `${live.model.provider}/${live.model.id}` : existing?.model,
-      metrics: { usedTokens: metrics.usedTokens, costAmount: metrics.costAmount, durationMs: Date.now() - leg.createdAtMs },
+      metrics: {
+        usedTokens: metrics.usedTokens,
+        costAmount: metrics.costAmount,
+        durationMs: Date.now() - leg.createdAtMs,
+      },
       labels: existing?.labels ?? { source: "collab-guest", [COLLAB_GUEST_SESSION_LABEL]: leg.sessionId },
     };
     this.#store.upsertAgent(agent);
