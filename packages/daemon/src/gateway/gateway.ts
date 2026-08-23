@@ -59,6 +59,7 @@ import {
   type WebViewActionResult,
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
+import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData } from "../collab/relay.ts";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
@@ -912,6 +913,13 @@ interface SocketState {
    */
   sessionQuery: SessionQuery;
 }
+/**
+ * Every shape an upgraded socket on this server may carry: an authenticated
+ * gateway connection, or one leg of the content-blind collab relay. The two
+ * never mix after upgrade, and the discriminant check at each websocket
+ * handler is the only place they meet.
+ */
+type GatewaySocketData = SocketState | RelaySocketData;
 
 /**
  * What the frame handler needs from a connection.
@@ -992,11 +1000,12 @@ export class Gateway {
   #staticRoot: string | undefined;
   #onError: GatewayOptions["onError"];
   #collab: CollabRooms;
+  #collabRelay = new CollabRelay();
 
   /** Set by `listen`, so uptime measures serving rather than construction. */
   #startedAtMs: number | undefined;
 
-  #server: Server<SocketState> | undefined;
+  #server: Server<GatewaySocketData> | undefined;
   #sockets = new Set<GatewaySocket>();
   /** Most recently registered live WebView socket for each agent. */
   #webviews = new Map<AgentId, GatewaySocket>();
@@ -1123,9 +1132,18 @@ export class Gateway {
         return Response.json({ error: "internal_error" }, { status: 500 });
       },
       websocket: {
-        open: (ws: ServerWebSocket<SocketState>) => this.#open(ws),
-        message: (ws: ServerWebSocket<SocketState>, message: string | Buffer) => this.#message(ws, message),
-        close: (ws: ServerWebSocket<SocketState>) => this.#close(ws),
+        open: (ws: ServerWebSocket<GatewaySocketData>) => {
+          if (isRelaySocketData(ws.data)) return this.#collabRelay.open(this.#relaySocket(ws));
+          this.#open(ws as ServerWebSocket<SocketState>);
+        },
+        message: (ws: ServerWebSocket<GatewaySocketData>, message: string | Buffer) => {
+          if (isRelaySocketData(ws.data)) return this.#collabRelay.message(this.#relaySocket(ws), message);
+          this.#message(ws as ServerWebSocket<SocketState>, message);
+        },
+        close: (ws: ServerWebSocket<GatewaySocketData>) => {
+          if (isRelaySocketData(ws.data)) return this.#collabRelay.close(this.#relaySocket(ws));
+          this.#close(ws as ServerWebSocket<SocketState>);
+        },
       },
     });
     this.#startedAtMs ??= Date.now();
@@ -1137,6 +1155,21 @@ export class Gateway {
     return port;
   }
 
+  /**
+   * The relay origin a collab host on this machine points at so the room
+   * stays on it, in the shape omp's `CollabHost.start(relayUrl)` expects: a
+   * bare origin it appends `/r/<roomId>` to itself. `ws://` rather than
+   * `wss://`: omp's link grammar accepts plain ws only for local hosts, and
+   * this daemon binds loopback unless the operator deliberately rebinds. A
+   * wildcard bind still answers on loopback, so the URL names that.
+   */
+  get collabRelayUrl(): string {
+    const port = this.#server?.port;
+    if (port === undefined) throw new Error("gateway is not listening");
+    const host = this.#host === "0.0.0.0" || this.#host === "::" ? "127.0.0.1" : this.#host;
+    return `ws://${host}:${port}`;
+  }
+
   async close(): Promise<void> {
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
@@ -1146,12 +1179,22 @@ export class Gateway {
     this.#unsubscribeRevoked = undefined;
     this.#disarmSessionWatcher();
     for (const ws of [...this.#sockets]) this.#close(ws);
+    // Relay legs are not in `#sockets`; `stop(true)` tears them down with
+    // everything else, and the room state dies with the server.
     // `stop(true)` closes live connections itself. Closing each socket here
     // first and then awaiting it deadlocks on Bun 1.3.4: the promise never
     // settles. Measured, not guessed. Clients therefore see an abnormal close
     // rather than a 1001, which is the right trade for a shutdown path that
     // actually returns.
-    await this.#server?.stop(true);
+    //
+    // The same poison applies when a socket was closed server-side at ANY
+    // point in the server's life, which the collab relay's refusals do by
+    // design (4004/4009/4001 are its protocol). Reproduced on 1.3.14: the
+    // await never settles, though the listen port is released synchronously
+    // either way, so skipping the await costs nothing the shutdown order
+    // relies on.
+    const stopping = this.#server?.stop(true);
+    if (!this.#collabRelay.hasClosedLegs) await stopping;
     this.#server = undefined;
     this.#startedAtMs = undefined;
   }
@@ -1385,7 +1428,7 @@ export class Gateway {
 
   // -- http ------------------------------------------------------------------
 
-  async #fetch(req: Request, server: Server<SocketState>): Promise<Response | undefined> {
+  async #fetch(req: Request, server: Server<GatewaySocketData>): Promise<Response | undefined> {
     // `req.url` is absolute only when the request carried a Host header, and
     // HTTP/1.0 does not require one. Parsed bare, such a request threw here,
     // before any authentication ran, so anything able to open the port could
@@ -1441,6 +1484,20 @@ export class Gateway {
       const secret = req.headers.get("x-webhook-secret") ?? url.searchParams.get("token") ?? "";
       const body = new Uint8Array(await req.arrayBuffer());
       return await this.fireWebhook(webhook[1] ?? "", secret, body, req.headers.get("content-type") ?? undefined);
+    }
+    // The collab relay: unauthenticated by design, because possession of the
+    // link is the trust boundary and every frame is sealed before it reaches
+    // the socket, so the relay forwards ciphertext it cannot read either way.
+    // omp's CollabSocket presents no credential on this leg, so a token gate
+    // would break `/collab ws://127.0.0.1:<port>` without protecting
+    // anything. Exposure is the daemon's bind, loopback unless the operator
+    // deliberately rebinds; what a relay leg can do is bounded there. The
+    // reasoning lives in full in collab/relay.ts.
+    const relayUpgrade = this.#collabRelay.upgradeData(url);
+    if (relayUpgrade !== null) {
+      if (relayUpgrade instanceof Response) return relayUpgrade;
+      if (server.upgrade(req, { data: relayUpgrade })) return undefined;
+      return new Response("expected a websocket upgrade", { status: 426 });
     }
 
     // Everything outside `/v1` is the web client, and it is terminal: a path
@@ -2868,6 +2925,15 @@ export class Gateway {
   }
 
   // -- websocket -------------------------------------------------------------
+
+  /**
+   * Narrow a socket the discriminant already identified as a relay leg.
+   * Sound because `data` is pinned at upgrade and never reassigned; this is
+   * the one place the union is resolved by anything but the check itself.
+   */
+  #relaySocket(ws: ServerWebSocket<GatewaySocketData>): RelaySocket {
+    return ws as RelaySocket;
+  }
 
   #open(ws: GatewaySocket): void {
     this.#sockets.add(ws);
