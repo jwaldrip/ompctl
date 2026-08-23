@@ -176,7 +176,7 @@ const CONNECTIONS: ConnectionList = {
  */
 class CannedClient {
   readonly indexAsks: unknown[] = [];
-  readonly tails: Array<{ sessionId: string; limit?: number }> = [];
+  readonly collabOpens: string[] = [];
   readonly histories: Array<{ agentId: string; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
@@ -201,13 +201,13 @@ class CannedClient {
   listSessions(query?: unknown): void {
     this.indexAsks.push(query ?? null);
   }
-  sessionTail(sessionId: string, limit?: number): void {
-    this.tails.push({ sessionId, limit });
+  openCollab(sessionId: string): void {
+    this.collabOpens.push(sessionId);
   }
+  leaveCollab(): void {}
   sessionHistory(agentId: string, sessionId: string, before?: number): void {
     this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
   }
-  sessionPrompt(): void {}
   resumeSession(): void {}
   prompt(): void {}
   cancel(): void {}
@@ -345,7 +345,7 @@ describe("the instrumentation itself", () => {
 });
 
 describe("a navigation does not pay for the bay twice", () => {
-  test("pushing the terminal route leaves the bay's list mounted, not rebuilt", () => {
+  test("pushing the session route leaves the bay's list mounted, not rebuilt", () => {
     const bay = mountBay();
     try {
       const listNode = bay.el("fleet-list");
@@ -353,7 +353,8 @@ describe("a navigation does not pay for the bay twice", () => {
       resetCounts();
 
       bay.openFirstRow();
-      expect(bay.el("terminal-session")).not.toBeNull();
+      joinFirstRow(bay);
+      expect(bay.el("session")).not.toBeNull();
 
       // The mount, not a screenshot: a rebuilt list is a new node and a new
       // mount count, either of which would show here.
@@ -364,7 +365,6 @@ describe("a navigation does not pay for the bay twice", () => {
       bay.unmount();
     }
   });
-
   test("popping back sends zero new index requests, as does pushing again", () => {
     const bay = mountBay();
     try {
@@ -372,9 +372,11 @@ describe("a navigation does not pay for the bay twice", () => {
 
       resetCounts();
       bay.openFirstRow();
-      bay.press("terminal-back");
+      joinFirstRow(bay);
+      bay.press("session-back");
       bay.openFirstRow();
-      bay.press("terminal-back");
+      joinFirstRow(bay);
+      bay.press("session-back");
 
       expect(bay.el("fleet-list")).not.toBeNull();
       expect(bay.client.indexAsks.length).toBe(1);
@@ -401,11 +403,12 @@ describe("a navigation does not pay for the bay twice", () => {
       resetCounts();
 
       bay.openFirstRow();
-      expect(bay.el("terminal-session")).not.toBeNull();
+      joinFirstRow(bay);
+      expect(bay.el("session")).not.toBeNull();
       const afterPush = { ...counts };
       const asksAfterPush = bay.client.indexAsks.length;
 
-      bay.press("terminal-back");
+      bay.press("session-back");
       expect(bay.el("fleet-list")).not.toBeNull();
       const afterPop = { ...counts };
       const asksAfterPop = bay.client.indexAsks.length;
@@ -458,6 +461,18 @@ function holder(overrides: Partial<Agent> = {}): Agent {
   };
 }
 
+/** The agent a daemon's collab guest presents for the row the sort put first. */
+const GUEST = "agt_guest" as AgentId;
+
+/**
+ * Completes the join the first row's open asked for, the way the daemon
+ * would: the answer names the agent, and its stream is what makes the screen
+ * renderable before any roster push arrives.
+ */
+function joinFirstRow(bay: Bay): void {
+  bay.frame("collab_opened", { sessionId: HELD_SESSION, agentId: GUEST, readOnly: false });
+  streamOneTurn(bay, GUEST);
+}
 /**
  * The index the operator's phone actually holds while an agent works: the same
  * 541 rows, with the one the agent is in still described the way the daemon's
@@ -586,20 +601,18 @@ describe("leaving a live session does not pay for its stream", () => {
     expect(idle).toEqual({ rowBuilds: 0, reloads: 0, rowRenders: 0, rowMounts: 0 });
   });
 
-  test("a live terminal session's activity frames cost the list nothing either", () => {
+  test("a joined terminal's update frames cost the list nothing either", () => {
     const bay = mountBay();
     try {
       bay.openFirstRow();
-      expect(bay.el("terminal-session")).not.toBeNull();
+      joinFirstRow(bay);
+      expect(bay.el("session")).not.toBeNull();
       resetCounts();
 
-      bay.frame("session_tail", { sessionId: "sess_000", messages: [], truncated: false, nextCursor: null });
-      for (let i = 0; i < 8; i += 1) {
-        bay.frame("tui_activity", { sessionId: "sess_000", kind: "turn_start" });
-        bay.frame("tui_activity", { sessionId: "sess_000", kind: "assistant_text", text: `working ${i}` });
-        bay.frame("tui_activity", { sessionId: "sess_000", kind: "turn_end" });
-      }
-      bay.press("terminal-back");
+      // The joined session streams as the ordinary agent's update frames, so
+      // what this counts is a live co-driven turn behind the detail route.
+      streamOneTurn(bay, GUEST);
+      bay.press("session-back");
       expect(bay.el("fleet-list")).not.toBeNull();
 
       expect(listCost()).toEqual({ rowBuilds: 0, reloads: 0, rowRenders: 0, rowMounts: 0 });

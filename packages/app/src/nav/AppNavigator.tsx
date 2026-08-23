@@ -44,7 +44,6 @@ import { OWN_CHROME, SHELL_SCREEN_OPTIONS, SHELL_THEME } from "./theme.ts";
 export type ShellParamList = {
   fleet: undefined;
   session: { agentId: AgentId };
-  terminal: { sessionId: string };
   menu: undefined;
   connections: undefined;
   invite: undefined;
@@ -56,7 +55,7 @@ export type ShellParamList = {
 };
 
 /** Which detail surface the console model says is open. */
-export type ShellSelection = { kind: "session"; agentId: AgentId } | { kind: "terminal"; sessionId: string };
+export type ShellSelection = { kind: "session"; agentId: AgentId };
 
 /**
  * What the console hands the shell: the header's subject, one gate, and a
@@ -84,7 +83,6 @@ export interface ShellSurfaces {
    * session screen never needs to know a navigator exists.
    */
   session: (agentId: AgentId, back: () => void, openConfig: () => void) => JSX.Element;
-  terminal: (sessionId: string, back: () => void) => JSX.Element;
   connections: (back: () => void, invite: () => void, settings: () => void) => JSX.Element;
   invite: (done: () => void) => JSX.Element;
   /**
@@ -139,7 +137,7 @@ function useSurfaces(): ShellSurfaces {
 }
 
 /** The two routes that present an open session, as opposed to the shell around it. */
-const DETAIL_ROUTES: Record<string, true> = { session: true, terminal: true };
+const DETAIL_ROUTES: Record<string, true> = { session: true };
 
 export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavigatorProps): JSX.Element {
   const navigation = useNavigationContainerRef<ShellParamList>();
@@ -170,13 +168,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
       // time, so a switch replaces rather than buries the previous one.
       if (stackHasDetail) navigation.dispatch(StackActions.popToTop());
       navigation.navigate("session", { agentId: selection.agentId });
-      return;
     }
-
-    const params = focused?.params as ShellParamList["terminal"] | undefined;
-    if (focused?.name === "terminal" && params?.sessionId === selection.sessionId) return;
-    if (stackHasDetail) navigation.dispatch(StackActions.popToTop());
-    navigation.navigate("terminal", { sessionId: selection.sessionId });
   }, [selection, navigation]);
 
   const onStateChange = useCallback(() => {
@@ -213,13 +205,12 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
             })}
           />
           <Stack.Screen name="session" component={SessionRoute} options={OWN_CHROME} />
-          <Stack.Screen name="terminal" component={TerminalRoute} options={OWN_CHROME} />
+          <Stack.Screen name="cowork" component={CoworkRoute} options={COWORK_OPTIONS} />
           <Stack.Screen name="agentConfig" component={AgentConfigRoute} options={OWN_CHROME} />
           <Stack.Screen name="menu" component={MenuRoute} options={{ title: "Menu", presentation: "modal" }} />
           <Stack.Screen name="connections" component={ConnectionsRoute} options={CONNECTIONS_OPTIONS} />
           <Stack.Screen name="invite" component={InviteRoute} options={INVITE_OPTIONS} />
           <Stack.Screen name="newSession" component={NewSessionRoute} options={NEW_SESSION_OPTIONS} />
-          <Stack.Screen name="cowork" component={CoworkRoute} options={COWORK_OPTIONS} />
           <Stack.Screen name="settings" component={SettingsRoute} options={SETTINGS_OPTIONS} />
           <Stack.Screen name="routines" component={RoutinesRoute} options={ROUTINES_OPTIONS} />
         </Stack.Navigator>
@@ -249,10 +240,6 @@ function SessionRoute({ route, navigation }: NativeStackScreenProps<ShellParamLi
     () => navigation.goBack(),
     () => navigation.navigate("agentConfig", { agentId: route.params.agentId }),
   );
-}
-
-function TerminalRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "terminal">): JSX.Element {
-  return useSurfaces().terminal(route.params.sessionId, () => navigation.goBack());
 }
 
 function AgentConfigRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "agentConfig">): JSX.Element {

@@ -28,9 +28,8 @@ import {
   emptyConsole,
   manageScopeAccess,
   promptScopeAccess,
+  readScopeAccess,
   sessionDeleteNotice,
-  tuiPageToAskFor,
-  tuiSessionFor,
 } from "./state.ts";
 import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
@@ -47,22 +46,11 @@ export interface ConsoleActions {
   loadEarlier: (agentId: AgentId) => void;
   /**
    * Open one browser row. A row whose session an agent already holds opens
-   * that agent's log; a live terminal session opens its prompt surface; the
-   * rest claim through the daemon.
+   * that agent's log; a live terminal session is joined through the daemon's
+   * collab guest and opens as the ordinary agent the join presents; the rest
+   * claim through the daemon.
    */
   openSession: (target: SessionOpenTarget) => void;
-  /**
-   * Send one prompt to a live terminal session. The daemon routes it to the
-   * terminal that owns the session; progress arrives as `tui_activity`, and a
-   * terminal with no bridge answers `tui_unreachable` instead.
-   */
-  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => void;
-  /**
-   * Ask a live terminal session for the page of turns older than the one on
-   * screen. Ignored when the file's start is already reached or a page is
-   * already in flight, so a double tap cannot ask twice.
-   */
-  loadEarlierTui: (sessionId: string) => void;
   /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
@@ -183,17 +171,17 @@ export function useConsole(
   );
 
   /**
-   * Ask one terminal session for the page older than `cursor`.
-   *
-   * Takes the cursor rather than reading it back out of state, because the
-   * caller that matters most is the answer handler continuing past an empty
-   * page: it holds the fresh cursor from the frame it just folded in, while
-   * a state read between commits could still see the one before it.
+   * Tell the daemon to leave the room when the operator walks away from a
+   * co-driven session, whether the way out is back or the opening of another
+   * session. The daemon's guest outlives this socket by design, so a leave
+   * nobody sends keeps the daemon co-driving a session nobody here is
+   * watching. Re-selecting the session already on screen is not a leave.
    */
-  const askOlderTui = useCallback(
-    (sessionId: string, cursor: number): void => {
-      dispatch({ t: "tui_history_request", sessionId });
-      client.sessionTail(sessionId, undefined, cursor);
+  const leaveCollab = useCallback(
+    (leaving: AgentId | null, next?: AgentId): void => {
+      if (leaving === null || leaving === next) return;
+      const join = stateRef.current.collabAgents.get(leaving);
+      if (join !== undefined) client.leaveCollab(join.sessionId);
     },
     [client],
   );
@@ -212,6 +200,7 @@ export function useConsole(
   const selectAgent = useCallback(
     (agentId: AgentId): void => {
       const current = stateRef.current;
+      leaveCollab(current.selected, agentId);
       dispatch({ t: "select", agentId });
       client.attach(agentId, current.watermarks.has(agentId) ? {} : { sinceSeq: 0 });
       const agent = current.agents.find(candidate => candidate.id === agentId);
@@ -219,7 +208,7 @@ export function useConsole(
         requestHistory(agentId, agent.acpSessionId);
       }
     },
-    [client, requestHistory],
+    [client, leaveCollab, requestHistory],
   );
   useEffect(() => {
     // The mic outlives this effect only when the link is alive; the cleanup
@@ -264,6 +253,22 @@ export function useConsole(
         dispatch({ t: "select", agentId: event.agentId });
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
+      }),
+      client.on("collab_opened", event => {
+        // The join's answer lands exactly like a resume's: it may arrive
+        // before the roster lists the guest agent, and it carries both
+        // identities attach and history need. A re-open of a session the
+        // daemon already co-drives answers with the same agentId, which the
+        // reducer folds to no change; the attach below then resumes from the
+        // watermark rather than replaying, and the history guard keeps the
+        // first page from being asked for twice.
+        const current = stateRef.current;
+        leaveCollab(current.selected, event.agentId);
+        dispatch({ t: "collab_opened", event });
+        client.attach(event.agentId, current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
+        if (!current.historyBefore.has(event.agentId)) {
+          requestHistory(event.agentId, event.sessionId);
+        }
       }),
       client.on("sessions", event => {
         dispatch({ t: "sessions", event });
@@ -310,18 +315,6 @@ export function useConsole(
             // is the same for any chunk.
           });
       }),
-      client.on("tui_activity", event => {
-        dispatch({ t: "tui_activity", event });
-      }),
-      client.on("session_tail", event => {
-        dispatch({ t: "session_tail", event });
-        // A page of pure tool traffic carries no turns while the file still
-        // holds plenty behind it, and the operator tapped for earlier words
-        // rather than earlier bytes. Asking on from the page's own cursor is
-        // what keeps that tap from ending on an unchanged screen.
-        const next = tuiPageToAskFor(event);
-        if (next !== null) askOlderTui(event.sessionId, next);
-      }),
       client.on("unauthorized", event => {
         dispatch({ t: "unauthorized", event });
       }),
@@ -350,7 +343,7 @@ export function useConsole(
       for (const off of offs) off();
       client.close();
     };
-  }, [askOlderTui, client, requestHistory, settleWebViewAction, voice]);
+  }, [client, leaveCollab, requestHistory, settleWebViewAction, voice]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -370,9 +363,26 @@ export function useConsole(
         selectAgent(agentId);
       },
       back() {
+        leaveCollab(stateRef.current.selected);
         dispatch({ t: "select", agentId: null });
       },
       prompt(agentId, text, images) {
+        // The three-way rule, the same one the microphone follows: a pairing
+        // that provably holds no prompt scope gets the reason stated rather
+        // than a frame the daemon must refuse, and an unknown one sends
+        // optimistically so an older daemon never loses a working control.
+        // Steering a co-driven terminal spends this scope exactly as
+        // prompting an owned agent does, so one gate covers both.
+        if (promptScopeAccess(stateRef.current, connection.scopes) === "missing") {
+          dispatch({
+            t: "error",
+            event: {
+              message:
+                "This device does not hold the prompt scope. Pair it again with prompt access to steer this session.",
+            },
+          });
+          return;
+        }
         client.prompt(agentId, text, images);
         dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
       },
@@ -408,25 +418,32 @@ export function useConsole(
         // holding it, so a double tap cannot make a second holder. Selecting
         // waits for that answer; the reply, not this dispatch, is what opens
         // the screen.
-        //
-        // A live terminal session never claims anything: the terminal cannot
-        // hand its renderer over, so the open is the local prompt surface and
-        // nothing crosses the wire until the operator sends from it.
         switch (target.kind) {
           case "agent":
             selectAgent(target.agentId);
             return;
-          case "live-tui":
-            dispatch({ t: "tui_select", sessionId: target.sessionId });
-            // The one thing that does cross the wire on open: the session's
-            // own transcript tail. A terminal session has no agent row, so
-            // `attach` and its update stream cannot reach it, and without this
-            // a session with a thousand messages in it opens as a composer
-            // over an empty pane. Asked per open rather than held across
-            // reconnects, because the daemon reads the file's end each time
-            // and the answer is only wanted while this surface is on screen.
-            client.sessionTail(target.sessionId);
+          case "live-tui": {
+            // A live terminal is joined, never taken over: the daemon
+            // co-drives it as a collab guest and answers `collab_opened` with
+            // an ordinary agent to select, so nothing here claims the
+            // renderer and the transcript arrives through the same frames an
+            // owned agent uses. Watching spends the read scope, so a pairing
+            // that provably lacks it gets the reason stated rather than a
+            // frame the daemon must refuse; an unknown one asks
+            // optimistically, and the daemon's refusal arrives named.
+            if (readScopeAccess(stateRef.current, connection.scopes) === "missing") {
+              dispatch({
+                t: "error",
+                event: {
+                  message:
+                    "This device does not hold the read scope. Pair it again with read access to watch this terminal.",
+                },
+              });
+              return;
+            }
+            client.openCollab(target.sessionId);
             return;
+          }
           case "dormant":
             client.resumeSession(target.sessionId, target.cwd);
             return;
@@ -440,18 +457,6 @@ export function useConsole(
               event: { message: "That session has no record the daemon can verify, so it cannot be opened from here." },
             });
         }
-      },
-      promptTui(sessionId, text, images) {
-        client.sessionPrompt(sessionId, text, undefined, images);
-        dispatch({ t: "tui_prompt", sessionId, text, imageCount: images?.length ?? 0 });
-      },
-      loadEarlierTui(sessionId) {
-        const tui = tuiSessionFor(stateRef.current, sessionId);
-        // Nothing older to reach, or an ask already out: the control renders
-        // both states, but a tap that arrives anyway must not put a second
-        // request on the wire for the same page.
-        if (tui.historyCursor === null || tui.historyLoadingEarlier) return;
-        askOlderTui(sessionId, tui.historyCursor);
       },
       deleteSession(sessionId) {
         // The row renders the missing scope and offers no confirmation, but
@@ -535,7 +540,7 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [askOlderTui, client, connection.scopes, requestHistory, settleWebViewAction, selectAgent, voice],
+    [client, connection.scopes, leaveCollab, requestHistory, settleWebViewAction, selectAgent, voice],
   );
 
   return [state, actions];

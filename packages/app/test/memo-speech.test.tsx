@@ -31,7 +31,7 @@ import type { MemoVoice, OmpctlVoiceModule } from "../src/voice/memo.ts";
 // paths: the ordering is the fixture.
 
 const { createDeviceSpeechPlayback, createDeviceVoiceCapture, WIRE_SAMPLE_RATE } = await import("../src/voice/memo.ts");
-const { apply, emptyConsole, promptScopeAccess, tuiPromptAccess } = await import("../src/console/state.ts");
+const { apply, COLLAB_WATCH_ONLY, emptyConsole, promptScopeAccess } = await import("../src/console/state.ts");
 const { useConsole } = await import("../src/console/useConsole.ts");
 const { SessionScreen } = await import("../src/screens/SessionScreen.tsx");
 
@@ -246,12 +246,6 @@ describe("the three-way prompt scope rule", () => {
     expect(promptScopeAccess(emptyConsole([]), [])).toBe("unknown");
     expect(promptScopeAccess(emptyConsole([]), ["read", "prompt"])).toBe("granted");
     expect(promptScopeAccess(emptyConsole([]), ["read"])).toBe("missing");
-  });
-
-  test("the terminal's selector is the same rule under its historic name", () => {
-    const state = drive([{ t: "agents", event: { agents: [AGENT], deviceId: "dev", scopes: ["read"] } }]);
-    expect(tuiPromptAccess(state, [])).toBe("missing");
-    expect(tuiPromptAccess(emptyConsole([]), [])).toBe("unknown");
   });
 });
 
@@ -574,7 +568,7 @@ interface MountedSession {
   unmount: () => void;
 }
 
-function mountSession(voice: SessionVoice): MountedSession {
+function mountSession(voice: SessionVoice, watchOnly?: string): MountedSession {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -594,6 +588,7 @@ function mountSession(voice: SessionVoice): MountedSession {
         onDecide={() => {}}
         onDecidePlan={() => {}}
         voice={voice}
+        watchOnly={watchOnly}
       />,
     );
   });
@@ -663,6 +658,37 @@ describe("the composer microphone control", () => {
     );
     try {
       expect(mounted.text("composer-mic-status")).toContain("Agent speech audio is unavailable on web.");
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+describe("a view-only co-driven terminal", () => {
+  test("carries the band in place of the composer, not above a control that cannot land", () => {
+    const mounted = mountSession(voiceProps(), COLLAB_WATCH_ONLY);
+    try {
+      expect(mounted.text("session-watch-only")).toContain("view-only");
+      // The composer and the microphone are gone rather than disabled: every
+      // steer from a view-only guest is refused at the daemon, so offering
+      // either would be a control whose only outcome is a refusal. Asserted
+      // on the nodes, because an enabled control carries no disabled flag
+      // and a flag check would pass against a live composer.
+      expect(mounted.attr("composer-mic", "data-testid")).toBeNull();
+      expect(mounted.attr("composer-send", "data-testid")).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a writable join keeps the composer, so the band is the exception and not the rule", () => {
+    const mounted = mountSession(voiceProps());
+    try {
+      expect(mounted.text("session-watch-only")).toBe("");
+      // The node itself, not its disabled state: an enabled control carries
+      // no `aria-disabled`, so its presence is what separates a composer
+      // that is offered from one the band replaced.
+      expect(mounted.attr("composer-mic", "data-testid")).toBe("composer-mic");
     } finally {
       mounted.unmount();
     }

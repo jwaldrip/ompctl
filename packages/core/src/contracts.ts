@@ -502,6 +502,100 @@ export type CollabServerFrame =
   | CollabVoiceFrame
   /** Finished notes replay with their durable audio payload; app-side de-duplication prevents re-speaking live notes. */
   | { t: "collab_voice_history"; roomId: string; notes: CollabVoiceNoteFrame[] };
+// ---------------------------------------------------------------------------
+// Co-driving a live terminal session (the daemon as a collab guest)
+//
+// omp's `/collab` shares a running session through an end-to-end encrypted
+// room; every payload is sealed AES-256-GCM under a key that only ever rides
+// in the link. A phone co-drives one of those sessions by asking this daemon
+// to join the room as a guest and render it back over the gateway socket.
+//
+// The load-bearing decision: a joined room is presented to the phone as an
+// ordinary agent. `collab_opened` hands back an `agentId`, the room's
+// back-transcript is appended to that agent's update log, and live entries
+// and events keep arriving as the same `update` frames an owned agent
+// produces. Attach, prompt, and cancel take their existing shapes; the app
+// never learns a second transcript shape.
+//
+// Naming, because this file already has one: `CollabRooms` above is the
+// daemon's own voice-note rooms, where the daemon is the hub. Here the
+// daemon is a *guest* of a room some terminal hosts. The two share no state
+// and no frames, and the vocabulary below (`collab_open`, never `room_join`
+// for this) keeps them unmergeable.
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a collab request was refused. Named rather than boolean for the same
+ * reason as `SessionDeleteRefusal`: each answer calls for something
+ * different from an operator, and the app routes on the key rather than
+ * parsing prose.
+ *
+ * - `unknown_session`: this machine has no session with that id. The usual
+ *   cause is a stale row on the phone, and silence there would read as a
+ *   join that never happened.
+ * - `not_hosted`: the session exists, but no live terminal registered with
+ *   this daemon holds it, so there is nothing that could share it. A
+ *   dormant session is resumable instead; that is `session_resume`'s job,
+ *   not this frame's.
+ * - `view_only`: the room was shared view-only, so the link this daemon
+ *   holds carries no write token. Watching is all a guest may do, and the
+ *   daemon refuses the write itself rather than send a frame the host is
+ *   specified to reject.
+ * - `not_joined`: a write or leave named a session this daemon is not
+ *   co-driving, because it never joined or the room already ended.
+ */
+export type CollabRefusal = "unknown_session" | "not_hosted" | "view_only" | "not_joined";
+
+/**
+ * The wording for each refusal, shared by every surface that has to say why:
+ * the daemon's audit detail and the app's own notice. One copy, because two
+ * would drift and an operator would meet whichever one the surface they
+ * happened to be on kept.
+ */
+export const COLLAB_REFUSAL_REASONS: Record<CollabRefusal, string> = {
+  unknown_session: "this machine has no session with that id",
+  not_hosted: "no live terminal holds that session, so there is nothing to co-drive",
+  view_only: "this session is shared view-only, so a guest may watch but not steer",
+  not_joined: "this daemon is not co-driving that session",
+};
+
+/**
+ * The agent-label key under which a co-driven agent carries the omp session
+ * id it mirrors. A phone that reconnects finds its guest agent again through
+ * the ordinary `agents` list by matching this label, instead of needing a
+ * second registry to ask.
+ */
+export const COLLAB_GUEST_SESSION_LABEL = "collab.session";
+
+/**
+ * The frames the daemon and a hosting terminal's bridge exchange on the
+ * terminal's registered control socket, so the daemon can obtain a room link
+ * for a session it was asked to co-drive. `requestId` correlates every
+ * answer with its ask, because hosting starts asynchronously. `relayUrl`
+ * travels in the request so the room always lands on the relay this daemon
+ * chose, never on one the bridge picked.
+ *
+ * The link is a credential: it is never written to the audit log, the same
+ * rule the socket token already follows.
+ */
+export type TuiCollabClientFrame =
+  | {
+      t: "tui_collab_opened";
+      sessionId: string;
+      requestId: string;
+      /** The strongest link the room offers: the full link when the room is writable, the view link when it is not. */
+      link: string;
+      /** The view-strength form of the same room's link, always present. */
+      viewLink: string;
+      /** False when the room was shared view-only; the daemon then refuses every write as `view_only`. */
+      writable: boolean;
+    }
+  | { t: "tui_collab_error"; sessionId: string; requestId: string; reason: "unavailable" | "refused" }
+  | { t: "tui_collab_closed"; sessionId: string; requestId: string };
+
+export type TuiCollabServerFrame =
+  | { t: "tui_collab_open"; sessionId: string; requestId: string; relayUrl: string }
+  | { t: "tui_collab_close"; sessionId: string; requestId: string };
 
 /**
  * How a steered turn lands in the live session. These are omp's own
@@ -769,6 +863,25 @@ export type ClientFrame =
    */
   | { t: "session_resume"; sessionId: string; cwd: string }
   /**
+   * Co-drive a live terminal session: join the collab room its host shares
+   * and follow it as an ordinary agent. Requires read scope to watch; the
+   * prompts that may follow require prompt scope, exactly as they do for an
+   * owned agent. Answered by `collab_opened`, or by an `error` carrying
+   * `collab_refused` (with a `CollabRefusal` reason) or `collab_unavailable`
+   * when the join itself failed on the wire. Asking again for a session this
+   * daemon already co-drives answers `collab_opened` with the same agentId,
+   * so a reconnected phone can recover its row without a second guest.
+   */
+  | { t: "collab_open"; sessionId: string }
+  /**
+   * Stop co-driving a session. The guest leaves the room and its agent row
+   * goes terminal, exactly as a stopped owned agent does. One-shot like the
+   * other instructions: a leave that never left means the daemon is still
+   * co-driving a session the operator believes they walked away from.
+   */
+  | { t: "collab_leave"; sessionId: string }
+  | TuiCollabClientFrame
+  /**
    * Delete sessions: the transcript files themselves, and everything this
    * daemon persists about them. Irreversible, so it is the one session frame
    * that carries a list: clearing hundreds of dead fixture sessions one
@@ -957,7 +1070,16 @@ export type ServerFrame =
   /** Synthesized audio, for a client with no voice of its own. */
   | { t: "speech"; agentId: AgentId; pcm: string }
   | { t: "transcript"; agentId: AgentId; text: string; final: boolean }
-  | { t: "error"; agentId?: AgentId; message: string; code?: string }
+  /**
+   * The one refusal envelope every surface shares. `code` names the class
+   * (`collab_refused`, `collab_unavailable`, `unauthorized`, ...) for
+   * routing; `reason` carries the machine key inside that class when one
+   * exists (a `CollabRefusal` for collab frames), so a client renders
+   * wording from the matching `*_REFUSAL_REASONS` record instead of
+   * parsing `message`. `sessionId` correlates a failure with the session
+   * row it came from, for frames that name a session rather than an agent.
+   */
+  | { t: "error"; agentId?: AgentId; sessionId?: string; message: string; code?: string; reason?: string }
   /** Ask a client's embedded WebView to perform an action, already cleared by the policy engine. */
   | { t: "webview_action"; agentId: AgentId; requestId: string; action: WebViewAction }
   | CollabServerFrame
@@ -995,6 +1117,17 @@ export type ServerFrame =
    * Sent only to the socket that asked.
    */
   | { t: "session_opened"; sessionId: string; agentId: AgentId }
+  /**
+   * A `collab_open` succeeded: this daemon joined the room the session's
+   * host shares, and the guest leg now presents as the agent `agentId`.
+   * Everything after this frame is the ordinary machinery -- `attach` for
+   * the transcript, `update` as the room streams, `prompt` and `cancel` to
+   * steer. `readOnly` reports the trust of the link the daemon holds: when
+   * the room was shared view-only, every write is refused as `view_only`
+   * no matter what scope the asking device carries.
+   */
+  | { t: "collab_opened"; sessionId: string; agentId: AgentId; readOnly: boolean }
+  | TuiCollabServerFrame
   /**
    * What a `session_delete` did, one result per id asked for, sent only to
    * the socket that asked. A refusal is reported here beside the deletions

@@ -47,7 +47,6 @@ import { RemoteStartScreen } from "../screens/RemoteStartScreen.tsx";
 import { RoutinesScreen } from "../screens/RoutinesScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
 import { SettingsScreen } from "../screens/SettingsScreen.tsx";
-import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
 import { deviceMemoVoice } from "../voice/memo.ts";
@@ -55,14 +54,13 @@ import type { ConsoleState } from "./state.ts";
 import {
   agentFor,
   browserSessionsOf,
+  COLLAB_WATCH_ONLY,
   canInvite,
   fleetClearances,
   manageScopeAccess,
   openSessionTarget,
   promptScopeAccess,
   sessionFor,
-  tuiPromptAccess,
-  tuiSessionFor,
 } from "./state.ts";
 import { createOmpdClient, useConsole } from "./useConsole.ts";
 
@@ -234,6 +232,11 @@ export function Console({
         delayMs={state.delayMs}
         canApprove={state.canApprove}
         refusal={state.refusal}
+        // A view-only join is stated on the screen rather than discovered by
+        // sending a prompt the daemon must refuse: the band names the exact
+        // strength of the link while the operator still has the keyboard
+        // closed.
+        watchOnly={state.collabAgents.get(agent.id)?.readOnly ? COLLAB_WATCH_ONLY : undefined}
         spoken={state.spoken.get(agent.id)?.text ?? null}
         historyBefore={state.historyBefore.get(agent.id)}
         historyLoading={state.historyLoading.has(agent.id)}
@@ -289,31 +292,6 @@ export function Console({
     );
   };
 
-  // A terminal session has no agent stream to attach to. It gets a bounded
-  // transcript tail plus live progress hints, and stays keyed like the agent
-  // log so switching rows never carries one session's draft into another.
-  const terminal = (sessionId: string, back: () => void): JSX.Element => {
-    const row = state.sessionIndex.find(candidate => candidate.id === sessionId);
-    return (
-      <TerminalSessionScreen
-        key={sessionId}
-        title={row?.title ?? "Terminal session"}
-        cwd={row?.cwd ?? row?.flattenedDir ?? ""}
-        status={row?.status ?? null}
-        promptAccess={tuiPromptAccess(state, connection.scopes)}
-        tui={tuiSessionFor(state, sessionId)}
-        connection={state.connection}
-        onBack={back}
-        onSubmit={(text, images) => {
-          actions.promptTui(sessionId, text, images);
-        }}
-        onLoadEarlier={() => {
-          actions.loadEarlierTui(sessionId);
-        }}
-      />
-    );
-  };
-
   // The config surface is stateless between visits: the daemon's config
   // routes answer each request whole, so nothing here joins the console
   // model. The scopes are the daemon's own last answer when it gives one,
@@ -337,7 +315,7 @@ export function Console({
     if (selected !== null && configPane === selected) {
       return agentConfig(selected, () => setConfigPane(null));
     }
-    return splitDetail(state, log, terminal, actions.back, setConfigPane);
+    return splitDetail(state, log, actions.back, setConfigPane);
   };
 
   const surfaces: ShellSurfaces = {
@@ -377,7 +355,6 @@ export function Console({
       </SafeScreen>
     ),
     session: log,
-    terminal,
     agentConfig,
     connections: (back, invite, settings) => (
       <ConnectionSwitcherScreen
@@ -463,7 +440,6 @@ export function Console({
 
 function selectionOf(state: ConsoleState): ShellSelection | null {
   if (state.selected !== null) return { kind: "session", agentId: state.selected };
-  if (state.selectedTui !== null) return { kind: "terminal", sessionId: state.selectedTui };
   return null;
 }
 
@@ -474,13 +450,11 @@ function selectionOf(state: ConsoleState): ShellSelection | null {
 function splitDetail(
   state: ConsoleState,
   log: (agentId: AgentId, back: () => void, openConfig: () => void) => JSX.Element,
-  terminal: (sessionId: string, back: () => void) => JSX.Element,
   back: () => void,
   openConfig: (agentId: AgentId) => void,
 ): JSX.Element | null {
   const selected = state.selected;
   if (selected !== null) return log(selected, back, () => openConfig(selected));
-  if (state.selectedTui !== null) return terminal(state.selectedTui, back);
   return null;
 }
 

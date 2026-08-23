@@ -137,15 +137,13 @@ describe("a column label cannot be cut at its container's edge", () => {
 
 describe("a composer's surface reaches the edge it pads to", () => {
   test("the view paying the inset below a composer paints the composer's surface", async () => {
-    for (const file of ["src/screens/SessionScreen.tsx", "src/screens/TerminalSessionScreen.tsx"]) {
-      const text = await source(file);
-      expect(styleBlock(text, "composerSafe")).toContain("backgroundColor: ground.surface");
-      // The colour and the pad must be one view: a parent's padding is
-      // outside every child, so a pad sitting on a transparent wrapper is
-      // exactly the strip of base colour below the message box the operator
-      // reported on the tablet.
-      expect(text).toMatch(/styles\.composerSafe,\s*\{\s*paddingBottom: bottomInsetFor\(/);
-    }
+    const text = await source("src/screens/SessionScreen.tsx");
+    expect(styleBlock(text, "composerSafe")).toContain("backgroundColor: ground.surface");
+    // The colour and the pad must be one view: a parent's padding is
+    // outside every child, so a pad sitting on a transparent wrapper is
+    // exactly the strip of base colour below the message box the operator
+    // reported on the tablet.
+    expect(text).toMatch(/styles\.composerSafe,\s*\{\s*paddingBottom: bottomInsetFor\(/);
   });
 });
 
@@ -201,7 +199,6 @@ function declaredStrings(text: string, name: string, property: string): readonly
  */
 async function labelledColumns(): Promise<readonly LabelledColumn[]> {
   const cowork = await source("src/screens/CoworkScreen.tsx");
-  const terminal = await source("src/screens/TerminalSessionScreen.tsx");
   return [
     {
       what: "the cowork rail's nav column",
@@ -209,22 +206,6 @@ async function labelledColumns(): Promise<readonly LabelledColumn[]> {
       style: "navSide",
       type: "kicker",
       labels: declaredStrings(cowork, "DESTINATIONS", "label"),
-    },
-    {
-      what: "the terminal log's attribution gutter",
-      file: "src/screens/TerminalSessionScreen.tsx",
-      style: "gutter",
-      type: "kicker",
-      // The two speakers, the two hint words, and every shape `elapsed` can
-      // put on the gutter's second line. The day form is the widest of those.
-      labels: [
-        "you",
-        "agent",
-        ...declaredStrings(terminal, "HINT_WORDS", "(?:sent|reply)"),
-        "365d 23h",
-        "23:59:59",
-        "--:--",
-      ],
     },
     {
       what: "the transcript's attribution gutter",
@@ -244,7 +225,6 @@ async function labelledColumns(): Promise<readonly LabelledColumn[]> {
     },
   ];
 }
-
 describe("a fixed-width container cannot break the word it holds", () => {
   test("every labelled column fits its longest unbreakable run", async () => {
     const failures: string[] = [];
