@@ -537,6 +537,10 @@ export type CollabServerFrame =
  *   this daemon holds it, so there is nothing that could share it. A
  *   dormant session is resumable instead; that is `session_resume`'s job,
  *   not this frame's.
+ * - `occupied`: the session is already in a shared room this daemon did
+ *   not open: it hosts one on a different relay, or it joined someone
+ *   else's room as a guest. A phone write cannot fix either, so it is a
+ *   refusal rather than a retry.
  * - `view_only`: the room was shared view-only, so the link this daemon
  *   holds carries no write token. Watching is all a guest may do, and the
  *   daemon refuses the write itself rather than send a frame the host is
@@ -544,7 +548,7 @@ export type CollabServerFrame =
  * - `not_joined`: a write or leave named a session this daemon is not
  *   co-driving, because it never joined or the room already ended.
  */
-export type CollabRefusal = "unknown_session" | "not_hosted" | "view_only" | "not_joined";
+export type CollabRefusal = "unknown_session" | "not_hosted" | "occupied" | "view_only" | "not_joined";
 
 /**
  * The wording for each refusal, shared by every surface that has to say why:
@@ -555,6 +559,7 @@ export type CollabRefusal = "unknown_session" | "not_hosted" | "view_only" | "no
 export const COLLAB_REFUSAL_REASONS: Record<CollabRefusal, string> = {
   unknown_session: "this machine has no session with that id",
   not_hosted: "no live terminal holds that session, so there is nothing to co-drive",
+  occupied: "that session is already in a shared room this daemon did not open",
   view_only: "this session is shared view-only, so a guest may watch but not steer",
   not_joined: "this daemon is not co-driving that session",
 };
@@ -590,7 +595,14 @@ export type TuiCollabClientFrame =
       /** False when the room was shared view-only; the daemon then refuses every write as `view_only`. */
       writable: boolean;
     }
-  | { t: "tui_collab_error"; sessionId: string; requestId: string; reason: "unavailable" | "refused" }
+  | {
+      t: "tui_collab_error";
+      sessionId: string;
+      requestId: string;
+      reason: "unavailable" | "refused";
+      /** Why, in the bridge's own words, for the daemon to pass through to the phone's notice. */
+      detail?: string;
+    }
   | { t: "tui_collab_closed"; sessionId: string; requestId: string };
 
 export type TuiCollabServerFrame =
@@ -1240,6 +1252,16 @@ export type AuditAction =
    * operator's content, and an audit log is not a transcript.
    */
   | "session.prompt"
+  /**
+   * A device asked to co-drive a live terminal session through its shared
+   * collab room, or was refused. Recorded on every exit for the same reason
+   * as `session.prompt`: this is a device reaching into a session someone
+   * else is sitting at, and a log that kept only the successes would omit
+   * exactly the attempts worth reviewing. `detail` carries the session id
+   * and the refusal reason; the room link is a credential and never rides
+   * an audit record.
+   */
+  | "collab.join"
   | "approval.decide"
   | "device.pair"
   | "device.revoke"
