@@ -168,6 +168,24 @@ Nine changes, each verified on the running daemon or by eye on the iPad simulato
 - **Fixed-width containers could not fit their own labels.** The sort bar clipped `SIZE` to `S`; the cowork rail broke `CONNECTORS` into `CONNECT` and `ORS`; the terminal gutter held `Sent to this terminal` in 68 points; the list marker split `100.` into `10` and `0.`. Measured with CoreText against the vendored fonts rather than eyeballed, and gated as a class.
 - **One owner of the bottom inset per screen.** In the split the shell paid the inset and the nested composer paid it again, so the composer floated an inset above the list and the strip beneath it painted the shell's colour. Measured after the fix on the iPad: the detail pane's last pixel row is the composer's own surface.
 
+### Landed on 2026-08-23: a live terminal is co-driven, not taken over
+
+The goal this serves is the one Claude Code's remote control cannot: every session on disk reachable from the phone. A dormant session was already resumable. A live one is held by a terminal, and two writers on one JSONL is not a thing to arrange, so the phone joins the room the terminal shares instead.
+
+- **The daemon is the collab relay.** `GET /r/<roomId>?role=host|guest`, mirroring omp's reference relay including its refusal codes, content-blind, keeping no state beyond live connections. A room between a terminal and a phone therefore never leaves the machine. Proven with a real omp: `/collab ws://127.0.0.1:<port>` printed a link resolving to the daemon and a second party joined and decrypted `welcome`. Left unauthenticated deliberately: omp's client presents no credential on that leg, every frame is sealed before it reaches the socket, and the daemon binds loopback.
+- **The daemon is a collab guest.** Link grammar, AES-256-GCM codec, reconnecting socket, and a mapper that turns collab frames into the same `update` stream an owned agent emits, so `collab_opened` hands back an ordinary `agentId` and the app learns no second transcript shape. The room key lives in a non-extractable WebCrypto handle owned by the leg, never the store, the audit log, or disk. `acpSessionId` is deliberately left unset: the terminal still owns the session, and faking it would flip the index to `live-ompd` and hide the terminal holding it.
+- **A room can start without a human typing `/collab`.** `pi.startCollab` in jwaldrip/oh-my-pi PR #24, with `/collab` refactored onto the same funnel so relay resolution and the guest and different-relay refusals live in one place. It returns links rather than printing them, because a link is a credential: a byte sweep of a scratch home found the room key in exactly one file, the probe's own output.
+- **The bridge asks omp to host.** No branch had this leg; the daemon sent `tui_collab_open` and nothing answered. The bridge now answers with both link strengths, passes omp's own refusal through verbatim, stops only rooms it started, and answers `unavailable` on a build without the API.
+- **Steering stays as the fallback.** A live row asks to co-drive first. On `unavailable`, the answer every shipping omp gives, the open lands on the steer surface that works today; on `refused` or a scope gate it states itself and does not silently fall back, because those are decisions the operator has to make. The comment names where the fallback dies: when `pi.startCollab` ships and the daemon stops answering `unavailable`.
+
+### Blocked on 2026-08-23: the collab chain is unproven end to end
+
+Each piece has its own proof. The four composed together do not.
+
+A scratch omp would not load the bridge extension, so no room existed to join. Three ways tried, each failing differently: installed under a `PI_CODING_AGENT_DIR` agent directory (omp wrote its session there but loaded no extension from its `extensions/`), passed explicitly with `-e` under a PTY TUI (no trace with `OMPD_BRIDGE_DEBUG` set), and `-e` in print mode (correctly skipped, since the bridge guards on `ctx.mode === "tui"`).
+
+The mechanism does work in the real environment: the operator's terminals register on his own daemon. The difference is that they run the installed binary with the bridge in its discovered location. Which means the honest sequencing is that the chain becomes provable once `pi.startCollab` is in an omp he actually runs. The installed build is 18.0.3 and a symbol sweep finds `collabHost` and `Collab session started` in it but no `startCollab` or `getCollabLinks`, so today every live row falls back to steering by design rather than by accident.
+
 ## Queue
 
 Everything Jason has asked for, in exactly one state. Parked is not dropped.
