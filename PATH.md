@@ -188,6 +188,16 @@ What was first written, that the extension would not load, is wrong and is corre
 
 Building the addon from source fails on this machine with rustc `E0554`, a nightly-only feature on a stable toolchain, and the Homebrew build embeds its native rather than shipping a loose `.node`, so there is nothing version-matched to borrow. The blocker is therefore a Rust toolchain, not the design and not the extension system.
 
+### Reproduced on 2026-08-23: a green suite that exits 1
+
+`packages/hub`'s redis-backplane suite fails roughly one run in three, and the failure is invisible in the counts: every test passes, `0 fail`, and the process still exits 1. Bun reports `# Unhandled error between tests`, `RedisError: Connection closed`, `code: "ERR_REDIS_CONNECTION_CLOSED"`, attributed to `await client.close()`.
+
+It needs a real server: the suite skips unless `OMPD_TEST_REDIS_URL` is set, so a local run without one is green vacuously. Against `redis:7` on a spare port it reproduced on main at 1 of 3 runs.
+
+Two hypotheses were tested and both are wrong. The narrowing helper was not rejecting the error: the code matches, and widening it past its `instanceof Error` gate left the failure at 1 of 10 runs. The rejection is also not reaching `close()`'s `catch` at all, which is what "between tests" means. So the abort is a floating promise the awaited one does not represent, and neither the existing process-level handler nor the 10ms drain after it catches it.
+
+Not fixed, and deliberately not guessed at further. It costs a re-run per affected PR.
+
 ## Queue
 
 Everything Jason has asked for, in exactly one state. Parked is not dropped.
