@@ -99,7 +99,15 @@ interface Fixture {
   setSessionId(id: string): void;
 }
 
-function fixture(opts: { url?: string | null; urls?: Array<string | null>; throwOnCreate?: boolean } = {}): Fixture {
+function fixture(
+  opts: {
+    url?: string | null;
+    urls?: Array<string | null>;
+    throwOnCreate?: boolean;
+    /** Collab methods the omp under test offers. Absent is an older build. */
+    collab?: Partial<Pick<BridgePi, "startCollab" | "getCollabLinks" | "stopCollab">>;
+  } = {},
+): Fixture {
   const sockets: FakeSocket[] = [];
   const timers: Scheduled[] = [];
   const sent: Fixture["sent"] = [];
@@ -111,6 +119,7 @@ function fixture(opts: { url?: string | null; urls?: Array<string | null>; throw
     sendUserMessage: (message, options) => {
       sent.push({ message, options });
     },
+    ...opts.collab,
   };
 
   const ctx: BridgeContext = {
@@ -767,5 +776,141 @@ describe("diagnostics", () => {
     expect(entry.kind).toBe("registered");
     expect(entry.sessionId).toBe(SESSION);
     expect(typeof entry.ts).toBe("string");
+  });
+});
+
+describe("collab hosting", () => {
+  test("starts a room on the daemon's relay and answers with both link strengths", async () => {
+    const asked: Array<{ relayUrl?: string }> = [];
+    const f = fixture({
+      collab: {
+        startCollab: async options => {
+          asked.push(options);
+          return { link: "room.FULLSECRET", viewLink: "room.VIEWSECRET" };
+        },
+      },
+    });
+    f.bridge.connect();
+    const socket = f.sockets[0];
+    socket?.accept();
+    socket?.sent.splice(0);
+
+    socket?.deliver({ t: "tui_collab_open", sessionId: SESSION, requestId: "req-1", relayUrl: "ws://127.0.0.1:7795" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The relay travels in the request, so the room lands on the one the
+    // daemon serves rather than whatever this terminal had configured.
+    expect(asked).toEqual([{ relayUrl: "ws://127.0.0.1:7795" }]);
+    expect(socket?.sent).toEqual([
+      {
+        t: "tui_collab_opened",
+        sessionId: SESSION,
+        requestId: "req-1",
+        link: "room.FULLSECRET",
+        viewLink: "room.VIEWSECRET",
+        writable: true,
+      },
+    ]);
+  });
+
+  test("an omp without the collab API answers unavailable rather than appearing broken", async () => {
+    const f = fixture();
+    f.bridge.connect();
+    const socket = f.sockets[0];
+    socket?.accept();
+    socket?.sent.splice(0);
+
+    socket?.deliver({ t: "tui_collab_open", sessionId: SESSION, requestId: "req-2" });
+    await Promise.resolve();
+
+    // This is the operator's real build today. The answer has to be one the
+    // daemon can act on, so it falls back to steering rather than reporting
+    // a terminal that is somehow broken.
+    expect(socket?.sent).toEqual([
+      {
+        t: "tui_collab_error",
+        sessionId: SESSION,
+        requestId: "req-2",
+        reason: "unavailable",
+        detail: "this omp build cannot start a collab room from an extension; steering still works",
+      },
+    ]);
+  });
+
+  test("omp's own refusal travels verbatim", async () => {
+    const f = fixture({
+      collab: {
+        startCollab: async () => {
+          throw new Error("Already hosting a collab session on relay wss://my.omp.sh (stop it first)");
+        },
+      },
+    });
+    f.bridge.connect();
+    const socket = f.sockets[0];
+    socket?.accept();
+    socket?.sent.splice(0);
+
+    socket?.deliver({ t: "tui_collab_open", sessionId: SESSION, requestId: "req-3" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(socket?.sent).toEqual([
+      {
+        t: "tui_collab_error",
+        sessionId: SESSION,
+        requestId: "req-3",
+        reason: "refused",
+        detail: "Already hosting a collab session on relay wss://my.omp.sh (stop it first)",
+      },
+    ]);
+  });
+
+  test("closing stops only a room this bridge started", async () => {
+    let stops = 0;
+    const f = fixture({
+      collab: {
+        startCollab: async () => ({ link: "room.FULL", viewLink: "room.VIEW" }),
+        stopCollab: () => {
+          stops += 1;
+        },
+      },
+    });
+    f.bridge.connect();
+    const socket = f.sockets[0];
+    socket?.accept();
+    socket?.sent.splice(0);
+
+    // A room the operator started by typing `/collab` is theirs. The bridge
+    // opened nothing, so a phone leaving must not take their sharing away.
+    socket?.deliver({ t: "tui_collab_close", sessionId: SESSION, requestId: "req-4" });
+    await Promise.resolve();
+    expect(stops).toBe(0);
+    expect(socket?.sent).toEqual([{ t: "tui_collab_closed", sessionId: SESSION, requestId: "req-4" }]);
+
+    socket?.sent.splice(0);
+    socket?.deliver({ t: "tui_collab_open", sessionId: SESSION, requestId: "req-5" });
+    await Promise.resolve();
+    await Promise.resolve();
+    socket?.sent.splice(0);
+    socket?.deliver({ t: "tui_collab_close", sessionId: SESSION, requestId: "req-6" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(stops).toBe(1);
+    expect(socket?.sent).toEqual([{ t: "tui_collab_closed", sessionId: SESSION, requestId: "req-6" }]);
+  });
+
+  test("a request naming another session is ignored", async () => {
+    const f = fixture({ collab: { startCollab: async () => ({ link: "l", viewLink: "v" }) } });
+    f.bridge.connect();
+    const socket = f.sockets[0];
+    socket?.accept();
+    socket?.sent.splice(0);
+
+    socket?.deliver({ t: "tui_collab_open", sessionId: "someone-elses", requestId: "req-7" });
+    await Promise.resolve();
+
+    expect(socket?.sent).toEqual([]);
   });
 });
