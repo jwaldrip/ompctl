@@ -154,6 +154,20 @@ Two defects this work found, both in the instruments rather than the product:
 - A liveness read off `SessionSummary.status` made an archived session deletable while a process still held it, because an archive mark deliberately outranks liveness there. The index now returns the set of sessions a process actually holds and delete refuses from it.
 - A probe reported scheduled routines dead after waiting 170 seconds for a `routine_ran` event. The database showed four successful runs inside that exact window: the event never reaches a socket that has not asked for routines. The probe was broken, not the scheduler, and it spent eight agent runs before it was stopped.
 
+### Landed on 2026-08-22: the chrome, the icons, cowork, attachments, and a gate that was lying
+
+Nine changes, each verified on the running daemon or by eye on the iPad simulator built from this tree.
+
+- **The type gate reported clean on code that did not compile.** Every agent worktree that day lived under `/tmp`, which on macOS is `/private/tmp`. The compiler names each file relative to `PWD` while resolving it physically, so from a symlinked directory it emitted paths like `../../../../private/tmp/<repo>/packages/app/src/x.ts`; re-resolved against the physical directory those landed outside the repo, where `classify` filed them as a dependency's problem and stopped gating. It hid eight `TS2304`s on one branch, including an unterminated block comment that swallowed two imports, and three more in a package reporting clean. `scripts/check-types.test.ts` now runs the real script through a real symlink against a project that really does not compile.
+- **The hub does proxy HTTP, and the codebase said twenty-five times that it does not.** `POST /v1/webhooks/<daemonId>/<routineId>` is received by the hub, relayed down the sealed socket as `webhook_request`, answered as `webhook_response`, and replayed as a real HTTP response, across instances, with a 30 second timeout. What is true is narrower: it tunnels exactly one shape and no other daemon route, and a general proxy would carry the device bearer token through the hub. The webhook tunnel already hands the hub a routine's plaintext secret and body, which is now written down rather than implied away.
+- **A routine can be deleted, its webhook is usable, and a fire no longer dies at ten seconds.** `Bun.serve` had no `idleTimeout`, so the default killed any request that waited out a turn. Proven by mutation on a scratch daemon: with the old ceiling a long turn died at 12.0s with an empty reply, with the fix the same routine answered 202 succeeded at 39.8s. `deleteRoutine` also never refused an unknown id, because `bun:sqlite` answers `null` where the guard checked `undefined`.
+- **A prompt can carry an image, proven against a real agent.** A hand-built PNG, red left half, blue right half, white square, went from client to socket to daemon to ACP to `omp`, which replied `red, blue, square`. The ceiling is the hub's 1,000,000 byte frame cap, enforced on both ends.
+- **Cowork crosses the socket**, so a hub-paired phone reaches skills, connectors, tasks and container hosts that were HTTP-only and therefore invisible from a phone.
+- **A live TUI session can be paged backwards** through its whole file, with the cursor `readSessionTail` already tracked. Proven on a real 15MB session: five pages, no seam gap.
+- **The Config icon was `fa-slash`**, Font Awesome's negation stroke, which at 14pt is a bare diagonal line. Config has its own glyph now, and no two names draw the same shape without a written reason.
+- **Fixed-width containers could not fit their own labels.** The sort bar clipped `SIZE` to `S`; the cowork rail broke `CONNECTORS` into `CONNECT` and `ORS`; the terminal gutter held `Sent to this terminal` in 68 points; the list marker split `100.` into `10` and `0.`. Measured with CoreText against the vendored fonts rather than eyeballed, and gated as a class.
+- **One owner of the bottom inset per screen.** In the split the shell paid the inset and the nested composer paid it again, so the composer floated an inset above the list and the strip beneath it painted the shell's colour. Measured after the fix on the iPad: the detail pane's last pixel row is the composer's own surface.
+
 ## Queue
 
 Everything Jason has asked for, in exactly one state. Parked is not dropped.
@@ -166,7 +180,7 @@ Everything Jason has asked for, in exactly one state. Parked is not dropped.
 - No way back to the session list from a session view, which makes the closed screen a dead end
 - Right align the folder and archive controls in the Sessions header to the trailing content edge
 - A large session can show a black transcript with no loading state while its first history page is fetched, for at least 90 seconds. Seen by eye on the iPad, 2026-08-21
-- Titles truncate near 14 characters and group paths truncate at both ends, on a display with room for both. Seen by eye on the iPad, 2026-08-21
+- Titles truncate near 14 characters and group paths truncate at both ends, on a display with room for both. Seen by eye on the iPad, 2026-08-21. The label class gate now covers a container that cannot fit its own text, which is a different defect: a title longer than any room it could be given needs a decision about what to drop, and that decision has not been made
 - The notice used to float over the console and once covered the reply it was reporting on. It is a band in the column now, and `packages/app/test/no-hidden-content.test.ts` gates the class: a row clips its own content, a flex item holding text can shrink, readings wrap, and a notice never positions absolutely. Done 2026-08-21
 - Two primary-button treatments and two content gutters across pair and connections; unknown metrics render as a bare `--`. Seen by eye on the iPad, 2026-08-21
 - Subagents never reach the daemon, so the Agent Hub cannot list them against a real omp host. Diagnosed 2026-08-21, see above
@@ -175,6 +189,8 @@ Everything Jason has asked for, in exactly one state. Parked is not dropped.
 - Audio was never heard on hardware: narration and the mic are proven to the wire and to the UI, not to the speaker
 - Deleting a session from the phone is untested on hardware: the row control and its confirmation are proven by unit tests and by 302 real deletions over HTTP, not by a thumb on a device
 - Creating a scheduled routine from the phone is untested on hardware: the trigger picker lives behind the menu and no Detox path reaches it
+- **The @path scenario cannot pass on this machine while the operator's own terminals are working.** It opens `session-open-first`, and under status sort a `live-tui` row sorts first. On 2026-08-22 that was `omp --continue` at pid 9704 with 2,882 messages, a real terminal mid-task, so the steer arrived and the nonce never came back inside the step's 120 seconds. Both live pids were verified alive, so this is not a stale liveness marker and the session is not the harness's to interrupt. The scenario needs a session it is entitled to steer, chosen deliberately rather than by whatever sorts first
+- Two routines scenarios fail without their fixture: they need `rtn_e2e_delete_me` seeded on the daemon and a pairing holding manage. A read-and-prompt pairing cannot run them, and the run says so rather than passing vacuously
 
 **parked** (starts only after `PATH GREEN`)
 - BushidoPhone, Jason's iPad, Test iPhone, Apple Watch
