@@ -164,6 +164,17 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // rather than watch a session that will never open.
   session_takeover: true,
   session_resume: true,
+  // The same one-shot class as `session_resume`: an open that never left
+  // leaves the operator watching a row that will never fill, and a leave
+  // that never left leaves the daemon co-driving a session they believe
+  // they walked away from.
+  collab_open: true,
+  collab_leave: true,
+  // Answers from the terminal bridge, never emitted by this app-facing
+  // client, exactly like `tui_activity`.
+  tui_collab_opened: false,
+  tui_collab_error: false,
+  tui_collab_closed: false,
   // Irreversible and never replayed. A delete that never left is an
   // operator action that silently did not happen, and the operator must
   // hear that rather than believe a transcript is gone; re-sending it on a
@@ -327,6 +338,10 @@ export interface ClientErrorEvent {
   message: string;
   code?: string;
   agentId?: AgentId;
+  /** Correlates a failure with the session row it came from, for frames that name a session rather than an agent. */
+  sessionId?: string;
+  /** The machine key inside `code` when one exists (a `CollabRefusal` for collab frames), for wording from the refusal record. */
+  reason?: string;
 }
 
 /**
@@ -418,6 +433,18 @@ export interface SessionsEvent {
 export interface SessionOpenedEvent {
   sessionId: string;
   agentId: AgentId;
+}
+/**
+ * A `collab_open` answered: the daemon joined the room the session's host
+ * shares and now presents it as `agentId`. From here the session is an
+ * ordinary agent -- attach for the transcript, prompt to steer. `readOnly`
+ * says the daemon's link is view-strength, so steering will be refused no
+ * matter what scope this device holds.
+ */
+export interface CollabOpenedEvent {
+  sessionId: string;
+  agentId: AgentId;
+  readOnly: boolean;
 }
 
 /**
@@ -610,6 +637,7 @@ export interface ClientEventMap {
   collab_voice_history: CollabVoiceHistoryEvent;
   sessions: SessionsEvent;
   session_opened: SessionOpenedEvent;
+  collab_opened: CollabOpenedEvent;
   sessions_deleted: SessionsDeletedEvent;
   device_invited: DeviceInvitedEvent;
   skills: SkillsEvent;
@@ -971,6 +999,27 @@ export class OmpdClient {
    */
   resumeSession(sessionId: string, cwd: string): void {
     this.send({ t: "session_resume", sessionId, cwd });
+  }
+  /**
+   * Co-drive a live terminal session: ask the daemon to join the collab
+   * room its host shares and present it as an ordinary agent. The answer
+   * arrives as `collab_opened`, or as an `error` whose code is
+   * `collab_refused` (with a `CollabRefusal` in `reason`) or
+   * `collab_unavailable` when the join failed on the wire. One-shot like
+   * `resumeSession`: the daemon-side guest outlives this socket, and
+   * re-asking after a reconnect answers with the same agentId.
+   */
+  openCollab(sessionId: string): void {
+    this.send({ t: "collab_open", sessionId });
+  }
+
+  /**
+   * Stop co-driving a session. The guest leaves the room and its agent row
+   * goes terminal. One-shot for the same reason `openCollab` is: a leave
+   * that never left means the daemon is still co-driving.
+   */
+  leaveCollab(sessionId: string): void {
+    this.send({ t: "collab_leave", sessionId });
   }
 
   /**
@@ -1526,6 +1575,13 @@ export class OmpdClient {
       case "session_opened":
         this.emit("session_opened", { sessionId: frame.sessionId, agentId: frame.agentId });
         return;
+      case "collab_opened":
+        this.emit("collab_opened", {
+          sessionId: frame.sessionId,
+          agentId: frame.agentId,
+          readOnly: frame.readOnly,
+        });
+        return;
       case "sessions_deleted":
         this.emit("sessions_deleted", { results: frame.results });
         return;
@@ -1651,7 +1707,13 @@ export class OmpdClient {
         // An error frame is a message about a request, not a transport
         // failure. Tearing down the socket here would turn "that prompt was
         // rejected" into "you are disconnected".
-        this.emit("error", { message: frame.message, code: frame.code, agentId: frame.agentId });
+        this.emit("error", {
+          message: frame.message,
+          code: frame.code,
+          agentId: frame.agentId,
+          sessionId: frame.sessionId,
+          reason: frame.reason,
+        });
         // Except when the daemon has stopped recognising us at all, which
         // wears the same code as a scope refusal. Asking settles which it is
         // without guessing from the message text.
