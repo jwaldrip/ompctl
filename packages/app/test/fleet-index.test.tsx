@@ -1,8 +1,8 @@
 /**
  * The Fleet index wiring: canned `sessions` frames becoming rendered rows,
  * the live roster overlaid onto them, and a live-tui row's open asking the
- * daemon to co-drive the session through its collab guest rather than
- * claiming it.
+ * daemon to co-drive the session through its collab guest, with the steer
+ * surface as the fallback when that terminal's omp cannot host a room.
  *
  * The exact bug this file pins: a daemon with hundreds of sessions and a
  * phone showing "No sessions.", because Fleet rows were derived from the
@@ -25,7 +25,14 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ConsoleEvent, ConsoleState, SessionOpenTarget } from "../src/console/state.ts";
-import { apply, browserSessionsOf, COLLAB_WATCH_ONLY, emptyConsole, openSessionTarget } from "../src/console/state.ts";
+import {
+  apply,
+  browserSessionsOf,
+  COLLAB_WATCH_ONLY,
+  emptyConsole,
+  openSessionTarget,
+  tuiSessionFor,
+} from "../src/console/state.ts";
 import type { ConsoleActions } from "../src/console/useConsole.ts";
 import type { Connection } from "../src/platform/connection.ts";
 import type { BrowserState } from "../src/session/browser.ts";
@@ -228,7 +235,8 @@ describe("a live agent is overlaid onto its indexed session", () => {
 // ---------------------------------------------------------------------------
 // Opening a row resolves to the holder, or the claim it can echo
 // ---------------------------------------------------------------------------
-describe("opening a row resolves to a holder, a claim, or a co-drive join", () => {
+
+describe("opening a row resolves to a holder, a claim, or the terminal prompt surface", () => {
   const INDEX: SessionSummary[] = [
     summary("s-tui", { cwd: DIR_A, flattenedDir: "-alpha", status: "live-tui", pid: 4242 }),
     summary("s-ompd", { cwd: DIR_A, flattenedDir: "-alpha", status: "live-ompd", agentId: "agt_late" }),
@@ -324,7 +332,9 @@ class CannedClient {
   readonly attached: Array<{ agentId: AgentId; options: unknown }> = [];
   readonly collabOpens: string[] = [];
   readonly collabLeaves: string[] = [];
+  readonly sessionPrompts: Array<{ sessionId: string; text: string }> = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
+  readonly tails: Array<{ sessionId: string; limit: number | undefined; cursor?: number }> = [];
   readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
@@ -360,8 +370,14 @@ class CannedClient {
   leaveCollab(sessionId: string): void {
     this.collabLeaves.push(sessionId);
   }
+  sessionPrompt(sessionId: string, text: string): void {
+    this.sessionPrompts.push({ sessionId, text });
+  }
   resumeSession(sessionId: string, cwd: string): void {
     this.resumes.push({ sessionId, cwd });
+  }
+  sessionTail(sessionId: string, limit?: number, cursor?: number): void {
+    this.tails.push({ sessionId, limit, ...(cursor === undefined ? {} : { cursor }) });
   }
   sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
     this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
@@ -374,6 +390,7 @@ class CannedClient {
   unregisterWebView(): void {}
   webViewResult(): void {}
 }
+
 const CONNECTION: Connection = {
   transport: "direct",
   url: "ws://127.0.0.1:7777/v1/socket",
@@ -439,6 +456,7 @@ describe("useConsole asks for the index once and folds the answer", () => {
       mounted.unmount();
     }
   });
+
   test("the sessions event becomes the state's index and the fleet's rows", () => {
     const mounted = mountConsole();
     try {
@@ -453,6 +471,25 @@ describe("useConsole asks for the index once and folds the answer", () => {
     }
   });
 });
+
+/**
+ * Open a live-tui row the way every omp before `pi.startCollab` resolves it:
+ * the join ask, the daemon's `collab_unavailable` answer, and the fallback
+ * that lands the operator on the steer surface. The steer tests open through
+ * here because that answer is what the terminals in the field give today.
+ */
+function openTuiByFallback(mounted: Mounted, sessionId: string): void {
+  act(() => {
+    mounted.actions().openSession({ kind: "live-tui", sessionId });
+  });
+  act(() => {
+    mounted.client.emit("error", {
+      code: "collab_unavailable",
+      sessionId,
+      message: "this omp build cannot host a collab room",
+    });
+  });
+}
 
 describe("useConsole opens a row through its holder or a claim on the socket", () => {
   test("a row with a holder attaches to that agent, the live-ompd open", () => {
@@ -480,9 +517,11 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
       // the screen that renders a co-driven terminal is the ordinary session
       // screen, and its agent exists only once `collab_opened` names one.
       expect(mounted.client.collabOpens).toEqual(["s-tui"]);
+      expect(mounted.client.tails).toHaveLength(0);
       expect(mounted.client.resumes).toHaveLength(0);
       expect(mounted.client.attached).toHaveLength(0);
       expect(mounted.state().selected).toBeNull();
+      expect(mounted.state().selectedTui).toBeNull();
 
       // The join's answer is the landing: the agent it names is selected and
       // attached exactly as a resume's answer would be, which is the whole
@@ -493,6 +532,126 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
       expect(mounted.state().selected).toBe("agt_guest");
       expect(mounted.client.attached).toEqual([{ agentId: "agt_guest", options: { sinceSeq: 0 } }]);
       expect(mounted.client.histories).toEqual([{ agentId: "agt_guest", sessionId: "s-tui" }]);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("loading earlier asks from the cursor the daemon handed back, and only once per page", () => {
+    const mounted = mountConsole();
+    try {
+      openTuiByFallback(mounted, "s-tui");
+      act(() => {
+        mounted.client.emit("session_tail", {
+          sessionId: "s-tui",
+          messages: [{ role: "user", text: "the newest words", at: "" }],
+          truncated: true,
+          nextCursor: 4096,
+        });
+      });
+
+      act(() => {
+        mounted.actions().loadEarlierTui("s-tui");
+      });
+      expect(mounted.client.tails).toEqual([
+        { sessionId: "s-tui", limit: undefined },
+        { sessionId: "s-tui", limit: undefined, cursor: 4096 },
+      ]);
+
+      // A second tap while that page is in flight must not put a second ask
+      // for the same offset on the wire.
+      act(() => {
+        mounted.actions().loadEarlierTui("s-tui");
+      });
+      expect(mounted.client.tails).toHaveLength(2);
+
+      // And once the file's start is reached there is nothing left to ask
+      // for, whatever the surface does.
+      act(() => {
+        mounted.client.emit("session_tail", {
+          sessionId: "s-tui",
+          messages: [{ role: "user", text: "the oldest words", at: "" }],
+          truncated: false,
+          nextCursor: null,
+          cursor: 4096,
+        });
+      });
+      act(() => {
+        mounted.actions().loadEarlierTui("s-tui");
+      });
+      expect(mounted.client.tails).toHaveLength(2);
+      expect(tuiSessionFor(mounted.state(), "s-tui").history.map(m => m.text)).toEqual([
+        "the oldest words",
+        "the newest words",
+      ]);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a page of pure tool traffic is asked past, not reported as the end of the file", () => {
+    // The exhaustion case that would otherwise strand the operator: the
+    // daemon's page carried no words because a screenful of the file is tool
+    // calls, and the file still holds plenty behind it.
+    const mounted = mountConsole();
+    try {
+      openTuiByFallback(mounted, "s-tui");
+      act(() => {
+        mounted.client.emit("session_tail", { sessionId: "s-tui", messages: [], truncated: true, nextCursor: 9000 });
+      });
+      act(() => {
+        mounted.actions().loadEarlierTui("s-tui");
+      });
+      act(() => {
+        mounted.client.emit("session_tail", {
+          sessionId: "s-tui",
+          messages: [],
+          truncated: true,
+          nextCursor: 6000,
+          cursor: 9000,
+        });
+      });
+
+      // The empty page's own cursor was asked for without the operator
+      // tapping again: they asked for earlier words, not earlier bytes.
+      expect(mounted.client.tails).toEqual([
+        { sessionId: "s-tui", limit: undefined },
+        { sessionId: "s-tui", limit: undefined, cursor: 9000 },
+        { sessionId: "s-tui", limit: undefined, cursor: 6000 },
+      ]);
+      expect(tuiSessionFor(mounted.state(), "s-tui").historyLoadingEarlier).toBe(true);
+
+      // Words at last: the walk settles rather than running on.
+      act(() => {
+        mounted.client.emit("session_tail", {
+          sessionId: "s-tui",
+          messages: [{ role: "assistant", text: "words behind the noise", at: "" }],
+          truncated: true,
+          nextCursor: 3000,
+          cursor: 6000,
+        });
+      });
+      expect(mounted.client.tails).toHaveLength(3);
+      expect(tuiSessionFor(mounted.state(), "s-tui").history.map(m => m.text)).toEqual(["words behind the noise"]);
+      expect(tuiSessionFor(mounted.state(), "s-tui").historyLoadingEarlier).toBe(false);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("prompting the open terminal sends sessionPrompt with that row's id and the text", () => {
+    const mounted = mountConsole();
+    try {
+      openTuiByFallback(mounted, "s-tui");
+      act(() => {
+        mounted.actions().promptTui("s-tui", "Reply with exactly: phone-turn-ok");
+      });
+      expect(mounted.client.sessionPrompts).toEqual([
+        { sessionId: "s-tui", text: "Reply with exactly: phone-turn-ok" },
+      ]);
+      // The sent echo is on state immediately: the daemon does not echo
+      // prompts, so without it a successful send still looks dropped.
+      expect(tuiSessionFor(mounted.state(), "s-tui").sent).toBe("Reply with exactly: phone-turn-ok");
     } finally {
       mounted.unmount();
     }
@@ -520,7 +679,7 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
         mounted.actions().openSession(target);
       });
       expect(mounted.state().notice).toContain("cannot be opened");
-      expect(mounted.client.collabOpens).toHaveLength(0);
+      expect(mounted.client.sessionPrompts).toHaveLength(0);
       expect(mounted.client.resumes).toHaveLength(0);
       expect(mounted.client.attached).toHaveLength(0);
     } finally {
@@ -540,6 +699,102 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
     } finally {
       mounted.unmount();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The terminal lifecycle: prompt, hints, and the refusal that names a remedy
+// ---------------------------------------------------------------------------
+
+describe("a prompted terminal reports progress as hints, never a transcript", () => {
+  test("a turn folds to busy, then a reply, then done", () => {
+    const started = drive([
+      { t: "tui_prompt", sessionId: "s-tui", text: "status of the deploy?" },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
+    ]);
+    // turn_start retires the sent echo and marks the turn busy: the
+    // terminal took the prompt.
+    expect(tuiSessionFor(started, "s-tui").sent).toBeNull();
+    expect(tuiSessionFor(started, "s-tui").busy).toBe(true);
+
+    const state = drive([
+      { t: "tui_prompt", sessionId: "s-tui", text: "status of the deploy?" },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "assistant_text", text: "green" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_end" } },
+    ]);
+    expect(tuiSessionFor(state, "s-tui").busy).toBe(false);
+    // The reply is the last text reported, not an appended transcript row.
+    expect(tuiSessionFor(state, "s-tui").reply).toBe("green");
+  });
+
+  test("a second assistant_text replaces the first, and a hint never accumulates", () => {
+    const state = drive([
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "assistant_text", text: "almost" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "assistant_text", text: "done" } },
+    ]);
+    expect(tuiSessionFor(state, "s-tui").reply).toBe("done");
+  });
+
+  test("an unreachable refusal lands on the open terminal, naming cause and remedy", () => {
+    const state = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "tui_prompt", sessionId: "s-tui", text: "hello?" },
+      { t: "error", event: { message: "no connected TUI owns session s-tui", code: "tui_unreachable" } },
+    ]);
+    const tui = tuiSessionFor(state, "s-tui");
+    expect(tui.sent).toBeNull();
+    // Words the operator can act on: the owner went away and recovery starts
+    // at that terminal, not the daemon's raw code or phrasing.
+    expect(tui.refusalKind).toBe("owner-gone");
+    expect(tui.refusal).toContain("no longer reachable");
+    expect(tui.refusal).toContain("Return to that terminal");
+    expect(tui.refusal).not.toContain("no connected TUI owns");
+    // The refusal is held on the screen's state, not burned into the toast.
+    expect(state.notice).toBeNull();
+  });
+
+  test("a refusal with no terminal open falls back to the daemon's own message", () => {
+    const state = drive([
+      { t: "error", event: { message: "no connected TUI owns session s-tui", code: "tui_unreachable" } },
+    ]);
+    expect(state.notice).toBe("no connected TUI owns session s-tui");
+    expect(tuiSessionFor(state, "s-tui").refusal).toBeNull();
+  });
+
+  test("activity after a refusal clears it: the bridge came back", () => {
+    const state = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "error", event: { message: "no connected TUI owns session s-tui", code: "tui_unreachable" } },
+      { t: "tui_activity", event: { sessionId: "s-tui", kind: "turn_start" } },
+    ]);
+    expect(tuiSessionFor(state, "s-tui").refusal).toBeNull();
+    expect(tuiSessionFor(state, "s-tui").busy).toBe(true);
+  });
+
+  test("opening a terminal closes the agent strip, and an agent landing closes the terminal", () => {
+    const both = drive([
+      { t: "select", agentId: "agt_open" },
+      { t: "tui_select", sessionId: "s-tui" },
+    ]);
+    expect(both.selected).toBeNull();
+    expect(both.selectedTui).toBe("s-tui");
+
+    const adopted = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "select", agentId: "agt_adopted" },
+    ]);
+    expect(adopted.selectedTui).toBeNull();
+    expect(adopted.selected).toBe("agt_adopted");
+  });
+
+  test("back clears the terminal surface", () => {
+    const state = drive([
+      { t: "tui_select", sessionId: "s-tui" },
+      { t: "select", agentId: null },
+    ]);
+    expect(state.selectedTui).toBeNull();
   });
 });
 
@@ -591,15 +846,12 @@ describe("a co-drive join is idempotent and states every refusal", () => {
     expect(state.noticeAboutLink).toBe(false);
   });
 
-  test("a join that failed on the wire is named too, rather than leaving the tap unanswered", () => {
-    const state = drive([{ t: "error", event: { message: "the guest leg never opened", code: "collab_unavailable" } }]);
-    expect(state.notice).toBe("Co-driving failed before the terminal answered: the guest leg never opened");
-  });
-
   test("a pairing that cannot watch is told why, and no frame is sent", () => {
     // The three-way scope rule at the open: `missing` states the reason,
     // rather than spending a round trip on a frame the daemon must refuse
-    // and whose refusal would arrive wearing another scope's wording.
+    // and whose refusal would arrive wearing another scope's wording. It
+    // does not fall back either: a pairing is the operator's own grant, so
+    // widening it is their call, never the surface's to route around.
     const mounted = mountConsole({ ...CONNECTION, scopes: ["prompt"] });
     try {
       act(() => {
@@ -608,6 +860,7 @@ describe("a co-drive join is idempotent and states every refusal", () => {
       expect(mounted.client.collabOpens).toHaveLength(0);
       expect(mounted.state().notice).toContain("read scope");
       expect(mounted.state().selected).toBeNull();
+      expect(mounted.state().selectedTui).toBeNull();
     } finally {
       mounted.unmount();
     }
@@ -652,6 +905,80 @@ describe("a co-drive join is idempotent and states every refusal", () => {
         mounted.actions().select("agt_other");
       });
       expect(mounted.client.collabLeaves).toEqual(["s-tui", "s-tui"]);
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The fallback: an omp without the collab API keeps its steer surface
+// ---------------------------------------------------------------------------
+
+describe("an omp without the collab API still gets its terminal steered", () => {
+  test("collab_unavailable lands the open on the steer surface, and the operator can still prompt", () => {
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
+      });
+      // The join was asked for first: collab stays the preferred path.
+      expect(mounted.client.collabOpens).toEqual(["s-tui"]);
+      expect(mounted.state().selectedTui).toBeNull();
+
+      act(() => {
+        mounted.client.emit("error", {
+          code: "collab_unavailable",
+          sessionId: "s-tui",
+          message: "this omp build cannot host a collab room",
+        });
+      });
+
+      // The fallback, not a notice: the terminal surface opens with its
+      // transcript tail asked for, and nothing reports a working screen as
+      // a failure.
+      expect(mounted.state().selectedTui).toBe("s-tui");
+      expect(mounted.client.tails).toEqual([{ sessionId: "s-tui", limit: undefined }]);
+      expect(mounted.state().notice).toBeNull();
+
+      // And the surface is a working one: a steer rides the same
+      // session_prompt frame it always did, with the sent echo on screen
+      // before the daemon answers.
+      act(() => {
+        mounted.actions().promptTui("s-tui", "Reply with exactly: phone-turn-ok");
+      });
+      expect(mounted.client.sessionPrompts).toEqual([
+        { sessionId: "s-tui", text: "Reply with exactly: phone-turn-ok" },
+      ]);
+      expect(tuiSessionFor(mounted.state(), "s-tui").sent).toBe("Reply with exactly: phone-turn-ok");
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a refused co-drive does not fall back: it states itself", () => {
+    const mounted = mountConsole();
+    try {
+      act(() => {
+        mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
+      });
+      act(() => {
+        mounted.client.emit("error", {
+          code: "collab_refused",
+          reason: "not_hosted",
+          sessionId: "s-tui",
+          message: COLLAB_REFUSAL_REASONS.not_hosted,
+        });
+      });
+
+      // A refusal is a decision the operator must make, so the surface
+      // stays closed: no fallback opens, no tail is asked for, and the
+      // refusal names itself in the daemon's own words.
+      expect(mounted.state().selectedTui).toBeNull();
+      expect(mounted.client.tails).toHaveLength(0);
+      expect(mounted.state().notice).toBe(`Co-driving was refused: ${COLLAB_REFUSAL_REASONS.not_hosted}`);
+      // And no steer leaves the device for a session nobody opened.
+      expect(mounted.client.sessionPrompts).toHaveLength(0);
     } finally {
       mounted.unmount();
     }

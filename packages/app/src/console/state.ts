@@ -20,6 +20,7 @@ import type {
   PlanReviewChoice,
   SessionDeleteResult,
   SessionSummary,
+  TranscriptTailMessage,
   WebViewAction,
 } from "@ompd/core/contracts";
 import {
@@ -39,8 +40,10 @@ import type {
   PlanReviewEvent,
   SayEvent,
   SessionHistoryEvent,
+  SessionTailEvent,
   StatusEvent,
   TranscriptEvent,
+  TuiActivityEvent,
   UnauthorizedEvent,
   UpdateEvent,
 } from "@ompd/core/ompd-client";
@@ -50,6 +53,7 @@ import {
   appendApproval,
   appendPrompt,
   EMPTY_SESSION,
+  echoText,
   endTurn,
   mergeSessionHistory,
   reduce,
@@ -162,12 +166,26 @@ export interface ConsoleState {
   readonly delayMs: number | undefined;
   readonly selected: AgentId | null;
   /**
+   * The live terminal session whose prompt surface is open, or null.
+   *
+   * Held beside `selected` rather than inside it because the two detail panes
+   * answer different shapes: an agent has a transcript this device attaches
+   * to, a terminal session has only the hints below. Exactly one of the two
+   * is ever non-null; the reducer enforces the exclusivity.
+   */
+  readonly selectedTui: string | null;
+  /** Hints about terminal sessions this device has prompted. Keyed by session id. */
+  readonly tuiSessions: ReadonlyMap<string, TuiSessionState>;
+  /**
    * The live terminal sessions this device co-drives, keyed by the agent the
-   * daemon presented for each join. A joined terminal is an ordinary agent in
-   * every other slice: it is selected through `selected`, streamed through
-   * `sessions`, and listed by the roster. This map holds what those cannot
-   * say: which session the agent co-drives, and whether the daemon's link to
-   * the terminal is view-only.
+   * daemon presented for each join.
+   *
+   * A joined terminal is an ordinary agent in every other slice: selected
+   * through `selected`, streamed through `sessions`, listed by the roster.
+   * This map holds what those cannot say: which session the agent co-drives,
+   * and whether the daemon's link to it is view-only. It stays empty on a
+   * machine whose omp cannot host a room, which is why the hints above are
+   * still the fallback rather than dead weight.
    */
   readonly collabAgents: ReadonlyMap<AgentId, CollabJoin>;
   /** At most one browser action per agent. Completion is correlated by request id. */
@@ -221,13 +239,80 @@ export type ScopeAccess = "granted" | "unknown" | "missing";
 export type PromptScopeAccess = ScopeAccess;
 
 /**
+ * The same rule, under the name the terminal screen has always imported.
+ * Kept as an alias rather than inlined so the terminal's props stay stable
+ * while the microphone and any later prompt-gated control share one rule.
+ */
+export type TuiPromptAccess = ScopeAccess;
+
+/** The two prompt refusals this screen can repair differently. */
+export type TuiPromptRefusalKind = "owner-gone" | "scope";
+/**
+ * What this device holds about one live terminal session, keyed by session id
+ * because a terminal session has no agent row.
+ *
+ * Two different things live here, and the distinction is load-bearing.
+ * `history` is transcript: the turns the daemon read out of the session's own
+ * file when this surface opened, oldest first. Everything else is a hint,
+ * because `tui_activity` frames are the terminal's own progress reporting and
+ * the wire contract says so: `reply` holds only the last text, `sent` only
+ * the prompt this device most recently sent, and neither accumulates.
+ */
+export interface TuiSessionState {
+  /**
+   * The last prompt this device sent, kept until the terminal reports taking
+   * the turn. Live activity is not appended to the served history, so without
+   * this echo the operator's own words vanish on submit.
+   */
+  readonly sent: string | null;
+  /** True between the terminal's own `turn_start` and `turn_end`. */
+  readonly busy: boolean;
+  /**
+   * True after this phone steers and until that terminal turn settles.
+   * Terminal activity that started elsewhere leaves it false, so an empty
+   * terminal-only turn does not become a false refusal on this device.
+   */
+  readonly awaitingReply: boolean;
+  /** The last `assistant_text` the terminal reported, verbatim. */
+  readonly reply: string | null;
+  /**
+   * The steered turn ended without readable assistant text. The full terminal
+   * transcript remains authoritative; this names that boundary on the phone.
+   */
+  readonly replyUnavailable: boolean;
+  /** Why the daemon refused the last prompt, once it has. */
+  readonly refusal: string | null;
+  /** Stable refusal vocabulary for the screen heading and recovery copy. */
+  readonly refusalKind: TuiPromptRefusalKind | null;
+  /**
+   * The transcript this device holds for the session, oldest first.
+   *
+   * A cursorless `session_tail` frame replaces it wholesale rather than
+   * merging: the daemon reads the file's end every time it is asked, so the
+   * newest answer is the truth and a merge would only invent an ordering
+   * neither side agreed on. A paged frame prepends, because the daemon read
+   * strictly older bytes than everything already held.
+   */
+  readonly history: readonly TranscriptTailMessage[];
+  /**
+   * The byte offset the next older page starts from, or null when there is
+   * no older page to ask for: the file's start is reached, or nothing has
+   * been served yet. What the load-earlier control is offered on.
+   */
+  readonly historyCursor: number | null;
+  /** True while an older page is in flight, so the control cannot be tapped twice. */
+  readonly historyLoadingEarlier: boolean;
+}
+
+/**
  * One live terminal session this device co-drives, keyed by the agent the
  * daemon presented for the join.
  *
  * Only the join lives here, never the transcript: a joined session streams
- * through the same update and history frames an owned agent uses, so the app
- * renders one transcript shape and the terminal's session screen is the
- * ordinary one.
+ * through the same update and history frames an owned agent uses, so the
+ * co-driven screen is the ordinary session screen rather than a second
+ * transcript shape. The hints above stay the surface for a terminal whose
+ * omp cannot host a room at all.
  */
 export interface CollabJoin {
   /** The session on the machine this agent co-drives. */
@@ -239,6 +324,31 @@ export interface CollabJoin {
    */
   readonly readOnly: boolean;
 }
+
+const EMPTY_TUI_SESSION: TuiSessionState = {
+  sent: null,
+  busy: false,
+  awaitingReply: false,
+  reply: null,
+  replyUnavailable: false,
+  refusal: null,
+  refusalKind: null,
+  history: [],
+  historyCursor: null,
+  historyLoadingEarlier: false,
+};
+
+/**
+ * What an operator can repair after the session index and the live socket
+ * disagreed. The row may still say live while its owner already closed,
+ * switched sessions, or lost the bridge, so the remedy starts at the terminal.
+ */
+const TUI_UNREACHABLE_GUIDANCE =
+  "The terminal that owned this session is no longer reachable. Return to that terminal, make sure this session is still open, then try again.";
+
+/** Scope refusals cannot be repaired by retrying the same instruction. */
+const TUI_SCOPE_GUIDANCE =
+  "This device does not hold the prompt scope. Pair it again with prompt access before steering this terminal.";
 
 export function emptyConsole(scopes: readonly string[]): ConsoleState {
   return {
@@ -256,6 +366,8 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     attempt: 0,
     delayMs: undefined,
     selected: null,
+    selectedTui: null,
+    tuiSessions: new Map(),
     collabAgents: new Map(),
     pendingWebViewActions: new Map(),
     // A pairing that did not declare its scopes stays optimistic; the daemon's
@@ -284,14 +396,24 @@ export type ConsoleEvent =
   /** Local: this device opened the microphone for one agent, or closed it. */
   | { t: "voice_capture"; agentId: AgentId | null }
   | { t: "unauthorized"; event: UnauthorizedEvent }
+  /** Daemon: turn progress from a live terminal session this device can prompt. */
+  | { t: "tui_activity"; event: TuiActivityEvent }
+  /** Daemon: one page of a terminal session's transcript, answering this device's ask. */
+  | { t: "session_tail"; event: SessionTailEvent }
+  | { t: "session_history"; event: SessionHistoryEvent }
+  | { t: "history_request"; agentId: AgentId }
+  /** Local: this device just asked a terminal session for an older page. */
+  | { t: "tui_history_request"; sessionId: string }
+  /** Local: the operator opened a terminal session's prompt surface, or went back to the bay. */
+  | { t: "tui_select"; sessionId: string | null }
+  /** Local: echo of a prompt this device just sent to a terminal session. */
+  | { t: "tui_prompt"; sessionId: string; text: string; imageCount?: number }
   /**
    * Daemon: a live terminal session this device asked to co-drive is now
    * presented as the named agent. The ordinary session screen renders it,
    * and everything after arrives as the frames any agent produces.
    */
   | { t: "collab_opened"; event: CollabOpenedEvent }
-  | { t: "session_history"; event: SessionHistoryEvent }
-  | { t: "history_request"; agentId: AgentId }
   /** Local: the operator opened a strip, or went back to the bay. */
   | { t: "select"; agentId: AgentId | null }
   /** Local: echo of a prompt this device just sent. */
@@ -376,14 +498,38 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "error": {
       const { code, message } = event.event;
-      // A collab refusal arrives with no screen of its own to land on: the
-      // tap that caused it came from the fleet, and the joined session, when
-      // there is one, is an ordinary agent's screen. So the refusal is a
-      // notice, worded from the daemon's own reason rather than passed
-      // through raw or, worse, swallowed into a spinner that never settles.
+      const selectedTui = state.selectedTui;
+      const promptPending = selectedTui !== null && (state.tuiSessions.get(selectedTui)?.sent ?? null) !== null;
+      // Prompt errors carry no session id, but a local prompt echo means this
+      // open terminal screen has exactly one request awaiting an answer. A
+      // refusal after the operator left has no honest screen correlation and
+      // falls through to the ordinary notice path.
+      if (code === "tui_unreachable" && selectedTui !== null) {
+        return withTuiSession(state, selectedTui, tui => ({
+          ...tui,
+          sent: null,
+          awaitingReply: false,
+          replyUnavailable: false,
+          refusal: TUI_UNREACHABLE_GUIDANCE,
+          refusalKind: "owner-gone",
+        }));
+      }
+      // A refused co-drive has no screen of its own to land on: the tap came
+      // from a fleet row, and a join that never happened has no agent. So it
+      // is a notice, worded from the daemon's own reason.
       const collabNotice = collabOpenNotice(event.event);
       if (collabNotice !== null) {
         return { ...state, notice: collabNotice, noticeAboutLink: false };
+      }
+      if (code !== undefined && SCOPE_CODES[code] && promptPending && selectedTui !== null) {
+        return withTuiSession(state, selectedTui, tui => ({
+          ...tui,
+          sent: null,
+          awaitingReply: false,
+          replyUnavailable: false,
+          refusal: TUI_SCOPE_GUIDANCE,
+          refusalKind: "scope",
+        }));
       }
       if (code !== undefined && SCOPE_CODES[code]) {
         return {
@@ -431,8 +577,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       return { ...state, unauthorized: event.event.reason, connection: "offline" };
 
     case "select": {
+      // Back goes to the bay from either detail pane, and an agent landing
+      // (a resume claim answered) replaces an open terminal surface: the two
+      // panes are exclusive by construction, not by caller discipline.
       if (event.agentId === null) {
-        return state.selected === null ? state : { ...state, selected: null };
+        return state.selected === null && state.selectedTui === null
+          ? state
+          : { ...state, selected: null, selectedTui: null };
       }
       // Selecting an agent rides the daemon's `session_opened` answer or a
       // roster row, and both are newer than a snapshot still in flight over
@@ -441,10 +592,18 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // photograph taken before the resumed agent was registered. A double
       // tap answers twice, so the re-select retires the streak too.
       const rosterMisses = clearMiss(state.rosterMisses, event.agentId);
-      if (state.selected === event.agentId) {
+      if (state.selected === event.agentId && state.selectedTui === null) {
         return rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses };
       }
-      return { ...state, selected: event.agentId, rosterMisses };
+      return { ...state, selected: event.agentId, selectedTui: null, rosterMisses };
+    }
+
+    case "tui_select": {
+      if (event.sessionId === null) {
+        return state.selectedTui === null ? state : { ...state, selectedTui: null };
+      }
+      if (state.selectedTui === event.sessionId && state.selected === null) return state;
+      return { ...state, selectedTui: event.sessionId, selected: null };
     }
 
     case "collab_opened": {
@@ -454,17 +613,41 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // names, exactly as a `session_opened`-driven select does.
       const rosterMisses = clearMiss(state.rosterMisses, agentId);
       // A second open of a session the daemon already co-drives answers with
-      // the agent it already holds: the join is rewritten with the same
-      // values and the selection does not move, so the frame folds to no
-      // change and no re-render. That is what makes a double tap free.
+      // the agent it already holds, so the frame folds to no change and no
+      // re-render. That is what makes a double tap on a row free.
       const existing = state.collabAgents.get(agentId);
       if (state.selected === agentId && existing?.sessionId === sessionId && existing.readOnly === readOnly) {
         return rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses };
       }
       const collabAgents = new Map(state.collabAgents);
       collabAgents.set(agentId, { sessionId, readOnly });
-      return { ...state, selected: agentId, collabAgents, rosterMisses };
+      // Selecting closes the terminal surface for the same reason a resume's
+      // answer does: the two detail panes are exclusive, and this session is
+      // now an agent's rather than a steer target.
+      return { ...state, selected: agentId, selectedTui: null, collabAgents, rosterMisses };
     }
+
+    case "tui_prompt":
+      return withTuiSession(state, event.sessionId, tui => ({
+        ...tui,
+        sent: echoText(event.text, event.imageCount ?? 0),
+        awaitingReply: true,
+        reply: null,
+        replyUnavailable: false,
+        refusal: null,
+        refusalKind: null,
+      }));
+
+    case "tui_activity":
+      return applyTuiActivity(state, event.event);
+
+    case "session_tail":
+      return applySessionTail(state, event.event);
+
+    case "tui_history_request":
+      return withTuiSession(state, event.sessionId, tui =>
+        tui.historyLoadingEarlier ? tui : { ...tui, historyLoadingEarlier: true },
+      );
 
     case "history_request": {
       const historyLoading = new Set(state.historyLoading);
@@ -642,6 +825,117 @@ function withSession(
   return { ...state, sessions };
 }
 
+/**
+ * Terminal turn progress, folded as hints about one row. A `turn_start`
+ * retires the sent echo and proves the bridge owner is back, so it clears an
+ * owner refusal but never a scope refusal. A turn this phone started remains
+ * awaiting until its end. If no readable assistant text arrived by then, the
+ * screen names the missing readback instead of looking stalled.
+ */
+function applyTuiActivity(state: ConsoleState, event: TuiActivityEvent): ConsoleState {
+  return withTuiSession(state, event.sessionId, tui => {
+    switch (event.kind) {
+      case "turn_start":
+        // Activity proves an owner is back, but it says nothing about this
+        // device's scope. Only an owner refusal may recover from activity.
+        if (tui.refusalKind === "scope") return { ...tui, sent: null, busy: true };
+        return {
+          ...tui,
+          sent: null,
+          busy: true,
+          refusal: null,
+          refusalKind: null,
+        };
+      case "assistant_text":
+        return event.text === undefined
+          ? tui
+          : {
+              ...tui,
+              reply: event.text,
+              replyUnavailable: false,
+            };
+      case "turn_end":
+        return {
+          ...tui,
+          busy: false,
+          awaitingReply: false,
+          replyUnavailable: tui.awaitingReply && tui.reply === null,
+        };
+    }
+  });
+}
+
+/**
+ * One page of a terminal session's transcript, folded into what this device
+ * holds for that session.
+ *
+ * The frame's echoed `cursor` decides which of two different things this is.
+ * Absent means the daemon read the end of the file, which is what a fresh
+ * open asks for, so it replaces the history wholesale. Present means an
+ * older page, which prepends: the daemon read strictly older bytes than
+ * anything already held, so there is nothing to merge and no ordering to
+ * invent.
+ *
+ * A page whose cursor is not the one this session is holding answers an ask
+ * some later open already replaced, and is dropped. Frames cross the hub
+ * relay with no ordering guarantee against each other, so without this a
+ * page in flight when the operator left and came back would prepend a
+ * stranger's stretch of file onto a freshly served tail.
+ */
+function applySessionTail(state: ConsoleState, event: SessionTailEvent): ConsoleState {
+  return withTuiSession(state, event.sessionId, tui => {
+    if (event.cursor === undefined) {
+      return {
+        ...tui,
+        history: event.messages,
+        historyCursor: event.nextCursor,
+        historyLoadingEarlier: false,
+      };
+    }
+    if (tui.historyCursor !== event.cursor) return tui;
+    return {
+      ...tui,
+      history: event.messages.length === 0 ? tui.history : [...event.messages, ...tui.history],
+      historyCursor: event.nextCursor,
+      historyLoadingEarlier: false,
+    };
+  });
+}
+
+/**
+ * The offset to ask a terminal session for next, once a page has landed, or
+ * null when the operator's tap is fully answered.
+ *
+ * A page can legitimately carry no turns while megabytes of file remain: a
+ * long run of tool traffic says nothing, and the reader stops at its budget
+ * inside one. The operator asked for earlier words, not earlier bytes, so an
+ * empty page is not an answer and the view asks on from its cursor. Only a
+ * page that produced turns, or one that reached the file's start, settles.
+ *
+ * The cursor must also have moved. A page that cannot advance -- one line
+ * larger than the whole read budget is the only way -- would otherwise be
+ * asked for forever.
+ */
+export function tuiPageToAskFor(event: SessionTailEvent): number | null {
+  if (event.cursor === undefined) return null;
+  if (event.messages.length > 0) return null;
+  if (event.nextCursor === null || event.nextCursor >= event.cursor) return null;
+  return event.nextCursor;
+}
+
+function withTuiSession(
+  state: ConsoleState,
+  sessionId: string,
+  change: (tui: TuiSessionState) => TuiSessionState,
+): ConsoleState {
+  const before = state.tuiSessions.get(sessionId) ?? EMPTY_TUI_SESSION;
+  const after = change(before);
+  if (after === before) return state;
+  const tuiSessions = new Map(state.tuiSessions);
+  tuiSessions.set(sessionId, after);
+  return { ...state, tuiSessions };
+}
+
 // ---------------------------------------------------------------------------
 // Selectors
 // ---------------------------------------------------------------------------
@@ -722,14 +1016,6 @@ function scopeAccess(state: ConsoleState, storedScopes: readonly string[], scope
 export function promptScopeAccess(state: ConsoleState, storedScopes: readonly string[]): PromptScopeAccess {
   return scopeAccess(state, storedScopes, SCOPE_PROMPT);
 }
-/**
- * The read scope's posture: what watching a session spends, owned or
- * co-driven. Joining a terminal as a viewer is the one open that spends it,
- * which is why it never needed its own gate before.
- */
-export function readScopeAccess(state: ConsoleState, storedScopes: readonly string[]): ScopeAccess {
-  return scopeAccess(state, storedScopes, SCOPE_READ);
-}
 
 /**
  * The manage scope's posture: what archiving already spends and what deleting
@@ -767,6 +1053,16 @@ export function sessionDeleteNotice(results: readonly SessionDeleteResult[]): st
   return `${refused.length} sessions were not deleted. The first: ${reason}.`;
 }
 
+/** The same rule for the terminal steering surface, under its historic name. */
+export function tuiPromptAccess(state: ConsoleState, storedScopes: readonly string[]): TuiPromptAccess {
+  return promptScopeAccess(state, storedScopes);
+}
+
+/** Hints about one terminal session. A row never prompted is not missing, it is blank. */
+export function tuiSessionFor(state: ConsoleState, sessionId: string): TuiSessionState {
+  return state.tuiSessions.get(sessionId) ?? EMPTY_TUI_SESSION;
+}
+
 /**
  * The band a view-only join's session screen carries in place of its
  * composer. Same vocabulary as the daemon's `view_only` refusal, so the band
@@ -777,23 +1073,29 @@ export const COLLAB_WATCH_ONLY =
   "Watching only. This terminal is shared view-only, so a steer from here would be refused.";
 
 /**
- * What to tell the operator about a collab frame the daemon refused or could
- * not deliver, or null when the error is not about co-driving.
+ * The read scope's posture: what watching a session spends, owned or
+ * co-driven. Joining a terminal as a viewer is the one open that spends it,
+ * which is why it never needed its own gate before.
+ */
+export function readScopeAccess(state: ConsoleState, storedScopes: readonly string[]): ScopeAccess {
+  return scopeAccess(state, storedScopes, SCOPE_READ);
+}
+
+/**
+ * What to tell the operator about a co-drive the daemon refused, or null when
+ * the error is not one of those.
  *
- * The daemon's message is the refusal record's own wording, so the notice
- * renders it verbatim and the prefix names the act that failed: the tap came
- * from a fleet row, and without the prefix a bare reason reads as though the
- * row itself were broken.
+ * `collab_unavailable` is deliberately absent: that is the answer an omp
+ * without the hosting API gives, and the error handler in `useConsole` falls
+ * the open back to the steer surface instead of refusing, so a toast on every
+ * open would report a working screen as a failure. That fallback, and this
+ * gap, die together when `pi.startCollab` ships. A real refusal is the
+ * opposite case, and its message is the refusal record's own wording,
+ * rendered verbatim after a prefix naming the act that failed.
  */
 export function collabOpenNotice(event: ClientErrorEvent): string | null {
-  switch (event.code) {
-    case "collab_refused":
-      return `Co-driving was refused: ${event.message}`;
-    case "collab_unavailable":
-      return `Co-driving failed before the terminal answered: ${event.message}`;
-    default:
-      return null;
-  }
+  if (event.code !== "collab_refused") return null;
+  return `Co-driving was refused: ${event.message}`;
 }
 
 /** What a strip shows. Derived rather than stored, so it cannot go stale. */

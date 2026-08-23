@@ -30,6 +30,8 @@ import {
   promptScopeAccess,
   readScopeAccess,
   sessionDeleteNotice,
+  tuiPageToAskFor,
+  tuiSessionFor,
 } from "./state.ts";
 import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
@@ -46,11 +48,23 @@ export interface ConsoleActions {
   loadEarlier: (agentId: AgentId) => void;
   /**
    * Open one browser row. A row whose session an agent already holds opens
-   * that agent's log; a live terminal session is joined through the daemon's
-   * collab guest and opens as the ordinary agent the join presents; the rest
-   * claim through the daemon.
+   * that agent's log; a live terminal session is asked for as a collab guest
+   * first and falls back to the steer surface when the terminal's omp cannot
+   * host; the rest claim through the daemon.
    */
   openSession: (target: SessionOpenTarget) => void;
+  /**
+   * Send one prompt to a live terminal session. The daemon routes it to the
+   * terminal that owns the session; progress arrives as `tui_activity`, and a
+   * terminal with no bridge answers `tui_unreachable` instead.
+   */
+  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => void;
+  /**
+   * Ask a live terminal session for the page of turns older than the one on
+   * screen. Ignored when the file's start is already reached or a page is
+   * already in flight, so a double tap cannot ask twice.
+   */
+  loadEarlierTui: (sessionId: string) => void;
   /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
@@ -169,7 +183,6 @@ export function useConsole(
     },
     [client],
   );
-
   /**
    * Tell the daemon to leave the room when the operator walks away from a
    * co-driven session, whether the way out is back or the opening of another
@@ -182,6 +195,22 @@ export function useConsole(
       if (leaving === null || leaving === next) return;
       const join = stateRef.current.collabAgents.get(leaving);
       if (join !== undefined) client.leaveCollab(join.sessionId);
+    },
+    [client],
+  );
+
+  /**
+   * Ask one terminal session for the page older than `cursor`.
+   *
+   * Takes the cursor rather than reading it back out of state, because the
+   * caller that matters most is the answer handler continuing past an empty
+   * page: it holds the fresh cursor from the frame it just folded in, while
+   * a state read between commits could still see the one before it.
+   */
+  const askOlderTui = useCallback(
+    (sessionId: string, cursor: number): void => {
+      dispatch({ t: "tui_history_request", sessionId });
+      client.sessionTail(sessionId, undefined, cursor);
     },
     [client],
   );
@@ -294,6 +323,28 @@ export function useConsole(
         dispatch({ t: "plan_review", event });
       }),
       client.on("error", event => {
+        // The steer-surface fallback. `collab_unavailable` is the daemon
+        // saying this terminal's omp has no collab API to answer with, which
+        // is every omp build before `pi.startCollab` ships. That is not a
+        // refusal the operator must act on: the steer surface drives the
+        // same terminal today, so the open lands there instead of dying as
+        // a toast, and the tail ask is repeated because the join never
+        // started streaming. A `collab_refused` answer is the opposite case:
+        // a decision only the operator can make, so it states itself through
+        // the reducer and never silently falls back.
+        //
+        // This branch dies when `pi.startCollab` ships and the daemon stops
+        // answering `collab_unavailable`: with every terminal able to host,
+        // the fallback is dead code and can be deleted with evidence.
+        if (event.code === "collab_unavailable" && event.sessionId !== undefined) {
+          // Landing on the terminal surface is walking away from whatever
+          // co-driven session was on screen, exactly as a join's answer is,
+          // so the leave reaches the daemon through the same call.
+          leaveCollab(stateRef.current.selected);
+          dispatch({ t: "tui_select", sessionId: event.sessionId });
+          client.sessionTail(event.sessionId);
+          return;
+        }
         dispatch({ t: "error", event });
       }),
       client.on("say", event => {
@@ -314,6 +365,18 @@ export function useConsole(
             // segment still deserves the speaker, and the operator's remedy
             // is the same for any chunk.
           });
+      }),
+      client.on("tui_activity", event => {
+        dispatch({ t: "tui_activity", event });
+      }),
+      client.on("session_tail", event => {
+        dispatch({ t: "session_tail", event });
+        // A page of pure tool traffic carries no turns while the file still
+        // holds plenty behind it, and the operator tapped for earlier words
+        // rather than earlier bytes. Asking on from the page's own cursor is
+        // what keeps that tap from ending on an unchanged screen.
+        const next = tuiPageToAskFor(event);
+        if (next !== null) askOlderTui(event.sessionId, next);
       }),
       client.on("unauthorized", event => {
         dispatch({ t: "unauthorized", event });
@@ -343,7 +406,7 @@ export function useConsole(
       for (const off of offs) off();
       client.close();
     };
-  }, [client, leaveCollab, requestHistory, settleWebViewAction, voice]);
+  }, [askOlderTui, client, leaveCollab, requestHistory, settleWebViewAction, voice]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -418,19 +481,25 @@ export function useConsole(
         // holding it, so a double tap cannot make a second holder. Selecting
         // waits for that answer; the reply, not this dispatch, is what opens
         // the screen.
+        //
+        // A live terminal session is joined before it is steered: the daemon
+        // co-drives it as a collab guest and answers `collab_opened` with an
+        // ordinary agent to select, which is the richer surface whenever the
+        // terminal's omp can host. When it cannot, the daemon's
+        // `collab_unavailable` answer falls back to the local prompt surface
+        // (see the error handler), so no omp build is left without a way in.
         switch (target.kind) {
           case "agent":
             selectAgent(target.agentId);
             return;
           case "live-tui": {
-            // A live terminal is joined, never taken over: the daemon
-            // co-drives it as a collab guest and answers `collab_opened` with
-            // an ordinary agent to select, so nothing here claims the
-            // renderer and the transcript arrives through the same frames an
-            // owned agent uses. Watching spends the read scope, so a pairing
-            // that provably lacks it gets the reason stated rather than a
-            // frame the daemon must refuse; an unknown one asks
-            // optimistically, and the daemon's refusal arrives named.
+            // A live terminal is joined, never taken over: nothing here
+            // claims the renderer, and the transcript arrives through the
+            // same frames an owned agent uses. Watching spends the read
+            // scope, so a pairing that provably lacks it gets the reason
+            // stated rather than a frame the daemon must refuse; an unknown
+            // one asks optimistically, and the daemon's refusal arrives
+            // named.
             if (readScopeAccess(stateRef.current, connection.scopes) === "missing") {
               dispatch({
                 t: "error",
@@ -457,6 +526,18 @@ export function useConsole(
               event: { message: "That session has no record the daemon can verify, so it cannot be opened from here." },
             });
         }
+      },
+      promptTui(sessionId, text, images) {
+        client.sessionPrompt(sessionId, text, undefined, images);
+        dispatch({ t: "tui_prompt", sessionId, text, imageCount: images?.length ?? 0 });
+      },
+      loadEarlierTui(sessionId) {
+        const tui = tuiSessionFor(stateRef.current, sessionId);
+        // Nothing older to reach, or an ask already out: the control renders
+        // both states, but a tap that arrives anyway must not put a second
+        // request on the wire for the same page.
+        if (tui.historyCursor === null || tui.historyLoadingEarlier) return;
+        askOlderTui(sessionId, tui.historyCursor);
       },
       deleteSession(sessionId) {
         // The row renders the missing scope and offers no confirmation, but
@@ -540,7 +621,7 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [client, connection.scopes, leaveCollab, requestHistory, settleWebViewAction, selectAgent, voice],
+    [askOlderTui, client, connection.scopes, leaveCollab, requestHistory, settleWebViewAction, selectAgent, voice],
   );
 
   return [state, actions];

@@ -21,6 +21,8 @@ import {
   fleetClearances,
   sessionFor,
   stripStats,
+  tuiPageToAskFor,
+  tuiSessionFor,
 } from "../src/console/state.ts";
 import { EMPTY_SESSION } from "../src/session/model.ts";
 
@@ -243,6 +245,91 @@ describe("durable session history", () => {
       event: { agentId: "a1", sessionId: "s1", entries: [], nextBefore: null },
     });
     expect(settled.historyLoading.has("a1")).toBe(false);
+  });
+});
+
+describe("paging a live terminal session's transcript", () => {
+  const SESSION = "s-tui";
+  const page = (texts: readonly string[], nextCursor: number | null, cursor?: number): ConsoleEvent => ({
+    t: "session_tail",
+    event: {
+      sessionId: SESSION,
+      messages: texts.map(text => ({ role: "user" as const, text, at: "" })),
+      truncated: nextCursor !== null,
+      nextCursor,
+      ...(cursor === undefined ? {} : { cursor }),
+    },
+  });
+
+  test("a first page replaces, an older page prepends, and the cursor follows the file backwards", () => {
+    const first = apply(emptyConsole([]), page(["newest"], 900));
+    expect(tuiSessionFor(first, SESSION).history.map(m => m.text)).toEqual(["newest"]);
+    expect(tuiSessionFor(first, SESSION).historyCursor).toBe(900);
+
+    const older = apply(first, page(["older"], 400, 900));
+    // Older above newer, which is the order the operator reads, and the
+    // page already on screen survives: a paged answer that replaced would
+    // lose the turns being read.
+    expect(tuiSessionFor(older, SESSION).history.map(m => m.text)).toEqual(["older", "newest"]);
+    expect(tuiSessionFor(older, SESSION).historyCursor).toBe(400);
+
+    const start = apply(older, page(["oldest"], null, 400));
+    expect(tuiSessionFor(start, SESSION).history.map(m => m.text)).toEqual(["oldest", "older", "newest"]);
+    // Nothing older left: the surface has no cursor to offer a control on.
+    expect(tuiSessionFor(start, SESSION).historyCursor).toBeNull();
+  });
+
+  test("a fresh open replaces a paged history rather than stacking onto it", () => {
+    const paged = drive([page(["newest"], 900), page(["older"], 400, 900)]);
+
+    const reopened = apply(paged, page(["newest again"], 900));
+
+    expect(tuiSessionFor(reopened, SESSION).history.map(m => m.text)).toEqual(["newest again"]);
+    expect(tuiSessionFor(reopened, SESSION).historyCursor).toBe(900);
+  });
+
+  test("a page answering a cursor this session no longer holds is dropped", () => {
+    // Frames cross the hub relay with no ordering guarantee, so a page asked
+    // for before the operator left and came back can land after the fresh
+    // tail. Prepending it would splice a stretch of file from nowhere onto
+    // the transcript.
+    const reopened = drive([page(["newest"], 900), page(["older"], 400, 900), page(["fresh"], 700)]);
+
+    const stale = apply(reopened, page(["from the old ask"], 200, 400));
+
+    expect(tuiSessionFor(stale, SESSION).history.map(m => m.text)).toEqual(["fresh"]);
+    expect(tuiSessionFor(stale, SESSION).historyCursor).toBe(700);
+  });
+
+  test("an empty older page adds no rows but carries the cursor deeper into the file", () => {
+    const asked = drive([page(["newest"], 900), { t: "tui_history_request", sessionId: SESSION }]);
+    expect(tuiSessionFor(asked, SESSION).historyLoadingEarlier).toBe(true);
+
+    const silent = apply(asked, page([], 500, 900));
+
+    expect(tuiSessionFor(silent, SESSION).history.map(m => m.text)).toEqual(["newest"]);
+    expect(tuiSessionFor(silent, SESSION).historyCursor).toBe(500);
+    expect(tuiSessionFor(silent, SESSION).historyLoadingEarlier).toBe(false);
+  });
+
+  test("an empty page with file behind it is asked on from; anything else settles", () => {
+    const silent = page([], 500, 900);
+    if (silent.t !== "session_tail") throw new Error("expected a session_tail event");
+    // The whole point: a screenful of tool traffic said nothing, and the
+    // operator asked for words. Stopping here would leave the tap unanswered
+    // with megabytes still behind it.
+    expect(tuiPageToAskFor(silent.event)).toBe(500);
+
+    const withWords = page(["something"], 500, 900);
+    const atStart = page([], null, 900);
+    const firstOpen = page([], 500);
+    // A cursor that cannot advance would be asked for forever: one line
+    // bigger than the whole read budget is the only way to get here.
+    const stuck = page([], 900, 900);
+    for (const settled of [withWords, atStart, firstOpen, stuck]) {
+      if (settled.t !== "session_tail") throw new Error("expected a session_tail event");
+      expect(tuiPageToAskFor(settled.event)).toBeNull();
+    }
   });
 });
 

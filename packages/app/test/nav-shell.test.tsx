@@ -15,7 +15,7 @@
 import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Agent, AgentId, SessionSummary } from "@ompd/core/contracts";
+import type { AgentId, SessionSummary } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -60,8 +60,9 @@ const CONNECTIONS: ConnectionList = {
  * is not, because what is under test is what the shell does with a frame.
  */
 class CannedClient {
+  readonly prompts: Array<{ sessionId: string; text: string }> = [];
+  readonly tails: Array<{ sessionId: string; limit?: number }> = [];
   readonly collabOpens: string[] = [];
-  readonly collabLeaves: string[] = [];
   readonly attached: AgentId[] = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly agentPrompts: Array<{ agentId: AgentId; text: string }> = [];
@@ -91,18 +92,34 @@ class CannedClient {
   }
   listSessions(): void {}
   /**
-   * Recorded rather than ignored: opening a live row asks the daemon to join
-   * it, so a double that lacked this method turned a navigation test into a
-   * TypeError about the client instead of a failure about the stack.
+   * Answered rather than ignored: this canned daemon is an omp without the
+   * collab API, so every join ask gets the `collab_unavailable` answer and
+   * the open falls back to the terminal route these tests drive. Recorded
+   * so a test can still prove the ask went out first.
    */
   openCollab(sessionId: string): void {
     this.collabOpens.push(sessionId);
+    this.emit("error", {
+      code: "collab_unavailable",
+      sessionId,
+      message: "this omp build cannot host a collab room",
+    });
   }
-  leaveCollab(sessionId: string): void {
-    this.collabLeaves.push(sessionId);
+  leaveCollab(): void {}
+  /**
+   * Recorded rather than ignored: opening a terminal route asks for the
+   * session's transcript tail, so a double that lacked this method turned a
+   * navigation test into a TypeError about the client instead of a failure
+   * about the stack.
+   */
+  sessionTail(sessionId: string, limit?: number): void {
+    this.tails.push({ sessionId, limit });
   }
   sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
     this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
+  }
+  sessionPrompt(sessionId: string, text: string): void {
+    this.prompts.push({ sessionId, text });
   }
   resumeSession(sessionId: string, cwd: string): void {
     this.resumes.push({ sessionId, cwd });
@@ -136,23 +153,6 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
   };
 }
 
-/**
- * The roster row a daemon's collab guest presents: an ordinary agent whose
- * held session is the terminal this device asked to co-drive.
- */
-function guestAgent(id: AgentId, sessionId: string): Agent {
-  return {
-    id,
-    name: `guest ${id}`,
-    state: "idle",
-    host: { kind: "local", id: "1", spec: { kind: "local" } },
-    cwd: "/Users/op/dev/src/github.com/op/alpha",
-    createdAt: "2026-02-01T00:00:00.000Z",
-    lastActiveAt: "2026-02-28T00:00:00.000Z",
-    labels: {},
-    acpSessionId: sessionId,
-  };
-}
 interface Shell {
   host: HTMLElement;
   client: CannedClient;
@@ -251,54 +251,35 @@ describe("the stack opens on the fleet and comes back to it", () => {
     }
   });
 
-  test("opening a live row joins it, and the session route's back returns to the list", () => {
+  test("opening a live row pushes the terminal route, and its back control returns to the list", () => {
     const shell = mountShell();
     try {
       shell.press("session-open-sess_live");
-      // The join is on the wire and nothing is pushed yet: the screen that
-      // renders a co-driven terminal is an agent's, and its agent exists
-      // only once the daemon's answer names one.
-      expect(shell.client.collabOpens).toEqual(["sess_live"]);
-      expect(shell.el("session")).toBeNull();
+      expect(shell.el("terminal-session")).not.toBeNull();
+      expect(shell.el("terminal-title")?.textContent).toBe("session sess_live");
 
-      act(() => {
-        shell.client.emit("agents", { agents: [guestAgent("agt_guest", "sess_live")] });
-        shell.client.emit("collab_opened", { sessionId: "sess_live", agentId: "agt_guest", readOnly: false });
-      });
-      expect(shell.el("session")).not.toBeNull();
-
-      shell.press("session-back");
-      expect(shell.el("session")).toBeNull();
+      shell.press("terminal-back");
+      expect(shell.el("terminal-session")).toBeNull();
       expect(shell.el("fleet-list")).not.toBeNull();
-      // Leaving the co-driven session tells the daemon to leave the room,
-      // so the guest does not outlive the screen that asked for it.
-      expect(shell.client.collabLeaves).toEqual(["sess_live"]);
     } finally {
       shell.unmount();
     }
   });
 
-  test("leaving the session route clears the console's own selection, so it does not bounce back", () => {
+  test("leaving the terminal route clears the console's own selection, so it does not bounce back", () => {
     const shell = mountShell();
     try {
       shell.press("session-open-sess_live");
-      act(() => {
-        shell.client.emit("agents", { agents: [guestAgent("agt_guest", "sess_live")] });
-        shell.client.emit("collab_opened", { sessionId: "sess_live", agentId: "agt_guest", readOnly: false });
-      });
-      shell.press("session-back");
+      shell.press("terminal-back");
       // The model, not just the stack: a selection left set would be re-pushed
       // by the sync effect on the very next render, which is the shape of bug a
       // two-way sync produces when only one direction is wired.
-      expect(shell.el("session")).toBeNull();
+      expect(shell.el("terminal-session")).toBeNull();
 
       // A second open still works, which a stale selection would have blocked
       // (the effect would see no change and never push).
       shell.press("session-open-sess_live");
-      act(() => {
-        shell.client.emit("collab_opened", { sessionId: "sess_live", agentId: "agt_guest", readOnly: false });
-      });
-      expect(shell.el("session")).not.toBeNull();
+      expect(shell.el("terminal-session")).not.toBeNull();
     } finally {
       shell.unmount();
     }
@@ -332,21 +313,17 @@ describe("the system insets are honoured at both edges", () => {
     }
   });
 
-  test("the session route draws its own bar, so it takes the top inset itself", () => {
+  test("the terminal route draws its own bar, so it takes the top inset itself", () => {
     setSafeAreaInsets(NOTCH);
     const shell = mountShell();
     try {
       shell.press("session-open-sess_live");
-      act(() => {
-        shell.client.emit("agents", { agents: [guestAgent("agt_guest", "sess_live")] });
-        shell.client.emit("collab_opened", { sessionId: "sess_live", agentId: "agt_guest", readOnly: false });
-      });
-      const session = shell.el("session");
-      expect(padding(session).top).toBe(`${NOTCH.top}px`);
+      const terminal = shell.el("terminal-session");
+      expect(padding(terminal).top).toBe(`${NOTCH.top}px`);
       // Its composer carries the bottom inset instead of the shell, so the send
       // button clears the home indicator without the screen padding twice.
-      expect(padding(session).bottom).toBe("0px");
-      const composer = shell.el("session-composer-safe");
+      expect(padding(terminal).bottom).toBe("0px");
+      const composer = shell.el("terminal-composer-safe");
       expect(padding(composer).bottom).toBe(`${NOTCH.bottom}px`);
     } finally {
       shell.unmount();
