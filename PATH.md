@@ -182,9 +182,21 @@ The goal this serves is the one Claude Code's remote control cannot: every sessi
 
 Each piece has its own proof. The four composed together do not.
 
-A scratch omp would not load the bridge extension, so no room existed to join. Three ways tried, each failing differently: installed under a `PI_CODING_AGENT_DIR` agent directory (omp wrote its session there but loaded no extension from its `extensions/`), passed explicitly with `-e` under a PTY TUI (no trace with `OMPD_BRIDGE_DEBUG` set), and `-e` in print mode (correctly skipped, since the bridge guards on `ctx.mode === "tui"`).
+A scratch omp could not be started at all, which is a different and smaller blocker than the one first recorded here.
 
-The mechanism does work in the real environment: the operator's terminals register on his own daemon. The difference is that they run the installed binary with the bridge in its discovered location. Which means the honest sequencing is that the chain becomes provable once `pi.startCollab` is in an omp he actually runs. The installed build is 18.0.3 and a symbol sweep finds `collabHost` and `Collab session started` in it but no `startCollab` or `getCollabLinks`, so today every live row falls back to steering by design rather than by accident.
+What was first written, that the extension would not load, is wrong and is corrected rather than deleted. A trivial probe extension passed with `-e` logged `module evaluated` and `factory called`, so the loader runs an explicitly named extension exactly as documented. What never arrived was `session_start`, because omp exited before it: `value "ClaudeV5" does not match any variant of enum Encoding`, thrown from the status line's tokenizer. That is a stale native addon. `pi_natives.darwin-arm64.node` was borrowed from an older worktree and does not know an encoding current source expects.
+
+Building the addon from source fails on this machine with rustc `E0554`, a nightly-only feature on a stable toolchain, and the Homebrew build embeds its native rather than shipping a loose `.node`, so there is nothing version-matched to borrow. The blocker is therefore a Rust toolchain, not the design and not the extension system.
+
+### Reproduced on 2026-08-23: a green suite that exits 1
+
+`packages/hub`'s redis-backplane suite fails roughly one run in three, and the failure is invisible in the counts: every test passes, `0 fail`, and the process still exits 1. Bun reports `# Unhandled error between tests`, `RedisError: Connection closed`, `code: "ERR_REDIS_CONNECTION_CLOSED"`, attributed to `await client.close()`.
+
+It needs a real server: the suite skips unless `OMPD_TEST_REDIS_URL` is set, so a local run without one is green vacuously. Against `redis:7` on a spare port it reproduced on main at 1 of 3 runs.
+
+Two hypotheses were tested and both are wrong. The narrowing helper was not rejecting the error: the code matches, and widening it past its `instanceof Error` gate left the failure at 1 of 10 runs. The rejection is also not reaching `close()`'s `catch` at all, which is what "between tests" means. So the abort is a floating promise the awaited one does not represent, and neither the existing process-level handler nor the 10ms drain after it catches it.
+
+Not fixed, and deliberately not guessed at further. It costs a re-run per affected PR.
 
 ## Queue
 
