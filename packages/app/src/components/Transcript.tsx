@@ -13,11 +13,10 @@
  * the person holding the device.
  */
 
-import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { useCallback, useState, useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import type { ListRenderItemInfo, NativeScrollEvent, NativeSyntheticEvent } from "react-native";
-import { FlatList, Pressable, StyleSheet, View, ActivityIndicator } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
@@ -53,18 +52,18 @@ export function Transcript({
   // Track the cursor of the request in flight to prevent duplicate requests
   // from scroll bounce or repeated onScroll events at the same offset.
   const inFlightCursor = useRef<number | null>(null);
-  
+
   // Track previous content height for Android manual anchor preservation
   const prevContentHeight = useRef<number>(0);
   const prevScrollY = useRef<number>(0);
-  
+
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<Entry>) => (
       <EntryRow entry={item} canApprove={canApprove} refusal={refusal} onDecide={onDecide} />
     ),
     [canApprove, refusal, onDecide],
   );
-  
+
   // Opening a session lands on the newest entry, and a streaming turn keeps
   // it there, unless the operator has scrolled up to read.
   const follow = useFollowNewest();
@@ -75,14 +74,14 @@ export function Transcript({
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       follow.onScroll(event);
-      
+
       // Record scroll position for Android manual anchor adjustment
       prevScrollY.current = event.nativeEvent.contentOffset.y;
-      
+
       // Check if near top and should auto-load
       const { contentOffset } = event.nativeEvent;
       const nearTop = contentOffset.y <= 48; // NEAR_TOP_SLACK
-      
+
       if (nearTop && canLoadEarlier && onLoadEarlier !== undefined && !loadingEarlier) {
         // Only fire if we're not already loading this exact cursor.
         // inFlightCursor is cleared when loadingEarlier changes or cursor advances.
@@ -92,7 +91,7 @@ export function Transcript({
         }
       }
     },
-    [follow, canLoadEarlier, onLoadEarlier, loadingEarlier],
+    [follow, canLoadEarlier, onLoadEarlier, loadingEarlier, inFlightCursor],
   );
 
   // When loading completes or cursor changes, clear the in-flight guard
@@ -104,22 +103,19 @@ export function Transcript({
 
   // Preserve scroll anchor when prepending entries via maintainVisibleContentPosition.
   // This prop handles iOS natively. For Android, fallback via onContentSizeChange.
-  const handleContentSizeChange = useCallback(
-    (_width: number, height: number) => {
-      // Android manual anchor: if content grew (prepend added items), scroll down by delta
-      if (prevContentHeight.current > 0 && height > prevContentHeight.current) {
-        const delta = height - prevContentHeight.current;
-        if (prevScrollY.current > 0 && flatListRef.current) {
-          flatListRef.current.scrollToOffset({
-            offset: prevScrollY.current + delta,
-            animated: false,
-          });
-        }
+  const handleContentSizeChange = useCallback((_width: number, height: number) => {
+    // Android manual anchor: if content grew (prepend added items), scroll down by delta
+    if (prevContentHeight.current > 0 && height > prevContentHeight.current) {
+      const delta = height - prevContentHeight.current;
+      if (prevScrollY.current > 0 && flatListRef.current) {
+        flatListRef.current.scrollToOffset({
+          offset: prevScrollY.current + delta,
+          animated: false,
+        });
       }
-      prevContentHeight.current = height;
-    },
-    [],
-  );
+    }
+    prevContentHeight.current = height;
+  }, []);
 
   return (
     <FlatList
