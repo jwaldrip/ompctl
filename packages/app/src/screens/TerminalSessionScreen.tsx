@@ -43,8 +43,9 @@ import type { JSX } from "react";
 import { useCallback, useState } from "react";
 import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { AttachmentsBar } from "../components/AttachmentsBar.tsx";
+import { SessionLoadFailed, SessionLoading } from "../components/SessionLoad.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
-import type { TuiPromptAccess, TuiSessionState } from "../console/state.ts";
+import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
@@ -61,6 +62,12 @@ export interface TerminalSessionScreenProps {
   status: SessionLiveStatus | null;
   /** Scope truth after the daemon hello, or the stored pairing hint before it. */
   promptAccess: TuiPromptAccess;
+  /**
+   * Whether this pane has the terminal session it opened. A row press commits
+   * the session and arms this before the daemon has answered, so the pane is
+   * this row's from the moment it is touched.
+   */
+  load: SessionLoad;
   /** This session's served transcript tail plus the hints the console holds about it. */
   tui: TuiSessionState;
   connection: ConnectionState;
@@ -149,7 +156,7 @@ function logRows(tui: TuiSessionState): LogRow[] {
 }
 
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
-  const { tui, connection, status, promptAccess } = props;
+  const { tui, connection, status, promptAccess, load } = props;
   // The latest index row, not the row that opened this route, decides whether
   // steering is still safe. A terminal can close while the screen remains.
   const liveTerminal = status === "live-tui";
@@ -302,7 +309,14 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </Kicker>
       </View>
 
-      {rows.length === 0 ? (
+      {load.phase === "loading" ? (
+        <SessionLoading title={props.title || "Untitled session"} />
+      ) : load.phase === "failed" ? (
+        <SessionLoadFailed
+          message={load.error ?? "The daemon refused this session."}
+          title={props.title || "Untitled session"}
+        />
+      ) : rows.length === 0 ? (
         // No turns yet, and a cursor still naming older file: a session whose
         // recent screenfuls are pure tool traffic opens with nothing to show
         // and everything still to read, so the control has to be reachable
@@ -329,77 +343,87 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         />
       )}
 
+      {/*
+        Every hint and refusal below is a claim about a session this pane has.
+        While the open is still outstanding, or once it has been refused, the
+        pane has none, and a "not a live terminal session" band over a session
+        that simply has not arrived would be a diagnosis of the wrong thing.
+      */}
       <View style={[styles.hints, rows.length === 0 && styles.hintsFill]}>
-        {liveTerminal ? null : (
-          <View testID="terminal-not-live-tui" style={styles.refusal}>
-            <View style={styles.refusalHead}>
-              <Glyph name="warning" size={13} color={signal.oxide} />
-              <Label color={signal.oxide}>Not a live terminal session</Label>
-            </View>
-            <Body color={ink.bright}>{notLiveGuidance(status)}</Body>
-          </View>
-        )}
+        {load.phase !== "ready" ? null : (
+          <>
+            {liveTerminal ? null : (
+              <View testID="terminal-not-live-tui" style={styles.refusal}>
+                <View style={styles.refusalHead}>
+                  <Glyph name="warning" size={13} color={signal.oxide} />
+                  <Label color={signal.oxide}>Not a live terminal session</Label>
+                </View>
+                <Body color={ink.bright}>{notLiveGuidance(status)}</Body>
+              </View>
+            )}
 
-        {promptAccess === "missing" || tui.refusalKind === "scope" ? (
-          <View testID="terminal-scope-refusal" style={styles.refusal}>
-            <View style={styles.refusalHead}>
-              <Glyph name="warning" size={13} color={signal.oxide} />
-              <Label color={signal.oxide}>Prompt scope required</Label>
-            </View>
-            <Body color={ink.bright}>
-              {tui.refusalKind === "scope" && tui.refusal !== null
-                ? tui.refusal
-                : "This device does not hold the prompt scope. Pair it again with prompt access before steering this terminal."}
-            </Body>
-          </View>
-        ) : null}
+            {promptAccess === "missing" || tui.refusalKind === "scope" ? (
+              <View testID="terminal-scope-refusal" style={styles.refusal}>
+                <View style={styles.refusalHead}>
+                  <Glyph name="warning" size={13} color={signal.oxide} />
+                  <Label color={signal.oxide}>Prompt scope required</Label>
+                </View>
+                <Body color={ink.bright}>
+                  {tui.refusalKind === "scope" && tui.refusal !== null
+                    ? tui.refusal
+                    : "This device does not hold the prompt scope. Pair it again with prompt access before steering this terminal."}
+                </Body>
+              </View>
+            ) : null}
 
-        {tui.refusalKind === "owner-gone" && tui.refusal !== null ? (
-          <View testID="terminal-owner-gone" style={styles.refusal}>
-            <View style={styles.refusalHead}>
-              <Glyph name="warning" size={13} color={signal.oxide} />
-              <Label color={signal.oxide}>Owning terminal is unreachable</Label>
-            </View>
-            <Body color={ink.bright}>{tui.refusal}</Body>
-          </View>
-        ) : null}
+            {tui.refusalKind === "owner-gone" && tui.refusal !== null ? (
+              <View testID="terminal-owner-gone" style={styles.refusal}>
+                <View style={styles.refusalHead}>
+                  <Glyph name="warning" size={13} color={signal.oxide} />
+                  <Label color={signal.oxide}>Owning terminal is unreachable</Label>
+                </View>
+                <Body color={ink.bright}>{tui.refusal}</Body>
+              </View>
+            ) : null}
 
-        {tui.replyUnavailable ? (
-          <View testID="terminal-reply-unavailable" style={styles.refusal}>
-            <View style={styles.refusalHead}>
-              <Glyph name="warning" size={13} color={signal.ochre} />
-              <Label color={signal.ochre}>Reply stayed in the terminal</Label>
-            </View>
-            <Body color={ink.bright}>
-              This turn ended without readable assistant text. Its full transcript and tool output remain in the owning
+            {tui.replyUnavailable ? (
+              <View testID="terminal-reply-unavailable" style={styles.refusal}>
+                <View style={styles.refusalHead}>
+                  <Glyph name="warning" size={13} color={signal.ochre} />
+                  <Label color={signal.ochre}>Reply stayed in the terminal</Label>
+                </View>
+                <Body color={ink.bright}>
+                  This turn ended without readable assistant text. Its full transcript and tool output remain in the
+                  owning terminal.
+                </Body>
+              </View>
+            ) : null}
+
+            {tui.busy ? (
+              <Kicker color={tone} testID="terminal-busy">
+                Working in the terminal
+              </Kicker>
+            ) : null}
+
+            {liveTerminal &&
+            tui.history.length === 0 &&
+            tui.refusal === null &&
+            tui.sent === null &&
+            tui.reply === null &&
+            !tui.replyUnavailable &&
+            !tui.busy ? (
+              <Body color={ink.muted} testID="terminal-explainer">
+                This session is live in a terminal on the machine. This phone steers it without taking ownership, and
+                live progress returns here.
+              </Body>
+            ) : null}
+
+            <Label color={ink.faint} testID="terminal-transcript-limit" style={styles.boundary}>
+              Only recent text and live assistant replies appear here. The full transcript and tool output stay in the
               terminal.
-            </Body>
-          </View>
-        ) : null}
-
-        {tui.busy ? (
-          <Kicker color={tone} testID="terminal-busy">
-            Working in the terminal
-          </Kicker>
-        ) : null}
-
-        {liveTerminal &&
-        tui.history.length === 0 &&
-        tui.refusal === null &&
-        tui.sent === null &&
-        tui.reply === null &&
-        !tui.replyUnavailable &&
-        !tui.busy ? (
-          <Body color={ink.muted} testID="terminal-explainer">
-            This session is live in a terminal on the machine. This phone steers it without taking ownership, and live
-            progress returns here.
-          </Body>
-        ) : null}
-
-        <Label color={ink.faint} testID="terminal-transcript-limit" style={styles.boundary}>
-          Only recent text and live assistant replies appear here. The full transcript and tool output stay in the
-          terminal.
-        </Label>
+            </Label>
+          </>
+        )}
       </View>
 
       {/*

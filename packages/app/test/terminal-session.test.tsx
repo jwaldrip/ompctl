@@ -46,6 +46,7 @@ function renderScreen(state: ConsoleState, onLoadEarlier: () => void = () => {})
       status="live-tui"
       promptAccess="granted"
       tui={tuiSessionFor(state, SESSION)}
+      load={{ phase: "ready", generation: 0, error: null }}
       connection="connected"
       onBack={() => {}}
       onLoadEarlier={onLoadEarlier}
@@ -84,6 +85,7 @@ function mountScreen(state: ConsoleState, onLoadEarlier: () => void = () => {}):
         status="live-tui"
         promptAccess="granted"
         tui={tuiSessionFor(state, SESSION)}
+        load={{ phase: "ready", generation: 0, error: null }}
         connection="connected"
         onBack={() => {}}
         onLoadEarlier={onLoadEarlier}
@@ -151,6 +153,7 @@ describe("the terminal composer", () => {
           status="live-tui"
           promptAccess="granted"
           tui={tuiSessionFor(emptyConsole([]), SESSION)}
+          load={{ phase: "ready", generation: 0, error: null }}
           connection="connected"
           onBack={() => {}}
           onLoadEarlier={() => {}}
@@ -205,6 +208,7 @@ describe("the terminal composer", () => {
           status="live-tui"
           promptAccess="granted"
           tui={tuiSessionFor(state, SESSION)}
+          load={{ phase: "ready", generation: 0, error: null }}
           connection="connected"
           onBack={() => {}}
           onLoadEarlier={() => {}}
@@ -497,6 +501,7 @@ describe("a terminal session renders the transcript the daemon served", () => {
           status="live-tui"
           promptAccess="granted"
           tui={tuiSessionFor(state, SESSION)}
+          load={{ phase: "ready", generation: 0, error: null }}
           connection="connected"
           onBack={() => {}}
           onLoadEarlier={() => {}}

@@ -58,6 +58,7 @@ import {
   COLLAB_WATCH_ONLY,
   canInvite,
   fleetClearances,
+  loadFor,
   manageScopeAccess,
   openSessionTarget,
   promptScopeAccess,
@@ -214,6 +215,10 @@ export function Console({
       agent.acpSessionId === undefined || resumeSummary?.cwd == null
         ? undefined
         : { kind: "dormant" as const, sessionId: agent.acpSessionId, cwd: resumeSummary.cwd };
+    // One lookup, two answers: whether the link is view-only, and what the
+    // context panel calls it. Read twice it could disagree with itself
+    // across a re-render mid-frame.
+    const collabJoin = state.collabAgents.get(agent.id);
     return (
       // Keyed, so selecting a different agent builds a new screen rather than
       // re-rendering one with a different target. Registration follows that
@@ -224,6 +229,20 @@ export function Console({
         key={agent.id}
         agent={agent}
         session={sessionFor(state, agent.id)}
+        // Keyed on this agent, so a frame for any other session can neither
+        // end this pane's wait nor begin one.
+        load={loadFor(state, agent.id)}
+        context={{
+          // The whole roster, not this session's subs: a sub parented to
+          // another sub only resolves when every row is present, and the
+          // panel scopes to this agent's descendants itself.
+          agents: state.agents,
+          // Derived here, where the join record lives. A screen that read an
+          // agent's labels for this would be holding a second copy of a fact
+          // the console already knows.
+          origin: collabJoin === undefined ? "owned" : collabJoin.readOnly ? "watching" : "co-driven",
+          onOpenSubagent: onOpenAgent,
+        }}
         connection={state.connection}
         attempt={state.attempt}
         delayMs={state.delayMs}
@@ -233,7 +252,7 @@ export function Console({
         // sending a prompt the daemon must refuse: the band names the exact
         // strength of the link while the operator still has the keyboard
         // closed.
-        watchOnly={state.collabAgents.get(agent.id)?.readOnly ? COLLAB_WATCH_ONLY : undefined}
+        watchOnly={collabJoin?.readOnly === true ? COLLAB_WATCH_ONLY : undefined}
         spoken={state.spoken.get(agent.id)?.text ?? null}
         historyBefore={state.historyBefore.get(agent.id)}
         historyLoading={state.historyLoading.has(agent.id)}
@@ -301,6 +320,9 @@ export function Console({
         cwd={row?.cwd ?? row?.flattenedDir ?? ""}
         status={row?.status ?? null}
         promptAccess={tuiPromptAccess(state, connection.scopes)}
+        // Armed by the row press itself, so this pane is the pressed row's
+        // before the daemon has answered anything about it.
+        load={loadFor(state, sessionId)}
         tui={tuiSessionFor(state, sessionId)}
         connection={state.connection}
         onBack={back}

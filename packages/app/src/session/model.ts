@@ -28,12 +28,34 @@ export type ToolKind = "think" | "read" | "execute" | "search" | "edit" | "fetch
 
 export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
 
-export type PlanStatus = "pending" | "in_progress" | "completed";
+/**
+ * A todo's state, in omp's own vocabulary rather than ACP's.
+ *
+ * omp keeps five: `blocked` names work that cannot proceed and carries the
+ * reason with it, and `abandoned` names work dropped on purpose, which is not
+ * the same claim as work finished. Its own ACP emitter collapses both before
+ * they leave the host (`blocked` to `pending`, `abandoned` to `completed`), so
+ * an owned session can only ever deliver the first three. A co-driven session
+ * carries the todo tool's raw result across the room instead, and the daemon's
+ * guest mapper keeps all five. Two fidelities of one feed, never two feeds.
+ */
+export type PlanStatus = "pending" | "in_progress" | "completed" | "blocked" | "abandoned";
 
+/**
+ * One todo. `phase` and `blocker` are present exactly when the producer sent
+ * them, which today means a co-driven session: omp's ACP plan update flattens
+ * its phases away and has no field for a blocker at all. Absent, never
+ * guessed -- a phase heading invented for an owned session would be a claim
+ * about how the operator organised their work that nothing on the wire made.
+ */
 export interface PlanEntry {
   content: string;
   priority: string;
   status: PlanStatus;
+  /** The phase heading this todo sits under, when the producer grouped them. */
+  phase?: string;
+  /** Why a `blocked` todo cannot proceed, in the operator's own words. */
+  blocker?: string;
 }
 
 export interface PlanReview {
@@ -75,6 +97,14 @@ export interface SessionInfo {
   title: string | null;
   model: string | null;
   cwd: string | null;
+  /**
+   * How hard the model is being asked to think, as omp names it. Only a
+   * co-driven session reports one: it rides the collab host's `state` frame,
+   * which the guest mapper forwards on `session_info_update`. An owned ACP
+   * session's mode lives behind the config surface instead, so this stays
+   * null there rather than borrowing the mode and calling it a thinking level.
+   */
+  thinkingLevel: string | null;
 }
 
 /** Counts the board shows. Maintained here so no view has to walk the timeline. */
@@ -196,7 +226,7 @@ export interface SessionState {
   readonly ordinal: number;
 }
 
-const EMPTY_INFO: SessionInfo = { updatedAt: null, title: null, model: null, cwd: null };
+const EMPTY_INFO: SessionInfo = { updatedAt: null, title: null, model: null, cwd: null, thinkingLevel: null };
 const EMPTY_ACTIVITY: Activity = { tools: 0, running: 0, failed: 0 };
 
 export const EMPTY_SESSION: SessionState = {
@@ -238,6 +268,8 @@ const PLAN_STATUSES: Record<string, PlanStatus> = {
   pending: "pending",
   in_progress: "in_progress",
   completed: "completed",
+  blocked: "blocked",
+  abandoned: "abandoned",
 };
 
 /** Chunk payloads, mapped to the entry they extend. */
@@ -487,10 +519,17 @@ function reducePlan(state: SessionState, payload: unknown): SessionState {
   for (const item of raw) {
     const content = readString(item, "content");
     if (content === null) continue;
+    const phase = readString(item, "phase");
+    const blocker = readString(item, "blocker");
     plan.push({
       content,
       priority: readString(item, "priority") ?? "medium",
       status: PLAN_STATUSES[readString(item, "status") ?? ""] ?? "pending",
+      // Spread rather than assigned null: absent is the honest shape for a
+      // producer that never sent one, and an explicit null would make every
+      // consumer test for two flavours of nothing.
+      ...(phase === null ? {} : { phase }),
+      ...(blocker === null ? {} : { blocker }),
     });
   }
   return { ...state, plan };
@@ -537,6 +576,7 @@ function reduceInfo(state: SessionState, payload: unknown): SessionState {
     title: readString(payload, "title") ?? state.info.title,
     model: readString(payload, "model") ?? readString(payload, "modelName") ?? state.info.model,
     cwd: readString(payload, "cwd") ?? state.info.cwd,
+    thinkingLevel: readString(payload, "thinkingLevel") ?? state.info.thinkingLevel,
   };
   return { ...state, info };
 }

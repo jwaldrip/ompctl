@@ -21,9 +21,11 @@ import { Pressable, StyleSheet, View } from "react-native";
 import { webViewCapability } from "../browser";
 import { Composer } from "../components/Composer.tsx";
 import { PlanCard } from "../components/PlanCard.tsx";
+import { SessionContext, type SessionContextSource } from "../components/SessionContext.tsx";
+import { SessionLoadFailed, SessionLoading } from "../components/SessionLoad.tsx";
 import { StatusReadout } from "../components/StatusReadout.tsx";
 import { Transcript } from "../components/Transcript.tsx";
-import type { PendingWebViewAction, PromptScopeAccess } from "../console/state.ts";
+import type { PendingWebViewAction, PromptScopeAccess, SessionLoad } from "../console/state.ts";
 import type { WebViewTarget } from "../console/webview.ts";
 import { routeWebViewAction } from "../console/webview.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
@@ -39,6 +41,19 @@ import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
 export interface SessionScreenProps {
   agent: Agent;
   session: SessionState;
+  /**
+   * The context panel's own data edge: the roster its subagents come from,
+   * how this device reaches the session, and where a subagent tap lands.
+   * Grouped for the reason `voice` is: a caller cannot supply two thirds of
+   * it and get a panel that renders a plausible half-truth.
+   */
+  context: SessionContextSource;
+  /**
+   * Whether this pane has the session it opened, is still waiting for it, or
+   * was refused it. Keyed on the agent by the console, so a frame for another
+   * session can neither end this wait nor start one.
+   */
+  load: SessionLoad;
   connection: ConnectionState;
   attempt: number;
   delayMs?: number;
@@ -105,7 +120,7 @@ export interface SessionVoice {
 }
 
 export function SessionScreen(props: SessionScreenProps): JSX.Element {
-  const { agent, session, connection } = props;
+  const { agent, session, connection, load } = props;
   const tone = signal[agentSignal(agent.state)];
   const busy = agent.state === "busy";
   const terminal = TERMINAL_AGENT_STATES.includes(agent.state);
@@ -338,24 +353,46 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         down, so the text was visible and the button was not.
       */}
       <View style={styles.body}>
-        <PlanCard
-          canApprove={props.canApprove}
-          onRespond={props.onDecidePlan}
-          plan={session.plan}
-          refusal={props.refusal}
-          review={session.planReview}
-        />
+        {/*
+          One branch for the whole working half of the screen. While this
+          session is arriving, or once its open has been refused, none of the
+          instruments below may render: a context panel, a plan card and a
+          transcript are all claims about a session this pane does not have
+          yet, and the header above already carries whose pane it is.
+        */}
+        {load.phase === "loading" ? (
+          <SessionLoading title={agent.name} />
+        ) : load.phase === "failed" ? (
+          <SessionLoadFailed message={load.error ?? "The daemon refused this session."} title={agent.name} />
+        ) : (
+          <>
+            {/*
+              Above the plan card and the transcript, inside the scroll-free
+              part of the column: collapsed it is one row, so the log keeps
+              every point it had, and it never becomes a rail the transcript
+              has to share its width with.
+            */}
+            <SessionContext {...props.context} agent={agent} now={props.now} session={session} />
+            <PlanCard
+              canApprove={props.canApprove}
+              onRespond={props.onDecidePlan}
+              plan={session.plan}
+              refusal={props.refusal}
+              review={session.planReview}
+            />
 
-        <Transcript
-          entries={session.entries}
-          canApprove={props.canApprove}
-          refusal={props.refusal}
-          onDecide={props.onDecide}
-          spoken={props.spoken}
-          canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
-          loadingEarlier={props.historyLoading}
-          onLoadEarlier={props.onLoadEarlier}
-        />
+            <Transcript
+              entries={session.entries}
+              canApprove={props.canApprove}
+              refusal={props.refusal}
+              onDecide={props.onDecide}
+              spoken={props.spoken}
+              canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
+              loadingEarlier={props.historyLoading}
+              onLoadEarlier={props.onLoadEarlier}
+            />
+          </>
+        )}
 
         {webViewCapability === null || !browserOpen ? null : (
           <View style={styles.browser} testID="session-browser">
@@ -388,7 +425,19 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
           testID="session-composer-safe"
         >
-          {props.watchOnly !== undefined ? (
+          {load.phase !== "ready" ? (
+            // No actions on a session this pane does not have. A composer here
+            // would take a prompt for a session that may turn out to be
+            // refused, and a cancel control would offer to interrupt a turn
+            // nobody has seen.
+            <View style={styles.resume} testID="session-actions-withheld">
+              <Label color={ink.muted}>
+                {load.phase === "loading"
+                  ? "Opening this session. Its controls appear with its transcript."
+                  : "This session did not open, so there is nothing to steer."}
+              </Label>
+            </View>
+          ) : props.watchOnly !== undefined ? (
             // The band takes the composer's place rather than sitting above
             // it: every steer from a view-only guest is refused, and a
             // control that can only fail is a refusal with extra steps.

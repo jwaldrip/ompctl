@@ -105,6 +105,81 @@ interface StreamState {
   last: { kind: "text" | "thinking" | "toolCall" | "other"; emitted: number; toolCallId?: string } | null;
 }
 
+/**
+ * omp's five todo states, verbatim. The ACP surface an owned session runs on
+ * folds `blocked` into `pending` and `abandoned` into `completed` before the
+ * update leaves the host; this leg reads the tool result itself, so nothing
+ * needs folding.
+ */
+const TODO_STATUSES: Record<string, true> = {
+  pending: true,
+  in_progress: true,
+  completed: true,
+  abandoned: true,
+  blocked: true,
+};
+
+/** One todo, as the app's plan reducer reads it. */
+interface TodoPlanEntry {
+  content: string;
+  priority: string;
+  status: string;
+  phase?: string;
+  blocker?: string;
+}
+
+/**
+ * The `plan` update a finished `todo` tool call carries, or undefined when
+ * this call was not one.
+ *
+ * Read from `result.details.phases`, which is the todo tool's own return
+ * shape: `{ name, tasks: [{ content, status, blocker? }] }`. Per-task
+ * tolerance rather than the all-or-nothing rule the agent registry follows,
+ * and for the opposite reason: a registry snapshot replaces the whole roster,
+ * so a half-read one would settle rows that are alive, while a todo list is
+ * the operator's own text and dropping one malformed task loses strictly less
+ * than dropping the list. An empty result still publishes: clearing the todos
+ * is a real state the operator has to see.
+ */
+function todoPlanUpdate(event: Extract<AgentEvent, { type: "tool_execution_end" }>): unknown {
+  if (event.toolName !== "todo" || event.isError === true) return undefined;
+  const details = readRecord(readRecord(event.result)?.details);
+  const phases = details?.phases;
+  if (!Array.isArray(phases)) return undefined;
+  const entries: TodoPlanEntry[] = [];
+  for (const phase of phases) {
+    const shape = readRecord(phase);
+    if (shape === undefined || !Array.isArray(shape.tasks)) continue;
+    const name = typeof shape.name === "string" && shape.name.length > 0 ? shape.name : undefined;
+    for (const task of shape.tasks) {
+      const fields = readRecord(task);
+      const content = fields?.content;
+      if (typeof content !== "string" || content.length === 0) continue;
+      const status = typeof fields?.status === "string" && TODO_STATUSES[fields.status] ? fields.status : "pending";
+      const blocker = fields?.blocker;
+      entries.push({
+        content,
+        // The todo tool has no notion of priority; the field exists because
+        // ACP's plan entry requires one, and omp's own emitter fills it the
+        // same way rather than inventing a ranking.
+        priority: "medium",
+        status,
+        ...(name === undefined ? {} : { phase: name }),
+        // Carried only for the state it explains. A stale blocker left on a
+        // task the operator unblocked would read as a live obstruction.
+        ...(status === "blocked" && typeof blocker === "string" && blocker.length > 0 ? { blocker } : {}),
+      });
+    }
+  }
+  return { sessionUpdate: "plan", entries };
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 export interface CollabStreamMapperOptions {
   /**
    * The daemon guest leg's display name. The host injects a guest's own
@@ -179,6 +254,13 @@ export class CollabStreamMapper {
           title: frame.state.sessionName,
           model: frame.state.model?.name,
           cwd: frame.state.cwd,
+          // The host reports this on every state frame and nothing downstream
+          // read it, so a co-driven session could not say how hard the model
+          // was being asked to think. It rides the info update rather than a
+          // frame of its own: it answers the same question the model name
+          // does, and the app's info reducer already ignores fields it has no
+          // slot for, so an older app is unaffected.
+          thinkingLevel: frame.state.thinkingLevel,
           updatedAt: new Date().toISOString(),
         });
         if (frame.state.contextUsage?.tokens != null) {
@@ -318,7 +400,7 @@ export class CollabStreamMapper {
           rawOutput: { content: [{ type: "text", text: this.#stringify(event.partialResult) }] },
         });
         return;
-      case "tool_execution_end":
+      case "tool_execution_end": {
         if (!this.#announcedTools.has(event.toolCallId)) {
           this.#announceTool(updates, event.toolCallId, event.toolName, undefined, "in_progress");
         }
@@ -328,7 +410,17 @@ export class CollabStreamMapper {
           status: event.isError === true ? "failed" : "completed",
           rawOutput: { content: [{ type: "text", text: this.#stringify(event.result) }] },
         });
+        // The todo tool's result IS the session's todo list, and the room
+        // carries it whole. omp's own ACP emitter does this same translation
+        // for an owned session and throws two things away on the way out:
+        // the phase headings, and the difference between blocked, abandoned
+        // and the two states it folds them into. Nothing here needs to lose
+        // them, so a co-driven session's todos arrive at the fidelity the
+        // operator actually typed.
+        const plan = todoPlanUpdate(event);
+        if (plan !== undefined) updates.push(plan);
         return;
+      }
       default:
         // agent_start/end, turn boundaries, notices, retries, compaction
         // chatter: footer and liveness concerns the state frames carry.

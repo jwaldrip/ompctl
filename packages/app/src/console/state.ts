@@ -114,6 +114,48 @@ const LINK_CODES: Record<string, true> = {
   send: true,
 };
 
+/**
+ * Whether the detail pane has what it opened for.
+ *
+ * - `loading`: a request that will certainly be answered is outstanding. Only
+ *   a selection that actually sent one arms this, which is what makes a
+ *   perpetual spinner structurally impossible: nothing is ever waiting on an
+ *   answer nobody asked for.
+ * - `ready`: the pane has the session's own data, whether that turns out to
+ *   be a transcript or an honestly empty one. This is also the default for a
+ *   subject nothing was ever asked about.
+ * - `failed`: the open was refused or could not be served. The pane says so,
+ *   in the daemon's words, under the subject that was refused.
+ */
+export type SessionLoadPhase = "loading" | "ready" | "failed";
+
+/**
+ * One subject's wait.
+ *
+ * What arms it: a fleet row press, a resume the daemon answered, or a join
+ * the daemon answered, each of which sends a request whose answer always
+ * comes back. What settles it: that subject's own authoritative data --
+ * a `session_history` page, an `update`, a `session_tail` page, a terminal's
+ * turn progress, or a refusal addressed to it.
+ *
+ * Never armed by a frame, only by a selection. A late answer for a subject
+ * the operator already left can therefore settle that subject's wait but can
+ * never put it back into one, and can never start one for anything else.
+ */
+export interface SessionLoad {
+  readonly phase: SessionLoadPhase;
+  /** The `ConsoleState.selection` that armed this wait. */
+  readonly generation: number;
+  /** The refusal's own words. Present only when `phase` is `failed`. */
+  readonly error: string | null;
+}
+
+/**
+ * What a subject nobody has asked about reports. Shared by reference so a
+ * screen comparing loads across renders sees no change where none happened.
+ */
+export const READY_LOAD: SessionLoad = { phase: "ready", generation: 0, error: null };
+
 export interface ConsoleState {
   readonly agents: readonly Agent[];
   readonly sessions: ReadonlyMap<AgentId, SessionState>;
@@ -218,6 +260,32 @@ export interface ConsoleState {
   readonly noticeAboutLink: boolean;
   /** Set once the daemon has confirmed the token is dead. Terminal. */
   readonly unauthorized: string | null;
+  /**
+   * How many times the detail pane's subject has changed, counting from zero.
+   *
+   * A load records the generation that armed it, which is what makes a
+   * superseded wait identifiable rather than merely unlucky: a test, and the
+   * reducer's own guards, can say "this load belongs to a selection the
+   * operator has already left" instead of inferring it from timing. It is
+   * never a substitute for the identity key below -- that is what actually
+   * keeps one session's frames out of another's pane.
+   */
+  readonly selection: number;
+  /**
+   * What the detail pane is waiting for, keyed by the subject it is waiting
+   * on: an agent id for a session log, a session id for a terminal surface.
+   *
+   * Keyed by subject and never by "the current pane" precisely because the
+   * frames that settle it cross a relay with no ordering guarantee. An answer
+   * for a session the operator has already left settles that session's load
+   * and touches nothing else, so it can neither render under the session now
+   * open nor clear the wait that session is still in.
+   *
+   * A subject with no entry has nothing outstanding, which is why the default
+   * is `ready` rather than `loading`: a pane must never wait on a request
+   * nobody made. `SessionLoad`'s own doc names what arms and settles one.
+   */
+  readonly loads: ReadonlyMap<string, SessionLoad>;
 }
 
 /**
@@ -378,6 +446,8 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     notice: null,
     noticeAboutLink: false,
     unauthorized: null,
+    selection: 0,
+    loads: new Map(),
   };
 }
 
@@ -404,8 +474,11 @@ export type ConsoleEvent =
   | { t: "history_request"; agentId: AgentId }
   /** Local: this device just asked a terminal session for an older page. */
   | { t: "tui_history_request"; sessionId: string }
-  /** Local: the operator opened a terminal session's prompt surface, or went back to the bay. */
-  | { t: "tui_select"; sessionId: string | null }
+  /**
+   * Local: the operator opened a terminal session's prompt surface, or went
+   * back to the bay. `awaiting` carries the same meaning it does on `select`.
+   */
+  | { t: "tui_select"; sessionId: string | null; awaiting?: boolean }
   /** Local: echo of a prompt this device just sent to a terminal session. */
   | { t: "tui_prompt"; sessionId: string; text: string; imageCount?: number }
   /**
@@ -413,9 +486,17 @@ export type ConsoleEvent =
    * presented as the named agent. The ordinary session screen renders it,
    * and everything after arrives as the frames any agent produces.
    */
-  | { t: "collab_opened"; event: CollabOpenedEvent }
-  /** Local: the operator opened a strip, or went back to the bay. */
-  | { t: "select"; agentId: AgentId | null }
+  | { t: "collab_opened"; event: CollabOpenedEvent; awaiting?: boolean }
+  /**
+   * Local: the operator opened a session log, or went back to the bay.
+   *
+   * `awaiting` is the caller's own report of whether it sent a request that
+   * will be answered. It is not a guess the reducer could make: only the
+   * action layer knows whether this open asked the daemon for anything, and
+   * arming a wait for an answer nobody asked for is precisely the perpetual
+   * spinner this contract exists to make impossible.
+   */
+  | { t: "select"; agentId: AgentId | null; awaiting?: boolean }
   /** Local: echo of a prompt this device just sent. */
   | { t: "prompt"; agentId: AgentId; text: string; imageCount?: number }
   /** Local: a clearance this device just settled. */
@@ -425,6 +506,13 @@ export type ConsoleEvent =
   | { t: "webview_action"; agentId: AgentId; requestId: string; action: WebViewAction }
   /** Local: exactly this action was answered, or its screen went away. */
   | { t: "webview_result"; agentId: AgentId; requestId: string }
+  /**
+   * Local or daemon: the open of exactly this subject was refused, or could
+   * not be served. Addressed, never ambient: a refusal that cannot name its
+   * subject is a notice, because the alternative is failing whichever pane
+   * happens to be open when it lands.
+   */
+  | { t: "open_failed"; subject: string; message: string }
   | { t: "dismiss" };
 
 /**
@@ -478,11 +566,15 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // roster snapshot in flight over the relay, so a session still receiving
       // updates can never be reaped by a stale roster.
       const rosterMisses = clearMiss(state.rosterMisses, agentId);
-      return { ...withSession(state, agentId, session => reduce(session, update)), watermarks, rosterMisses };
+      const next = withSession(state, agentId, session => reduce(session, update));
+      return { ...settleLoad(next, agentId), watermarks, rosterMisses };
     }
     case "approval": {
       const { agentId, requestId, tool, title, input } = event.event;
-      const next = withSession(state, agentId, session => appendApproval(session, { requestId, tool, title, input }));
+      const next = settleLoad(
+        withSession(state, agentId, session => appendApproval(session, { requestId, tool, title, input })),
+        agentId,
+      );
       if (agentId === state.selected) return next;
       const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
       return { ...next, notice: `${name} needs a clearance.`, noticeAboutLink: false };
@@ -490,7 +582,10 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "plan_review": {
       const { agentId, requestId, message, choices } = event.event;
-      const next = withSession(state, agentId, session => setPlanReview(session, { requestId, message, choices }));
+      const next = settleLoad(
+        withSession(state, agentId, session => setPlanReview(session, { requestId, message, choices })),
+        agentId,
+      );
       if (agentId === state.selected) return next;
       const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
       return { ...next, notice: `${name} needs a plan review.`, noticeAboutLink: false };
@@ -592,18 +687,33 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // photograph taken before the resumed agent was registered. A double
       // tap answers twice, so the re-select retires the streak too.
       const rosterMisses = clearMiss(state.rosterMisses, event.agentId);
+      // A re-select of the pane's own subject changes nothing, including its
+      // wait: a double tap must not restart a load that is already settled,
+      // or the log an operator is reading flickers back to a spinner.
       if (state.selected === event.agentId && state.selectedTui === null) {
         return rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses };
       }
-      return { ...state, selected: event.agentId, selectedTui: null, rosterMisses };
+      return {
+        ...armLoad(state, event.agentId, event.awaiting === true),
+        selected: event.agentId,
+        selectedTui: null,
+        rosterMisses,
+      };
     }
 
     case "tui_select": {
       if (event.sessionId === null) {
         return state.selectedTui === null ? state : { ...state, selectedTui: null };
       }
+      // The collab fallback re-selects the terminal it already committed to,
+      // so the idempotent case keeps the wait the row press armed rather than
+      // arming a second one.
       if (state.selectedTui === event.sessionId && state.selected === null) return state;
-      return { ...state, selectedTui: event.sessionId, selected: null };
+      return {
+        ...armLoad(state, event.sessionId, event.awaiting === true),
+        selectedTui: event.sessionId,
+        selected: null,
+      };
     }
 
     case "collab_opened": {
@@ -621,10 +731,19 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       }
       const collabAgents = new Map(state.collabAgents);
       collabAgents.set(agentId, { sessionId, readOnly });
-      // Selecting closes the terminal surface for the same reason a resume's
-      // answer does: the two detail panes are exclusive, and this session is
-      // now an agent's rather than a steer target.
-      return { ...state, selected: agentId, selectedTui: null, collabAgents, rosterMisses };
+      // This answer is what the row press was waiting for, so the terminal
+      // subject's wait is over -- and the agent it names inherits one,
+      // because the join's own transcript is what has not arrived yet.
+      // Settling the first before arming the second keeps the pane in exactly
+      // one wait rather than briefly in none.
+      const settled = settleLoad(state, sessionId);
+      return {
+        ...armLoad(settled, agentId, event.awaiting === true),
+        selected: agentId,
+        selectedTui: null,
+        collabAgents,
+        rosterMisses,
+      };
     }
 
     case "tui_prompt":
@@ -639,10 +758,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       }));
 
     case "tui_activity":
-      return applyTuiActivity(state, event.event);
+      // A terminal reporting its own turn progress is that session's data
+      // arriving, so it settles the wait a row press armed even when the
+      // tail page has not landed yet.
+      return settleLoad(applyTuiActivity(state, event.event), event.event.sessionId);
 
     case "session_tail":
-      return applySessionTail(state, event.event);
+      return settleLoad(applySessionTail(state, event.event), event.event.sessionId);
 
     case "tui_history_request":
       return withTuiSession(state, event.sessionId, tui =>
@@ -662,7 +784,22 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       historyBefore.set(agentId, nextBefore);
       const historyLoading = new Set(next.historyLoading);
       historyLoading.delete(agentId);
-      return { ...next, historyBefore, historyLoading };
+      // The page the open asked for. It always comes back, empty or not,
+      // which is what makes it the settle a session log can rely on: a
+      // session with no transcript reaches its honest empty state here
+      // rather than sitting under a spinner forever.
+      return { ...settleLoad(next, agentId), historyBefore, historyLoading };
+    }
+
+    case "open_failed": {
+      const held = state.loads.get(event.subject);
+      // Only a wait can fail. A refusal for a subject that already has its
+      // data, or that nobody is waiting on, is an ordinary notice's business
+      // and must not blank a log that is on screen and correct.
+      if (held === undefined || held.phase !== "loading") return state;
+      const loads = new Map(state.loads);
+      loads.set(event.subject, { phase: "failed", generation: held.generation, error: event.message });
+      return { ...state, loads };
     }
 
     case "prompt":
@@ -812,6 +949,42 @@ function clearMiss(misses: ReadonlyMap<AgentId, number>, agentId: AgentId): Read
   return next;
 }
 
+/**
+ * Commits a new detail subject and records what it is waiting for.
+ *
+ * The generation advances on every commit, whether or not anything is
+ * outstanding, so it counts what the operator did rather than what the
+ * network happened to do. `awaiting` false is not "no load": it is a load in
+ * `ready`, recorded at this generation, which is how a settled subject stays
+ * distinguishable from one nobody has opened.
+ */
+function armLoad(state: ConsoleState, subject: string, awaiting: boolean): ConsoleState {
+  const selection = state.selection + 1;
+  const loads = new Map(state.loads);
+  loads.set(subject, { phase: awaiting ? "loading" : "ready", generation: selection, error: null });
+  return { ...state, selection, loads };
+}
+
+/**
+ * This subject's data arrived.
+ *
+ * Settles only a wait, and only this subject's. It never arms one and never
+ * touches another subject's entry, which is the whole guard: a frame for a
+ * session the operator has already left cannot clear the wait the session now
+ * open is in, and cannot put the one it belongs to back into a wait either.
+ *
+ * A `failed` load stays failed. The refusal is the answer, and a later frame
+ * for the same subject is not the daemon retracting it -- reopening the row
+ * is what asks again.
+ */
+function settleLoad(state: ConsoleState, subject: string): ConsoleState {
+  const held = state.loads.get(subject);
+  if (held === undefined || held.phase !== "loading") return state;
+  const loads = new Map(state.loads);
+  loads.set(subject, { phase: "ready", generation: held.generation, error: null });
+  return { ...state, loads };
+}
+
 function withSession(
   state: ConsoleState,
   agentId: AgentId,
@@ -942,6 +1115,19 @@ function withTuiSession(
 
 export function sessionFor(state: ConsoleState, agentId: AgentId): SessionState {
   return state.sessions.get(agentId) ?? EMPTY_SESSION;
+}
+
+/**
+ * What the pane showing `subject` is waiting for.
+ *
+ * A screen asks only about its own subject, which is what makes cross-session
+ * leakage impossible rather than merely unlikely: there is no call shape that
+ * reads the pane's wait without naming whose wait it is. A subject nobody
+ * asked about reports `ready`, because a pane must never wait on a request
+ * nobody made.
+ */
+export function loadFor(state: ConsoleState, subject: string): SessionLoad {
+  return state.loads.get(subject) ?? READY_LOAD;
 }
 
 /**

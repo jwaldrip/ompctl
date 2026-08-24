@@ -114,6 +114,8 @@ describe("the transcript renders from canned frames", () => {
     <SessionScreen
       agent={OPEN}
       session={sessionFor(STATE, OPEN.id)}
+      load={{ phase: "ready", generation: 0, error: null }}
+      context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
       connection={STATE.connection}
       attempt={STATE.attempt}
       canApprove
@@ -197,6 +199,8 @@ describe("the transcript renders from canned frames", () => {
       <SessionScreen
         agent={{ ...OPEN, state: "idle" }}
         session={sessionFor(STATE, OPEN.id)}
+        load={{ phase: "ready", generation: 0, error: null }}
+        context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
         connection="connected"
         attempt={0}
         canApprove
@@ -228,6 +232,8 @@ describe("the transcript renders from canned frames", () => {
       <SessionScreen
         agent={{ ...OPEN, state: "idle" }}
         session={sessionFor(STATE, OPEN.id)}
+        load={{ phase: "ready", generation: 0, error: null }}
+        context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
         connection="offline"
         attempt={4}
         canApprove
@@ -260,6 +266,8 @@ describe("the transcript renders from canned frames", () => {
       <SessionScreen
         agent={OPEN}
         session={sessionFor(STATE, OPEN.id)}
+        load={{ phase: "ready", generation: 0, error: null }}
+        context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
         connection="connected"
         attempt={0}
         canApprove={false}

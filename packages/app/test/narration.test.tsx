@@ -176,6 +176,8 @@ describe("session narration", () => {
         <SessionScreen
           agent={AGENT}
           session={EMPTY_SESSION}
+          load={{ phase: "ready", generation: 0, error: null }}
+          context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
           connection="connected"
           attempt={0}
           voice={{
@@ -224,6 +226,8 @@ describe("session narration", () => {
           <SessionScreen
             agent={AGENT}
             session={value}
+            load={{ phase: "ready", generation: 0, error: null }}
+            context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
             connection="connected"
             attempt={0}
             canApprove

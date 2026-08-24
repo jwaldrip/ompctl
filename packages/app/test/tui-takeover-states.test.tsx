@@ -40,6 +40,7 @@ function renderScreen(
       status={options.status === undefined ? "live-tui" : options.status}
       promptAccess={options.promptAccess ?? "granted"}
       tui={tuiSessionFor(state, SESSION)}
+      load={{ phase: "ready", generation: 0, error: null }}
       connection="connected"
       onBack={() => {}}
       onLoadEarlier={() => {}}
@@ -65,6 +66,7 @@ function mountScreen(options: {
         status={options.status === undefined ? "live-tui" : options.status}
         promptAccess={options.promptAccess ?? "granted"}
         tui={tuiSessionFor(options.state ?? emptyConsole([]), SESSION)}
+        load={{ phase: "ready", generation: 0, error: null }}
         connection="connected"
         onBack={() => {}}
         onLoadEarlier={() => {}}

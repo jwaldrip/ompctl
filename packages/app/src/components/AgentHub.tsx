@@ -38,6 +38,46 @@ export function agentHubTree(agents: readonly Agent[]): AgentHubNode[] {
   return roots;
 }
 
+/**
+ * The subagents working under one session, at any depth, in the same shape
+ * the hub renders.
+ *
+ * Built from the whole roster rather than a pre-filtered slice: a sub's
+ * parent may itself be a sub, so the links only resolve when every row is
+ * present, and `agentHubTree` is the one place that resolution lives. An
+ * unknown id and a session with no subs are the same answer, an empty
+ * forest, because a caller cannot act differently on the two.
+ */
+export function subagentsOf(agents: readonly Agent[], parentId: string): AgentHubNode[] {
+  const found = findNode(agentHubTree(agents), parentId);
+  return found?.children ?? [];
+}
+
+function findNode(nodes: readonly AgentHubNode[], id: string): AgentHubNode | undefined {
+  for (const node of nodes) {
+    if (node.agent.id === id) return node;
+    const nested = findNode(node.children, id);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+/**
+ * Whether opening this subagent lands on a transcript.
+ *
+ * `acpSessionId` is the whole answer: it is what an attach addresses, and the
+ * two mirrors that create subagent rows differ on exactly this field. The
+ * supervisor's ACP mirror sets it when the host's registry reports a session
+ * id, so that row opens. The collab guest leg cannot: the room streams the
+ * mirrored session's transcript and nothing else, so a sub it mirrored has no
+ * transcript to reach and opening it would land on an empty log that looks
+ * like a session that lost its history. Those rows stay informational, which
+ * is a smaller lie than a blank transcript.
+ */
+export function subagentOpenable(agent: Agent): boolean {
+  return agent.acpSessionId !== undefined;
+}
+
 export interface AgentHubProps {
   /**
    * The full roster, not a pre-filtered subagent list. The hub drops main
@@ -85,6 +125,13 @@ const AGENT_HUB_EMPTY_COPY: Record<AgentHubEmpty, string> = {
   sharedQuiet: "Shared sessions report no subagents.",
   sharedQuietWithOwned: "Shared sessions report no subagents; sessions this daemon owns have no subagent feed.",
 };
+
+/**
+ * Why a listed subagent is not a control. Stated on the row rather than
+ * discovered by tapping it: the transcript was never shared, which is a fact
+ * about the link and not about the subagent.
+ */
+export const SUBAGENT_UNOPENABLE = "transcript not shared";
 
 function createsCycle(node: AgentHubNode, parent: AgentHubNode, byId: ReadonlyMap<string, AgentHubNode>): boolean {
   const lineage = new Set([node.agent.id]);
@@ -143,7 +190,20 @@ export function AgentHub({
   );
 }
 
-function AgentHubBranch({
+/**
+ * One subagent and its own subs, as a row plus whatever nests under it.
+ *
+ * Exported because the session detail renders the same forest scoped to one
+ * session: two drawings of a subagent would drift the moment either grew a
+ * field, and the operator would be reading two different claims about the
+ * same row.
+ *
+ * The row is a control only when it leads somewhere. When it does not, it
+ * renders as text with the reason beside it: a pressable that opens an empty
+ * transcript teaches an operator that a subagent lost its history, which is
+ * a worse lie than saying the transcript was never shared.
+ */
+export function AgentHubBranch({
   node,
   depth,
   now,
@@ -163,29 +223,51 @@ function AgentHubBranch({
       ? `runtime ${formatRuntime(runtimeMs)}`
       : `${metrics.usedTokens.toLocaleString()} tokens · ${formatRuntime(runtimeMs)}`;
   const costLabel = metrics?.costAmount === undefined ? null : `cost ${metrics.costAmount.toFixed(4)}`;
+  const openable = subagentOpenable(agent);
+  const body = (
+    <>
+      <View style={[styles.status, { backgroundColor: signalWash[status] }]}>
+        <Label color={signal[status]}>{agent.state}</Label>
+      </View>
+      <View style={styles.details}>
+        <Body color={ink.bright}>{agent.name}</Body>
+        {agent.taskTitle === undefined ? null : <Label color={ink.plain}>{agent.taskTitle}</Label>}
+        <View style={styles.meta}>
+          {agent.model === undefined ? null : <Kicker color={ink.muted}>{agent.model}</Kicker>}
+          <Kicker color={ink.muted}>{metricsLabel}</Kicker>
+          {costLabel === null ? null : <Kicker color={ink.muted}>{costLabel}</Kicker>}
+          {openable ? null : (
+            <Kicker color={ink.faint} testID={`agent-hub-unopenable-${agent.id}`}>
+              {SUBAGENT_UNOPENABLE}
+            </Kicker>
+          )}
+        </View>
+      </View>
+    </>
+  );
 
   return (
     <View style={[styles.branch, depth > 0 && styles.nested]} testID={`agent-hub-${agent.id}`}>
-      <Pressable
-        testID={`agent-hub-open-${agent.id}`}
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${agent.name} session`}
-        onPress={() => onOpen(agent)}
-        style={({ pressed }) => [styles.row, pressed && { backgroundColor: ground.active }]}
-      >
-        <View style={[styles.status, { backgroundColor: signalWash[status] }]}>
-          <Label color={signal[status]}>{agent.state}</Label>
+      {openable ? (
+        <Pressable
+          testID={`agent-hub-open-${agent.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${agent.name} session`}
+          onPress={() => onOpen(agent)}
+          style={({ pressed }) => [styles.row, pressed && { backgroundColor: ground.active }]}
+        >
+          {body}
+        </Pressable>
+      ) : (
+        <View
+          accessible
+          accessibilityLabel={`${agent.name}, ${agent.state}. ${SUBAGENT_UNOPENABLE}`}
+          style={styles.row}
+          testID={`agent-hub-row-${agent.id}`}
+        >
+          {body}
         </View>
-        <View style={styles.details}>
-          <Body color={ink.bright}>{agent.name}</Body>
-          {agent.taskTitle === undefined ? null : <Label color={ink.plain}>{agent.taskTitle}</Label>}
-          <View style={styles.meta}>
-            {agent.model === undefined ? null : <Kicker color={ink.muted}>{agent.model}</Kicker>}
-            <Kicker color={ink.muted}>{metricsLabel}</Kicker>
-            {costLabel === null ? null : <Kicker color={ink.muted}>{costLabel}</Kicker>}
-          </View>
-        </View>
-      </Pressable>
+      )}
       {node.children.map(child => (
         <AgentHubBranch key={child.agent.id} node={child} depth={depth + 1} now={now} onOpen={onOpen} />
       ))}
