@@ -159,6 +159,12 @@ export interface TunnelDaemonOptions {
   onWebhook?: (request: WebhookRequest) => Promise<WebhookResponse>;
   schedule?: (fn: () => void, ms: number) => { cancel(): void };
   random?: () => number;
+  /**
+   * Epoch milliseconds, for the timestamp the reconnect log lines carry.
+   * Injectable because a storm is diagnosed by the spacing between those
+   * lines, and a test that asserts on them must not depend on the wall clock.
+   */
+  now?: () => number;
 }
 
 const DEFAULT_MIN_BACKOFF_MS = 500;
@@ -186,6 +192,7 @@ export class TunnelDaemon {
   readonly #onWebhook: ((request: WebhookRequest) => Promise<WebhookResponse>) | undefined;
   readonly #schedule: (fn: () => void, ms: number) => { cancel(): void };
   readonly #random: () => number;
+  readonly #now: () => number;
 
   readonly #sessions = new Map<string, Session>();
   #socket: DialSocket | null = null;
@@ -193,6 +200,19 @@ export class TunnelDaemon {
   #attempt = 0;
   #stopped = true;
   #retry: { cancel(): void } | null = null;
+  /**
+   * Which dial the shared state below belongs to.
+   *
+   * A socket's handlers are bound once, at dial, and outlive the socket: the
+   * hub closes a superseded leg with 4409 well after its replacement is up,
+   * and a 1006 can surface later still. Without an owner, that late event ran
+   * against whatever leg was current -- nulling a live socket so every send
+   * including `ack` became a silent no-op, tearing the live leg's sessions,
+   * and dialing again, which the hub answered by 4409-ing the leg that had
+   * just registered. Each handler captures the generation it was bound at and
+   * only the current one may touch anything here.
+   */
+  #generation = 0;
 
   constructor(opts: TunnelDaemonOptions) {
     this.#hubUrl = opts.hubUrl.replace(/\/+$/, "");
@@ -207,6 +227,7 @@ export class TunnelDaemon {
     this.#onSession = opts.onSession;
     this.#onWebhook = opts.onWebhook;
     this.#random = opts.random ?? Math.random;
+    this.#now = opts.now ?? Date.now;
     this.#schedule =
       opts.schedule ??
       ((fn, ms) => {
@@ -240,6 +261,9 @@ export class TunnelDaemon {
     this.#retry?.cancel();
     this.#retry = null;
     this.#tearDownAll();
+    // Retires the current leg's ownership before closing it, so the close
+    // this provokes arrives as somebody else's and cannot reconnect.
+    this.#generation++;
     this.#socket?.close(1000, "shutting down");
     this.#socket = null;
     this.#registered = false;
@@ -247,28 +271,59 @@ export class TunnelDaemon {
 
   #connect(): void {
     if (this.#stopped) return;
+    const generation = ++this.#generation;
     const socket = this.#transport(`${this.#hubUrl}/v1/daemon`);
     this.#socket = socket;
-    socket.onmessage = data => void this.#onFrame(data);
-    socket.onerror = info => this.#onLog(`tunnel error: ${info.message}`);
-    socket.onclose = info => this.#onClose(info);
+    // Every handler is stamped with the dial it belongs to. A superseded leg
+    // still delivers events -- a late 4409, a 1006, a frame in flight -- and
+    // none of them speak for the leg that replaced it.
+    socket.onmessage = data => {
+      if (generation !== this.#generation) return;
+      void this.#onFrame(data);
+    };
+    socket.onerror = info => {
+      if (generation !== this.#generation) return;
+      this.#onLog(`tunnel error: ${info.message}`);
+    };
+    socket.onclose = info => this.#onClose(generation, info);
     socket.onopen = null;
   }
 
-  #onClose(info: { code: number; reason: string }): void {
+  #onClose(generation: number, info: { code: number; reason: string }): void {
+    const at = new Date(this.#now()).toISOString();
+    const reason = JSON.stringify(info.reason);
+    if (generation !== this.#generation) {
+      // The ordinary shape of a reconnect: this daemon dialed again, the hub
+      // replaced the old leg and closed it 4409, and that close is landing
+      // now. Acting on it would unseat the live leg and dial a third, which
+      // the hub would answer by closing the second. Recorded, not obeyed.
+      this.#onLog(
+        `tunnel closed at=${at} gen=${generation} live=${this.#generation} code=${info.code} reason=${reason} decision=ignored_superseded`,
+      );
+      return;
+    }
+
     this.#registered = false;
     this.#socket = null;
     // Every session died with the connection. Their clients hear it from the
     // hub and resume against the update log.
     this.#tearDownAll();
-    if (this.#stopped) return;
+    if (this.#stopped) {
+      this.#onLog(
+        `tunnel closed at=${at} gen=${generation} live=${this.#generation} code=${info.code} reason=${reason} decision=stopped`,
+      );
+      return;
+    }
 
     const ceiling = Math.min(this.#maxBackoffMs, this.#minBackoffMs * 2 ** this.#attempt);
     // Full jitter. A fleet reconnecting in lockstep after a hub redeploy is a
     // thundering herd against the thing that just came back.
     this.#attempt++;
-    this.#onLog(`tunnel closed (${info.code} ${info.reason}); reconnecting`);
-    this.#retry = this.#schedule(() => this.#connect(), Math.round(ceiling * this.#random()));
+    const delay = Math.round(ceiling * this.#random());
+    this.#onLog(
+      `tunnel closed at=${at} gen=${generation} live=${this.#generation} code=${info.code} reason=${reason} decision=reconnect attempt=${this.#attempt} delay=${delay}ms`,
+    );
+    this.#retry = this.#schedule(() => this.#connect(), delay);
   }
 
   async #onFrame(raw: string): Promise<void> {
