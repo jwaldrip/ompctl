@@ -15,9 +15,9 @@
 
 import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { useCallback, useRef } from "react";
-import type { ListRenderItemInfo, NativeScrollEvent, NativeSyntheticEvent } from "react-native";
-import { ActivityIndicator, FlatList, Platform, Pressable, StyleSheet, View } from "react-native";
+import { useCallback } from "react";
+import type { ListRenderItemInfo } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
@@ -25,23 +25,8 @@ import { type Entry, transcriptRowKey } from "../session/model.ts";
 import { ApprovalCard } from "./ApprovalCard.tsx";
 import { RichText } from "./rich/RichText.tsx";
 import { ToolCard } from "./ToolCard.tsx";
-import { isNearTop, useFollowNewest } from "./useFollowNewest.ts";
-
-/**
- * The identity of one history page, as a value that is always comparable.
- *
- * A cursor of `null` or `undefined` collapses to a single key rather than
- * comparing unequal to everything, which is what a bare `null !== undefined`
- * guard did: it never matched, so it never locked, and a callsite with no
- * cursor re-fired on every scroll frame. Collapsed, such a callsite gets one
- * automatic page and the button after that, which is a smaller loss than a
- * request storm and is stated in `TranscriptProps`.
- */
-type PageKey = string;
-
-function pageKeyOf(cursor: number | null | undefined): PageKey {
-  return cursor === null || cursor === undefined ? "unkeyed" : `c${cursor}`;
-}
+import { useFollowNewest } from "./useFollowNewest.ts";
+import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "./useTopHistoryPagination.ts";
 
 export interface TranscriptProps {
   entries: readonly Entry[];
@@ -84,126 +69,37 @@ export function Transcript({
   // Opening a session lands on the newest entry, and a streaming turn keeps
   // it there, unless the operator has scrolled up to read.
   const follow = useFollowNewest();
-  const listRef = useRef<FlatList | null>(null);
 
   /**
-   * The page an automatic request has already been fired for.
-   *
-   * Deliberately never cleared by a loading transition. A request that fails
-   * and leaves the cursor where it was must stay locked, or the operator
-   * sitting at the top re-fires the same failing page on every scroll frame.
-   * Only a page key that actually changed -- which is the daemon answering
-   * with new history -- unlocks the next automatic page. The button is the
-   * deliberate retry.
-   */
-  const requestedPage = useRef<PageKey | null>(null);
-
-  /**
-   * The head row key as of this render, read by `onContentSizeChange`, which
-   * runs after commit and therefore sees the entries the prepend delivered.
+   * The head row's key, in the same key space the list itself uses. That
+   * sameness is the requirement, not a convenience: the shared machine detects
+   * a prepend by comparing this against the key it recorded when the request
+   * went out, so a different function here would make a prepend and a
+   * re-render indistinguishable.
    */
   const headKey = entries.length > 0 ? transcriptRowKey(entries[0] as Entry) : null;
-  const headKeyRef = useRef<string | null>(headKey);
-  headKeyRef.current = headKey;
 
-  /**
-   * A load whose prepend has not been observed yet, and the head it was
-   * requested against.
-   *
-   * Armed by whichever control started the load, auto or manual, and consumed
-   * exactly once, by the first content growth that also moved the head. Tying
-   * it to the head rather than to a loading boolean is what keeps it correct:
-   * the order of a parent's rerender against the list's layout callback is
-   * not something this component can observe, but "the first row is a
-   * different row now" is.
-   */
-  const pendingAnchor = useRef<{ headKeyAtRequest: string | null } | null>(null);
-  const lastScrollY = useRef<number>(0);
-  const prevContentHeight = useRef<number>(0);
-
-  const pageKey = pageKeyOf(historyCursor);
-
-  const startLoad = useCallback(() => {
-    if (onLoadEarlier === undefined) return;
-    requestedPage.current = pageKey;
-    pendingAnchor.current = { headKeyAtRequest: headKeyRef.current };
-    onLoadEarlier();
-  }, [onLoadEarlier, pageKey]);
-
-  const handleScroll = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      follow.onScroll(event);
-      const offsetY = event.nativeEvent.contentOffset.y;
-      lastScrollY.current = offsetY;
-      if (!isNearTop(offsetY)) return;
-      if (canLoadEarlier !== true || onLoadEarlier === undefined || loadingEarlier === true) return;
-      // The whole dedup: this page has already been asked for automatically.
-      if (requestedPage.current === pageKey) return;
-      startLoad();
-    },
-    [follow, canLoadEarlier, onLoadEarlier, loadingEarlier, pageKey, startLoad],
-  );
-
-  /**
-   * The button is a deliberate act, so it fires whatever the guard says. It
-   * arms the anchor exactly as the automatic path does, which is why it
-   * cannot be wired straight to `onLoadEarlier`: a manual page that skipped
-   * the anchor would drop the reader wherever the prepend left them.
-   */
-  const handleLoadEarlierPress = useCallback(() => {
-    if (loadingEarlier === true) return;
-    startLoad();
-  }, [loadingEarlier, startLoad]);
-
-  const setListRef = useCallback(
-    (list: FlatList | null) => {
-      listRef.current = list;
-      follow.ref(list);
-    },
-    [follow],
-  );
-
-  const handleContentSizeChange = useCallback(
-    (_width: number, height: number) => {
-      const previous = prevContentHeight.current;
-      prevContentHeight.current = height;
-
-      const pending = pendingAnchor.current;
-      // A prepend is the only growth that moves the head. Streaming text, a
-      // new tool card and a footer all grow the list without touching row
-      // zero, so they fall out here and the wait survives for the real one.
-      if (pending !== null && headKeyRef.current !== pending.headKeyAtRequest) {
-        pendingAnchor.current = null;
-        // iOS keeps the reader in place natively through
-        // `maintainVisibleContentPosition`; adjusting again there would move
-        // them twice.
-        if (Platform.OS === "android" && previous > 0 && height > previous) {
-          listRef.current?.scrollToOffset({ offset: lastScrollY.current + (height - previous), animated: false });
-        }
-      }
-
-      follow.onContentSizeChange();
-    },
-    [follow],
-  );
+  const pagination = useTopHistoryPagination({
+    canLoadEarlier: canLoadEarlier === true,
+    loadingEarlier: loadingEarlier === true,
+    onLoadEarlier,
+    cursor: historyCursor,
+    headKey,
+    follow,
+  });
 
   return (
     <FlatList
       testID="transcript"
-      ref={setListRef}
+      ref={pagination.ref}
       style={styles.list}
       data={entries as Entry[]}
       keyExtractor={transcriptRowKey}
       renderItem={renderItem}
-      onScroll={handleScroll}
-      onContentSizeChange={handleContentSizeChange}
-      scrollEventThrottle={follow.scrollEventThrottle}
-      // `minIndexForVisible` alone. `autoscrollToTopThreshold` is the opposite
-      // of what history wants: it tells the list to jump to the very top when
-      // content is inserted above and the reader is already near it, which is
-      // exactly the state an auto-load happens in. It was throwing the reader
-      // onto the newly inserted oldest row instead of holding their place.
-      maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+      onScroll={pagination.onScroll}
+      onContentSizeChange={pagination.onContentSizeChange}
+      scrollEventThrottle={pagination.scrollEventThrottle}
+      maintainVisibleContentPosition={MAINTAIN_VISIBLE_CONTENT_POSITION}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
       automaticallyAdjustKeyboardInsets
@@ -216,7 +112,7 @@ export function Transcript({
               accessibilityRole="button"
               accessibilityLabel="Load earlier transcript entries"
               disabled={loadingEarlier}
-              onPress={handleLoadEarlierPress}
+              onPress={pagination.onPressLoadEarlier}
               style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
             >
               <Glyph name="resume" size={11} color={ink.muted} />

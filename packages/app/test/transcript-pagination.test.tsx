@@ -15,7 +15,7 @@
 import "./rnw.ts";
 
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { act, createElement, type ReactElement } from "react";
+import { act, type ComponentType, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TranscriptProps } from "../src/components/Transcript.tsx";
 import type { Entry } from "../src/session/model.ts";
@@ -70,7 +70,11 @@ const actual = await import("react-native");
  * infinite recursion: it segfaulted bun at a 52 GB peak rather than failing
  * as a test would.
  */
-const RealFlatList = actual.FlatList;
+// Cast at the seam, not at the callsite: `FlatList`'s real props are generic
+// over its item type and this recorder is a pass-through that never reads them,
+// so `createElement(RealFlatList, props)` matched no overload and the branch
+// did not typecheck as pushed.
+const RealFlatList = actual.FlatList as unknown as ComponentType<Record<string, unknown>>;
 
 function RecordingList(props: ListProps): ReactElement | null {
   if (!capturing) return createElement(RealFlatList, props as Record<string, unknown>);

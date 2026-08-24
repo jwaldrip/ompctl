@@ -24,12 +24,16 @@
  *   so pressing it means scrolling away from the bottom first, and near-bottom
  *   is already false by the time the older page arrives.
  *
- * `maintainVisibleContentPosition` was the alternative and is not used: it is
- * unimplemented on react-native-web, which compiles this same source, so it
- * would fix the phone and silently do nothing on the web build. An inverted
- * list was the other, and it inverts every layout decision above this file
- * (headers become footers, the keyboard inset flips) to buy a default this
- * hook provides in one place.
+ * `maintainVisibleContentPosition` is not an alternative to this and both
+ * lists now set it. It holds a reader's place across a PREPEND on iOS, which
+ * is `useTopHistoryPagination`'s concern; it does nothing for following the
+ * newest entry, and it is unimplemented on react-native-web, which compiles
+ * this same source. So the two coexist: that option handles the prepend where
+ * the platform supports it, this hook decides whether to follow at all, and
+ * the pagination hook restores the offset by hand on Android where the option
+ * is absent. An inverted list was the other option, and it inverts every
+ * layout decision above this file (headers become footers, the keyboard inset
+ * flips) to buy a default this hook provides in one place.
  *
  * The decision lives in `createFollower`, which is plain state and no React.
  * That is what lets the rules be asserted directly: a hook cannot be called
@@ -53,12 +57,27 @@ export const NEAR_BOTTOM_SLACK = 48;
 
 /**
  * How close to the start still counts as being near the top, in points.
- * Used for auto-loading transcript history when user scrolls near the beginning.
+ *
+ * The same slack as the bottom, and for the same reason: a list rarely rests
+ * exactly at zero. This is the trigger for asking for older history, so it is
+ * deliberately not a screenful -- a reader with a whole entry still above them
+ * has not reached the start of what they have.
  */
 export const NEAR_TOP_SLACK = 48;
 
 /** How often a list reports scrolling. Frequent enough to notice a thumb leaving the bottom. */
 export const SCROLL_EVENT_THROTTLE_MS = 100;
+
+/**
+ * Whether a scroll position counts as being near the start of the list.
+ *
+ * Pure and exported for the same reason `isNearBottom` is: the harness renders
+ * no scrolling list, so the threshold is asserted directly rather than inferred
+ * from one. `useTopHistoryPagination` is the only caller.
+ */
+export function isNearTop(offset: number): boolean {
+  return offset <= NEAR_TOP_SLACK;
+}
 
 /**
  * Whether a scroll position counts as the end of the list.
@@ -67,14 +86,6 @@ export const SCROLL_EVENT_THROTTLE_MS = 100;
  * than inferred from a rendered list, which reports no scroll offset in the
  * test harness.
  */
-
-/**
- * Whether a scroll position counts as being near the top of the list.
- * Used to trigger auto-loading of older transcript messages.
- */
-export function isNearTop(offset: number): boolean {
-  return offset <= NEAR_TOP_SLACK;
-}
 export function isNearBottom(offset: number, contentLength: number, viewportLength: number): boolean {
   // A list shorter than its viewport has its end on screen by definition, and
   // the arithmetic below would answer with a negative floor.
