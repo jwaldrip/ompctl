@@ -25,6 +25,7 @@ import { type Entry, transcriptRowKey } from "../session/model.ts";
 import { ApprovalCard } from "./ApprovalCard.tsx";
 import { RichText } from "./rich/RichText.tsx";
 import { ToolCard } from "./ToolCard.tsx";
+import { useFollowNewest } from "./useFollowNewest.ts";
 
 export interface TranscriptProps {
   entries: readonly Entry[];
@@ -55,15 +56,22 @@ export function Transcript({
     ),
     [canApprove, refusal, onDecide],
   );
+  // Opening a session lands on the newest entry, and a streaming turn keeps
+  // it there, unless the operator has scrolled up to read.
+  const follow = useFollowNewest();
 
   return (
     <FlatList
       testID="transcript"
+      ref={follow.ref}
       style={styles.list}
       contentContainerStyle={styles.content}
       data={entries as Entry[]}
       keyExtractor={transcriptRowKey}
       renderItem={renderItem}
+      onContentSizeChange={follow.onContentSizeChange}
+      onScroll={follow.onScroll}
+      scrollEventThrottle={follow.scrollEventThrottle}
       // The keyboard must never be the reason a control is unreachable. Dragging
       // the transcript puts it away, a tap on a row still reaches the row rather
       // than being eaten as a dismiss, and iOS keeps the last entries visible by
