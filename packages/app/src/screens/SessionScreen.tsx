@@ -19,6 +19,7 @@ import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { webViewCapability } from "../browser";
+import { ActivityPip } from "../components/ActivityPip.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { PlanCard } from "../components/PlanCard.tsx";
 import { SessionContext, type SessionContextSource } from "../components/SessionContext.tsx";
@@ -30,11 +31,13 @@ import type { WebViewTarget } from "../console/webview.ts";
 import { routeWebViewAction } from "../console/webview.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { agentSignal, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
+import { agentActivity } from "../session/activity.ts";
 import type { SessionState } from "../session/model.ts";
 import type { VoiceAvailability } from "../voice/memo.ts";
 import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
@@ -55,6 +58,8 @@ export interface SessionScreenProps {
    * session can neither end this wait nor start one.
    */
   load: SessionLoad;
+  /** Motion seam for the activity indicator. Unset in production. */
+  reduceMotion?: boolean;
   connection: ConnectionState;
   attempt: number;
   delayMs?: number;
@@ -122,6 +127,10 @@ export interface SessionVoice {
 
 export function SessionScreen(props: SessionScreenProps): JSX.Element {
   const { agent, session, connection, load } = props;
+  const tablet = useIsTablet();
+  // Derived, so it cannot go stale: there is no timer and nothing remembered,
+  // and a state that has gone idle reads idle on this very render.
+  const activity = agentActivity(agent, session, connection, load);
   const tone = signal[agentSignal(agent.state)];
   const busy = agent.state === "busy";
   const terminal = TERMINAL_AGENT_STATES.includes(agent.state);
@@ -277,6 +286,13 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           </View>
         </View>
 
+        {/*
+          Beside the state kicker, not instead of it: the kicker is the
+          daemon's own word for the agent row, and this is what the session is
+          doing. They differ, most visibly when an idle agent is holding a
+          clearance.
+        */}
+        <ActivityPip activity={activity} compact={!tablet} reduceMotion={props.reduceMotion} />
         <Kicker color={tone} testID="session-state">
           {agent.state}
         </Kicker>

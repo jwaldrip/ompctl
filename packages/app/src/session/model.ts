@@ -112,6 +112,21 @@ export interface Activity {
   tools: number;
   running: number;
   failed: number;
+  /**
+   * How many running calls there are of each kind, for a header that wants to
+   * name the work rather than count it.
+   *
+   * Maintained here with the counts above, for the reason they are: the
+   * alternative is walking the transcript on every render, and the transcript
+   * is thousands of entries long while a turn streams tokens into it.
+   *
+   * Kinds, never titles. `ToolEntry.title` is whatever ACP sent, and omp
+   * builds that from the tool's own arguments -- a command line, a path -- so
+   * putting it in a header would publish argument text to anything reading the
+   * screen or listening to VoiceOver. `ToolKind` is a closed set this reducer
+   * maps ACP's `kind` onto, and it carries no operand.
+   */
+  runningByKind: Readonly<Partial<Record<ToolKind, number>>>;
 }
 
 export interface UserEntry {
@@ -227,7 +242,7 @@ export interface SessionState {
 }
 
 const EMPTY_INFO: SessionInfo = { updatedAt: null, title: null, model: null, cwd: null, thinkingLevel: null };
-const EMPTY_ACTIVITY: Activity = { tools: 0, running: 0, failed: 0 };
+const EMPTY_ACTIVITY: Activity = { tools: 0, running: 0, failed: 0, runningByKind: {} };
 
 export const EMPTY_SESSION: SessionState = {
   entries: [],
@@ -437,14 +452,14 @@ function reduceToolCall(state: SessionState, payload: unknown): SessionState {
     return {
       ...state,
       entries: replaceAt(state.entries, existing, entry),
-      activity: countActivity(state.activity, before.status, entry.status, false),
+      activity: countActivity(state.activity, before.status, entry.status, false, before.toolKind, entry.toolKind),
     };
   }
 
   return {
     ...state,
     entries: [...closeStreams(state.entries), entry],
-    activity: countActivity(state.activity, null, entry.status, true),
+    activity: countActivity(state.activity, null, entry.status, true, null, entry.toolKind),
   };
 }
 
@@ -485,7 +500,7 @@ function reduceToolCallUpdate(state: SessionState, payload: unknown): SessionSta
   return {
     ...state,
     entries: replaceAt(state.entries, index, entry),
-    activity: countActivity(state.activity, before.status, entry.status, false),
+    activity: countActivity(state.activity, before.status, entry.status, false, before.toolKind, entry.toolKind),
   };
 }
 
@@ -497,16 +512,40 @@ function indexOfTool(entries: readonly Entry[], toolCallId: string): number {
   return -1;
 }
 
-function countActivity(activity: Activity, before: ToolStatus | null, after: ToolStatus, added: boolean): Activity {
+/**
+ * Folds one tool call's transition into the counts.
+ *
+ * `beforeKind` and `afterKind` are separate because an amendment may restate a
+ * call's kind: the running tally has to leave the kind it was counted under
+ * and join the one it is now, or a call that changed kind mid-flight would be
+ * counted twice and never released.
+ */
+function countActivity(
+  activity: Activity,
+  before: ToolStatus | null,
+  after: ToolStatus,
+  added: boolean,
+  beforeKind: ToolKind | null,
+  afterKind: ToolKind,
+): Activity {
   const wasRunning = before === "pending" || before === "in_progress";
   const isRunning = after === "pending" || after === "in_progress";
   const wasFailed = before === "failed";
   const isFailed = after === "failed";
-  if (!added && wasRunning === isRunning && wasFailed === isFailed) return activity;
+  const kindMoved = wasRunning && isRunning && beforeKind !== afterKind;
+  if (!added && wasRunning === isRunning && wasFailed === isFailed && !kindMoved) return activity;
+  const runningByKind: Partial<Record<ToolKind, number>> = { ...activity.runningByKind };
+  if (wasRunning && beforeKind !== null) {
+    const left = (runningByKind[beforeKind] ?? 0) - 1;
+    if (left > 0) runningByKind[beforeKind] = left;
+    else delete runningByKind[beforeKind];
+  }
+  if (isRunning) runningByKind[afterKind] = (runningByKind[afterKind] ?? 0) + 1;
   return {
     tools: activity.tools + (added ? 1 : 0),
     running: activity.running + (isRunning ? 1 : 0) - (wasRunning ? 1 : 0),
     failed: activity.failed + (isFailed ? 1 : 0) - (wasFailed ? 1 : 0),
+    runningByKind,
   };
 }
 

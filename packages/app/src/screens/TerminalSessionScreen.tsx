@@ -42,17 +42,20 @@ import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback } from "react";
 import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, View } from "react-native";
+import { ActivityPip } from "../components/ActivityPip.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
+import { tuiActivity } from "../session/activity.ts";
 import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 
 export interface TerminalSessionScreenProps {
@@ -68,6 +71,8 @@ export interface TerminalSessionScreenProps {
    * this row's from the moment it is touched.
    */
   load: SessionLoad;
+  /** Motion seam for the activity indicator. Unset in production. */
+  reduceMotion?: boolean;
   /** This session's served transcript tail plus the hints the console holds about it. */
   tui: TuiSessionState;
   connection: ConnectionState;
@@ -157,9 +162,11 @@ function logRows(tui: TuiSessionState): LogRow[] {
 
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
   const { tui, connection, status, promptAccess, load } = props;
+  const tablet = useIsTablet();
   // The latest index row, not the row that opened this route, decides whether
   // steering is still safe. A terminal can close while the screen remains.
   const liveTerminal = status === "live-tui";
+  const activity = tuiActivity(tui, connection, load, liveTerminal);
   const tone = status === null ? signal.oxide : signal[SESSION_STATUS_SIGNALS[status]];
   const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
   const ownedBottom = useOwnedBottomInset();
@@ -290,6 +297,12 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           </View>
         </View>
 
+        {/*
+          The terminal's own activity, from its turn boundaries. Narrower than
+          an owned agent's because the bridge forwards no tool events; see
+          `tuiActivity` for the missing producer.
+        */}
+        <ActivityPip activity={activity} compact={!tablet} reduceMotion={props.reduceMotion} />
         <Kicker color={tone} testID="terminal-state">
           {statusLabel}
         </Kicker>
