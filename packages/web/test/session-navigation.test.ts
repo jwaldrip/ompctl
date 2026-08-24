@@ -24,7 +24,7 @@ describe("session navigation", () => {
     const timelineB = createTimeline({});
 
     // Session A has content
-    let stateA = appendPrompt(EMPTY_SESSION, "Hello from A");
+    const stateA = appendPrompt(EMPTY_SESSION, "Hello from A");
     timelineA.render(stateA);
     expect(timelineA.element.querySelector(".entry")).toBeTruthy();
 
@@ -73,7 +73,7 @@ describe("session navigation", () => {
     const timelineB = createTimeline({});
 
     // A has content
-    let stateA = appendPrompt(EMPTY_SESSION, "A content");
+    const stateA = appendPrompt(EMPTY_SESSION, "A content");
     timelineA.render(stateA);
     expect(timelineA.element.querySelectorAll(".entry").length).toBe(1);
 
