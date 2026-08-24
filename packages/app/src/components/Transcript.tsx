@@ -13,8 +13,9 @@
  * the person holding the device.
  */
 
+import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { ListRenderItemInfo, NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
