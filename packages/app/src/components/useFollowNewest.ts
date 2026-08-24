@@ -51,6 +51,12 @@ import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
  */
 export const NEAR_BOTTOM_SLACK = 48;
 
+/**
+ * How close to the start still counts as being near the top, in points.
+ * Used for auto-loading transcript history when user scrolls near the beginning.
+ */
+export const NEAR_TOP_SLACK = 48;
+
 /** How often a list reports scrolling. Frequent enough to notice a thumb leaving the bottom. */
 export const SCROLL_EVENT_THROTTLE_MS = 100;
 
@@ -61,6 +67,14 @@ export const SCROLL_EVENT_THROTTLE_MS = 100;
  * than inferred from a rendered list, which reports no scroll offset in the
  * test harness.
  */
+
+/**
+ * Whether a scroll position counts as being near the top of the list.
+ * Used to trigger auto-loading of older transcript messages.
+ */
+export function isNearTop(offset: number): boolean {
+  return offset <= NEAR_TOP_SLACK;
+}
 export function isNearBottom(offset: number, contentLength: number, viewportLength: number): boolean {
   // A list shorter than its viewport has its end on screen by definition, and
   // the arithmetic below would answer with a negative floor.

@@ -15,9 +15,9 @@
 
 import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { useCallback } from "react";
-import type { ListRenderItemInfo } from "react-native";
-import { FlatList, Pressable, StyleSheet, View } from "react-native";
+import { useCallback, useState, useEffect } from "react";
+import type { ListRenderItemInfo, NativeScrollEvent, NativeSyntheticEvent } from "react-native";
+import { FlatList, Pressable, StyleSheet, View, ActivityIndicator } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
@@ -50,48 +50,111 @@ export function Transcript({
   loadingEarlier,
   onLoadEarlier,
 }: TranscriptProps): JSX.Element {
+  // Track the cursor of the request in flight to prevent duplicate requests
+  // from scroll bounce or repeated onScroll events at the same offset.
+  const inFlightCursor = useRef<number | null>(null);
+  
+  // Track previous content height for Android manual anchor preservation
+  const prevContentHeight = useRef<number>(0);
+  const prevScrollY = useRef<number>(0);
+  
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<Entry>) => (
       <EntryRow entry={item} canApprove={canApprove} refusal={refusal} onDecide={onDecide} />
     ),
     [canApprove, refusal, onDecide],
   );
+  
   // Opening a session lands on the newest entry, and a streaming turn keeps
   // it there, unless the operator has scrolled up to read.
   const follow = useFollowNewest();
+  const flatListRef = useRef<FlatList>(null);
+
+  // Auto-load earlier transcript when scrolling near the top.
+  // Dedup using cursor identity: only one request per cursor, cleared when cursor changes.
+  const handleScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      follow.onScroll(event);
+      
+      // Record scroll position for Android manual anchor adjustment
+      prevScrollY.current = event.nativeEvent.contentOffset.y;
+      
+      // Check if near top and should auto-load
+      const { contentOffset } = event.nativeEvent;
+      const nearTop = contentOffset.y <= 48; // NEAR_TOP_SLACK
+      
+      if (nearTop && canLoadEarlier && onLoadEarlier !== undefined && !loadingEarlier) {
+        // Only fire if we're not already loading this exact cursor.
+        // inFlightCursor is cleared when loadingEarlier changes or cursor advances.
+        if (inFlightCursor.current === null) {
+          inFlightCursor.current = null; // Mark as "request sent, waiting for loadingEarlier to become true"
+          onLoadEarlier();
+        }
+      }
+    },
+    [follow, canLoadEarlier, onLoadEarlier, loadingEarlier],
+  );
+
+  // When loading completes or cursor changes, clear the in-flight guard
+  useEffect(() => {
+    if (!loadingEarlier) {
+      inFlightCursor.current = null;
+    }
+  }, [loadingEarlier]);
+
+  // Preserve scroll anchor when prepending entries via maintainVisibleContentPosition.
+  // This prop handles iOS natively. For Android, fallback via onContentSizeChange.
+  const handleContentSizeChange = useCallback(
+    (_width: number, height: number) => {
+      // Android manual anchor: if content grew (prepend added items), scroll down by delta
+      if (prevContentHeight.current > 0 && height > prevContentHeight.current) {
+        const delta = height - prevContentHeight.current;
+        if (prevScrollY.current > 0 && flatListRef.current) {
+          flatListRef.current.scrollToOffset({
+            offset: prevScrollY.current + delta,
+            animated: false,
+          });
+        }
+      }
+      prevContentHeight.current = height;
+    },
+    [],
+  );
 
   return (
     <FlatList
       testID="transcript"
-      ref={follow.ref}
+      ref={flatListRef}
       style={styles.list}
-      contentContainerStyle={styles.content}
       data={entries as Entry[]}
       keyExtractor={transcriptRowKey}
       renderItem={renderItem}
-      onContentSizeChange={follow.onContentSizeChange}
-      onScroll={follow.onScroll}
-      scrollEventThrottle={follow.scrollEventThrottle}
-      // The keyboard must never be the reason a control is unreachable. Dragging
-      // the transcript puts it away, a tap on a row still reaches the row rather
-      // than being eaten as a dismiss, and iOS keeps the last entries visible by
-      // insetting content for the keyboard instead of hiding them behind it.
+      onScroll={handleScroll}
+      onContentSizeChange={handleContentSizeChange}
+      scrollEventThrottle={16}
+      maintainVisibleContentPosition={{
+        minIndexForVisible: 0,
+        autoscrollToTopThreshold: 100,
+      }}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
       automaticallyAdjustKeyboardInsets
       ListHeaderComponent={
         canLoadEarlier && onLoadEarlier !== undefined ? (
-          <Pressable
-            testID="history-load-earlier"
-            accessibilityRole="button"
-            accessibilityLabel="Load earlier transcript entries"
-            disabled={loadingEarlier}
-            onPress={onLoadEarlier}
-            style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
-          >
-            <Glyph name="resume" size={11} color={ink.muted} />
-            <Label color={ink.muted}>{loadingEarlier ? "Loading earlier…" : "Load earlier"}</Label>
-          </Pressable>
+          <View style={styles.header}>
+            {loadingEarlier && <ActivityIndicator size="small" />}
+            <Pressable
+              testID="history-load-earlier"
+              accessibilityRole="button"
+              accessibilityLabel="Load earlier transcript entries"
+              disabled={loadingEarlier}
+              onPress={onLoadEarlier}
+              style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
+            >
+              <Glyph name="resume" size={11} color={ink.muted} />
+              <Label color={ink.muted}>{loadingEarlier ? "Loading earlier…" : "Load earlier"}</Label>
+            </Pressable>
+          </View>
         ) : null
       }
       ListFooterComponent={
@@ -215,6 +278,7 @@ function Empty(): JSX.Element {
 const styles = StyleSheet.create({
   list: { flex: 1, backgroundColor: ground.base },
   content: { padding: space.wide, gap: space.step },
+  header: { flexDirection: "row", alignItems: "center", gap: space.step, paddingVertical: space.tight },
   earlier: {
     minHeight: 44,
     alignSelf: "center",
