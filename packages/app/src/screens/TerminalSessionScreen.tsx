@@ -43,7 +43,7 @@ import type { JSX } from "react";
 import { useCallback, useState } from "react";
 import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { AttachmentsBar } from "../components/AttachmentsBar.tsx";
-import { SessionLoadFailed, SessionLoading } from "../components/SessionLoad.tsx";
+import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
@@ -311,6 +311,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
 
       {load.phase === "loading" ? (
         <SessionLoading title={props.title || "Untitled session"} />
+      ) : load.phase === "stalled" ? (
+        <SessionLoadStalled connection={connection} title={props.title || "Untitled session"} />
       ) : load.phase === "failed" ? (
         <SessionLoadFailed
           message={load.error ?? "The daemon refused this session."}

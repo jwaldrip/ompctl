@@ -118,16 +118,26 @@ const LINK_CODES: Record<string, true> = {
  * Whether the detail pane has what it opened for.
  *
  * - `loading`: a request that will certainly be answered is outstanding. Only
- *   a selection that actually sent one arms this, which is what makes a
- *   perpetual spinner structurally impossible: nothing is ever waiting on an
- *   answer nobody asked for.
+ *   a selection that actually sent one arms this.
  * - `ready`: the pane has the session's own data, whether that turns out to
  *   be a transcript or an honestly empty one. This is also the default for a
  *   subject nothing was ever asked about.
  * - `failed`: the open was refused or could not be served. The pane says so,
  *   in the daemon's words, under the subject that was refused.
+ * - `stalled`: the link went down while the answer was outstanding, so the
+ *   answer is never coming on that socket.
+ *
+ * `stalled` is not a flavour of `failed`, and collapsing the two was the
+ * temptation worth resisting. A refusal is a verdict the operator has to act
+ * on and it survives a reconnect; a dropped link is a condition that resolves
+ * itself, and the same distinction already governs which notices `connected`
+ * retires. Wearing "could not open" for a flap would teach an operator to
+ * distrust a refusal that means it. And leaving such a load `loading` is the
+ * perpetual spinner this whole contract exists to prevent: `loading` promises
+ * an answer is on its way, and once the socket carrying it is gone that
+ * promise is false.
  */
-export type SessionLoadPhase = "loading" | "ready" | "failed";
+export type SessionLoadPhase = "loading" | "ready" | "failed" | "stalled";
 
 /**
  * One subject's wait.
@@ -136,11 +146,13 @@ export type SessionLoadPhase = "loading" | "ready" | "failed";
  * the daemon answered, each of which sends a request whose answer always
  * comes back. What settles it: that subject's own authoritative data --
  * a `session_history` page, an `update`, a `session_tail` page, a terminal's
- * turn progress, or a refusal addressed to it.
+ * turn progress, or a refusal addressed to it. What stalls it: the link
+ * dropping before any of those arrived.
  *
- * Never armed by a frame, only by a selection. A late answer for a subject
- * the operator already left can therefore settle that subject's wait but can
- * never put it back into one, and can never start one for anything else.
+ * Never armed by a frame, only by a selection or by the reconnect that
+ * re-asks for a stalled subject. A late answer for a subject the operator
+ * already left can therefore settle that subject's wait but can never put it
+ * back into one, and can never start one for anything else.
  */
 export interface SessionLoad {
   readonly phase: SessionLoadPhase;
@@ -513,6 +525,12 @@ export type ConsoleEvent =
    * happens to be open when it lands.
    */
   | { t: "open_failed"; subject: string; message: string }
+  /**
+   * Local: the reconnect has re-sent the ask for a subject whose link dropped
+   * mid-open. Dispatched only after the frame is actually on the wire, so a
+   * wait is never re-armed for a request nobody re-sent.
+   */
+  | { t: "load_rearm"; subject: string }
   | { t: "dismiss" };
 
 /**
@@ -527,6 +545,18 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
         connection: event.event.state,
         attempt: event.event.attempt,
         delayMs: event.event.delayMs,
+        // A wait is a promise that an answer is on its way, and the socket
+        // carrying it has gone. Every outstanding one stalls here rather than
+        // spinning until the app is restarted; the reconnect below is what
+        // asks again. Done for every subject, not only the open one, because
+        // a load left `loading` behind a pane the operator returns to would
+        // be a spinner with nothing behind it.
+        loads: event.event.state === "connected" ? state.loads : stallLoads(state.loads),
+        // The history guard in the action layer skips a re-ask while it
+        // believes one is in flight. After a drop nothing is in flight, so
+        // holding the flag is what would silently swallow the reconnect's
+        // re-ask.
+        historyLoading: event.event.state === "connected" ? state.historyLoading : new Set<AgentId>(),
       };
       // `connected` is the client reporting a completed handshake, the same
       // proof the status readout trusts, so it also retires a link notice:
@@ -793,13 +823,30 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "open_failed": {
       const held = state.loads.get(event.subject);
-      // Only a wait can fail. A refusal for a subject that already has its
-      // data, or that nobody is waiting on, is an ordinary notice's business
-      // and must not blank a log that is on screen and correct.
-      if (held === undefined || held.phase !== "loading") return state;
+      // Only an unsettled wait can fail. A refusal for a subject that already
+      // has its data, or that nobody is waiting on, is an ordinary notice's
+      // business and must not blank a log that is on screen and correct.
+      //
+      // A stalled wait may fail: the refusal for a subject whose link dropped
+      // arrives on the socket that replaced it, and it is the answer the pane
+      // was waiting for either way.
+      if (held === undefined || (held.phase !== "loading" && held.phase !== "stalled")) return state;
       const loads = new Map(state.loads);
       loads.set(event.subject, { phase: "failed", generation: held.generation, error: event.message });
       return { ...state, loads };
+    }
+
+    case "load_rearm": {
+      const held = state.loads.get(event.subject);
+      // Only a stall is re-armed, and only by the reconnect that has actually
+      // re-sent the ask. A `ready` subject needs nothing, and a `failed` one
+      // has its answer: re-arming that would turn a refusal back into a
+      // spinner on every flap.
+      if (held?.phase !== "stalled") return state;
+      const selection = state.selection + 1;
+      const loads = new Map(state.loads);
+      loads.set(event.subject, { phase: "loading", generation: selection, error: null });
+      return { ...state, selection, loads };
     }
 
     case "prompt":
@@ -979,10 +1026,31 @@ function armLoad(state: ConsoleState, subject: string, awaiting: boolean): Conso
  */
 function settleLoad(state: ConsoleState, subject: string): ConsoleState {
   const held = state.loads.get(subject);
-  if (held === undefined || held.phase !== "loading") return state;
+  // A stalled wait settles on real data too: the answer arriving on the socket
+  // that replaced the dropped one is exactly what the pane was waiting for,
+  // and refusing it here would leave a stall on screen over a live session.
+  if (held === undefined || (held.phase !== "loading" && held.phase !== "stalled")) return state;
   const loads = new Map(state.loads);
   loads.set(subject, { phase: "ready", generation: held.generation, error: null });
   return { ...state, loads };
+}
+
+/**
+ * Every outstanding wait, marked as having lost the socket its answer was
+ * coming on.
+ *
+ * Allocates only when there is a wait to stall, so the common status frame
+ * (a healthy `connected`, or a flap with nothing open) costs nothing and the
+ * console skips the render.
+ */
+function stallLoads(loads: ReadonlyMap<string, SessionLoad>): ReadonlyMap<string, SessionLoad> {
+  let next: Map<string, SessionLoad> | null = null;
+  for (const [subject, load] of loads) {
+    if (load.phase !== "loading") continue;
+    next ??= new Map(loads);
+    next.set(subject, { phase: "stalled", generation: load.generation, error: null });
+  }
+  return next ?? loads;
 }
 
 function withSession(

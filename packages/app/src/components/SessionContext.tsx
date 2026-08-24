@@ -21,7 +21,7 @@
  */
 
 import type { Agent } from "@ompd/core/contracts";
-import { type JSX, useState } from "react";
+import { type JSX, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -142,7 +142,19 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
   const tablet = useIsTablet();
   const [open, setOpen] = useState(props.defaultOpen ?? tablet);
 
-  const subagents = subagentsOf(props.agents, agent.id);
+  /**
+   * Keyed on the roster's identity and this session's id, because those are
+   * the only two things the forest depends on -- and because this band sits
+   * directly above a streaming transcript.
+   *
+   * Unmemoised, every frame of every turn walked the whole roster, allocated
+   * a node per agent and DFSed for this session's, then handed each branch a
+   * fresh object so the memoised rows below re-rendered their entire subtree
+   * for a hierarchy that had not changed. The roster holds still for minutes
+   * at a time while a turn streams tokens, so this is the ordinary case
+   * rather than a large-fleet edge one.
+   */
+  const subagents = useMemo(() => subagentsOf(props.agents, agent.id), [props.agents, agent.id]);
   const phases = todoPhases(session.plan);
   const progress = todoProgress(session.plan);
   const rows = contextRows(props);
@@ -255,7 +267,11 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
             <View style={styles.section} testID="session-context-state">
               <Kicker color={ink.muted}>State</Kicker>
               {rows.map(row => (
-                <View key={row.label} style={styles.row}>
+                // One node per pair, labelled with both. Read as two siblings
+                // a screen reader announces "Model" and "Claude Opus 5" with
+                // nothing joining them, which on a dense band is a list of
+                // words rather than a reading of the session.
+                <View accessible accessibilityLabel={`${row.label}: ${row.value}`} key={row.label} style={styles.row}>
                   <Label color={ink.muted} style={styles.rowLabel}>
                     {row.label}
                   </Label>
@@ -336,7 +352,15 @@ function contextRows(props: SessionContextProps): ContextRow[] {
   }
   const cwd = session.info.cwd ?? agent.cwd;
   if (cwd.length > 0) rows.push({ label: "Directory", value: shortenPath(cwd, 3), testID: "cwd" });
-  rows.push({ label: "Link", value: ORIGIN_LABELS[props.origin], testID: "origin" });
+  // Only when it says something the operator could not have assumed. Owned is
+  // the default every session is until told otherwise, so a "Link: this daemon
+  // owns it" row on every pane is chrome -- and, worse, it was the row that
+  // made this band impossible to omit: it was unconditional, so `rows` was
+  // never empty and a session with genuinely nothing to report still rendered
+  // a heading over one meaningless line.
+  if (props.origin !== "owned") {
+    rows.push({ label: "Link", value: ORIGIN_LABELS[props.origin], testID: "origin" });
+  }
   if (session.pendingApprovals.length > 0) {
     rows.push({
       label: "Awaiting you",

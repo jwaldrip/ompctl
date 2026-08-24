@@ -868,9 +868,15 @@ describe("a co-drive join is idempotent and states every refusal", () => {
         mounted.actions().openSession({ kind: "live-tui", sessionId: "s-tui" });
       });
       expect(mounted.client.collabOpens).toHaveLength(0);
-      expect(mounted.state().notice).toContain("read scope");
+      // Addressed to the row that was pressed, not raised as an ambient
+      // notice. The pane commits to that terminal first and then wears the
+      // refusal, because a toast over the previous session's log while that
+      // log stayed on screen read as a tap that did nothing.
       expect(mounted.state().selected).toBeNull();
-      expect(mounted.state().selectedTui).toBeNull();
+      expect(mounted.state().selectedTui).toBe("s-tui");
+      const refused = loadFor(mounted.state(), "s-tui");
+      expect(refused.phase).toBe("failed");
+      expect(refused.error).toContain("read scope");
     } finally {
       mounted.unmount();
     }
