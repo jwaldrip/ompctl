@@ -36,7 +36,9 @@ import {
   type AgentEvent,
   type AssistantContent,
   COLLAB_PROMPT_MESSAGE_TYPE,
+  type CollabAgentSnapshot,
   type CollabHostFrame,
+  parseCollabAgentSnapshots,
   type SessionEntry,
   type SessionHeader,
   type SessionState,
@@ -86,6 +88,13 @@ export interface CollabFrameMapping {
   readOnly?: boolean;
   /** Present when the frame ends the guest leg (`bye`, pre-welcome `error`); the string is the reason. */
   ended?: string;
+  /**
+   * Present when the frame carried a valid host agent-registry snapshot
+   * (`welcome` or `agents`). Absent when the host sent none, and absent when
+   * it sent one that failed validation: both mean "leave the mirrored rows
+   * alone", never "apply an empty registry".
+   */
+  agents?: CollabAgentSnapshot[];
 }
 
 /** Progress through the in-flight assistant message. */
@@ -136,11 +145,20 @@ export class CollabStreamMapper {
         out.header = frame.header;
         out.readOnly = frame.readOnly === true;
         out.entryCount = frame.entryCount;
+        if (frame.agents !== undefined) {
+          const agents = parseCollabAgentSnapshots(frame.agents);
+          if (agents !== undefined) out.agents = agents;
+        }
         // A session with no history completes the snapshot in the welcome
         // itself; the join waiter must not sit waiting for a chunk that
         // will never come.
         if (frame.entryCount === 0) out.snapshotFinal = true;
         break;
+      case "agents": {
+        const agents = parseCollabAgentSnapshots(frame.agents);
+        if (agents !== undefined) out.agents = agents;
+        break;
+      }
       case "snapshot-chunk":
         for (const entry of frame.entries ?? []) this.#mapEntry(entry, out.updates, { backfill: true });
         // The last chunk's `final` flag is what moves a joining guest from
@@ -183,8 +201,8 @@ export class CollabStreamMapper {
         break;
       default:
         // Unknown frame from a newer host: ignore, exactly as the web guest
-        // does. `agents`, `bus`, `ui-request`, `ui-request-end`, and
-        // `transcript` replies land here deliberately (see the PR notes).
+        // does. `bus`, `ui-request`, `ui-request-end`, and `transcript`
+        // replies land here deliberately (see the PR notes).
         break;
     }
     return out;

@@ -361,10 +361,7 @@ export function Console({
       <SafeScreen testID="fleet-surface" edges={{ bottom: !split }}>
         <View style={split ? styles.splitLayout : styles.singleLayout}>
           <View style={split ? [styles.splitBay, { width: bayWidth, paddingBottom: bayBottom }] : styles.bay}>
-            <AgentHub
-              agents={state.agents.filter(candidate => candidate.parentAgentId !== undefined)}
-              onOpen={onOpenAgent}
-            />
+            <AgentHub agents={state.agents} onOpen={onOpenAgent} />
             <FleetScreen
               browser={browser}
               onSort={onSort}

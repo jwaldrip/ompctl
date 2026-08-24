@@ -151,6 +151,84 @@ export interface SessionState {
   isAborting?: boolean;
 }
 
+// -- agent registry ---------------------------------------------------------
+
+/**
+ * One entry of the host's live agent registry, as a room reports it. Ported
+ * from `AgentSnapshot` in `@oh-my-pi/pi-wire`, the shape omp 18.0.3's collab
+ * host broadcasts (`{ t: "agents", agents }`, debounced on registry change,
+ * plus a copy in `welcome`): verified present in the installed binary, which
+ * is what makes this the one subagent feed a real host actually speaks. The
+ * ACP surface ompd-owned agents run over has no equivalent; nothing upstream
+ * emits `notifications/agent_registry`.
+ *
+ * Dates are epoch milliseconds, unlike the ISO strings the ACP-side registry
+ * mirror uses, and the wire carries neither the sub's session id nor its
+ * metrics: `hasSessionFile` only gates a transcript fetch this leg does not
+ * perform, so a mirrored sub lists but does not open.
+ */
+export interface CollabAgentSnapshot {
+  id: string;
+  displayName: string;
+  /** No `advisor` here: the host filters advisors out of what it broadcasts. */
+  kind: "main" | "sub";
+  parentId?: string;
+  status: "running" | "idle" | "parked" | "aborted";
+  hasSessionFile: boolean;
+  createdAt: number;
+  lastActivity: number;
+}
+
+/**
+ * Validates a registry payload from the room. All-or-nothing, the rule the
+ * ACP-side `parseAgentRegistryNotification` sets for the same records: the
+ * far side of the seal is still a process boundary, and half a registry
+ * applied to durable agent rows is worse than none.
+ */
+export function parseCollabAgentSnapshots(payload: unknown): CollabAgentSnapshot[] | undefined {
+  if (!Array.isArray(payload)) return undefined;
+  const out: CollabAgentSnapshot[] = [];
+  for (const candidate of payload) {
+    if (
+      typeof candidate !== "object" ||
+      candidate === null ||
+      !("id" in candidate) ||
+      !("displayName" in candidate) ||
+      !("kind" in candidate) ||
+      !("status" in candidate) ||
+      !("hasSessionFile" in candidate) ||
+      !("createdAt" in candidate) ||
+      !("lastActivity" in candidate) ||
+      typeof candidate.id !== "string" ||
+      typeof candidate.displayName !== "string" ||
+      (candidate.kind !== "main" && candidate.kind !== "sub") ||
+      (candidate.status !== "running" &&
+        candidate.status !== "idle" &&
+        candidate.status !== "parked" &&
+        candidate.status !== "aborted") ||
+      typeof candidate.hasSessionFile !== "boolean" ||
+      typeof candidate.createdAt !== "number" ||
+      !Number.isFinite(candidate.createdAt) ||
+      typeof candidate.lastActivity !== "number" ||
+      !Number.isFinite(candidate.lastActivity) ||
+      ("parentId" in candidate && candidate.parentId !== undefined && typeof candidate.parentId !== "string")
+    ) {
+      return undefined;
+    }
+    out.push({
+      id: candidate.id,
+      displayName: candidate.displayName,
+      kind: candidate.kind,
+      ...(candidate.parentId !== undefined ? { parentId: candidate.parentId as string } : {}),
+      status: candidate.status,
+      hasSessionFile: candidate.hasSessionFile,
+      createdAt: candidate.createdAt,
+      lastActivity: candidate.lastActivity,
+    });
+  }
+  return out;
+}
+
 // -- frames -----------------------------------------------------------------
 
 export type CollabGuestFrame =
@@ -167,13 +245,15 @@ export type CollabHostFrame =
       entryCount: number;
       /** True when this peer joined through a read-only (view) link. */
       readOnly?: boolean;
-      /**
-       * The host's subagent registry snapshot. Carried on the wire and
-       * deliberately ignored here: the phone renders one transcript, and the
-       * task tool calls that spawn subagents already appear in it.
-       */
-      agents?: unknown[];
+      /** The host's agent registry at join time; the join-time copy of what `agents` frames then re-broadcast. */
+      agents?: CollabAgentSnapshot[];
     }
+  /**
+   * The host's agent registry, re-broadcast (debounced) whenever it changes:
+   * a subagent registers, changes status, or is released. This is the feed
+   * the Agent Hub lists from.
+   */
+  | { t: "agents"; agents: CollabAgentSnapshot[] }
   | { t: "snapshot-chunk"; entries: SessionEntry[]; final: boolean }
   | { t: "entry"; entry: SessionEntry }
   | { t: "event"; event: AgentEvent }
