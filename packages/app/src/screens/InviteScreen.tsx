@@ -16,10 +16,11 @@
  * and works from anywhere the app is already connected. Tunnelling those
  * routes instead would have meant handing the hub this device's bearer token
  * to forward, which is the one thing the sealed socket exists to avoid.
- * The daemon, not this screen, enforces the ceiling: the picker
- * starts at this device's own scopes, widening past them is still possible
- * because the operator may legitimately want a different grant, and a
- * widened ask comes back as a readable refusal rather than a quieter grant.
+ * The daemon, not this screen, enforces the ceiling: the picker starts with
+ * every scope granted, because an invite is always one of this operator's own
+ * devices and full access is the useful default. A scope can still be removed
+ * before generating, and a widened ask comes back as a readable refusal rather
+ * than a quieter grant.
  */
 
 import { SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ } from "@ompd/core/contracts";
@@ -38,6 +39,9 @@ import type { Connection } from "../platform/connection.ts";
 
 /** Every scope the daemon knows how to grant. Mirrors the gateway's own `KNOWN_SCOPES`, which is not exported. */
 const ALL_SCOPES: readonly string[] = [SCOPE_READ, SCOPE_PROMPT, SCOPE_APPROVE, SCOPE_MANAGE];
+
+/** Every invite starts full: all four scopes, never a subset of this device's own. */
+const fullScopes = (): Set<string> => new Set(ALL_SCOPES);
 
 type Status =
   | { kind: "pending" }
@@ -70,7 +74,7 @@ export function InviteScreen({
   createClient?: (connection: Connection) => OmpdClient;
 }): JSX.Element {
   const [name, setName] = useState("New device");
-  const [scopes, setScopes] = useState<Set<string>>(() => new Set(connection.scopes));
+  const [scopes, setScopes] = useState<Set<string>>(fullScopes);
   const [status, setStatus] = useState<Status>({ kind: "pending" });
 
   // One client for this screen's lifetime. A client per render would be a
@@ -83,7 +87,7 @@ export function InviteScreen({
   // The ask travels by reference, not closure: the socket comes up after
   // mount, by which time the operator may have edited the name or toggled a
   // scope, and the frame must carry what the fields hold at that moment.
-  const askRef = useRef({ name: "New device", scopes: new Set(connection.scopes) });
+  const askRef = useRef({ name: "New device", scopes: fullScopes() });
   askRef.current = { name, scopes };
 
   // Whether the mount-time mint has been sent. The answer settles only once
@@ -167,6 +171,9 @@ export function InviteScreen({
 
       <View style={styles.field}>
         <Kicker color={ink.muted}>Scopes</Kicker>
+        <Body color={ink.muted} testID="invite-scopes-note">
+          Every invite starts with full access. Turn a scope off to narrow it first.
+        </Body>
         <View style={styles.scopes}>
           {ALL_SCOPES.map(scope => {
             const checked = scopes.has(scope);

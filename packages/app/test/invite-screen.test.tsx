@@ -123,7 +123,7 @@ function forbidFetch(): void {
 }
 
 describe("InviteScreen: minting a second device's credential over the socket", () => {
-  test("a hub connection mints on connect, asks for this device's own scopes, and renders the QR", async () => {
+  test("a fresh invite asks for every scope by default, even when this device holds fewer", async () => {
     forbidFetch();
     const { client, socket } = cannedClient();
     const host = document.createElement("div");
@@ -142,9 +142,26 @@ describe("InviteScreen: minting a second device's credential over the socket", (
     });
     await settle();
 
+    // The default is full access, not a subset of this device's own scopes:
+    // HUB_CONNECTION holds only read and approve, yet the ask carries all four.
     expect(socket.framesOfType("device_invite")).toEqual([
-      { t: "device_invite", name: "New device", scopes: ["read", "approve"] },
+      { t: "device_invite", name: "New device", scopes: ["read", "prompt", "approve", "manage"] },
     ]);
+
+    // The picker itself reads as full access, so the operator is never handed a
+    // partial checklist to reason about before inviting one of their own devices.
+    // react-native-web drops `accessibilityState.checked` rather than emitting
+    // `aria-checked`, so the assertion is that every chip renders in the same
+    // state as the others; the narrowing test below proves that state is the
+    // checked one by showing the class change when a scope is turned off.
+    const scopeClass = (scope: string): string => el(host, `invite-scope-${scope}`)?.getAttribute("class") ?? "";
+    expect(scopeClass("read")).not.toBe("");
+    for (const scope of ["prompt", "approve", "manage"]) {
+      expect(scopeClass(scope)).toBe(scopeClass("read"));
+    }
+    // The copy says so plainly rather than leaving full access to be inferred
+    // from four ticked boxes.
+    expect(el(host, "invite-scopes-note")?.textContent).toContain("full access");
 
     act(() => {
       socket.deliver({ t: "device_invited", token: "tok_new", name: "Kitchen iPad", scopes: ["read"] });
@@ -191,7 +208,7 @@ describe("InviteScreen: minting a second device's credential over the socket", (
     });
   });
 
-  test("a widened scope selection the daemon refuses surfaces as a readable message", async () => {
+  test("a scope this device cannot grant comes back as a readable refusal, tearing down the code it replaces", async () => {
     forbidFetch();
     const { client, socket } = cannedClient();
     const host = document.createElement("div");
@@ -216,10 +233,10 @@ describe("InviteScreen: minting a second device's credential over the socket", (
     await settle();
     expect(el(host, "invite-qr")).not.toBeNull();
 
-    // Widen past this device's own scopes -- `manage` is not in HUB_CONNECTION.scopes.
-    act(() => {
-      el(host, "invite-scope-manage")?.click();
-    });
+    // The full default asks for more than HUB_CONNECTION holds: `prompt` and
+    // `manage` are not among its scopes. The screen does not pre-empt that,
+    // because the daemon's ceiling is the one authority on what may be granted,
+    // and a refusal read here would be this screen guessing at it.
     act(() => {
       el(host, "invite-generate")?.click();
     });
@@ -227,13 +244,17 @@ describe("InviteScreen: minting a second device's credential over the socket", (
 
     const invites = socket.framesOfType("device_invite");
     expect(invites).toHaveLength(2);
-    expect(invites[1]).toEqual({ t: "device_invite", name: "New device", scopes: ["read", "approve", "manage"] });
+    expect(invites[1]).toEqual({
+      t: "device_invite",
+      name: "New device",
+      scopes: ["read", "prompt", "approve", "manage"],
+    });
 
     act(() => {
       socket.deliver({
         t: "error",
         code: "unauthorized",
-        message: "this device cannot grant manage: it does not hold that scope itself",
+        message: "this device cannot grant prompt, manage: it does not hold that scope itself",
       });
     });
     await settle();
@@ -244,6 +265,53 @@ describe("InviteScreen: minting a second device's credential over the socket", (
     // Refused, not crashed: the screen is still mounted and interactive.
     expect(el(host, "invite-generate")).not.toBeNull();
     expect(el(host, "invite-qr")).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+
+  test("a deliberately narrowed selection still sends only the scopes left on", async () => {
+    forbidFetch();
+    const { client, socket } = cannedClient();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => {
+      root.render(<InviteScreen connection={HUB_CONNECTION} onDone={() => {}} createClient={() => client} />);
+    });
+    act(() => {
+      socket.accept();
+      socket.deliver({ t: "hello", deviceId: "dev_owner", agents: [] });
+    });
+    await settle();
+
+    const classOf = (scope: string): string => el(host, `invite-scope-${scope}`)?.getAttribute("class") ?? "";
+    const checkedClass = classOf("manage");
+
+    // Full access is the default, not a cage. Turning scopes off is how a
+    // read-only view gets shared with someone who is not holding the device,
+    // and that path has to keep working exactly as before.
+    act(() => {
+      el(host, "invite-scope-prompt")?.click();
+      el(host, "invite-scope-approve")?.click();
+      el(host, "invite-scope-manage")?.click();
+    });
+
+    // The chip that was turned off no longer renders like the ones left on,
+    // which is what makes the "every chip matches" assertion in the default
+    // test mean "every chip is ticked" rather than "the class never varies".
+    expect(classOf("manage")).not.toBe(checkedClass);
+    expect(classOf("read")).toBe(checkedClass);
+    act(() => {
+      el(host, "invite-generate")?.click();
+    });
+    await settle();
+
+    const invites = socket.framesOfType("device_invite");
+    expect(invites).toHaveLength(2);
+    expect(invites[1]).toEqual({ t: "device_invite", name: "New device", scopes: ["read"] });
 
     act(() => {
       root.unmount();
