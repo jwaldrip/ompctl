@@ -165,10 +165,28 @@ export interface TunnelDaemonOptions {
    * lines, and a test that asserts on them must not depend on the wall clock.
    */
   now?: () => number;
+  /**
+   * How long a registered leg must survive before its next failure is treated
+   * as a fresh problem rather than a continuing one. Below this, the backoff
+   * keeps escalating.
+   */
+  stableAfterMs?: number;
 }
 
 const DEFAULT_MIN_BACKOFF_MS = 500;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
+/**
+ * The window a leg must outlive to count as healthy.
+ *
+ * A registration is not evidence of a working link. The hub accepts a daemon,
+ * then drops the leg a second later when a relayed burst trips its per-leg
+ * rate limit, and a daemon that treated the accept as success retried from
+ * the floor and walked straight back into it. Thirty seconds is far longer
+ * than that cycle (the observed flap ran at roughly 1.3s) and far shorter
+ * than the ordinary drops it must not penalise, which on this daemon arrive
+ * about an hour apart.
+ */
+const DEFAULT_STABLE_AFTER_MS = 30_000;
 
 interface Session {
   sessionId: string;
@@ -193,11 +211,18 @@ export class TunnelDaemon {
   readonly #schedule: (fn: () => void, ms: number) => { cancel(): void };
   readonly #random: () => number;
   readonly #now: () => number;
+  readonly #stableAfterMs: number;
 
   readonly #sessions = new Map<string, Session>();
   #socket: DialSocket | null = null;
   #registered = false;
   #attempt = 0;
+  /**
+   * When the current leg's registration was accepted, or null if it has not
+   * been. Read at close to tell a leg that worked from one that only got as
+   * far as being admitted.
+   */
+  #registeredAtMs: number | null = null;
   #stopped = true;
   #retry: { cancel(): void } | null = null;
   /**
@@ -228,6 +253,7 @@ export class TunnelDaemon {
     this.#onWebhook = opts.onWebhook;
     this.#random = opts.random ?? Math.random;
     this.#now = opts.now ?? Date.now;
+    this.#stableAfterMs = opts.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
     this.#schedule =
       opts.schedule ??
       ((fn, ms) => {
@@ -267,6 +293,7 @@ export class TunnelDaemon {
     this.#socket?.close(1000, "shutting down");
     this.#socket = null;
     this.#registered = false;
+    this.#registeredAtMs = null;
   }
 
   #connect(): void {
@@ -303,6 +330,8 @@ export class TunnelDaemon {
       return;
     }
 
+    const registeredAt = this.#registeredAtMs;
+    this.#registeredAtMs = null;
     this.#registered = false;
     this.#socket = null;
     // Every session died with the connection. Their clients hear it from the
@@ -315,13 +344,24 @@ export class TunnelDaemon {
       return;
     }
 
+    // A registration is not evidence of a working link, and treating it as
+    // one is what kept this daemon in the hub's rate limiter. The hub tears
+    // the phone's leg the moment this one drops; the phone reconnects and
+    // replays its attach set; that burst is relayed onto the fresh leg and
+    // trips the hub's per-leg budget, which closes it 4429. Clearing the
+    // escalation on the accept meant the next dial went out from the floor,
+    // straight back into a bucket that had not refilled. Only a leg that
+    // outlived the stability window clears it.
+    const lived = registeredAt === null ? null : this.#now() - registeredAt;
+    if (lived !== null && lived >= this.#stableAfterMs) this.#attempt = 0;
+
     const ceiling = Math.min(this.#maxBackoffMs, this.#minBackoffMs * 2 ** this.#attempt);
     // Full jitter. A fleet reconnecting in lockstep after a hub redeploy is a
     // thundering herd against the thing that just came back.
     this.#attempt++;
     const delay = Math.round(ceiling * this.#random());
     this.#onLog(
-      `tunnel closed at=${at} gen=${generation} live=${this.#generation} code=${info.code} reason=${reason} decision=reconnect attempt=${this.#attempt} delay=${delay}ms`,
+      `tunnel closed at=${at} gen=${generation} live=${this.#generation} code=${info.code} reason=${reason} lived=${lived === null ? "unregistered" : `${lived}ms`} decision=reconnect attempt=${this.#attempt} delay=${delay}ms`,
     );
     this.#retry = this.#schedule(() => this.#connect(), delay);
   }
@@ -336,7 +376,10 @@ export class TunnelDaemon {
         return;
       case "registered":
         this.#registered = true;
-        this.#attempt = 0;
+        // Deliberately does NOT clear `#attempt`. Being admitted proves the
+        // hub answered, not that the link holds; `#onClose` clears it once a
+        // leg has actually outlived the stability window.
+        this.#registeredAtMs = this.#now();
         this.#onRegistered?.(frame.instanceId);
         return;
       case "refused":

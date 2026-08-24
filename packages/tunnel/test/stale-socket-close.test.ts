@@ -258,9 +258,10 @@ describe("TunnelDaemon reconnect logging", () => {
     expect(closes).toHaveLength(2);
 
     // The close that owned its leg: it reconnected, and the line says so
-    // along with the wait, which is what makes a storm's cadence readable.
+    // along with how long the leg lasted and the wait, which is what makes a
+    // storm's cadence readable and a flap distinguishable from a clean drop.
     expect(closes[0]).toBe(
-      'tunnel closed at=2026-08-24T06:00:00.000Z gen=1 live=1 code=1006 reason="" decision=reconnect attempt=1 delay=0ms',
+      'tunnel closed at=2026-08-24T06:00:00.000Z gen=1 live=1 code=1006 reason="" lived=0ms decision=reconnect attempt=1 delay=0ms',
     );
     // The superseded one names both generations, so a log reader can see the
     // close was about a leg two dials old rather than the live one.
