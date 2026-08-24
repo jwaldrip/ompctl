@@ -380,14 +380,14 @@ export function createTimeline(options: TimelineOptions): TimelineView {
     }
 
     // Entries only ever append or amend, but a transcript replaced wholesale on
-    // reattach must not leave the previous session's nodes behind.
-    if (next.length < rendered.length) {
-      for (let index = next.length; index < rendered.length; index += 1) {
-        const stale = rendered[index];
-        if (stale === undefined) continue;
-        nodes.get(stale.id)?.root.remove();
-        nodes.delete(stale.id);
-      }
+    // reattach must not leave the previous session's nodes behind. Remove all
+    // entries that are in the old rendered set but not in the new set.
+    const nextIds = new Set(next.map(e => e.id));
+    for (let index = 0; index < rendered.length; index += 1) {
+      const stale = rendered[index];
+      if (stale === undefined || nextIds.has(stale.id)) continue;
+      nodes.get(stale.id)?.root.remove();
+      nodes.delete(stale.id);
     }
 
     rendered = next;

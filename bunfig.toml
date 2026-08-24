@@ -9,6 +9,7 @@ saveTextLockfile = true
 ".md" = "text"
 
 [test]
+preload = ["./test-setup.ts"]
 pathIgnorePatterns = [
   "**/node_modules/**",
   "**/.git/**",
