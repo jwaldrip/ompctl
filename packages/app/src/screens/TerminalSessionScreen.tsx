@@ -46,6 +46,7 @@ import { ActivityPip } from "../components/ActivityPip.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
+import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -197,6 +198,30 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
    */
   const follow = useFollowNewest();
 
+  /**
+   * The same top-history machine the owned transcript runs, on this surface's
+   * own rows and its own cursor.
+   *
+   * The head key comes from `rows[0].key`, which is exactly what this list's
+   * `keyExtractor` returns. That sameness is what makes a prepend detectable
+   * here: an arriving live hint and a streaming reply both grow this log
+   * without touching row zero, so they cannot consume an anchor armed for the
+   * older page still in flight.
+   *
+   * `tui.historyCursor` is null when the daemon's last page reached the start
+   * of the file, which is also what removes the manual control, so `canLoad`
+   * and the button agree by construction rather than by two separate checks.
+   */
+  const historyCursor = tui.historyCursor;
+  const pagination = useTopHistoryPagination({
+    canLoadEarlier: historyCursor !== null,
+    loadingEarlier: tui.historyLoadingEarlier,
+    onLoadEarlier: props.onLoadEarlier,
+    cursor: historyCursor,
+    headKey: rows[0]?.key ?? null,
+    follow,
+  });
+
   const renderRow = useCallback(({ item, index }: ListRenderItemInfo<LogRow>): JSX.Element => {
     const mine = item.kind === "turn" ? item.message.role === "user" : item.kind === "sent";
     const words = item.kind === "turn" ? item.message.text : item.text;
@@ -261,7 +286,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         accessibilityLabel="Load earlier turns of this terminal session"
         accessibilityState={{ disabled: tui.historyLoadingEarlier }}
         disabled={tui.historyLoadingEarlier}
-        onPress={props.onLoadEarlier}
+        onPress={pagination.onPressLoadEarlier}
         style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
       >
         <Glyph name="resume" size={11} color={ink.muted} />
@@ -327,7 +352,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         )
       ) : (
         <FlatList
-          ref={follow.ref}
+          ref={pagination.ref}
           testID="terminal-log"
           style={styles.log}
           contentContainerStyle={styles.logContent}
@@ -338,9 +363,10 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           keyExtractor={row => row.key}
           renderItem={renderRow}
           ListHeaderComponent={earlier}
-          onContentSizeChange={follow.onContentSizeChange}
-          onScroll={follow.onScroll}
-          scrollEventThrottle={follow.scrollEventThrottle}
+          maintainVisibleContentPosition={MAINTAIN_VISIBLE_CONTENT_POSITION}
+          onContentSizeChange={pagination.onContentSizeChange}
+          onScroll={pagination.onScroll}
+          scrollEventThrottle={pagination.scrollEventThrottle}
         />
       )}
 

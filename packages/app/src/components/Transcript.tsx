@@ -17,7 +17,7 @@ import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useCallback } from "react";
 import type { ListRenderItemInfo } from "react-native";
-import { FlatList, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
@@ -26,6 +26,7 @@ import { ApprovalCard } from "./ApprovalCard.tsx";
 import { RichText } from "./rich/RichText.tsx";
 import { ToolCard } from "./ToolCard.tsx";
 import { useFollowNewest } from "./useFollowNewest.ts";
+import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "./useTopHistoryPagination.ts";
 
 export interface TranscriptProps {
   entries: readonly Entry[];
@@ -38,6 +39,13 @@ export interface TranscriptProps {
   canLoadEarlier?: boolean;
   loadingEarlier?: boolean;
   onLoadEarlier?: () => void;
+  /**
+   * The cursor identifying the page currently on screen, which is what makes
+   * "this page was already asked for" answerable. A callsite that cannot
+   * report one still works, at the cost of a single automatic page: see
+   * `pageKeyOf`.
+   */
+  historyCursor?: number | null;
 }
 
 export function Transcript({
@@ -49,6 +57,7 @@ export function Transcript({
   canLoadEarlier,
   loadingEarlier,
   onLoadEarlier,
+  historyCursor,
 }: TranscriptProps): JSX.Element {
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<Entry>) => (
@@ -56,42 +65,60 @@ export function Transcript({
     ),
     [canApprove, refusal, onDecide],
   );
+
   // Opening a session lands on the newest entry, and a streaming turn keeps
   // it there, unless the operator has scrolled up to read.
   const follow = useFollowNewest();
 
+  /**
+   * The head row's key, in the same key space the list itself uses. That
+   * sameness is the requirement, not a convenience: the shared machine detects
+   * a prepend by comparing this against the key it recorded when the request
+   * went out, so a different function here would make a prepend and a
+   * re-render indistinguishable.
+   */
+  const headKey = entries.length > 0 ? transcriptRowKey(entries[0] as Entry) : null;
+
+  const pagination = useTopHistoryPagination({
+    canLoadEarlier: canLoadEarlier === true,
+    loadingEarlier: loadingEarlier === true,
+    onLoadEarlier,
+    cursor: historyCursor,
+    headKey,
+    follow,
+  });
+
   return (
     <FlatList
       testID="transcript"
-      ref={follow.ref}
+      ref={pagination.ref}
       style={styles.list}
-      contentContainerStyle={styles.content}
       data={entries as Entry[]}
       keyExtractor={transcriptRowKey}
       renderItem={renderItem}
-      onContentSizeChange={follow.onContentSizeChange}
-      onScroll={follow.onScroll}
-      scrollEventThrottle={follow.scrollEventThrottle}
-      // The keyboard must never be the reason a control is unreachable. Dragging
-      // the transcript puts it away, a tap on a row still reaches the row rather
-      // than being eaten as a dismiss, and iOS keeps the last entries visible by
-      // insetting content for the keyboard instead of hiding them behind it.
+      onScroll={pagination.onScroll}
+      onContentSizeChange={pagination.onContentSizeChange}
+      scrollEventThrottle={pagination.scrollEventThrottle}
+      maintainVisibleContentPosition={MAINTAIN_VISIBLE_CONTENT_POSITION}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
       automaticallyAdjustKeyboardInsets
       ListHeaderComponent={
         canLoadEarlier && onLoadEarlier !== undefined ? (
-          <Pressable
-            testID="history-load-earlier"
-            accessibilityRole="button"
-            accessibilityLabel="Load earlier transcript entries"
-            disabled={loadingEarlier}
-            onPress={onLoadEarlier}
-            style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
-          >
-            <Glyph name="resume" size={11} color={ink.muted} />
-            <Label color={ink.muted}>{loadingEarlier ? "Loading earlier…" : "Load earlier"}</Label>
-          </Pressable>
+          <View style={styles.header}>
+            {loadingEarlier && <ActivityIndicator size="small" />}
+            <Pressable
+              testID="history-load-earlier"
+              accessibilityRole="button"
+              accessibilityLabel="Load earlier transcript entries"
+              disabled={loadingEarlier}
+              onPress={pagination.onPressLoadEarlier}
+              style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
+            >
+              <Glyph name="resume" size={11} color={ink.muted} />
+              <Label color={ink.muted}>{loadingEarlier ? "Loading earlier…" : "Load earlier"}</Label>
+            </Pressable>
+          </View>
         ) : null
       }
       ListFooterComponent={
@@ -215,6 +242,7 @@ function Empty(): JSX.Element {
 const styles = StyleSheet.create({
   list: { flex: 1, backgroundColor: ground.base },
   content: { padding: space.wide, gap: space.step },
+  header: { flexDirection: "row", alignItems: "center", gap: space.step, paddingVertical: space.tight },
   earlier: {
     minHeight: 44,
     alignSelf: "center",

@@ -419,6 +419,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
               canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
               loadingEarlier={props.historyLoading}
               onLoadEarlier={props.onLoadEarlier}
+              historyCursor={typeof props.historyBefore === "number" ? props.historyBefore : null}
             />
           </>
         )}
