@@ -132,20 +132,17 @@ const SCAN_YIELD_EVERY_FILES = 8;
 const WARM_CACHE_BATCH_ROWS = 128;
 
 /**
- * How many group directories the targeted lookup walks between event-loop
- * yields, on the path where it has to walk at all.
+ * Deliberately absent: a bounded yield frequency for the targeted lookup.
  *
- * One yield per directory was the original shape and it is free on an idle
- * loop: 214 bare `setImmediate`s measured 0.08ms. It is not free when the loop
- * is busy, which is exactly when a tap arrives -- the fleet list's own warm
- * pass is still running -- and each turn then queues behind a slice of it. On
- * this machine's real tree that made one lookup 67ms p50.
- *
- * The cache below removes the walk for anything the index has seen, so this
- * only bounds the cold path. Sixteen `readdir`s is a slice well under a
- * frame, and it cuts the turns a cold lookup spends by the same factor.
+ * Yielding every N directories instead of every one was measured as free on
+ * an idle loop (214 bare `setImmediate`s cost 0.08ms) and looked attractive
+ * under contention, but nothing measured what it does to fairness while the
+ * warm pass is running, and `scanner.test.ts` pins one step per directory as
+ * the cooperative contract. The cache below removes the walk for anything the
+ * index has seen, which is the entire 67ms, so batching the yields on the
+ * remaining cold path would buy little and cost a fairness property no
+ * measurement here defends. Left alone on purpose.
  */
-const FIND_YIELD_EVERY_DIRS = 16;
 
 /** Hand the event loop to whatever else is waiting: I/O callbacks, timers, sockets. Microtasks do not qualify -- they run before the loop moves on. */
 function yieldToEventLoop(): Promise<void> {
@@ -488,14 +485,12 @@ export class SessionIndex {
     }
     const steps = findSessionFileIter(sessionId, this.#sessionsRoot);
     let step = steps.next();
-    let sinceYield = 0;
     while (!step.done) {
-      if (++sinceYield >= FIND_YIELD_EVERY_DIRS) {
-        sinceYield = 0;
-        await yieldToEventLoop();
-      }
+      await yieldToEventLoop();
       step = steps.next();
     }
+    // A walk that found it is worth remembering, so a second tap on a session
+    // the index never listed still pays the walk only once.
     if (step.value !== undefined) this.#pathBySession.set(sessionId, step.value);
     return step.value;
   }
