@@ -583,6 +583,8 @@ function mountSession(voice: SessionVoice): MountedSession {
       <SessionScreen
         agent={AGENT}
         session={EMPTY_SESSION}
+        load={{ phase: "ready", generation: 0, error: null }}
+        context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
         connection="connected"
         attempt={0}
         canApprove

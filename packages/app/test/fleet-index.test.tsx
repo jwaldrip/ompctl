@@ -30,6 +30,7 @@ import {
   browserSessionsOf,
   COLLAB_WATCH_ONLY,
   emptyConsole,
+  loadFor,
   openSessionTarget,
   tuiSessionFor,
 } from "../src/console/state.ts";
@@ -506,22 +507,26 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
     }
   });
 
-  test("a live-tui row asks the daemon to co-drive, claiming nothing until the join answers", () => {
+  test("a live-tui row asks the daemon to co-drive, and the pane is that row's from the press", () => {
     const mounted = mountConsole();
     try {
       const target: SessionOpenTarget = { kind: "live-tui", sessionId: "s-tui" };
       act(() => {
         mounted.actions().openSession(target);
       });
-      // The one frame the open sends is the join. Nothing is selected yet:
+      // The one frame the open sends is the join. No agent is selected yet:
       // the screen that renders a co-driven terminal is the ordinary session
-      // screen, and its agent exists only once `collab_opened` names one.
+      // screen, and its agent exists only once `collab_opened` names one. The
+      // terminal surface, though, is this row's immediately, waiting on the
+      // answer, because a press that commits nothing leaves the previous
+      // session on screen while the operator waits for this one.
       expect(mounted.client.collabOpens).toEqual(["s-tui"]);
       expect(mounted.client.tails).toHaveLength(0);
       expect(mounted.client.resumes).toHaveLength(0);
       expect(mounted.client.attached).toHaveLength(0);
       expect(mounted.state().selected).toBeNull();
-      expect(mounted.state().selectedTui).toBeNull();
+      expect(mounted.state().selectedTui).toBe("s-tui");
+      expect(loadFor(mounted.state(), "s-tui").phase).toBe("loading");
 
       // The join's answer is the landing: the agent it names is selected and
       // attached exactly as a resume's answer would be, which is the whole
@@ -532,6 +537,11 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
       expect(mounted.state().selected).toBe("agt_guest");
       expect(mounted.client.attached).toEqual([{ agentId: "agt_guest", options: { sinceSeq: 0 } }]);
       expect(mounted.client.histories).toEqual([{ agentId: "agt_guest", sessionId: "s-tui" }]);
+      // The terminal's wait is over -- the join is its answer -- and the
+      // agent it named inherits one, because the join's transcript has not
+      // arrived yet.
+      expect(loadFor(mounted.state(), "s-tui").phase).toBe("ready");
+      expect(loadFor(mounted.state(), "agt_guest").phase).toBe("loading");
     } finally {
       mounted.unmount();
     }
@@ -924,7 +934,11 @@ describe("an omp without the collab API still gets its terminal steered", () => 
       });
       // The join was asked for first: collab stays the preferred path.
       expect(mounted.client.collabOpens).toEqual(["s-tui"]);
-      expect(mounted.state().selectedTui).toBeNull();
+      // And the pane is this row's already, waiting on the answer. Claiming
+      // nothing until the daemon replied is what left the previous session on
+      // screen while the operator waited for this one.
+      expect(mounted.state().selectedTui).toBe("s-tui");
+      expect(loadFor(mounted.state(), "s-tui").phase).toBe("loading");
 
       act(() => {
         mounted.client.emit("error", {
@@ -974,7 +988,13 @@ describe("an omp without the collab API still gets its terminal steered", () => 
       // A refusal is a decision the operator must make, so the surface
       // stays closed: no fallback opens, no tail is asked for, and the
       // refusal names itself in the daemon's own words.
-      expect(mounted.state().selectedTui).toBeNull();
+      // The pane stays the pressed row's and wears the refusal: bouncing back
+      // to the list would read as a tap that did nothing, when in fact it was
+      // answered with a no.
+      expect(mounted.state().selectedTui).toBe("s-tui");
+      const refused = loadFor(mounted.state(), "s-tui");
+      expect(refused.phase).toBe("failed");
+      expect(refused.error).toBe(COLLAB_REFUSAL_REASONS.not_hosted);
       expect(mounted.client.tails).toHaveLength(0);
       expect(mounted.state().notice).toBe(`Co-driving was refused: ${COLLAB_REFUSAL_REASONS.not_hosted}`);
       // And no steer leaves the device for a session nobody opened.

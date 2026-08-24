@@ -481,6 +481,133 @@ describe("CollabStreamMapper", () => {
     expect(mapped.state?.isStreaming).toBe(false);
   });
 
+  test("a state frame forwards the host's thinking level, and says nothing when it has none", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    const reported = mapper.mapFrame({ t: "state", state: { ...HOST_STATE, thinkingLevel: "high" } });
+    expect(reported.updates[0]).toMatchObject({ sessionUpdate: "session_info_update", thinkingLevel: "high" });
+
+    // A host that reports none must not have one invented for it: the app's
+    // info reducer keeps whatever it last knew, and undefined is the only
+    // honest way to say "this frame carried no answer".
+    const silent = mapper.mapFrame({ t: "state", state: { ...HOST_STATE, isStreaming: true } });
+    // Named, as every other assertion in this describe names it: the mapper's
+    // return type is deliberately `unknown[]`, so a test reads one update
+    // through a stated shape rather than asserting inside the access.
+    const info = silent.updates[0] as { sessionUpdate: string; thinkingLevel?: string };
+    expect(info.sessionUpdate).toBe("session_info_update");
+    expect(info.thinkingLevel).toBeUndefined();
+  });
+
+  /**
+   * One finished tool call, mapped the way a room actually delivers it: the
+   * start frame announces the card, so the end frame's updates are the
+   * settle and whatever else that result publishes. Announcing here rather
+   * than letting the end frame do it keeps every index below meaningful.
+   */
+  function endToolCall(toolName: string, result: unknown, isError = false): unknown[] {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "event",
+      event: { type: "tool_execution_start", toolCallId: "tc", toolName, args: {} },
+    });
+    return mapper.mapFrame({
+      t: "event",
+      event: { type: "tool_execution_end", toolCallId: "tc", toolName, result, isError },
+    }).updates;
+  }
+
+  test("a finished todo tool call publishes the session's todo list, phases and blockers intact", () => {
+    // The todo tool's own return shape, as omp 18.0.3 builds it:
+    // `details.phases[] = { name, tasks: [{ content, status, blocker? }] }`.
+    const updates = endToolCall("todo", {
+      details: {
+        phases: [
+          {
+            name: "Audit",
+            tasks: [
+              { content: "Trace the contracts", status: "completed" },
+              { content: "Read the reducer", status: "in_progress" },
+            ],
+          },
+          {
+            name: "Build",
+            tasks: [
+              { content: "Wire the panel", status: "blocked", blocker: "waiting on the loading fix" },
+              { content: "Add a third rail", status: "abandoned" },
+              { content: "Ship it", status: "pending" },
+            ],
+          },
+        ],
+      },
+    });
+
+    // The tool card still settles: the plan is an addition, not a diversion.
+    expect(updates[0]).toMatchObject({ sessionUpdate: "tool_call_update", status: "completed" });
+    // Every phase name and both of the states omp's own ACP emitter folds
+    // away survive, which is the entire reason this path exists.
+    expect(updates[1]).toEqual({
+      sessionUpdate: "plan",
+      entries: [
+        { content: "Trace the contracts", priority: "medium", status: "completed", phase: "Audit" },
+        { content: "Read the reducer", priority: "medium", status: "in_progress", phase: "Audit" },
+        {
+          content: "Wire the panel",
+          priority: "medium",
+          status: "blocked",
+          phase: "Build",
+          blocker: "waiting on the loading fix",
+        },
+        { content: "Add a third rail", priority: "medium", status: "abandoned", phase: "Build" },
+        { content: "Ship it", priority: "medium", status: "pending", phase: "Build" },
+      ],
+    });
+  });
+
+  test("clearing the todos publishes an empty list rather than leaving the last one on screen", () => {
+    expect(endToolCall("todo", { details: { phases: [] } })[1]).toEqual({ sessionUpdate: "plan", entries: [] });
+  });
+
+  test("a todo call that failed, and any other tool, publish no plan at all", () => {
+    const phases = [{ name: "P", tasks: [{ content: "x", status: "pending" }] }];
+    expect(endToolCall("todo", { details: { phases } }, true)).toHaveLength(1);
+    expect(endToolCall("bash", "ok")).toHaveLength(1);
+    // A todo result whose shape the host changed under us is not a cleared
+    // list: publishing an empty plan for it would wipe a live todo list on
+    // every phone watching, so it publishes nothing.
+    expect(endToolCall("todo", { ok: true })).toHaveLength(1);
+  });
+
+  test("one malformed task is dropped; the rest of the operator's list still publishes", () => {
+    const updates = endToolCall("todo", {
+      details: {
+        phases: [
+          { tasks: [{ content: "", status: "pending" }, { status: "pending" }, "not an object"] },
+          { name: "Real", tasks: [{ content: "Keep this", status: "notastatus" }] },
+          // No `tasks` at all: skipped rather than treated as empty.
+          { name: "Bare" },
+        ],
+      },
+    });
+    // An unknown status falls back to pending, the same fallback the app's
+    // reducer makes, rather than dropping the operator's task over it.
+    expect(updates[1]).toEqual({
+      sessionUpdate: "plan",
+      entries: [{ content: "Keep this", priority: "medium", status: "pending", phase: "Real" }],
+    });
+  });
+
+  test("a blocker on a task that is not blocked is dropped, never shown as a live obstruction", () => {
+    const updates = endToolCall("todo", {
+      details: {
+        phases: [{ name: "P", tasks: [{ content: "Unblocked now", status: "in_progress", blocker: "stale" }] }],
+      },
+    });
+    expect(updates[1]).toEqual({
+      sessionUpdate: "plan",
+      entries: [{ content: "Unblocked now", priority: "medium", status: "in_progress", phase: "P" }],
+    });
+  });
+
   test("usage accumulates across assistant messages for the agent row", () => {
     const mapper = new CollabStreamMapper({ ownName: "ompd" });
     mapper.mapFrame({

@@ -230,10 +230,23 @@ export function useConsole(
     (agentId: AgentId): void => {
       const current = stateRef.current;
       leaveCollab(current.selected, agentId);
-      dispatch({ t: "select", agentId });
-      client.attach(agentId, current.watermarks.has(agentId) ? {} : { sinceSeq: 0 });
       const agent = current.agents.find(candidate => candidate.id === agentId);
-      if (agent?.acpSessionId !== undefined && !current.historyBefore.has(agentId)) {
+      // What this open actually asks the daemon for, decided before the
+      // dispatch because the reducer cannot know it.
+      //
+      // A wait is armed only when BOTH are true: this device holds nothing of
+      // this session yet (no watermark, so the attach asks for a full
+      // replay), and a history page was asked for. The second is what makes
+      // the wait provably end -- a page always comes back, empty or not,
+      // while a replay of an empty transcript sends no frame at all. The
+      // first is what keeps a session already streaming into this console
+      // from flashing a spinner over the log the operator can already read:
+      // its cache is live, not a leftover from a previous run.
+      const replaying = !current.watermarks.has(agentId);
+      const fetchingHistory = agent?.acpSessionId !== undefined && !current.historyBefore.has(agentId);
+      dispatch({ t: "select", agentId, awaiting: replaying && fetchingHistory });
+      client.attach(agentId, replaying ? { sinceSeq: 0 } : {});
+      if (agent?.acpSessionId !== undefined && fetchingHistory) {
         requestHistory(agentId, agent.acpSessionId);
       }
     },
@@ -279,7 +292,11 @@ export function useConsole(
         // frame already carries both identities needed for attach + history,
         // so do both once rather than calling selectAgent and racing a second
         // initial history request before React commits `history_request`.
-        dispatch({ t: "select", agentId: event.agentId });
+        //
+        // Always awaiting: the history page below is asked for unconditionally
+        // here, so there is always an answer coming, and a resume means this
+        // device holds nothing of the session yet by definition.
+        dispatch({ t: "select", agentId: event.agentId, awaiting: true });
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
       }),
@@ -293,9 +310,14 @@ export function useConsole(
         // first page from being asked for twice.
         const current = stateRef.current;
         leaveCollab(current.selected, event.agentId);
-        dispatch({ t: "collab_opened", event });
+        // The same rule the ordinary open follows: wait only when this device
+        // holds nothing of the joined session yet and a page that always
+        // answers was asked for.
+        const fetchingHistory = !current.historyBefore.has(event.agentId);
+        const replaying = !current.watermarks.has(event.agentId);
+        dispatch({ t: "collab_opened", event, awaiting: replaying && fetchingHistory });
         client.attach(event.agentId, current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
-        if (!current.historyBefore.has(event.agentId)) {
+        if (fetchingHistory) {
           requestHistory(event.agentId, event.sessionId);
         }
       }),
@@ -341,10 +363,23 @@ export function useConsole(
           // co-driven session was on screen, exactly as a join's answer is,
           // so the leave reaches the daemon through the same call.
           leaveCollab(stateRef.current.selected);
-          dispatch({ t: "tui_select", sessionId: event.sessionId });
+          // The press already committed this session and armed its wait; the
+          // tail below is what ends it. Re-selecting the same subject folds
+          // to no change, so the wait survives the fallback rather than
+          // restarting under it.
+          dispatch({ t: "tui_select", sessionId: event.sessionId, awaiting: true });
           client.sessionTail(event.sessionId);
           return;
         }
+        // A refusal that names a session or an agent belongs to that
+        // subject's pane, not to whichever pane is open when it lands. This
+        // is the case a refused co-drive made necessary: the operator pressed
+        // a row, the pane committed to it, and a toast over the previous
+        // session's log is not an answer about the row they pressed. The
+        // notice still goes out, because a refusal about a pane nobody is
+        // watching must still reach the operator.
+        const subject = event.sessionId ?? event.agentId;
+        if (subject !== undefined) dispatch({ t: "open_failed", subject, message: event.message });
         dispatch({ t: "error", event });
       }),
       client.on("say", event => {
@@ -504,12 +539,21 @@ export function useConsole(
               dispatch({
                 t: "error",
                 event: {
+                  // Addressed, so the refusal lands on the pane the operator
+                  // just committed to rather than only as a toast.
+                  sessionId: target.sessionId,
                   message:
                     "This device does not hold the read scope. Pair it again with read access to watch this terminal.",
                 },
               });
               return;
             }
+            // The press commits the session before the ask goes out, so the
+            // pane belongs to this row from the moment it is touched rather
+            // than from the moment the daemon answers. Every answer that can
+            // come back -- a join, the steer-surface fallback, or a refusal
+            // -- then lands on a pane that is already this session's.
+            dispatch({ t: "tui_select", sessionId: target.sessionId, awaiting: true });
             client.openCollab(target.sessionId);
             return;
           }
