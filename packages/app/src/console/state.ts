@@ -595,7 +595,16 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       if (state.selected === event.agentId && state.selectedTui === null) {
         return rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses };
       }
-      return { ...state, selected: event.agentId, selectedTui: null, rosterMisses };
+      // Clear the selected session's entries so it shows loading/empty state
+      // immediately instead of holding stale content from a previous run until
+      // new data arrives. This ensures "clicking on a session immediately shows
+      // a loading screen rather than holding on to the last."
+      const sessions = new Map(state.sessions);
+      const existing = state.sessions.get(event.agentId);
+      if (existing !== undefined && existing.entries.length > 0) {
+        sessions.set(event.agentId, { ...existing, entries: [] });
+      }
+      return { ...state, selected: event.agentId, selectedTui: null, rosterMisses, sessions };
     }
 
     case "tui_select": {
