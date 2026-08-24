@@ -12,7 +12,9 @@ import { writeSync } from "node:fs";
 import type { OmpctlWorld } from "../support/world.ts";
 
 When("I select {string}", async function (this: OmpctlWorld, testId: string) {
-  await this.app.tap(testId);
+  // Resolved like a field value: a row keyed by a per-run session id cannot be
+  // written literally into a feature file, and select is how a row opens.
+  await this.app.tap(this.resolve(testId));
 });
 
 When("I fill in {string} with {string}", async function (this: OmpctlWorld, testId: string, value: string) {
@@ -23,14 +25,22 @@ When("I dismiss the keyboard", async function (this: OmpctlWorld) {
   await this.app.dismissKeyboard();
 });
 
+When("I scroll {string} to its top", async function (this: OmpctlWorld, testId: string) {
+  await this.app.scrollToStart(testId);
+});
+
+When("I scroll {string} to its end", async function (this: OmpctlWorld, testId: string) {
+  await this.app.scrollToEnd(testId);
+});
+
 Then("I can see {string}", async function (this: OmpctlWorld, testId: string) {
-  await this.app.waitFor(testId);
+  await this.app.waitFor(this.resolve(testId));
 });
 
 Then("I cannot see {string}", async function (this: OmpctlWorld, testId: string) {
   // Deliberately not a negated `waitFor`: waiting for an absence would pass the
   // instant the app is slow, which is exactly when it is worth failing.
-  assert.equal(await this.app.isVisible(testId), false, `${testId} should not be present`);
+  assert.equal(await this.app.isVisible(this.resolve(testId)), false, `${testId} should not be present`);
 });
 
 Then("I can read {string} in {string}", async function (this: OmpctlWorld, expected: string, testId: string) {
@@ -111,4 +121,63 @@ Then("the agent replies in {string} echoing {string}", async function (
 Given("I capture {string}", async function (this: OmpctlWorld, name: string) {
   const path = await this.app.screenshot(name);
   this.attach(`captured ${path}`, "text/plain");
+});
+
+/**
+ * An on-screen row carrying the marker, without scrolling to find it.
+ *
+ * "The agent replies" scrolls to the end first because its reply is owed at
+ * the tail. This step exists for assertions about where the viewport already
+ * sits, and mounting is not enough there: a virtualized list keeps whole
+ * viewports of rows mounted around the visible one, so a row's existence
+ * says nothing about position. Visibility is the position signal, and
+ * scrolling here would manufacture the position under test. Matching is
+ * containment, not equality, because the row label carries a speaker prefix
+ * around the marker.
+ */
+Then("{string} shows a row echoing {string}", async function (this: OmpctlWorld, listId: string, needle: string) {
+  const expected = this.resolve(needle);
+  const deadline = Date.now() + 30_000;
+  let observed: Array<{ label: string; visible: boolean }> = [];
+  while (Date.now() < deadline) {
+    observed = await this.app.rowsOf("entry-assistant");
+    if (observed.some(row => row.label.includes(expected) && row.visible)) return;
+    const { promise: tick, resolve: ticked } = Promise.withResolvers<void>();
+    setTimeout(ticked, 500);
+    await tick;
+  }
+  const shown = observed.filter(row => row.visible).length;
+  const mounted = observed.some(row => row.label.includes(expected));
+  const tail = observed
+    .slice(-3)
+    .map(row => JSON.stringify(row.label))
+    .join(", ");
+  assert.fail(
+    `no visible row in ${listId} carried ${JSON.stringify(expected)} within 30s; ` +
+      `the row is ${mounted ? "mounted but off screen" : "not mounted at all"}, ` +
+      `${shown} rows visible, last labels: ${tail || "none"}`,
+  );
+});
+
+/**
+ * The absence half, ordered deliberately after a positive wait.
+ *
+ * Reading absence immediately would pass on a list that has not laid out yet,
+ * which is exactly the false green the ordering prevents: the scenario first
+ * waits for a row the new window MUST contain, and only then reads. The
+ * settle that follows gives a viewport jump (the defect under test) time to
+ * land and show the row it would betray, so a clean read here means the view
+ * genuinely stayed put, not that the read outran the failure. Mounted rows
+ * do not count: only a row on screen says the view moved to it.
+ */
+Then("{string} shows no row echoing {string}", async function (this: OmpctlWorld, listId: string, needle: string) {
+  const expected = this.resolve(needle);
+  const { promise: settle, resolve: settled } = Promise.withResolvers<void>();
+  setTimeout(settled, 1_500);
+  await settle;
+  const observed = await this.app.rowsOf("entry-assistant");
+  assert.ok(
+    !observed.some(row => row.label.includes(expected) && row.visible),
+    `${listId} showed a row carrying ${JSON.stringify(expected)}; the viewport jumped to it`,
+  );
 });

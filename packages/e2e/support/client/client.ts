@@ -58,11 +58,31 @@ export interface E2EClient {
   scrollToEnd(testId: string): Promise<void>;
 
   /**
+   * Scroll a scrollable list back to its head and let the layout settle.
+   *
+   * The mirror of `scrollToEnd`, for the rows a list keeps at its top: the
+   * transcript's `Load earlier` control is the list header, so it only exists
+   * as an element while the oldest mounted window is on screen. Anything that
+   * taps it has to scroll there first, exactly like the operator does.
+   */
+  scrollToStart(testId: string): Promise<void>;
+
+  /**
    * The rendered text or accessibility label of every element matching the
    * testID, in document order. Only mounted elements are listed, so a caller
    * searching a long list for a row scrolls that list to its end first.
    */
   labelsOf(testId: string): Promise<string[]>;
+
+  /**
+   * The same rows as `labelsOf`, with each row's on-screen visibility.
+   *
+   * Mounted is not shown: a virtualized list keeps whole viewports of rows
+   * mounted around the visible one, so a row's existence says nothing about
+   * where the operator sits. Visibility is the observable half of a scroll
+   * position, which is the thing neither driver can read directly.
+   */
+  rowsOf(testId: string): Promise<Array<{ label: string; visible: boolean }>>;
 
   /** Put the on-screen keyboard away so it stops covering the next target. */
   dismissKeyboard(): Promise<void>;

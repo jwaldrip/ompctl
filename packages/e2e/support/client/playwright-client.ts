@@ -103,6 +103,16 @@ export class PlaywrightClient implements E2EClient {
     await this.active().waitForTimeout(150);
   }
 
+  async scrollToStart(testId: string): Promise<void> {
+    const list = this.locator(testId);
+    await list.waitFor({ state: "attached", timeout: DEFAULT_TIMEOUT_MS });
+    await list.evaluate(node => {
+      node.scrollTop = 0;
+    });
+    // Same settle as scrollToEnd: the window mounts a frame after the offset.
+    await this.active().waitForTimeout(150);
+  }
+
   async labelsOf(testId: string): Promise<string[]> {
     // aria-label rather than text content: the app marks each transcript row
     // accessible with a speaker-prefixed label, which is the one string both
@@ -110,6 +120,26 @@ export class PlaywrightClient implements E2EClient {
     return this.active()
       .locator(`[data-testid="${testId}"]`)
       .evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-label") ?? node.textContent ?? ""));
+  }
+
+  async rowsOf(testId: string): Promise<Array<{ label: string; visible: boolean }>> {
+    // The same aria-label read as labelsOf, plus the browser's own notion of
+    // on-screen: a row whose box intersects the viewport. A virtualized list
+    // keeps off-screen rows in the DOM exactly as the native one keeps them
+    // mounted, so visibility, not existence, is the position signal.
+    return this.active()
+      .locator(`[data-testid="${testId}"]`)
+      .evaluateAll(nodes =>
+        nodes.map(node => ({
+          label: node.getAttribute("aria-label") ?? node.textContent ?? "",
+          // ownerDocument rather than window: this file typechecks against
+          // Node's types while the body itself runs in the page.
+          visible:
+            node.getBoundingClientRect().bottom > 0 &&
+            node.getBoundingClientRect().top < (node.ownerDocument.defaultView?.innerHeight ?? 0) &&
+            node.getBoundingClientRect().height > 0,
+        })),
+      );
   }
 
   /** A browser has no on-screen keyboard, so this is honestly a no-op. */

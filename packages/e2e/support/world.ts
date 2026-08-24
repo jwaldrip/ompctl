@@ -41,16 +41,38 @@ export class OmpctlWorld extends World {
    * unsubstituted `<endpoint>` in a failure message points straight at the cause.
    */
   resolve(value: string): string {
-    return value.replace(/<(endpoint|token|nonce)>/g, (whole, name: string) => {
+    return value.replace(/<(endpoint|token|nonce|session-id|agent-id|run-nonce)>/g, (whole, name: string) => {
       if (name === "nonce") {
         this.nonce ??= `ompctl-path-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         return this.nonce;
       }
-      const env = name === "endpoint" ? process.env.OMPD_E2E_ENDPOINT : process.env.OMPD_E2E_TOKEN;
+      // <run-nonce> differs from <nonce> in where it is born: the transcript
+      // the follow scenario reads is seeded before the suite starts, so the
+      // marker has to arrive from the environment that did the seeding rather
+      // than being minted here mid-scenario. <session-id> is the same story:
+      // a feature file cannot interpolate the session a run happens to mint.
+      const env =
+        name === "endpoint"
+          ? process.env.OMPD_E2E_ENDPOINT
+          : name === "token"
+            ? process.env.OMPD_E2E_TOKEN
+            : name === "session-id"
+              ? process.env.OMPD_E2E_SESSION_ID
+              : name === "agent-id"
+                ? process.env.OMPD_E2E_AGENT_ID
+                : process.env.OMPD_E2E_NONCE;
+      const envName =
+        name === "endpoint"
+          ? "OMPD_E2E_ENDPOINT"
+          : name === "token"
+            ? "OMPD_E2E_TOKEN"
+            : name === "session-id"
+              ? "OMPD_E2E_SESSION_ID"
+              : name === "agent-id"
+                ? "OMPD_E2E_AGENT_ID"
+                : "OMPD_E2E_NONCE";
       if (env === undefined || env.trim().length === 0) {
-        throw new Error(
-          `this scenario needs <${name}>; set ${name === "endpoint" ? "OMPD_E2E_ENDPOINT" : "OMPD_E2E_TOKEN"} from a real pairing`,
-        );
+        throw new Error(`this scenario needs <${name}>; set ${envName} from a real pairing`);
       }
       return env.trim();
     });

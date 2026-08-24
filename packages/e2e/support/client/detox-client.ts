@@ -37,9 +37,9 @@ interface DetoxGlobals {
     clearText(): Promise<void>;
     replaceText(text: string): Promise<void>;
     typeText(text: string): Promise<void>;
-    getAttributes(): Promise<{ text?: string; label?: string }>;
+    getAttributes(): Promise<{ text?: string; label?: string; visible?: boolean }>;
     scroll(pixels: number, direction: "up" | "down" | "left" | "right"): Promise<void>;
-    atIndex(index: number): { getAttributes(): Promise<{ text?: string; label?: string }> };
+    atIndex(index: number): { getAttributes(): Promise<{ text?: string; label?: string; visible?: boolean }> };
   };
   by: { id(id: string): unknown };
   waitFor(element: unknown): { toExist(): { withTimeout(ms: number): Promise<void> } };
@@ -109,14 +109,28 @@ export class DetoxClient implements E2EClient {
     // halves, a prior pairing bypasses the form and the next run measures old
     // state instead of the scenario.
     if (this.kind === "ios") await globals().device.clearKeychain();
+    // The debug build asks RCTBundleURLProvider for its bundle, and that reads
+    // RCT_jsLocation out of NSUserDefaults, which launch arguments seed (the
+    // channel OMPCTL_E2E_PLAINTEXT_TOKEN already proves). Port 8081 is only the
+    // baked-in default, so when another run's Metro already holds it this run's
+    // Metro takes a free port and the app is told, rather than the app loading
+    // whatever bundle a foreign Metro happens to serve.
+    const metroPort = process.env.E2E_METRO_PORT;
     await globals().device.launchApp({
       newInstance: true,
       delete: this.kind === "ios",
       permissions: { camera: "NO" },
-      // Only the iOS simulator needs this. The password-manager sheet lives
-      // outside the app and Detox cannot reach it on iOS 26; the launch flag
-      // prevents creating that sheet without weakening human launches.
-      launchArgs: this.kind === "ios" ? { OMPCTL_E2E_PLAINTEXT_TOKEN: "YES" } : undefined,
+      // Only the iOS simulator needs the plaintext flag. The password-manager
+      // sheet lives outside the app and Detox cannot reach it on iOS 26; the
+      // launch flag prevents creating that sheet without weakening human
+      // launches.
+      launchArgs:
+        this.kind === "ios"
+          ? {
+              OMPCTL_E2E_PLAINTEXT_TOKEN: "YES",
+              ...(metroPort === undefined ? {} : { RCT_jsLocation: `localhost:${metroPort}` }),
+            }
+          : undefined,
     });
   }
 
@@ -204,6 +218,26 @@ export class DetoxClient implements E2EClient {
     }
   }
 
+  async scrollToStart(testId: string): Promise<void> {
+    await this.waitFor(testId);
+    const g = globals();
+    // The same deliberately oversized distance as scrollToEnd, upward: both
+    // platforms clamp at the content edge, and a list already at its head
+    // refusing to scroll is the arrival this method asked for, not a failure.
+    // Looped rather than called once: one iOS scroll gesture covers a screen
+    // or two rather than the distance asked for (measured against a thirty
+    // row transcript), and the refusal is the only "at the top" signal Detox
+    // exposes, so the honest loop is scroll until told there is no further up.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        await g.element(g.by.id(testId)).scroll(100_000, "up");
+      } catch (cause) {
+        if (/Unable to scroll/i.test(cause instanceof Error ? cause.message : String(cause))) return;
+        throw cause;
+      }
+    }
+  }
+
   async labelsOf(testId: string): Promise<string[]> {
     const g = globals();
     const labels: string[] = [];
@@ -220,6 +254,25 @@ export class DetoxClient implements E2EClient {
       }
     }
     return labels;
+  }
+
+  async rowsOf(testId: string): Promise<Array<{ label: string; visible: boolean }>> {
+    const g = globals();
+    const rows: Array<{ label: string; visible: boolean }> = [];
+    // The same index probe as labelsOf. `visible` is Detox's own answer for
+    // whether the row's frame is on screen, which is the position signal
+    // neither platform's scroller exposes numerically: a virtualized list
+    // keeps whole viewports of rows mounted, so existence proves nothing
+    // about where the operator is looking.
+    for (let index = 0; index < 1000; index += 1) {
+      try {
+        const attrs = await g.element(g.by.id(testId)).atIndex(index).getAttributes();
+        rows.push({ label: attrs.text ?? attrs.label ?? "", visible: attrs.visible !== false });
+      } catch {
+        return rows;
+      }
+    }
+    return rows;
   }
 
   /**
