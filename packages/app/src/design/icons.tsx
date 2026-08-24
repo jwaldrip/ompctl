@@ -43,12 +43,12 @@ import {
   faGaugeHigh,
   faGlobe,
   faHand,
-  faImage,
   faLayerGroup,
   faLink,
   faListCheck,
   faMagnifyingGlass,
   faMicrophone,
+  faPaperclip,
   faPaperPlane,
   faPen,
   faPlay,
@@ -124,8 +124,12 @@ export type GlyphName =
   | "browser"
   | "narration"
   | "mic"
-  /** An image being attached to a prompt; `attach` is this device joining a session. */
-  | "image"
+  /**
+   * Something riding a prompt as an attachment, drawn as the paperclip every
+   * composer already teaches for the gesture. `attach` is this device joining
+   * a live session, which is a different verb entirely.
+   */
+  | "attachment"
   | "unknown"
   | "copy";
 
@@ -227,9 +231,14 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // Speech into this device, the microphone itself; narration is sound
   // leaving it, so the two never share a glyph.
   mic: faMicrophone,
-  // A picture riding a prompt, drawn as the picture itself rather than the
-  // paperclip, because what this control adds is an image, not a file.
-  image: faImage,
+  // The paperclip, because placement is what an operator reads first and the
+  // paperclip in a composer's lower-left corner is the one shape every
+  // messaging surface already spends on this gesture. This drew `fa-image`
+  // until 2026-08-24 on the argument that what the control adds is a picture
+  // rather than a file; the argument was about the payload, and the icon is
+  // about the act. What the picker actually accepts is still stated in words
+  // by the control's own accessibility label, which says images.
+  attachment: faPaperclip,
   unknown: faCircleQuestion,
   // Two sheets of paper, one lifted off the other: the one shape every
   // platform's users already read as "duplicate this exactly".

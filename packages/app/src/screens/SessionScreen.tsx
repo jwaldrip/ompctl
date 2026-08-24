@@ -34,6 +34,7 @@ import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
 import { agentSignal, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
+import { imageAttachmentPicker } from "../platform/attachments.ts";
 import type { SessionState } from "../session/model.ts";
 import type { VoiceAvailability } from "../voice/memo.ts";
 import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
@@ -295,19 +296,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             <Label color={browserOpen ? ink.plain : ink.muted}>Browser</Label>
           </Pressable>
         )}
-
-        {props.onOpenConfig === undefined ? null : (
-          <Pressable
-            testID="session-open-config"
-            accessibilityRole="button"
-            accessibilityLabel="Open this session's mode and model"
-            onPress={props.onOpenConfig}
-            style={({ pressed }) => [styles.headAction, pressed && { backgroundColor: ground.active }]}
-          >
-            <Glyph name="config" size={14} color={ink.muted} />
-            <Label color={ink.muted}>Config</Label>
-          </Pressable>
-        )}
       </View>
 
       <View
@@ -462,51 +450,81 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             </View>
           ) : (
             <View testID="session-voice">
-              {/*
-                A band in the column, never a layer over it: the microphone
-                and its status occupy real space above the composer, so a
-                long refusal or a long dictation pushes the composer down
-                rather than painting across it.
-              */}
-              <View style={styles.micRow}>
-                <Pressable
-                  testID="composer-mic"
-                  accessibilityRole="button"
-                  accessibilityLabel={voice.capturing ? "Stop the microphone and send" : "Speak to this agent"}
-                  accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
-                  disabled={micDisabled}
-                  onPress={voice.onToggle}
-                  style={({ pressed }) => [
-                    styles.mic,
-                    voice.capturing && styles.micLive,
-                    micDisabled && styles.micOff,
-                    pressed && { backgroundColor: ground.active },
-                  ]}
-                >
-                  <Glyph
-                    name="mic"
-                    size={14}
-                    color={voice.capturing ? signal.amber : micDisabled ? ink.faint : ink.plain}
-                  />
-                </Pressable>
-                <Label
-                  color={micGate === "ready" && !voice.capturing ? ink.faint : ink.plain}
-                  style={styles.micStatus}
-                  testID="composer-mic-status"
-                >
-                  {micStatus}
-                </Label>
-              </View>
-              {voice.dictation === null ? null : (
-                <Label color={ink.bright} style={styles.dictation} testID="composer-dictation">
-                  {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
-                </Label>
-              )}
               <Composer
+                prefix="composer"
+                picker={imageAttachmentPicker}
                 enabled={connection === "connected"}
+                placeholder={connection === "connected" ? "Say something to this agent" : "No link"}
+                sendLabel="Send"
                 busy={busy}
                 onSubmit={props.onSubmit}
                 onCancel={props.onCancel}
+                actions={
+                  <>
+                    {/*
+                      This session's mode and model, in the row with the words
+                      they will be spent on. It sat in the screen header until
+                      2026-08-24, which put a per-turn choice in the one band
+                      of the screen a thumb cannot reach, beside the identity
+                      chrome it has nothing to do with.
+                    */}
+                    {props.onOpenConfig === undefined ? null : (
+                      <Pressable
+                        testID="session-open-config"
+                        accessibilityRole="button"
+                        accessibilityLabel="Open this session's mode and model"
+                        onPress={props.onOpenConfig}
+                        style={({ pressed }) => [styles.rowAction, pressed && { backgroundColor: ground.active }]}
+                      >
+                        <Glyph name="config" size={14} color={ink.muted} />
+                        <Label color={ink.muted}>Config</Label>
+                      </Pressable>
+                    )}
+                    <Pressable
+                      testID="composer-mic"
+                      accessibilityRole="button"
+                      accessibilityLabel={voice.capturing ? "Stop the microphone and send" : "Speak to this agent"}
+                      accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
+                      disabled={micDisabled}
+                      onPress={voice.onToggle}
+                      style={({ pressed }) => [
+                        styles.mic,
+                        voice.capturing && styles.micLive,
+                        micDisabled && styles.micOff,
+                        pressed && { backgroundColor: ground.active },
+                      ]}
+                    >
+                      <Glyph
+                        name="mic"
+                        size={14}
+                        color={voice.capturing ? signal.amber : micDisabled ? ink.faint : ink.plain}
+                      />
+                    </Pressable>
+                  </>
+                }
+                notes={
+                  <>
+                    {/*
+                      Prose in the column, never a layer over it: the
+                      microphone's refusal and this device's live dictation
+                      occupy real space between the words and the action row,
+                      so a long one pushes the row down rather than painting
+                      across it. They cannot sit in the row itself, which is
+                      44 points of gestures.
+                    */}
+                    <Label
+                      color={micGate === "ready" && !voice.capturing ? ink.faint : ink.plain}
+                      testID="composer-mic-status"
+                    >
+                      {micStatus}
+                    </Label>
+                    {voice.dictation === null ? null : (
+                      <Label color={ink.bright} testID="composer-dictation">
+                        {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
+                      </Label>
+                    )}
+                  </>
+                }
               />
             </View>
           )}
@@ -520,7 +538,7 @@ const styles = StyleSheet.create({
   // Owns the space between the header and the bottom of the screen, so the
   // keyboard's inset lands here rather than on top of the composer.
   body: { flex: 1 },
-  // The band that owns the screen's bottom edge, microphone to home
+  // The band that owns the screen's bottom edge, composer to home
   // indicator. It paints the composer's surface because it is the view that
   // pays the inset below the composer: a parent's padding is outside every
   // child, so a transparent pad owner is how the shell's base colour ends up
@@ -586,18 +604,16 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.heavy,
     borderTopColor: ground.edge,
   },
-  // The microphone band sits above the composer and owns its space in the
-  // column: a refusal or a live dictation grows downward, never over the
-  // composer below it.
-  micRow: {
+  // A labelled control in the composer's action row, the same treatment the
+  // send beside it wears. `headAction`'s twin, kept separate because the
+  // header pads to `snug` against a dense row of chrome and the action row
+  // pads to `step` against the send it sits next to.
+  rowAction: {
     minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.snug,
     flexDirection: "row",
     alignItems: "center",
-    gap: space.snug,
-    paddingHorizontal: space.step,
-    backgroundColor: ground.surface,
-    borderTopWidth: stroke.hair,
-    borderTopColor: ground.edge,
+    gap: space.tight,
   },
   mic: {
     width: TOUCH_TARGET,
@@ -610,14 +626,6 @@ const styles = StyleSheet.create({
   },
   micLive: { borderColor: signal.amber },
   micOff: { borderColor: ground.edge },
-  // Shrinkable on purpose: a flex item's minimum is its content by default,
-  // and an unshrinkable status is what paints over siblings.
-  micStatus: { flex: 1, minWidth: 0 },
-  dictation: {
-    paddingHorizontal: space.step,
-    paddingBottom: space.snug,
-    backgroundColor: ground.surface,
-  },
   resumeButton: {
     minHeight: TOUCH_TARGET,
     alignSelf: "flex-start",
