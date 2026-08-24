@@ -24,6 +24,13 @@
  * Both composers reach this through `Composer`, which is the only thing that
  * lays the two halves out. Nothing else may place them, because a second
  * arrangement is a second convention.
+ *
+ * The paperclip is a ghost, not a boxed button. It wore a hairline square
+ * until it was seen on a phone beside three other hairline squares inside a
+ * hairline field inside a hairline container, and the whole surface read as a
+ * control panel. `design/controls.ts` carries the shape and the reasoning; the
+ * short version is that the 44-point target and a drawn border were never the
+ * same requirement.
  */
 
 import {
@@ -35,9 +42,10 @@ import {
 import type { JSX } from "react";
 import { useState } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
+import { ghost } from "../design/controls.ts";
 import { Glyph } from "../design/icons.tsx";
 import { Label } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { ground, ink, radius, signal, space, stroke } from "../design/tokens.ts";
 import type { ImageAttachmentPicker } from "../platform/attachments.ts";
 
 export interface UseImageAttachments {
@@ -160,11 +168,7 @@ export function AttachmentControl({ band, prefix }: { band: AttachmentBand; pref
       accessibilityState={{ disabled: band.disabled }}
       disabled={band.disabled}
       onPress={band.pick}
-      style={({ pressed }) => [
-        styles.attach,
-        pressed && !band.disabled && { backgroundColor: ground.active },
-        band.disabled && styles.attachOff,
-      ]}
+      style={({ pressed }) => [ghost.icon, pressed && !band.disabled && ghost.pressed]}
     >
       <Glyph
         name="attachment"
@@ -179,13 +183,15 @@ export function AttachmentControl({ band, prefix }: { band: AttachmentBand; pref
  * What this prompt is carrying, and what it could not: the chips and the one
  * live sentence, between the words and the action row.
  *
- * The wrapper renders even while empty and silent, because the status slot is
- * held permanently on a build with no picker and a band that comes and goes
- * would move the action row under the operator's thumb mid-compose.
+ * Absent while there is nothing to show, so an ordinary empty composer is the
+ * field and the row and nothing else. What must never disappear is the
+ * *control*, which lives in the row and states its own disabled reason
+ * through this band the moment there is a reason to state.
  */
-export function AttachmentsBar({ band, prefix }: { band: AttachmentBand; prefix: string }): JSX.Element {
+export function AttachmentsBar({ band, prefix }: { band: AttachmentBand; prefix: string }): JSX.Element | null {
+  if (band.images.length === 0 && band.status === "") return null;
   return (
-    <View testID={`${prefix}-attachments`}>
+    <View style={styles.band} testID={`${prefix}-attachments`}>
       {band.images.length === 0 ? null : (
         <View style={styles.chips}>
           {band.images.map((image, index) => (
@@ -225,29 +231,25 @@ export function AttachmentsBar({ band, prefix }: { band: AttachmentBand; prefix:
 }
 
 const styles = StyleSheet.create({
-  attach: {
-    minHeight: TOUCH_TARGET,
-    minWidth: TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: stroke.hair,
-  },
-  attachOff: { borderColor: ground.edge },
+  band: { gap: space.tight },
   notice: { flexShrink: 1 },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: space.snug, paddingVertical: space.tight },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: space.snug },
   chip: {
+    backgroundColor: ground.active,
     borderWidth: stroke.hair,
     borderColor: ground.line,
+    borderRadius: radius.control,
     padding: space.tight,
     flexDirection: "row",
     alignItems: "flex-start",
     gap: space.tight,
   },
-  thumb: { width: 48, height: 48, backgroundColor: ground.base },
+  thumb: { width: 48, height: 48, borderRadius: radius.control, backgroundColor: ground.base },
   remove: {
     minHeight: 28,
     minWidth: 28,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: radius.control,
   },
 });

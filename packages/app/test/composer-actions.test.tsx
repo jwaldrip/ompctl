@@ -33,6 +33,7 @@ import { describe, expect, test } from "bun:test";
 import { MAX_PROMPT_IMAGES, type PromptImage } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { ground, radius, signal } from "../src/design/tokens.ts";
 import type { ImageAttachmentPicker, PickedAttachments } from "../src/platform/attachments.ts";
 
 // Dynamic on purpose, the same reason every rendering test here does it: these
@@ -132,6 +133,41 @@ function renderedStyle(element: HTMLElement): string {
 function childIDs(element: HTMLElement): (string | null)[] {
   return [...element.children].map(child => child.getAttribute("data-testid"));
 }
+
+/**
+ * Drives a `TextInput` through the same `onChange` the DOM would, which is the
+ * only way to move a controlled RN field from a test. Copied in shape from
+ * `composer-submit.test.tsx`, which drives the same field for its own reason.
+ */
+function typeInto(input: HTMLElement, value: string): void {
+  const key = Object.keys(input).find(name => name.startsWith("__reactProps$"));
+  if (key === undefined) throw new Error("no React props on the rendered input");
+  const props = Reflect.get(input, key) as { onChange?: (event: unknown) => void };
+  if (typeof props.onChange !== "function") throw new Error("the rendered input has no onChange handler");
+  (input as HTMLInputElement).value = value;
+  props.onChange({
+    target: input,
+    currentTarget: input,
+    nativeEvent: { text: value },
+    preventDefault: () => {},
+    stopPropagation: () => {},
+  });
+}
+
+/**
+ * A microphone with nothing to complain about: available, in scope, free, and
+ * able to answer out loud. The idle case is the one the composer must stay
+ * silent about, so it needs a fixture of its own.
+ */
+const READY_VOICE = {
+  access: "granted",
+  mic: { available: true },
+  speech: { available: true },
+  dictation: null,
+  capturing: false,
+  busyElsewhere: false,
+  onToggle: () => {},
+} as const;
 
 const LIVE_PICKER: ImageAttachmentPicker = {
   availability: { available: true },
@@ -287,8 +323,8 @@ describe("a composer puts its gestures in one row under the words", () => {
         // 44 points is the floor on iOS and iPadOS, and the paperclip carries
         // no visible label, so the square itself is the whole target.
         const style = renderedStyle(attach);
-        expect(style).toContain("min-height:44px");
-        expect(style).toContain("min-width:44px");
+        expect(style).toContain("width:44px");
+        expect(style).toContain("height:44px");
         // An icon-only control has to name itself, and it must name what the
         // picker really offers rather than what a paperclip usually implies.
         expect(attach.getAttribute("aria-label")).toBe("Attach an image to this prompt");
@@ -434,6 +470,212 @@ describe("the paperclip is the same picker it always was", () => {
       expect(m.need("composer-attach").getAttribute("aria-disabled")).toBe("true");
       expect(m.need("composer-attach-status").textContent).toContain("no photo picker module");
       expect(m.need("composer-actions").contains(m.need("composer-attach-status"))).toBe(false);
+    } finally {
+      m.unmount();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One surface
+// ---------------------------------------------------------------------------
+
+/**
+ * The second half of the same defect, and the half no layout assertion could
+ * see. Getting the controls into the right row still left a hairline
+ * rectangle for the field nested inside a hairline rectangle for the
+ * composer, beside a boxed paperclip and three more equally boxed widgets,
+ * with an instructional sentence between them making a fourth band. Correct
+ * row, and it still read as a terminal control panel rather than a message
+ * box.
+ *
+ * Every rule below is read from the stylesheet react-native-web actually
+ * emitted, and every expected value is derived from a design token rather
+ * than typed in as a colour, so a token change moves the assertion with it.
+ */
+const rgba = (hex: string): string => {
+  const n = Number.parseInt(hex.replace("#", ""), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},1.00)`;
+};
+
+describe("a composer reads as one surface", () => {
+  for (const { what, prefix, mount: open } of COMPOSERS) {
+    test(`${what} draws exactly one box, and the surface owns it`, () => {
+      const m = open();
+      try {
+        const surface = renderedStyle(m.need(`${prefix}-surface`));
+        // The surface is the box: it carries the fill, the only border, and a
+        // radius large enough to read as an object rather than a panel.
+        expect(surface).toContain(`background-color:${rgba(ground.raised)}`);
+        expect(surface).toContain("border-top-width:1px");
+        expect(surface).toContain(`border-top-left-radius:${radius.surface}px`);
+
+        // And nothing inside it draws a second one. This is the whole defect:
+        // a box in a box is what made the field look like a separate widget.
+        for (const inner of [`${prefix}-input`, `${prefix}-attach`, `${prefix}-send`]) {
+          expect(renderedStyle(m.need(inner))).not.toContain("border-top-width:1px");
+        }
+      } finally {
+        m.unmount();
+      }
+    });
+
+    test(`${what} keeps the field borderless and part of the surface`, () => {
+      const m = open();
+      try {
+        const field = renderedStyle(m.need(`${prefix}-input`));
+        expect(field).toContain("border-top-width:0px");
+        // Transparent, so the surface's own fill runs behind the words.
+        expect(field).toContain("background-color:rgba(0,0,0,0.00)");
+        // Side padding belongs to the surface. A field that pads itself sits
+        // inset from the container's edge and reads as a nested control.
+        expect(field).toContain("padding-left:0px");
+        // Still grows: the reason the row sits under the words rather than
+        // beside them is that the words are allowed to take the height.
+        expect(field).toContain("max-height:140px");
+      } finally {
+        m.unmount();
+      }
+    });
+
+    test(`${what} emphasises send alone and leaves the paperclip a ghost`, () => {
+      const m = open();
+      try {
+        // A ghost is a target and a radius, and no cage: no border, and no
+        // fill until a finger is on it.
+        const attach = renderedStyle(m.need(`${prefix}-attach`));
+        expect(attach).toContain(`border-top-left-radius:${radius.control}px`);
+        expect(attach).not.toContain("border-top-width:1px");
+        // No fill of its own. react-native-web's base view class declares a
+        // transparent background for every View, so the check is for the two
+        // fills that would make this control compete with send, not for the
+        // absence of the property.
+        expect(attach).not.toContain(`background-color:${rgba(ground.active)}`);
+        expect(attach).not.toContain(`background-color:${rgba(signal.sage)}`);
+
+        // Send is the one filled control, and round rather than merely
+        // rounded, so the shape alone answers "what do I press".
+        const send = renderedStyle(m.need(`${prefix}-send`));
+        expect(send).toContain(`border-top-left-radius:${radius.pill}px`);
+        // Held, because nothing has been typed: visible, unmistakably not
+        // ready, and still filled rather than vanished.
+        expect(send).toContain(`background-color:${rgba(ground.active)}`);
+      } finally {
+        m.unmount();
+      }
+    });
+  }
+
+  test("a draft turns the send disc accent-filled, and nothing else changes weight", () => {
+    const m = mount(composer());
+    try {
+      act(() => {
+        typeInto(m.need("composer-input"), "ready to go");
+      });
+      expect(renderedStyle(m.need("composer-send"))).toContain(`background-color:${rgba(signal.sage)}`);
+      // The paperclip beside it is still a ghost. One emphasis per surface.
+      expect(renderedStyle(m.need("composer-attach"))).not.toContain(`background-color:${rgba(signal.sage)}`);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("the interrupt wears send's geometry, so no control moves when a turn starts", () => {
+    const idle = mount(composer());
+    const geometry = renderedStyle(idle.need("composer-send"));
+    idle.unmount();
+
+    const running = mount(composer({ busy: true, onCancel: () => {} }));
+    try {
+      const stop = renderedStyle(running.need("composer-cancel"));
+      expect(stop).toContain(`border-top-left-radius:${radius.pill}px`);
+      expect(stop).toContain("width:44px");
+      expect(geometry).toContain("width:44px");
+      // Filled in the failure colour rather than boxed in it.
+      expect(stop).toContain(`background-color:${rgba(signal.oxide)}`);
+    } finally {
+      running.unmount();
+    }
+  });
+
+  test("an empty composer is the field and the row, with no band between them", () => {
+    const m = mount(composer());
+    try {
+      // The attachments band is absent rather than an empty view holding
+      // height, so an ordinary composer has nothing between the words and
+      // the gestures.
+      expect(m.find("composer-attachments")).toBeNull();
+      const surface = m.need("composer-surface");
+      expect([...surface.children].length).toBe(2);
+    } finally {
+      m.unmount();
+    }
+  });
+});
+
+describe("the composer carries no permanent instructions", () => {
+  test("an idle microphone on a healthy link says nothing on screen", () => {
+    const m = mount(sessionScreen({ voice: { ...READY_VOICE } }));
+    try {
+      // The sentence that used to sit under the field forever. It is the
+      // microphone's accessibility hint now.
+      expect(m.find("composer-mic-status")).toBeNull();
+      expect(m.host.textContent ?? "").not.toContain("Tap to speak");
+      // The control is still there and still named; only the sentence left.
+      expect(m.need("composer-mic").getAttribute("aria-label")).toBe("Speak to this agent");
+      // Where the sentence went is not checkable here: `accessibilityHint`
+      // becomes a UIAccessibilityElement hint on iOS and react-native-web has
+      // nowhere to put it, so it is absent from this DOM by design. It is
+      // read off the device accessibility tree in the simulator proof instead,
+      // which is the surface that actually owns the guarantee.
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a refusal still reaches the operator, because that is news rather than chrome", () => {
+    const m = mount(sessionScreen());
+    try {
+      expect(m.need("composer-mic-status").textContent).toContain("no microphone in this test");
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a recording microphone says so", () => {
+    const m = mount(sessionScreen({ voice: { ...READY_VOICE, capturing: true } }));
+    try {
+      expect(m.need("composer-mic-status").textContent).toContain("Recording");
+    } finally {
+      m.unmount();
+    }
+  });
+});
+
+describe("the model control names the model", () => {
+  test("it renders the resolved model and thinking level from state this screen already holds", () => {
+    const m = mount(
+      sessionScreen({
+        session: {
+          ...EMPTY_SESSION,
+          info: { ...EMPTY_SESSION.info, model: "anthropic/claude-opus-5", thinkingLevel: "high" },
+        },
+      }),
+    );
+    try {
+      // The provider is dropped: an operator picking a model knows whose it
+      // is, and the row has about seventy points for the whole label.
+      expect(m.need("session-model-label").textContent).toBe("claude-opus-5 high");
+      expect(m.need("session-open-config").getAttribute("aria-label")).toContain("claude-opus-5 high");
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("told neither, it names the surface it opens rather than inventing a model", () => {
+    const m = mount(sessionScreen());
+    try {
+      expect(m.need("session-model-label").textContent).toBe("Config");
     } finally {
       m.unmount();
     }

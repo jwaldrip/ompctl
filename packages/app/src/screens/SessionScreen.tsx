@@ -29,7 +29,8 @@ import { Transcript } from "../components/Transcript.tsx";
 import type { PendingWebViewAction, PromptScopeAccess, SessionLoad } from "../console/state.ts";
 import type { WebViewTarget } from "../console/webview.ts";
 import { routeWebViewAction } from "../console/webview.ts";
-import { elapsed, shortenPath } from "../design/format.ts";
+import { ghost } from "../design/controls.ts";
+import { elapsed, modelLabel, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
@@ -201,6 +202,28 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             : voice.speech.available
               ? "Tap to speak; the agent answers out loud."
               : voice.speech.reason;
+
+  /**
+   * The same sentence, minus the one form of it that is an instruction rather
+   * than news.
+   *
+   * A refusal has to be on screen: an operator who cannot speak needs the
+   * reason, and `Recording` is the only feedback that the microphone is open.
+   * "Tap to speak; the agent answers out loud." is neither. It sat under the
+   * field permanently, made a band of its own, and was the last thing keeping
+   * the composer from reading as a single message surface. It is the
+   * microphone's accessibility hint now, where it costs no pixels and is still
+   * available to anyone who cannot see the glyph.
+   */
+  const micNotice = micGate === "ready" && !voice.capturing && voice.speech.available ? null : micStatus;
+
+  /**
+   * What this session actually runs, for the control that opens its config.
+   * Both halves come from state this screen already holds: the daemon's
+   * session info first, the roster's record of the agent as the fallback. No
+   * new fetch, and null when it was told neither.
+   */
+  const model = modelLabel(props.session.info.model ?? agent.model, props.session.info.thinkingLevel);
 
   /**
    * Leaving this screen mid-recording is the one moment this cleanup may
@@ -482,68 +505,84 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
                 actions={
                   <>
                     {/*
-                      This session's mode and model, in the row with the words
-                      they will be spent on. It sat in the screen header until
-                      2026-08-24, which put a per-turn choice in the one band
-                      of the screen a thumb cannot reach, beside the identity
-                      chrome it has nothing to do with.
+                      This session's model, in the row with the words it will
+                      be spent on, named rather than labelled `Config`. The
+                      daemon already tells this device the resolved model and
+                      the thinking level, and `SessionContext` renders both, so
+                      a control that opens that surface can say which model it
+                      is about instead of naming the screen behind it. Falls
+                      back to the surface's own name when the daemon has told
+                      this device neither, because inventing a model here would
+                      be worse than a generic word.
                     */}
                     {props.onOpenConfig === undefined ? null : (
                       <Pressable
                         testID="session-open-config"
                         accessibilityRole="button"
-                        accessibilityLabel="Open this session's mode and model"
+                        accessibilityLabel={
+                          model === null
+                            ? "Open this session's mode and model"
+                            : `Open this session's mode and model, now ${model}`
+                        }
                         onPress={props.onOpenConfig}
-                        style={({ pressed }) => [styles.rowAction, pressed && { backgroundColor: ground.active }]}
+                        style={({ pressed }) => [ghost.labelled, pressed && ghost.pressed]}
                       >
-                        <Glyph name="config" size={14} color={ink.muted} />
-                        <Label color={ink.muted}>Config</Label>
+                        <Label color={ink.muted} numberOfLines={1} testID="session-model-label">
+                          {model ?? "Config"}
+                        </Label>
+                        <Glyph name="chevron" size={11} color={ink.faint} />
                       </Pressable>
                     )}
                     <Pressable
                       testID="composer-mic"
                       accessibilityRole="button"
                       accessibilityLabel={voice.capturing ? "Stop the microphone and send" : "Speak to this agent"}
+                      // The sentence that used to sit permanently under the
+                      // field. It costs nothing here and it is the whole of
+                      // what a screen reader needs.
+                      accessibilityHint={micStatus}
                       accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
                       disabled={micDisabled}
                       onPress={voice.onToggle}
                       style={({ pressed }) => [
-                        styles.mic,
-                        voice.capturing && styles.micLive,
-                        micDisabled && styles.micOff,
-                        pressed && { backgroundColor: ground.active },
+                        ghost.icon,
+                        voice.capturing && ghost.live,
+                        pressed && !micDisabled && ghost.pressed,
                       ]}
                     >
                       <Glyph
                         name="mic"
-                        size={14}
+                        size={15}
                         color={voice.capturing ? signal.amber : micDisabled ? ink.faint : ink.plain}
                       />
                     </Pressable>
                   </>
                 }
                 notes={
-                  <>
-                    {/*
-                      Prose in the column, never a layer over it: the
-                      microphone's refusal and this device's live dictation
-                      occupy real space between the words and the action row,
-                      so a long one pushes the row down rather than painting
-                      across it. They cannot sit in the row itself, which is
-                      44 points of gestures.
-                    */}
-                    <Label
-                      color={micGate === "ready" && !voice.capturing ? ink.faint : ink.plain}
-                      testID="composer-mic-status"
-                    >
-                      {micStatus}
-                    </Label>
-                    {voice.dictation === null ? null : (
-                      <Label color={ink.bright} testID="composer-dictation">
-                        {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
-                      </Label>
-                    )}
-                  </>
+                  micNotice === null && voice.dictation === null ? null : (
+                    <>
+                      {/*
+                        Prose in the column, never a layer over it, and never
+                        permanently: a refusal or a live dictation occupies real
+                        space between the words and the action row, so a long one
+                        pushes the row down rather than painting across it. The
+                        idle instruction that used to live here is on the
+                        microphone's accessibility hint instead, because a
+                        sentence explaining a control is chrome and this surface
+                        is meant to read as one message box.
+                      */}
+                      {micNotice === null ? null : (
+                        <Label color={ink.plain} testID="composer-mic-status">
+                          {micNotice}
+                        </Label>
+                      )}
+                      {voice.dictation === null ? null : (
+                        <Label color={ink.bright} testID="composer-dictation">
+                          {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
+                        </Label>
+                      )}
+                    </>
+                  )
                 }
               />
             </View>
@@ -624,28 +663,6 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.heavy,
     borderTopColor: ground.edge,
   },
-  // A labelled control in the composer's action row, the same treatment the
-  // send beside it wears. `headAction`'s twin, kept separate because the
-  // header pads to `snug` against a dense row of chrome and the action row
-  // pads to `step` against the send it sits next to.
-  rowAction: {
-    minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.snug,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.tight,
-  },
-  mic: {
-    width: TOUCH_TARGET,
-    height: TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: stroke.hair,
-    borderColor: ground.line,
-    backgroundColor: ground.base,
-  },
-  micLive: { borderColor: signal.amber },
-  micOff: { borderColor: ground.edge },
   resumeButton: {
     minHeight: TOUCH_TARGET,
     alignSelf: "flex-start",
