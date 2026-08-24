@@ -71,14 +71,14 @@ export function StatusReadout({ state, attempt, delayMs, usage, clearances }: St
           label="context"
           tone={pressure}
           testID="status-context"
-          value={usage === null || usage.size === 0 ? "--" : `${formatTokens(usage.used)}/${formatTokens(usage.size)}`}
+          value={usage === null || usage.size === 0 ? null : `${formatTokens(usage.used)}/${formatTokens(usage.size)}`}
         />
         <Meter
           glyph="cost"
           label="spend"
           tone={ink.bright}
           testID="status-spend"
-          value={usage === null ? "--" : formatMoney(usage.costAmount, usage.costCurrency)}
+          value={usage === null ? null : formatMoney(usage.costAmount, usage.costCurrency)}
         />
         {clearances > 0 ? (
           <Meter
@@ -103,7 +103,8 @@ function Meter({
 }: {
   glyph: "load" | "cost" | "clearance";
   label: string;
-  value: string;
+  /** The reading, or null when the agent has not reported one. */
+  value: string | null;
   tone: string;
   testID: string;
 }): JSX.Element {
@@ -113,9 +114,21 @@ function Meter({
         <Glyph name={glyph} size={10} color={ink.faint} />
         <Label color={ink.faint}>{label}</Label>
       </View>
-      <Data color={tone} testID={testID}>
-        {value}
-      </Data>
+      {value === null ? (
+        // No usage report has arrived from the agent, so there is no number.
+        // A bare "--" in this slot read as a value — as a zero, or as a
+        // failure — and both are claims the app cannot make. Words say what
+        // the dash could not: the reading is absent because nothing upstream
+        // has spoken. The row stays: hiding it would make a silent host
+        // indistinguishable from a healthy one.
+        <Label color={ink.faint} testID={testID}>
+          not reported
+        </Label>
+      ) : (
+        <Data color={tone} testID={testID}>
+          {value}
+        </Data>
+      )}
     </View>
   );
 }

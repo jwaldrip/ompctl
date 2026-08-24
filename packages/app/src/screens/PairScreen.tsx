@@ -18,6 +18,7 @@ import { useState } from "react";
 import { Pressable, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { useFormMaxWidth } from "../design/layout.ts";
+import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
@@ -101,11 +102,10 @@ export function PairScreen({
           </Label>
         )}
 
-        <Pressable
+        <PrimaryButton
           testID="pair-submit"
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !ready }}
           disabled={!ready}
+          label="Connect"
           onPress={() => {
             if (target === null) return;
             const trimmedToken = token.trim();
@@ -122,14 +122,8 @@ export function PairScreen({
               scopes: [],
             });
           }}
-          style={({ pressed }) => [
-            styles.submit,
-            { borderColor: ready ? signal.sage : ground.edge },
-            pressed && { backgroundColor: ground.active },
-          ]}
-        >
-          <Label color={ready ? signal.sage : ink.faint}>Connect</Label>
-        </Pressable>
+          style={styles.submit}
+        />
         {onCancel === undefined ? null : (
           <Pressable accessibilityRole="button" onPress={onCancel} style={styles.cancel} testID="pair-cancel">
             <Label color={ink.plain}>Back to connections</Label>
@@ -172,6 +166,10 @@ function Field({
 }
 
 const styles = StyleSheet.create({
+  // The gutter is `space.loose`, the same value the connections screen pads
+  // by: the two screens are one flow and read as one surface. The extra room
+  // an iPad shows around this form comes from the centred `FORM_MAX_WIDTH`
+  // cap, not from this padding.
   screen: { justifyContent: "center", padding: space.loose },
   form: { gap: space.step, width: "100%", alignSelf: "center" },
   notice: {
@@ -192,13 +190,10 @@ const styles = StyleSheet.create({
     borderWidth: stroke.hair,
     borderColor: ground.line,
   },
-  submit: {
-    minHeight: TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: stroke.hair,
-    marginTop: space.snug,
-  },
+  // Placement only: the fill, the label face, and the parked state all live
+  // in PrimaryButton, so "what Connect looks like" cannot drift from "what
+  // Add connection looks like" again.
+  submit: { marginTop: space.snug },
   cancel: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET },
   scanEntry: { alignItems: "center", flexDirection: "row", gap: space.snug, minHeight: TOUCH_TARGET },
 });

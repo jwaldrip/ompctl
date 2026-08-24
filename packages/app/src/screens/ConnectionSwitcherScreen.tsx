@@ -2,6 +2,7 @@
 
 import type { JSX } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
@@ -73,9 +74,7 @@ export function ConnectionSwitcherScreen({
           </Text>
         </View>
       </Pressable>
-      <Pressable accessibilityRole="button" onPress={onAdd} style={styles.add} testID="add-connection">
-        <Text style={styles.addText}>Add connection</Text>
-      </Pressable>
+      <PrimaryButton label="Add connection" onPress={onAdd} testID="add-connection" />
       <Pressable accessibilityRole="button" onPress={onBack} style={styles.back} testID="close-connection-switcher">
         <Text style={styles.backText}>Back to console</Text>
       </Pressable>
@@ -115,7 +114,12 @@ function ConnectionRow({
 }
 
 const styles = StyleSheet.create({
-  screen: { backgroundColor: ground.base, gap: space.loose, padding: space.wide },
+  // The gutter is `space.loose`, the same value the pair screen pads by: these
+  // two screens are one flow (pair hands back to this chooser, "Add
+  // connection" hands forward to pair), and two gutters across one flow read
+  // as two apps. The wider value is the one that keeps a row's status word
+  // off the screen's edge.
+  screen: { backgroundColor: ground.base, gap: space.loose, padding: space.loose },
   heading: { gap: space.snug },
   entries: { borderColor: ground.edge, borderTopWidth: stroke.hair },
   entry: {
@@ -144,14 +148,6 @@ const styles = StyleSheet.create({
   },
   settingsCopy: { flex: 1, gap: space.tight },
   settingsHint: { ...type.body, color: ink.muted },
-  add: {
-    alignItems: "center",
-    backgroundColor: signal.sage,
-    justifyContent: "center",
-    minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.wide,
-  },
-  addText: { ...type.title, color: ink.inverse },
   back: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET },
   backText: { ...type.label, color: ink.plain },
   invite: { alignItems: "flex-start", justifyContent: "center", minHeight: TOUCH_TARGET },
