@@ -199,8 +199,15 @@ export class SessionIndex {
    * id and its directory encodes the cwd -- which is what makes an entry worth
    * keeping rather than re-deriving. Bounded by the number of sessions on the
    * machine, the same order as the catalog this class already assembles.
+   *
+   * Replaced wholesale at the end of a build rather than accumulated into.
+   * Two things follow from that, and both are the point: a build that is
+   * still walking never exposes a half-filled map to a `pathFor` running
+   * beside it, and a session whose file has gone drops out instead of sitting
+   * in here forever being re-validated. Assignment is the swap, so no reader
+   * can observe the intermediate.
    */
-  readonly #pathBySession = new Map<string, string>();
+  #pathBySession: Map<string, string> = new Map();
   /**
    * The in-flight background warm pass. One at a time, shared by every
    * build that observed the same cold counts; a pass that would duplicate
@@ -260,17 +267,24 @@ export class SessionIndex {
    */
   async #buildNow(): Promise<BuildOutcome> {
     const files: RawSessionFile[] = [];
+    // Built beside the live one, never into it. The swap below is what makes
+    // this visible, all at once, to anything that asks after the build.
+    const discovered = new Map<string, string>();
     let sinceYield = 0;
     for await (const file of this.#scan(this.#sessionsRoot)) {
       files.push(file);
       // Free: the scan already knows where every file is, and this is the
       // whole reason a later tap does not have to go looking for one.
-      this.#pathBySession.set(file.id, file.path);
+      discovered.set(file.id, file.path);
       if (++sinceYield >= SCAN_YIELD_EVERY_FILES) {
         sinceYield = 0;
         await yieldToEventLoop();
       }
     }
+    // Everything the scan just proved, and nothing it did not: an id whose
+    // file was deleted or renamed between builds is gone from the map rather
+    // than lingering as a path that only fails validation.
+    this.#pathBySession = discovered;
     const misses: RawSessionFile[] = [];
     const held = new Set<string>();
     const archived = this.#store.listArchivedSessionIds();
@@ -602,6 +616,10 @@ export class SessionIndex {
         results.push({ sessionId, deleted: false, refusal: "failed" });
         continue;
       }
+      // This process just unlinked the file, so it knows the mapping is dead
+      // without waiting for a build to notice or a later lookup to fail its
+      // `existsSync`.
+      this.#pathBySession.delete(sessionId);
       this.#store.deleteSessionRecords(sessionId);
       results.push({ sessionId, deleted: true });
     }
