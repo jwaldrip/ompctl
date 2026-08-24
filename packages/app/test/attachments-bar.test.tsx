@@ -8,6 +8,13 @@
  * keeps the control on screen, disabled, naming the capability, because a
  * vanished button reads as a vanished feature and gives nobody a way to tell
  * "this build cannot" apart from "that image was too big".
+ *
+ * Driven through `Composer`, which is the only thing that lays the band out.
+ * The band is one state in two positions now, the paperclip in the composer's
+ * action row and the chips and the sentence above it, so mounting the halves
+ * on their own would prove a wiring this app does not ship. Where the pick
+ * landed is read off the chips, which is what an operator actually sees.
+ * `composer-actions.test.tsx` owns where the two positions are.
  */
 
 import "./rnw.ts";
@@ -22,7 +29,7 @@ import type { ImageAttachmentPicker, PickedAttachments } from "../src/platform/a
 // `react-native-image-picker`, which resolves its native module table at
 // import time, so it can only be evaluated after `rnw.ts` installs the stub.
 const { createImageAttachmentPicker } = await import("../src/platform/attachments.ts");
-const { AttachmentsBar } = await import("../src/components/AttachmentsBar.tsx");
+const { Composer } = await import("../src/components/Composer.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -32,20 +39,19 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 interface Mounted {
   host: HTMLElement;
   root: Root;
-  /** What the band has been told the prompt now carries. */
-  images: PromptImage[][];
   /** How many times the control actually reached the picker. */
   picks: number;
+  /** The images this prompt now carries, read off the chips the operator sees. */
+  chips(): number;
   status(): string;
   press(): Promise<void>;
   unmount(): void;
 }
 
-function mount(picker: ImageAttachmentPicker, carried: PromptImage[] = []): Mounted {
+function mount(picker: ImageAttachmentPicker): Mounted {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  const images: PromptImage[][] = [];
   let picks = 0;
 
   const counted: ImageAttachmentPicker = {
@@ -58,14 +64,14 @@ function mount(picker: ImageAttachmentPicker, carried: PromptImage[] = []): Moun
 
   act(() => {
     root.render(
-      <AttachmentsBar
-        picker={counted}
-        images={carried}
-        onImages={next => {
-          images.push(next);
-        }}
-        enabled
+      <Composer
         prefix="composer"
+        picker={counted}
+        enabled
+        placeholder="Say something to this agent"
+        sendLabel="Send"
+        busy={false}
+        onSubmit={() => {}}
       />,
     );
   });
@@ -73,10 +79,10 @@ function mount(picker: ImageAttachmentPicker, carried: PromptImage[] = []): Moun
   const mounted: Mounted = {
     host,
     root,
-    images,
     get picks() {
       return picks;
     },
+    chips: () => host.querySelectorAll('[data-testid^="composer-attachment-"]:not([data-testid*="remove"])').length,
     status: () => host.querySelector('[data-testid="composer-attach-status"]')?.textContent ?? "",
     press: async () => {
       const control = host.querySelector('[data-testid="composer-attach"]') as HTMLElement | null;
@@ -115,7 +121,7 @@ describe("the attachments band", () => {
       // still on screen rather than replaced by a failure from a picker that
       // was never supposed to be called.
       expect(mounted.picks).toBe(0);
-      expect(mounted.images).toEqual([]);
+      expect(mounted.chips()).toBe(0);
       expect(mounted.status()).toContain("no photo picker module");
     } finally {
       mounted.unmount();
@@ -133,7 +139,7 @@ describe("the attachments band", () => {
       await mounted.press();
 
       expect(mounted.picks).toBe(1);
-      expect(mounted.images).toEqual([]);
+      expect(mounted.chips()).toBe(0);
       expect(mounted.status()).toBe(refusal);
     } finally {
       mounted.unmount();
@@ -154,7 +160,7 @@ describe("the attachments band", () => {
 
       // The success must not swallow the refusal: an operator who picked two
       // images and got one chip has to be told which one did not make it.
-      expect(mounted.images).toEqual([[fits]]);
+      expect(mounted.chips()).toBe(1);
       expect(mounted.status()).toContain("huge.jpg");
     } finally {
       mounted.unmount();

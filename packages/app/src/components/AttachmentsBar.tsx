@@ -1,6 +1,6 @@
 /**
- * The composer's image attachments: the control, the selected chips, and the
- * honest refusal, as one band.
+ * The composer's attachments: the paperclip, the selected chips, and the
+ * honest refusal.
  *
  * Three states, and none of them is "missing". Where the platform picker
  * exists, the control picks and each selected image shows as a removable
@@ -11,9 +11,19 @@
  * before anything is sent, so the daemon's own refusal is the backstop
  * rather than the first word the operator hears.
  *
- * Both composers embed this band inside their surface: unlike the microphone,
- * which is a mode of speaking, an attachment is part of the prompt being
- * composed, so it belongs with the words it will ride with.
+ * This is one band wearing two positions, which is why it exports a hook and
+ * two views rather than a single component. The control belongs in the
+ * composer's lower action row, at its left end, because that is where every
+ * surface a person has already used puts this gesture; the chips and the
+ * refusal belong above that row, under the words they will ride with,
+ * because a chip is part of the prompt and a refusal is a sentence rather
+ * than a 44-point control. `useImageAttachments` owns the state both halves
+ * read, so the two positions can never disagree about what this prompt is
+ * carrying.
+ *
+ * Both composers reach this through `Composer`, which is the only thing that
+ * lays the two halves out. Nothing else may place them, because a second
+ * arrangement is a second convention.
  */
 
 import {
@@ -30,7 +40,7 @@ import { Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { ImageAttachmentPicker } from "../platform/attachments.ts";
 
-export interface AttachmentsBarProps {
+export interface UseImageAttachments {
   /** The platform seam: live picker, or its named absence. */
   picker: ImageAttachmentPicker;
   /** The images already riding this prompt, in send order. */
@@ -39,11 +49,29 @@ export interface AttachmentsBarProps {
   onImages: (images: PromptImage[]) => void;
   /** False when the composer itself is offline or ineligible; picking is held with the reason named. */
   enabled: boolean;
-  /** TestID prefix shared by every control in the band, e.g. `composer` or `terminal-composer`. */
-  prefix: string;
 }
 
-export function AttachmentsBar({ picker, images, onImages, enabled, prefix }: AttachmentsBarProps): JSX.Element {
+/**
+ * What one composer's attachment band is, as the control and the chips both
+ * see it. A single object rather than seven props, so the two halves cannot
+ * be wired to different state.
+ */
+export interface AttachmentBand {
+  /** The images riding this prompt, in send order. */
+  readonly images: readonly PromptImage[];
+  /** Open the platform picker. A no-op while held, or while a sheet is already up. */
+  readonly pick: () => void;
+  /** Drop one image by position. Removal is positional because the chips are. */
+  readonly remove: (index: number) => void;
+  /** True when pressing the control cannot reach a picker at all. */
+  readonly disabled: boolean;
+  /** Why picking is held, or what the last pick refused. Empty when neither. */
+  readonly status: string;
+  /** True only while the reason is this build's permanent absence of a picker. */
+  readonly unavailable: boolean;
+}
+
+export function useImageAttachments({ picker, images, onImages, enabled }: UseImageAttachments): AttachmentBand {
   // The last thing the operator asked the band to do that it could not, so a
   // refusal stays readable until the next action replaces it. Not a queue of
   // errors: one live sentence is what a person standing in a composer reads.
@@ -100,39 +128,67 @@ export function AttachmentsBar({ picker, images, onImages, enabled, prefix }: At
       });
   };
 
+  return {
+    images,
+    pick,
+    remove: index => {
+      onImages(images.filter((_, at) => at !== index));
+      setNotice(null);
+    },
+    disabled,
+    status: gate ?? notice ?? "",
+    unavailable: !picker.availability.available,
+  };
+}
+
+/**
+ * The paperclip: the one control that adds to a prompt something other than
+ * words. It carries no visible label on purpose, because the row it sits in
+ * is a row of gestures and the band above it is where this one explains
+ * itself; assistive technology hears the whole sentence.
+ */
+export function AttachmentControl({ band, prefix }: { band: AttachmentBand; prefix: string }): JSX.Element {
+  return (
+    <Pressable
+      testID={`${prefix}-attach`}
+      accessibilityRole="button"
+      accessibilityLabel="Attach an image to this prompt"
+      // The picker offers photos and nothing else, so the hint says photos.
+      // The paperclip is the gesture's icon everywhere; it is not a claim
+      // that this build can attach a document.
+      accessibilityHint="Choose images from this device's photo library"
+      accessibilityState={{ disabled: band.disabled }}
+      disabled={band.disabled}
+      onPress={band.pick}
+      style={({ pressed }) => [
+        styles.attach,
+        pressed && !band.disabled && { backgroundColor: ground.active },
+        band.disabled && styles.attachOff,
+      ]}
+    >
+      <Glyph
+        name="attachment"
+        size={14}
+        color={band.disabled ? ink.faint : band.images.length > 0 ? signal.sage : ink.plain}
+      />
+    </Pressable>
+  );
+}
+
+/**
+ * What this prompt is carrying, and what it could not: the chips and the one
+ * live sentence, between the words and the action row.
+ *
+ * The wrapper renders even while empty and silent, because the status slot is
+ * held permanently on a build with no picker and a band that comes and goes
+ * would move the action row under the operator's thumb mid-compose.
+ */
+export function AttachmentsBar({ band, prefix }: { band: AttachmentBand; prefix: string }): JSX.Element {
   return (
     <View testID={`${prefix}-attachments`}>
-      <View style={styles.row}>
-        <Pressable
-          testID={`${prefix}-attach`}
-          accessibilityRole="button"
-          accessibilityLabel="Attach an image to this prompt"
-          accessibilityState={{ disabled }}
-          disabled={disabled}
-          onPress={pick}
-          style={({ pressed }) => [
-            styles.attach,
-            pressed && !disabled && { backgroundColor: ground.active },
-            disabled && styles.attachOff,
-          ]}
-        >
-          <Glyph name="image" size={14} color={disabled ? ink.faint : images.length > 0 ? signal.sage : ink.plain} />
-        </Pressable>
-        {/* The reason the control cannot be used, or the last pick's refusal.
-            The unavailable case holds this slot permanently; every other case
-            only borrows it until the next action. */}
-        <Label
-          color={picker.availability.available ? ink.faint : ink.plain}
-          style={styles.notice}
-          testID={`${prefix}-attach-status`}
-          numberOfLines={2}
-        >
-          {gate ?? notice ?? ""}
-        </Label>
-      </View>
-      {images.length === 0 ? null : (
+      {band.images.length === 0 ? null : (
         <View style={styles.chips}>
-          {images.map((image, index) => (
+          {band.images.map((image, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: a prompt's attachments are a positional composition list, not records with identity: removal is by position, the testIDs are by position, and the daemon never echoes them back to key against.
             <View key={`${prefix}-attachment-${index}`} style={styles.chip} testID={`${prefix}-attachment-${index}`}>
               <Image source={{ uri: `data:${image.mimeType};base64,${image.data}` }} style={styles.thumb} />
@@ -141,8 +197,7 @@ export function AttachmentsBar({ picker, images, onImages, enabled, prefix }: At
                 accessibilityRole="button"
                 accessibilityLabel={`Remove image ${index + 1}`}
                 onPress={() => {
-                  onImages(images.filter((_, at) => at !== index));
-                  setNotice(null);
+                  band.remove(index);
                 }}
                 style={({ pressed }) => [styles.remove, pressed && { backgroundColor: ground.active }]}
               >
@@ -152,12 +207,24 @@ export function AttachmentsBar({ picker, images, onImages, enabled, prefix }: At
           ))}
         </View>
       )}
+      {/* The reason the control cannot be used, or the last pick's refusal.
+          The unavailable case holds this slot permanently; every other case
+          only borrows it until the next action. */}
+      {band.status === "" ? null : (
+        <Label
+          color={band.unavailable ? ink.plain : ink.faint}
+          style={styles.notice}
+          testID={`${prefix}-attach-status`}
+          numberOfLines={2}
+        >
+          {band.status}
+        </Label>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", gap: space.tight },
   attach: {
     minHeight: TOUCH_TARGET,
     minWidth: TOUCH_TARGET,

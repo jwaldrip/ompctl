@@ -40,9 +40,9 @@
 import type { PromptImage, SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback, useState } from "react";
-import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, TextInput, View } from "react-native";
-import { AttachmentsBar } from "../components/AttachmentsBar.tsx";
+import { useCallback } from "react";
+import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, View } from "react-native";
+import { Composer } from "../components/Composer.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
@@ -50,7 +50,7 @@ import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
 import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
@@ -168,15 +168,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   const keyboardInset = useKeyboardInset();
   const rows = logRows(tui);
 
-  const [text, setText] = useState("");
-  const [images, setImages] = useState<PromptImage[]>([]);
-  const trimmed = text.trim();
   const connected = connection === "connected";
   const composerEnabled = connected && liveTerminal && promptAccess !== "missing" && tui.refusalKind !== "scope";
-  // An image-only prompt steers as well as a text-only one; the daemon's own
-  // frame check is what says a prompt with neither is empty, and this screen
-  // refuses it here first so the operator never needs the round trip.
-  const canSend = composerEnabled && (trimmed.length > 0 || images.length > 0);
   const placeholder = !connected
     ? "No link"
     : !liveTerminal
@@ -184,13 +177,6 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
       : promptAccess === "missing" || tui.refusalKind === "scope"
         ? "Prompt scope required"
         : "Say something to this terminal";
-
-  const submit = (): void => {
-    if (!canSend) return;
-    props.onSubmit(trimmed, images.length > 0 ? images : undefined);
-    setText("");
-    setImages([]);
-  };
 
   /**
    * The tail arrives oldest first, so the newest turn is the last row, and a
@@ -444,56 +430,22 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
         testID="terminal-composer-safe"
       >
-        <View style={styles.composer}>
-          {/*
-            The attachment band, inside the composer surface for the same
-            reason the agent composer carries it: the chips are part of the
-            turn being composed, and a steer can carry an image exactly as an
-            agent prompt can. The band renders its own named-unavailable
-            state, so a build with no picker says so instead of hiding.
-          */}
-          <AttachmentsBar
-            picker={imageAttachmentPicker}
-            images={images}
-            onImages={setImages}
-            enabled={composerEnabled}
-            prefix="terminal-composer"
-          />
-          <View style={styles.composerRow}>
-            <TextInput
-              testID="terminal-composer-input"
-              style={[styles.field, type.body, !composerEnabled && styles.fieldOff]}
-              value={text}
-              onChangeText={setText}
-              editable={composerEnabled}
-              multiline
-              placeholder={placeholder}
-              placeholderTextColor={ink.faint}
-              // Enter sends on a keyboard; Shift+Enter is a newline. Sending
-              // stays available mid-turn: a second prompt steers the running
-              // turn, which is the delivery the daemon defaults to.
-              submitBehavior="submit"
-              onSubmitEditing={submit}
-            />
-
-            <Pressable
-              testID="terminal-composer-send"
-              accessibilityRole="button"
-              accessibilityLabel="Send to this terminal"
-              accessibilityState={{ disabled: !canSend }}
-              disabled={!canSend}
-              onPress={submit}
-              style={({ pressed }) => [
-                styles.action,
-                { borderColor: canSend ? signal.sage : ground.edge },
-                pressed && { backgroundColor: ground.active },
-              ]}
-            >
-              <Glyph name="send" size={14} color={canSend ? signal.sage : ink.faint} />
-              <Label color={canSend ? signal.sage : ink.faint}>Send</Label>
-            </Pressable>
-          </View>
-        </View>
+        {/*
+          The same control the agent log uses, with no interrupt: a terminal's
+          turn cannot be cancelled from here, so `onCancel` is absent and the
+          send stays Send even mid-turn, which is the steer the daemon itself
+          defaults to. Everything else about the surface is shared, because
+          two arrangements of one composer is two conventions.
+        */}
+        <Composer
+          prefix="terminal-composer"
+          picker={imageAttachmentPicker}
+          enabled={composerEnabled}
+          placeholder={placeholder}
+          sendLabel="Send to this terminal"
+          busy={tui.busy}
+          onSubmit={props.onSubmit}
+        />
       </View>
     </SafeScreen>
   );
@@ -575,40 +527,4 @@ const styles = StyleSheet.create({
   refusal: { gap: space.snug, borderWidth: stroke.hair, borderColor: signal.oxide, padding: space.step },
   refusalHead: { flexDirection: "row", alignItems: "center", gap: space.tight },
   boundary: { marginTop: "auto", paddingTop: space.snug },
-  composer: {
-    gap: space.tight,
-    padding: space.step,
-    backgroundColor: ground.surface,
-    borderTopWidth: stroke.hair,
-    borderTopColor: ground.edge,
-  },
-  // The input and send sit in their own row inside the composer surface, so
-  // the attachment band can sit above them in the same surface without
-  // participating in the row's flex-end alignment.
-  composerRow: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: space.snug,
-  },
-  field: {
-    flex: 1,
-    minHeight: TOUCH_TARGET,
-    maxHeight: 140,
-    paddingHorizontal: space.step,
-    paddingVertical: space.snug,
-    color: ink.bright,
-    backgroundColor: ground.base,
-    borderWidth: stroke.hair,
-    borderColor: ground.line,
-  },
-  fieldOff: { color: ink.faint },
-  action: {
-    minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.step,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: space.tight,
-    borderWidth: stroke.hair,
-  },
 });

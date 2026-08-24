@@ -15,6 +15,7 @@ import { createRoot } from "react-dom/client";
 const { Composer } = await import("../src/components/Composer.tsx");
 const { Transcript } = await import("../src/components/Transcript.tsx");
 const { EMPTY_SESSION, appendPrompt } = await import("../src/session/model.ts");
+const { imageAttachmentPicker } = await import("../src/platform/attachments.ts");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -72,7 +73,11 @@ describe("composer submit", () => {
     act(() => {
       root.render(
         <Composer
+          prefix="composer"
+          picker={imageAttachmentPicker}
           enabled
+          placeholder="Say something to this agent"
+          sendLabel="Send"
           busy={false}
           onSubmit={text => {
             submitted.push(text);
