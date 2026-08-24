@@ -186,7 +186,7 @@ export function FleetScreen({
 
   return (
     <View style={styles.screen} testID="fleet">
-      <View style={styles.head}>
+      <View style={styles.head} testID="fleet-head">
         <View style={styles.lead}>
           <Glyph name="bay" size={16} color={ink.plain} />
           <Display heading testID="fleet-title">
@@ -290,7 +290,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.snug,
-    paddingHorizontal: space.wide,
+    // Leading inset only, no trailing one. The rows' action columns run flush
+    // to the screen's trailing edge, so a trailing inset here parked the
+    // folder and archive toggles inboard of the controls beneath them, seen
+    // by eye on the iPad. Flush, the 44-point targets centre their glyphs at
+    // the same trailing line the rows' action glyphs and the group headers'
+    // chevrons already share. The leading side keeps the title on the
+    // `space.wide` content edge the sort bar and group headers lead on.
+    paddingLeft: space.wide,
+    paddingRight: 0,
     paddingVertical: space.step,
     borderBottomWidth: stroke.heavy,
     borderBottomColor: ground.edge,
