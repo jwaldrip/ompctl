@@ -327,6 +327,50 @@ describe("the header's controls sit at the trailing content edge", () => {
   const sheetStart = page.indexOf("\n<style>");
   const markup = page.slice(0, sheetStart);
   const css = page.slice(sheetStart);
+  /**
+   * The level this harness can honestly observe. happy-dom computes no real
+   * layout, so a rendered rectangle for the head strip and one for a row
+   * would both read zero and any geometric assertion would be vacuous. What
+   * the harness does have is the atomic CSS each element's style compiles
+   * to, and the defect's whole mechanism lives there: `head` carried
+   * `paddingHorizontal: space.wide`, a 16px `padding-right` that parked the
+   * toggles inboard of the rows' flush action column, seen by eye on the
+   * iPad. These tests read that sheet, so restoring the old padding fails
+   * them outright rather than by approximation.
+   */
+  const headTag = markup.match(/<[^>]*data-testid="fleet-head"[^>]*>/)?.[0] ?? "";
+  const headClasses = classListOf(headTag);
+  const headRules = rulesDeclaring(css, headClasses);
+
+  test("the strip takes no trailing inset: the toggles reach the rows' trailing edge", () => {
+    // `fleet-head` anchors the strip; without it the tag lookup finds
+    // nothing and this test fails rather than passing on an empty ruleset.
+    expect(headClasses.length).toBeGreaterThan(0);
+    const trailingInsets = [...headRules.matchAll(/padding-right:\s*(\d+(?:\.\d+)?)px/g)].map(m => Number(m[1]));
+    expect(Math.max(0, ...trailingInsets)).toBe(0);
+  });
+
+  test("the strip keeps its leading inset: the title still leads on the shared content edge", () => {
+    // SortBar's chips and the group headers both lead on `space.wide`
+    // (16px); a fix that dropped the strip's padding altogether would put
+    // the title outboard of every strip beneath it, the same defect on the
+    // other edge.
+    expect(headClasses.length).toBeGreaterThan(0);
+    expect(headRules).toMatch(/padding-left:\s*16px/);
+  });
+
+  test("the rows' trailing action column is the flush edge the toggles align to", () => {
+    // The other half of the contract. Every row's trailing-most control is
+    // its delete action, a bare 44px target with no padding or margin of
+    // its own, so the column it forms is the screen's trailing edge itself.
+    // If the rows ever gain a trailing inset, this fails instead of letting
+    // the two edges drift apart in opposite directions.
+    const deleteTag = markup.match(/<[^>]*data-testid="session-delete-[^"]*"[^>]*>/)?.[0] ?? "";
+    const deleteRules = rulesDeclaring(css, classListOf(deleteTag));
+    expect(deleteTag).not.toBe("");
+    expect(deleteRules).not.toMatch(/padding-right/);
+    expect(deleteRules).not.toMatch(/margin-right/);
+  });
 
   test("the title group flexes to absorb the slack, not a spacer's worth of it", () => {
     // The wrapper View around the title is the last div opened before the
