@@ -30,6 +30,7 @@
  *   multiply the work it is reconnecting because of.
  */
 
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -130,6 +131,19 @@ const SCAN_YIELD_EVERY_FILES = 8;
  */
 const WARM_CACHE_BATCH_ROWS = 128;
 
+/**
+ * Deliberately absent: a bounded yield frequency for the targeted lookup.
+ *
+ * Yielding every N directories instead of every one was measured as free on
+ * an idle loop (214 bare `setImmediate`s cost 0.08ms) and looked attractive
+ * under contention, but nothing measured what it does to fairness while the
+ * warm pass is running, and `scanner.test.ts` pins one step per directory as
+ * the cooperative contract. The cache below removes the walk for anything the
+ * index has seen, which is the entire 67ms, so batching the yields on the
+ * remaining cold path would buy little and cost a fairness property no
+ * measurement here defends. Left alone on purpose.
+ */
+
 /** Hand the event loop to whatever else is waiting: I/O callbacks, timers, sockets. Microtasks do not qualify -- they run before the loop moves on. */
 function yieldToEventLoop(): Promise<void> {
   return new Promise<void>(resolve => setImmediate(resolve));
@@ -170,6 +184,30 @@ export class SessionIndex {
    * replay must not produce two full filesystem walks.
    */
   #buildInFlight: Promise<BuildOutcome> | null = null;
+
+  /**
+   * Session id to the file that holds it, for lookups that would otherwise
+   * walk every group directory.
+   *
+   * Seeded by the index build, which already has every path in hand: by the
+   * time an operator can tap a row, that row's path is known, so even the
+   * first tap skips the walk. Validated with one `existsSync` on the way out,
+   * so a file that has since moved or been deleted falls back to the walk
+   * rather than answering with a path that is no longer there.
+   *
+   * A session file does not move in practice -- its name encodes the session
+   * id and its directory encodes the cwd -- which is what makes an entry worth
+   * keeping rather than re-deriving. Bounded by the number of sessions on the
+   * machine, the same order as the catalog this class already assembles.
+   *
+   * Replaced wholesale at the end of a build rather than accumulated into.
+   * Two things follow from that, and both are the point: a build that is
+   * still walking never exposes a half-filled map to a `pathFor` running
+   * beside it, and a session whose file has gone drops out instead of sitting
+   * in here forever being re-validated. Assignment is the swap, so no reader
+   * can observe the intermediate.
+   */
+  #pathBySession: Map<string, string> = new Map();
   /**
    * The in-flight background warm pass. One at a time, shared by every
    * build that observed the same cold counts; a pass that would duplicate
@@ -229,14 +267,24 @@ export class SessionIndex {
    */
   async #buildNow(): Promise<BuildOutcome> {
     const files: RawSessionFile[] = [];
+    // Built beside the live one, never into it. The swap below is what makes
+    // this visible, all at once, to anything that asks after the build.
+    const discovered = new Map<string, string>();
     let sinceYield = 0;
     for await (const file of this.#scan(this.#sessionsRoot)) {
       files.push(file);
+      // Free: the scan already knows where every file is, and this is the
+      // whole reason a later tap does not have to go looking for one.
+      discovered.set(file.id, file.path);
       if (++sinceYield >= SCAN_YIELD_EVERY_FILES) {
         sinceYield = 0;
         await yieldToEventLoop();
       }
     }
+    // Everything the scan just proved, and nothing it did not: an id whose
+    // file was deleted or renamed between builds is gone from the map rather
+    // than lingering as a path that only fails validation.
+    this.#pathBySession = discovered;
     const misses: RawSessionFile[] = [];
     const held = new Set<string>();
     const archived = this.#store.listArchivedSessionIds();
@@ -440,12 +488,24 @@ export class SessionIndex {
    * client has no business being handed absolute paths on this machine.
    */
   async pathFor(sessionId: string): Promise<string | undefined> {
+    // One stat against 214 readdirs and as many event-loop turns. A remembered
+    // path that no longer exists is not an answer, so it is dropped and the
+    // walk runs: that keeps a deleted or moved file honest without making the
+    // common case pay for the rare one.
+    const remembered = this.#pathBySession.get(sessionId);
+    if (remembered !== undefined) {
+      if (existsSync(remembered)) return remembered;
+      this.#pathBySession.delete(sessionId);
+    }
     const steps = findSessionFileIter(sessionId, this.#sessionsRoot);
     let step = steps.next();
     while (!step.done) {
       await yieldToEventLoop();
       step = steps.next();
     }
+    // A walk that found it is worth remembering, so a second tap on a session
+    // the index never listed still pays the walk only once.
+    if (step.value !== undefined) this.#pathBySession.set(sessionId, step.value);
     return step.value;
   }
 
@@ -556,6 +616,10 @@ export class SessionIndex {
         results.push({ sessionId, deleted: false, refusal: "failed" });
         continue;
       }
+      // This process just unlinked the file, so it knows the mapping is dead
+      // without waiting for a build to notice or a later lookup to fail its
+      // `existsSync`.
+      this.#pathBySession.delete(sessionId);
       this.#store.deleteSessionRecords(sessionId);
       results.push({ sessionId, deleted: true });
     }
