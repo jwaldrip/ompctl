@@ -20,7 +20,7 @@ import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Connection, ConnectionList } from "../src/platform/connection.ts";
-import { resetSafeAreaInsets, setSafeAreaInsets } from "./rnw.ts";
+import { resetSafeAreaInsets, resetWindowSize, setSafeAreaInsets, setWindowSize } from "./rnw.ts";
 
 // Dynamic on purpose, same reason as `smoke.test.tsx`: bun evaluates a file's
 // whole static import graph before its body runs, so a static import of the
@@ -33,7 +33,10 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-afterEach(resetSafeAreaInsets);
+afterEach(() => {
+  resetSafeAreaInsets();
+  resetWindowSize();
+});
 
 const CONNECTION: Connection = {
   transport: "direct",
@@ -212,6 +215,14 @@ function mountShell(rows: readonly SessionSummary[] = [summary("sess_live")]): S
   };
 }
 
+/** The session list's content container: the first child of the virtualized list node, where content padding lands. */
+function fleetListContent(shell: Shell): HTMLElement {
+  const list = shell.el("fleet-list");
+  if (list === null) throw new Error("no fleet list rendered");
+  const content = list.children[0];
+  if (!(content instanceof HTMLElement)) throw new Error("fleet list has no content container");
+  return content;
+}
 function typeInto(input: HTMLElement, value: string): void {
   const key = Object.keys(input).find(name => name.startsWith("__reactProps$"));
   if (key === undefined) throw new Error("no React props on the rendered input");
@@ -308,6 +319,52 @@ describe("the system insets are honoured at both edges", () => {
       // spacer is asserting that this device's notch reached the header at all.
       const heights = [...shell.host.querySelectorAll<HTMLElement>("*")].map(node => node.style.height);
       expect(heights).toContain(`${NOTCH.top}px`);
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("the tablet split bay pays the home indicator as list content, never as bay padding", () => {
+    // iPad-class window: the split is on, so the fleet shell declines the
+    // bottom edge (the detail pane's composer owns its own). The list must
+    // reach the screen edge: the dead band this test exists to stop is a
+    // transparent strip an inset deep below the last row, which is exactly
+    // what padding on the bay container produces. The inset lands on the
+    // list's content instead, so rows clear the home indicator while the
+    // scrollable surface runs to the edge.
+    setWindowSize(1024, 1366);
+    setSafeAreaInsets(NOTCH);
+    const shell = mountShell();
+    try {
+      const surface = shell.el("fleet-surface");
+      expect(padding(surface).bottom).toBe("0px");
+      // The list's scroll content, not the list itself: the inset is paid as
+      // content padding on the list's content container.
+      const listContent = fleetListContent(shell);
+      expect(listContent.style.paddingBottom).toBe(`${NOTCH.bottom}px`);
+      // The bay container itself must not pad the inset away again: that is
+      // the strip of base colour below the last row the defect produced.
+      const bay = listContent.closest('[data-testid="fleet"]')?.parentElement ?? null;
+      expect(bay).not.toBeNull();
+      expect(
+        (bay as HTMLElement).style.paddingBottom === "" || (bay as HTMLElement).style.paddingBottom === "0px",
+      ).toBe(true);
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("the phone list still pays the home indicator through its shell, not the list content", () => {
+    // The default 390x844 window keeps the single-pane layout, where the
+    // fleet shell pays the bottom edge and the list content pays nothing, so
+    // nothing double counts on either edge.
+    setSafeAreaInsets(NOTCH);
+    const shell = mountShell();
+    try {
+      const surface = shell.el("fleet-surface");
+      expect(padding(surface).bottom).toBe(`${NOTCH.bottom}px`);
+      const listContent = fleetListContent(shell);
+      expect(listContent.style.paddingBottom === "" || listContent.style.paddingBottom === "0px").toBe(true);
     } finally {
       shell.unmount();
     }
