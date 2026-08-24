@@ -23,6 +23,12 @@ const MANAGER: Connection = {
   scopes: ["read", "manage", "prompt"],
 };
 const WATCHER: Connection = { ...MANAGER, token: "tok_watch", scopes: ["read"] };
+/**
+ * What `PairScreen` actually writes: a device paired by hand carries no scope
+ * hint at all, because nothing in that flow knows what the operator approved.
+ * Undeclared, never a refusal.
+ */
+const UNDECLARED: Connection = { ...MANAGER, token: "tok_hand_paired", scopes: [] };
 
 const ROUTINE: RemoteRoutine = {
   id: "rtn_calls",
@@ -98,7 +104,14 @@ function el(host: HTMLElement, testID: string): HTMLElement | null {
   return host.querySelector(`[data-testid="${testID}"]`);
 }
 
-async function mounted(connection: Connection) {
+/**
+ * `hello` defaults to greeting with the pairing's own scopes, which is the
+ * ordinary case. It is a separate argument because the stored scopes and the
+ * daemon's answer are genuinely two different facts: a device paired by hand
+ * stores none at all, and a grant can be widened or narrowed on the daemon
+ * long after the pairing was written.
+ */
+async function mounted(connection: Connection, hello?: { scopes?: string[] }) {
   const { client, socket } = cannedClient();
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -106,9 +119,14 @@ async function mounted(connection: Connection) {
   act(() => {
     root.render(<RoutinesScreen connection={connection} onBack={() => {}} createClient={() => client} />);
   });
+  const greeted = hello === undefined ? connection.scopes : hello.scopes;
   act(() => {
     socket.accept();
-    socket.deliver({ t: "hello", deviceId: "dev_phone", agents: [], scopes: connection.scopes });
+    socket.deliver(
+      greeted === undefined
+        ? { t: "hello", deviceId: "dev_phone", agents: [] }
+        : { t: "hello", deviceId: "dev_phone", agents: [], scopes: greeted },
+    );
   });
   await settle();
   return { socket, host, root };
@@ -621,6 +639,131 @@ describe("RoutinesScreen delete and webhook surface", () => {
     // clean into a shell.
     expect(clipboardWrites()).toEqual([expectedUrl]);
     expect(el(host, "routine-secret-copy")?.textContent).toContain("Copied");
+
+    act(() => root.unmount());
+    host.remove();
+  });
+});
+
+describe("RoutinesScreen scope gate", () => {
+  test("a pairing that declared no scopes manages routines the daemon says it may", async () => {
+    forbidFetch();
+    // The hand-paired case: nothing stored, and a daemon that grants manage.
+    const { socket, host, root } = await mounted(UNDECLARED, { scopes: ["read", "manage", "prompt"] });
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    // No refusal is claimed, because none was made.
+    expect(el(host, "routines-readonly-notice")).toBeNull();
+    expect(el(host, "routines-run-disabled-notice")).toBeNull();
+
+    // And the irreversible control actually reaches the daemon rather than
+    // sitting disabled against a grant that would have allowed it.
+    act(() => el(host, "routine-rtn_calls-delete")?.click());
+    await settle();
+    act(() => el(host, "routine-rtn_calls-confirm-yes")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_delete")).toEqual([{ t: "routine_delete", routineIds: [ROUTINE.id] }]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a daemon that reports no manage scope takes the controls away, whatever the pairing stored", async () => {
+    forbidFetch();
+    // The stored hint says manage; the daemon's own record says otherwise, and
+    // the daemon is the thing doing the enforcing.
+    const { socket, host, root } = await mounted(MANAGER, { scopes: ["read"] });
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    expect(el(host, "routines-readonly-notice")?.textContent).toContain("manage");
+    act(() => el(host, "routine-rtn_calls-delete")?.click());
+    await settle();
+    expect(el(host, "routine-rtn_calls-confirm-yes")).toBeNull();
+    expect(socket.framesOfType("routine_delete")).toEqual([]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("an older daemon that reports no scopes at all leaves an undeclared pairing able to act", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(UNDECLARED, {});
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    expect(el(host, "routines-readonly-notice")).toBeNull();
+    act(() => el(host, "routine-rtn_calls-delete")?.click());
+    await settle();
+    act(() => el(host, "routine-rtn_calls-confirm-yes")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_delete")).toEqual([{ t: "routine_delete", routineIds: [ROUTINE.id] }]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a routine list already on screen does not put the gate back to unknown", async () => {
+    forbidFetch();
+    // A reconnect re-greets, but a plain `agents` frame carries no scopes, and
+    // that absence must not overwrite the answer the daemon already gave.
+    const { socket, host, root } = await mounted(MANAGER, { scopes: ["read"] });
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    act(() => socket.deliver({ t: "agents", agents: [] }));
+    await settle();
+
+    expect(el(host, "routines-readonly-notice")?.textContent).toContain("manage");
+
+    act(() => root.unmount());
+    host.remove();
+  });
+});
+
+describe("RoutinesScreen action refusals", () => {
+  test("an error answering a delete reaches the operator instead of clearing the spinner", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    act(() => el(host, "routine-rtn_calls-delete")?.click());
+    await settle();
+    act(() => el(host, "routine-rtn_calls-confirm-yes")?.click());
+    await settle();
+    act(() =>
+      socket.deliver({
+        t: "error",
+        code: "routine_delete_failed",
+        message: "the routine store is read-only",
+      }),
+    );
+    await settle();
+
+    expect(el(host, "routines-action-error")?.textContent).toContain("the routine store is read-only");
+    // The list it was showing survives: an action refusal is not a failed read.
+    expect(el(host, "routine-rtn_calls")).not.toBeNull();
+    expect(el(host, "routines-read-error")).toBeNull();
+
+    // And the control is usable again rather than stuck behind a spinner that
+    // never cleared.
+    act(() => el(host, "routine-rtn_calls-confirm-yes")?.click());
+    await settle();
+    expect(socket.framesOfType("routine_delete")).toHaveLength(2);
+    expect(el(host, "routines-action-error")).toBeNull();
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a failed first read still owns the whole screen", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "error", code: "routines_unavailable", message: "no routine runner" }));
+    await settle();
+
+    expect(el(host, "routines-read-error")?.textContent).toContain("no routine runner");
+    expect(el(host, "routines-action-error")).toBeNull();
 
     act(() => root.unmount());
     host.remove();
