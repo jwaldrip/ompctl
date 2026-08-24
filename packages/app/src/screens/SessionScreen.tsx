@@ -353,7 +353,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           onDecide={props.onDecide}
           spoken={props.spoken}
           canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
-          loadingEarlier={props.historyLoading}
+          historyLoading={props.historyLoading}
           onLoadEarlier={props.onLoadEarlier}
         />
 

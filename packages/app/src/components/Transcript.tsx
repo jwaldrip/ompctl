@@ -17,7 +17,7 @@ import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useCallback } from "react";
 import type { ListRenderItemInfo } from "react-native";
-import { FlatList, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
@@ -36,7 +36,8 @@ export interface TranscriptProps {
   /** The daemon's prose summary of the last settled turn, when there is one. */
   spoken?: string | null;
   canLoadEarlier?: boolean;
-  loadingEarlier?: boolean;
+  /** True while any history page is in flight, first or earlier. */
+  historyLoading?: boolean;
   onLoadEarlier?: () => void;
 }
 
@@ -47,7 +48,7 @@ export function Transcript({
   onDecide,
   spoken,
   canLoadEarlier,
-  loadingEarlier,
+  historyLoading,
   onLoadEarlier,
 }: TranscriptProps): JSX.Element {
   const renderItem = useCallback(
@@ -85,19 +86,26 @@ export function Transcript({
             testID="history-load-earlier"
             accessibilityRole="button"
             accessibilityLabel="Load earlier transcript entries"
-            disabled={loadingEarlier}
+            disabled={historyLoading}
             onPress={onLoadEarlier}
             style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
           >
             <Glyph name="resume" size={11} color={ink.muted} />
-            <Label color={ink.muted}>{loadingEarlier ? "Loading earlier…" : "Load earlier"}</Label>
+            <Label color={ink.muted}>{historyLoading ? "Loading earlier…" : "Load earlier"}</Label>
           </Pressable>
         ) : null
       }
       ListFooterComponent={
         spoken === null || spoken === undefined || spoken.length === 0 ? null : <Spoken text={spoken} />
       }
-      ListEmptyComponent={<Empty />}
+      ListEmptyComponent={
+        // An empty list is two different truths and the fetch state is what
+        // tells them apart: an ask in flight with nothing on screen is a
+        // session still being read, which on a large file is a long wait, and
+        // painting it as "nothing yet" -- or as blank -- is exactly the report
+        // that a big session looked broken.
+        historyLoading ? <Loading /> : <Empty />
+      }
     />
   );
 }
@@ -208,6 +216,21 @@ function Empty(): JSX.Element {
     <View style={styles.empty} testID="transcript-empty">
       <Glyph name="bay" size={22} color={ground.edge} />
       <Label color={ink.muted}>Nothing on this strip yet.</Label>
+    </View>
+  );
+}
+
+/**
+ * The session's first page is still being read. The spinner and the muted
+ * label are the vocabulary the rest of the app already uses to say a read is
+ * in flight (the boot screen, routines, settings), rather than a second one
+ * invented here.
+ */
+function Loading(): JSX.Element {
+  return (
+    <View style={styles.empty} testID="transcript-loading">
+      <ActivityIndicator color={ink.plain} />
+      <Label color={ink.muted}>Loading this session…</Label>
     </View>
   );
 }

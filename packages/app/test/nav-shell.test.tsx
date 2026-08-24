@@ -67,6 +67,8 @@ class CannedClient {
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly agentPrompts: Array<{ agentId: AgentId; text: string }> = [];
   readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
+  /** What this canned socket claims about its link, read once at mount. */
+  readonly connectionState = "connected";
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -124,6 +126,18 @@ class CannedClient {
   resumeSession(sessionId: string, cwd: string): void {
     this.resumes.push({ sessionId, cwd });
   }
+  /**
+   * The Cowork surface's own asks, answered by `emit` when a test chooses.
+   * No-ops rather than absent: that surface polls, and a missing method turns
+   * a navigation assertion into a TypeError about the double.
+   */
+  readSkills(): void {}
+  readConnectors(): void {}
+  readTasks(): void {}
+  createTask(): void {}
+  cancelTask(): void {}
+  listDirectory(): void {}
+  createAgent(): void {}
   prompt(agentId: AgentId, text: string): void {
     this.agentPrompts.push({ agentId, text });
   }
@@ -280,6 +294,134 @@ describe("the stack opens on the fleet and comes back to it", () => {
       // (the effect would see no change and never push).
       shell.press("session-open-sess_live");
       expect(shell.el("terminal-session")).not.toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+});
+
+describe("an open session never paints a closed claim while its first frames fly", () => {
+  test("a dormant resume opens on the session with a loading transcript, not 'That session closed.'", () => {
+    const shell = mountShell([summary("sess_dormant", { status: "dormant" })]);
+    try {
+      shell.press("session-open-sess_dormant");
+      expect(shell.client.resumes).toEqual([
+        { sessionId: "sess_dormant", cwd: "/Users/op/dev/src/github.com/op/alpha" },
+      ]);
+
+      // The daemon's answer selects and attaches, then asks for the first
+      // history page. Neither the replay nor the page has landed yet: this is
+      // the window a Pixel screenshot caught wearing "That session closed.",
+      // with no way back, for the whole of the daemon's read.
+      act(() => {
+        shell.client.emit("session_opened", { sessionId: "sess_dormant", agentId: "agt_resumed" });
+      });
+      expect(shell.el("session-gone")).toBeNull();
+      expect(shell.el("session")).not.toBeNull();
+      expect(shell.el("transcript-loading")).not.toBeNull();
+      expect(shell.el("transcript-empty")).toBeNull();
+      // The way back is on screen for the whole window.
+      expect(shell.el("session-back")).not.toBeNull();
+
+      // The first page retires the loading state rather than the empty one:
+      // the session demonstrably holds something.
+      act(() => {
+        shell.client.emit("session_history", {
+          agentId: "agt_resumed",
+          sessionId: "sess_dormant",
+          entries: [{ kind: "assistant", id: "h1", text: "The oldest page.", thought: false, at: "" }],
+          nextBefore: null,
+        });
+      });
+      expect(shell.el("transcript-loading")).toBeNull();
+      expect(shell.el("entry-assistant")?.getAttribute("aria-label")).toBe("agent: The oldest page.");
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("a live session's first history fetch says it is loading, and an answered empty page says 'yet'", () => {
+    const shell = mountShell([]);
+    try {
+      act(() => {
+        shell.client.emit("agents", {
+          t: "agents",
+          agents: [
+            {
+              id: "agt_big" as AgentId,
+              name: "Big session",
+              state: "busy",
+              acpSessionId: "sess-big",
+              host: { kind: "local", id: "1", spec: { kind: "local" } },
+              cwd: "/workspace",
+              createdAt: "2026-02-01T00:00:00.000Z",
+              lastActiveAt: "2026-02-01T00:00:00.000Z",
+              labels: {},
+            },
+          ],
+        });
+      });
+      shell.press("session-open-sess-big");
+      expect(shell.client.histories).toEqual([{ agentId: "agt_big", sessionId: "sess-big" }]);
+
+      // A fetch is provably in flight and nothing has landed: blank is
+      // indistinguishable from broken, which is exactly the iPad report.
+      expect(shell.el("transcript-loading")).not.toBeNull();
+      expect(shell.el("transcript-empty")).toBeNull();
+
+      // An answered page with nothing in it is not a fetch in flight, so the
+      // empty vocabulary returns and no closed claim appears either way.
+      act(() => {
+        shell.client.emit("session_history", {
+          agentId: "agt_big",
+          sessionId: "sess-big",
+          entries: [],
+          nextBefore: null,
+        });
+      });
+      expect(shell.el("transcript-loading")).toBeNull();
+      expect(shell.el("transcript-empty")).not.toBeNull();
+      expect(shell.el("session-gone")).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+});
+
+describe("a session view that cannot show the session still offers the way back", () => {
+  test("the closed surface carries a back control that lands on the list", () => {
+    const shell = mountShell();
+    try {
+      // The one open that can still land here: a task naming an agent no
+      // roster row, session entry, or daemon vouch backs, opened from Cowork.
+      // Reaching it also proves the open survives a screen that pops itself
+      // and then selects, which used to drop the selection outright.
+      shell.press("open-menu");
+      shell.press("open-cowork");
+      act(() => {
+        shell.client.emit("tasks", {
+          tasks: [
+            {
+              id: "t_stale",
+              title: "A task whose session is gone",
+              prompt: "stale",
+              agentId: "agt_stale",
+              state: "running",
+              createdAt: "2026-02-01T00:00:00.000Z",
+              updatedAt: "2026-02-01T00:00:00.000Z",
+              labels: {},
+            },
+          ],
+        });
+      });
+      shell.press("task-t_stale");
+      shell.press("task-detail-open-session");
+      expect(shell.el("session-gone")).not.toBeNull();
+
+      // The dead end was real: nothing on this surface led anywhere.
+      shell.press("session-gone-back");
+      expect(shell.el("session-gone")).toBeNull();
+      expect(shell.el("fleet-list")).not.toBeNull();
     } finally {
       shell.unmount();
     }

@@ -442,6 +442,30 @@ describe("the roster is the authority", () => {
     expect(agentFor(state, "a1")?.name).toBe("agent a1");
   });
 
+  test("a vouched agent renders its stand-in before its first frame lands", () => {
+    // The resume answer selects, attaches, and asks for the first history
+    // page; the replay and the page are still on the wire. Claiming the
+    // session closed in this window is the dead end a dormant tap landed on:
+    // the claim was false for the whole of the daemon's read.
+    const opening = drive([
+      { t: "agents", event: { agents: [agent("a1")] } },
+      { t: "select", agentId: "a2" },
+      { t: "history_request", agentId: "a2" },
+    ]);
+    const standIn = agentFor(opening, "a2");
+    expect(standIn).not.toBeNull();
+    expect(standIn?.state).toBe("idle");
+
+    // An empty first page folds no session entry, and the answer must not
+    // resurrect the closed claim either: the daemon still vouched for the
+    // agent, and its replay may yet stream.
+    const answered = apply(opening, {
+      t: "session_history",
+      event: { agentId: "a2", sessionId: "s2", entries: [], nextBefore: null },
+    });
+    expect(agentFor(answered, "a2")).not.toBeNull();
+  });
+
   test("a turn that stopped leaves nothing streaming", () => {
     const state = drive([
       { t: "agents", event: { agents: [agent("a1", { state: "busy" })] } },

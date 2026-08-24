@@ -946,8 +946,8 @@ export function sessionFor(state: ConsoleState, agentId: AgentId): SessionState 
 
 /**
  * The agent a screen should render for an id: the roster's entry when it has
- * one, and otherwise a stand-in for an agent the daemon has vouched for but
- * the roster has not listed yet.
+ * one, and otherwise a stand-in for an agent this device holds daemon
+ * evidence for that no roster frame has listed yet.
  *
  * That gap is the dormant open. The daemon answers a resume with
  * `session_opened` and streams the replay, but its roster pushes only reach
@@ -955,15 +955,30 @@ export function sessionFor(state: ConsoleState, agentId: AgentId): SessionState 
  * session learns the new agent only from the next unrelated roster change or
  * a reconnect. Rendering nothing until then reads as a tap that did nothing;
  * rendering the stand-in reads as the session, which is what the updates
- * arriving into `sessions` already prove it is. The stand-in is built only
- * from what the session itself reported (title, cwd, updatedAt) plus an
- * honest idle state, never an invented name, and the first roster frame that
- * lists the agent replaces it whole.
+ * arriving into `sessions` already prove it is.
+ *
+ * Daemon evidence comes in two strengths. A folded session entry is the
+ * strong one: updates or a history page have landed, so the stand-in carries
+ * what they reported (title, cwd, updatedAt). The history ask is the weak
+ * one, and it is still evidence: it is only ever sent for an agent the daemon
+ * itself named. Before the ask counted here, the whole window between the
+ * resume answer and the first frame rendered "That session closed.", which
+ * over a first page that takes seconds to read is a false claim wearing a
+ * loading screen, with no way back. The stand-in is built only from what the
+ * session reported plus an honest idle state, never an invented name, and the
+ * first roster frame that lists the agent replaces it whole.
  */
 export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   const roster = state.agents.find(agent => agent.id === agentId);
   if (roster !== undefined) return roster;
-  const session = state.sessions.get(agentId);
+  // An agent whose history was asked about but has folded no frame holds no
+  // entry in `sessions`, so the vouch stands in for one: nothing but honest
+  // unknowns to show, which is what the window holds. Counting an answered
+  // ask too covers the rarer window where the first page came back empty --
+  // which folds no session entry -- and the daemon's word is still the only
+  // fact this device holds about the agent.
+  const vouched = state.historyLoading.has(agentId) || state.historyBefore.has(agentId);
+  const session = state.sessions.get(agentId) ?? (vouched ? EMPTY_SESSION : undefined);
   if (session === undefined) return null;
   const gone = (state.rosterMisses.get(agentId) ?? 0) >= 2;
   return {

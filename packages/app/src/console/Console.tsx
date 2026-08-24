@@ -25,16 +25,17 @@ import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { AgentHub } from "../components/AgentHub.tsx";
 import { Toast } from "../components/Toast.tsx";
 import { skillInvocation } from "../cowork/catalog.ts";
 import type { NewTaskInput } from "../cowork/tasks.ts";
 import { useCowork } from "../cowork/useCowork.ts";
+import { Glyph } from "../design/icons.tsx";
 import { useSplitBayWidth, useSplitLayout } from "../design/layout.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
-import { Body } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
+import { Body, Label } from "../design/text.tsx";
+import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
 import { AppNavigator } from "../nav/AppNavigator.tsx";
 import type { Connection, ConnectionList } from "../platform/connection.ts";
@@ -198,19 +199,32 @@ export function Console({
   }, []);
 
   const log = (agentId: AgentId, back: () => void, openConfig: () => void): JSX.Element => {
-    // `agentFor`, not a raw roster lookup: a resumed session starts streaming
-    // before any roster frame lists its agent, and the log it is streaming must
-    // be on screen rather than waiting for an unrelated roster change. The
-    // stand-in it builds is what keeps "That session closed." for genuinely
-    // deleted agents instead of every interleaving the relay can produce.
+    // `agentFor`, not a raw roster lookup: a session the daemon vouched for
+    // renders before any roster frame lists its agent, and its log must be on
+    // screen rather than waiting for an unrelated roster change. The stand-in
+    // it builds keeps "That session closed." for the one shape that deserves
+    // it: an id no roster row, session entry, or daemon vouch backs, such as a
+    // task whose session was deleted before its link was tapped.
     const agent = agentFor(state, agentId);
-    // The route can outlive its agent by one frame: a roster refresh that drops
-    // an agent clears the selection, and the pop happens in the same commit's
-    // effect. Saying so is better than an empty log pretending to be a session.
     if (agent === null) {
       return (
+        // The way back is the point of this surface's chrome. It exists
+        // precisely when there is nothing else to show, so a dead end with no
+        // exit is a trap rather than a message, and the operator arrived here
+        // from a list they can no longer see. Same control, same label, and
+        // same vocabulary the live session screens carry.
         <SafeScreen style={styles.gone} testID="session-gone">
           <Body color={ink.muted}>That session closed.</Body>
+          <Pressable
+            testID="session-gone-back"
+            accessibilityRole="button"
+            accessibilityLabel="Back to sessions"
+            onPress={back}
+            style={({ pressed }) => [styles.goneBack, pressed && { backgroundColor: ground.active }]}
+          >
+            <Glyph name="back" size={14} color={ink.plain} />
+            <Label color={ink.plain}>Sessions</Label>
+          </Pressable>
         </SafeScreen>
       );
     }
@@ -616,7 +630,18 @@ const styles = StyleSheet.create({
   // the fixed 340 happened. `test/no-hidden-content.test.ts` holds the rule.
   splitBay: { borderRightWidth: stroke.heavy, borderRightColor: ground.edge },
   splitDetail: { flex: 1 },
-  gone: { alignItems: "center", justifyContent: "center", padding: space.gulf },
+  gone: { alignItems: "center", justifyContent: "center", gap: space.step, padding: space.gulf },
+  // A labelled control and a full touch target: this is the only way off a
+  // surface that has nothing else on it.
+  goneBack: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.step,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+  },
   limit: { gap: space.step, justifyContent: "center", padding: space.gulf },
   coworkNotice: { padding: space.step, backgroundColor: ground.surface },
 });

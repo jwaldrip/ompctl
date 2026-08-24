@@ -151,9 +151,23 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
   leave.current = onLeaveSelection;
   const openSelection = useRef(selection);
   openSelection.current = selection;
+  /**
+   * The selection the sync effect below has already put on the stack.
+   *
+   * The two directions of this sync do not commit together: the model changes
+   * during render and the stack changes in the effect after it, so between
+   * those two moments the model holds a selection the stack has never seen. A
+   * screen that pops in that window makes the stack report no detail route
+   * while the newest selection is still waiting for the effect, and Cowork and
+   * the new-session screen both pop themselves and then select the session
+   * they opened. Reading that report as "the operator left" cleared the
+   * selection and lost the open silently: the tap did nothing at all.
+   */
+  const synced = useRef<ShellSelection | null>(selection);
 
   useEffect(() => {
     if (!navigation.isReady()) return;
+    synced.current = selection;
     const routes = navigation.getRootState().routes;
     const focused = routes[routes.length - 1];
     const stackHasDetail = routes.some(route => DETAIL_ROUTES[route.name] === true);
@@ -181,6 +195,11 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
 
   const onStateChange = useCallback(() => {
     if (openSelection.current === null || !navigation.isReady()) return;
+    // A stack that has not been handed the current selection yet cannot report
+    // that the operator left it: the effect above is about to push its route.
+    // Only a stack that has already carried this exact selection is evidence
+    // about what the operator did with it.
+    if (synced.current !== openSelection.current) return;
     const stackHasDetail = navigation.getRootState().routes.some(route => DETAIL_ROUTES[route.name] === true);
     // A detail route still under an open menu is not a closed session, which is
     // why this asks the whole stack rather than the focused route.

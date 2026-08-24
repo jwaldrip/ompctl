@@ -232,9 +232,19 @@ export function useConsole(
       leaveCollab(current.selected, agentId);
       dispatch({ t: "select", agentId });
       client.attach(agentId, current.watermarks.has(agentId) ? {} : { sinceSeq: 0 });
-      const agent = current.agents.find(candidate => candidate.id === agentId);
-      if (agent?.acpSessionId !== undefined && !current.historyBefore.has(agentId)) {
-        requestHistory(agentId, agent.acpSessionId);
+      // The roster first, the index second, because either can be the fresher
+      // one: `openSessionTarget` resolves a live row through the index when
+      // the roster has not admitted its holder yet, and an open that took that
+      // road would otherwise ask for no history at all. That costs two things
+      // at once. The replay becomes the only source of the transcript, so a
+      // long read shows an empty log with nothing said about it, and the ask
+      // is also what tells the screens the daemon vouched for this agent.
+      const roster = current.agents.find(candidate => candidate.id === agentId);
+      const sessionId =
+        roster?.acpSessionId ??
+        current.sessionIndex.find(row => row.agentId === agentId && row.status === "live-ompd")?.id;
+      if (sessionId !== undefined && !current.historyBefore.has(agentId)) {
+        requestHistory(agentId, sessionId);
       }
     },
     [client, leaveCollab, requestHistory],
