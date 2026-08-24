@@ -11,7 +11,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "@ompd/core";
@@ -766,6 +766,123 @@ describe("SessionIndex.pathFor", () => {
     const index = buildIndex(sessionsRoot, store);
 
     expect(await index.pathFor(SESSION_A)).toBeUndefined();
+  });
+
+  /**
+   * Makes the tree traversable but not listable.
+   *
+   * This is the discriminator the cache tests need, and it took a wrong turn to
+   * find: moving decoy files around proves nothing, because the walk still
+   * finds the real file at the same path and passes either way. Execute
+   * without read is different. `existsSync` on a known absolute path only
+   * needs to traverse, so a remembered path still resolves; `readdirSync`
+   * needs read, so the walk fails outright. A lookup that answers under these
+   * permissions can only have answered from memory.
+   */
+  function sealTree(sessionsRoot: string): () => void {
+    const dirs = [
+      sessionsRoot,
+      ...readdirSync(sessionsRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => join(sessionsRoot, e.name)),
+    ];
+    for (const dir of dirs) chmodSync(dir, 0o111);
+    return () => {
+      for (const dir of dirs) chmodSync(dir, 0o755);
+    };
+  }
+
+  test("a path already resolved is answered from memory, with the tree unlistable", async () => {
+    // The walk is what costs: on this machine's real tree one lookup measured
+    // 110ms p50, because it takes an event-loop turn per group directory and
+    // the fleet list's own warm pass is still on the loop when a tap arrives.
+    const sessionsRoot = tempRoot("session-index-pathfor-cache-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const wanted = writeSessionFile(sessionsRoot, "-b", "2026-08-11T00-00-00-000Z", SESSION_B, [titleLine("b")]);
+    const index = buildIndex(sessionsRoot, store);
+
+    expect(await index.pathFor(SESSION_B)).toBe(wanted);
+
+    const unseal = sealTree(sessionsRoot);
+    try {
+      // Only a remembered path can answer now.
+      expect(await index.pathFor(SESSION_B)).toBe(wanted);
+    } finally {
+      unseal();
+    }
+  });
+
+  test("the index build seeds the cache, so even the first lookup skips the walk", async () => {
+    // This is what makes the fix show up on the tap that matters rather than
+    // on the second one: the scan already knows every path, so by the time an
+    // operator can press a row, that row's path is known.
+    const sessionsRoot = tempRoot("session-index-pathfor-seed-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const wanted = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+
+    await index.query({ includeArchived: true });
+
+    const unseal = sealTree(sessionsRoot);
+    try {
+      // Never looked up before, and the tree cannot be listed: the only way to
+      // answer is from what the build already recorded.
+      expect(await index.pathFor(SESSION_A)).toBe(wanted);
+    } finally {
+      unseal();
+    }
+  });
+
+  test("a remembered path that has been deleted is not answered, it is re-resolved", async () => {
+    // Freshness identity. A stale hit must never be served, so the entry is
+    // dropped and the walk runs; with the file genuinely gone the honest
+    // answer is undefined. This one holds on either implementation, which is
+    // the point of a guard: it pins the behaviour the cache must not break.
+    const sessionsRoot = tempRoot("session-index-pathfor-stale-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const path = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+    expect(await index.pathFor(SESSION_A)).toBe(path);
+
+    rmSync(path);
+    expect(await index.pathFor(SESSION_A)).toBeUndefined();
+  });
+
+  test("a session file that moved to another group resolves to where it is now", async () => {
+    // The one case a map that never revalidated would get wrong: same id,
+    // different directory. The stale entry fails its existence check, the walk
+    // runs, and the new location is both returned and learned.
+    const sessionsRoot = tempRoot("session-index-pathfor-moved-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const before = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+    expect(await index.pathFor(SESSION_A)).toBe(before);
+
+    const newDir = join(sessionsRoot, "-elsewhere");
+    mkdirSync(newDir, { recursive: true });
+    const after = join(newDir, `2026-08-10T00-00-00-000Z_${SESSION_A}.jsonl`);
+    renameSync(before, after);
+    expect(await index.pathFor(SESSION_A)).toBe(after);
+
+    // Learned, not re-walked: sealing the tree proves the new location is now
+    // what memory holds.
+    const unseal = sealTree(sessionsRoot);
+    try {
+      expect(await index.pathFor(SESSION_A)).toBe(after);
+    } finally {
+      unseal();
+    }
+  });
+
+  test("a session created after the build is still found, because a miss still walks", async () => {
+    const sessionsRoot = tempRoot("session-index-pathfor-new-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+    await index.query({ includeArchived: true });
+
+    const fresh = writeSessionFile(sessionsRoot, "-new", "2026-08-14T00-00-00-000Z", SESSION_C, [titleLine("c")]);
+    expect(await index.pathFor(SESSION_C)).toBe(fresh);
   });
 
   test("a sessions root that is not there answers undefined rather than throwing", async () => {

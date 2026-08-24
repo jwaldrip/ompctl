@@ -30,6 +30,7 @@
  *   multiply the work it is reconnecting because of.
  */
 
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -130,6 +131,22 @@ const SCAN_YIELD_EVERY_FILES = 8;
  */
 const WARM_CACHE_BATCH_ROWS = 128;
 
+/**
+ * How many group directories the targeted lookup walks between event-loop
+ * yields, on the path where it has to walk at all.
+ *
+ * One yield per directory was the original shape and it is free on an idle
+ * loop: 214 bare `setImmediate`s measured 0.08ms. It is not free when the loop
+ * is busy, which is exactly when a tap arrives -- the fleet list's own warm
+ * pass is still running -- and each turn then queues behind a slice of it. On
+ * this machine's real tree that made one lookup 67ms p50.
+ *
+ * The cache below removes the walk for anything the index has seen, so this
+ * only bounds the cold path. Sixteen `readdir`s is a slice well under a
+ * frame, and it cuts the turns a cold lookup spends by the same factor.
+ */
+const FIND_YIELD_EVERY_DIRS = 16;
+
 /** Hand the event loop to whatever else is waiting: I/O callbacks, timers, sockets. Microtasks do not qualify -- they run before the loop moves on. */
 function yieldToEventLoop(): Promise<void> {
   return new Promise<void>(resolve => setImmediate(resolve));
@@ -170,6 +187,23 @@ export class SessionIndex {
    * replay must not produce two full filesystem walks.
    */
   #buildInFlight: Promise<BuildOutcome> | null = null;
+
+  /**
+   * Session id to the file that holds it, for lookups that would otherwise
+   * walk every group directory.
+   *
+   * Seeded by the index build, which already has every path in hand: by the
+   * time an operator can tap a row, that row's path is known, so even the
+   * first tap skips the walk. Validated with one `existsSync` on the way out,
+   * so a file that has since moved or been deleted falls back to the walk
+   * rather than answering with a path that is no longer there.
+   *
+   * A session file does not move in practice -- its name encodes the session
+   * id and its directory encodes the cwd -- which is what makes an entry worth
+   * keeping rather than re-deriving. Bounded by the number of sessions on the
+   * machine, the same order as the catalog this class already assembles.
+   */
+  readonly #pathBySession = new Map<string, string>();
   /**
    * The in-flight background warm pass. One at a time, shared by every
    * build that observed the same cold counts; a pass that would duplicate
@@ -232,6 +266,9 @@ export class SessionIndex {
     let sinceYield = 0;
     for await (const file of this.#scan(this.#sessionsRoot)) {
       files.push(file);
+      // Free: the scan already knows where every file is, and this is the
+      // whole reason a later tap does not have to go looking for one.
+      this.#pathBySession.set(file.id, file.path);
       if (++sinceYield >= SCAN_YIELD_EVERY_FILES) {
         sinceYield = 0;
         await yieldToEventLoop();
@@ -440,12 +477,26 @@ export class SessionIndex {
    * client has no business being handed absolute paths on this machine.
    */
   async pathFor(sessionId: string): Promise<string | undefined> {
+    // One stat against 214 readdirs and as many event-loop turns. A remembered
+    // path that no longer exists is not an answer, so it is dropped and the
+    // walk runs: that keeps a deleted or moved file honest without making the
+    // common case pay for the rare one.
+    const remembered = this.#pathBySession.get(sessionId);
+    if (remembered !== undefined) {
+      if (existsSync(remembered)) return remembered;
+      this.#pathBySession.delete(sessionId);
+    }
     const steps = findSessionFileIter(sessionId, this.#sessionsRoot);
     let step = steps.next();
+    let sinceYield = 0;
     while (!step.done) {
-      await yieldToEventLoop();
+      if (++sinceYield >= FIND_YIELD_EVERY_DIRS) {
+        sinceYield = 0;
+        await yieldToEventLoop();
+      }
       step = steps.next();
     }
+    if (step.value !== undefined) this.#pathBySession.set(sessionId, step.value);
     return step.value;
   }
 
