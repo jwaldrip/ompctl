@@ -996,25 +996,32 @@ export function canInvite(state: ConsoleState, storedScopes: readonly string[]):
 }
 
 /**
- * The three-way rule every scope-gated control follows: the daemon's hello
- * wins once it has reported scopes, the stored pairing's claim stands in
- * until then, and an empty stored grant means old or unknown rather than
- * missing.
+ * The three-way rule every scope-gated control follows, over the two things
+ * that actually decide it: what the daemon's hello reported (undefined until
+ * a daemon that reports scopes has answered) and what the pairing stored.
+ * Hello wins once it has answered, the stored claim stands in until then, and
+ * an empty stored grant means old or unknown rather than missing.
  *
- * One implementation for every scope, because the interesting part is the
- * three-way posture rather than which scope is being asked about, and two
- * copies of it would eventually disagree about what an older pairing means.
+ * Exported in this shape because not every scope-gated surface is inside the
+ * console reducer: `RoutinesScreen` owns its own socket and reads that
+ * socket's own hello, so it has the two inputs without ever holding a
+ * `ConsoleState`. One implementation for both, because two copies would
+ * eventually disagree about what an older pairing means, and the screen that
+ * disagreed would be the one whose controls silently went missing.
  */
-function scopeAccess(state: ConsoleState, storedScopes: readonly string[], scope: string): ScopeAccess {
-  const scopes = state.grantedScopes;
-  if (scopes !== undefined) return scopes.includes(scope) ? "granted" : "missing";
+export function scopeAccessOf(
+  grantedScopes: readonly string[] | undefined,
+  storedScopes: readonly string[],
+  scope: string,
+): ScopeAccess {
+  if (grantedScopes !== undefined) return grantedScopes.includes(scope) ? "granted" : "missing";
   if (storedScopes.length === 0) return "unknown";
   return storedScopes.includes(scope) ? "granted" : "missing";
 }
 
 /** The prompt scope's posture: what speaking to an agent and steering a terminal spend. */
 export function promptScopeAccess(state: ConsoleState, storedScopes: readonly string[]): PromptScopeAccess {
-  return scopeAccess(state, storedScopes, SCOPE_PROMPT);
+  return scopeAccessOf(state.grantedScopes, storedScopes, SCOPE_PROMPT);
 }
 
 /**
@@ -1026,7 +1033,7 @@ export function promptScopeAccess(state: ConsoleState, storedScopes: readonly st
  * silently went missing.
  */
 export function manageScopeAccess(state: ConsoleState, storedScopes: readonly string[]): ScopeAccess {
-  return scopeAccess(state, storedScopes, SCOPE_MANAGE);
+  return scopeAccessOf(state.grantedScopes, storedScopes, SCOPE_MANAGE);
 }
 
 /**
@@ -1078,7 +1085,7 @@ export const COLLAB_WATCH_ONLY =
  * which is why it never needed its own gate before.
  */
 export function readScopeAccess(state: ConsoleState, storedScopes: readonly string[]): ScopeAccess {
-  return scopeAccess(state, storedScopes, SCOPE_READ);
+  return scopeAccessOf(state.grantedScopes, storedScopes, SCOPE_READ);
 }
 
 /**
