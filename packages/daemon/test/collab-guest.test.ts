@@ -596,6 +596,20 @@ describe("CollabStreamMapper", () => {
     });
   });
 
+  test("a runaway plan is published up to the host's own array limit, not unbounded", () => {
+    // 300 tasks in one phase: past the 256 the host's own first shrink tier
+    // would have applied, so this leg publishes no more than the producer
+    // would have sent had the frame needed shrinking.
+    const tasks = Array.from({ length: 300 }, (_, index) => ({ content: `task ${index}`, status: "pending" }));
+    const updates = endToolCall("todo", { details: { phases: [{ name: "Long", tasks }] } });
+    const plan = updates[1] as { sessionUpdate: string; entries: Array<{ content: string }> };
+    expect(plan.sessionUpdate).toBe("plan");
+    expect(plan.entries).toHaveLength(256);
+    // Truncated from the end, so the todos the operator is working on survive.
+    expect(plan.entries[0]?.content).toBe("task 0");
+    expect(plan.entries[255]?.content).toBe("task 255");
+  });
+
   test("a blocker on a task that is not blocked is dropped, never shown as a live obstruction", () => {
     const updates = endToolCall("todo", {
       details: {

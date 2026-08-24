@@ -24,6 +24,7 @@ import type { MemoVoice } from "../voice/memo.ts";
 import { deviceMemoVoice } from "../voice/memo.ts";
 import type { ConsoleState, SessionOpenTarget } from "./state.ts";
 import {
+  agentFor,
   apply,
   emptyConsole,
   manageScopeAccess,
@@ -252,6 +253,39 @@ export function useConsole(
     },
     [client, leaveCollab, requestHistory],
   );
+
+  /**
+   * Re-ask for the open pane, when its answer was lost with the socket.
+   *
+   * Exactly one subject can be stalled and on screen, because the two detail
+   * panes are exclusive, so this asks once and re-arms once. Which frame goes
+   * out depends on which kind of pane it is, and each is the one the client
+   * itself documents as safe to re-send: `collab_open` answers with the agent
+   * the daemon already co-drives, and a history page is a read.
+   *
+   * Nothing happens for a `failed` pane. A refusal survives a reconnect: the
+   * daemon's answer did arrive, and re-asking would turn a verdict the
+   * operator has to act on into a spinner on every flap.
+   */
+  const reopenStalled = useCallback((): void => {
+    const current = stateRef.current;
+    const tuiSubject = current.selectedTui;
+    if (tuiSubject !== null) {
+      if (current.loads.get(tuiSubject)?.phase !== "stalled") return;
+      client.openCollab(tuiSubject);
+      dispatch({ t: "load_rearm", subject: tuiSubject });
+      return;
+    }
+    const agentId = current.selected;
+    if (agentId === null || current.loads.get(agentId)?.phase !== "stalled") return;
+    // Present by construction: a wait is armed for a session log only when a
+    // history page was asked for, and that needs a session file. An agent
+    // without one never waits, so it never stalls and never reaches here.
+    const sessionId = agentFor(current, agentId)?.acpSessionId;
+    if (sessionId === undefined) return;
+    requestHistory(agentId, sessionId);
+    dispatch({ t: "load_rearm", subject: agentId });
+  }, [client, requestHistory]);
   useEffect(() => {
     // The mic outlives this effect only when the link is alive; the cleanup
     // releases it for a full unmount the same way a dropped link does below.
@@ -277,6 +311,19 @@ export function useConsole(
             event: { message: "The link dropped while recording; that message was not delivered." },
           });
         }
+        // A stalled pane is re-asked on the socket that replaced the one its
+        // answer was coming on.
+        //
+        // Only the pane on screen, and deliberately: the client's own replay
+        // rules already say a snapshot ask is never replayed onto a screen
+        // nobody may still be on, and re-reading a transcript file for a
+        // session the operator has left is exactly that. A stalled load
+        // behind a pane they return to is re-asked when they open it again,
+        // because opening a row is what asks.
+        //
+        // The dispatch follows the send, never precedes it, so a wait is
+        // never re-armed for a frame that did not go out.
+        if (event.state === "connected") reopenStalled();
         if (event.state !== "connected" || askedForSessionIndex.current) return;
         askedForSessionIndex.current = true;
         // Archived rows ride along and the browser owns their visibility, so
@@ -441,7 +488,7 @@ export function useConsole(
       for (const off of offs) off();
       client.close();
     };
-  }, [askOlderTui, client, leaveCollab, requestHistory, settleWebViewAction, voice]);
+  }, [askOlderTui, client, leaveCollab, reopenStalled, requestHistory, settleWebViewAction, voice]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -530,30 +577,35 @@ export function useConsole(
           case "live-tui": {
             // A live terminal is joined, never taken over: nothing here
             // claims the renderer, and the transcript arrives through the
-            // same frames an owned agent uses. Watching spends the read
-            // scope, so a pairing that provably lacks it gets the reason
-            // stated rather than a frame the daemon must refuse; an unknown
-            // one asks optimistically, and the daemon's refusal arrives
-            // named.
+            // same frames an owned agent uses.
+            //
+            // The press commits the session before anything else, refusal or
+            // not. The pane belongs to this row from the moment it is
+            // touched, so every outcome -- a join, the steer-surface
+            // fallback, a refusal from the daemon, or the local refusal
+            // below -- lands on a pane that is already this session's rather
+            // than on the session the operator was reading a moment ago.
+            dispatch({ t: "tui_select", sessionId: target.sessionId, awaiting: true });
+            // Watching spends the read scope, so a pairing that provably
+            // lacks it gets the reason stated rather than a frame the daemon
+            // must refuse; an unknown one asks optimistically, and the
+            // daemon's refusal arrives named.
+            //
+            // Addressed to the subject, never raised as an ambient error. The
+            // reducer's error path keys its terminal branches off whatever is
+            // selected and never read a `sessionId` off the event at all, so
+            // a local refusal used to render as a toast over the previous
+            // session's log while that log stayed on screen. The pane carries
+            // the refusal now, which is why no notice is raised beside it.
             if (readScopeAccess(stateRef.current, connection.scopes) === "missing") {
               dispatch({
-                t: "error",
-                event: {
-                  // Addressed, so the refusal lands on the pane the operator
-                  // just committed to rather than only as a toast.
-                  sessionId: target.sessionId,
-                  message:
-                    "This device does not hold the read scope. Pair it again with read access to watch this terminal.",
-                },
+                t: "open_failed",
+                subject: target.sessionId,
+                message:
+                  "This device does not hold the read scope. Pair it again with read access to watch this terminal.",
               });
               return;
             }
-            // The press commits the session before the ask goes out, so the
-            // pane belongs to this row from the moment it is touched rather
-            // than from the moment the daemon answers. Every answer that can
-            // come back -- a join, the steer-surface fallback, or a refusal
-            // -- then lands on a pane that is already this session's.
-            dispatch({ t: "tui_select", sessionId: target.sessionId, awaiting: true });
             client.openCollab(target.sessionId);
             return;
           }

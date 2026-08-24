@@ -364,7 +364,10 @@ describe("the panel renders what the session actually reported", () => {
     try {
       expect(view.el("session-context-model")?.textContent).toBe("openai/gpt-5.4");
       expect(view.el("session-context-thinking")).toBeNull();
-      expect(view.el("session-context-origin")?.textContent).toBe("this daemon owns it");
+      // Owned is what every session is until told otherwise, so there is no
+      // Link row to read: a band that said so on every pane was the one row
+      // that made this section impossible to omit.
+      expect(view.el("session-context-origin")).toBeNull();
     } finally {
       view.unmount();
     }
@@ -421,9 +424,15 @@ describe("empty data omits a section rather than reporting a zero", () => {
     }
   });
 
-  test("a stopped session with nothing to report says nothing at all", () => {
+  test("a stopped session with nothing to report renders no band at all", () => {
     const view = mount(panel({ subject: agent("agt_main", { state: "stopped", cwd: "" }) }));
     try {
+      // The whole band, not just its sections: no todos, no subagents, no
+      // model, no directory and an owned link nobody needs told about leaves
+      // nothing to say, and a heading over nothing is the chrome this design
+      // refuses. Before the Link row was gated this assertion was impossible.
+      expect(view.el("session-context")).toBeNull();
+      expect(view.el("session-context-toggle")).toBeNull();
       // cwd blank and no model: every row is genuinely unknown, so the whole
       // band is absent rather than a header over three dashes. `Link` alone
       // would be chrome.

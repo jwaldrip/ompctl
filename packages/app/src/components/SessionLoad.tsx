@@ -15,6 +15,7 @@
  * verified. That confusion is exactly what this component exists to end.
  */
 
+import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
@@ -82,6 +83,49 @@ export function SessionLoadFailed({
       </Body>
       <Label color={ink.plain} testID={`${testID}-message`}>
         {message}
+      </Label>
+    </View>
+  );
+}
+
+export interface SessionLoadStalledProps {
+  /** The session whose answer was lost with the socket. */
+  title: string;
+  /** The link's own state, so the band says whether recovery is under way. */
+  connection: ConnectionState;
+  testID?: string;
+}
+
+/**
+ * The link went down before this session arrived.
+ *
+ * Neither the refusal band nor the skeleton, because it is neither: no verdict
+ * was reached, and no answer is on its way on the socket that was asked. The
+ * distinction belongs to the operator -- "could not open" is something they
+ * have to act on, and this is something the reconnect is already acting on.
+ * Wearing the refusal band for a flap is how an operator learns to ignore the
+ * one that means it.
+ */
+export function SessionLoadStalled({
+  title,
+  connection,
+  testID = "session-load-stalled",
+}: SessionLoadStalledProps): JSX.Element {
+  const detail =
+    connection === "connecting" || connection === "reconnecting"
+      ? "Reconnecting, then asking again."
+      : connection === "connected"
+        ? "The link is back. Open this row again to ask."
+        : "No link. This session is asked for again as soon as there is one.";
+  return (
+    <View accessible accessibilityLabel={`${title} did not arrive: ${detail}`} style={styles.panel} testID={testID}>
+      <Glyph name="link" size={22} color={signal.slate} />
+      <Kicker color={signal.slate}>Link lost</Kicker>
+      <Body color={ink.bright} numberOfLines={2} testID={`${testID}-title`}>
+        {title}
+      </Body>
+      <Label color={ink.plain} testID={`${testID}-detail`}>
+        {detail}
       </Label>
     </View>
   );

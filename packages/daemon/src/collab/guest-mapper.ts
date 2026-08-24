@@ -129,6 +129,23 @@ interface TodoPlanEntry {
 }
 
 /**
+ * How many todos one plan may publish.
+ *
+ * 256 is the host's own number, not a preference: omp shrinks any collab
+ * frame whose JSON exceeds 1 MiB through progressive tiers, and the first
+ * tier's array limit is 256. Bounding here at the same figure means this leg
+ * publishes no more than the producer would have sent had the frame needed
+ * shrinking, which is why it is anchored rather than chosen.
+ *
+ * Text length is deliberately not bounded. Nothing upstream or in this
+ * package fixes a per-todo character limit, so any figure would be invented,
+ * and the frame is already covered by the host's 1 MiB shrink and by the
+ * relay's own socket limits. Stated rather than papered over with a number
+ * nobody can defend.
+ */
+const MAX_TODO_ENTRIES = 256;
+
+/**
  * The `plan` update a finished `todo` tool call carries, or undefined when
  * this call was not one.
  *
@@ -140,6 +157,8 @@ interface TodoPlanEntry {
  * the operator's own text and dropping one malformed task loses strictly less
  * than dropping the list. An empty result still publishes: clearing the todos
  * is a real state the operator has to see.
+ *
+ * Bounded in count by `MAX_TODO_ENTRIES` above.
  */
 function todoPlanUpdate(event: Extract<AgentEvent, { type: "tool_execution_end" }>): unknown {
   if (event.toolName !== "todo" || event.isError === true) return undefined;
@@ -152,6 +171,12 @@ function todoPlanUpdate(event: Extract<AgentEvent, { type: "tool_execution_end" 
     if (shape === undefined || !Array.isArray(shape.tasks)) continue;
     const name = typeof shape.name === "string" && shape.name.length > 0 ? shape.name : undefined;
     for (const task of shape.tasks) {
+      // Truncated rather than refused, unlike the room's signaling and audio
+      // caps: a malformed frame has no partial value, but a todo list past
+      // this length is still the operator's own work and the first entries
+      // are the ones they are working on. The list is published up to the
+      // cap and the rest dropped.
+      if (entries.length >= MAX_TODO_ENTRIES) return { sessionUpdate: "plan", entries };
       const fields = readRecord(task);
       const content = fields?.content;
       if (typeof content !== "string" || content.length === 0) continue;

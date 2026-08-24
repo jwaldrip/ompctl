@@ -1,5 +1,5 @@
 import { type Agent, type AgentState, COLLAB_GUEST_AGENT_SOURCE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
-import type { JSX } from "react";
+import { type JSX, memo, useMemo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Body, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
@@ -161,8 +161,19 @@ export function AgentHub({
   now = Date.now(),
   testID = "agent-hub",
 }: AgentHubProps): JSX.Element | null {
-  const subs = agents.filter(candidate => candidate.parentAgentId !== undefined);
-  const tree = agentHubTree(subs);
+  /**
+   * Keyed on the roster, which is the only thing the forest depends on.
+   *
+   * The same defect the session band had, in the component that band borrows
+   * its rows from: on a tablet this hub sits beside the detail pane and
+   * re-renders on every console frame, so a streaming turn rebuilt the whole
+   * subagent forest here too. Fixing only the band would have left the more
+   * expensive of the two rebuilds in place.
+   */
+  const { subs, tree } = useMemo(() => {
+    const filtered = agents.filter(candidate => candidate.parentAgentId !== undefined);
+    return { subs: filtered, tree: agentHubTree(filtered) };
+  }, [agents]);
   if (tree.length === 0) {
     const reason = agentHubEmptyReason(agents);
     if (reason === null) return null;
@@ -202,8 +213,13 @@ export function AgentHub({
  * renders as text with the reason beside it: a pressable that opens an empty
  * transcript teaches an operator that a subagent lost its history, which is
  * a worse lie than saying the transcript was never shared.
+ *
+ * Memoised, because the session detail renders this band directly above a
+ * streaming transcript. Its caller hands it a forest whose node identity
+ * holds while the roster does, so a turn's tokens re-render the band's own
+ * shell and stop there instead of walking every subagent per frame.
  */
-export function AgentHubBranch({
+export const AgentHubBranch = memo(function AgentHubBranch({
   node,
   depth,
   now,
@@ -273,7 +289,7 @@ export function AgentHubBranch({
       ))}
     </View>
   );
-}
+});
 
 function statusSignal(state: AgentState): keyof typeof signal {
   if (state === "busy") return "amber";

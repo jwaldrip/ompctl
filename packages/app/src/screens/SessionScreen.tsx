@@ -22,7 +22,7 @@ import { webViewCapability } from "../browser";
 import { Composer } from "../components/Composer.tsx";
 import { PlanCard } from "../components/PlanCard.tsx";
 import { SessionContext, type SessionContextSource } from "../components/SessionContext.tsx";
-import { SessionLoadFailed, SessionLoading } from "../components/SessionLoad.tsx";
+import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
 import { StatusReadout } from "../components/StatusReadout.tsx";
 import { Transcript } from "../components/Transcript.tsx";
 import type { PendingWebViewAction, PromptScopeAccess, SessionLoad } from "../console/state.ts";
@@ -350,6 +350,8 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         */}
         {load.phase === "loading" ? (
           <SessionLoading title={agent.name} />
+        ) : load.phase === "stalled" ? (
+          <SessionLoadStalled connection={connection} title={agent.name} />
         ) : load.phase === "failed" ? (
           <SessionLoadFailed message={load.error ?? "The daemon refused this session."} title={agent.name} />
         ) : (
@@ -422,7 +424,9 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
               <Label color={ink.muted}>
                 {load.phase === "loading"
                   ? "Opening this session. Its controls appear with its transcript."
-                  : "This session did not open, so there is nothing to steer."}
+                  : load.phase === "stalled"
+                    ? "The link dropped before this session arrived. Its controls return with it."
+                    : "This session did not open, so there is nothing to steer."}
               </Label>
             </View>
           ) : props.watchOnly !== undefined ? (
