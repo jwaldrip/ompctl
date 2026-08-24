@@ -498,6 +498,76 @@ describe("CollabStreamMapper", () => {
     });
     expect(mapper.metrics()).toEqual({ usedTokens: 30, costAmount: 0.002 });
   });
+
+  test("the welcome registry and agents frames map, and an invalid payload maps nothing", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    const welcome = mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [
+        {
+          id: "Main",
+          displayName: "primary",
+          kind: "main",
+          status: "running",
+          hasSessionFile: true,
+          createdAt: 1,
+          lastActivity: 2,
+        },
+      ],
+    });
+    expect(welcome.agents).toHaveLength(1);
+
+    const broadcast = mapper.mapFrame({
+      t: "agents",
+      agents: [
+        {
+          id: "Main",
+          displayName: "primary",
+          kind: "main",
+          status: "idle",
+          hasSessionFile: true,
+          createdAt: 1,
+          lastActivity: 3,
+        },
+        {
+          id: "Scout",
+          displayName: "Policy Scout",
+          kind: "sub",
+          parentId: "Main",
+          status: "running",
+          hasSessionFile: false,
+          createdAt: 2,
+          lastActivity: 3,
+        },
+      ],
+    });
+    expect(broadcast.agents).toHaveLength(2);
+
+    // One bad entry voids the payload, never half of it. Cast: the type
+    // system knows "sleeping" is not a status, which is the point of
+    // sending it as wire garbage.
+    const invalid = mapper.mapFrame({
+      t: "agents",
+      agents: [
+        {
+          id: "Main",
+          displayName: "primary",
+          kind: "main",
+          status: "sleeping",
+          hasSessionFile: true,
+          createdAt: 1,
+          lastActivity: 3,
+        },
+      ] as unknown as never,
+    });
+    expect(invalid.agents).toBeUndefined();
+    const notAnArray = mapper.mapFrame({ t: "agents", agents: "Main" as unknown as never });
+    expect(notAnArray.agents).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -886,6 +956,146 @@ describe("collab guest legs over the gateway socket", () => {
       "agent row settled to stopped",
     );
     void stopped;
+    room.close();
+  });
+
+  test("the room's agent registry reaches the phone as Agent Hub rows and settles with the leg", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await r.send({
+        t: "welcome",
+        proto: 3,
+        header: { type: "session", id: SESSION_LIVE, title: "held by a TUI", timestamp: "t", cwd: "/host" },
+        state: { ...HOST_STATE, isStreaming: false },
+        entryCount: 0,
+        readOnly: false,
+        agents: [
+          {
+            id: "Main",
+            displayName: "primary",
+            kind: "main",
+            status: "running",
+            hasSessionFile: true,
+            createdAt: 1_000,
+            lastActivity: 2_000,
+          },
+        ],
+      });
+    });
+    relays.push(room);
+
+    const bridge = await h.registerBridge();
+    const phone = await h.connect(await h.pair([SCOPE_READ]));
+
+    phone.send({ t: "collab_open", sessionId: SESSION_LIVE });
+    const openAsk = await waitForBridgeFrame(bridge, frame => frame.t === "tui_collab_open");
+    bridge.deliver({
+      t: "tui_collab_opened",
+      sessionId: SESSION_LIVE,
+      requestId: openAsk.requestId as string,
+      link: room.fullLink(),
+      viewLink: room.viewLink(),
+      writable: true,
+    });
+    const opened = openedFrame(await phone.next(isCollabOpened, "collab_opened"));
+
+    // Roster pushes reach attached sockets only, the same choke point every
+    // other agents change rides, so the phone attaches first.
+    phone.send({ t: "attach", agentId: opened.agentId, sinceSeq: 0 });
+
+    // A registry change in the room becomes a roster push naming the sub,
+    // parented under the guest agent, with the wire's epoch-millisecond
+    // dates carried into the row's ISO fields.
+    await room.send({
+      t: "agents",
+      agents: [
+        {
+          id: "Main",
+          displayName: "primary",
+          kind: "main",
+          status: "running",
+          hasSessionFile: true,
+          createdAt: 1_000,
+          lastActivity: 4_000,
+        },
+        {
+          id: "Scout",
+          displayName: "Policy Scout",
+          kind: "sub",
+          parentId: "Main",
+          status: "running",
+          hasSessionFile: false,
+          createdAt: 1_500,
+          lastActivity: 3_500,
+        },
+        {
+          id: "Reviewer",
+          displayName: "Review",
+          kind: "sub",
+          parentId: "Scout",
+          status: "running",
+          hasSessionFile: false,
+          createdAt: 2_500,
+          lastActivity: 3_000,
+        },
+      ],
+    });
+    const roster = await phone.next(
+      frame => frame.t === "agents" && frame.agents.some(agent => agent.parentAgentId === opened.agentId),
+      "subagent roster push",
+    );
+    if (roster.t !== "agents") throw new Error("expected an agents frame");
+    const scout = roster.agents.find(agent => agent.parentAgentId === opened.agentId);
+    expect(scout).toMatchObject({
+      id: `${opened.agentId}:sub:Scout`,
+      name: "Policy Scout",
+      state: "busy",
+      createdAt: "1970-01-01T00:00:01.500Z",
+      lastActiveAt: "1970-01-01T00:00:03.500Z",
+    });
+    expect(scout?.labels.source).toBe("omp-subagent");
+    // A sub of a sub nests under its own parent, not the guest row.
+    const reviewer = roster.agents.find(agent => agent.parentAgentId === scout?.id);
+    expect(reviewer).toMatchObject({ name: "Review", state: "busy" });
+
+    // A registry id the host stops reporting settles in place, not vanishes.
+    await room.send({
+      t: "agents",
+      agents: [
+        {
+          id: "Main",
+          displayName: "primary",
+          kind: "main",
+          status: "idle",
+          hasSessionFile: true,
+          createdAt: 1_000,
+          lastActivity: 5_000,
+        },
+        {
+          id: "Scout",
+          displayName: "Policy Scout",
+          kind: "sub",
+          parentId: "Main",
+          status: "running",
+          hasSessionFile: false,
+          createdAt: 1_500,
+          lastActivity: 5_000,
+        },
+      ],
+    });
+    await phone.next(
+      frame =>
+        frame.t === "agents" && frame.agents.some(agent => agent.id === reviewer?.id && agent.state === "stopped"),
+      "released sub settled",
+    );
+
+    // Leaving settles every mirrored sub with the leg.
+    phone.send({ t: "collab_leave", sessionId: SESSION_LIVE });
+    await waitForBridgeFrame(bridge, frame => frame.t === "tui_collab_close");
+    await phone.next(
+      frame => frame.t === "agents" && frame.agents.some(agent => agent.id === scout?.id && agent.state === "stopped"),
+      "sub settled with the leg",
+    );
     room.close();
   });
 

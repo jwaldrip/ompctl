@@ -30,18 +30,20 @@ import {
   type Agent,
   type AgentId,
   type AgentState,
+  COLLAB_GUEST_AGENT_SOURCE,
   COLLAB_GUEST_SESSION_LABEL,
   type CollabRefusal,
   type PromptImage,
   SCOPE_PROMPT,
   SCOPE_READ,
   type Store,
+  TERMINAL_AGENT_STATES,
   type TuiCollabClientFrame,
   type TuiCollabServerFrame,
 } from "@ompd/core";
-import { createAgentId } from "../supervisor.ts";
+import { AGENT_STATE_FROM_REGISTRY, createAgentId } from "../supervisor.ts";
 import { importRoomKey } from "./guest-codec.ts";
-import type { CollabHostFrame } from "./guest-frames.ts";
+import type { CollabAgentSnapshot, CollabHostFrame } from "./guest-frames.ts";
 import { parseCollabLink } from "./guest-link.ts";
 import type { CollabFrameMapping } from "./guest-mapper.ts";
 import { CollabStreamMapper } from "./guest-mapper.ts";
@@ -102,6 +104,8 @@ interface GuestLeg {
   createdAtMs: number;
   /** The bridge request that opened the room, so leave can close a room this daemon caused. */
   bridgeRequestId: string;
+  /** omp registry id to daemon agent id, for every sub this leg has mirrored. */
+  registryAgents: Map<string, AgentId>;
   terminal: boolean;
 }
 
@@ -357,6 +361,7 @@ export class CollabGuests {
       readOnly: !writable,
       createdAtMs: Date.now(),
       bridgeRequestId,
+      registryAgents: new Map(),
       terminal: false,
     };
 
@@ -457,6 +462,7 @@ export class CollabGuests {
       const seq = this.#store.appendUpdate(leg.agentId, update);
       this.#events.onUpdate(leg.agentId, seq, update);
     }
+    if (mapping.agents !== undefined) this.#applyAgentSnapshots(leg, mapping.agents);
     if (mapping.ended !== undefined) {
       this.#endLeg(leg, "stopped", mapping.ended);
       return null;
@@ -471,6 +477,77 @@ export class CollabGuests {
       this.#upsertLegRow(leg, state, mapping.header, mapping.state);
     }
     return mapping;
+  }
+
+  /**
+   * Mirror the room's agent registry into rows the Agent Hub lists, the
+   * collab twin of the supervisor's `#onAgentRegistry`. The differences are
+   * the wire's: dates arrive as epoch milliseconds, a sub carries no session
+   * id or metrics, and the `main` entry is the mirrored session itself, so
+   * it is never given a row of its own. That entry's leg row already exists;
+   * a registry that omits it entirely simply leaves every sub parented to
+   * the leg row through its own id.
+   *
+   * A mirrored sub gets no update log and no prompt path: the room streams
+   * the session's transcript only, and a collab sub lists but does not open.
+   */
+  #applyAgentSnapshots(leg: GuestLeg, snapshots: CollabAgentSnapshot[]): void {
+    const mainRegistryId = snapshots.find(snapshot => snapshot.kind === "main")?.id;
+    const unresolved = snapshots.filter(snapshot => snapshot.kind === "sub");
+    const seen = new Set<string>();
+    let changed = false;
+
+    // Parents may appear after children in one snapshot, so resolve to a
+    // fixpoint, exactly as the supervisor's mirror does. A sub whose parent
+    // never resolves keeps no row: a guessed parent is worse than none.
+    while (unresolved.length > 0) {
+      let attached = false;
+      for (let index = unresolved.length - 1; index >= 0; index -= 1) {
+        const snapshot = unresolved[index]!;
+        const parentAgentId =
+          snapshot.parentId === undefined || snapshot.parentId === mainRegistryId
+            ? leg.agentId
+            : leg.registryAgents.get(snapshot.parentId);
+        const parent = parentAgentId === undefined ? undefined : this.#store.getAgent(parentAgentId);
+        if (parent == null) continue;
+
+        const agentId = leg.registryAgents.get(snapshot.id) ?? `${parent.id}:sub:${snapshot.id}`;
+        const existing = this.#store.getAgent(agentId);
+        const agent: Agent = {
+          id: agentId,
+          name: snapshot.displayName,
+          state: AGENT_STATE_FROM_REGISTRY[snapshot.status],
+          host: parent.host,
+          cwd: parent.cwd,
+          createdAt: new Date(snapshot.createdAt).toISOString(),
+          lastActiveAt: new Date(snapshot.lastActivity).toISOString(),
+          routineId: parent.routineId,
+          parentAgentId: parent.id,
+          labels: { ...existing?.labels, source: "omp-subagent" },
+        };
+        this.#store.upsertAgent(agent);
+        leg.registryAgents.set(snapshot.id, agentId);
+        seen.add(snapshot.id);
+        unresolved.splice(index, 1);
+        attached = true;
+        changed = true;
+      }
+      if (!attached) break;
+    }
+
+    // A registry id the host stopped reporting is settled, not deleted:
+    // omp keeps finished agents registered, so a disappearance is a release
+    // or a teardown, and the row stops rather than vanishing from under an
+    // operator watching it.
+    for (const [registryId, agentId] of leg.registryAgents) {
+      if (seen.has(registryId)) continue;
+      const agent = this.#store.getAgent(agentId);
+      if (agent != null && !TERMINAL_AGENT_STATES.includes(agent.state)) {
+        this.#store.setAgentState(agentId, "stopped");
+        changed = true;
+      }
+    }
+    if (changed) this.#events.onAgentsChanged(this.#store.listAgents());
   }
 
   #upsertLegRow(
@@ -497,7 +574,7 @@ export class CollabGuests {
         costAmount: metrics.costAmount,
         durationMs: Date.now() - leg.createdAtMs,
       },
-      labels: existing?.labels ?? { source: "collab-guest", [COLLAB_GUEST_SESSION_LABEL]: leg.sessionId },
+      labels: existing?.labels ?? { source: COLLAB_GUEST_AGENT_SOURCE, [COLLAB_GUEST_SESSION_LABEL]: leg.sessionId },
     };
     this.#store.upsertAgent(agent);
     this.#events.onAgentsChanged(this.#store.listAgents());
@@ -515,6 +592,14 @@ export class CollabGuests {
     this.#bySession.delete(leg.sessionId);
     this.#byAgent.delete(leg.agentId);
     leg.socket.close();
+    // The room's registry is gone with the leg, so every sub it mirrored
+    // settles to the same state: their rows were that registry's mirror, and
+    // a mirror with no source must not keep reporting its subjects live.
+    for (const agentId of leg.registryAgents.values()) {
+      const agent = this.#store.getAgent(agentId);
+      if (agent != null && !TERMINAL_AGENT_STATES.includes(agent.state)) this.#store.setAgentState(agentId, state);
+    }
+    leg.registryAgents.clear();
     this.#store.setAgentState(leg.agentId, state);
     this.#events.onAgentsChanged(this.#store.listAgents());
     this.#log(`collab guest ${leg.sessionId}: ended (${reason})`);

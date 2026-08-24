@@ -228,7 +228,12 @@ const PLAN_APPROVAL_PREFIX = "Approve plan ";
 const CHOICE_SEP = "\u0000";
 const TOOL_APPROVAL_KEY = TOOL_APPROVAL_CHOICES.join(CHOICE_SEP);
 const PLAN_APPROVAL_KEY = PLAN_APPROVAL_CHOICES.join(CHOICE_SEP);
-const AGENT_STATE_FROM_REGISTRY: Record<AcpAgentRegistrySnapshot["status"], AgentState> = {
+/**
+ * omp's registry statuses onto agent row states. Exported for the collab
+ * guest leg, whose rooms report the same upstream enum: one translation, or
+ * the two registry mirrors would drift.
+ */
+export const AGENT_STATE_FROM_REGISTRY: Record<AcpAgentRegistrySnapshot["status"], AgentState> = {
   running: "busy",
   idle: "idle",
   parked: "stopped",

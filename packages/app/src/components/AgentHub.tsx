@@ -1,4 +1,4 @@
-import type { Agent, AgentState } from "@ompd/core/contracts";
+import { type Agent, type AgentState, COLLAB_GUEST_AGENT_SOURCE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Body, Kicker, Label } from "../design/text.tsx";
@@ -40,9 +40,10 @@ export function agentHubTree(agents: readonly Agent[]): AgentHubNode[] {
 
 export interface AgentHubProps {
   /**
-   * Subagents only. The main agent is not listed here, matching OMP's own
-   * Agent Hub convention (`docs/agent-hub.md`): its conversation is the
-   * ambient session view, already on screen as the top-level Fleet row.
+   * The full roster, not a pre-filtered subagent list. The hub drops main
+   * agents itself (OMP's own Agent Hub convention: the main conversation is
+   * the ambient session view, already on screen as the top-level Fleet row),
+   * and it needs the roster to say WHY it is empty when it is.
    */
   agents: readonly Agent[];
   /** Open this exact root or nested agent's durable transcript. */
@@ -51,6 +52,39 @@ export interface AgentHubProps {
   now?: number;
   testID?: string;
 }
+
+/**
+ * Why the hub has nothing to list. The only feed a real omp host speaks is
+ * the collab room's registry broadcast, so the roster divides into sessions
+ * the daemon co-drives (shared, reporting) and everything else (no feed
+ * exists for them at all). An empty hub that cannot tell those apart reads
+ * as "no subagents" when the truth is "nothing shared", which is the defect
+ * this state exists to kill.
+ */
+export type AgentHubEmpty = "unshared" | "sharedQuiet" | "sharedQuietWithOwned";
+
+/**
+ * Classify an empty hub from the roster. Live rows only: a stopped guest's
+ * room is gone, and a roster with nothing live has no session to explain
+ * about, so both render nothing at all.
+ */
+export function agentHubEmptyReason(agents: readonly Agent[]): AgentHubEmpty | null {
+  const live = agents.filter(agent => !TERMINAL_AGENT_STATES.includes(agent.state));
+  if (live.length === 0) return null;
+  const shared = live.some(agent => agent.labels.source === COLLAB_GUEST_AGENT_SOURCE);
+  const owned = live.some(agent => agent.labels.source !== COLLAB_GUEST_AGENT_SOURCE);
+  if (shared && owned) return "sharedQuietWithOwned";
+  if (shared) return "sharedQuiet";
+  return "unshared";
+}
+
+/** What each empty reason says, in words the operator can act on. */
+const AGENT_HUB_EMPTY_COPY: Record<AgentHubEmpty, string> = {
+  unshared:
+    "Subagents appear for a session whose operator has shared it with this daemon; nothing appears for one nobody has.",
+  sharedQuiet: "Shared sessions report no subagents.",
+  sharedQuietWithOwned: "Shared sessions report no subagents; sessions this daemon owns have no subagent feed.",
+};
 
 function createsCycle(node: AgentHubNode, parent: AgentHubNode, byId: ReadonlyMap<string, AgentHubNode>): boolean {
   const lineage = new Set([node.agent.id]);
@@ -64,14 +98,15 @@ function createsCycle(node: AgentHubNode, parent: AgentHubNode, byId: ReadonlyMa
 }
 
 /**
- * Renders nothing when no subagent exists.
+ * Renders the subagent forest, or one line saying why there is none.
  *
- * A padded block headed AGENT HUB, reading "No subagents.", sat above the
- * sessions list on the operator's phone for the whole of a session with no
- * fan-out, which is most of them. It cost a heading, a count, a line of prose
- * and two rules of vertical space to say that nothing is happening, directly
- * above the list that is the point of the screen. Absence is the correct way
- * to render absence: when a subagent appears the block appears with it.
+ * Absence is still the render for a roster with nothing live: no session
+ * exists to wonder about, and a standing block above the sessions list that
+ * only says nothing is happening is chrome, not information. But a live
+ * roster with an empty hub is a claim, and the claim has to name its cause:
+ * an unshared session and a subagent-free one are indistinguishable without
+ * it. The block is a heading and one line, never the padded empty card this
+ * component once refused to be.
  */
 export function AgentHub({
   agents,
@@ -79,13 +114,27 @@ export function AgentHub({
   now = Date.now(),
   testID = "agent-hub",
 }: AgentHubProps): JSX.Element | null {
-  const tree = agentHubTree(agents);
-  if (tree.length === 0) return null;
+  const subs = agents.filter(candidate => candidate.parentAgentId !== undefined);
+  const tree = agentHubTree(subs);
+  if (tree.length === 0) {
+    const reason = agentHubEmptyReason(agents);
+    if (reason === null) return null;
+    return (
+      <View style={styles.hub} testID={testID} accessibilityLabel="Agent hierarchy">
+        <View style={styles.heading}>
+          <Kicker color={ink.muted}>AGENT HUB</Kicker>
+        </View>
+        <Label testID={`${testID}-empty`} color={ink.muted}>
+          {AGENT_HUB_EMPTY_COPY[reason]}
+        </Label>
+      </View>
+    );
+  }
   return (
     <View style={styles.hub} testID={testID} accessibilityLabel="Agent hierarchy">
       <View style={styles.heading}>
         <Kicker color={ink.muted}>AGENT HUB</Kicker>
-        <Label color={ink.plain}>{`${agents.length} ${agents.length === 1 ? "agent" : "agents"}`}</Label>
+        <Label color={ink.plain}>{`${subs.length} ${subs.length === 1 ? "agent" : "agents"}`}</Label>
       </View>
       {tree.map(node => (
         <AgentHubBranch key={node.agent.id} node={node} depth={0} now={now} onOpen={onOpen} />

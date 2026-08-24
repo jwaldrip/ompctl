@@ -571,6 +571,14 @@ export const COLLAB_REFUSAL_REASONS: Record<CollabRefusal, string> = {
  * second registry to ask.
  */
 export const COLLAB_GUEST_SESSION_LABEL = "collab.session";
+/**
+ * The `source` label value every co-driven agent row carries. The Agent Hub
+ * reads it to tell a session the daemon co-drives (whose room reports a live
+ * subagent registry) from one it owns (whose host has no registry surface at
+ * all), which is what makes the hub's empty state able to say why it is
+ * empty rather than read as a session with no subagents.
+ */
+export const COLLAB_GUEST_AGENT_SOURCE = "collab-guest";
 
 /**
  * The frames the daemon and a hosting terminal's bridge exchange on the
