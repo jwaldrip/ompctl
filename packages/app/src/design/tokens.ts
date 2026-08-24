@@ -153,10 +153,30 @@ export const space = {
 } as const;
 
 /**
- * Square, everywhere. Kept as a named token rather than a literal so the rule
- * is visible and a future rounding decision is one edit rather than a hunt.
+ * Corner radii, by the job the corner does.
+ *
+ * This file used to say "square, everywhere" and export a single `0` for it.
+ * The app never honoured that: `PlanCard` drew 8 and 6, the routines badge drew
+ * 12, and nothing read the token at all. What finally decided it was the
+ * composer. Square corners plus a hairline on every element turned the message
+ * box into a terminal control panel: a nested input rectangle inside a
+ * rectangle, beside three equally boxed widgets. A composer is one object a
+ * person types into, and the corner is most of what says so.
+ *
+ * So the rule is narrower than "no rounding" and it is still a rule: structure
+ * stays square, objects round. A rule, a gutter, a divider is structure. A
+ * thing you type into, press, or pick up is an object.
  */
-export const radius = 0;
+export const radius = {
+  /** Structure: rules, gutters, dividers, anything that is not an object. */
+  flat: 0,
+  /** A control living inside a surface: a ghost icon button, an attachment chip. */
+  control: 8,
+  /** A surface read as one object, the composer above all. */
+  surface: 14,
+  /** Fully round, reserved for the one action a surface emphasises. */
+  pill: 999,
+} as const;
 
 /** Hairline structure. `heavy` is a rule; `hair` is a division. */
 export const stroke = { hair: 1, heavy: 2 } as const;

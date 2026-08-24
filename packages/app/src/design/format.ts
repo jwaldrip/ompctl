@@ -66,3 +66,25 @@ export function shortenPath(path: string, segments = 2): string {
   if (parts.length <= segments + (home.startsWith("~") ? 1 : 0)) return home;
   return `…/${parts.slice(-segments).join("/")}`;
 }
+
+/**
+ * A model identity at the width a composer's action row can spare.
+ *
+ * OMP reports the resolved provider and model together, so the wire carries
+ * `anthropic/claude-opus-5` where a person says "opus". The provider is the
+ * least interesting part of it on a phone: an operator picking a model already
+ * knows whose it is, and the row has about seventy points for the whole label.
+ * The thinking level rides beside it when the daemon has told this device one,
+ * separated rather than concatenated so a missing level is a shorter label
+ * instead of a dangling punctuation mark.
+ *
+ * Null when neither is known, which is the honest answer and is what makes the
+ * control fall back to naming the surface it opens rather than inventing a
+ * model it was never told.
+ */
+export function modelLabel(model: string | null | undefined, thinking: string | null | undefined): string | null {
+  const name = (model ?? "").trim().split("/").pop() ?? "";
+  const level = (thinking ?? "").trim();
+  if (name.length === 0) return level.length === 0 ? null : level;
+  return level.length === 0 ? name : `${name} ${level}`;
+}

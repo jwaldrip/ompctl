@@ -186,10 +186,17 @@ describe("the transcript renders from canned frames", () => {
   });
 
   test("a busy agent is offered an interrupt rather than a second prompt", () => {
-    // The open agent is busy, so the action is Stop. Queueing a prompt behind
-    // a running turn is how two instructions become one confused one.
-    expect(html).toContain("Stop");
-    expect(html).not.toContain("Send");
+    // The open agent is busy, so the action is the interrupt. Queueing a
+    // prompt behind a running turn is how two instructions become one
+    // confused one.
+    //
+    // Asserted on the control rather than on the word `Stop`: send and
+    // interrupt are both filled icon-only discs now, so the identity a person
+    // and a screen reader get is the testID and the label, and a word in the
+    // markup would be checking the old drawing rather than the behaviour.
+    expect(html).toContain('data-testid="composer-cancel"');
+    expect(html).toContain("Interrupt this turn");
+    expect(html).not.toContain('data-testid="composer-send"');
     // The field stays editable, so the next prompt can be typed during a turn.
     expect(html).toContain("Say something to this agent");
   });
@@ -223,8 +230,8 @@ describe("the transcript renders from canned frames", () => {
         now={NOW}
       />,
     );
-    expect(idle).toContain("Send");
-    expect(idle).not.toContain("Stop");
+    expect(idle).toContain('data-testid="composer-send"');
+    expect(idle).not.toContain('data-testid="composer-cancel"');
   });
 
   test("a dead link says so and refuses the composer", () => {

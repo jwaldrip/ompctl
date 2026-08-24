@@ -11,11 +11,12 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "@ompd/core";
 import type { Agent, HostRef, SessionQuery, SessionSummary } from "@ompd/core/contracts";
+import { readSessionHistory } from "../../src/sessions/history.ts";
 import { scanSessionFiles } from "../../src/sessions/scanner.ts";
 import { SessionIndex } from "../../src/sessions/session-index.ts";
 
@@ -768,6 +769,123 @@ describe("SessionIndex.pathFor", () => {
     expect(await index.pathFor(SESSION_A)).toBeUndefined();
   });
 
+  /**
+   * Makes the tree traversable but not listable.
+   *
+   * This is the discriminator the cache tests need, and it took a wrong turn to
+   * find: moving decoy files around proves nothing, because the walk still
+   * finds the real file at the same path and passes either way. Execute
+   * without read is different. `existsSync` on a known absolute path only
+   * needs to traverse, so a remembered path still resolves; `readdirSync`
+   * needs read, so the walk fails outright. A lookup that answers under these
+   * permissions can only have answered from memory.
+   */
+  function sealTree(sessionsRoot: string): () => void {
+    const dirs = [
+      sessionsRoot,
+      ...readdirSync(sessionsRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => join(sessionsRoot, e.name)),
+    ];
+    for (const dir of dirs) chmodSync(dir, 0o111);
+    return () => {
+      for (const dir of dirs) chmodSync(dir, 0o755);
+    };
+  }
+
+  test("a path already resolved is answered from memory, with the tree unlistable", async () => {
+    // The walk is what costs: on this machine's real tree one lookup measured
+    // 110ms p50, because it takes an event-loop turn per group directory and
+    // the fleet list's own warm pass is still on the loop when a tap arrives.
+    const sessionsRoot = tempRoot("session-index-pathfor-cache-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const wanted = writeSessionFile(sessionsRoot, "-b", "2026-08-11T00-00-00-000Z", SESSION_B, [titleLine("b")]);
+    const index = buildIndex(sessionsRoot, store);
+
+    expect(await index.pathFor(SESSION_B)).toBe(wanted);
+
+    const unseal = sealTree(sessionsRoot);
+    try {
+      // Only a remembered path can answer now.
+      expect(await index.pathFor(SESSION_B)).toBe(wanted);
+    } finally {
+      unseal();
+    }
+  });
+
+  test("the index build seeds the cache, so even the first lookup skips the walk", async () => {
+    // This is what makes the fix show up on the tap that matters rather than
+    // on the second one: the scan already knows every path, so by the time an
+    // operator can press a row, that row's path is known.
+    const sessionsRoot = tempRoot("session-index-pathfor-seed-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const wanted = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+
+    await index.query({ includeArchived: true });
+
+    const unseal = sealTree(sessionsRoot);
+    try {
+      // Never looked up before, and the tree cannot be listed: the only way to
+      // answer is from what the build already recorded.
+      expect(await index.pathFor(SESSION_A)).toBe(wanted);
+    } finally {
+      unseal();
+    }
+  });
+
+  test("a remembered path that has been deleted is not answered, it is re-resolved", async () => {
+    // Freshness identity. A stale hit must never be served, so the entry is
+    // dropped and the walk runs; with the file genuinely gone the honest
+    // answer is undefined. This one holds on either implementation, which is
+    // the point of a guard: it pins the behaviour the cache must not break.
+    const sessionsRoot = tempRoot("session-index-pathfor-stale-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const path = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+    expect(await index.pathFor(SESSION_A)).toBe(path);
+
+    rmSync(path);
+    expect(await index.pathFor(SESSION_A)).toBeUndefined();
+  });
+
+  test("a session file that moved to another group resolves to where it is now", async () => {
+    // The one case a map that never revalidated would get wrong: same id,
+    // different directory. The stale entry fails its existence check, the walk
+    // runs, and the new location is both returned and learned.
+    const sessionsRoot = tempRoot("session-index-pathfor-moved-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const before = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+    expect(await index.pathFor(SESSION_A)).toBe(before);
+
+    const newDir = join(sessionsRoot, "-elsewhere");
+    mkdirSync(newDir, { recursive: true });
+    const after = join(newDir, `2026-08-10T00-00-00-000Z_${SESSION_A}.jsonl`);
+    renameSync(before, after);
+    expect(await index.pathFor(SESSION_A)).toBe(after);
+
+    // Learned, not re-walked: sealing the tree proves the new location is now
+    // what memory holds.
+    const unseal = sealTree(sessionsRoot);
+    try {
+      expect(await index.pathFor(SESSION_A)).toBe(after);
+    } finally {
+      unseal();
+    }
+  });
+
+  test("a session created after the build is still found, because a miss still walks", async () => {
+    const sessionsRoot = tempRoot("session-index-pathfor-new-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const index = buildIndex(sessionsRoot, store);
+    await index.query({ includeArchived: true });
+
+    const fresh = writeSessionFile(sessionsRoot, "-new", "2026-08-14T00-00-00-000Z", SESSION_C, [titleLine("c")]);
+    expect(await index.pathFor(SESSION_C)).toBe(fresh);
+  });
+
   test("a sessions root that is not there answers undefined rather than throwing", async () => {
     const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
     const index = new SessionIndex({
@@ -777,6 +895,146 @@ describe("SessionIndex.pathFor", () => {
     });
 
     expect(await index.pathFor(SESSION_A)).toBeUndefined();
+  });
+
+  test("a rebuild forgets an id whose file has gone, rather than keeping it to fail validation", async () => {
+    // Freshness of the map itself, not of one entry. Accumulating into the
+    // cache leaves a deleted session's id in there for the life of the
+    // process, answering every lookup with an `existsSync` that can only
+    // fail. A build reports what the tree holds now, so the map it publishes
+    // has to say the same thing.
+    const sessionsRoot = tempRoot("session-index-pathfor-prune-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const doomed = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    writeSessionFile(sessionsRoot, "-b", "2026-08-11T00-00-00-000Z", SESSION_B, [titleLine("b")]);
+    const index = buildIndex(sessionsRoot, store);
+
+    await index.query({ includeArchived: true });
+    expect(await index.pathFor(SESSION_A)).toBe(doomed);
+
+    rmSync(doomed);
+    await index.query({ includeArchived: true });
+
+    // Sealed, so nothing can be re-derived by walking: the answer has to come
+    // from the republished map, and the only truthful answer is that this id
+    // is not in it.
+    const unseal = sealTree(sessionsRoot);
+    try {
+      expect(await index.pathFor(SESSION_A)).toBeUndefined();
+      expect(await index.pathFor(SESSION_B)).toBeDefined();
+    } finally {
+      unseal();
+    }
+  });
+
+  test("a lookup racing an unfinished build never sees a partial map or another session's file", async () => {
+    // The map is published by assignment at the end of a build, so a lookup
+    // that lands mid-scan either finds nothing yet and walks, or finds the
+    // finished map. What it must never do is read a half-filled one and
+    // answer for the wrong session.
+    const sessionsRoot = tempRoot("session-index-pathfor-race-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    const pathA = writeSessionFile(sessionsRoot, "-a", "2026-08-10T00-00-00-000Z", SESSION_A, [titleLine("a")]);
+    const pathB = writeSessionFile(sessionsRoot, "-b", "2026-08-11T00-00-00-000Z", SESSION_B, [titleLine("b")]);
+    const index = buildIndex(sessionsRoot, store);
+
+    const [rows, resolvedA, resolvedB] = await Promise.all([
+      index.query({ includeArchived: true }),
+      index.pathFor(SESSION_A),
+      index.pathFor(SESSION_B),
+    ]);
+
+    expect(resolvedA).toBe(pathA);
+    expect(resolvedB).toBe(pathB);
+    expect(rows.map(row => row.id).sort()).toEqual([SESSION_A, SESSION_B].sort());
+
+    // And the map that survived the race still answers both correctly.
+    const unseal = sealTree(sessionsRoot);
+    try {
+      expect(await index.pathFor(SESSION_A)).toBe(pathA);
+      expect(await index.pathFor(SESSION_B)).toBe(pathB);
+    } finally {
+      unseal();
+    }
+  });
+
+  test("a seeded lookup hands the event loop on zero times, where a cold one yields per directory", async () => {
+    // The mechanism the 67ms was made of, counted rather than timed. The walk
+    // takes one `setImmediate` per group directory; on a loop busy with the
+    // fleet list's own warm pass each of those turns queues behind a slice of
+    // it. Counting the turns is deterministic where a stopwatch is not.
+    const sessionsRoot = tempRoot("session-index-pathfor-turns-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    for (let group = 0; group < 12; group++) {
+      writeSessionFile(sessionsRoot, `-g${group}`, "2026-08-10T00-00-00-000Z", `ses_filler_${group}`, [titleLine("f")]);
+    }
+    const wanted = writeSessionFile(sessionsRoot, "-zz", "2026-08-11T00-00-00-000Z", SESSION_B, [titleLine("b")]);
+    const index = buildIndex(sessionsRoot, store);
+
+    const countTurns = async (run: () => Promise<unknown>): Promise<number> => {
+      type SetImmediateFn = typeof globalThis.setImmediate;
+      const real: SetImmediateFn = globalThis.setImmediate;
+      let turns = 0;
+      // The node global's overload set is not expressible as a plain wrapper
+      // signature, and this only counts calls before delegating to the real
+      // one, so the shape is genuinely unchanged.
+      const counting = ((fn: (...args: unknown[]) => void, ...args: unknown[]) => {
+        turns++;
+        return real(fn, ...args);
+      }) as unknown as SetImmediateFn;
+      globalThis.setImmediate = counting;
+      try {
+        await run();
+      } finally {
+        globalThis.setImmediate = real;
+      }
+      return turns;
+    };
+
+    // A miss has to visit every group before it can answer, so its turn count
+    // does not depend on readdir order the way a hit in the first directory
+    // would. That is the walk the 67ms was made of.
+    const cold = await countTurns(() => index.pathFor("ses_absent_from_this_tree"));
+    expect(cold).toBeGreaterThan(0);
+
+    await index.query({ includeArchived: true });
+    const seeded = await countTurns(async () => {
+      expect(await index.pathFor(SESSION_B)).toBe(wanted);
+    });
+    expect(seeded).toBe(0);
+  });
+
+  test("the history door benefits without changing its own contract", async () => {
+    // `session_history` and `session_tail` both resolve their file through
+    // this one call and nothing else, so the saving reaches them with no API
+    // change at all. Asserted by reading a real page through the same door
+    // with the tree sealed behind it.
+    const sessionsRoot = tempRoot("session-index-pathfor-history-");
+    const store = openStore(join(tempRoot("session-index-db-"), "ompd.db"));
+    // Real turns, not just a title: `readSessionHistory` pages conversation
+    // turns, and a title line is not one, so a title-only fixture reads back
+    // zero entries whatever the lookup does.
+    const wanted = writeSessionFile(sessionsRoot, "-h", "2026-08-11T00-00-00-000Z", SESSION_B, [
+      titleLine("b"),
+      messageLine("m1", "user"),
+      messageLine("m2", "assistant"),
+    ]);
+    const index = buildIndex(sessionsRoot, store);
+
+    await index.query({ includeArchived: true });
+
+    const unseal = sealTree(sessionsRoot);
+    try {
+      const resolved = await index.pathFor(SESSION_B);
+      expect(resolved).toBe(wanted);
+      if (resolved === undefined) throw new Error("the seeded lookup answered nothing");
+      const page = await readSessionHistory(resolved, {});
+      // The parse has its own tests; what this one owns is that the door got a
+      // usable path out of the cache with the tree sealed behind it.
+      expect(Array.isArray(page.entries)).toBe(true);
+    } finally {
+      unseal();
+    }
   });
 });
 
