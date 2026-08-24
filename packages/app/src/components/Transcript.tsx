@@ -38,6 +38,8 @@ export interface TranscriptProps {
   canLoadEarlier?: boolean;
   loadingEarlier?: boolean;
   onLoadEarlier?: () => void;
+  /** The stable cursor identity of the current history range. Used by dedup guard. */
+  historyCursor?: number | null;
 }
 
 export function Transcript({
@@ -49,10 +51,14 @@ export function Transcript({
   canLoadEarlier,
   loadingEarlier,
   onLoadEarlier,
+  historyCursor,
 }: TranscriptProps): JSX.Element {
   // Track the cursor of the request in flight to prevent duplicate requests
   // from scroll bounce or repeated onScroll events at the same offset.
+  // Stores the historyCursor value of the last auto-load request.
   const inFlightCursor = useRef<number | null>(null);
+  // Track if current load is from pagination (vs streaming content)
+  const paginationLoadInFlight = useRef<boolean>(false);
 
   // Track previous content height for Android manual anchor preservation
   const prevContentHeight = useRef<number>(0);
@@ -85,28 +91,38 @@ export function Transcript({
 
       if (nearTop && canLoadEarlier && onLoadEarlier !== undefined && !loadingEarlier) {
         // Only fire if we're not already loading this exact cursor.
-        // inFlightCursor is cleared when loadingEarlier changes or cursor advances.
-        if (inFlightCursor.current === null) {
-          inFlightCursor.current = null; // Mark as "request sent, waiting for loadingEarlier to become true"
+        // Store the cursor value to block duplicate requests at the same position.
+        // This survives across re-renders, so 3 onScroll events at y=30 -> 1 request.
+        if (inFlightCursor.current !== historyCursor) {
+          inFlightCursor.current = historyCursor ?? null;
+          paginationLoadInFlight.current = true;
           onLoadEarlier();
         }
       }
     },
-    [follow, canLoadEarlier, onLoadEarlier, loadingEarlier, inFlightCursor],
+    [follow, canLoadEarlier, onLoadEarlier, loadingEarlier, historyCursor],
   );
 
-  // When loading completes or cursor changes, clear the in-flight guard
+  // When loading completes, clear the in-flight guard
   useEffect(() => {
     if (!loadingEarlier) {
       inFlightCursor.current = null;
+      paginationLoadInFlight.current = false;
     }
   }, [loadingEarlier]);
+
+  // When cursor changes (new page loaded), clear the guard to enable next auto-load
+  // biome-ignore lint/correctness/useExhaustiveDependencies: historyCursor prop must trigger guard reset
+  useEffect(() => {
+    inFlightCursor.current = null;
+  }, [historyCursor]);
 
   // Preserve scroll anchor when prepending entries via maintainVisibleContentPosition.
   // This prop handles iOS natively. For Android, fallback via onContentSizeChange.
   const handleContentSizeChange = useCallback((_width: number, height: number) => {
-    // Android manual anchor: if content grew (prepend added items), scroll down by delta
-    if (prevContentHeight.current > 0 && height > prevContentHeight.current) {
+    // Android manual anchor: only adjust for confirmed pagination prepends.
+    // Do NOT adjust for streaming token growth or other content changes at the bottom.
+    if (paginationLoadInFlight.current && prevContentHeight.current > 0 && height > prevContentHeight.current) {
       const delta = height - prevContentHeight.current;
       if (prevScrollY.current > 0 && flatListRef.current) {
         flatListRef.current.scrollToOffset({
