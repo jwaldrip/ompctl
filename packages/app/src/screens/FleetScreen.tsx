@@ -16,9 +16,13 @@
  * lets a canned `BrowserState` produce byte-identical markup to a live one,
  * the same discipline `console/state.ts` applies to the socket.
  *
- * It is a block, not a shell: the route around it owns the system insets, so
- * the agent hub above it sits inside the safe area too rather than under the
- * status bar while this list pads itself in the middle of the screen.
+ * It is a block, not a shell: the route around it owns the top and side insets,
+ * so the agent hub above it sits inside the safe area too rather than under the
+ * status bar while this list pads itself in the middle of the screen. The bottom
+ * edge is the list's own: when the shell declines it (the tablet split), this
+ * screen pays the home indicator as list content padding, so the scrollable
+ * surface runs to the screen edge instead of stopping an inset short. When a shell
+ * above has already paid it, `useOwnedBottomInset` reads zero and nothing doubles.
  */
 
 import type { JSX } from "react";
@@ -29,6 +33,7 @@ import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
 import type { ScopeAccess } from "../console/state.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
@@ -115,6 +120,18 @@ export function FleetScreen({
   deleteAccess,
   now,
 }: FleetScreenProps): JSX.Element {
+  // The list is the bottom-most surface in the bay, with no composer beneath
+  // it, so it owns the home-indicator inset itself. Paying it as content
+  // padding (not as padding on the bay container, the defect this replaces)
+  // lets the scrollable surface run to the screen edge instead of stopping an
+  // inset short and leaving a dead band where the last row should reach.
+  // `useOwnedBottomInset` is the one read that knows whether a shell above
+  // already paid it: on a phone the fleet surface's shell pays the bottom edge
+  // and this reads zero here, so nothing double counts. The style object is
+  // memoised on the inset for the same reason the renderers above are: a fresh
+  // identity per render would re-render the whole mounted window.
+  const ownedBottom = useOwnedBottomInset();
+  const listContentStyle = useMemo(() => ({ paddingBottom: ownedBottom }), [ownedBottom]);
   const view = useMemo(() => browserView(browser), [browser]);
   // The sections array, both row renderers, and the section header renderer
   // are memoised because each is a prop the virtualizer compares. A new
@@ -248,6 +265,7 @@ export function FleetScreen({
           keyExtractor={keyOf}
           renderSectionHeader={renderSectionHeader}
           renderItem={renderGrouped}
+          contentContainerStyle={listContentStyle}
           stickySectionHeadersEnabled
           initialNumToRender={FIRST_WINDOW}
           maxToRenderPerBatch={FIRST_WINDOW}
@@ -261,6 +279,7 @@ export function FleetScreen({
           data={view.flatSessions as BrowserSession[]}
           keyExtractor={keyOf}
           renderItem={renderFlat}
+          contentContainerStyle={listContentStyle}
           initialNumToRender={FIRST_WINDOW}
           maxToRenderPerBatch={FIRST_WINDOW}
           windowSize={WINDOW_SIZE}
