@@ -13,6 +13,7 @@ import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { scopeAccessOf } from "../console/state.ts";
 import { createOmpdClient } from "../console/useConsole.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
@@ -195,8 +196,30 @@ export function RoutinesScreen({
   onBack: () => void;
   createClient?: (connection: Connection) => OmpdClient;
 }): JSX.Element {
-  const canManage = connection.scopes.includes(SCOPE_MANAGE);
-  const canRun = canManage && connection.scopes.includes(SCOPE_PROMPT);
+  /**
+   * The scopes this screen's own socket was greeted with, undefined until the
+   * daemon has answered with them. Undefined is an older daemon, never an
+   * empty grant, so it must read as unknown rather than none.
+   */
+  const [grantedScopes, setGrantedScopes] = useState<readonly string[] | undefined>(undefined);
+  /**
+   * Three-way, the rule every other scope-gated surface in this app follows:
+   * the daemon's hello wins once it has answered, the stored pairing stands
+   * in until then, and a pairing that declared no scopes at all is unknown
+   * rather than refused. `PairScreen` stores none for every device paired by
+   * hand, so reading the stored array alone left those devices with a routine
+   * list they could see and not one control they could use, against a daemon
+   * that would have allowed every one of them.
+   *
+   * Unknown acts, here as everywhere else, and deliberately so even for the
+   * irreversible control: delete is two taps deep, the daemon enforces the
+   * scope regardless, and a refusal an operator can read beats a control that
+   * silently went missing.
+   */
+  const manageAccess = scopeAccessOf(grantedScopes, connection.scopes, SCOPE_MANAGE);
+  const promptAccess = scopeAccessOf(grantedScopes, connection.scopes, SCOPE_PROMPT);
+  const canManage = manageAccess !== "missing";
+  const canRun = canManage && promptAccess !== "missing";
   const [status, setStatus] = useState<RoutineStatus>({ kind: "loading" });
   const [draft, setDraft] = useState<RemoteRoutine | null>(null);
   const [intervalEdit, setIntervalEdit] = useState(() => deriveInterval(DEFAULT_INTERVAL_SECONDS));
@@ -205,17 +228,41 @@ export function RoutinesScreen({
   const [arming, setArming] = useState<string | null>(null);
   /** A named refusal from the daemon, shown on the routine it names. */
   const [refusal, setRefusal] = useState<{ routineId: string; reason: string } | null>(null);
+  /**
+   * The last error frame this socket answered an action with, held so it
+   * reaches the operator. Without it, a refused delete or a frame that never
+   * left an offline socket cleared the spinner and changed nothing else on
+   * screen, which reads exactly like a control that does not work.
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
   const [secret, setSecret] = useState<{ routineId: string; value: string } | null>(null);
   /** Which routine's copy control last fired, so its label can say what happened. */
   const [copied, setCopied] = useState<string | null>(null);
   const clientRef = useRef<OmpdClient | null>(null);
   if (clientRef.current === null) clientRef.current = createClient(connection);
   const client = clientRef.current;
+  /**
+   * The status as it is now, read by the error handler, which has to decide
+   * against what is on screen rather than what was there when this socket was
+   * wired. Assigned during render, the same idiom `useConsole` uses for the
+   * handlers that outlive a commit.
+   */
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   useEffect(() => {
     const offs = [
       client.on("status", event => {
         if (event.state === "connected") client.readRoutines();
+      }),
+      // Hello's scopes are the daemon's own record of what this device may
+      // do, read from the same set every authorization decision on this
+      // socket reads. Only the greeting carries them; a later `agents` frame
+      // does not, and undefined there must never clobber an answer already
+      // given, or a routine list refreshing would put the gate back to
+      // unknown.
+      client.on("agents", event => {
+        if (event.scopes !== undefined) setGrantedScopes(event.scopes);
       }),
       client.on("routines", event => {
         setPending(null);
@@ -266,7 +313,14 @@ export function RoutinesScreen({
       }),
       client.on("error", event => {
         setPending(null);
-        setStatus(current => (current.kind === "loading" ? { kind: "failed", message: event.message } : current));
+        // A load that never arrived owns the whole screen. Anything after one
+        // arrived answered an action, and the operator has to hear that
+        // rather than watch a spinner clear and nothing else change.
+        if (statusRef.current.kind === "loading") {
+          setStatus({ kind: "failed", message: event.message });
+          return;
+        }
+        setActionError(event.message);
       }),
     ];
 
@@ -280,6 +334,9 @@ export function RoutinesScreen({
   const deleteRoutine = useCallback(
     (routineId: string) => {
       if (!canManage) return;
+      // The previous answer is retired by the new ask, so a refusal on screen
+      // always belongs to the action the operator just took.
+      setActionError(null);
       setPending(`delete:${routineId}`);
       client.deleteRoutines([routineId]);
     },
@@ -424,6 +481,7 @@ export function RoutinesScreen({
     // in markup is a gate one accessibility path away from being gone.
     if (triggerCheck.error !== null) return;
     if (draft.actions.some(action => action.cwd.trim() === "")) return;
+    setActionError(null);
     setPending(`save:${draft.id}`);
     client.writeRoutine(draft);
     setDraft(null);
@@ -450,6 +508,20 @@ export function RoutinesScreen({
           <Label color={signal.ochre}>
             This pairing can edit routines but cannot run them: it holds no prompt scope.
           </Label>
+        </View>
+      ) : null}
+
+      {actionError !== null ? (
+        <View style={styles.notice} testID="routines-action-error">
+          <Label color={signal.oxide}>The daemon refused that: {actionError}</Label>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setActionError(null)}
+            style={styles.smallButton}
+            testID="routines-action-error-dismiss"
+          >
+            <Label color={ink.plain}>Dismiss</Label>
+          </Pressable>
         </View>
       ) : null}
 
@@ -552,6 +624,7 @@ export function RoutinesScreen({
                     accessibilityState={{ disabled: !canRun || pending !== null }}
                     disabled={!canRun || pending !== null}
                     onPress={() => {
+                      setActionError(null);
                       setPending(`run:${routine.id}`);
                       client.runRoutine(routine.id);
                     }}
@@ -567,6 +640,7 @@ export function RoutinesScreen({
                       accessibilityState={{ disabled: !canManage || pending !== null }}
                       disabled={!canManage || pending !== null}
                       onPress={() => {
+                        setActionError(null);
                         setPending(`secret:${routine.id}`);
                         setSecret(null);
                         client.rotateRoutineSecret(routine.id);
