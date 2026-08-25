@@ -153,7 +153,7 @@ final class PairingUITests: XCTestCase {
         let session = app.otherElements["session"]
         XCTAssertTrue(session.waitForExistence(timeout: 10), "selected agent session did not open")
 
-        let prompt = "Do not use tools. Do not make a todo list. Reply with exactly this token and nothing else: \(nonce)"
+        let prompt = "Use the shell to run sleep 6, then reply with exactly this token and nothing else: \(nonce)"
         let composer = app.textViews["composer-input"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10), "agent composer did not appear")
 
@@ -198,6 +198,13 @@ final class PairingUITests: XCTestCase {
             return
         }
 
+        let activity = app.otherElements["session-activity"]
+        XCTAssertTrue(activity.waitForExistence(timeout: 15), "the working row did not appear after the submitted prompt")
+        let workingFrame = XCTAttachment(screenshot: app.screenshot())
+        workingFrame.name = "scratch-working-session"
+        workingFrame.lifetime = .keepAlways
+        add(workingFrame)
+
         let assistantByLabel = app.otherElements
             .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-assistant", nonce))
             .firstMatch
@@ -208,5 +215,14 @@ final class PairingUITests: XCTestCase {
             assistantByLabel.waitForExistence(timeout: 90) || assistantByAny.waitForExistence(timeout: 5),
             "no new assistant response contained the unique nonce"
         )
+        XCTAssertTrue(app.otherElements["session-context"].exists, "session context strip was not rendered")
+        XCTAssertTrue(app.otherElements["composer-surface"].exists, "composer surface was not rendered")
+        let tools = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "tool-"))
+        XCTAssertGreaterThan(tools.count, 0, "scratch transcript did not render a tool card")
+        let settledFrame = XCTAttachment(screenshot: app.screenshot())
+        settledFrame.name = "scratch-settled-session"
+        settledFrame.lifetime = .keepAlways
+        add(settledFrame)
     }
 }
