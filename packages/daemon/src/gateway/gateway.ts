@@ -30,7 +30,6 @@ import {
   type CollabVoiceParticipant,
   type ConnectorSummary,
   type EndpointOffer,
-  type HostMount,
   isRecord,
   type PersistCollabVoiceNoteInput,
   PROMPT_IMAGE_REFUSAL_REASONS,
