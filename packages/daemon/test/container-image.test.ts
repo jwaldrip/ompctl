@@ -845,6 +845,36 @@ describe("populating the toolchain cache", () => {
     expect(statSync(join(dir, "ca-certificates.crt")).mode & 0o777).toBe(0o444);
   });
 
+  test("the landed modes hold under a hardened umask, not just the runner's", async () => {
+    // The assertions above pass on a machine with the common `umask 022` whether
+    // or not the code asserts its modes, because 022 strips nothing from 0555 or
+    // 0444. They only fail where the defect actually bites: an operator running
+    // the hardened `umask 077`, where a mode merely requested at `open` lands as
+    // 0500 and 0400. So this pins the umask rather than inheriting it, and it is
+    // the only reason CI can see this class of regression at all.
+    //
+    // Group and other bits are the whole point. A guest that maps the host owner
+    // onto root reads 0500 happily, which is why this went unnoticed; a container
+    // running as any other user cannot read the CA bundle it is told to trust.
+    const previous = process.umask(0o077);
+    try {
+      const h = harness();
+      const cacheRoot = tempDir("ompd-cache-");
+      const resolved = await provision(h, cacheRoot);
+      const dir = resolved.toolsDir ?? "";
+
+      expect(statSync(join(dir, "omp")).mode & 0o777).toBe(0o555);
+      expect(statSync(join(dir, "omp-shim")).mode & 0o777).toBe(0o555);
+      expect(statSync(join(dir, "ca-certificates.crt")).mode & 0o777).toBe(0o444);
+      // The directories stay owner-only, which the same umask cannot loosen and
+      // must not be relaxed by the fix above.
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(cacheRoot).mode & 0o777).toBe(0o700);
+    } finally {
+      process.umask(previous);
+    }
+  });
+
   test("no staging directory survives a successful landing", async () => {
     const h = harness();
     const cacheRoot = tempDir("ompd-cache-");

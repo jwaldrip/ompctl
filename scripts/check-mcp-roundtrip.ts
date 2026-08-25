@@ -136,10 +136,17 @@ class StdioMcp {
   #junk: string[] = [];
   #dead = false;
 
-  constructor(env: Record<string, string>) {
+  /**
+   * `cwd` is a parameter and not left to inherit, because omp spawns a stdio
+   * server from wherever it happens to be. A server that resolved anything
+   * against `process.cwd()` would pass every check run from this repository and
+   * fail in every real session, so at least one client here starts from `/`.
+   */
+  constructor(env: Record<string, string>, cwd: string = repo) {
     const [cmd, ...pre] = under.argv;
     this.#proc = spawn(cmd as string, [...pre, "mcp"], {
       env: { ...process.env, ...env },
+      cwd,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.#proc.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
@@ -181,6 +188,19 @@ class StdioMcp {
       } catch {
         // Anything unparsable on stdout is the defect this check exists to
         // catch: one stray human-readable line corrupts the framing for good.
+        this.#junk.push(line);
+        continue;
+      }
+      // Parsing is not enough, and assuming it was is how this check nearly
+      // shipped blind a second time. A structured logger writing one JSON object
+      // to stdout produces a line that parses perfectly and is not a JSON-RPC
+      // message, and a conforming client rejects the stream over it just the
+      // same. So the shape is asserted, not the syntax: `jsonrpc: "2.0"` plus
+      // either an id (a response) or a method (a notification or request).
+      const framed =
+        msg.jsonrpc === "2.0" &&
+        (typeof msg.id === "number" || typeof msg.id === "string" || typeof msg.method === "string");
+      if (!framed) {
         this.#junk.push(line);
         continue;
       }
@@ -446,16 +466,51 @@ try {
   const secret = field(rotated.structured, "secret");
   check("rotate returned a secret", typeof secret === "string" && String(secret).length > 20);
   const again = await client.call("ompctl_routine_rotate_webhook_secret", { routineId: hookId });
+  const replacement = field(again.structured, "secret");
+  check("rotating again returns a different secret", typeof replacement === "string" && replacement !== secret);
+
+  // Two different strings is not the claim the tool makes. It says the previous
+  // secret "stopped working just now", and the only way to observe that is to
+  // present it. A refused fire executes nothing, so this is safe to send; the
+  // replacement deliberately is not sent, because a webhook that authenticated
+  // would start the routine's prompts.
+  const staleFire = await fetch(`${base}/v1/webhooks/${hookId}`, {
+    method: "POST",
+    headers: { "x-webhook-secret": String(secret) },
+  });
   check(
-    "rotating again returns a different secret, so the old one is gone for good",
-    typeof field(again.structured, "secret") === "string" && field(again.structured, "secret") !== secret,
+    "the secret from before the rotation is refused, not merely replaced",
+    staleFire.status === 403,
+    `HTTP ${String(staleFire.status)}`,
   );
-  // The daemon keeps a hash. If the value were recoverable by reading, the
-  // "shown once" claim the tool makes would be false.
-  const hookAfter = await client.call("ompctl_routine_get", { routineId: hookId });
+  // The discriminator, without which the 403 above proves nothing: a 403 has to
+  // mean "this credential is wrong" rather than "this endpoint refuses
+  // everything". An id nothing holds answers differently.
+  const unknownFire = await fetch(`${base}/v1/webhooks/rtn_does_not_exist`, {
+    method: "POST",
+    headers: { "x-webhook-secret": String(secret) },
+  });
   check(
-    "the secret is not readable back through any read tool",
-    !JSON.stringify(hookAfter.structured).includes(String(secret)),
+    "an unknown routine answers 404 rather than the same 403",
+    unknownFire.status === 404,
+    `HTTP ${String(unknownFire.status)}`,
+  );
+
+  // The daemon keeps a hash. If the value were recoverable by reading, the
+  // "shown once" claim the tool makes would be false. Every read tool, not one:
+  // asserting against `ompctl_routine_get` alone left the list tool outside a
+  // claim written as "any read tool".
+  const hookAfter = await client.call("ompctl_routine_get", { routineId: hookId });
+  const listedAfter = await client.call("ompctl_routines_list", { nameContains: marker });
+  const readSurfaces = [
+    JSON.stringify(hookAfter.structured),
+    hookAfter.text,
+    JSON.stringify(listedAfter.structured),
+    listedAfter.text,
+  ];
+  check(
+    "neither read tool returns either secret, in structured output or in text",
+    readSurfaces.every(surface => !surface.includes(String(secret)) && !surface.includes(String(replacement))),
   );
 
   // --- negatives ----------------------------------------------------------
@@ -506,7 +561,7 @@ try {
   // client does not. So the stream itself is an assertion, not just a
   // transport.
   check(
-    "the server never wrote a non-JSON line to stdout",
+    "the server never wrote a non-JSON-RPC line to stdout",
     client.junkLines.length === 0,
     client.junkLines.slice(0, 3).join(" | "),
   );
@@ -535,6 +590,101 @@ try {
     badTokenOut.text.slice(0, 120),
   );
   check("offline and rejected-token report differently", offlineOut.text !== badTokenOut.text);
+
+  // --- the shape omp actually spawns --------------------------------------
+  //
+  // Everything above passed `OMPD_URL` and `OMPD_TOKEN`, which is the one shape
+  // the installed server never runs in. `ompd mcp install` writes a command and
+  // no environment at all, so a real session resolves the address from
+  // `<home>/endpoint` and reads the 0600 `<home>/token` at the point of use. A
+  // check that supplies both by environment proves the HTTP client and says
+  // nothing about the credential path.
+  //
+  // cwd is `/`, for the same reason: omp spawns a stdio server from wherever it
+  // happens to be, so anything resolved against `process.cwd()` would pass in
+  // this repository and fail in every real session.
+  check("the daemon published its endpoint for a server with no OMPD_URL", existsSync(join(home, "endpoint")));
+
+  const installed = new StdioMcp({ OMPD_HOME: home }, "/");
+  await installed.initialize();
+  const installedList = await installed.call("ompctl_routines_list", {});
+  check(
+    "a server given only OMPD_HOME, from cwd=/, reaches the daemon",
+    !installedList.isError,
+    installedList.text.slice(0, 120),
+  );
+
+  // --- two clients at once -------------------------------------------------
+  //
+  // Every OMP session spawns its own server process, so concurrent writers are
+  // the ordinary case rather than an edge one. They share one SQLite file
+  // through the daemon, which is the part that would fail.
+  const a = new StdioMcp({ OMPD_HOME: home }, "/");
+  const b = new StdioMcp({ OMPD_HOME: home }, workdir);
+  await Promise.all([a.initialize(), b.initialize()]);
+
+  const [madeA, madeB] = await Promise.all([
+    a.call("ompctl_routine_create", {
+      name: `${marker} concurrent a`,
+      trigger: { kind: "manual" },
+      actions: [{ name: "a", prompt: "a", cwd: workdir }],
+    }),
+    b.call("ompctl_routine_create", {
+      name: `${marker} concurrent b`,
+      trigger: { kind: "webhook" },
+      actions: [{ name: "b", prompt: "b", cwd: workdir }],
+    }),
+  ]);
+  const idA = String(field(field(madeA.structured, "routine"), "id") ?? "");
+  const idB = String(field(field(madeB.structured, "routine"), "id") ?? "");
+  check("two clients created two routines at once", !madeA.isError && !madeB.isError, `${idA} ${idB}`);
+  check("the two creates got distinct ids", idA.length > 0 && idB.length > 0 && idA !== idB);
+
+  const [updatedA, rotatedB] = await Promise.all([
+    a.call("ompctl_routine_update", { routineId: idA, enabled: false }),
+    b.call("ompctl_routine_rotate_webhook_secret", { routineId: idB }),
+  ]);
+  check("a concurrent update and a concurrent rotate both landed", !updatedA.isError && !rotatedB.isError);
+
+  const seen = await installed.call("ompctl_routines_list", { nameContains: marker });
+  const seenRoutines = field(seen.structured, "routines");
+  check(
+    "a third client sees both routines the other two wrote",
+    Array.isArray(seenRoutines) && seenRoutines.length === 2,
+    Array.isArray(seenRoutines) ? String(seenRoutines.length) : "not an array",
+  );
+
+  const [goneA, goneB] = await Promise.all([
+    a.call("ompctl_routine_delete", { routineIds: [idA] }),
+    b.call("ompctl_routine_delete", { routineIds: [idB] }),
+  ]);
+  check("two clients deleted their own routine at once", !goneA.isError && !goneB.isError);
+
+  const swept = await installed.call("ompctl_routines_list", { nameContains: marker });
+  const sweptRoutines = field(swept.structured, "routines");
+  check(
+    "nothing the concurrent pair created survives",
+    Array.isArray(sweptRoutines) && sweptRoutines.length === 0,
+    Array.isArray(sweptRoutines) ? String(sweptRoutines.length) : "not an array",
+  );
+
+  // Three more streams that a stray write would corrupt, asserted for the
+  // reason the first one is.
+  for (const [label, peer] of [
+    ["the installed-shape server", installed],
+    ["concurrent client a", a],
+    ["concurrent client b", b],
+  ] as const) {
+    check(
+      `${label} wrote no non-JSON-RPC line to stdout`,
+      peer.junkLines.length === 0,
+      peer.junkLines.slice(0, 2).join(" | "),
+    );
+  }
+
+  installed.close();
+  a.close();
+  b.close();
 } finally {
   // Sweep by marker prefix, not by the ids this run is holding: an earlier
   // failed run leaves orphans and they are indistinguishable from live ones to

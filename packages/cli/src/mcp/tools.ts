@@ -128,6 +128,18 @@ const labelsSchema = z
   .record(z.string(), z.string())
   .describe('Free-form tags, for example {"owner":"jason","area":"maintenance"}.');
 
+/**
+ * A string with something in it, which `z.string().min(1)` does not mean.
+ *
+ * `min(1)` accepts `"   "`, and the daemon trims a name before storing it and
+ * then refuses the empty result. That divergence is the whole failure mode this
+ * pair of surfaces exists to avoid: a model sends a name of spaces, this schema
+ * says yes, and the refusal arrives from the daemon naming a field the caller
+ * believes it filled in. Refusing here says so at the layer that knows the
+ * caller.
+ */
+const filledSchema = z.string().refine(value => value.trim().length > 0, "must not be blank");
+
 const cwdSchema = z
   .string()
   .regex(/^\//, "cwd must be an absolute path")
@@ -149,13 +161,10 @@ const actionDraftSchema = z.strictObject({
       "Existing action id. Omit when adding an action: the daemon mints one. Supply it on an update to keep " +
         "past run outcomes attached to this action across a rename.",
     ),
-  name: z.string().min(1).describe('Short label for this step, for example "sweep stale branches".'),
-  prompt: z
-    .string()
-    .min(1)
-    .describe(
-      "The prompt a fresh agent receives when this action runs. It gets no other context, so state the task in full.",
-    ),
+  name: filledSchema.describe('Short label for this step, for example "sweep stale branches".'),
+  prompt: filledSchema.describe(
+    "The prompt a fresh agent receives when this action runs. It gets no other context, so state the task in full.",
+  ),
   cwd: cwdSchema,
   timeoutSeconds: z
     .number()
@@ -178,10 +187,8 @@ const triggerDraftSchema = z
   .discriminatedUnion("kind", [
     z.strictObject({
       kind: z.literal("cron"),
-      expression: z.string().min(1).describe('Five-field cron expression, for example "0 2 * * *" for 02:00 daily.'),
-      timezone: z
-        .string()
-        .min(1)
+      expression: filledSchema.describe('Five-field cron expression, for example "0 2 * * *" for 02:00 daily.'),
+      timezone: filledSchema
         .optional()
         .describe('IANA timezone the expression is read in, for example "America/Denver". Omit for the daemon\'s own.'),
     }),
@@ -223,7 +230,7 @@ const getShape = {
 };
 
 const createShape = {
-  name: z.string().min(1).describe('What this routine is called, for example "nightly dependency sweep".'),
+  name: filledSchema.describe('What this routine is called, for example "nightly dependency sweep".'),
   enabled: z
     .boolean()
     .optional()
@@ -242,7 +249,7 @@ const createShape = {
 
 const updateShape = {
   routineId: z.string().min(1).describe("The routine to edit."),
-  name: z.string().min(1).optional().describe("Replaces the name."),
+  name: filledSchema.optional().describe("Replaces the name."),
   enabled: z.boolean().optional().describe("Turns the routine on or off without touching anything else."),
   trigger: triggerDraftSchema.optional().describe("Replaces the trigger entirely, including its kind."),
   actions: z

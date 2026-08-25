@@ -634,6 +634,23 @@ describe("input the schema refuses", () => {
     "an interval of zero seconds": { ...draft, trigger: { kind: "interval", seconds: 0 } },
     "a fractional interval": { ...draft, trigger: { kind: "interval", seconds: 1.5 } },
     "an empty name": { ...draft, name: "" },
+    // Blank is not empty, and `min(1)` cannot tell them apart. The daemon trims
+    // a name before storing it and refuses what is left, so a schema that
+    // accepted spaces here would send a draft the daemon rejects, naming a field
+    // the caller believes it filled in. Each of these is a separate field
+    // because each has its own guard on the daemon side, and one of them being
+    // right proves nothing about the rest.
+    "a name of only spaces": { ...draft, name: "   " },
+    "an action name of only spaces": {
+      ...draft,
+      actions: [{ name: " \t ", prompt: "Do it.", cwd: "/tmp/repo" }],
+    },
+    "a prompt of only spaces": { ...draft, actions: [{ name: "sweep", prompt: "  ", cwd: "/tmp/repo" }] },
+    "a cron expression of only spaces": { ...draft, trigger: { kind: "cron", expression: "   " } },
+    "a cron timezone of only spaces": {
+      ...draft,
+      trigger: { kind: "cron", expression: "0 2 * * *", timezone: " " },
+    },
     // Both of these would be stripped by a non-strict schema, and stripping is
     // worse than refusing: the caller is told yes and gets something else.
     "a secret on a webhook trigger": { ...draft, trigger: { kind: "webhook", secretRef: "whsec_mine" } },

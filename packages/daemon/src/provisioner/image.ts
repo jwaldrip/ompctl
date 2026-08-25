@@ -115,6 +115,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  fchmodSync,
   fsyncSync,
   mkdirSync,
   mkdtempSync,
@@ -1213,6 +1214,15 @@ function writeDurable(path: string, bytes: Uint8Array, mode: number): void {
   try {
     writeSync(fd, bytes);
     fsyncSync(fd);
+    // Asserted, not requested. The mode argument to `open` is masked by the
+    // process umask, so on a machine with the hardened `umask 077` that many
+    // operators run, a requested 0555 lands as 0500 and a 0444 CA bundle lands
+    // as 0400. Both still work for a guest that maps the host owner onto root,
+    // which is why this went unnoticed, and both break a container running as
+    // any other user: it can no longer read the bundle it is told to trust.
+    // `fchmod` on the open descriptor rather than `chmod` on the path, so
+    // nothing can be swapped in underneath between the write and the mode.
+    fchmodSync(fd, mode);
   } finally {
     closeSync(fd);
   }

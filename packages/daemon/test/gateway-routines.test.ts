@@ -620,6 +620,57 @@ describe("POST /v1/sync/import", () => {
     expect(h.daemon.store.listAudit().filter(row => row.action.startsWith("routine."))).toEqual([]);
   });
 
+  test("a restore that fails part way through records what actually landed", async () => {
+    const h = await harness();
+    const store = h.daemon.store;
+    const real = store.upsertRoutine.bind(store);
+
+    // Fails on the second routine, so the first is already on disk when the
+    // import gives up. This is the case where the log matters most and, before
+    // the audit row moved out of the happy path, the one case with nothing in
+    // it: a machine holding half of somebody else's catalogue, and a 400 that
+    // reads as "nothing changed".
+    let writes = 0;
+    Object.defineProperty(store, "upsertRoutine", {
+      configurable: true,
+      value: (routine: Routine) => {
+        writes += 1;
+        if (writes === 2) throw new Error("store went away mid-restore");
+        real(routine);
+      },
+    });
+
+    const imported = (id: string) => ({
+      id,
+      name: id,
+      enabled: true,
+      trigger: { kind: "manual" },
+      actions: [{ id: `act_${id}`, ...ACTION, labels: {} }],
+      singleton: true,
+      labels: {},
+      createdAt: "2026-08-19T00:00:00.000Z",
+    });
+
+    const response = await post(h, "/v1/sync/import", {
+      policyMode: "standard",
+      keepAwake: false,
+      skills: [],
+      connectors: [],
+      routines: [imported("rtn_first"), imported("rtn_second"), imported("rtn_third")],
+    });
+    expect(response.status).toBe(400);
+
+    Object.defineProperty(store, "upsertRoutine", { configurable: true, value: real });
+
+    const rows: AuditEntry[] = store.listAudit().filter(row => row.action === "sync.import");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.outcome).toBe("error");
+    // One landed of three attempted, which is the only number that tells an
+    // operator what state the machine is in.
+    expect(rows[0]?.detail).toMatchObject({ routines: 1, attempted: 3 });
+    expect(store.listRoutines().map(routine => routine.id)).toEqual(["rtn_first"]);
+  });
+
   test("a restore that moves a routine off webhook withdraws its credential", async () => {
     const h = await harness();
     const routine = await create(h, { name: "inbound", trigger: { kind: "webhook" }, actions: [ACTION] });

@@ -2294,6 +2294,12 @@ export class Gateway {
       }
       const document = parseSyncDocument(body);
       if (document === null) return Response.json({ error: "invalid_sync_document" }, { status: 400 });
+      // Counted rather than assumed, because a restore is not atomic: settings
+      // land first, then each routine in turn, and a failure part way through
+      // leaves a machine holding some of another daemon's catalogue. The 400
+      // below says the import failed, which is true and is also the reading that
+      // sends someone looking for a machine that changed nothing.
+      let landed = 0;
       try {
         config.apply({ policyMode: document.policyMode, keepAwake: document.keepAwake });
         for (const routine of document.routines) {
@@ -2308,6 +2314,7 @@ export class Gateway {
             ...routine,
             actions: routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
           });
+          landed += 1;
         }
         // One row for the one decision that was made. Restoring a catalogue
         // arms every automation in it, so a door that wrote them all and
@@ -2319,11 +2326,26 @@ export class Gateway {
           action: "sync.import",
           actorDeviceId: actor.deviceId,
           outcome: "ok",
-          detail: { routines: document.routines.length, policyMode: document.policyMode },
+          detail: { routines: landed, policyMode: document.policyMode },
         });
-        return Response.json({ ok: true, routines: document.routines.length });
+        return Response.json({ ok: true, routines: landed });
       } catch (err) {
-        return Response.json({ error: err instanceof Error ? err.message : "sync import failed" }, { status: 400 });
+        const reason = err instanceof Error ? err.message : "sync import failed";
+        // The row a partial restore needs most. Recording only the successes
+        // would leave the one case where the log matters, a machine holding half
+        // of somebody else's configuration, as the one case with nothing in it.
+        this.#store.audit({
+          action: "sync.import",
+          actorDeviceId: actor.deviceId,
+          outcome: "error",
+          detail: {
+            routines: landed,
+            attempted: document.routines.length,
+            policyMode: document.policyMode,
+            reason,
+          },
+        });
+        return Response.json({ error: reason }, { status: 400 });
       }
     }
 
@@ -2344,9 +2366,19 @@ export class Gateway {
       if (typeof draft === "string") {
         return Response.json({ error: "invalid_routine", reason: draft }, { status: 400 });
       }
+      // Minted against the catalogue, not merely minted. `#persistRoutine` is
+      // an upsert by design, because three of the four doors that reach it are,
+      // so an id that happened to already exist would make this create silently
+      // overwrite an unrelated routine. Sixteen hex characters make that
+      // vanishingly unlikely and "unlikely" is not a property a create route
+      // should rest an operator's automation on.
+      const taken: Record<string, true> = {};
+      for (const held of this.#store.listRoutines()) taken[held.id] = true;
+      let id = mintId("rtn");
+      while (taken[id] === true) id = mintId("rtn");
       const routine = this.#writeRoutine({
         routine: {
-          id: mintId("rtn"),
+          id,
           name: draft.name,
           // Enabled and singleton default on: a routine defined and left off is
           // the rarer intent, and overlapping runs of the same automation is
