@@ -255,6 +255,21 @@ describe("resolveMountPath", () => {
   /** Where `mkdtemp` actually lands once canonicalized. */
   const TMP_CANONICAL = realpathSync(tmpdir());
 
+  /**
+   * The "canonicalizes to X" clause only appears when the input and the
+   * canonical form actually differ, so a test that always expects it is
+   * asserting the filesystem's topology rather than the policy's behaviour.
+   * `/etc` differs from `/private/etc` on macOS and is identical to itself on
+   * Linux, and both are correct.
+   */
+  function expectCanonicalClause(reason: string, input: string, canonical: string): void {
+    if (input === canonical) {
+      expect(reason).not.toContain("canonicalizes to");
+      return;
+    }
+    expect(reason).toContain(`canonicalizes to ${canonical}`);
+  }
+
   describe("the reviewer's probe rows, every one of which the old check allowed", () => {
     test("the filesystem root", () => {
       expect(refusal("/")).toContain("/ is a protected directory");
@@ -284,16 +299,16 @@ describe("resolveMountPath", () => {
       expect(reason).toContain(`canonicalizes to ${HOME_PARENT}`);
     });
 
-    test("/etc, whose canonical form on macOS is /private/etc", () => {
+    test("/etc, whose canonical form on macOS is /private/etc and on Linux is itself", () => {
       const reason = refusal("/etc");
       expect(reason).toContain(`${ETC} is a protected directory`);
-      expect(reason).toContain(`canonicalizes to ${ETC}`);
+      expectCanonicalClause(reason, "/etc", ETC);
     });
 
     test("/var/root, root's own home directory", () => {
       const reason = refusal("/var/root");
       expect(reason).toContain(`${VAR_ROOT} is a protected directory`);
-      expect(reason).toContain(`canonicalizes to ${VAR_ROOT}`);
+      expectCanonicalClause(reason, "/var/root", VAR_ROOT);
     });
 
     test("a home directory reached through a doubled leading separator", () => {
@@ -325,8 +340,15 @@ describe("resolveMountPath", () => {
     });
 
     test("the OS trees", () => {
+      // Refused either for being a protected directory or for being inside
+      // one, because the topology differs: on Linux `/bin` and `/sbin` are
+      // symlinks into `/usr`, so they canonicalize to `/usr/bin` and are
+      // caught by the `/usr` tree rather than by their own entry. Both are the
+      // right answer, and the entries stay because a distro without the
+      // usr-merge resolves them to themselves.
       for (const dir of ["/System", "/Library", "/usr", "/bin", "/sbin"]) {
-        expect(refusal(dir)).toContain(`${dir} is a protected directory`);
+        const reason = refusal(dir);
+        expect(reason).toMatch(/is a protected directory|is inside the protected directory/);
       }
     });
 
@@ -486,13 +508,19 @@ describe("resolveMountPath", () => {
       rmSync(base, { recursive: true, force: true });
     });
 
-    test("is refused, not approved on a half-resolved string", () => {
+    test.if(process.getuid?.() !== 0)("is refused, not approved on a half-resolved string", () => {
+      // Skipped as root, and the skip is the honest answer rather than a gap:
+      // root bypasses the mode bits entirely, so `realpathSync` succeeds and
+      // there is no EACCES to observe. Linux CI runs as root. The property
+      // still holds for the unprivileged daemon this code actually runs as,
+      // and the symlink-loop test below covers the same guard through a path
+      // root cannot resolve either.
       const reason = refusal(locked);
       expect(reason).toContain("cannot canonicalize");
       expect(reason).toContain("(EACCES)");
     });
 
-    test("and so is anything under it, which existsSync cannot see", () => {
+    test.if(process.getuid?.() !== 0)("and so is anything under it, which existsSync cannot see", () => {
       // The trap: `existsSync` cannot stat through an unopenable parent, so it
       // answers false for a path that may well be there. Gating the refusal on
       // existence let this one through as an unverified path.
@@ -527,15 +555,16 @@ describe("resolveMountPath", () => {
     });
 
     test("resolves, and returns the canonical path rather than the input", () => {
-      // The whole point of returning a path at all. `/tmp/...` canonicalizes
-      // to `/private/tmp/...`; handing the caller back its own string would
-      // reintroduce the bug one layer down, where the runtime resolves it
-      // again on its own side.
+      // The whole point of returning a path at all: handing the caller back its
+      // own string would reintroduce the bug one layer down, where the runtime
+      // resolves it again on its own side. On macOS `/tmp/...` canonicalizes to
+      // `/private/tmp/...`; on Linux `/tmp` is a real directory and the
+      // canonical form is the input. Asserting against `realpathSync` rather
+      // than a hardcoded prefix keeps the assertion true on both and still
+      // fails if the function ever returns something that is not canonical.
       const under = mkdtempSync("/tmp/mount-canon-");
       try {
-        const resolved = accepted(under, { mustExist: true });
-        expect(resolved).toBe(`/private${under}`);
-        expect(resolved).not.toBe(under);
+        expect(accepted(under, { mustExist: true })).toBe(realpathSync(under));
       } finally {
         rmSync(under, { recursive: true, force: true });
       }
