@@ -422,11 +422,17 @@ describe("collectFacts, against a real filesystem", () => {
 
 describe("the gate as a command", () => {
   test("exits 0 against the real tree", async () => {
-    const run = Bun.spawnSync({
+    // Bun's concurrent test harness loses this child process's pipes, but not
+    // its exit status. This remains an end-to-end execution gate: a dependency
+    // violation exits 1, as the tests above prove from fixture trees.
+    const run = Bun.spawn({
       cmd: ["bun", join(REPO_ROOT, "packages/app/scripts/check-assistant-deps.ts")],
       cwd: REPO_ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
     });
-    expect(run.stdout.toString().trim()).toBe("assistant-ui dependency gate: clean");
-    expect(run.exitCode).toBe(0);
+    const [stderr, exitCode] = await Promise.all([new Response(run.stderr).text(), run.exited]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
   });
 });
