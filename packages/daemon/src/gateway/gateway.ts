@@ -2358,12 +2358,17 @@ export class Gateway {
         // would leave the one case where the log matters, a machine holding half
         // of somebody else's configuration, as the one case with nothing in it.
         //
-        // `completed` counts routines whose write returned, and `stage` says
-        // where the import stopped. Neither is called "landed": a routine's
-        // definition is committed before its credential withdrawal, so when
-        // `stage` is `routines` the one that threw may be on disk or may not.
-        // Reporting a single settled number would be the same overclaiming this
-        // row exists to fix.
+        // `completed` counts routines whose write committed, and `stage` says
+        // where the import stopped. A routine and its credential withdrawal now
+        // commit or roll back together, so the one that threw is not on disk and
+        // `completed` does not count it. What `stage` still carries that a bare
+        // count cannot is which of the three phases ended the restore, since
+        // settings land outside the store and outside any of those transactions.
+        //
+        // A restore is not atomic across routines: each one is its own
+        // transaction and this row is written after all of them. If this insert
+        // and the one above both fail, N routines are armed with nothing naming
+        // the restore, and the catch below says what that costs.
         try {
           this.#store.audit({
             action: "sync.import",
@@ -5346,13 +5351,21 @@ export class Gateway {
    * were three writes, and the invariant this seam exists to hold, that no door
    * arms an automation without leaving a record, was a hope: a committed
    * definition followed by a failed audit insert left the automation as the only
-   * trace of itself. The withdrawal keeps the ordering it had, after the write,
-   * and inside a transaction that ordering now survives a rollback rather than
-   * only a clean run.
+   * trace of itself. All three now commit or roll back together, so a failed
+   * audit leaves no routine rather than an unrecorded one, and a withdrawal can
+   * no longer outlive the definition that stopped naming it.
    *
-   * `audit` is passed through rather than built here, because only the caller
-   * knows whether this write is one arming decision to record or one routine
-   * inside a restore that records itself once for the whole catalogue.
+   * The withdrawal is still ordered after the write inside that transaction.
+   * That ordering no longer guards against a crash between them, because there
+   * is no longer a between; it is kept because a rollback undoes both and a
+   * reader should not have to reason about a delete that precedes the row it
+   * depends on.
+   *
+   * `audit` is a callback because only the caller knows whether this write is one
+   * arming decision to record or one routine inside a restore that records
+   * itself once for the whole catalogue. It is invoked here and its result is
+   * handed to the store, so it runs before the transaction opens and a throw
+   * from it writes nothing at all.
    */
   #persistRoutine(
     input: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] },
@@ -5378,8 +5391,9 @@ export class Gateway {
 
   /**
    * The `secretRef` a written routine ends up with, given what is already on
-   * disk. Pure: the withdrawal of a row belongs to `#persistRoutine`, after the
-   * write it depends on has committed.
+   * disk. Pure: it decides a value and touches nothing. The withdrawal of the
+   * row that value replaces belongs to `#persistRoutine`, in the same
+   * transaction as the write, so neither can land without the other.
    *
    * - webhook staying webhook keeps the stored ref verbatim, whatever the
    *   incoming definition claims. It is the public half of the endpoint's
