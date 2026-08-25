@@ -19,6 +19,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Linking, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Console } from "./console/Console.tsx";
+import { OmpThemeProvider } from "./design/OmpTheme.tsx";
 import { SafeScreen } from "./design/SafeScreen.tsx";
 import { ink } from "./design/tokens.ts";
 import { PairNavigator } from "./nav/PairNavigator.tsx";
@@ -171,7 +172,13 @@ export function App(): JSX.Element {
     }
   }
 
-  return <SafeAreaProvider>{body}</SafeAreaProvider>;
+  // The design system spans everything, inside the safe-area provider because
+  // Paper's own components read the insets through it.
+  return (
+    <SafeAreaProvider>
+      <OmpThemeProvider>{body}</OmpThemeProvider>
+    </SafeAreaProvider>
+  );
 }
 
 function consoleKey(active: SavedConnection): string {
