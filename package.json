@@ -24,6 +24,7 @@
     "gen:omp-bridge": "bun scripts/gen-omp-bridge.ts",
     "check": "bun run check:tools && bun run check:types",
     "check:evolution": "bun run scripts/check-evolution-lifecycle.ts",
+    "check:container-model": "bun run scripts/check-container-model-turn.ts",
     "check:lan": "bun run scripts/check-lan-roundtrip.ts",
     "check:hub": "bun run scripts/check-hub-roundtrip.ts",
     "check:path": "bun run scripts/check-path.ts",

@@ -100,9 +100,9 @@ const DECOY_VALUE = "sk-ant-oat01-DECOYDECOYDECOYDECOY";
  * a scan built on them would report a finding on every clean run.
  *
  * Not taken on faith in either direction. It is run against a planted decoy
- * before it is trusted to report nothing, both over the guest's home and over
- * the guest's environment, and the decoy run uses the same pattern and the
- * same pipeline as the real one.
+ * before it is trusted to report nothing, over the guest's home and over the
+ * guest's environment separately, and each decoy run uses the same pattern and
+ * the same pipeline as the real run that follows it.
  */
 const CREDENTIAL_SHAPES = "sk-ant-|sk-proj-|sk-or-v1-|github_pat_|ghp_|gho_|AIzaSy|xoxb-|xoxp-";
 
@@ -116,8 +116,8 @@ const CREDENTIAL_SHAPES = "sk-ant-|sk-proj-|sk-or-v1-|github_pat_|ghp_|gho_|AIza
  *
  * A canary rather than an existing variable, because "the guest could not see
  * $PATH" would be a statement about $PATH. The daemon inherits this process's
- * environment and spawns `container run` from it, so the variable is provably
- * one hop away from the guest, and its absence inside is a result.
+ * environment and spawns `container run` out of it, so the variable is provably
+ * one hop from the guest and its absence inside is a result.
  */
 const CANARY_ENV = "CANARY_CREDENTIAL";
 
@@ -127,10 +127,10 @@ const CANARY_ENV = "CANARY_CREDENTIAL";
  * Split into exact names and prefixes because macOS `ps` truncates `comm` at
  * 15 characters even under `-ww`: measured on this host, Docker Desktop's
  * helpers arrive as `com.docker.back` and QEMU as `qemu-system-aar`, so an
- * exact match on the full name would never fire for either. `OrbStack` is here
- * for the opposite reason: it is what the `docker` CLI actually starts on a Mac
- * with OrbStack installed, so a run that woke it is exactly the foreign
- * involvement this refuses, whatever the CLI was called.
+ * exact match on either full name would never fire. `OrbStack` is here for the
+ * opposite reason: it is what the `docker` CLI actually starts on a Mac with
+ * OrbStack installed, so a run that woke it is exactly the foreign involvement
+ * this phase refuses, whatever the CLI was called.
  *
  * The exact set is exact on purpose. A case-insensitive substring test for
  * "orb" matches `CoreSimulatorBridge`, which is running on this machine right
@@ -195,8 +195,8 @@ interface ApprovalFrame {
 /**
  * A phase that refused to continue.
  *
- * Thrown rather than returned, so the summary and the teardown both still run.
- * A bare `return` out of the middle of the run skips the tally, which turns a
+ * Thrown rather than returned, so the tally and the teardown both still run. A
+ * bare `return` out of the middle of the run skips the tally, which turns a
  * refusal at preflight into a script that prints nothing about what it checked.
  */
 class StopRun extends Error {}
@@ -241,7 +241,7 @@ function parseOptions(argv: string[]): Options {
   return { help };
 }
 
-/** Non-empty lines, which is what every `ls`-shaped probe below actually wants. */
+/** Non-empty trimmed lines, which is what every `ls`-shaped probe below wants. */
 function lines(text: string): string[] {
   return text
     .split("\n")
@@ -249,12 +249,13 @@ function lines(text: string): string[] {
     .filter(line => line !== "");
 }
 
-/** The operator's home written as `~`, so a printed path is short and not theirs to read twice. */
+/** The operator's home written as `~`, so a printed path is short and not theirs twice over. */
 function shortHome(path: string): string {
   const home = homedir();
   return path.startsWith(home) ? `~${path.slice(home.length)}` : path;
 }
 
+/** A captured listing, indented under the line that introduced it. */
 function indent(text: string): string {
   const body = text.trimEnd();
   return body === "" ? "    (none)" : body.replace(/^/gm, "    ");
@@ -334,11 +335,11 @@ async function api(base: string, token: string, path: string, init: RequestInit 
  *
  * Approvals are answered rather than ignored. This script asks for one token of
  * text and no tool, so a permission request means the model reached for a tool
- * anyway; leaving it unanswered would hang the turn until the deadline and
+ * anyway; leaving it unanswered would hang the turn until the deadline and then
  * report "no reply" for a turn that was waiting on this process. Denying it
- * once lets the turn finish and still answer, and the tool the model reached
- * for is recorded so the failure text says what happened rather than just that
- * nothing arrived.
+ * once lets the turn finish and still answer, and the tool it reached for is
+ * kept so the failure text says what happened rather than only that nothing
+ * arrived.
  */
 class Client {
   #ws: WebSocket;
@@ -362,7 +363,8 @@ class Client {
           tool: String(frame.tool),
         };
         this.#approvals.push(approval);
-        this.send({ t: "decide", agentId: approval.agentId, requestId: approval.requestId, choice: "deny", scope: "once" });
+        const { agentId, requestId } = approval;
+        this.send({ t: "decide", agentId, requestId, choice: "deny", scope: "once" });
         return;
       }
       if (frame.t === "update") {
@@ -428,8 +430,7 @@ async function settle(base: string, token: string, agentId: string, ms: number):
   const deadline = Date.now() + ms;
   for (;;) {
     const body = (await (await api(base, token, "/v1/agents")).json()) as { agents: Agent[] };
-    const agent = body.agents.find(candidate => candidate.id === agentId);
-    const state = agent?.state;
+    const state = body.agents.find(candidate => candidate.id === agentId)?.state;
     if (state === "idle" || state === "failed" || state === "stopped") return state;
     if (Date.now() > deadline) throw new Error(`agent ${agentId} never settled (state=${String(state)})`);
     await Bun.sleep(1000);
@@ -473,7 +474,15 @@ function scalarFrom(yaml: string, key: string): string {
   return typeof parsed === "string" ? parsed : "";
 }
 
-/** `http://host:port` for an endpoint the guest was given, or empty if it is not a URL. */
+/**
+ * `http://host:port` for an endpoint the guest was handed, or empty.
+ *
+ * Taken from the guest's own `models.yml` rather than reconstructed from the
+ * network's CIDR, and that is the difference between a probe and a guess:
+ * Apple hands out subnets in creation order, so the gateway of the network this
+ * container happens to be on is not derivable from anything this script knows.
+ * The address the container actually dialled is the only one worth probing.
+ */
 function originOf(endpoint: string): string {
   if (endpoint === "") return "";
   try {
@@ -486,6 +495,7 @@ function originOf(endpoint: string): string {
 
 /** The status of one broker request, or null when nothing answered at all. */
 async function brokerStatus(url: string, path: string, init: RequestInit): Promise<number | null> {
+  if (url === "") return null;
   try {
     const res = await fetch(`${url}${path}`, { ...init, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
     return res.status;
@@ -494,14 +504,9 @@ async function brokerStatus(url: string, path: string, init: RequestInit): Promi
   }
 }
 
-/** A message body the broker would forward if it accepted the request. Never accepted here. */
+/** A body the broker would forward if it ever accepted one of these probes. It never does. */
 function probeBody(model: string): string {
   return JSON.stringify({ model, max_tokens: 16, messages: [{ role: "user", content: `probe ${NONCE}` }] });
-}
-
-function isForeignRuntime(name: string): boolean {
-  if (FOREIGN_EXACT[name] === true) return true;
-  return FOREIGN_PREFIX.some(prefix => name.startsWith(prefix));
 }
 
 /**
@@ -510,7 +515,7 @@ function isForeignRuntime(name: string): boolean {
  * Keyed by pid rather than counted, because the question is not whether docker
  * is running on this machine -- OrbStack and a qemu were both already up when
  * this script was written -- but whether this run started one. That is a set
- * difference between two snapshots, and it needs identities on both sides.
+ * difference between two snapshots and it needs identities on both sides.
  */
 async function foreignProcesses(): Promise<{ read: boolean; total: number; matches: Map<number, string> }> {
   const ps = await run(["ps", "-Awwo", "pid=,comm="]);
@@ -522,14 +527,10 @@ async function foreignProcesses(): Promise<{ read: boolean; total: number; match
     total += 1;
     const command = found[2] ?? "";
     const name = command.slice(command.lastIndexOf("/") + 1);
-    if (isForeignRuntime(name)) matches.set(Number(found[1]), name);
+    const foreign = FOREIGN_EXACT[name] === true || FOREIGN_PREFIX.some(prefix => name.startsWith(prefix));
+    if (foreign) matches.set(Number(found[1]), name);
   }
   return { read: ps.code === 0 && total > 0, total, matches };
-}
-
-/** `pid name` for each entry, so a failure names what appeared rather than how many. */
-function describeProcesses(matches: Map<number, string>): string {
-  return [...matches].map(([pid, name]) => `${name}(${pid})`).join(", ");
 }
 
 /**
@@ -562,11 +563,11 @@ async function networkCidr(network: string): Promise<string | null> {
  * A routable IPv4 on a real interface that is NOT the container bridge.
  *
  * The exclusion is the whole point. While a container is running, Apple's
- * runtime holds the network's gateway address on a host interface -- that is
+ * runtime holds that network's gateway address on a host interface -- that is
  * what makes the broker's bind possible at all -- so a naive "first
- * non-internal IPv4" would hand back the very address the broker is listening
- * on, and the probe that is supposed to show the broker is not on the LAN would
- * fail against the address it is deliberately bound to.
+ * non-internal IPv4" can hand back the very address the broker is listening on,
+ * and the probe meant to show the broker is not on the LAN would then fail
+ * against the address it is deliberately bound to.
  */
 function lanAddress(excludeCidr: string | null): { name: string; address: string } | null {
   for (const [name, entries] of Object.entries(networkInterfaces())) {
@@ -650,26 +651,18 @@ async function main(): Promise<number> {
     // separated out here with the exact remedy attached.
     const status = await run([RUNTIME, "system", "status"]);
     const apiserver = `${status.stdout}${status.stderr}`.includes("apiserver is running");
-    if (
-      !record(
-        "the container apiserver is running",
-        apiserver,
-        apiserver ? "apiserver is running" : `remedy: ${RUNTIME} system start`,
-      )
-    ) {
+    const remedy = apiserver ? "apiserver is running" : `remedy: ${RUNTIME} system start`;
+    if (!record("the container apiserver is running", apiserver, remedy)) {
       throw new StopRun("Apple's apiserver is down, so nothing below would be measuring this runtime");
     }
     // The broker forwards to `omp auth-gateway` and `omp auth-broker`, both
     // spawned from the daemon's `ompPath`, which defaults to a bare `omp`. A
-    // missing binary surfaces as a provisioning failure two phases later with a
-    // message about model access, so it is named here instead.
+    // missing binary surfaces two phases later as a provisioning failure about
+    // model access, so it is named here instead.
     const omp = await run(["omp", "--version"]);
+    const ompDetail = omp.stdout.trim() || omp.stderr.trim();
     if (
-      !record(
-        "omp is on PATH, so the daemon can spawn the auth services the broker forwards to",
-        omp.code === 0,
-        omp.stdout.trim() || omp.stderr.trim(),
-      )
+      !record("omp is on PATH, so the daemon can spawn the auth services behind the broker", omp.code === 0, ompDetail)
     ) {
       throw new StopRun("omp is not on PATH, so the broker would have nothing to forward to");
     }
@@ -687,16 +680,17 @@ async function main(): Promise<number> {
     phase("no foreign runtime is involved");
     const before = await foreignProcesses();
     processBefore = before.matches;
-    // A read that returned nothing would make the comparison in the teardown
-    // phase vacuous, so whether the process table can be read at all is the
-    // check here; the comparison itself is the one that can catch something.
+    // A read that returned nothing would make the comparison at teardown
+    // vacuous, so whether the process table can be read at all is the check
+    // here; the comparison itself is the one that can catch something.
+    const alreadyUp = [...before.matches].map(([pid, name]) => `${name}(${pid})`).join(", ");
     record(
       "the process table can be read, so the comparison at teardown is not vacuous",
       before.read,
-      `${before.total} processes, ${before.matches.size} foreign-runtime process(es) already running: ` +
-        `${describeProcesses(before.matches) || "none"}`,
+      `${before.total} processes, ${before.matches.size} foreign-runtime process(es) already up: ` +
+        `${alreadyUp || "none"}`,
     );
-    console.log("  those are this machine's, not this run's; the teardown phase compares against exactly this set");
+    console.log("  those are this machine's, not this run's; teardown compares against exactly that set");
 
     phase("start a daemon on its own port and home");
     const brokerPort = await freePort();
@@ -717,15 +711,12 @@ async function main(): Promise<number> {
     const started = await daemon.start();
     let base = started.url;
     let token = readFileSync(join(home, "token"), "utf8").trim();
-    if (
-      !record(
-        "daemon listening on its own port and home",
-        started.port > 0 && token !== "",
-        `${base} home=${home} brokerPort=${brokerPort}`,
-      )
-    ) {
-      throw new StopRun("the daemon did not come up, so nothing below can be provisioned");
-    }
+    const listening = record(
+      "daemon listening on its own port and home",
+      started.port > 0 && token !== "",
+      `${base} home=${home} brokerPort=${brokerPort}`,
+    );
+    if (!listening) throw new StopRun("the daemon did not come up, so nothing below can be provisioned");
 
     phase("provision a container agent through POST /v1/agents");
     const listedBefore = await run([RUNTIME, "ls", "--all"]);
@@ -760,7 +751,7 @@ async function main(): Promise<number> {
       agent.host.resolved?.runtime === RUNTIME,
       `runtime=${agent.host.resolved?.runtime ?? "(none recorded)"}`,
     );
-    // The two fields that make teardown survive a restart, which the last phase
+    // The two fields that let teardown survive a restart, which the last phase
     // depends on: without them a restarted daemon has nothing to address the
     // container or the seeded home with.
     record(
@@ -805,7 +796,7 @@ async function main(): Promise<number> {
 
     // Read once, from the guest's own view. Held in memory only: never printed,
     // never written to disk, never placed in an argv. It is the live bearer for
-    // this container's grant, and the revocation phase needs it after the agent
+    // this container's grant, and the revocation phase needs it once the agent
     // is gone. Reading it here rather than there is deliberate -- three
     // assertions below are about bytes that must appear nowhere except this one
     // file, and they cannot be made without the bytes.
@@ -830,18 +821,12 @@ async function main(): Promise<number> {
       `apiKey is a command over ${GUEST_TOKEN_PATH}`,
     );
 
-    // A check that cannot fail is not a check. The scan is run against a
-    // planted decoy first, with the same pattern and the same pipeline, and
-    // only then against the real tree. The decoy is written from inside the
-    // guest so it lands in exactly the directory being scanned.
-    const scanArgv = [
-      RUNTIME,
-      "exec",
-      containerId,
-      "sh",
-      "-c",
-      `grep -rlE '${CREDENTIAL_SHAPES}' ${GUEST_HOME_MOUNT} 2>/dev/null | sort`,
-    ];
+    // A check that cannot fail is not a check. The scan runs against a planted
+    // decoy first, with the same pattern and the same pipeline, and only then
+    // against the real tree. The decoy is written from inside the guest so it
+    // lands in exactly the directory being scanned.
+    const scanCommand = `grep -rlE '${CREDENTIAL_SHAPES}' ${GUEST_HOME_MOUNT} 2>/dev/null | sort`;
+    const scanArgv = [RUNTIME, "exec", containerId, "sh", "-c", scanCommand];
     await exec(containerId, ["sh", "-c", `printf '%s\\n' '${DECOY_VALUE}' > ${GUEST_DECOY_PATH}`]);
     const decoyScan = await run(scanArgv);
     record(
@@ -860,21 +845,14 @@ async function main(): Promise<number> {
     // The same question of the environment. Variable names only on the way out,
     // never values: a scan that printed what it found would publish the very
     // thing it exists to prove is absent.
-    const envDecoy = await exec(containerId, [
-      "sh",
-      "-c",
-      `DECOY=${DECOY_VALUE} env | grep -E '${CREDENTIAL_SHAPES}' | cut -d= -f1 | sort; echo PROBE-COMPLETE`,
-    ]);
+    const envPipeline = `env | grep -E '${CREDENTIAL_SHAPES}' | cut -d= -f1 | sort; echo PROBE-COMPLETE`;
+    const envDecoy = await exec(containerId, ["sh", "-c", `DECOY=${DECOY_VALUE} ${envPipeline}`]);
     record(
       "the environment scan detects a planted credential shape",
       lines(envDecoy.stdout).includes("DECOY"),
       lines(envDecoy.stdout).join(", "),
     );
-    const envScan = await exec(containerId, [
-      "sh",
-      "-c",
-      `env | grep -E '${CREDENTIAL_SHAPES}' | cut -d= -f1 | sort; echo PROBE-COMPLETE`,
-    ]);
+    const envScan = await exec(containerId, ["sh", "-c", envPipeline]);
     const envHits = lines(envScan.stdout).filter(name => name !== "PROBE-COMPLETE");
     record(
       "no provider-credential value shape in the guest's environment",
@@ -892,7 +870,7 @@ async function main(): Promise<number> {
     ];
     const presentOnHost = hostCanaries.filter(path => existsSync(path));
     // Without this, "the guest could not read it" would also be true of a path
-    // that does not exist anywhere, and every refusal below would be vacuous.
+    // that exists nowhere, and every refusal below would be vacuous.
     record(
       "the host really holds credential paths the guest must not reach",
       presentOnHost.length > 0,
@@ -901,7 +879,8 @@ async function main(): Promise<number> {
     for (const path of hostCanaries) {
       // `cat` for a file and `ls` for a directory, in one command, because the
       // list holds both and a `cat` of a directory fails for the wrong reason.
-      const reach = await exec(containerId, ["sh", "-c", `cat ${path} >/dev/null 2>&1 || ls -a ${path} >/dev/null 2>&1`]);
+      const reachCommand = `cat ${path} >/dev/null 2>&1 || ls -a ${path} >/dev/null 2>&1`;
+      const reach = await exec(containerId, ["sh", "-c", reachCommand]);
       record(
         `the guest cannot reach ${shortHome(path)}`,
         reach.code !== 0,
@@ -941,21 +920,21 @@ async function main(): Promise<number> {
         : `no nonce in ${client.assistantText.length} chars of reply after ${elapsed}s; ` +
             `state=${turn.state ?? "unknown"}`,
     );
-    if (!turn.seen) {
+    if (turn.seen) {
+      const afterTurn = await settle(base, token, agent.id, SETTLE_TIMEOUT_MS);
+      record("the agent settled after the turn", afterTurn === "idle", `state=${afterTurn}`);
+    } else {
       // In full, not sliced. A failure here is the whole point of the script,
-      // and an operator reading it needs the provider's own words rather than a
+      // and whoever reads it needs the provider's own words rather than a
       // truncated hint: "quota exhausted", "model not found" and "connection
       // refused" are three different repairs.
-      console.log("\n  the turn produced no nonce. everything the daemon and the socket said about it:");
+      console.log("\n  the turn produced no nonce. everything the socket said about it:");
       console.log(`  assistant text: ${client.assistantText || "(nothing)"}`);
-      for (const message of client.errors) console.log(`  socket error: ${message}`);
       if (client.errors.length === 0) console.log("  socket error: (none)");
+      for (const message of client.errors) console.log(`  socket error: ${message}`);
       for (const approval of client.approvals) {
         console.log(`  the model asked to use ${approval.tool}, which this run denied; it was told to use no tool`);
       }
-    } else {
-      const afterTurn = await settle(base, token, agent.id, SETTLE_TIMEOUT_MS);
-      record("the agent settled after the turn", afterTurn === "idle", `state=${afterTurn}`);
     }
 
     phase("the broker is not reachable from anywhere it should not be");
@@ -1013,7 +992,7 @@ async function main(): Promise<number> {
     // with it, and the broker closes when its last grant goes. A request that
     // cannot connect after that proves nothing about the grant, and reading it
     // as revocation would be a check that passes hardest when it is broken. So
-    // liveness is established first, and the evidence used depends on the
+    // liveness is established first, and which evidence is used depends on the
     // answer rather than on hope.
     const stillListening = await brokerStatus(guestOrigin, "/v1/healthz", { method: "GET" });
     if (stillListening === 404) {
@@ -1035,7 +1014,7 @@ async function main(): Promise<number> {
       const since = daemonLog.slice(logMark).join("\n");
       const revoked = /model broker: revoked a grant for (\S+) \((\d+) requests?, (\d+) tokens? used\)/.exec(since);
       record(
-        "the broker revoked this grant, and served the turn on it",
+        "the broker revoked this grant, and had served the turn on it",
         revoked !== null && revoked[1] === grantedModel && Number(revoked[2]) > 0,
         revoked === null
           ? "the broker never reported revoking a grant, so the turn may not have gone through it"
@@ -1049,19 +1028,20 @@ async function main(): Promise<number> {
             headers: { authorization: `Bearer ${guestBearer}`, "content-type": "application/json" },
             body: probeBody(grantedModel),
           });
-          return `${url} -> ${seen ?? "nothing answered"}`;
+          return { url, seen };
         }),
       );
       record(
         "the withdrawn bearer has no listener left to present it to",
-        statuses.every(entry => entry.endsWith("nothing answered")),
-        statuses.join(", "),
+        statuses.every(entry => entry.seen === null),
+        statuses.map(entry => `${entry.url} -> ${entry.seen ?? "nothing answered"}`).join(", "),
       );
     }
 
     // The constraint the whole design rests on: the bearer appears in one 0600
     // file inside the guest and nowhere else this daemon writes.
     const auditText = await (await api(base, token, "/v1/audit?limit=200")).text();
+    const audit = JSON.parse(auditText) as { entries: AuditEntry[] };
     record(
       "no audit row carries the guest's bearer",
       guestBearer !== "" && !auditText.includes(guestBearer),
@@ -1074,8 +1054,11 @@ async function main(): Promise<number> {
     );
     record(
       "the grant is audited",
-      (JSON.parse(auditText) as { entries: AuditEntry[] }).entries.some(entry => entry.action === "model.grant"),
-      "model.grant",
+      audit.entries.some(entry => entry.action === "model.grant"),
+      audit.entries
+        .filter(entry => entry.action.startsWith("model."))
+        .map(entry => `${entry.action}:${entry.outcome}`)
+        .join(",") || "(no model.* rows)",
     );
     record(
       "the seeded guest home is gone from the host",
@@ -1104,14 +1087,23 @@ async function main(): Promise<number> {
     if (secondNetwork !== "") networks.push(secondNetwork);
     const secondGuestHome = second.host.resolved?.guestHome ?? "";
     if (secondGuestHome !== "") guestHomes.push(secondGuestHome);
-    record("a second container agent was provisioned", secondCreated.status === 201, `${second.id} state=${second.state}`);
+    record(
+      "a second container agent was provisioned",
+      secondCreated.status === 201,
+      `${second.id} state=${second.state}`,
+    );
 
+    // Both read while the container is still up, because after the restart
+    // neither is recoverable: the bearer lives only in the guest's 0600 file and
+    // in the broker's memory, and the endpoint is the one address worth probing
+    // afterwards.
     const secondTokenRead = await exec(secondId, ["cat", GUEST_TOKEN_PATH]);
     const secondBearer = secondTokenRead.stdout.trim();
+    const secondOrigin = originOf(scalarFrom((await exec(secondId, ["cat", GUEST_MODELS_YML])).stdout, "baseUrl"));
     record(
       "the second guest holds a bearer of its own, not a copy of the first",
       secondBearer !== "" && secondBearer !== guestBearer,
-      `${secondBearer.length} chars, not shown`,
+      `${secondBearer.length} chars, not shown; endpoint ${secondOrigin || "(unread)"}`,
     );
 
     await daemon.stop();
@@ -1119,11 +1111,11 @@ async function main(): Promise<number> {
     // Observed between the two daemons rather than assumed either way, because
     // it decides what the assertion below is actually about. A graceful stop
     // destroys every container this process provisioned, so on that path
-    // reconciliation meets a persisted ref whose container is already absent
-    // and folds it into success. A container still listed here is one the
-    // previous daemon did not reclaim, and then reconciliation is what removes
-    // it. Both are worth proving; claiming the second when the first happened
-    // would be a claim about a step that did no work.
+    // reconciliation meets a persisted ref whose container is already absent and
+    // folds it into success. A container still listed here is one the previous
+    // daemon did not reclaim, and then reconciliation is what removes it. Both
+    // are worth proving; claiming the second when the first happened would be a
+    // claim about a step that did no work.
     const between = await run([RUNTIME, "ls", "--all", "--quiet"]);
     const survivedStop = lines(between.stdout).includes(secondId);
     console.log(
@@ -1159,9 +1151,8 @@ async function main(): Promise<number> {
       `state=${secondRow?.state ?? "(no row)"}`,
     );
 
-    const restartAudit = JSON.parse(await (await api(base, token, "/v1/audit?limit=200")).text()) as {
-      entries: AuditEntry[];
-    };
+    const restartAuditText = await (await api(base, token, "/v1/audit?limit=200")).text();
+    const restartAudit = JSON.parse(restartAuditText) as { entries: AuditEntry[] };
     const reconciled = restartAudit.entries.filter(
       entry => entry.action === "host.reconcile" && entry.detail.hostId === secondId,
     );
@@ -1175,17 +1166,16 @@ async function main(): Promise<number> {
     // daemon restart withdraws model access from every container it did not
     // start, and that is by design rather than a gap: the broker's grants live
     // only in the process that minted them, and the bearer is deliberately
-    // absent from the `HostRef.resolved` the store persists, so a restarted
-    // daemon can still remove the container and the directory while having
-    // nothing left that could honour the token.
+    // absent from the `HostRef.resolved` the store persists. So a restarted
+    // daemon can still remove the container and delete the directory while
+    // holding nothing that could honour the token.
     const persisted = JSON.stringify(secondRow?.host ?? {});
     record(
       "the persisted host ref carries no bearer, which is why a restart withdraws model access by design",
-      secondBearer !== "" && !persisted.includes(secondBearer) && persisted.length > 0,
+      persisted.length > 0 && secondBearer !== "" && !persisted.includes(secondBearer),
       `${persisted.length} bytes of HostRef scanned; the grant died with the process that minted it`,
     );
 
-    const secondOrigin = originOf(`http://${cidrGateway(secondNetwork, await networkCidr(secondNetwork))}`);
     const deadEnds = [secondOrigin, `http://127.0.0.1:${brokerPort}`].filter(url => url !== "");
     const deadStatuses = await Promise.all(
       deadEnds.map(async url => {
@@ -1227,15 +1217,15 @@ async function main(): Promise<number> {
     } catch (err) {
       console.log(`  cleanup: stopping the daemon failed: ${String(err)}`);
     }
+    const survivors = lines((await run([RUNTIME, "ls", "--all", "--quiet"])).stdout);
     for (const id of containers) {
-      const still = await run([RUNTIME, "ls", "--all", "--quiet"]);
-      if (!lines(still.stdout).includes(id)) continue;
+      if (!survivors.includes(id)) continue;
       const forced = await run([RUNTIME, "rm", "--force", id]);
       console.log(`  cleanup: force-removed a surviving container ${id.slice(0, 12)} (exit ${forced.code})`);
     }
+    const networksLeft = lines((await run([RUNTIME, "network", "ls", "--quiet"])).stdout);
     for (const name of networks) {
-      const left = await run([RUNTIME, "network", "ls", "--quiet"]);
-      if (!lines(left.stdout).includes(name)) continue;
+      if (!networksLeft.includes(name)) continue;
       const removed = await run([RUNTIME, "network", "rm", name]);
       console.log(`  cleanup: removed a surviving network ${name} (exit ${removed.code})`);
     }
@@ -1248,17 +1238,18 @@ async function main(): Promise<number> {
     }
     console.log("  cleanup: guest homes, workspace and daemon home removed");
 
-    if (processBefore === null) {
+    const snapshot = processBefore;
+    if (snapshot === null) {
       console.log("  no process-table snapshot was taken, so nothing can be said about foreign runtimes");
     } else {
       const after = await foreignProcesses();
-      const appeared = new Map([...after.matches].filter(([pid]) => !processBefore.has(pid)));
+      const appeared = [...after.matches].filter(([pid]) => !snapshot.has(pid));
       record(
         "no docker, podman, orb, vfkit or qemu process was started by this run",
-        after.read && appeared.size === 0,
-        appeared.size > 0
-          ? `appeared during this run: ${describeProcesses(appeared)}`
-          : `${processBefore.size} foreign-runtime process(es) were already running and are untouched`,
+        after.read && appeared.length === 0,
+        appeared.length > 0
+          ? `appeared during this run: ${appeared.map(([pid, name]) => `${name}(${pid})`).join(", ")}`
+          : `${snapshot.size} foreign-runtime process(es) were already running and are untouched`,
       );
     }
   }
@@ -1266,23 +1257,6 @@ async function main(): Promise<number> {
   const failed = checks.filter(check => !check.ok);
   console.log(`\n${checks.length - failed.length} ok, ${failed.length} failed`);
   return failed.length === 0 ? 0 : 1;
-}
-
-/**
- * The gateway address of a network, as `host:port` is not what `network
- * inspect` returns: it answers a CIDR, and the gateway is its first address.
- *
- * Used only after the network has been destroyed, where the point is that
- * nothing answers there any more. An unknown network yields an empty string,
- * which the caller drops from its probe list rather than turning into a URL
- * pointing at nothing in particular.
- */
-function cidrGateway(network: string, cidr: string | null): string {
-  if (network === "" || cidr === null) return "";
-  const base = cidr.split("/")[0] ?? "";
-  const octets = base.split(".");
-  if (octets.length !== 4) return "";
-  return `${octets[0]}.${octets[1]}.${octets[2]}.1`;
 }
 
 process.exit(await main());

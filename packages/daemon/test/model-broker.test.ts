@@ -43,7 +43,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { Server, Timer } from "bun";
+import type { Server } from "bun";
 import { ModelBroker, type ModelGrant, type ModelGrantLimits } from "../src/model-broker/broker.ts";
 
 /** The one model every grant here allowlists, unless a test says otherwise. */
@@ -77,11 +77,22 @@ const LISTEN = { attempts: 4, delayMs: 25 } as const;
  */
 const LARGE_BODY_BYTES = 33 * 1024 * 1024;
 
-/** The broker's `MAX_REQUEST_BODY_BYTES`, which is not exported, and a nudge past it. */
+/** The broker's `MAX_REQUEST_BODY_BYTES`, which it does not export. */
 const REQUEST_BODY_CAP = 32 * 1024 * 1024;
-const OVER_CAP_BODY_BYTES = REQUEST_BODY_CAP + 1024;
 
-/** Room for 33 MiB across loopback, which bun:test's 5s default does not leave. */
+/**
+ * Double the cap, not a byte over it, and the difference decides whether the
+ * 413 test can fail. `readBounded` crosses the cap after 32 MiB and its job is
+ * to keep reading anyway; a `cap + 1024` body leaves a kilobyte of remainder,
+ * which the kernel has long since accepted, so the test reads zero bytes
+ * outstanding whether or not anything read past the cap. Measured on Bun
+ * 1.3.14: at `cap + 1024` a broker that bails at the cap AND skips the `#deny`
+ * drain still passes; at `2 * cap` it leaves roughly 32 MiB outstanding and is
+ * caught.
+ */
+const OVER_CAP_BODY_BYTES = 2 * REQUEST_BODY_CAP;
+
+/** Room for tens of megabytes across loopback, which bun:test's 5s default does not leave. */
 const LARGE_BODY_TEST_TIMEOUT_MS = 30_000;
 
 const encoder = new TextEncoder();
@@ -151,8 +162,14 @@ async function freePorts(count: number): Promise<number[]> {
     probes.push(Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) }));
   }
   const ports = probes.map(probe => probe.port);
+  // Stopped before anything can throw, so a probe never outlives this call.
   await Promise.all(probes.map(probe => probe.stop(true)));
-  return ports;
+  const reserved: number[] = [];
+  for (const port of ports) {
+    if (port === undefined) throw new Error("Bun.serve reported no port for a free-port probe");
+    reserved.push(port);
+  }
+  return reserved;
 }
 
 async function freePort(): Promise<number> {
@@ -191,6 +208,16 @@ interface RawResponse {
 
 interface RawConnection {
   send(payload: string | Uint8Array): void;
+  /**
+   * Bytes queued for this socket that the kernel has not accepted yet.
+   *
+   * This is the whole drain assertion. A handler that consumed the request
+   * body before answering cannot have answered until every byte reached it, so
+   * a refusal arriving with anything still queued here is a refusal written
+   * over a body that is still in flight, which is the state that desyncs the
+   * connection.
+   */
+  pending(): number;
   /** The next complete response on this connection, or a named timeout. */
   next(label: string, ms?: number): Promise<RawResponse>;
   close(): void;
@@ -273,7 +300,10 @@ function parseResponse(buf: Uint8Array): ParsedResponse | null {
 }
 
 async function rawConnect(host: string, port: number): Promise<RawConnection> {
-  let inbox = new Uint8Array(0);
+  // Annotated rather than inferred: `concat` yields the `ArrayBufferLike`
+  // spelling and `new Uint8Array(0)` yields the `ArrayBuffer` one, which do not
+  // assign in that direction under the generic typed-array lib.
+  let inbox: Uint8Array = new Uint8Array(0);
   let waiting: (() => void) | null = null;
   let failure: Error | null = null;
   const outbox: Uint8Array[] = [];
@@ -324,6 +354,11 @@ async function rawConnect(host: string, port: number): Promise<RawConnection> {
     send(payload) {
       outbox.push(typeof payload === "string" ? encoder.encode(payload) : payload);
       pump();
+    },
+    pending() {
+      let total = 0;
+      for (const queued of outbox) total += queued.byteLength;
+      return total;
     },
     next(label, ms = DEADLINE_MS) {
       return new Promise<RawResponse>((resolve, reject) => {
@@ -497,10 +532,7 @@ describe("route allowlist", () => {
 
     expect((await post("/v1/messages", { token: granted.token })).status).toBe(200);
     expect((await post("/v1/messages/count_tokens", { token: granted.token })).status).toBe(200);
-    expect(upstreamSeen.map(call => new URL(call.url).pathname)).toEqual([
-      "/v1/messages",
-      "/v1/messages/count_tokens",
-    ]);
+    expect(upstreamSeen.map(call => new URL(call.url).pathname)).toEqual(["/v1/messages", "/v1/messages/count_tokens"]);
     // The guest's bearer stops at the broker. What reaches the gateway is the
     // gateway's own, which the guest has never held.
     expect(upstreamSeen.map(call => call.authorization)).toEqual([
@@ -948,10 +980,12 @@ describe("listen and issue ordering", () => {
   test("names the attempts and the elapsed budget when the address never binds", async () => {
     const occupied = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) });
     servers.push(occupied);
+    const taken = occupied.port;
+    if (taken === undefined) throw new Error("Bun.serve reported no port for the occupied-port probe");
     const blocked = makeBroker();
 
-    await expect(blocked.listen({ host: "127.0.0.1", port: occupied.port, attempts: 2, delayMs: 10 })).rejects.toThrow(
-      `model broker could not bind 127.0.0.1:${occupied.port} after 2 attempts over 20ms`,
+    await expect(blocked.listen({ host: "127.0.0.1", port: taken, attempts: 2, delayMs: 10 })).rejects.toThrow(
+      `model broker could not bind 127.0.0.1:${taken} after 2 attempts over 20ms`,
     );
 
     // A failed bind must not poison the broker: the next container provisions
@@ -966,11 +1000,33 @@ describe("listen and issue ordering", () => {
 
 // ---------------------------------------------------------------------------
 // The drain
+//
+// What actually desyncs a connection, measured on Bun 1.3.14 by deleting
+// `await drainBody(req)` from `#deny` and re-running this file:
+//
+//   A client that writes its whole declared body always resynchronises,
+//   whatever the size and whatever the handler did. 4 MiB, 33 MiB and 128 MiB
+//   all recover. So "send a huge body, then send another request" is a test
+//   that cannot fail, and an earlier draft of this file was exactly that.
+//
+//   The connection breaks when the refusal is written while body bytes are
+//   still in flight. A real client that already holds a final response stops
+//   sending the rest, and the server is then parked mid-body: it reads the next
+//   request's head as body continuation and either answers nothing at all or
+//   answers `400 Bad Request` with `Connection: close`. Both were reproduced.
+//
+// So the assertion is not "the next request works" -- that is the symptom, and
+// it needs a client that misbehaves in exactly the right way to show up. The
+// assertion is that NOTHING IS STILL QUEUED when the refusal lands, which is
+// only true of a handler that consumed the body before answering, and which
+// fails immediately and legibly rather than as a timeout. The follow-up
+// request is asserted too, because the property the drain exists for is that
+// the connection survives.
 // ---------------------------------------------------------------------------
 
 describe("refusal body drain", () => {
   test(
-    "leaves the connection usable after refusing a request whose body it never wanted",
+    "reads a refused request's body before answering, and leaves the connection usable",
     async () => {
       const granted = issueGrant();
       const host = `127.0.0.1:${brokerPort}`;
@@ -985,6 +1041,7 @@ describe("refusal body drain", () => {
       const notFound = await connection.next("the 404 refusal of an oversized POST /v1/models");
       expect(notFound.status).toBe(404);
       expect(JSON.parse(notFound.body)).toEqual({ error: "not_found" });
+      expect({ refusal: 404, stillQueued: connection.pending() }).toEqual({ refusal: 404, stillQueued: 0 });
 
       // Refused at the credential, on the same connection, same shape.
       connection.send(requestHead({ path: "/v1/messages", host, contentLength: large.byteLength }));
@@ -992,10 +1049,8 @@ describe("refusal body drain", () => {
       const unauthorized = await connection.next("the 401 refusal of an oversized unauthenticated POST");
       expect(unauthorized.status).toBe(401);
       expect(JSON.parse(unauthorized.body)).toEqual({ error: "unauthorized" });
+      expect({ refusal: 401, stillQueued: connection.pending() }).toEqual({ refusal: 401, stillQueued: 0 });
 
-      // The whole point. Without the drain in `#deny` this request never
-      // completes, and this file fails as the named timeout below rather than
-      // as a wrong status.
       const valid = encoder.encode(JSON.stringify({ model: MODEL }));
       connection.send(
         requestHead({ path: "/v1/messages", host, contentLength: valid.byteLength, token: granted.token }),
@@ -1010,7 +1065,7 @@ describe("refusal body drain", () => {
   );
 
   test(
-    "leaves the connection usable after refusing a body over the cap",
+    "reads an over-cap body to the end before refusing it, and leaves the connection usable",
     async () => {
       const granted = issueGrant();
       const host = `127.0.0.1:${brokerPort}`;
@@ -1026,6 +1081,12 @@ describe("refusal body drain", () => {
       expect(tooLarge.status).toBe(413);
       expect(JSON.parse(tooLarge.body)).toEqual({ error: "payload_too_large" });
       expect(logs.join("\n")).toContain(`body exceeds the ${REQUEST_BODY_CAP}-byte ceiling`);
+      // Two things hold this zero and either one alone is enough: `readBounded`
+      // keeps reading past the cap and stops retaining, and `#deny` drains
+      // whatever is left. Measured on Bun 1.3.14, breaking one still passes and
+      // breaking both leaves half this body outstanding, so this pins the
+      // property the connection depends on rather than one mechanism's shape.
+      expect({ refusal: 413, stillQueued: connection.pending() }).toEqual({ refusal: 413, stillQueued: 0 });
 
       const valid = encoder.encode(JSON.stringify({ model: MODEL }));
       connection.send(
