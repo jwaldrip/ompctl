@@ -209,9 +209,12 @@ export class RedisBackplane implements Backplane {
       // Silence the old client's close, which is now expected rather than news.
       stale.onclose = () => {};
       try {
-        stale.close();
-      } catch {
-        // Already gone, which is the state this was trying to reach.
+        // `close` may reject asynchronously when the connection was already
+        // lost. Awaiting keeps the rejection attached to this healing cycle
+        // instead of leaking into the next test or hub request.
+        await stale.close();
+      } catch (err) {
+        if (!isRedisConnectionClosedError(err)) throw err;
       }
       this.#onDisrupted?.("backplane subscriber stopped receiving; resubscribed on a new connection");
     } catch (cause) {

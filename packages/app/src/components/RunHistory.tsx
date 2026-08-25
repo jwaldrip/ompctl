@@ -31,11 +31,12 @@
 
 import type { ActionRun, ActionRunState, Run, RunState } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import type { PressableStateCallbackType } from "react-native";
 import { Pressable, StyleSheet, View } from "react-native";
+import { Surface } from "react-native-paper";
 import { Glyph } from "../design/icons.tsx";
+import { rhythm } from "../design/rhythm.ts";
 import { Body, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { ground, ink, signal, signalWash, stroke } from "../design/tokens.ts";
 import type { SignalName } from "../session/browser.ts";
 import { formatAge } from "../session/browser.ts";
 
@@ -200,7 +201,7 @@ function RunCard({
       : `started ${formatAge(run.startedAt)} ago, ended ${formatAge(run.finishedAt)} ago`;
   const sessions = linked.size === 1 ? "1 linked session" : `${linked.size} linked sessions`;
   return (
-    <View style={styles.run} testID={`run-${run.id}`}>
+    <Surface elevation={0} style={styles.run} testID={`run-${run.id}`}>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${RUN_STATE_LABELS[run.state]} run, ${timing}, ${sessions}. ${
@@ -246,7 +247,7 @@ function RunCard({
           <RunActionRow key={action.actionId} run={run} action={action} onOpenSession={onOpenSession} />
         ))
       )}
-    </View>
+    </Surface>
   );
 }
 
@@ -303,54 +304,57 @@ function RunActionRow({
     </View>
   );
 }
-
 // Hoisted, so a card's rows do not hand the pressables a fresh style function
-// on every render of the screen above them. Declared below the sheet because
-// the disabled pair is an array built once at module load rather than a closure
-// that reads the sheet later.
-const runHeadStyle = ({ pressed }: PressableStateCallbackType) => [styles.runHead, pressed && styles.pressed];
-const moreStyle = ({ pressed }: PressableStateCallbackType) => [styles.more, pressed && styles.pressed];
-const openStyle = ({ pressed }: PressableStateCallbackType) => [styles.open, pressed && styles.pressed];
+// on every render of the screen above them. The structural measurements are
+// semantic rhythm jobs rather than picked `space.*` steps, so the card can
+// change as one surface when the design system changes.
+const runHeadStyle = ({ pressed }: { pressed: boolean }) => [styles.runHead, pressed && styles.pressed];
+const moreStyle = ({ pressed }: { pressed: boolean }) => [styles.more, pressed && styles.pressed];
+const openStyle = ({ pressed }: { pressed: boolean }) => [styles.open, pressed && styles.pressed];
 
 const styles = StyleSheet.create({
   runs: {
-    gap: space.hair,
-    paddingTop: space.step,
+    gap: rhythm.pairGap,
+    paddingTop: rhythm.rowGap,
     borderTopWidth: stroke.hair,
     borderTopColor: ground.line,
   },
-  runsHead: { flexDirection: "row", alignItems: "center", gap: space.tight },
-  run: { borderWidth: stroke.hair, borderColor: ground.line, backgroundColor: ground.surface },
-  runHead: { flexDirection: "row", alignItems: "center", gap: space.snug, minHeight: TOUCH_TARGET },
+  runsHead: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
+  run: {
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+    backgroundColor: ground.surface,
+    padding: rhythm.cardPad,
+  },
+  runHead: { flexDirection: "row", alignItems: "center", gap: rhythm.cardGap, minHeight: rhythm.minTarget },
   /** The state's own colour as a rule down the run's leading edge. */
   bar: { alignSelf: "stretch", width: stroke.heavy },
-  runCopy: { flex: 1, minWidth: 0, gap: space.hair, paddingVertical: space.tight },
-  runHeadline: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.snug },
+  runCopy: { flex: 1, minWidth: 0, gap: rhythm.pairGap },
+  runHeadline: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: rhythm.cardGap },
   runAction: {
     flexDirection: "row",
     alignItems: "center",
-    gap: space.snug,
-    paddingLeft: space.snug,
-    paddingRight: space.tight,
+    minHeight: rhythm.minTarget,
+    gap: rhythm.cardGap,
     borderTopWidth: stroke.hair,
     borderTopColor: ground.line,
   },
   open: {
-    minHeight: TOUCH_TARGET,
+    minHeight: rhythm.minTarget,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: space.tight,
-    paddingHorizontal: space.snug,
+    gap: rhythm.glyphGap,
+    paddingHorizontal: rhythm.controlPad,
     backgroundColor: signalWash.sage,
   },
   openDisabled: { backgroundColor: ground.active },
   more: {
-    minHeight: TOUCH_TARGET,
+    minHeight: rhythm.minTarget,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: space.tight,
+    gap: rhythm.glyphGap,
   },
   pressed: { backgroundColor: ground.active },
 });

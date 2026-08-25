@@ -19,8 +19,9 @@ import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
+import { rhythm } from "../design/rhythm.ts";
 import { Body, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
+import { ground, ink, signal, stroke } from "../design/tokens.ts";
 
 export interface SessionLoadingProps {
   /** The session being waited for, named so the pane is visibly its own. */
@@ -132,15 +133,24 @@ export function SessionLoadStalled({
 }
 
 const styles = StyleSheet.create({
+  // All three states wear one panel. The gutter is the screen's, so a pane
+  // that is still waiting is inset exactly as far as the transcript that
+  // replaces it: this was 32 all round, the widest inset in the app, and the
+  // session name jumped left the moment the log arrived.
+  //
+  // `sectionGap` vertically, because the glyph, the state word, the session
+  // name and the skeleton are four different kinds of thing rather than a run
+  // of rows.
   panel: {
     alignItems: "center",
     backgroundColor: ground.base,
     flex: 1,
-    gap: space.step,
+    gap: rhythm.rowGap,
     justifyContent: "center",
-    padding: space.gulf,
+    paddingHorizontal: rhythm.gutter,
+    paddingVertical: rhythm.sectionGap,
   },
-  skeleton: { alignSelf: "stretch", gap: space.snug, marginTop: space.step },
+  skeleton: { alignSelf: "stretch", gap: rhythm.rowGapTight, marginTop: rhythm.rowGap },
   bar: { backgroundColor: ground.raised, borderBottomWidth: stroke.hair, borderBottomColor: ground.line, height: 14 },
   barWide: { width: "100%" },
   barMid: { width: "78%" },

@@ -26,6 +26,7 @@ import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
+import { Divider } from "react-native-paper";
 import { AgentHub } from "../components/AgentHub.tsx";
 import { Toast } from "../components/Toast.tsx";
 import { skillInvocation } from "../cowork/catalog.ts";
@@ -453,6 +454,15 @@ export function Console({
               deleteAccess={manageScopeAccess(state, connection.scopes)}
             />
           </View>
+          {/*
+            The seam between the panes, and it belongs to neither of them. It
+            was `borderRightWidth` on the bay, which made the division the
+            bay's property: it existed only while the bay did, its weight was
+            the bay's business, and a bay that ever grew a background would
+            have painted over it. As a sibling it is what it actually is, one
+            rule between two panes, and Paper draws it.
+          */}
+          {split ? <Divider style={styles.splitSeam} testID="split-seam" /> : null}
           {split ? <View style={styles.splitDetail}>{splitPane()}</View> : null}
         </View>
       </SafeScreen>
@@ -702,10 +712,34 @@ const styles = StyleSheet.create({
   singleLayout: { flex: 1 },
   splitLayout: { flex: 1, flexDirection: "row" },
   bay: { flex: 1 },
-  // No width here by design: the bay's width is computed from the window at
-  // render (`useSplitBayWidth`), and a literal in the sheet is exactly how
-  // the fixed 340 happened. `test/no-hidden-content.test.ts` holds the rule.
-  splitBay: { borderRightWidth: stroke.heavy, borderRightColor: ground.edge },
+  // Empty, and deliberately still here.
+  //
+  // No width, by design: the bay's width is computed from the window at render
+  // (`useSplitBayWidth`), and a literal in this sheet is exactly how the fixed
+  // 340 happened. `test/no-hidden-content.test.ts` reads this block BY NAME to
+  // prove no width has crept back, so deleting it would not fail that test --
+  // it would silently stop protecting the pane. The block is the assertion's
+  // anchor, and the empty braces are the statement that the bay pane has no
+  // geometry of its own.
+  //
+  // No border any more either. The rule dividing the panes was `borderRight`
+  // here, which made the division the bay's property; it is a `Divider`
+  // between the panes now.
+  splitBay: {},
+  // The pane seam. `Divider` supplies the element and its place in the theme;
+  // the two declarations here are the two Paper cannot answer -- it draws a
+  // horizontal hairline, and this is a vertical rule at the weight the palette
+  // reserves for "a section genuinely ends", which is exactly what the edge of
+  // a pane is.
+  //
+  // No `paneGutter` beside it, and that is not an omission. Both panes already
+  // pay `rhythm.gutter` inside their own edges -- the bay's list and the log's
+  // header, readout and composer all measure 16 from the seam -- so the air
+  // between the two columns of content is 16 + 2 + 16 today. A gap on top of
+  // that would charge the same separation a third time and push it to 50 on a
+  // device whose bay floor is already 400. `paneGutter` and `gutter` are the
+  // same value for exactly this reason: the pane gutter is paid by each pane.
+  splitSeam: { width: stroke.heavy, backgroundColor: ground.edge },
   splitDetail: { flex: 1 },
   gone: { alignItems: "center", justifyContent: "center", padding: space.gulf },
   limit: { gap: space.step, justifyContent: "center", padding: space.gulf },

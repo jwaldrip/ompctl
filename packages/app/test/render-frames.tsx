@@ -29,6 +29,9 @@ import type { Connection, ConnectionList } from "../src/platform/connection.ts";
 import { setWindowSize } from "./rnw.ts";
 
 const { Console } = await import("../src/console/Console.tsx");
+// Dynamic for the same RNW boundary as Console: Paper reaches React Native, so
+// loading it before the substitution would pull the native entrypoint in.
+const { WithOmpTheme } = await import("./theme.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -495,6 +498,74 @@ const FRAMES: Frame[] = [
       });
     },
   },
+  {
+    // The clearance surface, which is the one place a picture is worth more
+    // than a position assertion: an `ApprovalCard` carries three controls and
+    // a tool payload, so it is the widest row the log ever renders and the
+    // most likely to collide with the composer on the narrowest phone.
+    name: "iphone-owned-approval",
+    width: 390,
+    height: 844,
+    drive: (emit, press) => {
+      emit("agents", { agents: [AGENT] });
+      press("session-open-sess_a");
+      emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      emit("update", {
+        agentId: "agt_a",
+        seq: 1,
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "delete the stale worktrees" },
+          messageId: "u1",
+        },
+      });
+      emit("approval", {
+        agentId: "agt_a",
+        requestId: "req_1",
+        title: "Run a command",
+        tool: "bash",
+        input: { command: "git worktree prune" },
+      });
+    },
+  },
+  {
+    name: "ipad-owned-approval",
+    width: 1024,
+    height: 1366,
+    drive: (emit, press) => {
+      emit("agents", { agents: [AGENT] });
+      press("session-open-sess_a");
+      emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      emit("update", {
+        agentId: "agt_a",
+        seq: 1,
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "delete the stale worktrees" },
+          messageId: "u1",
+        },
+      });
+      emit("approval", {
+        agentId: "agt_a",
+        requestId: "req_1",
+        title: "Run a command",
+        tool: "bash",
+        input: { command: "git worktree prune" },
+      });
+    },
+  },
+  {
+    // Arriving, before any history lands. The frame that proves the load state
+    // owns the pane rather than sitting above a half-built log: nothing here
+    // may claim a turn, and nothing may show another session's rows.
+    name: "iphone-owned-loading",
+    width: 390,
+    height: 844,
+    drive: (emit, press) => {
+      emit("agents", { agents: [AGENT] });
+      press("session-open-sess_a");
+    },
+  },
 ];
 
 mkdirSync("/tmp/frames", { recursive: true });
@@ -507,15 +578,17 @@ for (const frame of FRAMES) {
   const root = createRoot(host);
   act(() => {
     root.render(
-      <Console
-        connection={CONNECTION}
-        daemonLabel="Studio Mac"
-        connections={CONNECTIONS}
-        onAddConnection={() => {}}
-        onSelectConnection={() => {}}
-        onUnpair={() => {}}
-        createClient={() => client as unknown as OmpdClient}
-      />,
+      <WithOmpTheme>
+        <Console
+          connection={CONNECTION}
+          daemonLabel="Studio Mac"
+          connections={CONNECTIONS}
+          onAddConnection={() => {}}
+          onSelectConnection={() => {}}
+          onUnpair={() => {}}
+          createClient={() => client as unknown as OmpdClient}
+        />
+      </WithOmpTheme>,
     );
   });
   const emit = (name: string, event: unknown): void => {

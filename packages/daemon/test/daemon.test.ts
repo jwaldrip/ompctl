@@ -104,6 +104,22 @@ describe("config", () => {
       // platform's own runtime, and ompd's pinned base plus mounted toolchain.
       containerRuntime: "",
       containerImage: "",
+      // Fixed rather than OS-assigned: this number ends up inside URLs written
+      // into OMP's own MCP config, which outlive the process that wrote them.
+      mcpAuthPort: 7778,
+      // On, because a container agent with no model access reaches `idle` and
+      // then fails every prompt. Off makes provisioning refuse rather than
+      // producing that agent, so the default is the only one that delivers the
+      // capability the flag names.
+      containerModelAccess: true,
+      // Empty is the same kind of real answer as the two above: resolve the
+      // host's own `modelRoles.default` rather than pin a model this daemon
+      // chose, because the grant is spent against the operator's credential.
+      containerModel: "",
+      // A number rather than 0, and that is load bearing: the guest's config
+      // carries this endpoint and is written before the container starts, so
+      // an OS-assigned port would not be known in time to seed it.
+      containerModelBrokerPort: 7788,
     });
   });
 
@@ -213,6 +229,51 @@ describe("config", () => {
 
     writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: 7 }));
     expect(() => loadConfig(home)).toThrow(/containerImage must be a string/);
+  });
+
+  test("the model access keys round-trip, and each refusal names the file and the value", () => {
+    const home = tempDir("ompd-cfg-");
+    const path = join(home, "config.json");
+
+    // Positive controls first, and they are not decoration: three refusals
+    // prove nothing if the loader throws on every value these keys can hold.
+    writeFileSync(
+      path,
+      JSON.stringify({
+        containerModelAccess: false,
+        containerModel: "anthropic/claude-haiku-4-5",
+        containerModelBrokerPort: 19_000,
+      }),
+    );
+    const loaded = loadConfig(home);
+    expect(loaded.containerModelAccess).toBe(false);
+    expect(loaded.containerModel).toBe("anthropic/claude-haiku-4-5");
+    expect(loaded.containerModelBrokerPort).toBe(19_000);
+
+    // `"yes"` rather than a shape nothing would ever write. A truthy string is
+    // exactly what an operator types when they mean `true`, and coercing it
+    // would turn a typo into a silently different daemon.
+    writeFileSync(path, JSON.stringify({ containerModelAccess: "yes" }));
+    expect(() => loadConfig(home)).toThrow(/containerModelAccess must be true or false, got yes/);
+    expect(() => loadConfig(home)).toThrow(path);
+
+    writeFileSync(path, JSON.stringify({ containerModel: 7 }));
+    expect(() => loadConfig(home)).toThrow(/containerModel must be a string, got 7/);
+
+    // `0` specifically. Every other port in this config may be zero and mean
+    // "whatever the OS hands back", and this one may not: the guest's config
+    // carries the endpoint and is seeded before the container starts, so a port
+    // discovered at bind time would be seeded as a port nothing listens on.
+    for (const bad of [0, -1, 65_536, 7788.5, "7788"]) {
+      writeFileSync(path, JSON.stringify({ containerModelBrokerPort: bad }));
+      expect(() => loadConfig(home), String(bad)).toThrow(
+        /containerModelBrokerPort must be an integer between 1 and 65535/,
+      );
+    }
+
+    // Overrides travel the same checks, which is what the CLI and the container
+    // check script rely on: a flag must not be a way past the loader.
+    expect(() => loadConfig(home, { containerModelBrokerPort: 0 })).toThrow(/containerModelBrokerPort must be/);
   });
 
   test("the container backend is built from the persisted config, and probes what it names", async () => {

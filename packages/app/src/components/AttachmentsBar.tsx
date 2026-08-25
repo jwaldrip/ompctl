@@ -21,16 +21,37 @@
  * read, so the two positions can never disagree about what this prompt is
  * carrying.
  *
- * Both composers reach this through `Composer`, which is the only thing that
- * lays the two halves out. Nothing else may place them, because a second
- * arrangement is a second convention.
+ * Every composer reaches both halves through here. `Composer` and
+ * `OmpComposer` lay them out; neither draws them. `OmpComposer` used to carry
+ * its own copy of the paperclip and its own copy of the chip band, which is
+ * two arrangements of one control, which is two conventions -- exactly the
+ * defect the placement rules exist to stop. There is one of each now.
  *
- * The paperclip is a ghost, not a boxed button. It wore a hairline square
- * until it was seen on a phone beside three other hairline squares inside a
- * hairline field inside a hairline container, and the whole surface read as a
- * control panel. `design/controls.ts` carries the shape and the reasoning; the
- * short version is that the 44-point target and a drawn border were never the
- * same requirement.
+ * ## What Paper supplies here, and what it could not
+ *
+ * The paperclip and a chip's remove badge are `IconButton`: a real control
+ * with a real press treatment, instead of a `Pressable` wearing a hand-rolled
+ * `ghost` style and a `pressed` fill. `design/controls.ts` is gone with them.
+ *
+ * A chip is `Surface` plus that `IconButton`, and deliberately NOT Paper's
+ * `Chip`, measured against `react-native-paper@5.15.3` rather than assumed.
+ * Three things, each fatal on its own:
+ *
+ *  - `Chip`'s close affordance is a bare `Pressable` carrying only
+ *    `accessibilityRole` and `closeIconAccessibilityLabel`. It takes no
+ *    `testID` and no prop supplies one, so `<prefix>-attachment-remove-<n>`
+ *    -- the handle removal is driven by, in two test files and in the
+ *    simulator proof -- would simply cease to exist.
+ *  - `Chip` puts `testID` on its inner ripple and hard-codes the bordered
+ *    outer `Surface` to `<testID>-container`, so `<prefix>-attachment-<n>`
+ *    would stop naming the box an operator sees and start naming something
+ *    inside it.
+ *  - `Chip` always renders a `Text` label from required `children`, and its
+ *    `avatar` slot is cloned to 24x24 inside a wrapper. An attachment chip
+ *    has no text at all; it is a 48-point thumbnail and a way to take it off.
+ *
+ * So the chip is built from the two Paper components that can carry it, and
+ * every testID and every positional accessibility label survives.
  */
 
 import {
@@ -41,11 +62,13 @@ import {
 } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useState } from "react";
-import { Image, Pressable, StyleSheet, View } from "react-native";
-import { ghost } from "../design/controls.ts";
+import { Image, StyleSheet, View } from "react-native";
+import { IconButton, Surface } from "react-native-paper";
 import { Glyph } from "../design/icons.tsx";
+import { rhythm } from "../design/rhythm.ts";
 import { Label } from "../design/text.tsx";
-import { ground, ink, radius, signal, space, stroke } from "../design/tokens.ts";
+import { radius, stroke } from "../design/tokens.ts";
+import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { ImageAttachmentPicker } from "../platform/attachments.ts";
 
 export interface UseImageAttachments {
@@ -154,12 +177,22 @@ export function useImageAttachments({ picker, images, onImages, enabled }: UseIm
  * words. It carries no visible label on purpose, because the row it sits in
  * is a row of gestures and the band above it is where this one explains
  * itself; assistive technology hears the whole sentence.
+ *
+ * The glyph is handed over as a render function rather than as one of Paper's
+ * icon names. The theme maps Paper's name slot onto `Glyph`, but only under
+ * the provider, and a control mounted without one renders no icon at all and
+ * warns about vector-icon packages this app does not ship. A function is the
+ * other half of `IconSource` and it draws ompctl's own family unconditionally,
+ * at the colour the gate already computed -- which matters, because
+ * `getIconButtonColor` throws a custom icon colour away the moment the button
+ * is disabled and would grey the paperclip in Material's grey.
  */
 export function AttachmentControl({ band, prefix }: { band: AttachmentBand; prefix: string }): JSX.Element {
+  const theme = useOmpTheme();
+  const tone = band.disabled ? theme.ink.faint : band.images.length > 0 ? theme.signal.sage : theme.ink.plain;
   return (
-    <Pressable
+    <IconButton
       testID={`${prefix}-attach`}
-      accessibilityRole="button"
       accessibilityLabel="Attach an image to this prompt"
       // The picker offers photos and nothing else, so the hint says photos.
       // The paperclip is the gesture's icon everywhere; it is not a claim
@@ -168,14 +201,75 @@ export function AttachmentControl({ band, prefix }: { band: AttachmentBand; pref
       accessibilityState={{ disabled: band.disabled }}
       disabled={band.disabled}
       onPress={band.pick}
-      style={({ pressed }) => [ghost.icon, pressed && !band.disabled && ghost.pressed]}
+      icon={({ size }) => <Glyph name="attachment" size={size} color={tone} />}
+      size={ATTACH_GLYPH}
+      // A ghost: no fill until a finger is on it, and then the fill is the
+      // ripple rather than a second style. `ghost.pressed` was this.
+      containerColor="transparent"
+      rippleColor={theme.ground.active}
+      style={[styles.iconTarget, styles.noMargin]}
+      contentStyle={styles.iconTarget}
+    />
+  );
+}
+
+/**
+ * One image riding this prompt, as a chip you can take back off.
+ *
+ * Positional throughout -- positional testIDs, positional removal, an ordinal
+ * in the accessibility label -- because a prompt's attachments are a
+ * composition list rather than records with identity: the daemon never echoes
+ * an id back to key against.
+ */
+function AttachmentChip({
+  image,
+  index,
+  prefix,
+  onRemove,
+}: {
+  image: PromptImage;
+  index: number;
+  prefix: string;
+  onRemove: () => void;
+}): JSX.Element {
+  const theme = useOmpTheme();
+  // The badge is 28 because the theme says a chip's remove affordance is 28,
+  // and a finger needs 44. The difference is paid as hit slop rather than as a
+  // 44-point disc, because a 44-point remove beside a 48-point thumbnail is a
+  // chip that is mostly a delete button.
+  const badge = theme.control.chipRemove;
+  const grow = (theme.rhythm.minTarget - badge) / 2;
+  const removeSize = { width: badge, height: badge };
+  return (
+    // A chip is an object you pick up, so it is the one thing inside a
+    // composer allowed an edge, at the control radius rather than the
+    // surface's.
+    <Surface
+      mode="flat"
+      elevation={0}
+      testID={`${prefix}-attachment-${index}`}
+      style={[styles.chip, { backgroundColor: theme.ground.active, borderColor: theme.ground.line }]}
     >
-      <Glyph
-        name="attachment"
-        size={14}
-        color={band.disabled ? ink.faint : band.images.length > 0 ? signal.sage : ink.plain}
+      <Image
+        source={{ uri: `data:${image.mimeType};base64,${image.data}` }}
+        style={[
+          styles.thumb,
+          { width: theme.control.thumb, height: theme.control.thumb, backgroundColor: theme.ground.base },
+        ]}
       />
-    </Pressable>
+      <IconButton
+        testID={`${prefix}-attachment-remove-${index}`}
+        accessibilityLabel={`Remove image ${index + 1}`}
+        onPress={onRemove}
+        icon={({ size }) => <Glyph name="deny" size={size} color={theme.ink.plain} />}
+        size={REMOVE_GLYPH}
+        containerColor="transparent"
+        rippleColor={theme.ground.raised}
+        hitSlop={{ top: grow, bottom: grow, left: grow, right: grow }}
+        style={[styles.roundedControl, styles.noMargin, removeSize]}
+        contentStyle={removeSize}
+      />
+    </Surface>
   );
 }
 
@@ -189,27 +283,23 @@ export function AttachmentControl({ band, prefix }: { band: AttachmentBand; pref
  * through this band the moment there is a reason to state.
  */
 export function AttachmentsBar({ band, prefix }: { band: AttachmentBand; prefix: string }): JSX.Element | null {
+  const theme = useOmpTheme();
   if (band.images.length === 0 && band.status === "") return null;
   return (
     <View style={styles.band} testID={`${prefix}-attachments`}>
       {band.images.length === 0 ? null : (
         <View style={styles.chips}>
           {band.images.map((image, index) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: a prompt's attachments are a positional composition list, not records with identity: removal is by position, the testIDs are by position, and the daemon never echoes them back to key against.
-            <View key={`${prefix}-attachment-${index}`} style={styles.chip} testID={`${prefix}-attachment-${index}`}>
-              <Image source={{ uri: `data:${image.mimeType};base64,${image.data}` }} style={styles.thumb} />
-              <Pressable
-                testID={`${prefix}-attachment-remove-${index}`}
-                accessibilityRole="button"
-                accessibilityLabel={`Remove image ${index + 1}`}
-                onPress={() => {
-                  band.remove(index);
-                }}
-                style={({ pressed }) => [styles.remove, pressed && { backgroundColor: ground.active }]}
-              >
-                <Glyph name="deny" size={10} color={ink.plain} />
-              </Pressable>
-            </View>
+            <AttachmentChip
+              // biome-ignore lint/suspicious/noArrayIndexKey: a prompt's attachments are a positional composition list, not records with identity: removal is by position, the testIDs are by position, and the daemon never echoes them back to key against.
+              key={`${prefix}-attachment-${index}`}
+              image={image}
+              index={index}
+              prefix={prefix}
+              onRemove={() => {
+                band.remove(index);
+              }}
+            />
           ))}
         </View>
       )}
@@ -218,7 +308,7 @@ export function AttachmentsBar({ band, prefix }: { band: AttachmentBand; prefix:
           only borrows it until the next action. */}
       {band.status === "" ? null : (
         <Label
-          color={band.unavailable ? ink.plain : ink.faint}
+          color={band.unavailable ? theme.ink.plain : theme.ink.faint}
           style={styles.notice}
           testID={`${prefix}-attach-status`}
           numberOfLines={2}
@@ -230,26 +320,34 @@ export function AttachmentsBar({ band, prefix }: { band: AttachmentBand; prefix:
   );
 }
 
+/** The paperclip's glyph. Icon weight, not spacing: it is not on the grid. */
+const ATTACH_GLYPH = 14;
+/** The remove badge's glyph, small because the badge is. */
+const REMOVE_GLYPH = 10;
+
 const styles = StyleSheet.create({
-  band: { gap: space.tight },
+  band: { gap: rhythm.rowGapTight },
   notice: { flexShrink: 1 },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: space.snug },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: rhythm.cardGap },
   chip: {
-    backgroundColor: ground.active,
     borderWidth: stroke.hair,
-    borderColor: ground.line,
     borderRadius: radius.control,
-    padding: space.tight,
+    padding: rhythm.controlPad,
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: space.tight,
+    gap: rhythm.glyphGap,
   },
-  thumb: { width: 48, height: 48, borderRadius: radius.control, backgroundColor: ground.base },
-  remove: {
-    minHeight: 28,
-    minWidth: 28,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.control,
-  },
+  thumb: { borderRadius: radius.control },
+  /** The corner every control inside a surface wears. */
+  roundedControl: { borderRadius: radius.control },
+  /**
+   * `IconButton` pays itself a six-point margin. A control in a row of
+   * controls owes its rhythm to the row, not to itself.
+   */
+  noMargin: { margin: 0 },
+  /**
+   * A ghost target: the whole 44-point square, so a row of them keeps an even
+   * rhythm and a finger lands on any of them.
+   */
+  iconTarget: { width: rhythm.minTarget, height: rhythm.minTarget, borderRadius: radius.control },
 });

@@ -23,6 +23,7 @@ import {
   type Actor,
   type Agent,
   type AgentId,
+  type AuditInput,
   type ClientFrame,
   COLLAB_REFUSAL_REASONS,
   type CollabRefusal,
@@ -31,6 +32,8 @@ import {
   type ConnectorSummary,
   type EndpointOffer,
   isRecord,
+  type McpAuthState,
+  type McpAuthStatus,
   nextFireTime,
   type PersistCollabVoiceNoteInput,
   PROMPT_IMAGE_REFUSAL_REASONS,
@@ -454,6 +457,51 @@ export interface SkillCatalog {
 /** The connector counterpart to `SkillCatalog`. */
 export interface ConnectorCatalog {
   list(cwd?: string): Promise<ConnectorSummary[]>;
+}
+
+/**
+ * The MCP auth broker, as the gateway is allowed to see it.
+ *
+ * Every method here returns identifiers, states and URLs. There is
+ * deliberately no method that returns a token, a refresh token or a client
+ * secret, so no route can be written that leaks one by accident: the type
+ * itself refuses. `authorizationUrl` is the one URL that crosses the wire and
+ * it is a public endpoint carrying a PKCE challenge, not a credential.
+ */
+export interface McpAuthCatalog {
+  status(): McpAuthStatus;
+  beginLogin(input: { resourceUrl: string; name?: string }): Promise<{ flowId: string; authorizationUrl: string }>;
+  loginProgress(
+    flowId: string,
+  ): { state: "pending" | "complete" | "failed"; grantId?: string; serverName?: string; detail?: string } | undefined;
+  refresh(
+    grantId: string,
+  ): Promise<{ outcome: "ok" | "definitive" | "transient"; state: McpAuthState; detail?: string }>;
+  forget(grantId: string): boolean;
+  importFromOmp(input: { dryRun: boolean; force: boolean }): Promise<McpAuthImportReport>;
+  apply(): Promise<McpAuthApplyReport>;
+  unapply(): Promise<{ removed: string[] }>;
+}
+
+export interface McpAuthImportReport {
+  refused?: "broker_running";
+  dryRun: boolean;
+  imported: Array<{ grantId: string; serverName: string; resourceUrl: string; recoveredTokenUrl: boolean }>;
+  skipped: Array<{ resourceUrl: string; reason: string }>;
+}
+
+export interface McpAuthApplyReport {
+  applied: Array<{ serverName: string; brokerName: string; url: string }>;
+  disabled: string[];
+  /**
+   * Grants deliberately left unwired, and why.
+   *
+   * `apply` also disables the original server's own definition, so wiring a
+   * grant that cannot serve would replace something that works today with a
+   * 503. These are reported rather than written, and the next `apply` picks
+   * them up once a person has authorized them.
+   */
+  skipped: Array<{ serverName: string; state: McpAuthState; detail: string }>;
 }
 
 /**
@@ -1109,6 +1157,13 @@ export interface GatewayOptions {
   /** The connector counterpart to `skills`. Absent, `GET /v1/connectors` reports the feature off the same way. */
   connectors?: ConnectorCatalog;
   /**
+   * The MCP auth broker. Absent, every `/v1/mcp-auth*` route reports the
+   * feature off, so an operator can tell "no grants yet" from "this daemon is
+   * not brokering MCP auth at all" -- a distinction that matters here more
+   * than most, because both look like a connector that stopped working.
+   */
+  mcpAuth?: McpAuthCatalog;
+  /**
    * Task lifecycle. Absent, every `/v1/tasks*` route reports the feature off
    * rather than 404ing, so a client can tell "no such task" from "this
    * daemon build has no task tracking".
@@ -1285,6 +1340,7 @@ export class Gateway {
   #onTokenRotated: ((deviceId: string, token: string) => string | undefined) | undefined;
   #skills: SkillCatalog | undefined;
   #connectors: ConnectorCatalog | undefined;
+  #mcpAuth: McpAuthCatalog | undefined;
   #syncConfig: SyncConfig | undefined;
   #tasks: TaskCatalog | undefined;
   #sessionIndex: SessionIndex | undefined;
@@ -1384,6 +1440,7 @@ export class Gateway {
     this.#syncConfig = opts.syncConfig;
     this.#skills = opts.skills;
     this.#connectors = opts.connectors;
+    this.#mcpAuth = opts.mcpAuth;
     this.#tasks = opts.tasks;
     this.#sessionIndex = opts.sessionIndex;
     this.#endpoints = opts.endpoints;
@@ -2331,11 +2388,24 @@ export class Gateway {
         // machine started running work nobody scheduled on it. Per-routine
         // `routine.create` rows would be fifty arming decisions nobody made,
         // which reads worse than one restore recorded as a restore.
+        //
+        // The same fields as the failure row below, deliberately. They were
+        // once `routines` here and `completed`/`attempted` there, which meant
+        // anything counting imports had to special-case the outcome to find the
+        // same number under a different name. On success `stage` is always
+        // `record` and `completed` always equals `attempted`, and both are
+        // carried anyway so the shape of a `sync.import` row does not depend on
+        // how it went.
         this.#store.audit({
           action: "sync.import",
           actorDeviceId: actor.deviceId,
           outcome: "ok",
-          detail: { routines: completed, policyMode: document.policyMode },
+          detail: {
+            stage,
+            completed,
+            attempted: document.routines.length,
+            policyMode: document.policyMode,
+          },
         });
         return Response.json({ ok: true, routines: completed });
       } catch (err) {
@@ -2344,12 +2414,17 @@ export class Gateway {
         // would leave the one case where the log matters, a machine holding half
         // of somebody else's configuration, as the one case with nothing in it.
         //
-        // `completed` counts routines whose write returned, and `stage` says
-        // where the import stopped. Neither is called "landed": a routine's
-        // definition is committed before its credential withdrawal, so when
-        // `stage` is `routines` the one that threw may be on disk or may not.
-        // Reporting a single settled number would be the same overclaiming this
-        // row exists to fix.
+        // `completed` counts routines whose write committed, and `stage` says
+        // where the import stopped. A routine and its credential withdrawal now
+        // commit or roll back together, so the one that threw is not on disk and
+        // `completed` does not count it. What `stage` still carries that a bare
+        // count cannot is which of the three phases ended the restore, since
+        // settings land outside the store and outside any of those transactions.
+        //
+        // A restore is not atomic across routines: each one is its own
+        // transaction and this row is written after all of them. If this insert
+        // and the one above both fail, N routines are armed with nothing naming
+        // the restore, and the catch below says what that costs.
         try {
           this.#store.audit({
             action: "sync.import",
@@ -2575,6 +2650,159 @@ export class Gateway {
       if (outcome.kind === "unknown-agent") return Response.json({ error: "not_found" }, { status: 404 });
       if (outcome.kind === "failed") return Response.json({ error: outcome.error }, { status: 502 });
       return Response.json({ connectors: outcome.value });
+    }
+
+    // MCP auth. Reading the state of a grant is `read`; everything that moves
+    // a credential is `manage`, including login, because beginning an
+    // authorization is how a new credential gets onto this machine.
+    if (path === "/v1/mcp-auth" && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      return Response.json(broker.status());
+    }
+
+    if (path === "/v1/mcp-auth/login" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      let body: { resourceUrl?: unknown; name?: unknown };
+      try {
+        body = (await req.json()) as { resourceUrl?: unknown; name?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const resourceUrl = typeof body.resourceUrl === "string" ? body.resourceUrl : "";
+      // https only, and not as a style preference: an authorization code and
+      // then a bearer token travel to whatever this names, so a plaintext
+      // destination is a credential handed to the network. Loopback is the one
+      // exception, because a test's fake authorization server lives there and
+      // nothing leaves the machine.
+      let parsed: URL;
+      try {
+        parsed = new URL(resourceUrl);
+      } catch {
+        return Response.json({ error: "resourceUrl must be an absolute URL" }, { status: 400 });
+      }
+      const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
+      if (parsed.protocol !== "https:" && !loopback) {
+        return Response.json({ error: "resourceUrl must be https, or loopback" }, { status: 400 });
+      }
+      const name = typeof body.name === "string" && body.name.length > 0 ? body.name : undefined;
+      try {
+        const begun = await broker.beginLogin({ resourceUrl, name });
+        this.#store.audit({
+          action: "mcp_auth.login",
+          actorDeviceId: actor.deviceId,
+          outcome: "ok",
+          detail: { resourceUrl },
+        });
+        return Response.json(begun, { status: 201 });
+      } catch (err) {
+        this.#store.audit({
+          action: "mcp_auth.login",
+          actorDeviceId: actor.deviceId,
+          outcome: "error",
+          detail: { resourceUrl },
+        });
+        return Response.json({ error: err instanceof Error ? err.message : "login failed" }, { status: 502 });
+      }
+    }
+
+    const mcpAuthLoginProgress = /^\/v1\/mcp-auth\/login\/([A-Za-z0-9_-]+)$/.exec(path);
+    if (mcpAuthLoginProgress && req.method === "GET") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      const progress = broker.loginProgress(mcpAuthLoginProgress[1] ?? "");
+      if (progress === undefined) return Response.json({ error: "not_found" }, { status: 404 });
+      return Response.json(progress);
+    }
+
+    if (path === "/v1/mcp-auth/import" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      let body: { dryRun?: unknown; force?: unknown };
+      try {
+        body = (await req.json()) as { dryRun?: unknown; force?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const report = await broker.importFromOmp({ dryRun: body.dryRun === true, force: body.force === true });
+      this.#store.audit({
+        action: "mcp_auth.import",
+        actorDeviceId: actor.deviceId,
+        outcome: report.refused === undefined ? "ok" : "denied",
+        // Counts and refusal reasons only. The URLs are already in the report
+        // the caller receives; the audit log does not need a second copy, and
+        // it certainly does not need anything from the credential rows.
+        detail: { imported: report.imported.length, skipped: report.skipped.length, dryRun: report.dryRun },
+      });
+      return Response.json(report);
+    }
+
+    if (path === "/v1/mcp-auth/apply" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      try {
+        const report = await broker.apply();
+        this.#store.audit({
+          action: "mcp_auth.apply",
+          actorDeviceId: actor.deviceId,
+          outcome: "ok",
+          detail: { applied: report.applied.length, disabled: report.disabled.length },
+        });
+        return Response.json(report);
+      } catch (err) {
+        return Response.json({ error: err instanceof Error ? err.message : "apply failed" }, { status: 409 });
+      }
+    }
+
+    if (path === "/v1/mcp-auth/unapply" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      const removed = await broker.unapply();
+      this.#store.audit({
+        action: "mcp_auth.apply",
+        actorDeviceId: actor.deviceId,
+        outcome: "ok",
+        detail: { removed: removed.removed.length },
+      });
+      return Response.json(removed);
+    }
+
+    const mcpAuthRefresh = /^\/v1\/mcp-auth\/([A-Za-z0-9_]+)\/refresh$/.exec(path);
+    if (mcpAuthRefresh && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      const result = await broker.refresh(mcpAuthRefresh[1] ?? "");
+      this.#store.audit({
+        action: "mcp_auth.refresh",
+        actorDeviceId: actor.deviceId,
+        outcome: result.outcome === "ok" ? "ok" : "error",
+        detail: { grantId: mcpAuthRefresh[1], state: result.state },
+      });
+      return Response.json(result);
+    }
+
+    const mcpAuthForget = /^\/v1\/mcp-auth\/([A-Za-z0-9_]+)$/.exec(path);
+    if (mcpAuthForget && req.method === "DELETE") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      const removed = broker.forget(mcpAuthForget[1] ?? "");
+      this.#store.audit({
+        action: "mcp_auth.forget",
+        actorDeviceId: actor.deviceId,
+        outcome: removed ? "ok" : "denied",
+        detail: { grantId: mcpAuthForget[1] },
+      });
+      if (!removed) return Response.json({ error: "not_found" }, { status: 404 });
+      return Response.json({ removed });
     }
 
     if (path === "/v1/tasks" && req.method === "GET") {
@@ -5327,31 +5555,54 @@ export class Gateway {
    * kind and discarded, and the ref is either the one already on disk or a
    * freshly minted one. See `#adoptTrigger`.
    *
-   * The withdrawal is ordered deliberately: the row goes only after the
-   * definition that no longer names it is committed. Deleting first and then
-   * failing the write leaves a routine that still says `webhook`, pointed at a
-   * row that is gone, and there is no door that can put it back.
+   * The definition, the credential a retarget withdraws, and the audit row all
+   * go through `store.commitRoutineWrite` as one transaction. Separately they
+   * were three writes, and the invariant this seam exists to hold, that no door
+   * arms an automation without leaving a record, was a hope: a committed
+   * definition followed by a failed audit insert left the automation as the only
+   * trace of itself. All three now commit or roll back together, so a failed
+   * audit leaves no routine rather than an unrecorded one, and a withdrawal can
+   * no longer outlive the definition that stopped naming it.
+   *
+   * The withdrawal is still ordered after the write inside that transaction.
+   * That ordering no longer guards against a crash between them, because there
+   * is no longer a between; it is kept because a rollback undoes both and a
+   * reader should not have to reason about a delete that precedes the row it
+   * depends on.
+   *
+   * `audit` is a callback because only the caller knows whether this write is one
+   * arming decision to record or one routine inside a restore that records
+   * itself once for the whole catalogue. It is invoked here and its result is
+   * handed to the store, so it runs before the transaction opens and a throw
+   * from it writes nothing at all.
    */
-  #persistRoutine(input: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] }): {
-    routine: Routine;
-    created: boolean;
-  } {
+  #persistRoutine(
+    input: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] },
+    audit?: (created: boolean, routine: Routine) => AuditInput,
+  ): { routine: Routine; created: boolean } {
     const existing = this.#store.listRoutines().find(candidate => candidate.id === input.id);
+    const created = existing === undefined;
     const routine: Routine = { ...input, trigger: this.#adoptTrigger(existing?.trigger, input.trigger) };
-    this.#store.upsertRoutine(routine);
-    if (existing?.trigger.kind === "webhook" && routine.trigger.kind !== "webhook") {
-      // The capability is exactly what was just withdrawn, so the credential
-      // goes with it. A surviving hash is a live secret nothing in the
-      // catalogue names any more: nothing lists it and nothing can rotate it.
-      this.#store.deleteWebhookSecret(existing.trigger.secretRef);
-    }
-    return { routine, created: existing === undefined };
+    // The capability is exactly what a retarget withdraws, so the credential
+    // goes with it. A surviving hash is a live secret nothing in the catalogue
+    // names any more: nothing lists it and nothing can rotate it.
+    const withdrawn =
+      existing?.trigger.kind === "webhook" && routine.trigger.kind !== "webhook"
+        ? existing.trigger.secretRef
+        : undefined;
+    this.#store.commitRoutineWrite({
+      routine,
+      ...(withdrawn === undefined ? {} : { withdrawSecretRef: withdrawn }),
+      ...(audit === undefined ? {} : { audit: audit(created, routine) }),
+    });
+    return { routine, created };
   }
 
   /**
    * The `secretRef` a written routine ends up with, given what is already on
-   * disk. Pure: the withdrawal of a row belongs to `#persistRoutine`, after the
-   * write it depends on has committed.
+   * disk. Pure: it decides a value and touches nothing. The withdrawal of the
+   * row that value replaces belongs to `#persistRoutine`, in the same
+   * transaction as the write, so neither can land without the other.
    *
    * - webhook staying webhook keeps the stored ref verbatim, whatever the
    *   incoming definition claims. It is the public half of the endpoint's
@@ -5389,18 +5640,17 @@ export class Gateway {
     routine: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] };
     actorDeviceId: string;
   }): Routine {
-    const { routine, created } = this.#persistRoutine(input.routine);
-    this.#store.audit({
+    const { routine } = this.#persistRoutine(input.routine, (created, written) => ({
       action: created ? "routine.create" : "routine.update",
       actorDeviceId: input.actorDeviceId,
       outcome: "ok",
       detail: {
-        routineId: routine.id,
-        name: routine.name,
-        trigger: routine.trigger.kind,
-        actions: routine.actions.length,
+        routineId: written.id,
+        name: written.name,
+        trigger: written.trigger.kind,
+        actions: written.actions.length,
       },
-    });
+    }));
     return routine;
   }
 

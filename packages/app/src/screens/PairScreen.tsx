@@ -15,7 +15,7 @@
 import { DEFAULT_HUB_HOST, parseDeviceCredential, parsePairTarget } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useState } from "react";
-import { Pressable, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { useFormMaxWidth } from "../design/layout.ts";
 import { PrimaryButton } from "../design/PrimaryButton.tsx";
@@ -56,80 +56,88 @@ export function PairScreen({
 
   return (
     <SafeScreen style={styles.screen} testID="pair">
-      <View style={width > formMaxWidth ? [styles.form, { maxWidth: formMaxWidth }] : styles.form} testID="pair-form">
-        <Kicker color={ink.muted}>ompctl</Kicker>
-        <Display heading>Take the position</Display>
+      <ScrollView
+        automaticallyAdjustKeyboardInsets
+        contentContainerStyle={styles.scrollContent}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        style={styles.scroll}
+      >
+        <View style={width > formMaxWidth ? [styles.form, { maxWidth: formMaxWidth }] : styles.form} testID="pair-form">
+          <Kicker color={ink.muted}>ompctl</Kicker>
+          <Display heading>Take the position</Display>
 
-        {notice === undefined ? null : (
-          <View style={styles.notice} accessibilityLiveRegion="assertive" testID="pair-notice">
-            <Glyph name="unpair" size={12} color={signal.ochre} />
-            <Label color={signal.ochre} style={styles.noticeText}>
-              {notice}
+          {notice === undefined ? null : (
+            <View style={styles.notice} accessibilityLiveRegion="assertive" testID="pair-notice">
+              <Glyph name="unpair" size={12} color={signal.ochre} />
+              <Label color={signal.ochre} style={styles.noticeText}>
+                {notice}
+              </Label>
+            </View>
+          )}
+
+          <Body color={ink.plain}>
+            On the machine running the daemon: ompd invite for a token. Paste it below. The hub is already filled in;
+            change it only if you run your own.
+          </Body>
+
+          <Pressable accessibilityRole="button" onPress={onScan} style={styles.scanEntry} testID="pair-scan-entry">
+            <Glyph color={ink.plain} name="qrcode" size={14} />
+            <Label color={ink.plain}>Scan a QR code instead</Label>
+          </Pressable>
+
+          <Field label="Hub" value={raw} onChange={setRaw} testID="pair-endpoint" />
+          {raw.trim().length === 0 ? null : (
+            <Label color={target === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
+              {target === null
+                ? "Not a hub address"
+                : // A hub base and a daemon's own socket read alike, so the
+                  // transport is named back: one reaches a daemon behind NAT, the
+                  // other only works on this network.
+                  target.transport === "direct"
+                  ? "Direct socket"
+                  : target.hubUrl}
             </Label>
-          </View>
-        )}
-
-        <Body color={ink.plain}>
-          On the machine running the daemon: ompd invite for a token. Paste it below. The hub is already filled in;
-          change it only if you run your own.
-        </Body>
-
-        <Pressable accessibilityRole="button" onPress={onScan} style={styles.scanEntry} testID="pair-scan-entry">
-          <Glyph color={ink.plain} name="qrcode" size={14} />
-          <Label color={ink.plain}>Scan a QR code instead</Label>
-        </Pressable>
-
-        <Field label="Hub" value={raw} onChange={setRaw} testID="pair-endpoint" />
-        {raw.trim().length === 0 ? null : (
-          <Label color={target === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
-            {target === null
-              ? "Not a hub address"
-              : // A hub base and a daemon's own socket read alike, so the
-                // transport is named back: one reaches a daemon behind NAT, the
-                // other only works on this network.
-                target.transport === "direct"
-                ? "Direct socket"
-                : target.hubUrl}
-          </Label>
-        )}
-        {/* Masked for every human launch. The simulator harness unmasks it so
+          )}
+          {/* Masked for every human launch. The simulator harness unmasks it so
             iOS does not raise its own save-password sheet, which Detox cannot
             reach and which would stop an unattended run. */}
-        <Field label="Token" value={token} onChange={setToken} secure={!E2E_PLAINTEXT_TOKEN} testID="pair-token" />
-        {token.trim().length === 0 || target?.transport === "direct" ? null : (
-          <Label color={credential === null ? signal.ochre : ink.muted} testID="pair-token-kind">
-            {credential === null ? "Not a device token" : `Daemon ${credential.daemonId.slice(0, 11)}...`}
-          </Label>
-        )}
+          <Field label="Token" value={token} onChange={setToken} secure={!E2E_PLAINTEXT_TOKEN} testID="pair-token" />
+          {token.trim().length === 0 || target?.transport === "direct" ? null : (
+            <Label color={credential === null ? signal.ochre : ink.muted} testID="pair-token-kind">
+              {credential === null ? "Not a device token" : `Daemon ${credential.daemonId.slice(0, 11)}...`}
+            </Label>
+          )}
 
-        <PrimaryButton
-          testID="pair-submit"
-          disabled={!ready}
-          label="Connect"
-          onPress={() => {
-            if (target === null) return;
-            const trimmedToken = token.trim();
-            if (target.transport === "direct") {
-              onPair({ transport: "direct", url: target.url, token: trimmedToken, scopes: [] });
-              return;
-            }
-            if (credential === null) return;
-            onPair({
-              transport: "hub",
-              hubUrl: target.hubUrl,
-              daemonId: credential.daemonId,
-              token: credential.token,
-              scopes: [],
-            });
-          }}
-          style={styles.submit}
-        />
-        {onCancel === undefined ? null : (
-          <Pressable accessibilityRole="button" onPress={onCancel} style={styles.cancel} testID="pair-cancel">
-            <Label color={ink.plain}>Back to connections</Label>
-          </Pressable>
-        )}
-      </View>
+          <PrimaryButton
+            testID="pair-submit"
+            disabled={!ready}
+            label="Connect"
+            onPress={() => {
+              if (target === null) return;
+              const trimmedToken = token.trim();
+              if (target.transport === "direct") {
+                onPair({ transport: "direct", url: target.url, token: trimmedToken, scopes: [] });
+                return;
+              }
+              if (credential === null) return;
+              onPair({
+                transport: "hub",
+                hubUrl: target.hubUrl,
+                daemonId: credential.daemonId,
+                token: credential.token,
+                scopes: [],
+              });
+            }}
+            style={styles.submit}
+          />
+          {onCancel === undefined ? null : (
+            <Pressable accessibilityRole="button" onPress={onCancel} style={styles.cancel} testID="pair-cancel">
+              <Label color={ink.plain}>Back to connections</Label>
+            </Pressable>
+          )}
+        </View>
+      </ScrollView>
     </SafeScreen>
   );
 }
@@ -166,11 +174,11 @@ function Field({
 }
 
 const styles = StyleSheet.create({
-  // The gutter is `space.loose`, the same value the connections screen pads
-  // by: the two screens are one flow and read as one surface. The extra room
-  // an iPad shows around this form comes from the centred `FORM_MAX_WIDTH`
-  // cap, not from this padding.
-  screen: { justifyContent: "center", padding: space.loose },
+  // The shell keeps the same screen gutter as connections. The inner scroll
+  // gives large Dynamic Type a route above the keyboard.
+  screen: { padding: space.loose },
+  scroll: { flex: 1 },
+  scrollContent: { flexGrow: 1, justifyContent: "center" },
   form: { gap: space.step, width: "100%", alignSelf: "center" },
   notice: {
     flexDirection: "row",

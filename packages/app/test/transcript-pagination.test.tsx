@@ -15,9 +15,12 @@
 import "./rnw.ts";
 
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { Agent } from "@ompd/core/contracts";
 import { act, type ComponentType, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { TranscriptProps } from "../src/components/Transcript.tsx";
+import type { OmpThreadListProps } from "../src/assistant/OmpThread.tsx";
+import { rhythm } from "../src/design/rhythm.ts";
+import { ink, radius } from "../src/design/tokens.ts";
 import type { Entry } from "../src/session/model.ts";
 
 declare global {
@@ -94,9 +97,33 @@ mock.module("react-native", () => ({
   FlatList: RecordingList,
 }));
 
-// Same reason: imported after `mock.module`, so `Transcript` closes over the
+// Same reason: imported after `mock.module`, so the primitive closes over the
 // recorder rather than the real list.
-const { Transcript } = await import("../src/components/Transcript.tsx");
+//
+// The subject moved from `Transcript` to the production surface: the provider
+// plus `OmpThreadList`. What is under test did not change -- which props the
+// component hands its list and how it responds when they are invoked -- and the
+// reason the recorder still works is measured: with all four of assistant-ui's
+// scroll flags false, the library adds only `data`, `keyExtractor`, `renderItem`
+// and its own ref plumbing, so every scroll and anchor prop reaching the list is
+// still ours.
+const { OmpThreadList, OmpThreadProvider } = await import("../src/assistant/OmpThread.tsx");
+const { EMPTY_SESSION } = await import("../src/session/model.ts");
+// Dynamic for the same reason as the two above, which is the one exception this
+// file's static-import rule names: this module imports `react-native`, so a
+// static import here would resolve it before `mock.module` had replaced
+// `FlatList` and the recorder would never be installed. Imported at all so the
+// anchor assertion compares the component's prop against the exact object it is
+// supposed to pass, rather than against a restatement of its numbers.
+const { MAINTAIN_VISIBLE_CONTENT_POSITION } = await import("../src/components/useTopHistoryPagination.ts");
+// Dynamic for the same reason again, one step further out: the provider reaches
+// `react-native` through `useColorScheme` and pulls react-native-paper in
+// behind it, and a static import of either resolves the real, untranspiled
+// package before `./rnw.ts` has substituted the web build for it.
+const { WithOmpTheme } = await import("./theme.tsx");
+// The real react-native-web StyleSheet, reached through the pinned namespace
+// for the same reason `RealFlatList` is: `actual` was captured before the mock.
+const { StyleSheet } = actual;
 
 /** Everything one mounted list recorded, and the handle it recorded through. */
 interface ListRecorder {
@@ -127,7 +154,7 @@ function entry(id: string): Entry {
 }
 
 interface Harness {
-  render: (overrides?: Partial<TranscriptProps>) => void;
+  render: (overrides?: Partial<OmpThreadListProps>) => void;
   props: () => ListProps;
   loads: () => number;
   list: ListRecorder;
@@ -148,7 +175,7 @@ function mount(initial: {
   const root: Root = createRoot(host);
   const list = recorderList();
   let calls = 0;
-  let current: TranscriptProps = {
+  let current: OmpThreadListProps = {
     entries: initial.entries,
     canApprove: false,
     onDecide: () => {},
@@ -160,10 +187,38 @@ function mount(initial: {
     historyCursor: initial.historyCursor,
   };
 
+  const agent: Agent = {
+    id: "agt_a",
+    name: "Alpha",
+    state: "idle",
+    host: { kind: "local", id: "1", spec: { kind: "local" } },
+    cwd: "/w",
+    createdAt: "2026-08-24T11:00:00.000Z",
+    lastActiveAt: "2026-08-24T11:00:00.000Z",
+    labels: {},
+  };
+
   const render: Harness["render"] = overrides => {
     current = { ...current, ...(overrides ?? {}) };
     act(() => {
-      root.render(<Transcript {...current} />);
+      root.render(
+        // The rows reach the list through the runtime, which is the production
+        // path: the provider holds the session and the list reads the thread.
+        <OmpThreadProvider
+          agent={agent}
+          session={{ ...EMPTY_SESSION, entries: current.entries }}
+          connection="connected"
+          load={{ phase: "ready", generation: 0, error: null }}
+          promptAccess="granted"
+          canApprove={false}
+          onSubmit={() => {}}
+          onCancel={() => {}}
+          onDecide={() => {}}
+          onDecidePlan={() => {}}
+        >
+          <OmpThreadList {...current} />
+        </OmpThreadProvider>,
+      );
     });
   };
 
@@ -248,7 +303,7 @@ afterAll(() => {
   platformOS = "android";
 });
 
-describe("Transcript auto-load: request identity", () => {
+describe("owned thread auto-load: request identity", () => {
   test("a scroll bounce at the top asks once, not once per event", () => {
     const h = mount({ entries: [entry("a"), entry("b")], historyCursor: 100 });
 
@@ -340,7 +395,7 @@ describe("Transcript auto-load: request identity", () => {
   });
 });
 
-describe("Transcript prepend anchor", () => {
+describe("owned thread prepend anchor", () => {
   test("the anchor survives the parent clearing loading before the list reports its size", () => {
     // The ordering the old boolean effect lost. The parent delivers entries,
     // cursor and loading:false in one commit; the layout callback arrives
@@ -441,7 +496,7 @@ describe("Transcript prepend anchor", () => {
   });
 });
 
-describe("Transcript list configuration", () => {
+describe("owned thread list configuration", () => {
   test("nothing tells the list to jump to a newly inserted top", () => {
     const h = mount({ entries: [entry("a")], historyCursor: 100 });
     const config = h.props().maintainVisibleContentPosition;
@@ -460,7 +515,7 @@ describe("Transcript list configuration", () => {
   });
 });
 
-describe("Transcript follow-newest composition", () => {
+describe("owned thread follow-newest composition", () => {
   test("the list handle reaches the follower, so a streaming turn still lands on newest", () => {
     // The regression this suite exists to stop: overriding `ref` and
     // `onContentSizeChange` left `useFollowNewest` holding no list and never
@@ -521,14 +576,6 @@ describe("Transcript follow-newest composition", () => {
  * discriminates is the footer's CONTENT, so these walk it.
  */
 describe("the turn underway rides the list like any other row", () => {
-  const WORKING = {
-    kind: "working",
-    label: "Working",
-    announcement: "Working",
-    live: true,
-    actionable: false,
-  } as const;
-
   /** Whether a rendered element tree contains a node carrying `testID`. */
   function contains(node: unknown, testID: string): boolean {
     if (node === null || node === undefined || typeof node !== "object") return false;
@@ -536,24 +583,26 @@ describe("the turn underway rides the list like any other row", () => {
     const element = node as { props?: Record<string, unknown> };
     const props = element.props;
     if (props === undefined) return false;
-    if (props.testID === testID) return true;
+    // Either spelling: a react-native element carries `testID`, a DOM probe
+    // carries `data-testid`, and the footer slot legitimately holds both kinds.
+    if (props.testID === testID || props["data-testid"] === testID) return true;
     return contains(props.children, testID);
   }
 
   test("the row is inside the footer the list is handed, not beside the list", () => {
     const h = mount({ entries: [entry("a")] });
 
-    // Nothing in flight: the slot may exist for the spoken summary, but the
-    // row must not be in it.
-    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(false);
+    // Nothing in flight: the slot exists for the spoken summary, but no
+    // activity row is in it.
+    expect(contains(h.props().ListFooterComponent, "probe-activity")).toBe(false);
 
-    h.render({ activity: WORKING });
-    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(true);
+    h.render({ footer: <span data-testid="probe-activity">working</span> });
+    expect(contains(h.props().ListFooterComponent, "probe-activity")).toBe(true);
 
     // And it leaves again, rather than being a row that arrives once and stays
     // for the rest of the session.
-    h.render({ activity: null });
-    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(false);
+    h.render({ footer: null });
+    expect(contains(h.props().ListFooterComponent, "probe-activity")).toBe(false);
     h.unmount();
   });
 
@@ -570,7 +619,7 @@ describe("the turn underway rides the list like any other row", () => {
     const before = h.list.scrollToEnd.length;
 
     h.scrollTo(10, 4000);
-    h.render({ activity: WORKING });
+    h.render({ footer: <span data-testid="probe-activity">working</span> });
     h.contentSize(4040);
 
     expect(h.list.scrollToEnd).toHaveLength(before);
@@ -581,17 +630,409 @@ describe("the turn underway rides the list like any other row", () => {
     const h = mount({ entries: [entry("a")] });
     h.contentSize(1000);
     h.scrollTo(10, 4000);
-    h.render({ activity: WORKING });
+    h.render({ footer: <span data-testid="probe-activity">working</span> });
     h.contentSize(1040);
     const before = h.list.scrollToEnd.length;
 
     // Turn end removes the row and the content shrinks. A follower that
     // treated a shrink as new content would yank a reader to the bottom at
     // exactly the moment the agent stopped talking.
-    h.render({ activity: null });
+    h.render({ footer: null });
     h.contentSize(1000);
 
     expect(h.list.scrollToEnd).toHaveLength(before);
     h.unmount();
+  });
+});
+
+/**
+ * The styling pass must not have touched the anchor's wiring.
+ *
+ * The block above proves the machine behaves; this proves the wiring the
+ * behaviour rides on is still the component's own after Paper moved in. The
+ * discriminator is `onLayout`: assistant-ui only installs handlers of its own
+ * when at least one of its four scroll flags is on, and that is exactly the
+ * state that would fight `useFollowNewest`. So a flag flipped back to its
+ * default -- by an edit, or by an upgrade changing what "unset" means -- shows
+ * up here as a library `onLayout` arriving, and as the four flags no longer
+ * being consumed before the list sees them.
+ */
+describe("the list assistant-ui is handed is still the pagination machine's", () => {
+  test("every scroll and anchor prop is the component's, and the library adds none", () => {
+    const h = mount({ entries: [entry("a")], historyCursor: 100 });
+    const raw = h.props() as unknown as Record<string, unknown>;
+
+    // Consumed by the primitive because all four are false, so they never
+    // reach the list. One of them true and the primitive forwards its own
+    // tracking instead.
+    for (const flag of [
+      "autoScroll",
+      "scrollToBottomOnRunStart",
+      "scrollToBottomOnInitialize",
+      "scrollToBottomOnThreadSwitch",
+    ]) {
+      expect(raw[flag]).toBeUndefined();
+    }
+    expect(raw.onLayout).toBeUndefined();
+
+    // And ours, all five, unchanged.
+    expect(typeof raw.ref === "function" || typeof raw.ref === "object").toBe(true);
+    expect(typeof raw.onScroll).toBe("function");
+    expect(typeof raw.onContentSizeChange).toBe("function");
+    expect(raw.scrollEventThrottle).toBe(100);
+    expect(raw.maintainVisibleContentPosition).toBe(MAINTAIN_VISIBLE_CONTENT_POSITION);
+    h.unmount();
+  });
+});
+
+/**
+ * The spacing an operator actually sees, read off the rendered sheet.
+ *
+ * "spacing looks off" was the report, so the assertion has to be the rendered
+ * geometry rather than the token the source names: a surface can import
+ * `rhythm` and still spend it on the wrong job. Every expectation below is
+ * written against `rhythm.x` so a change to the scale moves the test with it,
+ * and against the declaration the browser would ship so a rule that never made
+ * it into the sheet fails.
+ *
+ * The list renders for real here, which is why `capturing` goes off: the
+ * recorder stands in for the list everywhere else in this file, and a null list
+ * has no geometry to read. The rows are deliberately empty so this measures the
+ * shell -- the gutter, the row rhythm, the header control, the spoken band and
+ * the empty state -- and not `renderers.tsx`, which has its own suite.
+ */
+describe("the log's rhythm, as rendered", () => {
+  /**
+   * `getSheet` is a react-native-web extension its TypeScript surface does not
+   * publish: static StyleSheet values compile to atomic classes whose
+   * declarations live in one injected sheet rather than in the markup. Same cast
+   * `terminal-session.test.tsx` and `composer-actions.test.tsx` make.
+   */
+  const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
+
+  /** Every emitted declaration addressing one element's own classes. */
+  function rulesOf(element: Element | null): string {
+    const classes = [...(element?.classList ?? [])];
+    if (classes.length === 0) return "";
+    return rnwStyleSheet
+      .getSheet()
+      .textContent.split("\n")
+      .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
+      .join("\n");
+  }
+
+  /**
+   * A token hex as react-native-web spells it. Same helper
+   * `composer-actions.test.tsx` carries, for the same reason: RNW normalises
+   * every colour to `rgba(r,g,b,a.aa)`, so a hex compared against the sheet
+   * never matches and an assertion written that way passes on any colour.
+   */
+  const rgba = (hex: string): string => {
+    const n = Number.parseInt(hex.replace("#", ""), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},1.00)`;
+  };
+
+  /** The nearest element at or under `root` whose own rules match. */
+  function withRule(root: Element | null, pattern: RegExp): Element | null {
+    if (root === null) return null;
+    for (const element of [root, ...root.querySelectorAll("*")]) {
+      if (pattern.test(rulesOf(element))) return element;
+    }
+    return null;
+  }
+
+  /** The nearest ancestor of `node` whose own rules match. */
+  function ancestorWithRule(node: Element | null, pattern: RegExp): Element | null {
+    let walk = node?.parentElement ?? null;
+    while (walk !== null) {
+      if (pattern.test(rulesOf(walk))) return walk;
+      walk = walk.parentElement;
+    }
+    return null;
+  }
+
+  /** The real list, painted under the real theme provider unless told otherwise. */
+  function paint(options?: { themed?: boolean }): { host: HTMLElement; root: Root; unmount: () => void } {
+    capturing = false;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const agent: Agent = {
+      id: "agt_r",
+      name: "Rhythm",
+      state: "idle",
+      host: { kind: "local", id: "1", spec: { kind: "local" } },
+      cwd: "/w",
+      createdAt: "2026-08-24T11:00:00.000Z",
+      lastActiveAt: "2026-08-24T11:00:00.000Z",
+      labels: {},
+    };
+    const tree = (
+      <OmpThreadProvider
+        agent={agent}
+        session={EMPTY_SESSION}
+        connection="connected"
+        load={{ phase: "ready", generation: 0, error: null }}
+        promptAccess="granted"
+        canApprove={false}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+        onDecide={() => {}}
+        onDecidePlan={() => {}}
+      >
+        <OmpThreadList
+          entries={[]}
+          canApprove={false}
+          onDecide={() => {}}
+          canLoadEarlier
+          loadingEarlier={false}
+          onLoadEarlier={() => {}}
+          historyCursor={100}
+          spoken="the deploy is green"
+        />
+      </OmpThreadProvider>
+    );
+    act(() => {
+      // `themed: false` takes the surface BARE, with no provider above it. That
+      // is not a convenience: it is the only state in which a Paper icon passed
+      // by name silently stops drawing, so the glyph gate below has to refuse
+      // the wrapper to mean anything.
+      root.render(options?.themed === false ? tree : <WithOmpTheme>{tree}</WithOmpTheme>);
+    });
+    return {
+      host,
+      root,
+      unmount: () => {
+        act(() => {
+          root.unmount();
+        });
+        host.remove();
+        capturing = true;
+      },
+    };
+  }
+
+  test("the screen gutter and the row rhythm are paid once, by the content container", () => {
+    const p = paint();
+    try {
+      const list = p.host.querySelector('[data-testid="aui-messages"]');
+      expect(list).not.toBeNull();
+      // RNW's ScrollView renders exactly one content container child, and it is
+      // where contentContainerStyle lands.
+      const rules = rulesOf(list?.children[0] ?? null);
+      expect(rules).toContain(`padding-left:${rhythm.gutter}px`);
+      expect(rules).toContain(`padding-right:${rhythm.gutter}px`);
+      expect(rules).toMatch(new RegExp(`(?:row-)?gap:\\s*${rhythm.rowGap}px`));
+    } finally {
+      p.unmount();
+    }
+  });
+
+  test("nothing inside the log pays the screen gutter a second time", () => {
+    const p = paint();
+    try {
+      // The defect the rhythm scale exists to kill: the transcript read as
+      // padded out because a card inside a gutter paid the gutter again. So no
+      // element under the content container may declare it horizontally.
+      //
+      // Both spellings, because they are the same defect: RNW compiles an
+      // all-sides `padding` to the shorthand and a `paddingHorizontal` to the
+      // two long-hands, and a check that read only the long-hands passed on a
+      // card paying `padding: rhythm.gutter` -- which is exactly the shape this
+      // test exists to catch.
+      const content = p.host.querySelector('[data-testid="aui-messages"]')?.children[0] ?? null;
+      expect(content).not.toBeNull();
+      const gutter = new RegExp(`(?:^|[;{\\s])padding(?:-left|-right)?:\\s*${rhythm.gutter}px`);
+      // Named, not the nodes themselves: a failing `toEqual` on a happy-dom
+      // element tries to serialise the whole node for its diff, which does not
+      // terminate. A test that hangs on the defect it is meant to report is not
+      // a check.
+      const doubled = [...(content?.querySelectorAll("*") ?? [])]
+        .filter(element => gutter.test(rulesOf(element)))
+        .map(element => element.getAttribute("data-testid") ?? element.className);
+      expect(doubled).toEqual([]);
+    } finally {
+      p.unmount();
+    }
+  });
+
+  test("the history control is a finger target on the grid, in a container that belongs to it", () => {
+    const p = paint();
+    try {
+      const control = p.host.querySelector('[data-testid="history-load-earlier"]');
+      expect(control).not.toBeNull();
+      // Paper's own button is shorter than a finger; the content row carries
+      // the target and the control's own horizontal padding.
+      const content = withRule(control, new RegExp(`min-height:${rhythm.minTarget}px`));
+      expect(content).not.toBeNull();
+      const geometry = rulesOf(content);
+      expect(geometry).toContain(`padding-left:${rhythm.controlPad}px`);
+      expect(geometry).toContain(`padding-right:${rhythm.controlPad}px`);
+      // Paper's off-grid 10pt label margin is gone, and the glyph sits
+      // `glyphGap` from its word once Paper's negative icon margin is paid back.
+      const label = withRule(control, /margin-top:0px/);
+      expect(label).not.toBeNull();
+      expect(rulesOf(label)).toContain("margin-left:12px");
+
+      // The control belongs to the history above it, so its container pays the
+      // tight step rather than a section's air.
+      const band = ancestorWithRule(control, new RegExp(`padding-top:${rhythm.rowGapTight}px`));
+      expect(band).not.toBeNull();
+      expect(rulesOf(band)).toContain(`padding-bottom:${rhythm.rowGapTight}px`);
+    } finally {
+      p.unmount();
+    }
+  });
+
+  /**
+   * The glyph draws with no provider above the surface.
+   *
+   * Paper's `Icon` routes a STRING source through `settings.icon`, which only
+   * `OmpThemeProvider` supplies; bare, the string form falls through to Paper's
+   * bundled Material renderer, which has no font in this app and draws a literal
+   * box character. A FUNCTION source is called directly, so it draws either way.
+   *
+   * Taken BARE on purpose. Wrapped in `WithOmpTheme` this passes on both forms,
+   * which is exactly what would make it worthless: the provider is what hides
+   * the defect. `Glyph` renders Font Awesome path data through the `./rnw.ts`
+   * svg stub, so a real drawing means a `<path` inside the control.
+   */
+  test("the control's glyph is a real drawing even with no theme provider above it", () => {
+    const p = paint({ themed: false });
+    try {
+      const control = p.host.querySelector('[data-testid="history-load-earlier"]');
+      expect(control).not.toBeNull();
+      expect(control?.querySelectorAll("path").length).toBeGreaterThan(0);
+      // And no Material fallback beside it: the box character Paper draws when
+      // it cannot find a font.
+      expect(control?.textContent ?? "").not.toContain("\u25A1");
+    } finally {
+      p.unmount();
+    }
+  });
+
+  test("the control is neither the emphasis colour nor the emphasis shape", () => {
+    const p = paint();
+    try {
+      const control = p.host.querySelector('[data-testid="history-load-earlier"]');
+      if (control === null) throw new Error("no history-load-earlier control was rendered");
+
+      // A way back through history is a quiet control. Two claims below, and
+      // they fail for different reasons, which is why both are here.
+      //
+      // The haystack is the control's subtree AND the Surface Paper wraps it in.
+      // That ancestor is not optional: Paper puts the testID on the inner
+      // TouchableRipple and the FILL on the Surface above it, so a haystack
+      // starting at the testID cannot see a filled button at all. Measured with
+      // `mode="contained"`, the one-word edit that gives this control the
+      // emphasis fill: with the ancestor excluded the colour check PASSED while
+      // sage sat on the parent. One level up is Paper's own button root; two
+      // would reach the log and let unrelated colour fail this.
+      //
+      // Whitespace is stripped at the read because happy-dom returns the style
+      // attribute as `rgba(132, 124, 109, 1.00)` while the atomic sheet writes
+      // it closed up, so a needle spelled one way is never found in a haystack
+      // spelled the other. Newlines survive so a failure is still readable.
+      const painted = [control.parentElement, control, ...control.querySelectorAll("*")].filter(
+        (element): element is Element => element !== null,
+      );
+      const inline = painted.map(element => element.getAttribute("style") ?? "").join("\n");
+      const style = `${inline}\n${painted.map(element => rulesOf(element)).join("\n")}`.replace(/[^\S\n]+/g, "");
+
+      // CLAIM ONE: the control paints nothing. `mode="text"` is an unfilled
+      // control by definition, and asserting the ABSENCE of any fill catches a
+      // filled control in ANY colour rather than only the sage I happened to
+      // think of -- a negative naming one colour is a list of remembered
+      // violations, not a check. Transparent fills are dropped because
+      // react-native-web's base view class declares one on everything.
+      //
+      // Both halves measured. `mode="contained"` reports
+      // ["rgba(143,169,123,1.00)"], the sage fill. `buttonColor` set to signal
+      // violet reports ["rgba(139,123,196,1.00)"] -- a colour this assertion
+      // never mentions, which the sage-only negative below passes clean. The
+      // failure names the offending colour rather than saying a needle was
+      // found.
+      const fills = [...style.matchAll(/background-color:([^;\n}]+)/g)]
+        .map(match => match[1] ?? "")
+        .filter(value => value !== "" && value !== "transparent" && !value.endsWith(",0.00)"));
+      expect(fills).toEqual([]);
+
+      // CLAIM TWO: the label and glyph are muted rather than the emphasis
+      // colour. Distinct from claim one, which only sees fills: removing
+      // `textColor` makes Paper paint the TEXT `colors.primary` while nothing
+      // gains a background, so "paints nothing" still passes and only this
+      // catches it. Measured: this line then fails with sage where muted should
+      // be.
+      //
+      // There was a `not.toContain(rgba(signal.sage))` here and I deleted it,
+      // because it could not be made to fail while this line passed. Every state
+      // I could reach either loses muted entirely (textColor removed, so this
+      // line fails first) or gains a background (a filled mode, so claim one
+      // fails first), and the one upstream change that would split them --
+      // Paper ceasing to pass textColor to the icon -- falls back to
+      // `colors.onSurface`, which is ink.bright, not sage. An assertion that
+      // cannot fail while its neighbour passes is decoration, so the claim it
+      // was making lives here instead.
+      expect(style).toContain(rgba(ink.muted));
+
+      // And Paper's `roundness * 5` pill is overridden back to a control's own
+      // radius. The one pill in this app is the send disc, for the same reason
+      // sage is: that shape means "completes the action".
+      //
+      // Paper computes this one and hands it to the container AND the touchable
+      // as an inline `border-radius` shorthand rather than a class, which is why
+      // the whitespace-stripped inline half is what carries it. A reader that
+      // only consulted the sheet would find nothing and pass on a pill.
+      //
+      // Unlike the colour pair above, the POSITIVE is what discriminates here
+      // and the negative is a cheap guard I could not make earn its place. Both
+      // states I reached flip the two nodes together: with the override off both
+      // read 40px, and with it applied to `contentStyle` instead of `style`
+      // Paper's own 40 survives while the 8 lands as sheet long-hands, so the
+      // positive fails first either way. Kept because it costs nothing and would
+      // catch an upstream change that split the two, but recorded as unproven
+      // rather than left looking load-bearing.
+      expect(style).toContain(`border-radius:${radius.control}px`);
+      expect(style).not.toContain(`border-radius:${radius.control * 5}px`);
+    } finally {
+      p.unmount();
+    }
+  });
+
+  test("the spoken band is a card with a section's air above it", () => {
+    const p = paint();
+    try {
+      const said = p.host.querySelector('[data-testid="transcript-say"]');
+      expect(said).not.toBeNull();
+      const rules = rulesOf(said);
+      // A card's inner pad, not the screen gutter: the content container above
+      // it already paid that. RNW emits an all-sides `padding` as the shorthand
+      // and a `paddingHorizontal` as the two long-hands, so the declaration
+      // asserted here is the one this rule actually compiles to.
+      expect(rules).toContain(`padding:${rhythm.cardPad}px`);
+      // What the daemon said out loud is a different section from the turns.
+      expect(rules).toContain(`margin-top:${rhythm.sectionGap}px`);
+      // Its glyph and its prose are siblings inside the card.
+      expect(rules).toMatch(new RegExp(`(?:column-)?gap:\\s*${rhythm.cardGap}px`));
+      // Still a rule down its left edge, which is what marks it as spoken.
+      expect(rules).toContain("border-left-width:2px");
+    } finally {
+      p.unmount();
+    }
+  });
+
+  test("the empty state is a section, and still says the sentence it always said", () => {
+    const p = paint();
+    try {
+      const empty = p.host.querySelector('[data-testid="transcript-empty"]');
+      expect(empty).not.toBeNull();
+      expect(empty?.textContent).toContain("Nothing on this strip yet.");
+      const rules = rulesOf(empty);
+      expect(rules).toContain(`padding-top:${rhythm.sectionGap}px`);
+      expect(rules).toContain(`padding-bottom:${rhythm.sectionGap}px`);
+      expect(rules).toMatch(new RegExp(`(?:row-)?gap:\\s*${rhythm.rowGap}px`));
+    } finally {
+      p.unmount();
+    }
   });
 });

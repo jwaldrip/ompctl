@@ -38,6 +38,19 @@ const { agentActivity, tuiActivity } = await import("../src/session/activity.ts"
 const { EMPTY_SESSION, reduce } = await import("../src/session/model.ts");
 const { READY_LOAD } = await import("../src/console/state.ts");
 const { Console } = await import("../src/console/Console.tsx");
+const { StyleSheet } = await import("react-native");
+const { attributionWidth } = await import("../src/design/rhythm.ts");
+const { ground, stroke } = await import("../src/design/tokens.ts");
+
+/**
+ * A six-digit hex as react-native-web's compiler serialises it into the sheet.
+ * Same helper `composer-actions.test.tsx` carries, for the same reason: a token
+ * is the thing worth asserting and this is the spelling it comes out in.
+ */
+const rgba = (hex: string): string => {
+  const n = Number.parseInt(hex.replace("#", ""), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},1.00)`;
+};
 
 /**
  * The two things this change introduces, loaded per test rather than at the
@@ -662,13 +675,110 @@ function userTurn(shell: Shell, seq: number, text: string): void {
   });
 }
 
+describe("a session joined after its turn ended", () => {
+  /**
+   * The device found this one. Attaching to an agent that is ALREADY idle never
+   * produces a busy -> idle transition, and the daemon replays the transcript
+   * as ordinary update frames, so the last assistant chunk of a turn that
+   * finished before this device arrived stayed marked streaming. On an iPhone
+   * 17 simulator against a real daemon the agent reported `idle` while the app
+   * drew a "Working" row and offered the interrupt in place of send.
+   *
+   * The roster is the authority on liveness. A non-busy agent has nothing in
+   * flight whether or not this device watched it stop.
+   */
+  test("shows no working row and offers send, not interrupt", () => {
+    // Split width, so the detail pane and its composer are on screen without a
+    // navigation press: the same shape the neighbouring cases use.
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      // Idle from the first frame: this device never sees `busy`.
+      shell.emit("agents", { agents: ROSTER });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      userTurn(shell, 1, "what did you find?");
+      // A replayed assistant chunk. No `message_end` follows, because the turn
+      // was already over when we joined.
+      shell.emit("update", {
+        agentId: "agt_a",
+        seq: 2,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "The mount policy imports node:path." },
+          messageId: "m1",
+        },
+      });
+      // Deliberately NO trailing roster frame. A settled session sends none,
+      // which is exactly what made the device fail while a test that emitted
+      // one passed.
+
+      expect(shell.rowLabel()).toBeNull();
+      expect(shell.rowCount()).toBe(0);
+      // The composer's own claim has to agree with the roster.
+      expect(shell.el("composer-send")).not.toBeNull();
+      expect(shell.el("composer-cancel")).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  /**
+   * The other half of the same fix, and the half nothing reached.
+   *
+   * `applyAgents` used to require having WATCHED the agent stop
+   * (`before.get(id)?.state === "busy"`). One dropped roster snapshot is
+   * tolerated by design -- `rosterMisses` reaps a session only after two
+   * agreeing misses -- and a snapshot that omits the agent leaves `before`
+   * with no entry for it, so the next frame saying `idle` found no remembered
+   * `busy` beside it and settled nothing.
+   *
+   * The update path cannot cover this one, which is why both changes exist:
+   * while the roster says `busy` a chunk IS a live stream and settling it
+   * would erase a caret that is telling the truth, and no further chunk
+   * arrives once the turn has ended.
+   */
+  test("a roster snapshot dropped between busy and idle still settles the turn", () => {
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      shell.emit("agents", { agents: [{ ...ROSTER[0], state: "busy" } as Agent] });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      userTurn(shell, 1, "what did you find?");
+      shell.emit("update", {
+        agentId: "agt_a",
+        seq: 2,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "The mount policy imports node:path." },
+          messageId: "m1",
+        },
+      });
+      // While the roster says busy, a streaming chunk is the honest reading.
+      expect(shell.rowLabel()).toBe("Working");
+
+      // One snapshot that does not name this agent. Survivable by contract.
+      shell.emit("agents", { agents: [] });
+      // The turn ended while the roster was away, so this frame is the first
+      // evidence of it -- and there is no remembered `busy` beside it.
+      shell.emit("agents", { agents: ROSTER });
+
+      expect(shell.rowLabel()).toBeNull();
+      expect(shell.rowCount()).toBe(0);
+      expect(shell.el("composer-send")).not.toBeNull();
+      expect(shell.el("composer-cancel")).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+});
+
 describe("the turn underway sits after the operator's prompt and above the composer", () => {
   test("an idle session has no row at all: chat carries turns, not status", () => {
     setWindowSize(1024, 1366);
     const shell = mountShell();
     try {
       openOwned(shell);
-      expect(shell.el("transcript")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
       expect(shell.rowLabel()).toBeNull();
       expect(shell.rowCount()).toBe(0);
     } finally {
@@ -704,7 +814,7 @@ describe("the turn underway sits after the operator's prompt and above the compo
       userTurn(shell, 1, "ship it");
       shell.emit("agents", { agents: [{ ...ROSTER[0], state: "busy" } as Agent] });
 
-      expect(shell.within("session-activity", "transcript")).toBe(true);
+      expect(shell.within("session-activity", "aui-messages")).toBe(true);
     } finally {
       shell.unmount();
     }
@@ -913,7 +1023,7 @@ describe("the header says what the session is, and nothing about the turn", () =
       expect(head).toContain("Alpha");
       expect(head).toContain("busy");
       expect(head).not.toContain("Working");
-      expect(shell.within("session-activity", "transcript")).toBe(true);
+      expect(shell.within("session-activity", "aui-messages")).toBe(true);
     } finally {
       shell.unmount();
     }
@@ -1053,4 +1163,164 @@ describe("the row holds its place on a phone as well as a tablet", () => {
       }
     });
   }
+});
+
+/**
+ * The row's whole claim is that it IS the next agent row, not chrome that
+ * happens to sit inside the list. Ordering proves it is in the right PLACE;
+ * this proves it is the right SHAPE, which is the half that a reader actually
+ * sees. Two rows one under the other with attribution columns of different
+ * widths do not read as one conversation, they read as a transcript with a
+ * status strip stuck to the bottom of it.
+ *
+ * `ActivityRow` and `renderers.tsx` are separate files, so nothing but a test
+ * keeps them equal. This is that test, and it is deliberately a comparison
+ * between the two rendered rows rather than an assertion that each matches a
+ * number: a number can be changed in both files by someone who never learns
+ * the two had to agree.
+ */
+describe("the working row is shaped like the turn it precedes", () => {
+  const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
+
+  /**
+   * One declaration's value for an element, last-wins, from BOTH places
+   * react-native-web puts one: the atomic class for a value it registered at
+   * module scope, and the `style` attribute for one the component computed at
+   * render time. Reading only the sheet was enough until the attribution column
+   * started scaling with `fontScale`, at which point the width moved inline and
+   * a sheet-only read returned null -- a pass turning into a crash rather than
+   * into a wrong answer, which is the lucky version.
+   */
+  function declared(el: HTMLElement, property: string): string | null {
+    const inline = el.getAttribute("style") ?? "";
+    const direct = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`).exec(inline);
+    if (direct !== null) return (direct[1] as string).trim();
+    const classes = el.className.split(/\s+/).filter(Boolean);
+    let found: string | null = null;
+    for (const rule of rnwStyleSheet.getSheet().textContent.split("\n")) {
+      if (!classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule))) continue;
+      for (const declaration of rule.matchAll(new RegExp(`(?:^|[;{])\\s*${property}:\\s*([^;}]+)`, "gi"))) {
+        found = declaration[1]?.trim() ?? found;
+      }
+    }
+    return found;
+  }
+
+  /** A row's attribution column: the first child, which carries the speaker. */
+  function attribution(row: HTMLElement | null, what: string): HTMLElement {
+    const column = row?.firstElementChild ?? null;
+    if (!(column instanceof HTMLElement)) throw new Error(`${what} rendered no attribution column`);
+    return column;
+  }
+
+  test("its attribution column is the same width as the transcript's, and its own insets are zero", () => {
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      shell.emit("agents", { agents: ROSTER });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      userTurn(shell, 1, "ship it");
+      shell.emit("agents", { agents: [{ ...ROSTER[0], state: "busy" } as Agent] });
+
+      const working = shell.el("session-activity");
+      const turn = shell.el("entry-user");
+      expect(working).not.toBeNull();
+      expect(turn).not.toBeNull();
+
+      // The column that carries "agent" and the one that carries "you" are the
+      // same gutter, so they are the same width. 64 rather than the 76 this
+      // started at, which is 12 points handed back to every line of prose.
+      const workingColumn = declared(attribution(working, "the working row"), "width");
+      const turnColumn = declared(attribution(turn, "the operator's turn"), "width");
+      // `attributionWidth(1)` rather than the raw token: the column is 72 at the
+      // default text size and grows from there, so the number this asserts is
+      // the one an operator on default settings actually gets.
+      expect(workingColumn).toBe(`${attributionWidth(1)}px`);
+      expect(turnColumn).toBe(workingColumn);
+      const workingSpeaker = attribution(working, "the working row").firstElementChild;
+      const turnSpeaker = attribution(turn, "the operator's turn").firstElementChild;
+      if (!(workingSpeaker instanceof HTMLElement) || !(turnSpeaker instanceof HTMLElement)) {
+        throw new Error("an attribution column rendered without its speaker");
+      }
+      for (const speaker of [workingSpeaker, turnSpeaker]) {
+        expect(declared(speaker, "text-overflow")).toBe("ellipsis");
+        expect(declared(speaker, "white-space")).toBe("nowrap");
+      }
+
+      // And the rows themselves pay no horizontal inset: the list's content
+      // container pays the gutter once, for every row in it. A row that pays
+      // its own would sit 16 further in than the turn above it.
+      for (const [what, row] of [
+        ["the working row", working],
+        ["the operator's turn", turn],
+      ] as const) {
+        if (row === null) throw new Error(`${what} did not render`);
+        expect(declared(row, "padding-left")).toBeNull();
+        expect(declared(row, "padding-right")).toBeNull();
+      }
+    } finally {
+      shell.unmount();
+    }
+  });
+});
+
+/**
+ * The rule between the two panes.
+ *
+ * It was `borderRightWidth` on the bay's own style, which is a division owned
+ * by one of the two things it divides: it existed only while the bay did, and
+ * a bay that ever grew a background would have painted over it. It is a Paper
+ * `Divider` between the panes now, so the seam is a thing rather than one
+ * pane's edge.
+ *
+ * Asserted through the real console at both screen classes, because "between
+ * the panes" is a claim about document order and a claim about which screens
+ * exist, and neither is provable from the style sheet alone.
+ */
+describe("the pane seam belongs to neither pane", () => {
+  const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
+
+  test("a tablet draws it between the bay and the log, at the weight of a section ending", () => {
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      openOwned(shell);
+
+      // Between them, in the order a reader's eye crosses the screen.
+      expect(shell.order("fleet-list", "split-seam", "session-head")).toEqual([
+        "fleet-list",
+        "split-seam",
+        "session-head",
+      ]);
+
+      const seam = shell.el("split-seam");
+      if (seam === null) throw new Error("the pane seam did not render");
+      const classes = seam.className.split(/\s+/).filter(Boolean);
+      const rules = rnwStyleSheet
+        .getSheet()
+        .textContent.split("\n")
+        .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
+        .join("\n");
+      // A rule at the palette's heavier weight, which is what the edge of a
+      // pane is. Paper's own hairline default would be one step lighter than
+      // every other place in the app where a section genuinely ends.
+      expect(rules).toContain(`width:${stroke.heavy}px`);
+      expect(rules).toContain(`background-color:${rgba(ground.edge)}`);
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("a phone has one column, so it draws no seam at all", () => {
+    setWindowSize(390, 844);
+    const shell = mountShell();
+    try {
+      openOwned(shell);
+      // A rule dividing two panes when there is only one pane is a rule
+      // dividing a column from nothing.
+      expect(shell.el("split-seam")).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
 });

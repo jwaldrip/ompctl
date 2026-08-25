@@ -8,6 +8,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Connection } from "../src/platform/connection.ts";
 
+// Dynamic for the same RNW boundary as the screen import below: the provider
+// pulls Paper, which pulls React Native, so a static import would run first.
+const { WithOmpTheme } = await import("./theme.tsx");
 const { RoutinesScreen } = await import("../src/screens/RoutinesScreen.tsx");
 const { RUNS_PER_PAGE } = await import("../src/components/RunHistory.tsx");
 
@@ -126,14 +129,16 @@ async function mounted(connection: Connection, hello?: { scopes?: string[] }) {
   const opened: string[] = [];
   act(() => {
     root.render(
-      <RoutinesScreen
-        connection={connection}
-        createClient={() => client}
-        onBack={() => {}}
-        onOpenSession={sessionId => {
-          opened.push(sessionId);
-        }}
-      />,
+      <WithOmpTheme>
+        <RoutinesScreen
+          connection={connection}
+          createClient={() => client}
+          onBack={() => {}}
+          onOpenSession={sessionId => {
+            opened.push(sessionId);
+          }}
+        />
+      </WithOmpTheme>,
     );
   });
   const greeted = hello === undefined ? connection.scopes : hello.scopes;

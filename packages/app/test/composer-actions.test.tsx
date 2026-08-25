@@ -43,7 +43,7 @@ import type { ImageAttachmentPicker, PickedAttachments } from "../src/platform/a
 const { Composer } = await import("../src/components/Composer.tsx");
 const { SessionScreen } = await import("../src/screens/SessionScreen.tsx");
 const { TerminalSessionScreen } = await import("../src/screens/TerminalSessionScreen.tsx");
-const { EMPTY_SESSION } = await import("../src/session/model.ts");
+const { appendApproval, EMPTY_SESSION } = await import("../src/session/model.ts");
 const { emptyConsole, tuiSessionFor } = await import("../src/console/state.ts");
 const { StyleSheet } = await import("react-native");
 
@@ -119,19 +119,49 @@ function mount(element: React.JSX.Element): Mounted {
  */
 const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
 
-/** Every emitted declaration that addresses one element's own classes. */
+/**
+ * Everything one element's own style actually says, from both places
+ * react-native-web puts it.
+ *
+ * Only `StyleSheet.create` values are compiled into the atomic sheet. Anything
+ * built at render time -- which is every colour now that surfaces read
+ * `useOmpTheme()` -- is written to the element's own `style` attribute
+ * instead. Reading the sheet alone made this "what did the element render
+ * statically", which is not the claim any test here is making. The inline half
+ * is whitespace-stripped so `background-color: rgba(36, 33, 27, 1.00)` matches
+ * the sheet's own `background-color:rgba(36,33,27,1.00)` spelling.
+ */
 function renderedStyle(element: HTMLElement): string {
   const classes = element.className.split(/\s+/).filter(name => name.length > 0);
-  return rnwStyleSheet
+  const fromSheet = rnwStyleSheet
     .getSheet()
     .textContent.split("\n")
     .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
     .join("\n");
+  return `${fromSheet}\n${(element.getAttribute("style") ?? "").replace(/\s+/g, "")}`;
 }
 
-/** The testIDs of one element's direct children, in order. */
+/** How Paper names the box it wraps a control in. */
+const PAPER_CONTAINER = "-container";
+
+/**
+ * The testIDs of one element's direct children, in order, naming the CONTROL
+ * in each slot rather than the box a library wrapped it in.
+ *
+ * Paper's `IconButton` renders its pressable inside a `Surface` and hard-codes
+ * that outer element to `<testID>-container`, with no prop to move it. The
+ * control is the pressable -- it carries the label, the disabled state and the
+ * press -- so membership is read by the pressable's own testID. The claim is
+ * unchanged and still fails on everything it used to: a control missing, a
+ * control out of order, or a control that drifted out of its group.
+ */
 function childIDs(element: HTMLElement): (string | null)[] {
-  return [...element.children].map(child => child.getAttribute("data-testid"));
+  return [...element.children].map(child => {
+    const own = child.getAttribute("data-testid");
+    if (own === null || !own.endsWith(PAPER_CONTAINER)) return own;
+    const inner = own.slice(0, -PAPER_CONTAINER.length);
+    return child.querySelector(`[data-testid="${inner}"]`) === null ? own : inner;
+  });
 }
 
 /**
@@ -676,6 +706,137 @@ describe("the model control names the model", () => {
     const m = mount(sessionScreen());
     try {
       expect(m.need("session-model-label").textContent).toBe("Config");
+    } finally {
+      m.unmount();
+    }
+  });
+});
+
+/**
+ * Drive the runtime-controlled composer field through the props react-native-web
+ * attached, rather than by faking a DOM event. Same seam
+ * `assistant-adapter.test.tsx` uses, for the same reason: the value lives in the
+ * runtime, so setting `.value` alone changes nothing the composer can see.
+ */
+function typeIntoField(input: HTMLElement, value: string): void {
+  const key = Object.keys(input).find(name => name.startsWith("__reactProps$"));
+  if (key === undefined) throw new Error("no React props on the rendered input");
+  const props = Reflect.get(input, key) as { onChange?: (event: unknown) => void };
+  if (typeof props.onChange !== "function") throw new Error("the rendered input has no onChange handler");
+  (input as HTMLInputElement).value = value;
+  act(() => {
+    props.onChange?.({
+      target: input,
+      currentTarget: input,
+      nativeEvent: { text: value },
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// A refusal under the words is a refusal of the SEND
+// ---------------------------------------------------------------------------
+
+/**
+ * The composer's refusal line answers exactly one question: why the words the
+ * operator just typed will not go. Nothing else may ride it.
+ *
+ * The cutover gave the composer a `refusal` prop and the screen filled it from
+ * `ConsoleState.refusal`, which is the daemon's APPROVE-scope verdict ("Sign
+ * this from a device holding the approve scope"). A device holding prompt scope
+ * and not approve scope therefore read a sentence saying its prompt was refused
+ * while its send control was live and worked. The old `Composer` had no such
+ * prop, so this could not happen before and nothing existed to catch it.
+ *
+ * Absence and presence in the same run, the way the cutover file does it: the
+ * wrong value must not appear, and the channel must still carry the right one.
+ */
+describe("the composer names why a send is held, and only that", () => {
+  const APPROVE_REFUSAL = "device may not approve. Sign this from a device holding the approve scope.";
+
+  test("an approve-scope refusal stays with the clearance surfaces and never rides the composer", () => {
+    const m = mount(sessionScreen({ canApprove: false, refusal: APPROVE_REFUSAL }));
+    try {
+      expect(m.find("composer-refusal")).toBeNull();
+      // Not merely un-labelled: the sentence is nowhere on the surface an
+      // operator reads before pressing send.
+      expect(m.need("composer-surface").textContent ?? "").not.toContain("approve scope");
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a missing prompt scope is named under the words, because that is what holds the send", () => {
+    const m = mount(
+      sessionScreen({
+        voice: {
+          access: "missing",
+          mic: { available: false, reason: "no microphone in this test" },
+          speech: { available: false, reason: "no playback in this test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        },
+      }),
+    );
+    try {
+      expect(m.need("composer-refusal").textContent ?? "").toContain("prompt scope");
+      // The field stays usable and the send is the thing that is held, which is
+      // the distinction the two gates exist for.
+      expect(m.need("composer-send").getAttribute("aria-disabled")).toBe("true");
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a pairing that never declared its scopes keeps its send, optimistically", () => {
+    // `PromptScopeAccess` is three-way and only `missing` is a refusal: a
+    // pairing that predates scopes reports `unknown`, and the daemon's own
+    // refusal is what retires the control. The cutover's store held the send on
+    // `!== "granted"`, so such a device found send permanently dead with no
+    // sentence explaining it -- and the microphone beside it stayed pressable,
+    // so the same surface disagreed with itself about the same fact.
+    const m = mount(
+      sessionScreen({
+        voice: {
+          access: "unknown",
+          mic: { available: false, reason: "no microphone in this test" },
+          speech: { available: false, reason: "no playback in this test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        },
+      }),
+    );
+    try {
+      expect(m.find("composer-refusal")).toBeNull();
+      // Held only because the field is empty, which is what typing releases.
+      expect(m.need("composer-send").getAttribute("aria-disabled")).toBe("true");
+      typeIntoField(m.need("composer-input"), "ship it");
+      expect(m.need("composer-send").getAttribute("aria-disabled")).toBeNull();
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a clearance still waiting is named under the words, because it holds the send too", () => {
+    const m = mount(
+      sessionScreen({
+        session: appendApproval(EMPTY_SESSION, {
+          requestId: "req_9",
+          tool: "shell",
+          title: "rm -rf ./dist",
+          input: { command: "rm -rf ./dist" },
+        }),
+      }),
+    );
+    try {
+      expect(m.need("composer-refusal").textContent ?? "").toContain("clearance");
+      expect(m.need("composer-send").getAttribute("aria-disabled")).toBe("true");
     } finally {
       m.unmount();
     }

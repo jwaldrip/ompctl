@@ -379,7 +379,7 @@ describe("a link lost mid-open never leaves a pane spinning", () => {
 
       shell.emit("session_history", { agentId: "agt_b", sessionId: "sess_b", entries: [], nextBefore: null });
       expect(shell.el("session-loading")).toBeNull();
-      expect(shell.el("transcript-empty")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
     } finally {
       shell.unmount();
     }
@@ -396,13 +396,13 @@ describe("a link lost mid-open never leaves a pane spinning", () => {
       shell.emit("agents", { agents: [agent("agt_new", { name: "Fresh" })] });
       shell.press("session-open-agt_new");
       expect(shell.el("session-loading")).toBeNull();
-      expect(shell.el("transcript")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
 
       shell.emit("status", { state: "reconnecting", attempt: 1, delayMs: 1_000 });
       shell.emit("status", { state: "connected", attempt: 0 });
       expect(shell.el("session-load-stalled")).toBeNull();
       expect(shell.el("session-load-failed")).toBeNull();
-      expect(shell.el("transcript")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
     } finally {
       shell.unmount();
     }

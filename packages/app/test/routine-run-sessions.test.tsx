@@ -26,6 +26,7 @@ import { resetWindowSize, setWindowSize } from "./rnw.ts";
 // file's whole static import graph before its body runs, so a static import of
 // the console would pull the real `react-native` in before `./rnw.ts` could
 // substitute it.
+const { WithOmpTheme } = await import("./theme.tsx");
 const { Console } = await import("../src/console/Console.tsx");
 
 declare global {
@@ -227,15 +228,17 @@ function mountRoutines(options: {
 
   act(() => {
     root.render(
-      <Console
-        connection={CONNECTION}
-        daemonLabel="Studio Mac"
-        connections={CONNECTIONS}
-        onAddConnection={() => {}}
-        onSelectConnection={() => {}}
-        onUnpair={() => {}}
-        createClient={() => client as unknown as OmpdClient}
-      />,
+      <WithOmpTheme>
+        <Console
+          connection={CONNECTION}
+          daemonLabel="Studio Mac"
+          connections={CONNECTIONS}
+          onAddConnection={() => {}}
+          onSelectConnection={() => {}}
+          onUnpair={() => {}}
+          createClient={() => client as unknown as OmpdClient}
+        />
+      </WithOmpTheme>,
     );
   });
 

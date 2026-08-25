@@ -16,6 +16,7 @@ import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { rhythm } from "../src/design/rhythm.ts";
 import type { Connection, ConnectionList } from "../src/platform/connection.ts";
 import type { PlanEntry, SessionState } from "../src/session/model.ts";
 import { resetWindowSize, setWindowSize } from "./rnw.ts";
@@ -30,6 +31,8 @@ const { SessionContext, todoPhases, todoProgress, TODO_ABSENT_WHILE_BUSY } = awa
 const { EMPTY_SESSION, reduce } = await import("../src/session/model.ts");
 const { Console } = await import("../src/console/Console.tsx");
 const { SUBAGENT_UNOPENABLE } = await import("../src/components/AgentHub.tsx");
+const { StyleSheet } = await import("react-native");
+const { WithOmpTheme } = await import("./theme.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -74,8 +77,11 @@ function mount(node: ReactNode): Mounted {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
+  // Wrapped the way `App.tsx` wraps the whole console: Paper's own components
+  // read their palette, faces and radii from the provider, and a panel
+  // rendered without one is a different surface from the one that ships.
   act(() => {
-    root.render(node);
+    root.render(<WithOmpTheme>{node}</WithOmpTheme>);
   });
   const el = (testID: string): HTMLElement | null => {
     const found = host.querySelector(`[data-testid="${testID}"]`);
@@ -93,7 +99,7 @@ function mount(node: ReactNode): Mounted {
     },
     render: next => {
       act(() => {
-        root.render(next);
+        root.render(<WithOmpTheme>{next}</WithOmpTheme>);
       });
     },
     unmount: () => {
@@ -126,6 +132,49 @@ function panel(options: {
       session={options.session ?? EMPTY_SESSION}
     />
   );
+}
+
+/**
+ * `getSheet` is a react-native-web extension the package's own web build
+ * publishes and its types do not. Same cast `composer-actions.test.tsx` makes,
+ * for the same reason: a static `StyleSheet` value compiles to an atomic class
+ * whose declaration lives in one injected sheet rather than in the markup.
+ */
+const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
+
+/**
+ * The declarations an element actually carries, from BOTH places RNW puts them.
+ *
+ * Registered `StyleSheet` values arrive as classes in the injected sheet;
+ * anything computed at render time -- a row's own indent, which is its depth
+ * times one step -- is written inline instead. Reading either half alone makes
+ * a real measurement read as `undefined`, so this merges them and lets inline
+ * win, which is what the cascade does.
+ */
+function declarationsFor(element: HTMLElement): Map<string, string> {
+  const classes = element.className.split(/\s+/).filter(name => name.length > 0);
+  const out = new Map<string, string>();
+  const take = (text: string): void => {
+    for (const declaration of text.matchAll(/([a-z-]+):\s*([^;]+);/gi)) {
+      const property = declaration[1];
+      const value = declaration[2];
+      if (property === undefined || value === undefined) continue;
+      out.set(property.toLowerCase(), value.replaceAll(" ", "").trim());
+    }
+  };
+  for (const rule of rnwStyleSheet.getSheet().textContent.split("\n")) {
+    if (!classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule))) continue;
+    take(rule);
+  }
+  const inline = element.getAttribute("style");
+  if (inline !== null) take(inline.endsWith(";") ? inline : `${inline};`);
+  return out;
+}
+
+/** One measurement off an element, in points, or null when it declares none. */
+function points(element: HTMLElement, property: string): number | null {
+  const written = declarationsFor(element).get(property);
+  return written === undefined ? null : Number.parseFloat(written);
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +564,143 @@ describe("the collapse default follows the screen class", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The rhythm, read off the rendered surface
+// ---------------------------------------------------------------------------
+
+describe("the panel spends one step per level of nesting and nothing else", () => {
+  /** A chain four deep under the open session, every link openable. */
+  const chain = [
+    agent("agt_main"),
+    agent("agt_a", { parentAgentId: "agt_main", acpSessionId: "s_a" }),
+    agent("agt_b", { parentAgentId: "agt_a", acpSessionId: "s_b" }),
+    agent("agt_c", { parentAgentId: "agt_b", acpSessionId: "s_c" }),
+    agent("agt_d", { parentAgentId: "agt_c", acpSessionId: "s_d" }),
+  ];
+
+  test("three levels deep is three steps of rhythm.indent, not an ad-hoc ramp", () => {
+    const view = mount(panel({ subject: chain[0] as Agent, agents: chain }));
+    try {
+      // Read off the row itself rather than summed up the tree: the branch
+      // boxes nest, so an offset paid by them compounds invisibly and the step
+      // a row sits at stops being anything a reader -- or this test -- can
+      // check. `marginLeft: space.wide` plus `paddingLeft: space.snug` plus a
+      // rail is what used to add up to one step by accident; it reads as zero
+      // here, at every depth, which is the failure this asserts.
+      const indentOf = (id: string): number => {
+        const row = view.el(`agent-hub-open-${id}`);
+        if (row === null) throw new Error(`no row rendered for ${id}`);
+        return points(row, "padding-left") ?? 0;
+      };
+      expect(indentOf("agt_a")).toBe(0);
+      expect(indentOf("agt_b")).toBe(rhythm.indent);
+      expect(indentOf("agt_c")).toBe(2 * rhythm.indent);
+      expect(indentOf("agt_d")).toBe(3 * rhythm.indent);
+      // The multiplication, stated as the rule rather than as three numbers: a
+      // second per-level inset anywhere in the tree breaks this even if each
+      // row's own value still looked plausible.
+      expect(indentOf("agt_d") - indentOf("agt_c")).toBe(rhythm.indent);
+    } finally {
+      view.unmount();
+    }
+  });
+
+  test("a nested row is still a finger target, sized by a floor rather than a height", () => {
+    const view = mount(panel({ subject: chain[0] as Agent, agents: chain }));
+    try {
+      const row = view.el("agent-hub-open-agt_d");
+      if (row === null) throw new Error("no deepest row rendered");
+      expect(points(row, "min-height")).toBe(rhythm.minTarget);
+      // A fixed height is what clips a row at a larger type size.
+      expect(points(row, "height")).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  });
+
+  test("a directory as long as the machine says it is truncates in its row, never widens it", () => {
+    const deep = "/Users/op/dev/src/github.com/op/alpha/packages/app/src/components/really/deep";
+    const view = mount(
+      panel({
+        subject: agent("agt_main", { cwd: deep, model: "anthropic/claude-opus-5-with-a-very-long-name" }),
+      }),
+    );
+    try {
+      const value = view.el("session-context-cwd");
+      if (value === null) throw new Error("no directory row rendered");
+      const declarations = declarationsFor(value);
+      // `numberOfLines={1}`: the value ellipsises inside its own share of the
+      // row. Without it the path sets a floor the row cannot go under and the
+      // band grows wider than the pane it sits in.
+      expect(declarations.get("text-overflow")).toBe("ellipsis");
+      expect(declarations.get("white-space")).toBe("nowrap");
+      expect(declarations.get("overflow-x")).toBe("hidden");
+      // And the label column beside it is a floor, so a larger type size grows
+      // the column instead of cutting the word in it.
+      const label = value.previousElementSibling;
+      if (!(label instanceof HTMLElement)) throw new Error("no label beside the value");
+      expect(points(label, "min-width")).toBe(96);
+      expect(points(label, "width")).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  });
+});
+
+describe("collapsed, the band is one row on the transcript's own column", () => {
+  test("the header is one row tall by a floor, and pays the screen gutter", () => {
+    setWindowSize(390, 844);
+    const main = agent("agt_main");
+    const view = mount(
+      <SessionContext
+        agent={main}
+        agents={[main, agent("agt_sub", { parentAgentId: "agt_main", acpSessionId: "s1" })]}
+        now={NOW}
+        onOpenSubagent={() => {}}
+        origin="owned"
+        session={sessionWithPlan([{ content: "Ship it", status: "in_progress" }])}
+      />,
+    );
+    try {
+      const head = view.el("session-context-toggle");
+      if (head === null) throw new Error("no header rendered");
+      // Collapsed the band is the header and nothing else, so the header's own
+      // height IS the band's height.
+      expect(view.el("session-context-body")).toBeNull();
+      expect(points(head, "min-height")).toBe(rhythm.minTarget);
+      expect(points(head, "height")).toBeNull();
+      // The same inset the transcript below it pays, which is what makes the
+      // two read as one column rather than two panels that nearly line up.
+      expect(points(head, "padding-left")).toBe(rhythm.gutter);
+      expect(points(head, "padding-right")).toBe(rhythm.gutter);
+    } finally {
+      view.unmount();
+    }
+  });
+
+  test("open, the sections are a section apart and the body pays the same gutter", () => {
+    setWindowSize(390, 844);
+    const view = mount(
+      panel({
+        session: sessionWithPlan([{ content: "Ship it", status: "in_progress" }]),
+      }),
+    );
+    try {
+      const body = view.el("session-context-body");
+      if (body === null) throw new Error("no body rendered");
+      // The scroll view's own child is the content container RNW renders the
+      // contentContainerStyle onto, and it compiles a `gap` and an all-sides
+      // `padding` to those shorthands rather than to their long forms.
+      const content = body.firstElementChild;
+      if (!(content instanceof HTMLElement)) throw new Error("no scroll content rendered");
+      expect(points(content, "gap")).toBe(rhythm.sectionGap);
+      expect(points(content, "padding")).toBe(rhythm.gutter);
+    } finally {
+      view.unmount();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Identity, through the real console
 // ---------------------------------------------------------------------------
 
@@ -599,17 +785,23 @@ function mountShell(): Shell {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
+  // Provided the way the app provides it, at the root above the console: the
+  // shell renders Paper components (a chip, a button, an icon slot), and
+  // without the provider those come out in Material's palette with Paper's own
+  // icon renderer, which is not the shell this test is about.
   act(() => {
     root.render(
-      <Console
-        connection={CONNECTION}
-        daemonLabel="Studio Mac"
-        connections={CONNECTIONS}
-        onAddConnection={() => {}}
-        onSelectConnection={() => {}}
-        onUnpair={() => {}}
-        createClient={() => client as unknown as OmpdClient}
-      />,
+      <WithOmpTheme>
+        <Console
+          connection={CONNECTION}
+          daemonLabel="Studio Mac"
+          connections={CONNECTIONS}
+          onAddConnection={() => {}}
+          onSelectConnection={() => {}}
+          onUnpair={() => {}}
+          createClient={() => client as unknown as OmpdClient}
+        />
+      </WithOmpTheme>,
     );
   });
   act(() => {
@@ -781,8 +973,8 @@ describe("a row press commits its own session before the daemon answers", () => 
       // Nothing of Alpha's, and nothing that claims Bravo is empty: the
       // transcript's own empty state is a verified absence, and this pane has
       // verified nothing yet.
-      expect(shell.el("transcript")).toBeNull();
-      expect(shell.el("transcript-empty")).toBeNull();
+      expect(shell.el("aui-messages")).toBeNull();
+      expect(shell.el("aui-messages")).toBeNull();
       expect(shell.el("session-context")).toBeNull();
       expect(shell.detailText()).not.toContain("Alpha's only todo");
       // And no controls for a session that may yet be refused.
@@ -807,8 +999,8 @@ describe("a row press commits its own session before the daemon answers", () => 
       shell.emit("session_history", { agentId: "agt_b", sessionId: "sess_b", entries: [], nextBefore: null });
       expect(shell.el("session-loading")).toBeNull();
       // The honest empty, not a spinner that never ends.
-      expect(shell.el("transcript")).not.toBeNull();
-      expect(shell.el("transcript-empty")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
     } finally {
       shell.unmount();
     }

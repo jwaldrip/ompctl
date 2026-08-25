@@ -1,8 +1,11 @@
 import { type Agent, type AgentState, COLLAB_GUEST_AGENT_SOURCE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import { type JSX, memo, useMemo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
+import { Surface } from "react-native-paper";
+import { rhythm } from "../design/rhythm.ts";
 import { Body, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { type SignalName, space, stroke } from "../design/tokens.ts";
+import { useOmpTheme } from "../design/useOmpTheme.ts";
 
 export interface AgentHubNode {
   agent: Agent;
@@ -161,6 +164,7 @@ export function AgentHub({
   now = Date.now(),
   testID = "agent-hub",
 }: AgentHubProps): JSX.Element | null {
+  const theme = useOmpTheme();
   /**
    * Keyed on the roster, which is the only thing the forest depends on.
    *
@@ -174,30 +178,31 @@ export function AgentHub({
     const filtered = agents.filter(candidate => candidate.parentAgentId !== undefined);
     return { subs: filtered, tree: agentHubTree(filtered) };
   }, [agents]);
+  const panel = [styles.hub, { backgroundColor: theme.ground.surface, borderBottomColor: theme.ground.edge }];
   if (tree.length === 0) {
     const reason = agentHubEmptyReason(agents);
     if (reason === null) return null;
     return (
-      <View style={styles.hub} testID={testID} accessibilityLabel="Agent hierarchy">
+      <Surface elevation={0} mode="flat" style={panel} testID={testID} accessibilityLabel="Agent hierarchy">
         <View style={styles.heading}>
-          <Kicker color={ink.muted}>AGENT HUB</Kicker>
+          <Kicker color={theme.ink.muted}>AGENT HUB</Kicker>
         </View>
-        <Label testID={`${testID}-empty`} color={ink.muted}>
+        <Label testID={`${testID}-empty`} color={theme.ink.muted}>
           {AGENT_HUB_EMPTY_COPY[reason]}
         </Label>
-      </View>
+      </Surface>
     );
   }
   return (
-    <View style={styles.hub} testID={testID} accessibilityLabel="Agent hierarchy">
+    <Surface elevation={0} mode="flat" style={panel} testID={testID} accessibilityLabel="Agent hierarchy">
       <View style={styles.heading}>
-        <Kicker color={ink.muted}>AGENT HUB</Kicker>
-        <Label color={ink.plain}>{`${subs.length} ${subs.length === 1 ? "agent" : "agents"}`}</Label>
+        <Kicker color={theme.ink.muted}>AGENT HUB</Kicker>
+        <Label color={theme.ink.plain}>{`${subs.length} ${subs.length === 1 ? "agent" : "agents"}`}</Label>
       </View>
       {tree.map(node => (
         <AgentHubBranch key={node.agent.id} node={node} depth={0} now={now} onOpen={onOpen} />
       ))}
-    </View>
+    </Surface>
   );
 }
 
@@ -230,6 +235,7 @@ export const AgentHubBranch = memo(function AgentHubBranch({
   now: number;
   onOpen: (agent: Agent) => void;
 }): JSX.Element {
+  const theme = useOmpTheme();
   const { agent } = node;
   const metrics = agent.metrics;
   const runtimeMs = metrics?.durationMs ?? Math.max(0, now - Date.parse(agent.createdAt));
@@ -240,20 +246,31 @@ export const AgentHubBranch = memo(function AgentHubBranch({
       : `${metrics.usedTokens.toLocaleString()} tokens · ${formatRuntime(runtimeMs)}`;
   const costLabel = metrics?.costAmount === undefined ? null : `cost ${metrics.costAmount.toFixed(4)}`;
   const openable = subagentOpenable(agent);
+  /**
+   * One step of nesting per level, and nothing else.
+   *
+   * The offset is paid by the ROW, not by the branch box around it, and that
+   * is what makes the depth readable: the boxes nest, so an inset on them
+   * compounds and the step a row actually sits at becomes a sum nobody can
+   * see. Here it is one multiplication -- three levels deep is three steps of
+   * `rhythm.indent` -- which is exactly what replaced the `marginLeft` plus
+   * `paddingLeft` plus rail that used to add up to one step by accident.
+   */
+  const indent = depth === 0 ? null : { paddingLeft: depth * rhythm.indent };
   const body = (
     <>
-      <View style={[styles.status, { backgroundColor: signalWash[status] }]}>
-        <Label color={signal[status]}>{agent.state}</Label>
+      <View style={[styles.status, { backgroundColor: theme.signalWash[status] }]}>
+        <Label color={theme.signal[status]}>{agent.state}</Label>
       </View>
       <View style={styles.details}>
-        <Body color={ink.bright}>{agent.name}</Body>
-        {agent.taskTitle === undefined ? null : <Label color={ink.plain}>{agent.taskTitle}</Label>}
+        <Body color={theme.ink.bright}>{agent.name}</Body>
+        {agent.taskTitle === undefined ? null : <Label color={theme.ink.plain}>{agent.taskTitle}</Label>}
         <View style={styles.meta}>
-          {agent.model === undefined ? null : <Kicker color={ink.muted}>{agent.model}</Kicker>}
-          <Kicker color={ink.muted}>{metricsLabel}</Kicker>
-          {costLabel === null ? null : <Kicker color={ink.muted}>{costLabel}</Kicker>}
+          {agent.model === undefined ? null : <Kicker color={theme.ink.muted}>{agent.model}</Kicker>}
+          <Kicker color={theme.ink.muted}>{metricsLabel}</Kicker>
+          {costLabel === null ? null : <Kicker color={theme.ink.muted}>{costLabel}</Kicker>}
           {openable ? null : (
-            <Kicker color={ink.faint} testID={`agent-hub-unopenable-${agent.id}`}>
+            <Kicker color={theme.ink.faint} testID={`agent-hub-unopenable-${agent.id}`}>
               {SUBAGENT_UNOPENABLE}
             </Kicker>
           )}
@@ -263,14 +280,14 @@ export const AgentHubBranch = memo(function AgentHubBranch({
   );
 
   return (
-    <View style={[styles.branch, depth > 0 && styles.nested]} testID={`agent-hub-${agent.id}`}>
+    <View style={styles.branch} testID={`agent-hub-${agent.id}`}>
       {openable ? (
         <Pressable
           testID={`agent-hub-open-${agent.id}`}
           accessibilityRole="button"
           accessibilityLabel={`Open ${agent.name} session`}
           onPress={() => onOpen(agent)}
-          style={({ pressed }) => [styles.row, pressed && { backgroundColor: ground.active }]}
+          style={({ pressed }) => [styles.row, indent, pressed && { backgroundColor: theme.ground.active }]}
         >
           {body}
         </Pressable>
@@ -278,7 +295,7 @@ export const AgentHubBranch = memo(function AgentHubBranch({
         <View
           accessible
           accessibilityLabel={`${agent.name}, ${agent.state}. ${SUBAGENT_UNOPENABLE}`}
-          style={styles.row}
+          style={[styles.row, indent]}
           testID={`agent-hub-row-${agent.id}`}
         >
           {body}
@@ -291,7 +308,7 @@ export const AgentHubBranch = memo(function AgentHubBranch({
   );
 });
 
-function statusSignal(state: AgentState): keyof typeof signal {
+function statusSignal(state: AgentState): SignalName {
   if (state === "busy") return "amber";
   if (state === "idle") return "sage";
   if (state === "waiting" || state === "provisioning" || state === "starting") return "ochre";
@@ -308,22 +325,17 @@ function formatRuntime(durationMs: number): string {
 
 const styles = StyleSheet.create({
   hub: {
-    gap: space.snug,
-    padding: space.wide,
-    backgroundColor: ground.surface,
+    gap: rhythm.rowGap,
+    padding: rhythm.gutter,
     borderBottomWidth: stroke.heavy,
-    borderBottomColor: ground.edge,
   },
   heading: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" },
-  branch: { gap: space.tight },
-  nested: {
-    marginLeft: space.wide,
-    paddingLeft: space.snug,
-    borderLeftWidth: stroke.hair,
-    borderLeftColor: ground.edge,
-  },
-  row: { minHeight: TOUCH_TARGET, flexDirection: "row", gap: space.snug, alignItems: "flex-start" },
+  branch: { gap: rhythm.rowGap },
+  row: { minHeight: rhythm.minTarget, flexDirection: "row", gap: rhythm.rowGapTight, alignItems: "flex-start" },
+  // 64 and the two pads inside it are the state swatch's own geometry, not a
+  // rhythm job: `minWidth` keeps a column of them aligned without ever cutting
+  // the longest state ("provisioning"), which a fixed width would.
   status: { minWidth: 64, paddingHorizontal: space.tight, paddingVertical: space.hair, alignItems: "center" },
-  details: { flex: 1, gap: space.hair },
-  meta: { flexDirection: "row", flexWrap: "wrap", columnGap: space.snug, rowGap: space.hair },
+  details: { flex: 1, gap: rhythm.pairGap },
+  meta: { flexDirection: "row", flexWrap: "wrap", columnGap: rhythm.cardGap, rowGap: rhythm.pairGap },
 });
