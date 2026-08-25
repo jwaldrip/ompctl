@@ -23,16 +23,48 @@ final class PairingUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testFreshInstallPairsAndReachesConsole() throws {
+    /**
+     * The normal CI contract is an environment value. Local UI automation needs
+     * the same test without publishing a bearer to xcodebuild's command line,
+     * test logs, or the runner environment, so it may instead pass a mode-600
+     * file path. The direct environment form wins to preserve CI unchanged.
+     */
+    private func requiredInput(_ environmentKey: String, fileKey: String) -> String? {
         let environment = ProcessInfo.processInfo.environment
-        guard let endpoint = environment["OMPD_TEST_ENDPOINT"], !endpoint.isEmpty else {
-            XCTFail("OMPD_TEST_ENDPOINT is not set in the test runner environment")
+        if let direct = environment[environmentKey], !direct.isEmpty {
+            return direct
+        }
+        guard let path = environment[fileKey], !path.isEmpty else {
+            XCTFail("\(environmentKey) or \(fileKey) is not set in the test runner environment")
+            return nil
+        }
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+            guard permissions & 0o077 == 0 else {
+                XCTFail("\(fileKey) must name a private file")
+                return nil
+            }
+            let value = try String(contentsOfFile: path, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else {
+                XCTFail("\(fileKey) names an empty file")
+                return nil
+            }
+            return value
+        } catch {
+            XCTFail("\(fileKey) could not be read")
+            return nil
+        }
+    }
+
+    func testFreshInstallPairsAndReachesConsole() throws {
+        guard let endpoint = requiredInput("OMPD_TEST_ENDPOINT", fileKey: "OMPD_TEST_ENDPOINT_FILE") else {
             return
         }
-        guard let token = environment["OMPD_TEST_TOKEN"], !token.isEmpty else {
-            XCTFail("OMPD_TEST_TOKEN is not set in the test runner environment")
+        guard let token = requiredInput("OMPD_TEST_TOKEN", fileKey: "OMPD_TEST_TOKEN_FILE") else {
             return
         }
+        let environment = ProcessInfo.processInfo.environment
         guard let agentID = environment["OMPD_TEST_AGENT_ID"], !agentID.isEmpty else {
             XCTFail("OMPD_TEST_AGENT_ID is not set in the test runner environment")
             return
@@ -53,24 +85,23 @@ final class PairingUITests: XCTestCase {
             removeUIInterruptionMonitor(localNetworkPrompt)
         }
 
-        // The app itself never reads these; they are threaded through only so
-        // the whole chain from environment to keystrokes is traceable, and so
-        // nothing in this file is ever a literal endpoint or token.
-        app.launchEnvironment["OMPD_TEST_ENDPOINT"] = endpoint
-        app.launchEnvironment["OMPD_TEST_TOKEN"] = token
+        // The app itself never reads test inputs. Keeping credentials in the
+        // XCTest runner rather than launchEnvironment keeps a file-backed token
+        // out of the target process, system diagnostics, and app state.
         app.launch()
 
         let endpointField = app.textFields["pair-endpoint"]
         XCTAssertTrue(endpointField.waitForExistence(timeout: 15), "pairing screen did not appear on launch")
 
-        // This is the defect the whole change fixes: the endpoint field used
-        // to arrive prefilled with a loopback URL that can never work from a
-        // phone. A fresh launch (the app was uninstalled before this run, so
-        // there is no saved pairing) must show it empty.
+        // Fresh installs intentionally start with the hosted hub, never a
+        // loopback socket that a real phone could not reach. The test must
+        // replace that default before asserting the direct-socket route.
         let initialValue = (endpointField.value as? String) ?? ""
-        XCTAssertTrue(initialValue.isEmpty, "endpoint field must be empty on a fresh launch, was '\(initialValue)'")
+        XCTAssertFalse(initialValue.hasPrefix("ws://127.0.0.1"), "fresh pairing must not default to daemon loopback")
 
         endpointField.tap()
+        endpointField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: initialValue.count))
+        XCTAssertEqual((endpointField.value as? String) ?? "", "", "the hosted hub value did not clear before direct pairing")
         endpointField.typeText(endpoint)
 
         let endpointKind = app.staticTexts["pair-endpoint-kind"]
@@ -105,6 +136,10 @@ final class PairingUITests: XCTestCase {
         }
         XCTAssertTrue(submit.isHittable, "connect button remained obscured by the keyboard")
         submit.tap()
+        // XCTest delivers interruption monitors only after a fresh UI event.
+        // Without this, a Local Network sheet can sit over the pairing result
+        // while the test waits for a console that cannot appear.
+        app.tap()
         let console = app.otherElements["console"]
         XCTAssertTrue(console.waitForExistence(timeout: 20), "console did not appear after pairing")
         let fleet = app.otherElements["fleet"]
