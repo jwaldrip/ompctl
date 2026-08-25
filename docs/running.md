@@ -492,20 +492,24 @@ gives you the first one only.
 
 ## Run an agent in a container
 
-An agent is created on a container host by naming one in the spec:
+An agent is created on a container host by asking for the kind. Which image it
+runs is not part of the request: that is the daemon's own `containerImage`
+config, for the reason in [The image, and why a paired device cannot name
+one](#the-image-and-why-a-paired-device-cannot-name-one) below. `host.image` on
+the wire is refused, and `ompd new --image` is gone.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:7777/v1/agents \
   -H "authorization: Bearer $(cat ~/.ompd/token)" \
   -H 'content-type: application/json' \
-  -d '{"name":"sandboxed","cwd":"'"$PWD"'","host":{"kind":"container","image":"your/omp:tag"}}'
+  -d '{"name":"sandboxed","cwd":"'"$PWD"'","host":{"kind":"container"}}'
 ```
 
 or from the CLI, which can also name further directories the container gets
 to see:
 
 ```bash
-ompd new ~/dev/some-repo --container --image your/omp:tag \
+ompd new ~/dev/some-repo --container \
   --mounts ~/dev/shared-lib:ro,~/dev/scratch:rw
 ```
 
