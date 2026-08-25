@@ -649,20 +649,6 @@ export class Supervisor {
   }
 
   /**
-   * The agent currently holding one ACP session, when this supervisor owns it.
-   *
-   * The gateway uses this only to turn a concurrent identical resume into the
-   * idempotent `session_opened` answer. Its session index is intentionally
-   * asynchronous, so re-reading that index after `resumeAgent` loses a race
-   * can still see the old dormant row even though this map already names the
-   * agent that won. Returning this map's answer is not a second index: it is
-   * the authoritative in-process lock `resumeAgent` itself just consulted.
-   */
-  agentForSession(sessionId: string): AgentId | undefined {
-    return this.#sessionAgent.get(sessionId);
-  }
-
-  /**
    * Resume an existing on-disk session under a new daemon-owned agent, via
    * ACP `session/load`. See {@link ResumeAgentInput} for what "existing"
    * means here: `sessionId` is looked up on whichever host `cwd` resolves to
@@ -926,7 +912,14 @@ export class Supervisor {
   async stopAgent(agentId: AgentId, actor: Actor): Promise<void> {
     this.#authorize(actor, SCOPE_MANAGE, "agent.stop", agentId);
     const { agent, entry } = this.#resolve(agentId);
-    if (agent.acpSessionId) await entry.host.client.closeSession(agent.acpSessionId);
+    if (agent.acpSessionId) {
+      await entry.host.client.closeSession(agent.acpSessionId);
+      // A stopped agent no longer owns this durable session. Leaving its id in
+      // the in-process lock turns a later ordinary resume into "already held"
+      // even though the row is terminal and the host just closed it, which is
+      // exactly the state routine actions leave behind.
+      if (this.#sessionAgent.get(agent.acpSessionId) === agentId) this.#sessionAgent.delete(agent.acpSessionId);
+    }
     entry.agents.delete(agentId);
     this.#setState(agentId, "stopped");
     this.#store.audit({ action: "agent.stop", agentId, outcome: "ok" });
