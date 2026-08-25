@@ -15,6 +15,11 @@
  * says so in its own text. Nothing here logs a response body, anywhere: a log
  * line is how the rotate response ends up somewhere nobody meant to keep it.
  *
+ * A session id is not in that category and is returned as it stands. It names
+ * a session and grants nothing: opening one still goes through the daemon's
+ * own auth, so withholding the id would cost a caller the ability to look at
+ * what a run did while protecting nothing.
+ *
  * The schema descriptions are the only specification a model ever reads. There
  * is no man page and no README in that loop, so a field whose description says
  * nothing is a field that gets guessed at.
@@ -331,6 +336,13 @@ const runViewSchema = z.object({
   startedAt: z.string(),
   finishedAt: z.string().optional(),
   error: z.string().optional().describe("Event-level cause, used for singleton skips and daemon interruption."),
+  linkedSessionCount: z
+    .number()
+    .int()
+    .describe(
+      "How many distinct sessions this run created, counted over the `sessionId`s below. Zero means none of " +
+        "these actions recorded one, which is what every run predating session links looks like.",
+    ),
   actions: z.array(
     z.object({
       actionId: z.string(),
@@ -338,6 +350,14 @@ const runViewSchema = z.object({
       index: z.number().int(),
       state: z.enum(ACTION_RUN_STATES),
       agentId: z.string().optional(),
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "The session this action's agent ran in, as an ordinary session open takes it. A handle, not a " +
+            "secret: it names a session and grants nothing. Absent on a run recorded before the daemon " +
+            "linked sessions, and on an action that never reached an agent.",
+        ),
       summary: z.string().optional(),
       error: z.string().optional(),
       refusal: z.object({ code: z.string(), reason: z.string() }).optional(),
@@ -443,10 +463,28 @@ function actionRunView(run: ActionRun): RunView["actions"][number] {
     index: run.index,
     state: run.state,
     agentId: run.agentId,
+    sessionId: run.sessionId,
     summary: run.summary,
     error: run.error,
     refusal: run.refusal === undefined ? undefined : { code: run.refusal.code, reason: run.refusal.reason },
   };
+}
+
+/**
+ * How many sessions one run created.
+ *
+ * Distinct and non-blank, not `actions.length`: a run whose actions never
+ * reached an agent has no session to open, and counting the actions instead
+ * would tell a model there is something to look at when there is not. Blank is
+ * treated as absent for the same reason a missing key is, because an empty
+ * string is a value no session open can take.
+ */
+function linkedSessionCount(run: Run): number {
+  const linked = new Set<string>();
+  for (const action of run.actions) {
+    if (action.sessionId !== undefined && action.sessionId.length > 0) linked.add(action.sessionId);
+  }
+  return linked.size;
 }
 
 function runView(run: Run): RunView {
@@ -457,6 +495,7 @@ function runView(run: Run): RunView {
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     error: run.error,
+    linkedSessionCount: linkedSessionCount(run),
     actions: run.actions.map(actionRunView),
   };
 }
@@ -483,10 +522,20 @@ function routineLine(routine: RoutineSummary): string {
   return `  ${routine.id}  ${routine.enabled ? "enabled " : "disabled"}  ${routine.name}  ${triggerLabel(routine.trigger)}  ${actions}`;
 }
 
+/**
+ * One run, as a line.
+ *
+ * The session count is here and not only in the structured output because the
+ * text is what a model reads. A count that appeared solely in
+ * `structuredContent` would be a field a caller has to already know to look
+ * for, and the whole point of reporting it is that someone asking "why did
+ * last night's routine fail" learns there is a session to open.
+ */
 function runLine(run: RunView): string {
   const failed = run.actions.filter(action => action.state === "failed" || action.state === "timed_out").length;
   const detail = failed === 0 ? "" : `  ${String(failed)} failed`;
-  return `  ${run.id}  ${run.state}  started ${run.startedAt}${detail}`;
+  const sessions = run.linkedSessionCount === 1 ? "  1 session" : `  ${String(run.linkedSessionCount)} sessions`;
+  return `  ${run.id}  ${run.state}  started ${run.startedAt}${detail}${sessions}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -559,7 +608,9 @@ export function registerRoutineTools(server: McpServer, ctx: CliContext): void {
       description:
         "One routine in full, with every action's prompt and working directory, plus its most recent runs and " +
         "how each action inside them ended. This is what to read before editing a routine or when asked why a " +
-        "run did not do what someone expected. A webhook routine's credential reference is never included.",
+        "run did not do what someone expected. Each run reports how many sessions it created, and each action " +
+        "inside it reports the `sessionId` of the one it ran in, which opens like any other session. A webhook " +
+        "routine's credential reference is never included.",
       inputSchema: getShape,
       outputSchema: { routine: routineViewSchema, runs: z.array(runViewSchema) },
       annotations: {

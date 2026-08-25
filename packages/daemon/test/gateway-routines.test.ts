@@ -329,6 +329,131 @@ describe("GET /v1/routines/:id", () => {
     expect(deleted.status).toBe(200);
     expect(h.daemon.store.listRoutines()).toEqual([]);
   });
+
+  test("every action's session link comes back verbatim, and a run recorded before them still reads", async () => {
+    const h = await harness();
+    const routine = await create(h, {
+      name: "nightly",
+      trigger: { kind: "manual" },
+      actions: [ACTION, { name: "Publish", prompt: "publish the summary", cwd: "/tmp" }],
+    });
+
+    // One action per session, which is what the scheduler produces: it creates
+    // a fresh agent per action, so a two-action run is two sessions and not one
+    // shared between them.
+    h.daemon.store.upsertRun({
+      id: "run_linked",
+      routineId: routine.id,
+      state: "succeeded",
+      startedAt: "2026-08-02T00:00:00.000Z",
+      finishedAt: "2026-08-02T00:05:00.000Z",
+      actions: [
+        {
+          actionId: "act_1",
+          actionName: "Summarise",
+          index: 0,
+          agentId: "agt_1",
+          sessionId: "ses_first",
+          state: "succeeded",
+          startedAt: "2026-08-02T00:00:00.000Z",
+          finishedAt: "2026-08-02T00:02:00.000Z",
+        },
+        {
+          actionId: "act_2",
+          actionName: "Publish",
+          index: 1,
+          agentId: "agt_2",
+          sessionId: "ses_second",
+          state: "succeeded",
+          startedAt: "2026-08-02T00:02:00.000Z",
+          finishedAt: "2026-08-02T00:05:00.000Z",
+        },
+      ],
+    });
+
+    const body = (await (await get(h, `/v1/routines/${routine.id}`)).json()) as { runs: Run[] };
+    expect(body.runs[0]?.actions.map(action => action.sessionId)).toEqual(["ses_first", "ses_second"]);
+  });
+
+  test("a run stored before session links survives the round trip carrying no sessionId key at all", async () => {
+    const h = await harness();
+    const routine = await create(h, { name: "nightly", trigger: { kind: "manual" }, actions: [ACTION] });
+
+    // Written the way every row already on disk was written: an action outcome
+    // with no session link, because the field did not exist when it was
+    // recorded. `actions` is serialized whole into one column, so no DDL change
+    // touched these rows, nothing backfilled them, and nothing may guess at
+    // them. The field being optional is what lets this compile, which is the
+    // same property that lets an old row deserialize.
+    h.daemon.store.upsertRun({
+      id: "run_legacy",
+      routineId: routine.id,
+      state: "succeeded",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      finishedAt: "2026-08-01T00:01:00.000Z",
+      actions: [
+        {
+          actionId: "act_1",
+          actionName: "Summarise",
+          index: 0,
+          agentId: "agt_old",
+          state: "succeeded",
+          startedAt: "2026-08-01T00:00:00.000Z",
+          finishedAt: "2026-08-01T00:01:00.000Z",
+        },
+      ],
+    });
+
+    const body = (await (await get(h, `/v1/routines/${routine.id}`)).json()) as { runs: Run[] };
+    const action = body.runs[0]?.actions[0];
+    expect(body.runs.map(run => run.id)).toEqual(["run_legacy"]);
+    expect(action?.agentId).toBe("agt_old");
+    // Absent, not empty and not invented: a read that materialized "" here
+    // would hand every caller a session id that opens nothing.
+    expect(action === undefined ? [] : Object.keys(action)).not.toContain("sessionId");
+  });
+
+  test("a run carries no credential and no execution host, whatever fields it grows", async () => {
+    const h = await harness();
+    const routine = await create(h, { name: "inbound", trigger: { kind: "webhook" }, actions: [ACTION] });
+    h.daemon.store.upsertRun({
+      id: "run_scan",
+      routineId: routine.id,
+      state: "succeeded",
+      startedAt: "2026-08-03T00:00:00.000Z",
+      finishedAt: "2026-08-03T00:01:00.000Z",
+      actions: [
+        {
+          actionId: "act_1",
+          actionName: "Summarise",
+          index: 0,
+          agentId: "agt_3",
+          sessionId: "ses_scanned",
+          state: "succeeded",
+          startedAt: "2026-08-03T00:00:00.000Z",
+          finishedAt: "2026-08-03T00:01:00.000Z",
+        },
+      ],
+    });
+
+    const response = await get(h, `/v1/routines/${routine.id}`);
+    const body = (await response.json()) as { runs: Run[] };
+    // Scoped to the runs half on purpose. The routine half legitimately
+    // carries the `{kind:"local"}` host the write forced onto every action, and
+    // the webhook `secretRef` the app round trips, so a whole-body scan here
+    // would assert something false about this route rather than something true
+    // about a run.
+    const serialized = JSON.stringify(body.runs);
+    expect(serialized).toContain("ses_scanned");
+    // Over the serialized text rather than a field allowlist: a field added to
+    // `ActionRun` later that happened to carry a token or a host spec would
+    // pass a check that only knew today's names.
+    expect(serialized).not.toContain(refOf(routine));
+    expect(serialized).not.toContain(h.operator);
+    for (const forbidden of ["secretRef", "secret", "token", "host", "image", "mounts"]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
 });
 
 describe("PATCH /v1/routines/:id", () => {

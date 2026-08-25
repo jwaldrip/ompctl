@@ -469,6 +469,30 @@ export interface ActionRun {
   summary?: string;
   error?: string;
   refusal?: ActionRefusal;
+  /**
+   * The ACP session this action's agent opened, when it opened one.
+   *
+   * This is the same identity every other session surface is keyed by: it is
+   * `Agent.acpSessionId`, and it is the row id the session index answers
+   * queries under. A client that has it can therefore open this run's work
+   * through the ordinary session path instead of needing a route of its own.
+   * Transport is deliberately not stored beside it. Whether the session is
+   * held by a live agent, dormant on disk, or live in a terminal is resolved
+   * from the index at the moment of opening, and a copy taken when the run
+   * finished would be a second answer that goes stale.
+   *
+   * Absent means one of two things and never a third: the run was recorded
+   * before this field existed, or the action never got as far as opening a
+   * session, which is every action refused for an empty prompt and every one
+   * whose host could not be stood up. It does not mean the session is gone.
+   * A reader with no id renders no link, because the only other option is
+   * guessing one.
+   *
+   * It is not a credential. It names a session the daemon already serves
+   * through the session surface, and every frame on that surface applies its
+   * own scope gate, so holding the id is not authority to read or resume it.
+   */
+  sessionId?: string;
 }
 
 export type RunState = "queued" | "running" | "succeeded" | "failed" | "skipped" | "timed_out";

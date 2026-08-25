@@ -1,14 +1,18 @@
 import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { ClientFrame, RemoteRoutine, ServerFrame } from "@ompd/core/contracts";
+import type { ClientFrame, RemoteRoutine, Run, ServerFrame } from "@ompd/core/contracts";
 import { hubWebhookPath, ROUTINE_DELETE_REFUSAL_REASONS, webhookPath } from "@ompd/core/contracts";
 import { OmpdClient, type SocketCloseInfo, type SocketLike } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Connection } from "../src/platform/connection.ts";
 
+// Dynamic for the same RNW boundary as the screen import below: the provider
+// pulls Paper, which pulls React Native, so a static import would run first.
+const { WithOmpTheme } = await import("./theme.tsx");
 const { RoutinesScreen } = await import("../src/screens/RoutinesScreen.tsx");
+const { RUNS_PER_PAGE } = await import("../src/components/RunHistory.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -116,8 +120,26 @@ async function mounted(connection: Connection, hello?: { scopes?: string[] }) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
+  /**
+   * Every session id this screen asked to open, in order. The screen is handed
+   * the console's opener in the app, so this is the boundary the run links
+   * cross: what matters here is which id crossed it, and the console suite is
+   * where the transport that id resolves to is proved.
+   */
+  const opened: string[] = [];
   act(() => {
-    root.render(<RoutinesScreen connection={connection} onBack={() => {}} createClient={() => client} />);
+    root.render(
+      <WithOmpTheme>
+        <RoutinesScreen
+          connection={connection}
+          createClient={() => client}
+          onBack={() => {}}
+          onOpenSession={sessionId => {
+            opened.push(sessionId);
+          }}
+        />
+      </WithOmpTheme>,
+    );
   });
   const greeted = hello === undefined ? connection.scopes : hello.scopes;
   act(() => {
@@ -129,7 +151,7 @@ async function mounted(connection: Connection, hello?: { scopes?: string[] }) {
     );
   });
   await settle();
-  return { socket, host, root };
+  return { socket, host, root, opened };
 }
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -764,6 +786,226 @@ describe("RoutinesScreen action refusals", () => {
 
     expect(el(host, "routines-read-error")?.textContent).toContain("no routine runner");
     expect(el(host, "routines-action-error")).toBeNull();
+
+    act(() => root.unmount());
+    host.remove();
+  });
+});
+
+/**
+ * A run whose two prompt actions each opened their own session, which is what
+ * the scheduler produces: one agent per prompt action, one ACP session per
+ * agent.
+ */
+const LINKED_RUN: Run = {
+  id: "run_linked",
+  routineId: ROUTINE.id,
+  state: "succeeded",
+  startedAt: "2026-08-19T09:00:00.000Z",
+  finishedAt: "2026-08-19T09:00:04.000Z",
+  actions: [
+    {
+      actionId: "text-back",
+      actionName: "Text back",
+      index: 0,
+      state: "succeeded",
+      summary: "texted the caller",
+      startedAt: "2026-08-19T09:00:00.000Z",
+      finishedAt: "2026-08-19T09:00:02.000Z",
+      agentId: "agt_text",
+      sessionId: "sess_text",
+    },
+    {
+      actionId: "webhook",
+      actionName: "Webhook",
+      index: 1,
+      state: "succeeded",
+      summary: "delivered",
+      startedAt: "2026-08-19T09:00:02.000Z",
+      finishedAt: "2026-08-19T09:00:04.000Z",
+      agentId: "agt_hook",
+      sessionId: "sess_hook",
+    },
+  ],
+};
+
+/** What a run recorded before `ActionRun.sessionId` existed looks like. */
+const UNLINKED_RUN: Run = {
+  id: "run_old",
+  routineId: ROUTINE.id,
+  state: "succeeded",
+  startedAt: "2026-08-18T09:00:00.000Z",
+  finishedAt: "2026-08-18T09:00:02.000Z",
+  actions: [
+    {
+      actionId: "text-back",
+      actionName: "Text back",
+      index: 0,
+      state: "succeeded",
+      summary: "texted the caller",
+      startedAt: "2026-08-18T09:00:00.000Z",
+      finishedAt: "2026-08-18T09:00:02.000Z",
+    },
+  ],
+};
+
+/** Every run row currently mounted, in document order. */
+function runRows(host: HTMLElement): HTMLElement[] {
+  return [...host.querySelectorAll<HTMLElement>('[data-testid^="run-"][data-testid$="-toggle"]')];
+}
+
+describe("RoutinesScreen run history", () => {
+  test("a run with two prompt actions links two distinct sessions and counts them", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [LINKED_RUN] }));
+    await settle();
+
+    expect(el(host, "run-run_linked-state")?.textContent).toBe("Succeeded");
+    expect(el(host, "run-run_linked-sessions")?.textContent).toBe("2 linked sessions");
+    // Both readings, because a finished run has an end and a running one does
+    // not, and the card must never invent the one it does not have.
+    expect(el(host, "run-run_linked-timing")?.textContent).toContain("started");
+    expect(el(host, "run-run_linked-timing")?.textContent).toContain("ended");
+
+    act(() => el(host, "run-run_linked-toggle")?.click());
+    await settle();
+    expect(readsDisabled(field(host, "run-run_linked-action-text-back-open"))).toBe(false);
+    expect(readsDisabled(field(host, "run-run_linked-action-webhook-open"))).toBe(false);
+    expect(el(host, "run-run_linked-action-webhook")?.textContent).toContain("delivered");
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a still-running run says so instead of naming an end it never reached", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    const running: Run = {
+      ...LINKED_RUN,
+      id: "run_now",
+      state: "running",
+      finishedAt: undefined,
+      actions: [{ ...LINKED_RUN.actions[0]!, state: "running", finishedAt: undefined, summary: undefined }],
+    };
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [running] }));
+    await settle();
+
+    expect(el(host, "run-run_now-state")?.textContent).toBe("Running");
+    expect(el(host, "run-run_now-timing")?.textContent).toContain("still running");
+    expect(el(host, "run-run_now-timing")?.textContent).not.toContain("ended");
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("each link opens the session its own action ran in, never the other one", async () => {
+    forbidFetch();
+    const { socket, host, root, opened } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [LINKED_RUN] }));
+    await settle();
+    act(() => el(host, "run-run_linked-toggle")?.click());
+    await settle();
+
+    act(() => field(host, "run-run_linked-action-webhook-open").click());
+    await settle();
+    act(() => field(host, "run-run_linked-action-text-back-open").click());
+    await settle();
+
+    // The id each control carries, in the order they were pressed. Two links on
+    // one run that both opened the first action's session is the defect this
+    // pins, and it would pass a check that only counted the calls.
+    expect(opened).toEqual(["sess_hook", "sess_text"]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a run recorded before sessions were linked offers a disabled control that says why", async () => {
+    forbidFetch();
+    const { socket, host, root, opened } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [UNLINKED_RUN] }));
+    await settle();
+
+    expect(el(host, "run-run_old-sessions")?.textContent).toBe("0 linked sessions");
+    act(() => el(host, "run-run_old-toggle")?.click());
+    await settle();
+
+    const control = field(host, "run-run_old-action-text-back-open");
+    expect(readsDisabled(control)).toBe(true);
+    // The label has to carry the reason: a disabled control that only reads
+    // "Open session" tells a screen reader nothing about why it is off.
+    expect(control.getAttribute("aria-label")).toContain("this run recorded none for it");
+    act(() => control.click());
+    await settle();
+    expect(opened).toEqual([]);
+    // Present rather than hidden: an omitted row would make an old run look
+    // like a run with fewer actions.
+    expect(el(host, "run-run_old-action-text-back")).not.toBeNull();
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a long history renders one page, and the control reveals the next", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    const many: Run[] = Array.from({ length: 500 }, (_unused, index) => ({
+      ...LINKED_RUN,
+      id: `run_${index}`,
+      startedAt: new Date(Date.parse(LINKED_RUN.startedAt) - index * 60_000).toISOString(),
+    }));
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: many }));
+    await settle();
+
+    expect(runRows(host)).toHaveLength(RUNS_PER_PAGE);
+    expect(el(host, "routine-rtn_calls-runs-more")?.textContent).toContain("of 500");
+
+    act(() => el(host, "routine-rtn_calls-runs-more")?.click());
+    await settle();
+    expect(runRows(host)).toHaveLength(RUNS_PER_PAGE * 2);
+    // Still bounded after the reveal: the control adds a page, it does not
+    // drop the cap.
+    expect(el(host, "routine-rtn_calls-runs-more")).not.toBeNull();
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a routine that has never run says so rather than showing an empty block", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    expect(el(host, "routine-rtn_calls-runs-empty")?.textContent).toContain("has not run yet");
+    expect(runRows(host)).toEqual([]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a run that ended before any action started says so when opened", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    const skipped: Run = {
+      id: "run_skipped",
+      routineId: ROUTINE.id,
+      state: "skipped",
+      startedAt: "2026-08-19T09:00:00.000Z",
+      finishedAt: "2026-08-19T09:00:00.000Z",
+      error: "the previous run was still going, and this routine is a singleton",
+      actions: [],
+    };
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [skipped] }));
+    await settle();
+
+    expect(el(host, "run-run_skipped-error")?.textContent).toContain("singleton");
+    act(() => el(host, "run-run_skipped-toggle")?.click());
+    await settle();
+    // Opened, and not silently empty: a toggle that reveals nothing reads as a
+    // control that does not work.
+    expect(el(host, "run-run_skipped-no-actions")?.textContent).toContain("before any action started");
 
     act(() => root.unmount());
     host.remove();

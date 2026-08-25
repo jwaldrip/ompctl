@@ -409,6 +409,104 @@ describe("reading routines", () => {
     expect(h.calls[0]?.path).toBe("/v1/routines/rtn_hook?runLimit=10");
     await h.close();
   });
+
+  test("an inspected run reports each action's session and how many distinct ones it created", async () => {
+    // Two actions, two sessions, which is what the scheduler produces: it
+    // creates a fresh agent per action, so nothing here is one session shared
+    // between them.
+    const linked: Run = {
+      id: "run_2",
+      routineId: "rtn_cron",
+      state: "succeeded",
+      startedAt: "2026-08-04T02:00:00.000Z",
+      finishedAt: "2026-08-04T02:06:00.000Z",
+      actions: [
+        {
+          actionId: "act_1",
+          actionName: "sweep",
+          index: 0,
+          state: "succeeded",
+          agentId: "agt_10",
+          sessionId: "ses_sweep",
+          startedAt: "2026-08-04T02:00:00.000Z",
+          finishedAt: "2026-08-04T02:03:00.000Z",
+        },
+        {
+          actionId: "act_2",
+          actionName: "publish",
+          index: 1,
+          state: "succeeded",
+          agentId: "agt_11",
+          sessionId: "ses_publish",
+          startedAt: "2026-08-04T02:03:00.000Z",
+          finishedAt: "2026-08-04T02:06:00.000Z",
+        },
+      ],
+    };
+    const h = await harness({
+      routes: {
+        "GET /v1/routines/rtn_cron?runLimit=10": { body: { routine: CRON_ROUTINE, runs: [linked] } },
+      },
+    });
+
+    const result = await h.call("ompctl_routine_get", { routineId: "rtn_cron" });
+    expect(result.isError).toBe(false);
+    expect(result.structured).toMatchObject({
+      runs: [
+        {
+          id: "run_2",
+          linkedSessionCount: 2,
+          actions: [{ sessionId: "ses_sweep" }, { sessionId: "ses_publish" }],
+        },
+      ],
+    });
+
+    // And in the text, because the text is what a model reads. A count that
+    // existed only in `structuredContent` would be a field a caller has to
+    // already know to ask for.
+    expect(result.text).toContain("2 sessions");
+    await h.close();
+  });
+
+  test("a run whose actions never reached a session reports none rather than guessing at one", async () => {
+    // The shape of every run recorded before session links existed, and of a
+    // run whose action was refused before it started an agent. The field is
+    // optional all the way down, so this row simply has no key. `refused` is an
+    // action state and not a run state: the event as a whole failed.
+    const unlinked: Run = {
+      id: "run_3",
+      routineId: "rtn_cron",
+      state: "failed",
+      startedAt: "2026-07-01T02:00:00.000Z",
+      finishedAt: "2026-07-01T02:00:01.000Z",
+      actions: [
+        {
+          actionId: "act_1",
+          actionName: "sweep",
+          index: 0,
+          state: "refused",
+          startedAt: "2026-07-01T02:00:00.000Z",
+          finishedAt: "2026-07-01T02:00:01.000Z",
+          refusal: { code: "unauthorized", reason: "the device lost manage scope" },
+        },
+      ],
+    };
+    const h = await harness({
+      routes: {
+        "GET /v1/routines/rtn_cron?runLimit=10": { body: { routine: CRON_ROUTINE, runs: [unlinked] } },
+      },
+    });
+
+    const result = await h.call("ompctl_routine_get", { routineId: "rtn_cron" });
+    expect(result.isError).toBe(false);
+    expect(result.structured).toMatchObject({ runs: [{ id: "run_3", linkedSessionCount: 0 }] });
+    expect(result.text).toContain("0 sessions");
+    // Absent rather than empty, over the whole serialized result: a projection
+    // that materialized `""` would hand a model a session id that opens
+    // nothing, and it would read as a link rather than as its absence.
+    expect(JSON.stringify(result.raw)).not.toContain("sessionId");
+    await h.close();
+  });
 });
 
 describe("writing routines", () => {

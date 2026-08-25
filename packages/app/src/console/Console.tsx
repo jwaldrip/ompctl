@@ -52,7 +52,7 @@ import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
 import { deviceMemoVoice } from "../voice/memo.ts";
-import type { ConsoleState } from "./state.ts";
+import type { ConsoleState, SessionOpenTarget } from "./state.ts";
 import {
   agentFor,
   browserSessionsOf,
@@ -150,10 +150,62 @@ export function Console({
     setConfigPane(null);
   }, [state.selected]);
 
+  /**
+   * Whether a session was opened from a route pushed over the fleet, rather
+   * than from the fleet itself.
+   *
+   * On a phone this changes nothing: the stack presents every open session,
+   * because there is no second column to present it in. On a tablet the
+   * detail normally sits in the fleet's own split pane, and a route pushed
+   * over the fleet (Routines) covers that pane completely, so a link tapped
+   * there would set the model's selection and change nothing the operator can
+   * see. This says the stack has to present it instead.
+   *
+   * Set at the moment of the open rather than derived from which route is
+   * focused, and deliberately: derived, any socket frame arriving while
+   * Routines was open would have yanked a tablet operator into a session they
+   * had selected before they ever left the list.
+   */
+  const [openedFromRoute, setOpenedFromRoute] = useState(false);
+  /**
+   * A dormant resume has to be confirmed by a NEW selection. The fleet can
+   * already have the terminal holder selected when its index row becomes
+   * dormant; that old stopped agent still names the same ACP id, and accepting
+   * it as the answer to a later resume request hides the pane before the daemon
+   * has accepted anything. `selectedBefore` rules that old selection out.
+   */
+  const [pendingRouteSession, setPendingRouteSession] = useState<{
+    sessionId: string;
+    selectedBefore: AgentId | null;
+    failureRevision: number;
+  } | null>(null);
+  /**
+   * Which surface presents the open session: the stack, or the tablet's own
+   * detail pane. Exactly one of the two, always, so no session screen is
+   * mounted twice over one agent and no selection is left with nowhere to be
+   * seen.
+   */
+  const stackPresentsDetail = !split || openedFromRoute;
+
   // Read rather than depended on, so the row handlers below keep one identity
   // for the life of the console.
   const latest = useRef({ state, actions });
   latest.current = { state, actions };
+
+  useEffect(() => {
+    if (pendingRouteSession === null) return;
+    const failed = state.lastFailedSessionOpen;
+    if (failed?.sessionId === pendingRouteSession.sessionId && failed.revision > pendingRouteSession.failureRevision) {
+      setPendingRouteSession(null);
+      return;
+    }
+    if (state.selected === null || state.selected === pendingRouteSession.selectedBefore) return;
+    const selected = agentFor(state, state.selected);
+    const confirmedSessionId = selected?.acpSessionId ?? state.sessionIds.get(state.selected);
+    if (confirmedSessionId !== pendingRouteSession.sessionId) return;
+    setOpenedFromRoute(true);
+    setPendingRouteSession(null);
+  }, [pendingRouteSession, state]);
 
   const onSort = useCallback((field: SortField) => {
     dispatchBrowser({ t: "sort", field });
@@ -182,12 +234,63 @@ export function Console({
   const onDelete = useCallback((session: BrowserSession) => {
     latest.current.actions.deleteSession(session.id);
   }, []);
-  // Rows are sessions, not agents: the pure resolver in state.ts decides what
-  // the tap lands on, and the action owns the impure ways to reach it -- attach,
-  // a claim the daemon verifies, or the terminal prompt surface.
-  const onOpen = useCallback((session: BrowserSession) => {
+  /**
+   * The one way any surface in this app opens a session.
+   *
+   * Rows are sessions, not agents: the pure resolver in state.ts decides what
+   * the tap lands on, and the action owns the impure ways to reach it -- attach,
+   * a claim the daemon verifies, or the terminal prompt surface. Both callers
+   * go through here rather than each resolving for itself, so the fleet list
+   * and Routines can never disagree about which transport a session takes.
+   */
+  const openSessionById = useCallback((sessionId: string): SessionOpenTarget => {
     const current = latest.current;
-    current.actions.openSession(openSessionTarget(current.state, session.id));
+    const target = openSessionTarget(current.state, sessionId);
+    current.actions.openSession(target);
+    return target;
+  }, []);
+  const onOpen = useCallback(
+    (session: BrowserSession) => {
+      openSessionById(session.id);
+    },
+    [openSessionById],
+  );
+  /**
+   * The same opener, reached from a route pushed over the fleet. The one extra
+   * act is presentation: the model is opened the single way, and the shell is
+   * told that the pane which would otherwise show it is buried.
+   *
+   * `unopenable` is not an open. A dormant target is also not open yet: its
+   * resume claim has to come back as an agent selection before the stack can
+   * hide the fleet pane. Agent and live-TUI targets are already present and
+   * select synchronously, so their presentation can move immediately.
+   */
+  const openSessionFromRoute = useCallback(
+    (sessionId: string) => {
+      const target = openSessionById(sessionId);
+      if (target.kind === "dormant") {
+        setOpenedFromRoute(false);
+        setPendingRouteSession({
+          sessionId: target.sessionId,
+          selectedBefore: latest.current.state.selected,
+          failureRevision: latest.current.state.lastFailedSessionOpen?.revision ?? 0,
+        });
+        return;
+      }
+      setPendingRouteSession(null);
+      setOpenedFromRoute(target.kind !== "unopenable");
+    },
+    [openSessionById],
+  );
+  /**
+   * The way out of a detail surface, wherever it was opened from. The stack
+   * reports the pop, the model drops the selection, and the pane goes back to
+   * being the surface that presents the next one.
+   */
+  const leaveSelection = useCallback(() => {
+    setOpenedFromRoute(false);
+    setPendingRouteSession(null);
+    latest.current.actions.back();
   }, []);
   const onOpenAgent = useCallback((agent: Agent) => {
     latest.current.actions.select(agent.id);
@@ -356,6 +459,10 @@ export function Console({
   // swaps in place beside the list: the same screen the navigator pushes on
   // a phone, with the pane's own back in place of the stack's.
   const splitPane = (): JSX.Element | null => {
+    // The stack has it: a session opened from a route pushed over the fleet is
+    // presented there, and rendering it here as well would mount two screens
+    // over one agent, each registering itself as that agent's WebView target.
+    if (stackPresentsDetail) return null;
     const selected = state.selected;
     if (selected !== null && configPane === selected) {
       return agentConfig(selected, () => setConfigPane(null));
@@ -425,7 +532,27 @@ export function Console({
     // for the console's connection. The screen decides from the pairing's
     // scopes whether it may change anything or only read.
     settings: back => <SettingsScreen connection={connection} onBack={back} />,
-    routines: back => <RoutinesScreen connection={connection} onBack={back} />,
+    // Owns its own socket, like the settings screen above. It receives the
+    // console's `createClient` for the same reason Cowork does: it is the seam
+    // a test drives this surface's socket through, and in the app it is the
+    // same factory the console dialled with. `onOpenSession` is the shared
+    // opener, so a run's linked session lands on whichever surface the session
+    // index says holds it, exactly as tapping that session in the fleet would.
+    routines: back => (
+      <RoutinesScreen
+        connection={connection}
+        createClient={createClient}
+        onBack={() => {
+          // A dormant resume can still be in flight when this route leaves. Its
+          // later session_opened frame is no longer an answer to this route's
+          // tap, so it must not turn the tablet stack on after the operator has
+          // already returned to the fleet.
+          setPendingRouteSession(null);
+          back();
+        }}
+        onOpenSession={openSessionFromRoute}
+      />
+    ),
     // This screen owns its own socket rather than borrowing the console's, so
     // browsing and cloning cannot compete with the list for the connection the
     // operator is watching. The cost is that the console does not hear its
@@ -466,15 +593,18 @@ export function Console({
     ),
   };
 
-  // The stack presents an open session only where the list cannot hold it: on a
-  // tablet the detail pane is beside the list, and pushing a route over the list
-  // it is meant to sit next to would be the phone layout with extra steps.
-  const selection = split ? null : selectionOf(state);
+  // The stack presents an open session only where nothing else can hold it: on
+  // a tablet the detail pane is beside the list, and pushing a route over the
+  // list it is meant to sit next to would be the phone layout with extra
+  // steps. A session opened from a route pushed over that list is the one
+  // exception, because the pane is then behind a full-screen route and
+  // presenting it there would show the operator nothing.
+  const selection = stackPresentsDetail ? selectionOf(state) : null;
 
   return (
     <View style={styles.position} testID="console">
       <View style={styles.shell}>
-        <AppNavigator surfaces={surfaces} selection={selection} onLeaveSelection={actions.back} />
+        <AppNavigator surfaces={surfaces} selection={selection} onLeaveSelection={leaveSelection} />
       </View>
       {state.notice === null ? null : (
         // A link notice is the connection's own claim, and it reports under
