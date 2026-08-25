@@ -358,21 +358,21 @@ Branch `feat/assistant-ui-proof`, off `1efcdd4`. **The owned session is cut over
 
 **Proven**
 
-- **886 app tests, 1505 root tests**, types clean, `biome check .` clean across 449 files, dependency gate clean.
+- **896 app tests, 1584 root tests** (14 skipped), types clean, `biome check .` clean across 454 files, dependency gate clean.
 - Every previously existing suite now drives the production path, not a dead component. `transcript-pagination.test.tsx` (the #129 proof, 21 tests) was retargeted from `Transcript` to `OmpThreadProvider` + `OmpThreadList` and still asserts request identity, the prepend anchor, list configuration and follow-newest composition. `rich-text`, `composer-submit` and `no-hidden-content` now target `OmpEntryRow`.
 - `assistant-cutover.test.tsx` asserts the screen mounts the provider, the primitive list and the primitive composer; that **no** `components/Transcript` import or `<Transcript>` element survives anywhere in `src`; that the owned screen does not render the terminal's composer; and that the terminal surface renders no assistant-ui thread. Each absence is paired with a presence in the same file.
-- The composition tests discriminate. Swapping the primitives for plain `FlatList`/`View`/`TextInput`/`Pressable` with identical testIDs fails two tests: the runtime-driven gating of send and the interrupt, and a real dispatch round trip. Everything else passed against that lookalike, which is why those two exist.
-- Metro bundles the assistant surface for **ios, android, macos, windows**. A scoped Vite build of the same entry: **782 modules, 553.57 kB / 164.06 kB gzip**.
-- `bun run build:web` is **red, pre-existing**: `react-native-qrcode-svg` ships JSX in a `.js` file that rollup's commonjs resolver rejects, and baseline `1efcdd4` fails identically. Not caused by this change and not fixed by it.
+- The composition tests discriminate, re-measured at review. Swapping the primitives for plain `FlatList`/`View`/`TextInput`/`Pressable` with identical testIDs, every testID kept, fails **8** tests across the app suite: two in `assistant-adapter.test.tsx` (the runtime-driven gating of send and the interrupt, and a real dispatch round trip), five in `assistant-composer.test.tsx`, and one agent-hub case that opens a session. What a lookalike cannot fake is the runtime holding and dispatching through those controls, so the failures cluster there.
+- Metro bundles the real entry (`index.js`) for **ios, android, macos, windows**: 4,518,588 / 4,520,931 / 4,483,130 / 4,475,807 bytes.
+- `bun run build:web` is **green**: 1,155 modules, `dist/assets/index-*.js` 1,240.10 kB / 379.55 kB gzip. It was red before #139, which landed on `main` and fixed the `react-native-qrcode-svg` untranspiled-JSX resolution; the scoped `vite.aui.config.ts` build that existed only to work around that red is deleted, because the full build now covers strictly more.
 
 **Two defects the cutover itself surfaced**
 
-- **A thought and a reply sharing a wire message id collided.** `transcriptRowKey` discriminates the channel; my converter keyed on `rowId` alone, so one silently won and a thought row vanished. Caught by an existing `nav-shell` assertion, fixed with `assistantRowId(entry)`.
+- **A thought and a reply sharing a wire message id collided.** `transcriptRowKey` discriminates the channel; my converter keyed on `rowId` alone, so one silently won and a thought row vanished. Caught by an existing `nav-shell` assertion. Fixed with `messageRowId(entry)`, which is `transcriptRowKey`'s derivation whole — kind prefix included — with `rowId` in place of the rotating wire id, so two entries of different kinds sharing an id cannot collide either.
 - **A subagent could not be steered mid-turn.** Under #131's one-emphasis contract the interrupt replaces send while a turn is in flight, and the old composer showed send regardless because it read only the roster. The store derives `isRunning` from roster, streaming entry and running tools, which is more truthful; the test now settles the turn through the roster transition that `applyAgents` uses to call `endTurn`.
 
 **The cloud hazard is removed, not merely detected**
 
-- `metro.config.cjs` and `vite.config.ts` redirect `@assistant-ui/core`'s cloud subtree to `stubs/assistant-ui-cloud.js`. Result: **zero** occurrences of `NEXT_PUBLIC_ASSISTANT_BASE_URL` in the ios, android, macos, windows and web outputs, and the `AssistantCloud` class gone (the only residue is the re-export *name* `useAssistantCloudThreadHistoryAdapter` in core's barrel).
+- `metro.config.cjs` and `vite.config.ts` redirect `@assistant-ui/core`'s cloud subtree to `stubs/assistant-ui-cloud.js`. Measured on the real entry: **zero** occurrences of `NEXT_PUBLIC_ASSISTANT_BASE_URL` and zero of `new AssistantCloud` in the ios, android, macos, windows and web outputs. The only residue is the re-export *name* `useAssistantCloudThreadHistoryAdapter`, five string occurrences per native bundle, all of them the stub's own export and its refusal message.
 - `scripts/assistant-cloud-env.cjs` is a second, opposite-direction guard, called from Metro config, Vite config and the bun test preload. All three refuse with the real message, verified by setting the variable in a child process.
 - The stub throws rather than no-ops, so a caller asking for a cloud capability fails where the mistake is.
 
@@ -395,10 +395,16 @@ Looked at, not just measured: the approval card renders CLEARANCE / `bash` / the
 
 One harness artifact worth stating: the standalone HTML loads no webfont, so the frames render in the browser's serif fallback. The app ships its own stack; the geometry is real, the typeface in these pictures is not.
 
+**Found at review, and fixed here**
+
+- **The empty transcript state was dropped.** `Transcript` carried `ListEmptyComponent={<Empty />}`; the cutover shipped no empty slot, so a session with no rows was a blank pane. Nothing caught it: every row assertion passes when no row is expected. Restored on `OmpThreadList`, with a test that pairs its presence on an idle empty session against its absence once a row exists.
+- **The composer displayed the approve-scope refusal as a send refusal.** `OmpComposer` gained a `refusal` prop the old `Composer` never had, and `SessionScreen` filled it from `ConsoleState.refusal`, which is the daemon's approve verdict. A device holding prompt scope and not approve scope read "Sign this from a device holding the approve scope" under a send control that worked. The composer now receives only the refusals that actually hold its send — a missing prompt scope, a clearance still waiting — which are exactly the two `isSendDisabled` derives from; the approve verdict stays with `PlanCard` and `ApprovalCard`.
+- **Half the settlement fix had no coverage.** Reverting the `applyAgents` relaxation on its own failed **zero** of 890 tests, because the existing regression case delivers the roster before the replayed updates and the update-frame path settles it. The path only that half covers is a dropped roster snapshot between `busy` and `idle`: `rosterMisses` tolerates one miss, and a snapshot omitting the agent clears the remembered `busy`. That case is now a test, and it fails when the relaxation is reverted.
+- **An unknown prompt scope silently retired the send.** The store held it on `promptAccess !== "granted"`, and `PromptScopeAccess` is three-way precisely so that it does not: a pairing that predates scopes reports `unknown`, and only `missing` is a refusal. The shipped `Composer` gated on `connection === "connected"` alone, so such a device could send until this branch; after it, send was dead with nothing on screen saying why, while the microphone beside it — which already reads `missing` — stayed pressable. Now `promptAccess === "missing"`, with a test that types into the runtime-controlled field and fails against the old gate.
+
 **Not done**
 
-- No iOS/Android **simulator or device** pass. `LaunchSmokeUITests` runs against a build with no daemon so it never opens a session, which is why this harness exists; it renders the real components through the same react-native-web substitution the shipped web build makes, but it is not a device.
-- No interaction pass on hardware for attachment pick, cancel mid-stream, or top pagination.
+- No **hardware** pass for attachment pick through the real photo picker, or top pagination against a session with a paged cursor. Both are covered by suites; neither has a device observation. The iPhone 17 / iOS 26.5 simulator pass covers open, transcript, tool cards, session context, send, cancel mid-stream and session switch, plus an iPad Pro 13-inch split-layout frame.
 - Terminal migration, deliberately, per §8 and its design note.
 
 ---

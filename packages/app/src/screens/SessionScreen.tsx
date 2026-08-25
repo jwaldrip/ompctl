@@ -190,6 +190,27 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
    */
 
   /**
+   * Why a SEND will be refused, which is a different fact from why an approval
+   * is.
+   *
+   * `props.refusal` is the daemon's approve-scope verdict -- "Sign this from a
+   * device holding the approve scope" -- and it belongs to the clearance
+   * surfaces, which is where it went before this screen had a composer that
+   * could take one. Handing it to the composer told an operator who holds
+   * prompt scope that their words would not go, under a send control that was
+   * live and worked. So the composer is given the refusals that actually hold
+   * its send, and they are exactly the two the store's `isSendDisabled`
+   * derives from: a missing prompt scope, and a clearance still waiting.
+   */
+  const clearances = session.pendingApprovals.length + (session.planReview === null ? 0 : 1);
+  const sendRefusal =
+    props.voice.access === "missing"
+      ? "This device does not hold the prompt scope. Pair it again with prompt access to steer this agent."
+      : clearances > 0
+        ? "Answer the clearance above before sending."
+        : undefined;
+
+  /**
    * What this session actually runs, for the control that opens its config.
    * Both halves come from state this screen already holds: the daemon's
    * session info first, the roster's record of the agent as the fallback. No
@@ -496,7 +517,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
                   voice={props.voice}
                   model={model}
                   onOpenConfig={props.onOpenConfig}
-                  refusal={props.refusal}
+                  refusal={sendRefusal}
                 />
               </View>
             )}

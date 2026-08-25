@@ -38,7 +38,7 @@ import { Glyph } from "../design/icons.tsx";
 import { Code, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import type { Entry } from "../session/model.ts";
-import { assistantRowId, entryOf, type OmpStoreInput, ompStore } from "./adapter.ts";
+import { entryOf, messageRowId, type OmpStoreInput, ompStore } from "./adapter.ts";
 import { OmpEntryRow } from "./renderers.tsx";
 import { useOmpRuntime } from "./runtime.ts";
 
@@ -135,13 +135,13 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
 
   /**
    * The head row's key, in the same key space the list uses. `MessagesFlatList`
-   * keys on the converted message id, and `convertEntry` emits `rowId` for an
-   * assistant row and `id` for every other kind -- so this has to be that same
-   * derivation, not `transcriptRowKey`, or a prepend and a re-render would be
-   * indistinguishable to the shared machine.
+   * keys on the converted message id and `convertEntry` emits `messageRowId`,
+   * so this calls the same function rather than restating its rule -- two
+   * derivations would make a prepend and a re-render indistinguishable to the
+   * shared machine.
    */
   const first = props.entries[0];
-  const headKey = first === undefined ? null : first.kind === "assistant" ? assistantRowId(first) : first.id;
+  const headKey = first === undefined ? null : messageRowId(first);
 
   const pagination = useTopHistoryPagination({
     canLoadEarlier: props.canLoadEarlier === true,
@@ -201,6 +201,19 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
             {props.footer}
           </>
         }
+        // The surface an operator sees before their first turn. It is the
+        // shipped `Transcript`'s own, kept rather than re-invented: a cutover
+        // that drops a state a session can actually be in leaves a blank pane
+        // where there was a sentence.
+        //
+        // "Empty" here is the LIST's emptiness, not the session's, and the two
+        // differ in exactly one case: while `isRunning` holds with no rows yet,
+        // the external-store runtime synthesizes its optimistic placeholder, so
+        // the list has a message (which `OmpRow` draws as nothing) and this does
+        // not render. That is the right answer rather than a gap -- the footer's
+        // working row is already saying what is happening, and "Nothing on this
+        // strip yet" would contradict it.
+        ListEmptyComponent={<Empty />}
       >
         {({ message }) => (
           <OmpRow message={message} canApprove={props.canApprove} refusal={props.refusal} onDecide={props.onDecide} />
@@ -240,6 +253,23 @@ function OmpRow({
 }
 
 /**
+ * A session with nothing in it yet, which is every session's first state.
+ *
+ * Lifted from `Transcript` for the reason `Spoken` is: the cutover must not
+ * silently drop a surface an operator already had. The list is the library's
+ * now, so this rides in `ListEmptyComponent` rather than being rendered beside
+ * it -- the empty slot belongs to the list that knows it has no rows.
+ */
+function Empty(): JSX.Element {
+  return (
+    <View style={styles.empty} testID="transcript-empty">
+      <Glyph name="bay" size={22} color={ground.edge} />
+      <Label color={ink.muted}>Nothing on this strip yet.</Label>
+    </View>
+  );
+}
+
+/**
  * What the daemon would say out loud, shown as text because this build has no
  * voice of its own. Lifted from `Transcript` rather than re-invented: the
  * cutover must not silently drop a surface an operator already had.
@@ -268,6 +298,7 @@ const styles = StyleSheet.create({
   },
   spokenText: { flex: 1 },
   list: { flex: 1, backgroundColor: ground.base },
+  empty: { alignItems: "center", gap: space.step, paddingVertical: space.gulf },
   header: { flexDirection: "row", alignItems: "center", gap: space.step, paddingVertical: space.tight },
   earlier: {
     minHeight: 44,

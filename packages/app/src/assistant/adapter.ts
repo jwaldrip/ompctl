@@ -80,13 +80,27 @@ const APPROVAL_BY_OPTION: Readonly<Record<string, { choice: ApprovalChoice; scop
 };
 
 /**
- * An assistant row's identity: the row id it was born with, discriminated by
- * channel. Exported because the list's pagination machine has to derive the head
- * key the same way, and two derivations would make a prepend and a re-render
+ * One row's identity in assistant-ui's message list.
+ *
+ * `transcriptRowKey`'s derivation with one substitution: an assistant row keys
+ * on `rowId` rather than `id`, because `id` follows the wire and rotates
+ * mid-reply. Everything else is that function verbatim, kind prefix included.
+ *
+ * The kind prefix is not decoration. `transcriptRowKey` carries it because a
+ * FlatList key collision is a visible React warning; assistant-ui's message
+ * repository is keyed globally, and a collision there STRANDS or REPLACES a row
+ * with no error at all -- the failure this converter already hit once, when a
+ * thought and a reply shared a wire id. Two entries of different KINDS sharing
+ * an id is that same defect one step out, so it is closed the same way instead
+ * of resting on which id spaces omp happens to keep apart today.
+ *
+ * Exported because the list's pagination machine has to derive the head key the
+ * same way, and two derivations would make a prepend and a re-render
  * indistinguishable.
  */
-export function assistantRowId(entry: { rowId: string; thought: boolean }): string {
-  return entry.thought ? `thought:${entry.rowId}` : entry.rowId;
+export function messageRowId(entry: Entry): string {
+  if (entry.kind === "assistant") return `assistant:${entry.thought ? "thought" : "message"}:${entry.rowId}`;
+  return `${entry.kind}:${entry.id}`;
 }
 
 /** Where a custom renderer finds the entry a message was built from. */
@@ -123,7 +137,7 @@ export function convertEntry(entry: Entry): ThreadMessageLike {
     case "user":
       return {
         role: "user",
-        id: entry.id,
+        id: messageRowId(entry),
         content: [{ type: "text", text: entry.text }],
         metadata,
       };
@@ -141,9 +155,9 @@ export function convertEntry(entry: Entry): ThreadMessageLike {
         // and a reply can carry the SAME wire message id -- `findChunkTarget`
         // keeps them as separate rows precisely because they are different
         // channels -- so keying on `rowId` alone made them collide and one
-        // silently won. `transcriptRowKey` already draws this distinction; this
-        // is the same discrimination in the same shape.
-        id: assistantRowId(entry),
+        // silently won. `messageRowId` is `transcriptRowKey`'s derivation, kind
+        // prefix included, with `rowId` in place of the rotating wire id.
+        id: messageRowId(entry),
         // A thought is reasoning, which assistant-ui models as its own part
         // kind rather than as prose with a flag. The distinction is the one the
         // transcript already draws with a violet gutter.
@@ -157,7 +171,7 @@ export function convertEntry(entry: Entry): ThreadMessageLike {
     case "tool":
       return {
         role: "assistant",
-        id: entry.id,
+        id: messageRowId(entry),
         content: [
           {
             type: "tool-call",
@@ -197,7 +211,7 @@ export function convertEntry(entry: Entry): ThreadMessageLike {
     case "approval":
       return {
         role: "assistant",
-        id: entry.id,
+        id: messageRowId(entry),
         content: [
           {
             type: "tool-call",
@@ -231,7 +245,7 @@ export function convertEntry(entry: Entry): ThreadMessageLike {
       // fitting a vocabulary.
       return {
         role: "assistant",
-        id: entry.id,
+        id: messageRowId(entry),
         content: [{ type: "data-omp-unknown", data: { label: entry.label, payload: entry.payload } }],
         metadata,
       };
@@ -365,11 +379,20 @@ export function ompStore(input: OmpStoreInput) {
      * `isDisabled` takes the input away entirely, which is right when this
      * device cannot steer at all -- no link, a dead session, or a pane whose
      * open was refused. `isSendDisabled` leaves the operator able to type and
-     * only refuses the send, which is right for a missing prompt scope: they
-     * can compose, and the refusal below says why it will not go.
+     * only refuses the send, which is right for a refused prompt scope and for
+     * a clearance still waiting: they can compose, and the screen's refusal
+     * says why it will not go.
+     *
+     * `missing`, not `!== "granted"`. `PromptScopeAccess` is three-way on
+     * purpose and only `missing` is a refusal: a pairing that predates scopes
+     * reports `unknown`, and holding its send would silently retire a control
+     * that may still work, which is the exact failure that three-way shape
+     * exists to prevent. The microphone on this surface already reads the
+     * field this way, so the two controls now agree rather than disagreeing
+     * about the same fact.
      */
     isDisabled: connection !== "connected" || load.phase === "failed" || TERMINAL_AGENT_STATES.includes(agent.state),
-    isSendDisabled: promptAccess !== "granted" || clearances > 0,
+    isSendDisabled: promptAccess === "missing" || clearances > 0,
 
     onNew: async (message: AppendedMessage): Promise<void> => {
       // The composer's own parts, flattened to the text the daemon takes.

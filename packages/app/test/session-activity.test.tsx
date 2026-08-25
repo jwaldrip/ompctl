@@ -708,6 +708,55 @@ describe("a session joined after its turn ended", () => {
       shell.unmount();
     }
   });
+
+  /**
+   * The other half of the same fix, and the half nothing reached.
+   *
+   * `applyAgents` used to require having WATCHED the agent stop
+   * (`before.get(id)?.state === "busy"`). One dropped roster snapshot is
+   * tolerated by design -- `rosterMisses` reaps a session only after two
+   * agreeing misses -- and a snapshot that omits the agent leaves `before`
+   * with no entry for it, so the next frame saying `idle` found no remembered
+   * `busy` beside it and settled nothing.
+   *
+   * The update path cannot cover this one, which is why both changes exist:
+   * while the roster says `busy` a chunk IS a live stream and settling it
+   * would erase a caret that is telling the truth, and no further chunk
+   * arrives once the turn has ended.
+   */
+  test("a roster snapshot dropped between busy and idle still settles the turn", () => {
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      shell.emit("agents", { agents: [{ ...ROSTER[0], state: "busy" } as Agent] });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      userTurn(shell, 1, "what did you find?");
+      shell.emit("update", {
+        agentId: "agt_a",
+        seq: 2,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "The mount policy imports node:path." },
+          messageId: "m1",
+        },
+      });
+      // While the roster says busy, a streaming chunk is the honest reading.
+      expect(shell.rowLabel()).toBe("Working");
+
+      // One snapshot that does not name this agent. Survivable by contract.
+      shell.emit("agents", { agents: [] });
+      // The turn ended while the roster was away, so this frame is the first
+      // evidence of it -- and there is no remembered `busy` beside it.
+      shell.emit("agents", { agents: ROSTER });
+
+      expect(shell.rowLabel()).toBeNull();
+      expect(shell.rowCount()).toBe(0);
+      expect(shell.el("composer-send")).not.toBeNull();
+      expect(shell.el("composer-cancel")).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
 });
 
 describe("the turn underway sits after the operator's prompt and above the composer", () => {

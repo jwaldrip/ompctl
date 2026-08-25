@@ -722,4 +722,30 @@ describe("assistant-ui renders ompctl's rows, and it is really assistant-ui doin
       view.unmount();
     }
   });
+
+  test("a session with nothing in it says so rather than showing a blank pane", () => {
+    // The shipped `Transcript` had this in `ListEmptyComponent` and the cutover
+    // dropped it, which is the one class of regression a suite full of presence
+    // assertions cannot see: every row test still passed, because no row was
+    // expected. Absence and presence in the same run, so the sentence is proved
+    // to be the EMPTY state rather than permanent chrome.
+    //
+    // Idle, deliberately. A running turn with no rows yet is the one case where
+    // the runtime's own optimistic placeholder occupies the list, and the
+    // footer's working row is the truer sentence there.
+    const empty = mount(thread(EMPTY_SESSION, { agent: agent({ state: "idle" }) }));
+    try {
+      expect(empty.el("transcript-empty")).not.toBeNull();
+    } finally {
+      empty.unmount();
+    }
+
+    const filled = mount(thread(withUserTurn("ship it"), { agent: agent({ state: "idle" }) }));
+    try {
+      expect(filled.el("entry-user")).not.toBeNull();
+      expect(filled.el("transcript-empty")).toBeNull();
+    } finally {
+      filled.unmount();
+    }
+  });
 });
