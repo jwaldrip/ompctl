@@ -443,4 +443,26 @@ describe("surviving a restart", () => {
     expect(reopened.get(input.id)).toMatchObject({ state: "reauth_required" });
     expect(reopened.get(input.id)?.detail).toContain("not recorded");
   });
+
+  test("migration keeps a specific existing reauth reason", () => {
+    const { path, vault, store } = fresh();
+    const input = grantInput("imported", "https://imported.example.test/mcp", { refreshToken: "rt_imported" });
+    store.save(input);
+    store.close();
+    stores.pop();
+
+    const raw = new Database(path);
+    raw.run(
+      `UPDATE mcp_auth_grants
+       SET client_auth_method=NULL,
+           state='reauth_required',
+           detail='OMP stored no OAuth client id for this credential'
+       WHERE id=?`,
+      [input.id],
+    );
+    raw.close();
+
+    const reopened = reopen(path, vault);
+    expect(reopened.get(input.id)?.detail).toBe("OMP stored no OAuth client id for this credential");
+  });
 });
