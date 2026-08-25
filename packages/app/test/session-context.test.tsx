@@ -781,8 +781,8 @@ describe("a row press commits its own session before the daemon answers", () => 
       // Nothing of Alpha's, and nothing that claims Bravo is empty: the
       // transcript's own empty state is a verified absence, and this pane has
       // verified nothing yet.
-      expect(shell.el("transcript")).toBeNull();
-      expect(shell.el("transcript-empty")).toBeNull();
+      expect(shell.el("aui-messages")).toBeNull();
+      expect(shell.el("aui-messages")).toBeNull();
       expect(shell.el("session-context")).toBeNull();
       expect(shell.detailText()).not.toContain("Alpha's only todo");
       // And no controls for a session that may yet be refused.
@@ -807,8 +807,8 @@ describe("a row press commits its own session before the daemon answers", () => 
       shell.emit("session_history", { agentId: "agt_b", sessionId: "sess_b", entries: [], nextBefore: null });
       expect(shell.el("session-loading")).toBeNull();
       // The honest empty, not a spinner that never ends.
-      expect(shell.el("transcript")).not.toBeNull();
-      expect(shell.el("transcript-empty")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
     } finally {
       shell.unmount();
     }

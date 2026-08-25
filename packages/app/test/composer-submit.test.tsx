@@ -13,7 +13,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 
 const { Composer } = await import("../src/components/Composer.tsx");
-const { Transcript } = await import("../src/components/Transcript.tsx");
+const { OmpEntryRow } = await import("../src/assistant/renderers.tsx");
 const { EMPTY_SESSION, appendPrompt } = await import("../src/session/model.ts");
 const { imageAttachmentPicker } = await import("../src/platform/attachments.ts");
 
@@ -50,7 +50,13 @@ describe("composer submit", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => {
-      root.render(<Transcript entries={session.entries} canApprove onDecide={() => {}} spoken={null} />);
+      root.render(
+        <>
+          {session.entries.map(entry => (
+            <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+          ))}
+        </>,
+      );
     });
 
     const row = host.querySelector('[data-testid="entry-user"]');

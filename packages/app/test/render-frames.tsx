@@ -279,6 +279,74 @@ const FRAMES: Frame[] = [
       emit("agents", { agents: [{ ...AGENT, state: "idle" }] });
     },
   },
+  {
+    // The clearance surface, which is the one place a picture is worth more
+    // than a position assertion: an `ApprovalCard` carries three controls and
+    // a tool payload, so it is the widest row the log ever renders and the
+    // most likely to collide with the composer on the narrowest phone.
+    name: "iphone-owned-approval",
+    width: 390,
+    height: 844,
+    drive: (emit, press) => {
+      emit("agents", { agents: [AGENT] });
+      press("session-open-sess_a");
+      emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      emit("update", {
+        agentId: "agt_a",
+        seq: 1,
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "delete the stale worktrees" },
+          messageId: "u1",
+        },
+      });
+      emit("approval", {
+        agentId: "agt_a",
+        requestId: "req_1",
+        title: "Run a command",
+        tool: "bash",
+        input: { command: "git worktree prune" },
+      });
+    },
+  },
+  {
+    name: "ipad-owned-approval",
+    width: 1024,
+    height: 1366,
+    drive: (emit, press) => {
+      emit("agents", { agents: [AGENT] });
+      press("session-open-sess_a");
+      emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      emit("update", {
+        agentId: "agt_a",
+        seq: 1,
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "delete the stale worktrees" },
+          messageId: "u1",
+        },
+      });
+      emit("approval", {
+        agentId: "agt_a",
+        requestId: "req_1",
+        title: "Run a command",
+        tool: "bash",
+        input: { command: "git worktree prune" },
+      });
+    },
+  },
+  {
+    // Arriving, before any history lands. The frame that proves the load state
+    // owns the pane rather than sitting above a half-built log: nothing here
+    // may claim a turn, and nothing may show another session's rows.
+    name: "iphone-owned-loading",
+    width: 390,
+    height: 844,
+    drive: (emit, press) => {
+      emit("agents", { agents: [AGENT] });
+      press("session-open-sess_a");
+    },
+  },
 ];
 
 mkdirSync("/tmp/frames", { recursive: true });

@@ -64,14 +64,31 @@ export async function configSetCommand(
 ): Promise<number> {
   requireKnownKey(cmd.key);
 
-  // `port` and `keepAwake` are the only two keys whose JSON type is not a
-  // plain string, so a typed value has to be built before `loadConfig` (which
-  // only ever sees what a config file could already contain) can judge it.
+  // A value arrives from argv as a string, and `loadConfig` judges the shape a
+  // config FILE could hold, where a port is a JSON number and a flag is a JSON
+  // boolean. So the string has to be given its real type before it is judged.
+  //
+  // Which type that is comes from `DEFAULT_CONFIG` rather than from a list of
+  // key names maintained here, and that is the whole point. The list read
+  // `port` and `keepAwake`, went stale when `intentPollIntervalMs` and
+  // `replica` arrived, and was stale again for every container key: `ompd
+  // config set containerModelBrokerPort 17788` wrote the string "17788", and
+  // the daemon then refused its own config with "must be an integer between 1
+  // and 65535, got 17788". That reads as a broken validator rather than as a
+  // stringly-typed write, because `String()` renders both spellings the same.
+  // `containerModelAccess false` was worse: a non-empty string is not `false`,
+  // so an operator could not turn container model access off at all.
+  //
+  // Deriving the type means a key added to `DEFAULT_CONFIG` is settable the day
+  // it exists, with no second place to remember. `DEFAULT_CONFIG` is also
+  // already the source of `CONFIG_KEYS` directly above, so this is the same
+  // object answering both questions rather than a new dependency.
   let value: unknown = cmd.value;
-  if (cmd.key === "port" || cmd.key === "intentPollIntervalMs") {
+  const shape = typeof DEFAULT_CONFIG[cmd.key as keyof OmpdConfig];
+  if (shape === "number") {
     value = Number(cmd.value);
     if (!Number.isInteger(value)) throw new UsageError(`${cmd.key} must be an integer, got ${cmd.value}`);
-  } else if (cmd.key === "keepAwake" || cmd.key === "replica") {
+  } else if (shape === "boolean") {
     if (cmd.value !== "true" && cmd.value !== "false") {
       throw new UsageError(`${cmd.key} must be true or false, got ${cmd.value}`);
     }

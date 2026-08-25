@@ -301,6 +301,21 @@ export interface ResolvedHost {
   ompSha256?: string;
   /** sha256 of the CA bundle the container was given, when a toolchain was mounted. */
   caSha256?: string;
+  /**
+   * Daemon-side directory seeded as the container's `HOME`, or null when the
+   * host was provisioned without model access. Recorded for the same reason
+   * `network` is: after a restart there is no process map, and this directory
+   * is the guest's whole configuration, so teardown has to be able to reclaim
+   * it from the store alone.
+   *
+   * It deliberately names the directory and nothing inside it. The bearer the
+   * broker issued lives only in a 0600 file under this path and in the
+   * broker's own memory, never here, because the store persists `HostRef` and
+   * a token written into it would outlive the container that held it. The
+   * consequence is intended: a daemon restart forgets every grant, so a
+   * restarted daemon withdraws model access from containers it did not start.
+   */
+  guestHome?: string | null;
   /** ISO timestamp, so reconciliation can tell a fresh host from an orphan. */
   createdAt: string;
 }
@@ -1612,6 +1627,23 @@ export type AuditAction =
    * carries the routine id and, on a refusal, which refusal it was.
    */
   | "routine.delete"
+  /**
+   * A container host was granted scoped access to one model through the
+   * daemon's broker, or the grant failed. `detail` carries the model id, the
+   * container network, and on a failure the reason; it NEVER carries the
+   * bearer the guest was issued. A grant is the moment a guest gains the
+   * ability to spend the operator's model credential, so it is its own action
+   * rather than detail on `host.provision`: the two fail for different
+   * reasons, and "which container could talk to which model, and when" has to
+   * be answerable without reading provisioning records.
+   */
+  | "model.grant"
+  /**
+   * A container host's model grant was revoked, or the revocation failed.
+   * Paired with `model.grant` so the trail bounds the window in which a guest
+   * could spend the credential. Same rule on `detail`: model id, never a token.
+   */
+  | "model.revoke"
   /**
    * A device cloned a repository onto this machine, or was refused. `detail`
    * carries the url and the destination; a url carrying a credential is

@@ -662,13 +662,110 @@ function userTurn(shell: Shell, seq: number, text: string): void {
   });
 }
 
+describe("a session joined after its turn ended", () => {
+  /**
+   * The device found this one. Attaching to an agent that is ALREADY idle never
+   * produces a busy -> idle transition, and the daemon replays the transcript
+   * as ordinary update frames, so the last assistant chunk of a turn that
+   * finished before this device arrived stayed marked streaming. On an iPhone
+   * 17 simulator against a real daemon the agent reported `idle` while the app
+   * drew a "Working" row and offered the interrupt in place of send.
+   *
+   * The roster is the authority on liveness. A non-busy agent has nothing in
+   * flight whether or not this device watched it stop.
+   */
+  test("shows no working row and offers send, not interrupt", () => {
+    // Split width, so the detail pane and its composer are on screen without a
+    // navigation press: the same shape the neighbouring cases use.
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      // Idle from the first frame: this device never sees `busy`.
+      shell.emit("agents", { agents: ROSTER });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      userTurn(shell, 1, "what did you find?");
+      // A replayed assistant chunk. No `message_end` follows, because the turn
+      // was already over when we joined.
+      shell.emit("update", {
+        agentId: "agt_a",
+        seq: 2,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "The mount policy imports node:path." },
+          messageId: "m1",
+        },
+      });
+      // Deliberately NO trailing roster frame. A settled session sends none,
+      // which is exactly what made the device fail while a test that emitted
+      // one passed.
+
+      expect(shell.rowLabel()).toBeNull();
+      expect(shell.rowCount()).toBe(0);
+      // The composer's own claim has to agree with the roster.
+      expect(shell.el("composer-send")).not.toBeNull();
+      expect(shell.el("composer-cancel")).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  /**
+   * The other half of the same fix, and the half nothing reached.
+   *
+   * `applyAgents` used to require having WATCHED the agent stop
+   * (`before.get(id)?.state === "busy"`). One dropped roster snapshot is
+   * tolerated by design -- `rosterMisses` reaps a session only after two
+   * agreeing misses -- and a snapshot that omits the agent leaves `before`
+   * with no entry for it, so the next frame saying `idle` found no remembered
+   * `busy` beside it and settled nothing.
+   *
+   * The update path cannot cover this one, which is why both changes exist:
+   * while the roster says `busy` a chunk IS a live stream and settling it
+   * would erase a caret that is telling the truth, and no further chunk
+   * arrives once the turn has ended.
+   */
+  test("a roster snapshot dropped between busy and idle still settles the turn", () => {
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      shell.emit("agents", { agents: [{ ...ROSTER[0], state: "busy" } as Agent] });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      userTurn(shell, 1, "what did you find?");
+      shell.emit("update", {
+        agentId: "agt_a",
+        seq: 2,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "The mount policy imports node:path." },
+          messageId: "m1",
+        },
+      });
+      // While the roster says busy, a streaming chunk is the honest reading.
+      expect(shell.rowLabel()).toBe("Working");
+
+      // One snapshot that does not name this agent. Survivable by contract.
+      shell.emit("agents", { agents: [] });
+      // The turn ended while the roster was away, so this frame is the first
+      // evidence of it -- and there is no remembered `busy` beside it.
+      shell.emit("agents", { agents: ROSTER });
+
+      expect(shell.rowLabel()).toBeNull();
+      expect(shell.rowCount()).toBe(0);
+      expect(shell.el("composer-send")).not.toBeNull();
+      expect(shell.el("composer-cancel")).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+});
+
 describe("the turn underway sits after the operator's prompt and above the composer", () => {
   test("an idle session has no row at all: chat carries turns, not status", () => {
     setWindowSize(1024, 1366);
     const shell = mountShell();
     try {
       openOwned(shell);
-      expect(shell.el("transcript")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
       expect(shell.rowLabel()).toBeNull();
       expect(shell.rowCount()).toBe(0);
     } finally {
@@ -704,7 +801,7 @@ describe("the turn underway sits after the operator's prompt and above the compo
       userTurn(shell, 1, "ship it");
       shell.emit("agents", { agents: [{ ...ROSTER[0], state: "busy" } as Agent] });
 
-      expect(shell.within("session-activity", "transcript")).toBe(true);
+      expect(shell.within("session-activity", "aui-messages")).toBe(true);
     } finally {
       shell.unmount();
     }
@@ -913,7 +1010,7 @@ describe("the header says what the session is, and nothing about the turn", () =
       expect(head).toContain("Alpha");
       expect(head).toContain("busy");
       expect(head).not.toContain("Working");
-      expect(shell.within("session-activity", "transcript")).toBe(true);
+      expect(shell.within("session-activity", "aui-messages")).toBe(true);
     } finally {
       shell.unmount();
     }

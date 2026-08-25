@@ -72,6 +72,12 @@ export function untranspiledJsxDeps(): Plugin {
 // package manager hoists or nests differently.
 const resolveFromHere = createRequire(import.meta.url).resolve;
 
+// Same guard as `metro.config.cjs`, same reason, one implementation.
+const { assertNoAssistantCloudEnv } = createRequire(import.meta.url)("./scripts/assistant-cloud-env.cjs") as {
+  assertNoAssistantCloudEnv: (env?: Record<string, string | undefined>, where?: string) => void;
+};
+assertNoAssistantCloudEnv(process.env, "vite.config.ts");
+
 const webNodeModules = ["react-native-web", "react-native-svg", "@fortawesome/react-native-fontawesome"];
 
 export default defineConfig({
@@ -84,6 +90,20 @@ export default defineConfig({
         // not declare it in `exports`, so the bundler has to be told.
         find: /^react-native-svg$/,
         replacement: resolveFromHere("react-native-svg/lib/module/ReactNativeSVG.web.js"),
+      },
+      {
+        /**
+         * `@assistant-ui/core`'s cloud subtree, stubbed. The same redirect
+         * `metro.config.cjs` makes, for the same reason:
+         * `runtimes/cloud/useCloudThreadListAdapter.js` reads
+         * `process.env.NEXT_PUBLIC_ASSISTANT_BASE_URL` at MODULE scope and
+         * constructs an anonymous `AssistantCloud` if it is set, and
+         * `react/index.js` imports it statically. Nothing here imports a cloud
+         * symbol, so redirecting removes the client and the env read rather
+         * than watching for them.
+         */
+        find: /@assistant-ui[/\\]core[/\\]dist[/\\]react[/\\]runtimes[/\\]cloud[/\\].*$/,
+        replacement: resolveFromHere("./stubs/assistant-ui-cloud.js"),
       },
     ],
     extensions: [".web.tsx", ".web.ts", ".web.jsx", ".web.js", ".tsx", ".ts", ".jsx", ".js", ".json"],
