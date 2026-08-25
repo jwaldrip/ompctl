@@ -609,6 +609,12 @@ describe("attribution survives the move into assistant-ui", () => {
       expect(replyKicker.textContent).toBe("agent");
       expect(declarationsFor(thoughtKicker).get("color")).toBe(rgb(signal.violet));
       expect(declarationsFor(replyKicker).get("color")).toBe(rgb(signal.sage));
+      // The gutter caps at 1.5x dynamic type, so its label must ellipsise
+      // rather than wrap and make an activity row unexpectedly taller.
+      for (const kicker of [thoughtKicker, replyKicker]) {
+        expect(declarationsFor(kicker).get("text-overflow")).toBe("ellipsis");
+        expect(declarationsFor(kicker).get("white-space")).toBe("nowrap");
+      }
 
       // Muted is not a decoration: `RichText muted` drops prose from
       // `ink.bright` to `ink.plain`, and the same string must therefore render

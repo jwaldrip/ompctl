@@ -96,7 +96,9 @@ export const ActivityRow = memo(function ActivityRow({
         before it has anything to say.
       */}
       <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: tone }]}>
-        <Kicker color={tone}>{speaker}</Kicker>
+        <Kicker color={tone} numberOfLines={1}>
+          {speaker}
+        </Kicker>
       </View>
       <View style={styles.body}>
         {animate ? (

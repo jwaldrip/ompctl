@@ -1237,6 +1237,15 @@ describe("the working row is shaped like the turn it precedes", () => {
       // the one an operator on default settings actually gets.
       expect(workingColumn).toBe(`${attributionWidth(1)}px`);
       expect(turnColumn).toBe(workingColumn);
+      const workingSpeaker = attribution(working, "the working row").firstElementChild;
+      const turnSpeaker = attribution(turn, "the operator's turn").firstElementChild;
+      if (!(workingSpeaker instanceof HTMLElement) || !(turnSpeaker instanceof HTMLElement)) {
+        throw new Error("an attribution column rendered without its speaker");
+      }
+      for (const speaker of [workingSpeaker, turnSpeaker]) {
+        expect(declared(speaker, "text-overflow")).toBe("ellipsis");
+        expect(declared(speaker, "white-space")).toBe("nowrap");
+      }
 
       // And the rows themselves pay no horizontal inset: the list's content
       // container pays the gutter once, for every row in it. A row that pays

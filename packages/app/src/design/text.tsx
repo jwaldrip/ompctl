@@ -69,10 +69,14 @@ function useTextScale(): number {
 }
 
 /** Section kickers. Always upper case, because the tracking assumes it. */
-export function Kicker({ children, color = ink.muted, style, testID }: LineProps): JSX.Element {
+export function Kicker({ children, color = ink.muted, style, numberOfLines, testID }: LineProps): JSX.Element {
   const fontScale = useTextScale();
   return (
-    <Text testID={testID} style={[scaled(type.kicker, fontScale), { color, textTransform: "uppercase" }, style]}>
+    <Text
+      testID={testID}
+      numberOfLines={numberOfLines}
+      style={[scaled(type.kicker, fontScale), { color, textTransform: "uppercase" }, style]}
+    >
       {children}
     </Text>
   );

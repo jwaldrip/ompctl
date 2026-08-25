@@ -71,7 +71,9 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
       return (
         <View style={styles.row} testID="entry-user" accessible accessibilityLabel={`you: ${entry.text}`}>
           <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: ink.faint }]}>
-            <Kicker color={ink.muted}>you</Kicker>
+            <Kicker color={ink.muted} numberOfLines={1}>
+              you
+            </Kicker>
           </View>
           <RichText text={entry.text} />
         </View>
@@ -91,7 +93,9 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
               { width: attributionWidth(fontScale), borderLeftColor: entry.thought ? signal.violet : signal.sage },
             ]}
           >
-            <Kicker color={entry.thought ? signal.violet : signal.sage}>{entry.thought ? "thinking" : "agent"}</Kicker>
+            <Kicker color={entry.thought ? signal.violet : signal.sage} numberOfLines={1}>
+              {entry.thought ? "thinking" : "agent"}
+            </Kicker>
             {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
           </View>
           <RichText muted={entry.thought} text={entry.text} />
