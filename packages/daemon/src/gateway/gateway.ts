@@ -3471,10 +3471,17 @@ export class Gateway {
           );
       this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: agent.id });
     } catch (err) {
-      // The claim is re-verified rather than trusting the throw: a refusal
-      // naming "already held" from a path that lost a race means another
-      // caller's identical request finished in between, and that outcome is
-      // the idempotent answer, not a failure.
+      // `resumeAgent` consults the supervisor's in-process session lock before
+      // it starts a second host. A concurrent resume can therefore lose after
+      // index verification but before that lock, and the asynchronous index
+      // still reports the old dormant row when we get here. Ask the same lock
+      // the failed resume did before re-verifying the slower index: the agent
+      // that won is the idempotent `session_opened` answer, not a refusal.
+      const heldBy = this.#sup.agentForSession(frame.sessionId);
+      if (heldBy !== undefined) {
+        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: heldBy });
+        return;
+      }
       const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
       if (settled.verdict === "held") {
         this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });

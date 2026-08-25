@@ -649,6 +649,20 @@ export class Supervisor {
   }
 
   /**
+   * The agent currently holding one ACP session, when this supervisor owns it.
+   *
+   * The gateway uses this only to turn a concurrent identical resume into the
+   * idempotent `session_opened` answer. Its session index is intentionally
+   * asynchronous, so re-reading that index after `resumeAgent` loses a race
+   * can still see the old dormant row even though this map already names the
+   * agent that won. Returning this map's answer is not a second index: it is
+   * the authoritative in-process lock `resumeAgent` itself just consulted.
+   */
+  agentForSession(sessionId: string): AgentId | undefined {
+    return this.#sessionAgent.get(sessionId);
+  }
+
+  /**
    * Resume an existing on-disk session under a new daemon-owned agent, via
    * ACP `session/load`. See {@link ResumeAgentInput} for what "existing"
    * means here: `sessionId` is looked up on whichever host `cwd` resolves to
@@ -674,6 +688,7 @@ export class Supervisor {
     // granted prompt can interact only until its agent process exits, after
     // which the same conversation becomes a permanent permission error.
     const who = this.#authorize(actor, SCOPE_PROMPT, "agent.resume");
+
     const heldBy = this.#sessionAgent.get(input.sessionId);
     if (heldBy) {
       throw new Error(`session ${input.sessionId} is already held by agent ${heldBy}`);

@@ -547,6 +547,30 @@ describe("the session_resume websocket frame", () => {
     phone.close();
   });
 
+  test("a stale dormant index still answers the supervisor-held resume idempotently", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
+    const phone = await h.connect(token);
+
+    phone.send({ t: "session_resume", sessionId: SESSION_DORMANT, cwd: h.dormantDir });
+    const first = await phone.next(isOpenedFrame, "first session_opened frame");
+    if (!isOpenedFrame(first)) throw new Error("expected a session_opened frame");
+
+    // The exact race a routine-run link can hit: supervisor already holds the
+    // session, but a stale index sees the agent as terminal and returns the old
+    // dormant row. Calling resumeAgent then throws "already held". Rechecking
+    // that same stale index used to repeat dormant and turn the idempotent
+    // answer into a toast, leaving the app with no viewer.
+    h.store.setAgentState(first.agentId, "stopped");
+    phone.send({ t: "session_resume", sessionId: SESSION_DORMANT, cwd: h.dormantDir });
+    const second = await phone.next(isOpenedFrame, "stale-index idempotent session_opened frame");
+    if (!isOpenedFrame(second)) throw new Error("expected a session_opened frame");
+
+    expect(second.agentId).toBe(first.agentId);
+    expect(h.fake.loads).toEqual([SESSION_DORMANT]);
+    phone.close();
+  });
+
   test("refuses a cwd that disagrees with the index and loads nothing", async () => {
     const h = await harness();
     const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
