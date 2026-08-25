@@ -115,7 +115,7 @@ export class McpAuthStore implements GrantStore {
              detail='OAuth client authentication method was not recorded by this broker version; reauthorize to establish one',
              next_attempt_at=NULL,
              updated_at=?
-         WHERE client_auth_method IS NULL`,
+         WHERE client_auth_method IS NULL AND state <> 'reauth_required'`,
       )
       .run(new Date().toISOString());
     this.#vault = vault;
