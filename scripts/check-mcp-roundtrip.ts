@@ -291,18 +291,28 @@ const daemon = spawn(cmd as string, [...pre, "start", "--host", "127.0.0.1", "--
   stdio: ["ignore", "pipe", "pipe"],
 });
 
-/** Readiness is the daemon saying it listens, not the process existing. */
+/**
+ * Readiness is the daemon saying it listens, not the process existing.
+ *
+ * Everything it wrote is kept, and quoted when readiness fails. A check whose
+ * whole report is "daemon never listened" sends whoever reads it to guess, and
+ * the daemon is the one party that already said what went wrong.
+ */
+let daemonOutput = "";
+let daemonExit: number | null = null;
 const ready = await new Promise<boolean>(resolve => {
   const deadline = setTimeout(() => resolve(false), 120_000);
   const watch = (chunk: Buffer): void => {
-    if (chunk.toString().includes("ompd is listening at")) {
+    daemonOutput += chunk.toString();
+    if (daemonOutput.includes("ompd is listening at")) {
       clearTimeout(deadline);
       resolve(true);
     }
   };
   daemon.stdout.on("data", watch);
   daemon.stderr.on("data", watch);
-  daemon.on("exit", () => {
+  daemon.on("exit", code => {
+    daemonExit = code;
     clearTimeout(deadline);
     resolve(false);
   });
@@ -313,7 +323,13 @@ let client: StdioMcp | null = null;
 try {
   console.log(`\nscratch daemon at ${base}, home ${home}`);
   check("daemon reached readiness", ready);
-  if (!ready) throw new Error("daemon never listened");
+  if (!ready) {
+    console.error(
+      `\nthe daemon exited ${daemonExit === null ? "never (timed out)" : `with code ${String(daemonExit)}`}. ` +
+        `What it said:\n${daemonOutput.trim() || "(nothing at all on stdout or stderr)"}`,
+    );
+    throw new Error("daemon never listened");
+  }
 
   const token = readFileSync(join(home, "token"), "utf8").trim();
   const env = { OMPD_HOME: home, OMPD_URL: base, OMPD_TOKEN: token };
