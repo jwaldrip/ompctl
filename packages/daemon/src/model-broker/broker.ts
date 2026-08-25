@@ -179,6 +179,15 @@ const MAX_LOGGED_PATH = 120;
  * Why an in-flight upstream request was cancelled, carried as the abort reason
  * so the rejection a revoked grant's handler catches says what happened rather
  * than surfacing as a bare `AbortError` indistinguishable from a network fault.
+ *
+ * It has to stay a constant with nothing caller-supplied in it. Measured on Bun
+ * 1.3.14: aborting a `fetch` whose response is already streaming makes Bun print
+ * the abort reason, with a stack, straight to this process's stderr. It is not
+ * an unhandled rejection and not the `Bun.serve` `error` hook -- neither fires,
+ * and there is no userland hook that suppresses it. So whatever is in here is
+ * written to the daemon's log stream outside `#log`, past every rule this class
+ * keeps about what may reach a log line. A token or a grant detail in this
+ * string would be a credential in the operator's logs.
  */
 const REVOKED_ABORT_REASON = "the model grant was revoked while the request was in flight";
 
@@ -429,7 +438,7 @@ export class ModelBroker {
     const token = randomBytes(TOKEN_BYTES).toString("base64url");
     const digest = createHash("sha256").update(token).digest();
     const endpoint = `http://${host}:${port}`;
-    this.#grants.set(digest.toString("hex"), {
+    const grant: Grant = {
       digest,
       model: input.model,
       peerCidr: input.peerCidr,
@@ -445,7 +454,7 @@ export class ModelBroker {
       requestsUsed: 0,
       tokensUsed: 0,
       abort: new AbortController(),
-    });
+    };
     this.#log(
       `granted ${input.model} on ${endpoint} to ` +
         // Named rather than left to be inferred from an absent range: turning
@@ -455,6 +464,13 @@ export class ModelBroker {
         `(${input.limits.maxRequests} requests, ${input.limits.maxTokens} tokens, ` +
         `${input.limits.maxConcurrent} concurrent, ${input.ttlMs}ms)`,
     );
+    // Last, deliberately, and after the log rather than before it. `#onLog` is
+    // a caller-supplied sink, so it can throw, and a throw between the insert
+    // and the return would leave a grant live in this map that nobody holds the
+    // token for: presentable by whoever the token was already written for,
+    // revocable by nobody, and gone from the audit trail. Every step that can
+    // fail happens above this line, so a failed `issue` mints nothing.
+    this.#grants.set(digest.toString("hex"), grant);
     // The plaintext leaves here once and is never stored. The caller writes it
     // into the guest's 0600 token file and forgets it too.
     return { token, endpoint, model: input.model };

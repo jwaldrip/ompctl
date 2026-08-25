@@ -803,20 +803,35 @@ describe("ceilings", () => {
 // Admission is atomic, or the ceilings are decorations
 //
 // The ceilings used to be checked at the top of the handler and incremented
-// after `readBounded` and `#upstreamBearer`, both of which yield. Every
-// request in a burst therefore read the same stale zero, every one passed
-// admission, and every one forwarded. A sequential test cannot see that: one
-// request at a time passes either version. So these fire a burst an order of
-// magnitude past the ceiling at a gateway that answers nothing until the test
-// lets it, which is the only shape where the race is the difference between
-// pass and fail.
+// after `readBounded` and `#upstreamBearer`, both of which yield. Every request
+// parked on one of those awaits had passed the check without moving the count,
+// so a burst all read the same stale zero, all passed, and all forwarded.
+//
+// Reproducing that takes more than volume, and this is the part worth reading
+// before touching these tests. A burst sent with `fetch` does NOT reproduce it:
+// each request's body is already complete when the handler starts, so the read
+// resolves in a microtask and the next connection is not even read until the
+// previous request has been admitted and forwarded. Measured on Bun 1.3.14,
+// fifty concurrent `fetch` calls against the racy broker still never exceeded
+// the ceiling.
+//
+// What does reproduce it is a guest dribbling its body, which is a thing a
+// guest can trivially do and `fetch` cannot express: send the head, send one
+// byte, wait, send the rest. Measured on the same runtime, Bun invokes the
+// handler as soon as the head arrives, so every one of those requests sits
+// inside `readBounded` having already passed the ceiling check. That is the
+// window, it is entirely under the guest's control, and it is why the
+// reservation has to be taken in the same synchronous block as the check.
 // ---------------------------------------------------------------------------
 
 /** Far enough past any ceiling here that one stale read shows up as a pile-up. */
 const BURST = 50;
 
-/** Long enough for fifty loopback requests, which bun:test's 5s default is not. */
+/** Long enough for fifty parked loopback requests, which bun:test's 5s default is not. */
 const BURST_DEADLINE_MS = 15_000;
+
+/** Room for fifty sockets and two body writes each. */
+const BURST_TEST_TIMEOUT_MS = 30_000;
 
 interface Burst {
   /** Opens as soon as the fake gateway is holding more than the ceiling allows. */
@@ -828,18 +843,19 @@ interface Burst {
   /** Lets the held requests complete. */
   finish(): void;
   /** Every response, once the held ones have drained. */
-  drain(): Promise<Response[]>;
+  drain(): Promise<RawResponse[]>;
 }
 
 /**
- * `BURST` requests fired without awaiting any of them, at a fake gateway that
- * holds every request it receives.
+ * `BURST` requests, each parked inside the handler's body read with its ceiling
+ * check already passed, and only then completed.
  *
- * Holding is what makes the count meaningful: nothing the broker admitted can
- * finish and free its slot while the burst is still arriving, so the number the
- * gateway is holding is exactly the number that got through admission.
+ * The fake gateway holds everything it receives until `finish`, which is what
+ * makes the count meaningful: nothing the broker admitted can complete and free
+ * its slot while the burst is still arriving, so what the gateway is holding is
+ * exactly what got through admission.
  */
-function burst(input: { token: string; ceiling: number }): Burst {
+async function parkedBurst(input: { token: string; ceiling: number }): Promise<Burst> {
   const overshot = gate();
   const refused = gate();
   const finish = gate();
@@ -856,15 +872,36 @@ function burst(input: { token: string; ceiling: number }): Burst {
     return Response.json({ usage: { input_tokens: 1, output_tokens: 1 } });
   };
 
-  const flight = Array.from({ length: BURST }, () =>
-    request("/v1/messages", { token: input.token }).then(response => {
-      // Only refusals can resolve before `finish`, so this counts refusals
-      // without having to read a status to know one.
+  const host = `127.0.0.1:${brokerPort}`;
+  const body = encoder.encode(JSON.stringify({ model: MODEL }));
+  const opened: RawConnection[] = [];
+  for (let i = 0; i < BURST; i += 1) {
+    const connection = await rawConnect("127.0.0.1", brokerPort);
+    connections.push(connection);
+    opened.push(connection);
+    connection.send(requestHead({ path: "/v1/messages", host, contentLength: body.byteLength, token: input.token }));
+    // One byte. Enough for the handler to run, be admitted, and block in
+    // `readBounded`; not enough for it to go on and forward.
+    connection.send(body.subarray(0, 1));
+  }
+
+  const flight = opened.map(connection => {
+    const answer = connection.next("a response to one of the burst requests", BURST_DEADLINE_MS).then(response => {
+      // Only a refusal can answer before `finish`, so this counts refusals
+      // without having to read a status to recognise one.
       answered += 1;
       if (answered >= BURST - input.ceiling) refused.open();
       return response;
-    }),
-  );
+    });
+    // An assertion failing below leaves these outstanding, `afterEach` closes
+    // the sockets under them, and an unhandled rejection would then replace the
+    // real failure in the report with a socket error.
+    answer.catch(() => undefined);
+    return answer;
+  });
+
+  // Only now, with every request admitted and parked, does any body complete.
+  for (const connection of opened) connection.send(body.subarray(1));
 
   return {
     overshot,
@@ -878,7 +915,7 @@ function burst(input: { token: string; ceiling: number }): Burst {
 }
 
 /** Responses counted by status, so a failure names the shape and not just a number. */
-function byStatus(answers: Response[]): Record<string, number> {
+function byStatus(answers: readonly { status: number }[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const answer of answers) {
     const key = String(answer.status);
@@ -888,51 +925,57 @@ function byStatus(answers: Response[]): Record<string, number> {
 }
 
 describe("atomic admission", () => {
-  test("a burst past maxConcurrent never puts more than the ceiling on the wire", async () => {
-    const ceiling = 2;
-    const granted = issueGrant({ limits: { maxRequests: BURST, maxTokens: 1_000_000, maxConcurrent: ceiling } });
-    const fired = burst({ token: granted.token, ceiling });
+  test(
+    "a burst past maxConcurrent never puts more than the ceiling on the wire",
+    async () => {
+      const ceiling = 2;
+      const granted = issueGrant({ limits: { maxRequests: BURST, maxTokens: 1_000_000, maxConcurrent: ceiling } });
+      const fired = await parkedBurst({ token: granted.token, ceiling });
 
-    // Whichever happens first. A broker with the race loses on `overshot` and
-    // loses immediately, with the peak in the failure message, rather than as an
-    // anonymous timeout.
-    await withDeadline(
-      Promise.race([fired.refused.promise, fired.overshot.promise]),
-      "the burst to be refused or to overshoot the concurrency ceiling",
-      BURST_DEADLINE_MS,
-    );
-    expect(fired.peak()).toBeLessThanOrEqual(ceiling);
+      // Whichever happens first. A broker with the race loses on `overshot`,
+      // and loses immediately with the peak in the failure message rather than
+      // as an anonymous timeout.
+      await withDeadline(
+        Promise.race([fired.refused.promise, fired.overshot.promise]),
+        "the burst to be refused or to overshoot the concurrency ceiling",
+        BURST_DEADLINE_MS,
+      );
+      expect(fired.peak()).toBeLessThanOrEqual(ceiling);
 
-    fired.finish();
-    const answers = await fired.drain();
-    // Exact, not a bound: the burst is only released after every refusal has
-    // been answered, so nothing can arrive late and find a free slot.
-    expect(byStatus(answers)).toEqual({ "200": ceiling, "429": BURST - ceiling });
-    expect(upstreamSeen).toHaveLength(ceiling);
-    await Promise.all(answers.map(answer => answer.text()));
-  });
+      fired.finish();
+      const answers = await fired.drain();
+      // Exact, not a bound: the burst is released only after every refusal has
+      // been answered, so nothing can arrive late and find a free slot.
+      expect(byStatus(answers)).toEqual({ "200": ceiling, "429": BURST - ceiling });
+      expect(upstreamSeen).toHaveLength(ceiling);
+    },
+    BURST_TEST_TIMEOUT_MS,
+  );
 
-  test("a burst past maxRequests never puts more than the ceiling on the wire", async () => {
-    const ceiling = 3;
-    // Concurrency deliberately wide open, so the request ceiling is the only
-    // thing that can hold this burst back and the assertion is about that
-    // counter rather than about the other one.
-    const granted = issueGrant({ limits: { maxRequests: ceiling, maxTokens: 1_000_000, maxConcurrent: BURST } });
-    const fired = burst({ token: granted.token, ceiling });
+  test(
+    "a burst past maxRequests never puts more than the ceiling on the wire",
+    async () => {
+      const ceiling = 3;
+      // Concurrency deliberately wide open, so the request ceiling is the only
+      // thing that can hold this burst back and the assertion is about that
+      // counter rather than about the other one.
+      const granted = issueGrant({ limits: { maxRequests: ceiling, maxTokens: 1_000_000, maxConcurrent: BURST } });
+      const fired = await parkedBurst({ token: granted.token, ceiling });
 
-    await withDeadline(
-      Promise.race([fired.refused.promise, fired.overshot.promise]),
-      "the burst to be refused or to overshoot the request ceiling",
-      BURST_DEADLINE_MS,
-    );
-    expect(fired.peak()).toBeLessThanOrEqual(ceiling);
+      await withDeadline(
+        Promise.race([fired.refused.promise, fired.overshot.promise]),
+        "the burst to be refused or to overshoot the request ceiling",
+        BURST_DEADLINE_MS,
+      );
+      expect(fired.peak()).toBeLessThanOrEqual(ceiling);
 
-    fired.finish();
-    const answers = await fired.drain();
-    expect(byStatus(answers)).toEqual({ "200": ceiling, "402": BURST - ceiling });
-    expect(upstreamSeen).toHaveLength(ceiling);
-    await Promise.all(answers.map(answer => answer.text()));
-  });
+      fired.finish();
+      const answers = await fired.drain();
+      expect(byStatus(answers)).toEqual({ "200": ceiling, "402": BURST - ceiling });
+      expect(upstreamSeen).toHaveLength(ceiling);
+    },
+    BURST_TEST_TIMEOUT_MS,
+  );
 
   test(
     "a refusal after admission gives back both the slot and the request",
@@ -1318,6 +1361,35 @@ describe("listen and issue ordering", () => {
     expect(
       blocked.issue({ model: MODEL, peerCidr: null, limits: DEFAULT_LIMITS, ttlMs: DEFAULT_TTL_MS }).endpoint,
     ).toBe(`http://127.0.0.1:${usable}`);
+  });
+
+  test("mints nothing when the log sink throws", async () => {
+    const angry = new ModelBroker({
+      upstreamUrl: () => upstreamBase,
+      upstreamBearer: async () => UPSTREAM_BEARER,
+      onLog: line => {
+        // Only the grant line. A sink that throws on everything fails the bind
+        // instead -- `#attach` catches, forgets the address, and `issue` then
+        // refuses for having no endpoint to name -- so this test would never
+        // reach the ordering it is about. Measured: that is exactly what the
+        // first draft of this test did.
+        if (line.includes("granted")) throw new Error("the log sink refused this line");
+      },
+      now: () => nowMs,
+    });
+    brokers.push(angry);
+    const port = await freePort();
+    await angry.listen({ host: "127.0.0.1", port, ...LISTEN });
+
+    expect(() =>
+      angry.issue({ model: MODEL, peerCidr: "127.0.0.0/8", limits: DEFAULT_LIMITS, ttlMs: DEFAULT_TTL_MS }),
+    ).toThrow("the log sink refused this line");
+
+    // The whole point. A grant inserted before the log line survives the throw
+    // while its token is discarded with the stack: presentable by whoever was
+    // already handed it, revocable by nobody, absent from the audit trail. The
+    // insert is last so a failed `issue` mints nothing.
+    expect(angry.liveGrants()).toBe(0);
   });
 });
 
