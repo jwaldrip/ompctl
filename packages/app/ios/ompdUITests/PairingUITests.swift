@@ -153,10 +153,13 @@ final class PairingUITests: XCTestCase {
         let session = app.otherElements["session"]
         XCTAssertTrue(session.waitForExistence(timeout: 10), "selected agent session did not open")
 
-        let prompt = "Use the shell to run sleep 6, then reply with exactly this token and nothing else: \(nonce)"
         let composer = app.textViews["composer-input"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10), "agent composer did not appear")
+        let idleSend = app.buttons["composer-send"]
+        XCTAssertTrue(idleSend.waitForExistence(timeout: 10), "settled session did not render composer-send before typing")
+        XCTAssertTrue(idleSend.isEnabled, "settled session rendered a disabled composer-send")
 
+        let prompt = "Use the shell to run sleep 6, then reply with exactly this token and nothing else: \(nonce)"
         let userRows = app.otherElements.matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "entry-user")
         )
@@ -170,15 +173,22 @@ final class PairingUITests: XCTestCase {
         composer.typeText(prompt)
         XCTAssertTrue(((composer.value as? String) ?? "").contains(nonce), "composer input did not contain the nonce")
         let send = app.buttons["composer-send"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5), "agent send control did not appear")
-        XCTAssertTrue(send.isEnabled, "agent send control did not become enabled for the prompt")
-        if send.isHittable {
-            send.tap()
-        } else {
-            let returnKey = app.keyboards.firstMatch.buttons["Return"]
-            XCTAssertTrue(returnKey.waitForExistence(timeout: 5), "composer controls are obscured and keyboard has no Return key")
-            returnKey.tap()
+        let cancel = app.buttons["composer-cancel"]
+        let afterTypeFrame = XCTAttachment(screenshot: app.screenshot())
+        afterTypeFrame.name = "scratch-after-typing"
+        afterTypeFrame.lifetime = .keepAlways
+        add(afterTypeFrame)
+        let afterTypeHierarchy = XCTAttachment(string: app.debugDescription)
+        afterTypeHierarchy.name = "scratch-after-typing-hierarchy"
+        afterTypeHierarchy.lifetime = .keepAlways
+        add(afterTypeHierarchy)
+        guard send.exists else {
+            XCTFail("composer-send disappeared after typing; composer-cancel exists=\(cancel.exists)")
+            return
         }
+        XCTAssertTrue(send.isEnabled, "agent send control did not become enabled for the prompt")
+        XCTAssertTrue(send.isHittable, "visible composer-send is not hittable")
+        send.tap()
 
         // Optimistic user entries carry accessibilityLabel = prompt text and
         // testID entry-user. Either surface is enough; both must exist once
