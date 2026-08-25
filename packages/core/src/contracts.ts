@@ -104,6 +104,22 @@ export interface HostSpec {
    * same thing on both sides of the boundary.
    */
   mounts?: HostMount[];
+  /**
+   * Network policy for a container host.
+   *
+   * `"isolated"` (the default) gives the host a network of its own, so it
+   * cannot see the operator's other containers, and leaves egress open because
+   * an ACP agent has to reach a model endpoint.
+   *
+   * `"none"` asks for no network at all. Not every runtime can express that,
+   * and one that cannot must refuse rather than approximate it: Apple
+   * `container` has no `none` network (`--network none` gives
+   * `notFound: "network none not found"`) and `--no-dns` only deletes
+   * `/etc/resolv.conf` while leaving IP egress open. Silently downgrading a
+   * request for no network into a NAT network with a missing resolver would be
+   * a confinement claim nobody asked the runtime for.
+   */
+  network?: "isolated" | "none";
 }
 
 export interface HostMount {

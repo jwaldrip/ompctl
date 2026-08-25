@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import { GATE_CONFIG_YAML } from "../packages/acp/src/index.ts";
 import type { Agent, AgentState } from "../packages/core/src/index.ts";
 import { Ompd } from "../packages/daemon/src/index.ts";
+import { renderOmpHomeShim } from "../packages/daemon/src/provisioner/image.ts";
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -177,7 +178,11 @@ async function ensureImage(image: string): Promise<boolean> {
     if (!res.ok) throw new Error(`downloading omp-linux-${target} failed: ${res.status}`);
     writeFileSync(join(context, "omp"), Buffer.from(await res.arrayBuffer()), { mode: 0o755 });
     cpSync(join(SCRIPTS_DIR, "container-host.Dockerfile"), join(context, "Dockerfile"));
-    cpSync(join(SCRIPTS_DIR, "omp-home-shim.sh"), join(context, "omp-home-shim.sh"));
+    // Rendered from the daemon's own copy rather than a sibling file, so the
+    // image path and the mounted-toolchain path can never drift apart. This one
+    // points at the layer the Dockerfile creates; the toolchain path points at
+    // its read-only mount.
+    writeFileSync(join(context, "omp-home-shim.sh"), renderOmpHomeShim("/usr/local/lib/omp/omp"), { mode: 0o755 });
 
     console.log(`  building ${image} for linux/${target}`);
     const built = await run(["docker", "build", "-t", image, context]);

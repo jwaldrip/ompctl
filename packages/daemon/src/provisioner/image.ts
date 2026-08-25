@@ -63,7 +63,6 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { HostSpec } from "@ompd/core";
 import { execCommand } from "./exec.ts";
 import { type CommandRunner, ProvisionError } from "./types.ts";
@@ -121,10 +120,6 @@ const SHIM_NAME = "omp-shim";
 
 const OMP_NAME = "omp";
 
-/** Source of the shim, and the one line in it that has to be rewritten. */
-const SHIM_SOURCE = "omp-home-shim.sh";
-const SHIM_IMAGE_EXEC = 'exec /usr/local/lib/omp/omp "$@"';
-
 /** Public, unauthenticated. This is the whole reason the private default is gone. */
 const RELEASE_BASE = "https://github.com/can1357/oh-my-pi/releases/download";
 
@@ -135,20 +130,77 @@ const DIGEST_LENGTH = 12;
 const STDERR_TAIL = 800;
 
 /**
- * Where `omp-home-shim.sh` lives, resolved from this module rather than the
- * process cwd, because the daemon starts wherever the operator happens to be.
+ * The shim, embedded rather than read off disk.
  *
- * Correct when the daemon runs from the checkout, which is how it runs today.
- * Knowingly wrong inside the single-file binary `bun run build:cli` produces:
- * in a compiled bundle `import.meta.url` is `file:///$bunfs/root/<name>`, so
- * this collapses to `/scripts` (verified by compiling a two-line probe with
- * `bun build --compile` and printing both values). No fallback is attempted,
- * because a fallback would find some other directory's shim and mount it. The
- * failure surfaces as a `ProvisionError` naming the exact missing path, and
- * `EnsureToolchainOptions.scriptsDir` is how a packaged daemon points at the
- * copy it shipped.
+ * It used to be `scripts/omp-home-shim.sh`, resolved relative to this module.
+ * That is wrong in the artifact ompd actually ships: inside the single-file
+ * binary `bun run build:cli` produces, `import.meta.url` is
+ * `file:///$bunfs/root/<name>`, so a module-relative `../../../../scripts`
+ * collapses to `/scripts` and the read fails. The daemon would then refuse to
+ * provision any container host, and it would do so only once installed, never
+ * from the checkout where it was tested.
+ *
+ * Embedding also removes the string surgery it replaced. The old code read the
+ * file and rewrote its final `exec` line to point at the mount, asserting the
+ * match so a silent miss could not produce a shim that execs a path which does
+ * not exist. A template takes no such risk: the exec target is a parameter, so
+ * there is nothing to match and nothing to assert. `renderOmpHomeShim` is
+ * exported because the legacy docker-image path in
+ * `scripts/check-container-host.ts` needs the same script pointed at
+ * `/usr/local/lib/omp/omp` instead, and one source of truth for both is the
+ * point.
+ *
+ * Every line below is load-bearing; see the original for the reasoning, which
+ * is preserved verbatim.
  */
-const DEFAULT_SCRIPTS_DIR = fileURLToPath(new URL("../../../../scripts", import.meta.url));
+export function renderOmpHomeShim(ompPath: string): string {
+  return `#!/bin/sh
+# Point omp at an OMP home carried in on the workspace mount.
+#
+# The container backend runs \`<runtime> exec -i <id> <omp>\`, and the only
+# things it injects at run time are the image, the workspace bind mount, the
+# toolchain mount, and OMPD_REPO / OMPD_REF. There is no flag for "give the
+# container credentials", so the workspace is the only channel: the daemon
+# mounts it at the same absolute path it has on the host and sets it as the
+# container's workdir, and \`exec\` inherits that workdir.
+#
+# So an OMP home seeded at \`<workspace>/.omp-home\` is picked up here. That is a
+# security fact, not a convenience: every credential in it is readable by
+# anything running in the container, and by anything that can write to the
+# workspace on the host.
+#
+# Absent, omp runs against the image's own HOME and has no credentials. That is
+# left alone rather than refused, because \`omp --version\` and any other local
+# check has to keep working, and the failure surfaces loudly at the first model
+# call. A seed that is present but has no \`.omp\` in it is different: someone
+# meant to pass credentials and the wiring is wrong, so that one is refused
+# rather than quietly downgraded to the image's config.
+set -eu
+
+SEED="$PWD/.omp-home"
+if [ -d "$SEED" ]; then
+  if [ ! -d "$SEED/.omp" ]; then
+    echo "omp shim: $SEED exists but holds no .omp; refusing to fall back to the image's HOME" >&2
+    exit 78
+  fi
+  # Under /tmp because that is the one writable filesystem a hardened container
+  # host has: the root filesystem is mounted read-only where the runtime can
+  # express it, and the scratch root is a tmpfs. \`mktemp -d\` rather than a fixed
+  # path so nothing already sitting there can be followed, since /tmp is shared
+  # and world-writable.
+  HOME="$(mktemp -d /tmp/omp-home.XXXXXXXX)"
+  export HOME
+  # Copied rather than used in place, for two reasons. The seed is a bind mount
+  # from the daemon's machine, so an ACP host that refreshed a credential in
+  # place would be writing the operator's own OMP home. And omp keeps its state
+  # in SQLite, whose locking is not dependable over a virtiofs mount.
+  cp -a "$SEED/." "$HOME/"
+  chmod -R go-rwx "$HOME"
+fi
+
+exec ${ompPath} "$@"
+`;
+}
 
 export interface ToolchainInputs {
   ompVersion: string;
@@ -161,7 +213,6 @@ export interface EnsureToolchainOptions {
   spec: HostSpec;
   run?: CommandRunner;
   cacheRoot?: string;
-  scriptsDir?: string;
   /** The caller's `process.env.OMPD_CONTAINER_IMAGE`. */
   envImage?: string;
   ompVersion?: string;
@@ -233,7 +284,6 @@ export async function ensureToolchain(opts: EnsureToolchainOptions): Promise<Res
 async function ensureDefaultToolchain(opts: EnsureToolchainOptions): Promise<ResolvedToolchain> {
   const run = opts.run ?? execCommand;
   const cacheRoot = opts.cacheRoot ?? join(homedir(), ".ompd", "toolchain");
-  const scriptsDir = opts.scriptsDir ?? DEFAULT_SCRIPTS_DIR;
   const ompVersion = opts.ompVersion ?? (await detectOmpVersion(run));
   const arch = opts.arch ?? hostReleaseArch();
   const inputs: ToolchainInputs = { ompVersion, arch };
@@ -241,7 +291,7 @@ async function ensureDefaultToolchain(opts: EnsureToolchainOptions): Promise<Res
   // Rendered before anything is fetched, so a shim whose shape has drifted
   // costs nothing. It is also needed on the hit path, to notice a cached
   // toolchain still carrying a superseded shim.
-  const shim = renderShim(readBuildSource(join(scriptsDir, SHIM_SOURCE)));
+  const shim = renderOmpHomeShim(`${TOOLCHAIN_MOUNT_PATH}/${OMP_NAME}`);
 
   const hit = findCached(cacheRoot, inputs);
   if (hit !== null) {
@@ -365,44 +415,7 @@ function refreshShim(dir: string, shim: string, onLog?: (line: string) => void):
   const staged = `${path}.${randomUUID().slice(0, 8)}.new`;
   writeDurable(staged, new TextEncoder().encode(shim), 0o555);
   renameSync(staged, path);
-  onLog?.(`refreshed ${path} from ${SHIM_SOURCE}`);
-}
-
-/**
- * Point the shim at the mounted binary.
- *
- * `scripts/omp-home-shim.sh` was written for an image that put omp at
- * `/usr/local/lib/omp/omp`. There is no image layer doing that any more, so its
- * final `exec` has to move to the mount. The match is asserted rather than
- * assumed: a `replace` that quietly found nothing would produce a shim that
- * execs a path which does not exist, and the first symptom would be a container
- * that starts and then fails to speak ACP.
- */
-function renderShim(source: string): string {
-  if (!source.includes(SHIM_IMAGE_EXEC)) {
-    throw new ProvisionError(
-      `${SHIM_SOURCE} no longer contains ${JSON.stringify(SHIM_IMAGE_EXEC)}, so it cannot be repointed at ${TOOLCHAIN_MOUNT_PATH}/${OMP_NAME}; update this rewrite alongside the shim`,
-      "container",
-    );
-  }
-  return source.replace(SHIM_IMAGE_EXEC, `exec ${TOOLCHAIN_MOUNT_PATH}/${OMP_NAME} "$@"`);
-}
-
-/**
- * A missing build source is a `ProvisionError` naming the path, not an ENOENT
- * from three frames down, because the realistic cause is a daemon running from
- * somewhere `scripts/` was never shipped to and the path is the whole diagnosis.
- */
-function readBuildSource(path: string): string {
-  try {
-    return readFileSync(path, "utf8");
-  } catch (err) {
-    throw new ProvisionError(
-      `cannot read ${path}, needed to assemble the container toolchain; pass scriptsDir if the daemon was packaged without scripts/`,
-      "container",
-      { cause: err },
-    );
-  }
+  onLog?.(`refreshed ${path}`);
 }
 
 /**

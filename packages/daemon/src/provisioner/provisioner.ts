@@ -76,7 +76,19 @@ export class HostProvisioner implements Provisioner {
     const supplied = opts.backends;
     if (supplied === undefined) {
       this.#backends.set("local", new LocalBackend());
-      this.#backends.set("container", new ContainerBackend({ workspace: opts.workspace, home: opts.home }));
+      // Runtime and default image come from the environment rather than being
+      // baked in: `OMPD_CONTAINER_RUNTIME` pins one (and a pinned runtime that
+      // is absent refuses instead of falling back), `OMPD_CONTAINER_IMAGE`
+      // replaces the public base image the toolchain path otherwise uses.
+      this.#backends.set(
+        "container",
+        new ContainerBackend({
+          workspace: opts.workspace,
+          home: opts.home,
+          runtime: process.env.OMPD_CONTAINER_RUNTIME,
+          image: process.env.OMPD_CONTAINER_IMAGE,
+        }),
+      );
       if (opts.cloudDriver !== undefined) {
         this.#backends.set("cloud", new CloudBackend({ driver: opts.cloudDriver }));
       }

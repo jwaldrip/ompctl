@@ -509,30 +509,82 @@ ompd new ~/dev/some-repo --container --image your/omp:tag \
   --mounts ~/dev/shared-lib:ro,~/dev/scratch:rw
 ```
 
-The daemon probes `docker`, `podman`, and `container` (Apple's) in that order
-unless a runtime is pinned, starts a detached container from the named image,
-mounts the workspace at the same absolute path it has here so a cwd means the
-same thing on both sides, and speaks ACP over `<runtime> exec -i <id> omp acp`.
-Stopping the last agent on a host removes the container and the network it was
-given.
+The daemon picks a runtime in platform order, native first: on macOS
+`container` (Apple's), then `podman`, then `docker`. That order is the fix for
+a real failure. It used to probe `docker` first and take whatever answered, so
+on any Mac with Docker or OrbStack installed the native runtime was never
+chosen no matter what else was present, and an operator had no way to ask for
+it. `OMPD_CONTAINER_RUNTIME=<name>` pins one instead, and a pinned runtime that
+is missing is an error rather than a quiet fall back to whatever else happens to
+be installed. On Linux the order is `podman` then `docker`, because podman is
+daemonless and rootless by design; see "Linux" below for what the host still
+has to provide.
 
-A runtime outside that list is refused rather than assumed to behave like
-docker, because a runtime nobody has held a `run --help` against cannot be
-trusted to have accepted the confinement it was asked for. `orbctl` was on this
-list and should not have been: OrbStack's container surface is `docker`, while
-`orbctl` manages OrbStack Linux machines and its `run` means "run a command on
-Linux", taking none of `--volume`, `--cap-drop`, or `--network`.
+It then starts a detached container, mounts the workspace at the same absolute
+path it has here so a cwd means the same thing on both sides, and speaks ACP
+over `<runtime> exec -i <id> <omp>`. Stopping the last agent on a host removes
+the container and the network it was given.
 
-ompd does not build or publish the image; `scripts/container-host.Dockerfile`
-is the minimal one the end-to-end check builds, and it is a reference rather
-than a product. Whatever image you point at needs `omp` on its `PATH` and a
-root certificate store.
+**Confinement is read off the runtime, not off its name.** Every flag ompd
+sends is one it saw in that binary's own `run --help`. That is not pedantry:
+Apple `container` 0.4.1 rejects `--cap-drop`, `--read-only`, `--pids-limit` and
+`--security-opt` outright (exit 64, `Unknown option`), while 1.3.0 accepts
+`--cap-drop`, `--read-only` and `--ulimit`. One table keyed on the name
+`container` cannot be right for both, and the failure mode of getting it wrong
+is silently withholding a real security control from a runtime that has it. A
+CLI whose help cannot be parsed is refused rather than guessed at, and
+`ompd doctor` prints which runtime would be selected and which flags it is
+actually being asked for.
 
-`bun run scripts/check-container-host.ts` proves the whole path against a real
-container, including that a denied bash call does not run, that an allowed one
-does, and that each of the escapes below fails. It cleans up everything it
-makes. It runs against `docker`; the run command itself is exercised per
-runtime by the unit tests in `packages/daemon/test/provisioner.test.ts`.
+### The image, and why nothing private is pulled
+
+ompd does not build or publish an image. Naming one is still supported and
+still wins: `spec.image`, or `OMPD_CONTAINER_IMAGE` for the daemon default, is
+pulled exactly as written and nothing is mounted over it. That image needs
+`omp` on its `PATH` and a root certificate store.
+
+Name nothing and there is no build and no private registry in the path. The
+default is a public base image (`debian:bookworm-slim`) with the toolchain
+delivered as a read-only bind mount at `/opt/ompd`, cached under
+`~/.ompd/toolchain/omp-<version>-<arch>-<digest>/`:
+
+- `omp` itself, downloaded from the public `oh-my-pi` GitHub release for the
+  container's architecture. A Linux ELF bind-mounted from macOS runs in the
+  guest, which is what makes this work at all.
+- `omp-shim`, the same `scripts/omp-home-shim.sh` that picks up an OMP home
+  seeded on the workspace mount.
+- `ca-certificates.crt`, extracted once from `alpine:3.20`, because neither
+  `debian:bookworm-slim` nor `debian:bookworm` ships one and omp reaches a
+  model over TLS. `SSL_CERT_FILE` points at it.
+
+The directory name carries the binary's digest, so a changed input is a
+different directory and a stale toolchain cannot be silently reused. The
+download lands in a sibling directory and is renamed into place, so a killed
+process cannot leave a half-written binary that a later run treats as a cache
+hit, and the digest is re-verified after it lands. The shim is compared on every
+cache hit and refreshed if it has changed, because the shim is what decides
+whether a workspace-seeded OMP home is honoured or refused, and that behaviour
+going stale would be a security regression rather than a cosmetic one.
+
+This is what fixes the failure that prompted the work: the old default was
+`ghcr.io/jwaldrip/omp:latest`, a private image, so every container provision
+died with `error from registry: denied` (docker exit 125) and surfaced as
+"Unable to start container". Nothing on the default path now needs a
+credential, so there is nothing to deny.
+
+Base-image choice is not free: `omp` is a glibc build, so a musl base does not
+run it (`sh: /opt/ompd/omp: not found` on Alpine). debian-slim also already
+carries the coreutils the gate wrapper's far side needs.
+
+`bun run scripts/check-native-container.ts` proves the confinement boundary
+against a real container on the native runtime, including a negative control:
+it runs the same hostile probe unconfined first and fails if that does *not*
+leak, because a containment check that cannot fail proves nothing. It cleans up
+everything it makes. `bun run scripts/check-container-host.ts` proves the
+approval gate end to end against docker. The run command itself is exercised
+per capability by the unit tests in `packages/daemon/test/provisioner.test.ts`,
+and the capability parse against recorded `run --help` output from docker
+29.4.0, podman 4.8.2 and Apple 0.4.1 in `container-runtime.test.ts`.
 
 ### Extra mounts
 
@@ -554,30 +606,48 @@ silent no-op.
 ### How it is confined
 
 None of the flags below are configurable, because a sandbox with a switch on
-it is a sandbox someone turns off. Which flags exist to turn on, though,
-genuinely differs by runtime -- Apple's `container` CLI (verified against
-0.4.1) has no `--cap-drop`, `--security-opt`, `--read-only`, or `--pids-limit`,
-and exits on an unknown flag rather than ignoring it, so provisioning against
-it never sends a flag it does not accept:
+it is a sandbox someone turns off. Which flags exist to turn on genuinely
+differs by runtime, and by runtime *version*: every row below was produced by
+running the command, and the Apple column is `container` 0.4.1 specifically.
 
-| Guarantee | docker / podman | Apple `container` |
+| Guarantee | docker / podman | Apple `container` 0.4.1 |
 | --- | --- | --- |
-| Runs as your uid/gid, never root | yes -- `--user` | yes -- `--user` |
-| No Linux capability is granted | yes -- `--cap-drop ALL` | not expressible, and arguably not needed: each container gets its own lightweight VM, so there is no shared kernel for a capability to escape into |
-| A setuid binary cannot regain privilege | yes -- `--security-opt no-new-privileges` | same as above -- the VM boundary, not this flag, is what would stop it |
-| **Image is read-only** | yes -- `--read-only` | **no.** This flag does not exist on this CLI. The image is writable from inside the container, which is a real loss of confinement, not a reframed one |
-| A fork bomb stays inside the sandbox | yes -- `--pids-limit 1024` | not expressible; the VM's own resource limits are the boundary instead of a pid cap enforced by a shared kernel |
-| Scratch is tmpfs and dies with the container | yes -- `--tmpfs` | yes -- `--tmpfs` |
-| A bridge network per host | yes | yes |
+| Runs as your uid/gid, never root | yes -- `--user` | **no.** Its `--user` takes a name, and a numeric one does not fail to parse, it kills the container (`XPC connection error: Connection interrupted`). Every guest is root inside its own VM. What the flag existed to prevent does not happen anyway: virtiofs squashes ownership, so a file the container creates in a mount lands owned by you whether it ran as root or as `nobody` |
+| No Linux capability is granted | yes -- `--cap-drop ALL` | not expressible (exit 64, `Unknown option`), and arguably not needed: each container gets its own lightweight VM, so there is no shared kernel for a capability to escape into. 1.3.0 does have `--cap-drop`, and would be sent it |
+| A setuid binary cannot regain privilege | yes -- `--security-opt no-new-privileges` | not expressible; the VM boundary, not this flag, is what would stop it. Still absent in 1.3.0 |
+| **Image is read-only** | yes -- `--read-only` | **no.** The flag does not exist here, and the root filesystem is writable from inside, which is a real loss of confinement rather than a reframed one. 1.3.0 does have `--read-only`, and would be sent it |
+| A fork bomb stays inside the sandbox | yes -- `--pids-limit 1024` | no pid cap. `--memory` and `--cpus` are the only ceiling, and they are sent: verified biting rather than ignored, with `--memory 512M --cpus 2` giving a guest that reports 2 cpus and 490 MB |
+| Scratch is tmpfs and dies with the container | yes -- `--tmpfs <path>:rw,exec,...` | yes, but **bare path only**. The docker-style option suffix parses, exits 0, and then mounts nothing at all, so the spelling is chosen per runtime and the check script asserts the mount exists from inside rather than trusting the flag |
+| A network per host, isolated from other hosts | yes | yes, `mode: nat`, and networks are isolated from one another |
+| Network egress can be denied | not attempted: the agent has to reach a model endpoint | **not expressible at all.** There is no `--network none` (`notFound: "network none not found"`), and `--no-dns` only deletes `/etc/resolv.conf` while leaving IP egress open |
+| Host environment is withheld | yes: no `-e` is passed | yes, verified: a canary exported on the host is absent inside |
+| Host filesystem beyond the mounts | not visible | not visible, verified |
+| Extra mounts default to read-only | yes | yes, and enforced: a write reports `Read-only file system` |
 
-The three flags Apple's CLI lacks that are folded into "a different trade, not
-a hole" -- `--cap-drop`, `--security-opt no-new-privileges`, `--pids-limit` --
+The flags Apple's CLI lacks that are folded into "a different trade, not a
+hole" -- `--cap-drop`, `--security-opt no-new-privileges`, `--pids-limit` --
 all mitigate a shared-kernel escape. A VM-per-container runtime has no shared
 kernel for any of them to escape into, so their absence there is not the same
-claim as their absence on docker. `--read-only` is not that: it is whether the
-image can be rewritten from inside, and that is lost outright on Apple
-`container` today, which is why it gets its own row instead of being grouped
-with the rest.
+claim as their absence on docker. Two rows are not that, and are reported as
+losses: `--read-only`, which is whether the image can be rewritten from inside,
+and running as root, which is what it says. Upgrading to `container` 1.3.0
+recovers `--read-only` and `--cap-drop` with no change to ompd, because
+capability is probed rather than tabled.
+
+### Linux
+
+A bundled runtime that needs nothing from the host is not achievable there, and
+shipping `runc` would not change that. What blocks it is not binaries:
+`newuidmap` and `newgidmap` have to be setuid, which is filesystem metadata a
+tarball cannot carry and only root can apply; `/etc/subuid` and `/etc/subgid`
+entries need root; unprivileged user namespaces are a kernel build option; and
+cgroups v2 delegation needs host systemd and a user D-Bus session. Podman
+documents exactly these prerequisites rather than pretending to remove them,
+and podman is itself daemonless, so on Linux ompd selects it first and reports
+the specific missing prerequisite when rootless containers are unavailable.
+Known-failing hosts: `kernel.unprivileged_userns_clone=0`, RHEL 7-era kernels,
+`user.max_user_namespaces=0`, non-systemd distros, and nested containers whose
+subuid range is exhausted.
 
 ### The threat model, which is the part worth reading
 

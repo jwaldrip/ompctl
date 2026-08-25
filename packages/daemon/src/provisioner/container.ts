@@ -1,13 +1,13 @@
 /**
  * The container backend.
  *
- * A detached container is started from a published image with the workspace
- * mounted at the same absolute path it has on the host, so a cwd the daemon
- * hands to `session/new` means the same thing on both sides. An operator may
- * name further host directories in `spec.mounts`; each lands at that same
- * identical absolute path inside, for the same reason. The ACP transport is
- * `<runtime> exec -i <id> omp acp`: a duplex byte stream, exactly like the
- * local pipe, which is why the supervisor needs to know nothing about this.
+ * A detached container is started from a base image with the workspace mounted
+ * at the same absolute path it has on the host, so a cwd the daemon hands to
+ * `session/new` means the same thing on both sides. An operator may name
+ * further host directories in `spec.mounts`; each lands at that same identical
+ * absolute path inside, for the same reason. The ACP transport is
+ * `<runtime> exec -i <id> <omp>`: a duplex byte stream, exactly like the local
+ * pipe, which is why the supervisor needs to know nothing about this.
  *
  * The approval gate is preserved, not reimplemented. `spawn` delegates to
  * `spawnLocalHost` with `ompPath` pointing at a generated wrapper, so
@@ -16,13 +16,34 @@
  * and rewrites the flag. See `gate-wrapper.ts`. ompd never passes `--config`
  * and never authors the overlay.
  *
- * The run command is built per runtime, not assumed docker-shaped. Apple's
- * `container` CLI (0.4.1) has no flag for `--cap-drop`, `--security-opt`,
- * `--read-only`, or `--pids-limit`, and exits on an unknown flag rather than
- * ignoring it, so a docker-shaped command never provisions on it at all. See
- * `RUNTIME_FLAG_SUPPORT` below and `docs/running.md`'s per-runtime table for
- * what that means for confinement, which is not the same on every runtime and
- * is never silently rounded up to "the same as docker".
+ * Two things this file used to get wrong, both of which cost an operator a
+ * working sandbox rather than merely a warning.
+ *
+ * It chose a runtime by taking whichever of `docker`, `podman`, `container`
+ * answered `--version` first. On a Mac with Docker installed that is always
+ * Docker, so Apple's native runtime was never selected even when it was
+ * present and working, and an operator had no way to ask for it. Selection now
+ * lives in `runtime.ts`: platform-ordered, pinnable, and fail-closed, so a
+ * pinned runtime that is missing is an error rather than a quiet downgrade to
+ * whatever else happened to be installed.
+ *
+ * It also decided confinement from a table keyed on the runtime's *name*. That
+ * is not a property of a name: Apple `container` 0.4.1 rejects `--cap-drop`,
+ * `--read-only`, `--pids-limit` and `--security-opt` outright (exit 64,
+ * `Unknown option`), while 1.3.0 accepts the first two and `--ulimit`. One
+ * table entry cannot be true for both, and the failure mode of getting it
+ * wrong is silently withholding a real security control. Capability is now
+ * derived from the binary's own `run --help` by `runtime.ts` and arrives here
+ * as a `RuntimeCapability`; this file sends a flag if and only if that
+ * capability says the flag exists.
+ *
+ * The same table also hid a third defect that no amount of gating the four
+ * flags would have caught: `--user <uid>:<gid>` was appended unconditionally,
+ * and Apple's `--user` takes a name. Feeding it `501:20` does not produce a
+ * usage error, it kills the container (`XPC connection error: Connection
+ * interrupted`). So the Apple path could never have provisioned at all. The
+ * numeric user flag is now gated on `capability.numericUser`, which is true
+ * only when that CLI's own `--user` description documents a numeric uid.
  */
 
 import { rmSync } from "node:fs";
@@ -33,6 +54,8 @@ import { spawnLocalHost } from "@ompd/acp";
 import { dangerousMountReason, type HostKind, type HostMount, type HostSpec, isInside } from "@ompd/core";
 import { execCommand } from "./exec.ts";
 import { type GateWrapper, writeGateWrapper } from "./gate-wrapper.ts";
+import { type EnsureToolchainOptions, ensureToolchain, type ResolvedToolchain } from "./image.ts";
+import { type RuntimeCapability, selectRuntime } from "./runtime.ts";
 import {
   type CommandRunner,
   type HostHandle,
@@ -41,66 +64,43 @@ import {
   type SpawnHost,
 } from "./types.ts";
 
-/**
- * Probe order. Docker first because OrbStack, Colima, and Rancher all present a
- * docker CLI, so it is the most likely to be both present and wired up.
- *
- * `orbctl` is deliberately absent. It was listed here and described as verified,
- * and it is neither: OrbStack's container surface IS `docker`, while `orbctl`
- * manages OrbStack Linux machines. Its `run` means "run a command on Linux", it
- * takes none of `--volume`, `--cap-drop`, or `--network`, and it rejects
- * `--version`. The probe only ever skipped it by that accident; pinning it
- * through `ContainerBackendOptions.runtime` would have produced a command that
- * looks like a container and is not one.
- */
-export const CONTAINER_RUNTIMES: readonly string[] = ["docker", "podman", "container"];
-
-/**
- * Used when `spec.image` is absent. ompd does not build an image: the operator
- * publishes one containing `omp` and points specs at it. A wrong or missing
- * image fails provisioning loudly rather than falling back to anything.
- */
-export const DEFAULT_CONTAINER_IMAGE = "ghcr.io/jwaldrip/omp:latest";
-
 /** Directory inside the container holding ompd's per-host scratch. */
 const DEFAULT_SCRATCH_ROOT = "/tmp";
 
-/** What a runtime may return as a container id. */
+/**
+ * Memory and CPU ceiling for a container host.
+ *
+ * Sent only where the capability reports the flags, but worth stating why they
+ * are here at all: Apple `container` rejects `--pids-limit`, so on that runtime
+ * these two are the *only* resource ceiling available. Without them a runaway
+ * build inside a sandbox is bounded by nothing but the host.
+ */
+const DEFAULT_MEMORY = "4g";
+const DEFAULT_CPUS = "4";
+
+/** What a runtime may return as a container id. Apple returns a UUID, docker a hash. */
 const CONTAINER_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
-/**
- * First runtime that answers `--version`, or null.
- *
- * `--version` rather than `info` because it is the one subcommand all four
- * spell the same way. It proves the CLI is installed, not that its daemon is
- * up; a stopped daemon surfaces as a `ProvisionError` carrying the runtime's
- * own stderr on the first `run`, which is a better message than anything a
- * probe could synthesise.
- */
-export async function detectContainerRuntime(run: CommandRunner = execCommand): Promise<string | null> {
-  for (const runtime of CONTAINER_RUNTIMES) {
-    try {
-      const probe = await run([runtime, "--version"]);
-      if (probe.code === 0) return runtime;
-    } catch {
-      // Not installed. `Bun.spawn` throws for a missing binary rather than
-      // exiting non-zero, so this is the common case, not an error.
-    }
-  }
-  return null;
-}
-
 export interface ContainerBackendOptions {
-  /** Pin a runtime instead of probing. */
+  /** Pin a runtime instead of probing in platform order. */
   runtime?: string;
-  /** Image used when `spec.image` is absent. */
+  /**
+   * Skip the probe entirely and use this capability.
+   *
+   * The seam the unit tests drive: capability is otherwise derived from a real
+   * `run --help`, and the fixtures behind that live in `container-runtime.test.ts`.
+   */
+  capability?: RuntimeCapability;
+  /** Default image when `spec.image` is absent. Normally `OMPD_CONTAINER_IMAGE`. */
   image?: string;
   /** Host directory mounted into the container at the same absolute path. */
   workspace?: string;
   /** Directory inside the container for ompd's scratch. */
   scratchRoot?: string;
-  /** Path to omp inside the image. */
-  remoteOmpPath?: string;
+  /** Where the mounted toolchain is cached. Defaults to `~/.ompd/toolchain`. */
+  toolchainRoot?: string;
+  /** Overrides `process.platform` for selection order. */
+  platform?: string;
   /**
    * The daemon's own state directory. Never mountable: it holds the pairing
    * token and the audit trail an operator relies on to catch a sandbox doing
@@ -111,98 +111,20 @@ export interface ContainerBackendOptions {
   home?: string;
   run?: CommandRunner;
   spawn?: SpawnHost;
+  /** Toolchain resolution seam, so tests never download or extract anything. */
+  toolchain?: (opts: EnsureToolchainOptions) => Promise<ResolvedToolchain>;
 }
 
 interface ContainerRecord {
   runtime: string;
   containerId: string;
-  /** Removed after the container, which is the only order that works. */
-  network: string;
+  /**
+   * Removed after the container, which is the only order that works. `null`
+   * when the host ran with no network, so nothing was created to reclaim.
+   */
+  network: string | null;
   wrapper: GateWrapper;
 }
-
-/**
- * `--user <uid>:<gid>`, or nothing where the platform has no such notion.
- *
- * The daemon's own ids rather than a name baked into the image, because the
- * workspace arrives as a bind mount owned by whoever runs the daemon: a
- * container running as anyone else could not write to the directory it was
- * given, and one running as root would leave root-owned files in the
- * operator's repository.
- */
-function userArgs(): string[] {
-  const uid = process.getuid?.();
-  const gid = process.getgid?.();
-  if (uid === undefined || gid === undefined) return [];
-  return ["--user", `${uid}:${gid}`];
-}
-
-/**
- * Which of the four confinement flags a runtime's CLI actually accepts.
- *
- * What was actually verified on this machine, and what was not, because an
- * unearned "verified" is worse than an admitted assumption. Confirmed by
- * reading each CLI's own `run --help`: docker, podman 4.8.2 (a drop-in, all
- * nine flags present), and Apple's `container` 0.4.1. That last one is a
- * different CLI: it accepts `--user`, `--tmpfs`, `--volume`, `--network`,
- * `--workdir`, `--detach`, and `--rm`, but exits on `--cap-drop`,
- * `--security-opt`, `--read-only`, or `--pids-limit` as an unknown flag, so a
- * docker-shaped command never provisions on it.
- *
- * This table is what stands between "provision fails on the first unknown flag"
- * and "provision silently claims a confinement guarantee it never asked the
- * runtime for": every new runtime added to `CONTAINER_RUNTIMES` needs an entry
- * here, and a real `run --help` behind it, before it can be trusted.
- *
- * The four flags this table gates are not one thing. `--cap-drop`,
- * `--security-opt no-new-privileges`, and `--pids-limit` mitigate a
- * shared-kernel escape: a capability, a regained privilege, or a fork bomb
- * reaching past the container into the host's own kernel. Apple's `container`
- * gives each container its own lightweight VM, so there is no shared kernel
- * for any of those three to escape into in the first place -- their absence
- * there is a different boundary, not a hole in this one. `--read-only` is not
- * that: it is whether the image itself can be rewritten from inside, and
- * losing it is a real loss regardless of which kernel the container has.
- * `docs/running.md` reports it as one rather than folding it into the same
- * "different trade" story as the other three.
- */
-interface RuntimeFlagSupport {
-  capDrop: boolean;
-  securityOpt: boolean;
-  readOnly: boolean;
-  pidsLimit: boolean;
-}
-
-const DOCKER_SHAPED_FLAGS: RuntimeFlagSupport = {
-  capDrop: true,
-  securityOpt: true,
-  readOnly: true,
-  pidsLimit: true,
-};
-
-const APPLE_CONTAINER_FLAGS: RuntimeFlagSupport = {
-  capDrop: false,
-  securityOpt: false,
-  readOnly: false,
-  pidsLimit: false,
-};
-
-/**
- * Runtime to verified capability. Keys match `CONTAINER_RUNTIMES` exactly.
- *
- * A lookup rather than a conditional, because the conditional it replaced read
- * `runtime === "container" ? APPLE : DOCKER_SHAPED`, which handed docker's shape
- * to every runtime that was not Apple's, including any added later and any
- * pinned by an operator. That is the behaviour this file's own header promises
- * never happens. An absent entry is now a refusal: a runtime nobody has held a
- * `run --help` against cannot be trusted to have accepted the confinement we
- * asked for, and failing to provision is the safe direction.
- */
-const RUNTIME_FLAG_SUPPORT: Record<string, RuntimeFlagSupport> = {
-  docker: DOCKER_SHAPED_FLAGS,
-  podman: DOCKER_SHAPED_FLAGS,
-  container: APPLE_CONTAINER_FLAGS,
-};
 
 /**
  * Refuse a mount that would hand the sandbox the credentials that make it a
@@ -224,28 +146,98 @@ function refuseIfDangerous(hostPath: string, home: string): void {
   }
 }
 
+/**
+ * The confinement flags this runtime's CLI actually accepts.
+ *
+ * Nothing an ACP host does needs a Linux capability; none can be regained
+ * afterwards because no-new-privileges blocks setuid; a fork bomb in a sandbox
+ * should not take the operator's machine with it. All of that holds only on a
+ * runtime that can express it. A flag absent from the capability was never
+ * sent, which is not the same as having held, and `docs/running.md` reports the
+ * difference per runtime rather than rounding every runtime up to docker.
+ *
+ * The three that Apple's runtime lacks (`--cap-drop`, `--security-opt`,
+ * `--pids-limit`) all mitigate a shared-kernel escape, and Apple gives each
+ * container its own lightweight VM, so their absence there is a different
+ * boundary rather than a hole in this one. `--read-only` is not that: it is
+ * whether the image itself can be rewritten from inside, and losing it is a
+ * real loss whichever kernel the container has.
+ */
+function confinementArgs(cap: RuntimeCapability): string[] {
+  const args: string[] = [];
+  if (cap.capDrop) args.push("--cap-drop", "ALL");
+  if (cap.securityOpt) args.push("--security-opt", "no-new-privileges:true");
+  if (cap.readOnly) args.push("--read-only");
+  if (cap.pidsLimit) args.push("--pids-limit", "1024");
+  if (cap.memoryLimit) args.push("--memory", DEFAULT_MEMORY);
+  if (cap.cpuLimit) args.push("--cpus", DEFAULT_CPUS);
+
+  // The daemon's own ids rather than a name baked into the image, because the
+  // workspace arrives as a bind mount owned by whoever runs the daemon: a
+  // container running as anyone else could not write to the directory it was
+  // given, and one running as root would leave root-owned files in the
+  // operator's repository.
+  //
+  // Sent only where the CLI documents a numeric uid for `--user`. On Apple's
+  // runtime it does not, and neither concern applies there anyway: virtiofs
+  // squashes ownership, so a file the container creates in a mount lands owned
+  // by the host user whether the container ran as root or as nobody.
+  if (cap.numericUser) {
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+    if (uid !== undefined && gid !== undefined) args.push("--user", `${uid}:${gid}`);
+  }
+  return args;
+}
+
+/**
+ * The scratch tmpfs, spelled the way this runtime actually honours.
+ *
+ * `exec` is on because omp unpacks and runs native helpers out of its own
+ * scratch; withholding it would break the binary without bounding anything,
+ * since the agent can already run commands from the workspace by design.
+ *
+ * The option suffix is gated because Apple `container` 0.4.1 *parses*
+ * `--tmpfs /scratch:rw,exec,...`, exits 0, and then mounts nothing at all:
+ * `ls -ld /scratch` reports no such file. A bare path mounts real tmpfs there.
+ * Docker needs the suffix to get exec, size and mode. A flag that succeeds and
+ * does nothing is worse than one that errors, so this is the one property here
+ * that cannot be read off `run --help` and is recorded knowledge instead.
+ */
+function tmpfsArgs(cap: RuntimeCapability, scratchRoot: string): string[] {
+  return cap.tmpfsOptions
+    ? ["--tmpfs", `${scratchRoot}:rw,exec,nosuid,nodev,size=1g,mode=1777`]
+    : ["--tmpfs", scratchRoot];
+}
+
 export class ContainerBackend implements ProvisionerBackend {
   readonly kind: HostKind = "container";
 
   #runtime: string | undefined;
-  #image: string;
+  #capability: RuntimeCapability | undefined;
+  #image: string | undefined;
   #workspace: string;
   #scratchRoot: string;
-  #remoteOmpPath: string;
+  #toolchainRoot: string | undefined;
+  #platform: string | undefined;
   #home: string;
   #run: CommandRunner;
   #spawn: SpawnHost;
+  #toolchain: (opts: EnsureToolchainOptions) => Promise<ResolvedToolchain>;
   #live = new Map<string, ContainerRecord>();
 
   constructor(opts: ContainerBackendOptions = {}) {
     this.#runtime = opts.runtime;
-    this.#image = opts.image ?? DEFAULT_CONTAINER_IMAGE;
+    this.#capability = opts.capability;
+    this.#image = opts.image;
     this.#workspace = opts.workspace ?? process.cwd();
     this.#scratchRoot = opts.scratchRoot ?? DEFAULT_SCRATCH_ROOT;
-    this.#remoteOmpPath = opts.remoteOmpPath ?? "omp";
+    this.#toolchainRoot = opts.toolchainRoot;
+    this.#platform = opts.platform;
     this.#home = opts.home ?? join(homedir(), ".ompd");
     this.#run = opts.run ?? execCommand;
     this.#spawn = opts.spawn ?? spawnLocalHost;
+    this.#toolchain = opts.toolchain ?? ensureToolchain;
   }
 
   async provision(spec: HostSpec): Promise<HostHandle> {
@@ -262,53 +254,76 @@ export class ContainerBackend implements ProvisionerBackend {
       return { hostPath: mount.hostPath, mode: mount.mode ?? "ro" };
     });
 
-    const runtime = this.#runtime ?? (await detectContainerRuntime(this.#run));
-    if (runtime === null) {
-      throw new ProvisionError(`no container runtime found (tried ${CONTAINER_RUNTIMES.join(", ")})`, "container");
-    }
-    const flags = RUNTIME_FLAG_SUPPORT[runtime];
-    if (flags === undefined) {
+    // Capability, not a name. `selectRuntime` throws a `ProvisionError` naming
+    // every candidate and its specific reason, so "not installed" and
+    // "installed but its service is down" read differently and each says what
+    // to run next.
+    const cap =
+      this.#capability ?? (await selectRuntime({ run: this.#run, platform: this.#platform, pinned: this.#runtime }));
+    const runtime = cap.runtime;
+
+    // The base image and, on the default path, a host directory holding omp
+    // that gets bind-mounted read-only. Nothing here touches a private
+    // registry: that is the whole point, since a denied pull from
+    // `ghcr.io/jwaldrip/omp:latest` is what made every container provision
+    // fail before.
+    const toolchain = await this.#toolchain({
+      runtime,
+      spec,
+      run: this.#run,
+      cacheRoot: this.#toolchainRoot,
+      envImage: this.#image,
+    });
+
+    const env: string[] = [];
+    for (const [key, value] of Object.entries(toolchain.env)) env.push("--env", `${key}=${value}`);
+    if (spec.repo !== undefined) env.push("--env", `OMPD_REPO=${spec.repo}`);
+    if (spec.ref !== undefined) env.push("--env", `OMPD_REF=${spec.ref}`);
+
+    // A network policy the runtime can actually enforce, or a refusal.
+    //
+    // `"none"` is refused outright where the runtime cannot express it, rather
+    // than approximated. On Apple `container` the tempting approximation is
+    // `--no-dns`, and it is a false one: all it does is delete
+    // `/etc/resolv.conf`, and under it `ping 1.1.1.1` and `ping 8.8.8.8` both
+    // still succeed. Accepting the request and sending that flag would report a
+    // sealed container while handing the agent open egress, which is worse than
+    // saying no.
+    const policy = spec.network ?? "isolated";
+    if (policy === "none" && !cap.networkNone) {
       throw new ProvisionError(
-        `runtime ${runtime} has no verified confinement capability entry; ` +
-          `add one to RUNTIME_FLAG_SUPPORT backed by its own \`run --help\` before using it`,
+        `${runtime} ${cap.version} cannot express a container with no network, so a "none" policy is refused ` +
+          `rather than approximated: it has no \`none\` network, and \`--no-dns\` only removes the resolver ` +
+          `while leaving IP egress open. Use a runtime that supports \`--network none\`, or ask for "isolated".`,
         "container",
       );
     }
 
-    const image = spec.image ?? this.#image;
-    const env: string[] = [];
-    if (spec.repo !== undefined) env.push("--env", `OMPD_REPO=${spec.repo}`);
-    if (spec.ref !== undefined) env.push("--env", `OMPD_REF=${spec.ref}`);
-
-    // A network of its own, created before the container that joins it.
+    // Otherwise a network of its own, created before the container that joins
+    // it.
     //
     // The default bridge puts every container on one segment, so an agent on
     // it can reach the operator's database, cache, and anything else they
     // happen to be running. Egress to the internet stays open because the
-    // agent has to reach a model endpoint, and Docker cannot express "this one
-    // host and nothing else" without a proxy in the path. That is a real
-    // remaining exposure and `docs/running.md` says so rather than implying
-    // this is a sealed box.
-    const network = `ompd-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    const madeNetwork = await this.#run([runtime, "network", "create", network]);
-    if (madeNetwork.code !== 0) {
-      throw new ProvisionError(
-        `${runtime} network create failed (exit ${madeNetwork.code}): ${madeNetwork.stderr.trim()}`,
-        "container",
-      );
+    // agent has to reach a model endpoint, and neither docker nor Apple's
+    // runtime can express "this one host and nothing else" without a proxy in
+    // the path. That is a real remaining exposure and `docs/running.md` says
+    // so rather than implying this is a sealed box.
+    //
+    // Two names, because they are two things: what `--network` receives, and
+    // what teardown has to remove. A `"none"` policy creates nothing, so there
+    // is nothing to reclaim and `network rm none` must never be attempted.
+    const createdNetwork = policy === "none" ? null : `ompd-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const networkArg = createdNetwork ?? "none";
+    if (createdNetwork !== null) {
+      const madeNetwork = await this.#run([runtime, "network", "create", createdNetwork]);
+      if (madeNetwork.code !== 0) {
+        throw new ProvisionError(
+          `${runtime} network create failed (exit ${madeNetwork.code}): ${madeNetwork.stderr.trim()}`,
+          "container",
+        );
+      }
     }
-
-    // Confinement flags this runtime's CLI actually accepts, per
-    // `RuntimeFlagSupport` above. Nothing an ACP host does needs a capability;
-    // none of these can be regained afterwards because no-new-privileges
-    // blocks setuid; a fork bomb in a sandbox should not take the operator's
-    // machine with it -- on a runtime that can express all three. An empty
-    // entry here means the flag was never sent, not that it silently held.
-    const confineArgs: string[] = [];
-    if (flags.capDrop) confineArgs.push("--cap-drop", "ALL");
-    if (flags.securityOpt) confineArgs.push("--security-opt", "no-new-privileges:true");
-    if (flags.readOnly) confineArgs.push("--read-only");
-    if (flags.pidsLimit) confineArgs.push("--pids-limit", "1024");
 
     // Each named mount lands at the identical absolute path inside, the same
     // property `--volume workspace:workspace` already relies on. Read-only
@@ -316,6 +331,12 @@ export class ContainerBackend implements ProvisionerBackend {
     const mountArgs: string[] = [];
     for (const mount of mounts) {
       mountArgs.push("--volume", `${mount.hostPath}:${mount.hostPath}:${mount.mode}`);
+    }
+    // The toolchain, read-only, and verified to be so: a write into it reports
+    // `Read-only file system`. It carries omp itself, so it is the one mount
+    // the container must not be able to rewrite.
+    if (toolchain.toolsDir !== null) {
+      mountArgs.push("--volume", `${toolchain.toolsDir}:${toolchain.mountPath}:ro`);
     }
 
     // `tail -f /dev/null` keeps the container alive so exec has something to
@@ -327,32 +348,22 @@ export class ContainerBackend implements ProvisionerBackend {
       "--detach",
       "--rm",
       "--network",
-      network,
-      // The agent runs as the daemon's own user, never root. Two things follow:
-      // a file it creates in the workspace belongs to the operator rather than
-      // to root, and a bug in the runtime lands as an unprivileged user.
-      ...userArgs(),
-      ...confineArgs,
-      // The one writable filesystem besides the mounts, and it dies with the
-      // container. `exec` is on because omp unpacks and runs native helpers
-      // out of its own scratch; withholding it would break the binary without
-      // bounding anything, since the agent can already run commands from the
-      // workspace by design.
-      "--tmpfs",
-      `${this.#scratchRoot}:rw,exec,nosuid,nodev,size=1g,mode=1777`,
+      networkArg,
+      ...confinementArgs(cap),
+      ...tmpfsArgs(cap, this.#scratchRoot),
       "--volume",
       `${this.#workspace}:${this.#workspace}`,
       ...mountArgs,
       "--workdir",
       this.#workspace,
       ...env,
-      image,
+      toolchain.image,
       "tail",
       "-f",
       "/dev/null",
     ]);
     if (created.code !== 0) {
-      await this.#run([runtime, "network", "rm", network]).catch(() => undefined);
+      await this.#removeNetwork(runtime, createdNetwork);
       throw new ProvisionError(
         `${runtime} run failed (exit ${created.code}): ${created.stderr.trim() || created.stdout.trim()}`,
         "container",
@@ -365,7 +376,7 @@ export class ContainerBackend implements ProvisionerBackend {
       // id. Removing the network it is attached to is the only handle left,
       // and it fails while the container holds it, which is the loud version
       // of this going wrong.
-      await this.#run([runtime, "network", "rm", network]).catch(() => undefined);
+      await this.#removeNetwork(runtime, createdNetwork);
       throw new ProvisionError(`${runtime} run returned no usable container id`, "container");
     }
 
@@ -375,7 +386,7 @@ export class ContainerBackend implements ProvisionerBackend {
       await this.#prepareScratch(runtime, containerId, scratch);
       wrapper = writeGateWrapper({
         shell: [runtime, "exec", "-i", containerId],
-        attach: [runtime, "exec", "-i", containerId, this.#remoteOmpPath],
+        attach: [runtime, "exec", "-i", containerId, toolchain.ompPath],
         remoteConfigPath: `${scratch}/gate.yml`,
         label: `container ${containerId.slice(0, 12)}`,
         kind: "container",
@@ -386,7 +397,7 @@ export class ContainerBackend implements ProvisionerBackend {
       // goes with it, and only after it, because a network with a container
       // still attached cannot be removed.
       await this.#run([runtime, "rm", "--force", containerId]).catch(() => undefined);
-      await this.#run([runtime, "network", "rm", network]).catch(() => undefined);
+      await this.#removeNetwork(runtime, createdNetwork);
       throw err instanceof ProvisionError
         ? err
         : new ProvisionError(`container ${containerId} could not be prepared: ${String(err)}`, "container", {
@@ -394,13 +405,15 @@ export class ContainerBackend implements ProvisionerBackend {
           });
     }
 
-    this.#live.set(containerId, { runtime, containerId, network, wrapper });
+    this.#live.set(containerId, { runtime, containerId, network: createdNetwork, wrapper });
     const spawn = this.#spawn;
     return {
       // Mounts are normalized (default mode filled in) so an operator reading
       // this ref back sees exactly what the container can see, not merely
-      // what they happened to type.
-      ref: { kind: "container", id: containerId, spec: { ...spec, mounts } },
+      // what they happened to type. The image is recorded too: on the default
+      // path it is a public base rather than whatever the daemon's default
+      // happened to be at the time, and a transcript should say which.
+      ref: { kind: "container", id: containerId, spec: { ...spec, image: toolchain.image, mounts } },
       // `ompPath` is overridden rather than merged: the caller's omp path is a
       // path on the daemon's machine and means nothing inside the container.
       spawn: (opts: SpawnLocalHostOptions): LocalHost => spawn({ ...opts, ompPath: wrapper.path }),
@@ -423,13 +436,25 @@ export class ContainerBackend implements ProvisionerBackend {
     // always after it: docker refuses to remove a network something is still
     // attached to. A leftover empty network is litter rather than a risk, so
     // its failure is logged by the caller's audit entry, not thrown here.
-    await this.#run([record.runtime, "network", "rm", record.network]).catch(() => undefined);
+    await this.#removeNetwork(record.runtime, record.network);
     if (removed.code !== 0) {
       throw new ProvisionError(
         `${record.runtime} rm failed (exit ${removed.code}): ${removed.stderr.trim()}`,
         "container",
       );
     }
+  }
+
+  /**
+   * Remove a network this backend created, and only one it created.
+   *
+   * `null` means the host ran under a `"none"` policy, so nothing was created
+   * and there is nothing to reclaim. Attempting `network rm none` would try to
+   * delete a runtime-owned name on the runtimes that have one.
+   */
+  async #removeNetwork(runtime: string, network: string | null): Promise<void> {
+    if (network === null) return;
+    await this.#run([runtime, "network", "rm", network]).catch(() => undefined);
   }
 
   async #prepareScratch(runtime: string, containerId: string, scratch: string): Promise<void> {

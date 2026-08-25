@@ -28,13 +28,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import type { HostSpec } from "@ompd/core";
 import {
   CA_SOURCE_IMAGE,
   DEFAULT_BASE_IMAGE,
   ensureToolchain,
+  renderOmpHomeShim,
   TOOLCHAIN_MOUNT_PATH,
   toolchainDir,
 } from "../src/provisioner/image.ts";
@@ -44,8 +44,6 @@ import { ProvisionError } from "../src/provisioner/types.ts";
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
-
-const REPO_SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "scripts");
 
 const OMP_BYTES = new TextEncoder().encode("#!/fake-elf\nomp payload\n");
 const OMP_SHA = createHash("sha256").update(OMP_BYTES).digest("hex");
@@ -111,13 +109,6 @@ function harness(opts: HarnessOptions = {}): Harness {
       return opts.omp ?? OMP_BYTES;
     },
   };
-}
-
-/** A scripts dir holding a shim whose exec line the module will not recognise. */
-function brokenScriptsDir(): string {
-  const dir = tempDir("ompd-scripts-");
-  writeFileSync(join(dir, "omp-home-shim.sh"), '#!/bin/sh\nexec /somewhere/else/omp "$@"\n');
-  return dir;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +212,6 @@ describe("a named image", () => {
       run: h.run,
       cacheRoot: tempDir("ompd-cache-"),
       envImage: "\n",
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: h.fetchAsset,
@@ -245,7 +235,6 @@ describe("populating the toolchain cache", () => {
       spec: SPEC,
       run: h.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: h.fetchAsset,
@@ -277,7 +266,6 @@ describe("populating the toolchain cache", () => {
       spec: SPEC,
       run: h.run,
       cacheRoot: tempDir("ompd-cache-"),
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: h.fetchAsset,
@@ -295,7 +283,6 @@ describe("populating the toolchain cache", () => {
       spec: SPEC,
       run: h.run,
       cacheRoot: tempDir("ompd-cache-"),
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: h.fetchAsset,
@@ -315,7 +302,6 @@ describe("populating the toolchain cache", () => {
       spec: SPEC,
       run: h.run,
       cacheRoot: tempDir("ompd-cache-"),
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: h.fetchAsset,
@@ -336,7 +322,6 @@ describe("populating the toolchain cache", () => {
       spec: SPEC,
       run: h.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: h.fetchAsset,
@@ -352,7 +337,6 @@ describe("populating the toolchain cache", () => {
       spec: SPEC,
       run: h.run,
       cacheRoot: tempDir("ompd-cache-"),
-      scriptsDir: REPO_SCRIPTS,
       arch: "x64",
       fetchAsset: h.fetchAsset,
     });
@@ -375,7 +359,6 @@ describe("a cached toolchain", () => {
       spec: SPEC,
       run: first.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: first.fetchAsset,
@@ -387,7 +370,6 @@ describe("a cached toolchain", () => {
       spec: SPEC,
       run: second.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: second.fetchAsset,
@@ -409,7 +391,6 @@ describe("a cached toolchain", () => {
       spec: SPEC,
       run: first.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: first.fetchAsset,
@@ -431,7 +412,6 @@ describe("a cached toolchain", () => {
         spec: SPEC,
         run: second.run,
         cacheRoot,
-        scriptsDir: REPO_SCRIPTS,
         ompVersion: "18.0.4",
         arch: "arm64",
         fetchAsset: second.fetchAsset,
@@ -442,10 +422,14 @@ describe("a cached toolchain", () => {
   });
 
   test("a superseded shim is refreshed in place, still without a download", async () => {
+    // The staleness this guards is real even though the shim is now embedded:
+    // the cache directory is named after the omp binary's digest, so a release
+    // of ompd that changes the shim reuses the same directory. The shim decides
+    // whether a workspace-seeded OMP home is honoured or refused, so an old copy
+    // pinned there forever is a security behaviour going stale rather than a
+    // cosmetic one. Simulated by corrupting the cached copy directly, which is
+    // indistinguishable from a shim written by an older build.
     const cacheRoot = tempDir("ompd-cache-");
-    const scriptsDir = tempDir("ompd-scripts-");
-    const realShim = readFileSync(join(REPO_SCRIPTS, "omp-home-shim.sh"), "utf8");
-    writeFileSync(join(scriptsDir, "omp-home-shim.sh"), realShim);
 
     const first = harness();
     const populated = await ensureToolchain({
@@ -453,13 +437,15 @@ describe("a cached toolchain", () => {
       spec: SPEC,
       run: first.run,
       cacheRoot,
-      scriptsDir,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: first.fetchAsset,
     });
+    const dir = populated.toolsDir ?? "";
+    const current = readFileSync(join(dir, "omp-shim"), "utf8");
 
-    writeFileSync(join(scriptsDir, "omp-home-shim.sh"), realShim.replace("set -eu", "set -eu\n# a later fix\n"));
+    chmodSync(join(dir, "omp-shim"), 0o755);
+    writeFileSync(join(dir, "omp-shim"), '#!/bin/sh\n# an older build\nexec /opt/ompd/omp "$@"\n');
 
     const second = harness();
     const hit = await ensureToolchain({
@@ -467,7 +453,6 @@ describe("a cached toolchain", () => {
       spec: SPEC,
       run: second.run,
       cacheRoot,
-      scriptsDir,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: second.fetchAsset,
@@ -475,10 +460,11 @@ describe("a cached toolchain", () => {
 
     expect(hit.cached).toBe(true);
     expect(second.fetched).toEqual([]);
-    const shim = readFileSync(join(populated.toolsDir!, "omp-shim"), "utf8");
-    expect(shim).toContain("# a later fix");
-    expect(shim).toContain(`exec ${TOOLCHAIN_MOUNT_PATH}/omp "$@"`);
-    expect(readdirSync(populated.toolsDir!).sort()).toEqual(["ca-certificates.crt", "omp", "omp-shim"]);
+    const shim = readFileSync(join(dir, "omp-shim"), "utf8");
+    expect(shim).toBe(current);
+    expect(shim).not.toContain("an older build");
+    expect(shim).toContain("refusing to fall back to the image's HOME");
+    expect(readdirSync(dir).sort()).toEqual(["ca-certificates.crt", "omp", "omp-shim"]);
   });
 
   test("another version or arch does not collide with the cached one", async () => {
@@ -489,7 +475,6 @@ describe("a cached toolchain", () => {
       spec: SPEC,
       run: first.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: first.fetchAsset,
@@ -501,7 +486,6 @@ describe("a cached toolchain", () => {
       spec: SPEC,
       run: second.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.5",
       arch: "arm64",
       fetchAsset: second.fetchAsset,
@@ -536,7 +520,6 @@ describe("a failed toolchain", () => {
         spec: SPEC,
         run: h.run,
         cacheRoot,
-        scriptsDir: REPO_SCRIPTS,
         ompVersion: "18.0.4",
         arch: "arm64",
         fetchAsset: h.fetchAsset,
@@ -555,7 +538,6 @@ describe("a failed toolchain", () => {
         spec: SPEC,
         run: h.run,
         cacheRoot,
-        scriptsDir: REPO_SCRIPTS,
         ompVersion: "18.0.4",
         arch: "arm64",
         fetchAsset: h.fetchAsset,
@@ -575,7 +557,6 @@ describe("a failed toolchain", () => {
           spec: SPEC,
           run: h.run,
           cacheRoot,
-          scriptsDir: REPO_SCRIPTS,
           ompVersion: "18.0.4",
           arch: "arm64",
           fetchAsset: h.fetchAsset,
@@ -594,7 +575,6 @@ describe("a failed toolchain", () => {
         spec: SPEC,
         run: h.run,
         cacheRoot: tempDir("ompd-cache-"),
-        scriptsDir: REPO_SCRIPTS,
         ompVersion: "18.0.4",
         arch: "arm64",
         fetchAsset: h.fetchAsset,
@@ -602,43 +582,43 @@ describe("a failed toolchain", () => {
     ).rejects.toThrow(/exit 125/);
   });
 
-  test("a shim whose exec line moved is refused before any download", async () => {
+  test("the shim is embedded, so no scripts directory is consulted at all", async () => {
+    // The reason this replaced a pair of "the file is missing / the file drifted"
+    // tests: reading the shim off disk relative to this module is correct from a
+    // checkout and wrong in the single-file binary ompd ships, where
+    // `import.meta.url` is `file:///$bunfs/root/<name>`. A defect that only
+    // appears once installed is the worst shape available, so the shim is now a
+    // template with no filesystem input and there is nothing left to miss.
     const h = harness();
     const cacheRoot = tempDir("ompd-cache-");
 
-    await expect(
-      ensureToolchain({
-        runtime: "container",
-        spec: SPEC,
-        run: h.run,
-        cacheRoot,
-        scriptsDir: brokenScriptsDir(),
-        ompVersion: "18.0.4",
-        arch: "arm64",
-        fetchAsset: h.fetchAsset,
-      }),
-    ).rejects.toThrow(/no longer contains/);
-    expect(h.fetched).toEqual([]);
-    expect(h.argv).toEqual([]);
-    expectEmptyCache(cacheRoot);
+    const resolved = await ensureToolchain({
+      runtime: "container",
+      spec: SPEC,
+      run: h.run,
+      cacheRoot,
+      ompVersion: "18.0.4",
+      arch: "arm64",
+      fetchAsset: h.fetchAsset,
+    });
+
+    const shim = readFileSync(join(resolved.toolsDir ?? "", "omp-shim"), "utf8");
+    expect(shim).toContain('exec /opt/ompd/omp "$@"');
+    // The security behaviour, not merely the exec target: a seeded home with no
+    // `.omp` in it must be refused rather than quietly downgraded to the
+    // image's own HOME, because that is the difference between "no credentials"
+    // and "the wrong credentials".
+    expect(shim).toContain("refusing to fall back to the image's HOME");
+    expect(shim).toContain("exit 78");
   });
 
-  test("a missing scripts directory names the path it could not read", async () => {
-    const h = harness();
-    const missing = join(tempDir("ompd-scripts-"), "gone");
-
-    await expect(
-      ensureToolchain({
-        runtime: "container",
-        spec: SPEC,
-        run: h.run,
-        cacheRoot: tempDir("ompd-cache-"),
-        scriptsDir: missing,
-        ompVersion: "18.0.4",
-        arch: "arm64",
-        fetchAsset: h.fetchAsset,
-      }),
-    ).rejects.toThrow(join(missing, "omp-home-shim.sh"));
+  test("the same template serves the image path with a different exec target", async () => {
+    // `scripts/check-container-host.ts` builds an image that puts omp at a real
+    // path instead of mounting it, and both callers rendering from one function
+    // is what stops the two shims drifting apart.
+    expect(renderOmpHomeShim("/usr/local/lib/omp/omp")).toContain('exec /usr/local/lib/omp/omp "$@"');
+    expect(renderOmpHomeShim("/opt/ompd/omp")).toContain('exec /opt/ompd/omp "$@"');
+    expect(renderOmpHomeShim("/usr/local/lib/omp/omp")).not.toContain("/opt/ompd/omp");
   });
 
   test("omp not on PATH is a named failure, not a 404 URL", async () => {
@@ -650,7 +630,6 @@ describe("a failed toolchain", () => {
         spec: SPEC,
         run: h.run,
         cacheRoot: tempDir("ompd-cache-"),
-        scriptsDir: REPO_SCRIPTS,
         arch: "arm64",
         fetchAsset: h.fetchAsset,
       }),
@@ -668,7 +647,6 @@ describe("a failed toolchain", () => {
       spec: SPEC,
       run: h.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: h.fetchAsset,
@@ -696,7 +674,6 @@ describe("a failed toolchain", () => {
       spec: SPEC,
       run: h.run,
       cacheRoot,
-      scriptsDir: REPO_SCRIPTS,
       ompVersion: "18.0.4",
       arch: "arm64",
       fetchAsset: h.fetchAsset,

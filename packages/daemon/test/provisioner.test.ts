@@ -27,12 +27,13 @@ import {
   type CloudMachine,
   type CommandRunner,
   ContainerBackend,
-  detectContainerRuntime,
   type HostHandle,
   HostProvisioner,
   LocalBackend,
   ProvisionError,
   type ProvisionerBackend,
+  type ResolvedToolchain,
+  type RuntimeCapability,
   renderGateWrapper,
   type SpawnHost,
 } from "../src/provisioner/index.ts";
@@ -195,6 +196,66 @@ function containerRunner(containerId: string): ContainerRunner {
   return { run, calls };
 }
 
+/**
+ * A docker-shaped capability, stated rather than probed.
+ *
+ * The backend takes a `RuntimeCapability` instead of deciding confinement from
+ * a runtime's name, so these tests declare the shape they are asserting
+ * against. Whether a real binary actually has these flags is a different
+ * question, answered in `container-runtime.test.ts` against recorded
+ * `run --help` output from docker 29.4.0, podman 4.8.2 and Apple's 0.4.1.
+ */
+const DOCKER_CAP: RuntimeCapability = {
+  runtime: "docker",
+  version: "Docker version 29.4.0, build 9d7ad9f",
+  capDrop: true,
+  securityOpt: true,
+  readOnly: true,
+  pidsLimit: true,
+  numericUser: true,
+  networks: true,
+  tmpfsOptions: true,
+  networkNone: true,
+  memoryLimit: true,
+  cpuLimit: true,
+};
+
+/**
+ * Apple `container` 0.4.1, which accepts none of the four confinement flags
+ * and whose `--user` takes a name rather than a uid.
+ */
+const APPLE_CAP: RuntimeCapability = {
+  runtime: "container",
+  version: "container CLI version 0.4.1 (build: release, commit: 4ac18b5)",
+  capDrop: false,
+  securityOpt: false,
+  readOnly: false,
+  pidsLimit: false,
+  numericUser: false,
+  networks: true,
+  tmpfsOptions: false,
+  networkNone: false,
+  memoryLimit: true,
+  cpuLimit: true,
+};
+
+/**
+ * Resolves to an image with no toolchain mount, so argv assertions elsewhere
+ * are not perturbed by it. The toolchain path itself, including the download,
+ * the sha256 and the cache hit, is covered in `container-image.test.ts`.
+ */
+const stubToolchain = async (): Promise<ResolvedToolchain> => ({
+  image: "debian:bookworm-slim",
+  source: "default",
+  toolsDir: null,
+  mountPath: "/opt/ompd",
+  ompPath: "omp",
+  env: {},
+  ompSha256: null,
+  caSha256: null,
+  cached: true,
+});
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -208,7 +269,8 @@ describe("dispatch", () => {
     const container = new RecordingBackend(
       "container",
       new ContainerBackend({
-        runtime: "docker",
+        capability: DOCKER_CAP,
+        toolchain: stubToolchain,
         run: containerRunner("cnt000000001").run,
         spawn: recorder.spawn,
       }),
@@ -404,42 +466,40 @@ describe("lifetime", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Runtime detection
+// Runtime selection
+//
+// Selection and capability derivation live in `runtime.ts` and are covered
+// against real recorded `run --help` output in `container-runtime.test.ts`.
+// What belongs here is only the backend's own behaviour when selection fails.
 // ---------------------------------------------------------------------------
 
-describe("detectContainerRuntime", () => {
-  test("returns null when nothing is installed", async () => {
-    const probed: string[] = [];
-    const run: CommandRunner = async argv => {
-      probed.push(argv[0] ?? "");
-      // A missing binary throws; an installed one that cannot answer exits non-zero.
-      if (argv[0] === "podman") return { code: 127, stdout: "", stderr: "broken" };
-      throw new ProvisionError(`${argv[0]} could not be started`);
-    };
-
-    expect(await detectContainerRuntime(run)).toBeNull();
-    expect(probed).toEqual(["docker", "podman", "container"]);
-  });
-
-  test("returns the first runtime that answers, in probe order", async () => {
-    const run: CommandRunner = async argv => {
-      if (argv[0] === "docker") throw new ProvisionError("no docker here");
-      return { code: 0, stdout: `${argv[0]} version 1.0\n`, stderr: "" };
-    };
-    expect(await detectContainerRuntime(run)).toBe("podman");
-  });
-
-  test("provisioning fails when no runtime is installed", async () => {
+describe("runtime selection reaches the backend", () => {
+  test("provisioning fails when no runtime is installed, and creates nothing", async () => {
     const attempted: string[][] = [];
     const run: CommandRunner = async argv => {
       attempted.push([...argv]);
       throw new ProvisionError("not installed");
     };
-    const backend = new ContainerBackend({ run });
+    const backend = new ContainerBackend({ run, platform: "darwin" });
 
-    await expect(backend.provision({ kind: "container" })).rejects.toThrow(/no container runtime/);
-    // Probes only. Nothing was created, so nothing needs reclaiming.
+    await expect(backend.provision({ kind: "container" })).rejects.toThrow(ProvisionError);
+    // Probes only. Nothing was created, so nothing needs reclaiming: no
+    // network, no run, no exec.
     expect(attempted.every(argv => argv[1] === "--version")).toBe(true);
+  });
+
+  test("a pinned runtime that is absent never falls back to another", async () => {
+    const probed: string[] = [];
+    const run: CommandRunner = async argv => {
+      probed.push(argv[0] ?? "");
+      throw new ProvisionError("not installed");
+    };
+    const backend = new ContainerBackend({ run, runtime: "container", platform: "darwin" });
+
+    await expect(backend.provision({ kind: "container" })).rejects.toThrow(ProvisionError);
+    // The property that matters: an operator who pinned the native runtime and
+    // also happens to have Docker installed must not silently get Docker.
+    expect(probed).toEqual(["container"]);
   });
 });
 
@@ -464,8 +524,8 @@ describe("container hosts keep the approval gate", () => {
       recorder,
       calls: runner.calls,
       backend: new ContainerBackend({
-        runtime: "docker",
-        remoteOmpPath: "/usr/local/bin/omp",
+        capability: DOCKER_CAP,
+        toolchain: async () => ({ ...(await stubToolchain()), ompPath: "/usr/local/bin/omp" }),
         scratchRoot: "/far",
         run: runner.run,
         spawn: recorder.spawn,
@@ -566,13 +626,13 @@ describe("container hosts keep the approval gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Runtime-shaped confinement flags
+// Confinement follows the capability, not the runtime's name
 // ---------------------------------------------------------------------------
 
-describe("the run command is shaped per runtime, not assumed docker", () => {
-  function runArgvFor(runtime: string): Promise<string[]> {
+describe("the run command is shaped by capability, not assumed docker", () => {
+  function runArgvFor(capability: RuntimeCapability): Promise<string[]> {
     const runner = containerRunner("cnt000000001");
-    const backend = new ContainerBackend({ runtime, run: runner.run });
+    const backend = new ContainerBackend({ capability, run: runner.run, toolchain: stubToolchain });
     return backend.provision({ kind: "container" }).then(() => {
       const run = runner.calls.find(argv => argv[1] === "run");
       if (run === undefined) throw new Error("no run call recorded");
@@ -580,40 +640,30 @@ describe("the run command is shaped per runtime, not assumed docker", () => {
     });
   }
 
-  test("docker gets every one of the four confinement flags", async () => {
-    const argv = await runArgvFor("docker");
+  test("a docker-shaped capability gets every one of the four confinement flags", async () => {
+    const argv = await runArgvFor(DOCKER_CAP);
     expect(argv).toContain("--cap-drop");
     expect(argv).toContain("--security-opt");
     expect(argv).toContain("no-new-privileges:true");
     expect(argv).toContain("--read-only");
     expect(argv).toContain("--pids-limit");
-  });
-
-  test("podman is docker-shaped too, verified against podman 4.8.2 on this machine", async () => {
-    // orbctl used to be asserted here and should never have been: it manages
-    // OrbStack Linux machines rather than containers, its `run` takes none of
-    // these flags, and OrbStack's actual container surface is `docker`.
-    const argv = await runArgvFor("podman");
-    expect(argv).toContain("--cap-drop");
-    expect(argv).toContain("--security-opt");
-    expect(argv).toContain("--read-only");
-    expect(argv).toContain("--pids-limit");
-  });
-
-  test("a runtime with no capability entry is refused rather than guessed at", async () => {
-    // The property that makes the table trustworthy: an unknown runtime must not
-    // silently inherit docker's shape, because that is how a confinement
-    // guarantee gets claimed without ever being asked for.
-    await expect(runArgvFor("orbctl")).rejects.toThrow();
+    // And the numeric user, which is the flag that used to be sent
+    // unconditionally and killed Apple's runtime.
+    expect(argv).toContain("--user");
   });
 
   test("Apple `container` never receives a flag its CLI rejects", async () => {
-    const argv = await runArgvFor("container");
+    const argv = await runArgvFor(APPLE_CAP);
+    // Each of these exits 64 with `Unknown option` on a real 0.4.1.
     expect(argv).not.toContain("--cap-drop");
     expect(argv).not.toContain("--security-opt");
     expect(argv).not.toContain("no-new-privileges:true");
     expect(argv).not.toContain("--read-only");
     expect(argv).not.toContain("--pids-limit");
+    // And this one is worse than an unknown flag: `--user 501:20` does not
+    // fail to parse, it kills the container with an XPC error, so the Apple
+    // path could never provision at all while it was sent unconditionally.
+    expect(argv).not.toContain("--user");
     // What it does still receive: the flags verified to work against a real
     // 0.4.1 install.
     expect(argv).toContain("--tmpfs");
@@ -622,6 +672,81 @@ describe("the run command is shaped per runtime, not assumed docker", () => {
     expect(argv).toContain("--workdir");
     expect(argv).toContain("--detach");
     expect(argv).toContain("--rm");
+    // Apple has no `--pids-limit`, so memory and cpu are the only ceiling it
+    // can be given. Withholding them would leave a sandbox bounded by nothing.
+    expect(argv).toContain("--memory");
+    expect(argv).toContain("--cpus");
+  });
+
+  test("the scratch tmpfs is spelled the way each runtime honours", async () => {
+    // Docker needs the option suffix to get exec, size and mode.
+    const docker = await runArgvFor(DOCKER_CAP);
+    expect(docker[docker.indexOf("--tmpfs") + 1]).toBe("/tmp:rw,exec,nosuid,nodev,size=1g,mode=1777");
+
+    // Apple `container` 0.4.1 parses that same suffix, exits 0, and then
+    // mounts nothing at all, which is why this is gated rather than sent
+    // everywhere: a flag that succeeds and does nothing is worse than one
+    // that errors.
+    const apple = await runArgvFor(APPLE_CAP);
+    expect(apple[apple.indexOf("--tmpfs") + 1]).toBe("/tmp");
+  });
+
+  test("a capability with no confinement still gets the mount and lifecycle flags", async () => {
+    // The failure this guards: gating every flag on capability must not
+    // accidentally gate the flags that make a container a container.
+    const bare: RuntimeCapability = {
+      ...APPLE_CAP,
+      networks: true,
+      memoryLimit: false,
+      cpuLimit: false,
+    };
+    const argv = await runArgvFor(bare);
+    expect(argv).toContain("--volume");
+    expect(argv).toContain("--workdir");
+    expect(argv).toContain("--network");
+    expect(argv).not.toContain("--memory");
+    expect(argv).not.toContain("--cpus");
+  });
+
+  test("a no-network policy is refused where the runtime cannot express it", async () => {
+    // The approximation this exists to prevent: on Apple `container` there is
+    // no `none` network, and the tempting substitute is `--no-dns`, which only
+    // deletes `/etc/resolv.conf`. Under it `ping 1.1.1.1` still succeeds, so
+    // accepting the request would report a sealed container while handing the
+    // agent open egress. Refusing is the honest answer.
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({ capability: APPLE_CAP, run: runner.run, toolchain: stubToolchain });
+
+    await expect(backend.provision({ kind: "container", network: "none" })).rejects.toThrow(/cannot express/);
+    // Refused before anything was created, and `--no-dns` was never reached for.
+    expect(runner.calls).toEqual([]);
+  });
+
+  test("a no-network policy is honoured where the runtime can express it", async () => {
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({ capability: DOCKER_CAP, run: runner.run, toolchain: stubToolchain });
+
+    const handle = await backend.provision({ kind: "container", network: "none" });
+    const run = runner.calls.find(argv => argv[1] === "run") ?? [];
+    expect(run[run.indexOf("--network") + 1]).toBe("none");
+    // Nothing was created, so nothing is reclaimed: `network rm none` would be
+    // an attempt to delete a name the runtime owns.
+    expect(runner.calls.some(argv => argv[1] === "network" && argv[2] === "create")).toBe(false);
+
+    await backend.destroy(handle);
+    expect(runner.calls.some(argv => argv[1] === "network" && argv[2] === "rm")).toBe(false);
+  });
+
+  test("the default policy still gets a network of its own, and reclaims it", async () => {
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({ capability: APPLE_CAP, run: runner.run, toolchain: stubToolchain });
+
+    const handle = await backend.provision({ kind: "container" });
+    const created = runner.calls.find(argv => argv[1] === "network" && argv[2] === "create");
+    expect(created?.[3]).toMatch(/^ompd-[0-9a-f]{12}$/);
+
+    await backend.destroy(handle);
+    expect(runner.calls).toContainEqual(["container", "network", "rm", created?.[3] ?? ""]);
   });
 });
 
@@ -635,7 +760,8 @@ describe("extra mounts", () => {
     return {
       runner,
       backend: new ContainerBackend({
-        runtime: "docker",
+        capability: DOCKER_CAP,
+        toolchain: stubToolchain,
         workspace: "/work/repo",
         home,
         run: runner.run,
@@ -709,7 +835,8 @@ describe("extra mounts", () => {
       const store = tempStore();
       const runner = containerRunner("cnt000000001");
       const backend = new ContainerBackend({
-        runtime: "docker",
+        capability: DOCKER_CAP,
+        toolchain: stubToolchain,
         workspace: "/work/repo",
         home: home ?? "/home/operator/.ompd",
         run: runner.run,
