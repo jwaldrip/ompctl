@@ -528,7 +528,14 @@ export function Console({
       <RoutinesScreen
         connection={connection}
         createClient={createClient}
-        onBack={back}
+        onBack={() => {
+          // A dormant resume can still be in flight when this route leaves. Its
+          // later session_opened frame is no longer an answer to this route's
+          // tap, so it must not turn the tablet stack on after the operator has
+          // already returned to the fleet.
+          setPendingRouteSession(null);
+          back();
+        }}
         onOpenSession={openSessionFromRoute}
       />
     ),
