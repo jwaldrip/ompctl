@@ -98,6 +98,8 @@ async function harness(
     approvalTimeoutMs?: number;
     onWebViewResult?: (agentId: AgentId, requestId: string, result: WebViewActionResult) => boolean;
     routines?: RoutineRunner;
+    /** Makes this gateway a replica, which queues writes instead of running them. */
+    federation?: { replica: boolean; syncToken: string };
   } = {},
 ): Promise<Harness> {
   const path = `/tmp/ompd-gateway-${crypto.randomUUID()}.db`;
@@ -128,6 +130,7 @@ async function harness(
     sessions: hosts,
     onWebViewResult: opts.onWebViewResult,
     routines: opts.routines,
+    federation: opts.federation,
   });
   gateways.push(gw);
   const port = await gw.listen();
@@ -626,6 +629,172 @@ describe("http scopes", () => {
     const reader = await h.pair("phone", [SCOPE_READ]);
     expect((await h.http("/v1/audit", {}, reader)).status).toBe(200);
     expect((await h.http("/v1/approvals", {}, reader)).status).toBe(200);
+  });
+});
+
+/**
+ * `host` on `POST /v1/agents` used to be an `as HostSpec` cast, gated only by
+ * `manage` scope. The cast is not a check: whatever a caller put in `host`
+ * reached the provisioner with its declared type and none of its claims
+ * tested, and the provisioner turns those fields into a container runtime's
+ * argv.
+ *
+ * Every refusal here is paired with a positive control, because a validator
+ * that refuses everything also produces a 400 and would pass a test that only
+ * asserted the status.
+ */
+describe("host spec validation on agent creation", () => {
+  /** POST an agent whose `host` is whatever a client felt like sending. */
+  async function create(h: Harness, token: string, host: unknown): Promise<Response> {
+    return await h.http(
+      "/v1/agents",
+      { method: "POST", body: JSON.stringify({ name: "x", cwd: "/work", host }) },
+      token,
+    );
+  }
+
+  async function errorOf(res: Response): Promise<string> {
+    const body = (await res.json()) as { error?: unknown };
+    return typeof body.error === "string" ? body.error : "";
+  }
+
+  test("a malformed host is a 400 and creates nothing", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    const res = await create(h, manage, { kind: "nonsense" });
+    expect(res.status).toBe(400);
+    expect(await errorOf(res)).toContain("host.kind must be one of");
+    // The refusal is the point, but "no agent" is the property that matters:
+    // a 400 that still spawned a host would be worse than no check at all.
+    expect(h.sup.listAgents()).toHaveLength(0);
+
+    // Positive control: the same request with a valid kind is created.
+    const ok = await create(h, manage, { kind: "local" });
+    expect(ok.status).toBe(201);
+    expect(h.sup.listAgents()).toHaveLength(1);
+  });
+
+  test("an image reference beginning with a dash is refused", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    // `image` reaches argv as the image positional, so a runtime reads
+    // `--privileged` as a flag and makes the following word the image name.
+    const res = await create(h, manage, { kind: "container", image: "--privileged" });
+    expect(res.status).toBe(400);
+    expect(await errorOf(res)).toContain("cannot begin with a dash");
+    expect(h.sup.listAgents()).toHaveLength(0);
+
+    const single = await create(h, manage, { kind: "container", image: "-rm" });
+    expect(single.status).toBe(400);
+
+    // Positive control: an ordinary reference passes validation. It then fails
+    // for a different, named reason, because this harness has no provisioner.
+    // A 500 saying so proves the validator let it through; a 400 would not.
+    const allowed = await create(h, manage, { kind: "container", image: "ghcr.io/example/omp:1" });
+    expect(allowed.status).toBe(500);
+    expect(await errorOf(allowed)).toContain("requires the provisioner");
+  });
+
+  test("each field is checked, and an unknown field is refused rather than passed through", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    const cases: Array<{ host: unknown; expect: string }> = [
+      { host: "container", expect: "host must be an object" },
+      { host: null, expect: "host must be an object" },
+      { host: [], expect: "host must be an object" },
+      { host: {}, expect: "host.kind must be one of" },
+      { host: { kind: "container", image: 7 }, expect: "host.image must be a string" },
+      { host: { kind: "container", repo: {} }, expect: "host.repo must be a string" },
+      { host: { kind: "container", ref: false }, expect: "host.ref must be a string" },
+      { host: { kind: "container", ttlSeconds: 0 }, expect: "host.ttlSeconds must be a positive finite number" },
+      { host: { kind: "container", ttlSeconds: -1 }, expect: "host.ttlSeconds must be a positive finite number" },
+      { host: { kind: "container", ttlSeconds: "60" }, expect: "host.ttlSeconds must be a positive finite number" },
+      { host: { kind: "container", network: "host" }, expect: 'host.network must be "isolated" or "none"' },
+      { host: { kind: "container", mounts: "/tmp" }, expect: "host.mounts must be an array" },
+      { host: { kind: "container", mounts: ["/tmp"] }, expect: "each host.mounts entry must be an object" },
+      { host: { kind: "container", mounts: [{ mode: "ro" }] }, expect: "needs a non-empty hostPath string" },
+      { host: { kind: "container", mounts: [{ hostPath: 1 }] }, expect: "needs a non-empty hostPath string" },
+      { host: { kind: "container", mounts: [{ hostPath: "" }] }, expect: "needs a non-empty hostPath string" },
+      { host: { kind: "container", mounts: [{ hostPath: "/tmp", mode: "rwx" }] }, expect: 'must be "ro" or "rw"' },
+      // Unknown keys, at both levels. A field nobody validates is a field
+      // nobody has decided is safe, so it does not travel.
+      { host: { kind: "local", privileged: true }, expect: 'host has an unknown field "privileged"' },
+      {
+        host: { kind: "container", mounts: [{ hostPath: "/tmp", containerPath: "/etc" }] },
+        expect: 'unknown field "containerPath"',
+      },
+    ];
+
+    for (const probe of cases) {
+      const res = await create(h, manage, probe.host);
+      expect(res.status).toBe(400);
+      expect(await errorOf(res)).toContain(probe.expect);
+    }
+    expect(h.sup.listAgents()).toHaveLength(0);
+  });
+
+  test("a fully populated valid host reaches the supervisor", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    // Every optional field, each in a shape the validator accepts. Reaching
+    // the provisioner check is what proves the whole spec passed: nothing here
+    // was refused, and nothing was silently dropped on the way.
+    const res = await create(h, manage, {
+      kind: "container",
+      image: "ghcr.io/example/omp:1",
+      repo: "example/thing",
+      ref: "main",
+      ttlSeconds: 900,
+      network: "none",
+      mounts: [{ hostPath: "/tmp/scratch" }, { hostPath: "/tmp/tools", mode: "rw" }],
+    });
+    expect(res.status).toBe(500);
+    expect(await errorOf(res)).toContain("requires the provisioner");
+
+    // And omitting `host` entirely is still a local agent, unchanged.
+    const local = await h.http(
+      "/v1/agents",
+      { method: "POST", body: JSON.stringify({ name: "y", cwd: "/work" }) },
+      manage,
+    );
+    expect(local.status).toBe(201);
+    expect(h.sup.listAgents()).toHaveLength(1);
+  });
+
+  test("the socket door refuses the same host the route refuses", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+    const ws = await openSocket(h.port, manage);
+
+    // One validator, both doors. A check on the HTTP route alone would leave
+    // the frame as the way in, which is the door a paired phone uses.
+    ws.send({ t: "agent_create", name: "x", cwd: "/work", host: { kind: "container", image: "--privileged" } });
+    const frame = await ws.next(f => f.t === "error", "an error frame");
+    expect(JSON.stringify(frame)).toContain("cannot begin with a dash");
+    expect(h.sup.listAgents()).toHaveLength(0);
+  });
+
+  test("a replica refuses a bad host instead of queueing it for a primary to run", async () => {
+    const h = await harness({ federation: { replica: true, syncToken: "cloud-sync-token" } });
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    // A replica does not run the spec, it stores it. Validating on the run
+    // path alone would persist an unchecked `host` here and hand it to a
+    // primary later, where nothing looks at it again.
+    const res = await create(h, manage, { kind: "container", image: "--privileged" });
+    expect(res.status).toBe(400);
+    expect(await errorOf(res)).toContain("cannot begin with a dash");
+    expect(h.store.listPendingQueuedIntents()).toHaveLength(0);
+
+    // Positive control: a valid host on a replica does queue, so the 400 above
+    // is the validator and not a replica that refuses everything.
+    const queued = await create(h, manage, { kind: "container", image: "ghcr.io/example/omp:1" });
+    expect(queued.status).toBe(202);
+    expect(h.store.listPendingQueuedIntents()).toHaveLength(1);
   });
 });
 
