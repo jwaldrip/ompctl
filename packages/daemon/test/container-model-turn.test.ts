@@ -1015,10 +1015,14 @@ describe("daemon model access", () => {
 
   test("a throwing log sink cannot reach back into the broker's own operations", async () => {
     // No injected spare, so this grant is served by a broker
-    // `DaemonModelAccess` constructs itself and whose log sink it wraps. That
-    // wrapping is the thing under test: `ModelBroker.issue` announces a grant
-    // after inserting it, so a sink that threw back into it would leave a live
-    // bearer this daemon never receives and can therefore never revoke.
+    // `DaemonModelAccess` constructs itself and whose log sink it wraps. The
+    // wrapping is what is under test, and `revoke` is why it exists:
+    // `ModelBroker.revoke` deletes the grant and then says it did, so a sink
+    // that threw back into it would abandon the unwind `grant` depends on to
+    // withdraw a bearer nothing else can reach. `issue` sets its map last, after
+    // its own log line, so it is not the case that motivates this -- but a
+    // throwing sink still has to leave this daemon able to mint, record, unwind
+    // and report, which is the whole sequence this test walks.
     //
     // Done on the first grant rather than by releasing one and granting again,
     // deliberately: a release closes the listener, and a test that gave its port
@@ -1033,6 +1037,11 @@ describe("daemon model access", () => {
     // and has to stay loud, rather than from inside the broker.
     expect(err.message).toContain("was minted and then withdrawn");
     expect(err.message).toContain("the log sink is broken");
+    // And the unwind really ran, rather than the grant having been refused
+    // somewhere upstream of the mint: this line is the broker's own account of
+    // the revocation, written through the wrapped sink. Without the wrapping the
+    // throw lands inside `issue` and there is never anything to revoke.
+    expect(h.logs.some(line => line.includes(`revoked a grant for ${MODEL}`))).toBe(true);
     expect(h.access.status().liveGrants).toBe(0);
     expect(h.gateway.seen).toEqual([]);
   });

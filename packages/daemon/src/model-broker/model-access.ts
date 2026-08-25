@@ -300,15 +300,11 @@ export class DaemonModelAccess implements ModelAccessProvider {
         ttlMs: this.#grantTtlMs ?? DEFAULT_GRANT_TTL_MS,
       }).token;
     } catch (err) {
-      // `issue` performs every check it makes before it generates a token, so a
-      // refusal here means nothing was minted, and its messages name the input
-      // that was wrong and never the token.
-      //
-      // There is exactly one way it can throw with a grant already live, and it
-      // is not an input at all: `issue` inserts the grant and then announces it,
-      // so a log sink that throws would leave a bearer this daemon never
-      // receives. `#brokerFor` wraps that sink for this reason, which is what
-      // keeps this catch meaning what it says.
+      // `issue` refuses before it mints. Every check it makes happens before the
+      // token is generated, and the insertion into its own grant map is the last
+      // statement it runs, after the log line, so a throw from anywhere in it --
+      // an input it rejected or a log sink that failed -- leaves nothing live.
+      // Its messages name the input that was wrong and never the token.
       this.#fail("model.grant", { model, network }, [`the model broker refused to mint a grant: ${reasonOf(err)}`]);
     }
 
@@ -726,14 +722,17 @@ export class DaemonModelAccess implements ModelAccessProvider {
         // Isolated, and this is the one place in this file where swallowing is
         // the right answer rather than the lazy one.
         //
-        // `ModelBroker` logs from inside `issue`, `revoke` and every request
-        // path, always after it has already changed its own state: `issue`
-        // inserts the grant and then announces it. So a throw carried back into
-        // the broker abandons the operation halfway, and the specific halfway
-        // that matters is an `issue` that minted a live grant and then threw,
-        // leaving this daemon without the token and therefore without any way
-        // to revoke it for a day. Measured against the broker as it stands: a
-        // log sink that throws turns `grant` into exactly that.
+        // `ModelBroker` logs from inside `revoke`, `revokeAll`, `listen` and
+        // every request path, and each of those has already changed its own
+        // state by the time it writes the line: `revoke` deletes the grant and
+        // then says it did. A throw carried back into the broker therefore
+        // abandons an operation that has already half happened, and the one
+        // that matters most here is `revoke`, because `#unwind` calls it to undo
+        // a grant nothing else can withdraw. `issue` is the exception rather
+        // than the rule -- it inserts into its grant map last, after its log
+        // line, so a throw there mints nothing -- and that is a property of the
+        // broker as it stands rather than one this file may assume of the next
+        // version of it.
         //
         // There is also nowhere to report the throw. The sink that would carry
         // the report is the one that just failed. So the trade is a lost log
