@@ -64,11 +64,10 @@ final class PairingUITests: XCTestCase {
         guard let token = requiredInput("OMPD_TEST_TOKEN", fileKey: "OMPD_TEST_TOKEN_FILE") else {
             return
         }
-        let environment = ProcessInfo.processInfo.environment
-        guard let agentID = environment["OMPD_TEST_AGENT_ID"], !agentID.isEmpty else {
-            XCTFail("OMPD_TEST_AGENT_ID is not set in the test runner environment")
+        guard let sessionID = requiredInput("OMPD_TEST_SESSION_ID", fileKey: "OMPD_TEST_SESSION_ID_FILE") else {
             return
         }
+        let environment = ProcessInfo.processInfo.environment
         guard let nonce = environment["OMPD_TEST_NONCE"], !nonce.isEmpty else {
             XCTFail("OMPD_TEST_NONCE is not set in the test runner environment")
             return
@@ -146,8 +145,8 @@ final class PairingUITests: XCTestCase {
         XCTAssertTrue(fleet.waitForExistence(timeout: 5), "session fleet did not appear after pairing")
         XCTAssertTrue(app.staticTexts["fleet-count"].exists, "session fleet count did not appear after pairing")
 
-        let agent = app.descendants(matching: .any)["session-open-first"]
-        XCTAssertTrue(agent.waitForExistence(timeout: 20), "scratch agent \(agentID) was not present in the session fleet")
+        let agent = app.descendants(matching: .any)["session-open-\(sessionID)"]
+        XCTAssertTrue(agent.waitForExistence(timeout: 20), "scratch session \(sessionID) was not present in the fleet")
         agent.tap()
 
         let session = app.otherElements["session"]
