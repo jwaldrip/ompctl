@@ -19,8 +19,15 @@
  *
  * This module owns their lifecycle and nothing else. It does not proxy, does
  * not mint grants, and never reads a provider credential. The one secret it
- * touches is the gateway's own inbound bearer, and it reads that from disk at
- * the moment a caller asks for it rather than holding a copy.
+ * touches is the gateway's own inbound bearer. It reads that from disk on every
+ * call rather than caching it for use, so `omp auth-gateway token --regenerate`
+ * takes effect on the next request; and it keeps the values it has read in a
+ * small bounded set for exactly one purpose, which is redacting them out of a
+ * child's output by identity rather than by pattern. That retention is a
+ * deliberate trade and it adds no exposure that was not already there: the same
+ * plaintext is in this process's heap on every forwarded request either way,
+ * and what the set buys in exchange for its lifetime is the one part of `scrub`
+ * that is exact instead of best-effort.
  *
  * The start ordering is not cosmetic. The gateway is itself a broker client
  * and refuses to boot without a broker to talk to: measured against omp
@@ -71,6 +78,26 @@ const MAX_LOG_LINE_CHARS = 500;
 /** Child output kept per service, so a failure can say what the child said. */
 const FAILURE_TAIL_LINES = 12;
 
+/** One marker for every redaction, so a scrubbed line reads the same wherever it came from. */
+const REDACTED = "[redacted]";
+
+/**
+ * Bounds on the set of secrets `scrub` removes by exact match.
+ *
+ * The floor keeps a short value out of the set. omp's own gateway bearer is 43
+ * base64url characters, and a token file holding two characters is not a
+ * credential anything can rely on, but it IS a substring of half the English
+ * language: putting it in the set would turn every line that happens to contain
+ * those two characters into confetti.
+ *
+ * The ceiling bounds what rotation can accumulate. Every regenerate adds a
+ * value and none can be dropped on rotation, because a line written before it
+ * may still be in flight carrying the old one. Eight is more than a daemon's
+ * lifetime sees and it caps the per-line cost at eight substring scans.
+ */
+const MIN_KNOWN_SECRET_CHARS = 8;
+const MAX_KNOWN_SECRETS = 8;
+
 /**
  * The slice of a spawned process this module drives, so a test can hand it a
  * child of its own choosing without spawning omp. `Bun.spawn`'s subprocess
@@ -94,7 +121,11 @@ export interface OmpAuthServicesOptions {
   brokerPort?: number;
   /** Default 0, meaning pick a free loopback port. */
   gatewayPort?: number;
-  /** MUST never receive a token. Child output is scrubbed before it gets here. */
+  /**
+   * Never receives a bearer this module has read: those are removed by
+   * identity. Everything else in a child's output is removed by pattern, which
+   * is best-effort rather than a guarantee. See `scrub`.
+   */
   onLog?: (line: string) => void;
   /** Injectable for tests. */
   spawn?: SpawnLike;
@@ -135,6 +166,15 @@ export class OmpAuthServices {
   #gateway: Service | null = null;
   /** The one in-flight start, shared by every concurrent caller of `ensure`. */
   #starting: Promise<{ gatewayUrl: string }> | null = null;
+  /**
+   * Every secret this module has read, oldest first.
+   *
+   * It exists so `scrub` can remove a credential by identity. A pattern can
+   * only guess at what a credential looks like; this set knows, for the one
+   * secret this module reads. See the header for why holding it costs nothing
+   * that was not already held.
+   */
+  readonly #known = new Set<string>();
 
   constructor(opts: OmpAuthServicesOptions) {
     this.#ompPath = opts.ompPath;
@@ -204,6 +244,10 @@ export class OmpAuthServices {
           "Recreate it with `omp auth-gateway token --regenerate`.",
       );
     }
+    // Learned here rather than at the call sites, because this is the only
+    // place the value enters this process, and a caller that forgot to say so
+    // would leave the exact-match layer reading a stale set.
+    this.#remember(token);
     return token;
   }
 
@@ -250,6 +294,22 @@ export class OmpAuthServices {
    * never leaves a child running that nothing holds.
    */
   async #start(): Promise<{ gatewayUrl: string }> {
+    // Read the gateway's bearer before either child is spawned, purely so
+    // `scrub` knows it by identity while their startup output is being drained.
+    // Without this the value is not learned until `#verifyBearerAccepted`,
+    // which runs after both children have already written everything they write
+    // at boot: exactly the window in which a gateway complaining about its own
+    // token would quote it. Swallowed, because on a genuinely first start the
+    // file does not exist yet -- the gateway is about to write it -- and that
+    // residual window is one of the reasons the pattern layer in `scrub` is not
+    // optional. A missing token file becomes a reported failure in
+    // `#verifyBearerAccepted`, which is where it belongs.
+    try {
+      await this.gatewayBearer();
+    } catch {
+      // Nothing to learn yet.
+    }
+
     if (this.#broker === null || this.#broker.exited) {
       // A broker that has gone away takes the gateway with it. The gateway was
       // handed the broker's url in its environment at spawn time and a
@@ -448,7 +508,7 @@ export class OmpAuthServices {
     const decoder = new TextDecoder();
     let buffered = "";
     const emit = (raw: string): void => {
-      const line = scrub(raw);
+      const line = scrub(raw, this.#known);
       if (line.length === 0) return;
       service.tail.push(line);
       if (service.tail.length > FAILURE_TAIL_LINES) service.tail.shift();
@@ -466,6 +526,24 @@ export class OmpAuthServices {
       // waiting on it, and a partial line adds nothing to that.
     }
     if (buffered.length > 0) emit(buffered);
+  }
+
+  /**
+   * Add one value to the set `scrub` matches exactly.
+   *
+   * Insertion order is the eviction order, which is why this is a `Set`: the
+   * oldest known secret is the one least likely to still appear in a line a
+   * child is about to write.
+   */
+  #remember(secret: string): void {
+    if (secret.length < MIN_KNOWN_SECRET_CHARS) return;
+    if (this.#known.has(secret)) return;
+    this.#known.add(secret);
+    while (this.#known.size > MAX_KNOWN_SECRETS) {
+      const oldest = this.#known.values().next();
+      if (oldest.done === true) return;
+      this.#known.delete(oldest.value);
+    }
   }
 }
 
@@ -600,34 +678,101 @@ function lastMeaningful(tail: readonly string[]): string | undefined {
 }
 
 /**
- * Strip anything that could be a secret out of a child's output, then cap it.
+ * Remove what is, or looks like, a secret from a child's line, then cap it.
  *
- * omp is careful with its own logging: the broker announces the path its bearer
- * came from and not the bearer. But this daemon's rule is that a token never
- * reaches a log line, an audit row, or an error message, and that rule cannot
- * be delegated to a child process whose version nobody here pins. So every line
- * a child writes is scrubbed before it is forwarded or quoted, and the patterns
- * lean towards over-redacting. A log line that lost a commit hash costs
- * nothing; one that carried a bearer costs the whole boundary.
+ * Two layers, and they are not equally strong. Saying which is which is the
+ * point of this comment, because an earlier version of it claimed an absolute
+ * that regexes over another process's output cannot deliver.
+ *
+ * The first layer is exact. Every secret this module has read is removed by
+ * identity, so it does not matter what alphabet the value uses, whether it is
+ * quoted, or whether it sits behind a field name anybody anticipated. What it
+ * does depend on is having been read first, which is why `#start` reads the
+ * gateway's bearer before either child is spawned.
+ *
+ * The second layer is patterns, and a pattern cannot establish an invariant. It
+ * catches `Authorization: Bearer <...>`, the `token=<...>` family, a JWT, an
+ * opaque token carrying separators, and any long unbroken base64url run, and it
+ * leans hard towards over-redacting: a line that lost a commit hash costs
+ * nothing, a line that carried a bearer costs the whole boundary. It is still
+ * best-effort. A credential in a shape none of these recognise, written by a
+ * child before this module has read that value, reaches `#onLog` and the failure
+ * tail as the child wrote it. Nothing in a regex over the output of a process
+ * whose version nobody here pins changes that, and a comment claiming otherwise
+ * would be worse than the gap, because it would stop anyone looking for it.
+ *
+ * So the guarantee worth leaning on is not this one. The guest's bearer is
+ * minted by `ModelBroker`, written to exactly one 0600 file, and never
+ * interpolated into a line by anything in this daemon; the gateway's bearer is
+ * returned by `gatewayBearer` and written nowhere. Neither depends on this
+ * function. What this function is for is defence in depth over a child nobody
+ * here controls: measured against omp 18.0.4 the broker announces the path its
+ * bearer came from and not the bearer, and this is what stands between that
+ * changing in some later version and a credential in the daemon log.
  */
-function scrub(raw: string): string {
-  const redacted = raw
-    .trimEnd()
+function scrub(raw: string, known: Iterable<string>): string {
+  let text = raw.trimEnd();
+  // Exact first, so a known credential is gone before a pattern can half-match
+  // it and leave a recognisable fragment of it behind.
+  for (const secret of known) {
+    if (text.includes(secret)) text = text.split(secret).join(REDACTED);
+  }
+
+  const redacted = text
     // `Authorization: Bearer <token>`, in any casing. The length floor is what
     // keeps this off English: the broker logs the sentence "auth-broker bearer
     // token loaded", and redacting the word "token" out of the one line that
     // says where its credential came from would cost the most useful
     // diagnostic on the whole path to protect nothing.
-    .replace(/bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, "bearer [redacted]")
+    .replace(/bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, `bearer ${REDACTED}`)
     // `token=<value>`, `"secret":"<value>"`, `--api-key <value>`, and the rest
     // of that family, quoted or not.
     .replace(
       /([A-Za-z0-9_-]*(?:token|secret|password|api[-_]?key)[A-Za-z0-9_-]*["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
-      "$1[redacted]",
+      `$1${REDACTED}`,
     )
+    // A JWT: three base64url segments joined by dots, the first starting `ey`
+    // because that is what a `{"` header base64s to. Called out separately from
+    // the rule below because a short one -- three ten-character segments, which
+    // is a perfectly ordinary signed handle -- clears neither that rule's total
+    // nor its per-run floor, and clears no other rule here either.
+    .replace(/ey[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, REDACTED)
+    // An opaque token carrying separators: `ya29.a0AfB1...`, a padded base64
+    // value, anything of that shape. This is the gap a review named, and it is
+    // a real one: every separator ends the run the rule below is measuring, so
+    // a dotted OAuth token with no `Bearer` in front of it and no
+    // credential-like field name behind it matched none of the three rules this
+    // function used to have.
+    .replace(SEGMENTED_RUN, match => (opaque(match) ? REDACTED : match))
     // Whatever is left that simply looks like a credential: an unbroken run of
     // base64url characters at least as long as omp's own 43-character bearer.
-    // This is the rule that catches the value nobody anticipated.
-    .replace(/[A-Za-z0-9_-]{32,}/g, "[redacted]");
+    .replace(/[A-Za-z0-9_-]{32,}/g, REDACTED);
   return redacted.length > MAX_LOG_LINE_CHARS ? redacted.slice(0, MAX_LOG_LINE_CHARS) : redacted;
+}
+
+/** Runs of base64url characters joined by the separators real tokens use. Deciding is `opaque`. */
+const SEGMENTED_RUN = /[A-Za-z0-9_-]+(?:[.+/=~][A-Za-z0-9_-]+)+/g;
+const SEGMENT_SEPARATOR = /[.+/=~]/;
+
+/** Total width and longest-run floors a separated run has to clear to be treated as a credential. */
+const SEGMENTED_MIN_CHARS = 32;
+const SEGMENT_MIN_RUN_CHARS = 16;
+
+/**
+ * Whether a separated run is a credential rather than a path, a url, a version
+ * or a dotted identifier.
+ *
+ * Both floors are load-bearing. Total width alone would redact
+ * `/Users/jwaldrip/dev/src/github.com/jwaldrip/ompctl`, fifty characters of
+ * exactly this shape and the single most useful thing a child can say about
+ * where it looked for something. The longest-run floor is what separates them:
+ * a path is many short segments, an opaque credential has at least one long
+ * high-entropy one. `ya29.a0AfB1...` clears both floors; that path's longest
+ * segment is eight characters and clears neither.
+ */
+function opaque(candidate: string): boolean {
+  if (candidate.length < SEGMENTED_MIN_CHARS) return false;
+  let longest = 0;
+  for (const run of candidate.split(SEGMENT_SEPARATOR)) longest = Math.max(longest, run.length);
+  return longest >= SEGMENT_MIN_RUN_CHARS;
 }

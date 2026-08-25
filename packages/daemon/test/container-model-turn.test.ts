@@ -32,16 +32,28 @@
  *    `agent.db`, no second copy of the bearer in `models.yml`, and the path
  *    baked into `models.yml` is the path inside the guest rather than the host
  *    temp directory that backs the mount.
+ * 5. A credential must not ride out of a child process into the daemon's log.
+ *    The last section drives the real `OmpAuthServices` over a fake `spawn` and
+ *    proves the two halves of that separately: a value this daemon holds is
+ *    removed by identity, and a value it does not hold is removed only if a
+ *    pattern recognises it. The second half is a real gap and the test that
+ *    demonstrates it is deliberate, because the comment in that module now says
+ *    so and a claim nobody can fail is worth nothing.
  *
- * Nothing here spawns omp. `OmpAuthServices` is injected as a fake, which is
- * also what makes the "the guest's bearer stops at the broker" assertion
- * possible: the fake's upstream bearer is a distinctive string, so the fake
- * gateway can prove which credential was forwarded. The broker, though, is
- * real and really binds, because a bind refusal, a peer check and a revocation
- * observable as a 401 are most of what is under test. It binds loopback: a real
- * container network gateway such as `192.168.65.1` is not an address a test
- * host holds, and the `host-bridge` shape cares that the bind address and the
- * guest's address are the same string, not what that string is.
+ * Nothing here spawns omp. For everything about `DaemonModelAccess`,
+ * `OmpAuthServices` is injected as a fake, which is also what makes the "the
+ * guest's bearer stops at the broker" assertion possible: the fake's upstream
+ * bearer is a distinctive string, so the fake gateway can prove which
+ * credential was forwarded. The last section is the one place the real
+ * `OmpAuthServices` runs, and it runs over a fake `spawn` and two loopback
+ * servers standing in for the children's health and catalog endpoints.
+ *
+ * The model broker, though, is real and really binds, because a bind refusal, a
+ * peer check and a revocation observable as a 401 are most of what is under
+ * test. It binds loopback: a real container network gateway such as
+ * `192.168.65.1` is not an address a test host holds, and the `host-bridge`
+ * shape cares that the bind address and the guest's address are the same
+ * string, not what that string is.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -51,7 +63,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelBroker } from "../src/model-broker/broker.ts";
 import { DaemonModelAccess, type ModelAccessAuditRow } from "../src/model-broker/model-access.ts";
-import type { OmpAuthServices } from "../src/model-broker/omp-auth-services.ts";
+import { type AuthServiceProcess, OmpAuthServices } from "../src/model-broker/omp-auth-services.ts";
 import {
   GUEST_HOME_MOUNT,
   type GuestModelAccess,
@@ -213,6 +225,16 @@ interface Harness {
   /** `http://127.0.0.1:<port>`: where the broker really listens in these tests. */
   brokerUrl: string;
   writeHostConfig(text: string): void;
+  /**
+   * Make the daemon's own audit or log sink throw.
+   *
+   * Both are supplied by the daemon, so a throw is a bug in its own wiring
+   * rather than anything a container can cause. It is worth injecting anyway:
+   * they are called after `issue` has already minted a bearer, so a throw that
+   * merely propagated would leave a live credential the provisioner never saw
+   * and can therefore never release.
+   */
+  breakSink(which: "audit" | "log", reason: string): void;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -234,6 +256,9 @@ afterEach(async () => {
 });
 
 async function harness(opts: { enabled?: boolean; model?: string } = {}): Promise<Harness> {
+  // Off unless a test turns it on. Read live by both sinks below rather than
+  // captured, so a test can break them after construction.
+  let brokenSink: { which: "audit" | "log"; reason: string } | null = null;
   const logs: string[] = [];
   const audit: ModelAccessAuditRow[] = [];
   const issued: IssuedRecord[] = [];
@@ -246,6 +271,13 @@ async function harness(opts: { enabled?: boolean; model?: string } = {}): Promis
   const broker = new ModelBroker({
     upstreamUrl: () => gateway.origin,
     upstreamBearer: () => services.gatewayBearer(),
+    // Never throws, even when `breakSink` has broken the daemon's own sinks.
+    // That is faithful rather than convenient: in production the only place a
+    // broker's log sink comes from is `#brokerFor`, which wraps it so a throw
+    // cannot travel back into a broker mid-operation, and a test seam that
+    // threw here would be modelling a wiring the daemon does not have. The test
+    // below reaches the wrapped sink by getting `DaemonModelAccess` to build its
+    // own broker.
     onLog: line => {
       logs.push(line);
     },
@@ -274,15 +306,20 @@ async function harness(opts: { enabled?: boolean; model?: string } = {}): Promis
     enabled: opts.enabled ?? true,
     onLog: line => {
       logs.push(line);
+      if (brokenSink?.which === "log") throw new Error(brokenSink.reason);
     },
     onAudit: row => {
       audit.push(row);
+      if (brokenSink?.which === "audit") throw new Error(brokenSink.reason);
     },
     services: services as unknown as OmpAuthServices,
     broker,
   });
 
   cleanups.push(async () => {
+    // First, because `close` logs: a sink left broken would report as a
+    // cleanup failure instead of as the assertion the test just made.
+    brokenSink = null;
     await access.close();
     await broker.close();
     await gateway.stop();
@@ -303,6 +340,9 @@ async function harness(opts: { enabled?: boolean; model?: string } = {}): Promis
     writeHostConfig: text => {
       mkdirSync(join(configDir, "agent"), { recursive: true });
       writeFileSync(join(configDir, "agent", "config.yml"), text);
+    },
+    breakSink: (which, reason) => {
+      brokenSink = { which, reason };
     },
   };
 }
@@ -604,18 +644,57 @@ describe("daemon model access", () => {
     expect(await answers(h.brokerUrl)).toBe(false);
   });
 
-  test("a host-alias hostname is held to what a URL and a YAML scalar can carry", async () => {
+  test("a host-alias hostname is held to what a URL, a YAML scalar and a resolver can carry", async () => {
     const h = await harness();
 
-    for (const hostname of ["host.docker.internal/../evil", "host.docker.internal:9999", "host docker internal", ""]) {
+    const refused = [
+      // Structurally dangerous: each of these would turn `http://<host>:<port>`
+      // into a different address than it reads as, or break the YAML scalar.
+      "host.docker.internal/../evil",
+      "host.docker.internal:9999",
+      "host docker internal",
+      "",
+      // Merely unresolvable, which the character-set rule this replaced let
+      // through. None of them is an origin escape and every one of them is a
+      // container that provisions and then cannot reach its own broker, which
+      // is the same defect this whole seam exists to remove.
+      ".",
+      "-",
+      "_",
+      "a..b",
+      "-lead",
+      "trail-",
+      // A 64-character label, one past the DNS limit.
+      `${"a".repeat(64)}.internal`,
+      // Valid labels, 313 characters of them.
+      `${Array.from({ length: 5 }, () => "a".repeat(60)).join(".")}.internal`,
+    ];
+
+    for (const hostname of refused) {
       const err = await rejection(h.access.grant({ network: null, bridge: hostAlias({ hostname }) }));
       expect(err.message).toContain("is not a hostname a guest can be pointed at");
-      expect(err.message).toContain("letters, digits, dot, dash and underscore");
+      expect(err.message).toContain("dot-separated labels");
       expect(err.message).toContain(JSON.stringify(hostname));
     }
 
     expect(h.issued).toEqual([]);
-    expect(h.audit).toHaveLength(4);
+    expect(h.audit).toHaveLength(refused.length);
+  });
+
+  test("the hostname rule still passes the value this path actually uses", async () => {
+    const h = await harness();
+
+    // `host.docker.internal` first, because it is the only value the
+    // `host-alias` shape ever produces in practice and a rule that refused it
+    // would take Docker Desktop off the table entirely. The rest are the forms
+    // a tighter rule most easily refuses by accident: one label with no dot, a
+    // digit-leading label, and a dash inside a label rather than at its edge.
+    for (const hostname of [DESKTOP_ALIAS, "host", "0host.internal", "host-1.docker.internal"]) {
+      const granted = await h.access.grant({ network: null, bridge: hostAlias({ hostname }) });
+      expect(granted.endpoint).toBe(`http://${hostname}:${h.port}`);
+    }
+
+    expect(h.audit.filter(row => row.outcome === "error")).toEqual([]);
   });
 
   test("the loopback auth services refusing to start is relayed, not swallowed", async () => {
@@ -885,6 +964,50 @@ describe("daemon model access", () => {
     expect(h.logs.filter(line => line.includes(GATEWAY_BEARER))).toEqual([]);
     expect(h.audit.filter(row => JSON.stringify(row.detail).includes(GATEWAY_BEARER))).toEqual([]);
   });
+
+  for (const sink of ["audit", "log"] as const) {
+    test(`a throwing ${sink} sink unwinds the grant instead of leaving one live that nobody holds`, async () => {
+      const h = await harness();
+      const reason = `the ${sink} sink is broken`;
+      h.breakSink(sink, reason);
+
+      const err = await rejection(h.access.grant({ network: "ompd-net", bridge: hostBridge() }));
+
+      // The mint already happened: `issue` runs before either sink is called.
+      // So a rejection on its own is not enough. The token was never returned,
+      // which means the provisioner cannot release it, which means a grant left
+      // live here is a credential nobody holds and nobody can withdraw, live
+      // for its whole 24 hour TTL.
+      expect(err.message).toContain("was minted and then withdrawn");
+      expect(err.message).toContain(reason);
+      expect(h.broker.liveGrants()).toBe(0);
+      expect(h.access.status().liveGrants).toBe(0);
+      // And nothing spent a single request of the operator's quota through it.
+      expect(h.gateway.seen).toEqual([]);
+    });
+  }
+
+  test("a throwing log sink cannot reach back into the broker's own operations", async () => {
+    const h = await harness();
+    const bridge = hostBridge();
+    // Consume the injected spare and then release it, so the next grant is
+    // served by a broker `DaemonModelAccess` builds itself. That is the only
+    // shape production has, and the one where a throwing sink could otherwise
+    // abandon `issue` after it had already inserted a live grant: the token
+    // never reaches this daemon, so nothing can ever revoke it.
+    const first = await h.access.grant({ network: "ompd-net", bridge });
+    await h.access.release({ token: first.token });
+    h.breakSink("log", "the log sink is broken");
+
+    const err = await rejection(h.access.grant({ network: "ompd-net", bridge }));
+
+    // The refusal comes from this daemon's own `#log` call, which is not
+    // wrapped and must stay loud, rather than from inside the broker.
+    expect(err.message).toContain("was minted and then withdrawn");
+    expect(err.message).toContain("the log sink is broken");
+    expect(h.access.status().liveGrants).toBe(0);
+    expect(h.gateway.seen).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1077,5 +1200,261 @@ describe("guest config", () => {
     // the error propagates, so a refused provision leaves nothing on disk.
     const after = readdirSync(tmpdir()).filter(name => name.startsWith("ompd-guest-"));
     expect(after.filter(name => !before.includes(name))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Child output from the loopback omp services
+// ---------------------------------------------------------------------------
+
+/**
+ * The unauthenticated health paths the real module polls, and the one
+ * authenticated read it makes before it calls a gateway usable.
+ *
+ * Written out here rather than imported, deliberately: a test that read these
+ * off the module would keep passing if the module changed them, and the point
+ * of the endpoints is that they are a contract with omp rather than with this
+ * file.
+ */
+const BROKER_HEALTH_PATH = "/v1/healthz";
+const GATEWAY_HEALTH_PATH = "/healthz";
+const CATALOG_PATH = "/v1/models";
+
+/**
+ * A loopback server standing in for one of omp's own services.
+ *
+ * It answers the health flag the readiness poll reads, and the catalog read
+ * `#verifyBearerAccepted` makes. A 404 on anything else is not padding: it is
+ * how a module that started probing something different shows up as a refused
+ * start rather than as a pass.
+ */
+function fakeOmpService(port: number, healthPath: string): { authorizations: string[]; stop(): Promise<void> } {
+  const authorizations: string[] = [];
+  const server = Bun.serve({
+    hostname: LOOPBACK,
+    port,
+    fetch: req => {
+      const path = new URL(req.url).pathname;
+      if (path === healthPath) return Response.json({ ok: true, version: "18.0.4" });
+      if (path === CATALOG_PATH) {
+        authorizations.push(req.headers.get("authorization") ?? "");
+        return Response.json({ data: [{ id: MODEL }] });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    },
+  });
+  return {
+    authorizations,
+    stop: async () => {
+      await server.stop(true);
+    },
+  };
+}
+
+interface FakeChild {
+  process: AuthServiceProcess;
+  /** Write one line to the child's stdout, as omp's own logger would. */
+  say(line: string): void;
+}
+
+/**
+ * A child process whose output this file drives one line at a time.
+ *
+ * `stderr` is null on purpose. The module skips a null stream, so there is
+ * exactly one place a forwarded line can have come from and an assertion about
+ * it cannot pass on the other stream.
+ */
+function fakeChild(): FakeChild {
+  const encoder = new TextEncoder();
+  let out: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const stdout = new ReadableStream<Uint8Array>({
+    start: controller => {
+      out = controller;
+    },
+  });
+  const exit = Promise.withResolvers<number>();
+  let running = true;
+  return {
+    process: {
+      stdout,
+      stderr: null,
+      exited: exit.promise,
+      kill: () => {
+        if (!running) return;
+        running = false;
+        out?.close();
+        // 143, which is what both real services answer to SIGTERM.
+        exit.resolve(143);
+      },
+    },
+    say: line => {
+      if (out === undefined) throw new Error("the fake child's stdout was never started");
+      out.enqueue(encoder.encode(`${line}\n`));
+    },
+  };
+}
+
+interface AuthHarness {
+  logs: string[];
+  /** What the fake gateway was handed on its catalog read. */
+  authorizations: string[];
+  /** Write one line as the named child and answer with the line the drain forwarded. */
+  say(name: "auth-broker" | "auth-gateway", line: string): Promise<string>;
+}
+
+/**
+ * The real `OmpAuthServices`, started against fake children.
+ *
+ * Real because `scrub` is module-private and reaching it any other way would be
+ * testing a copy of it. The children are fake and the two loopback servers are
+ * real, so `ensure` runs its whole ordering -- broker, health, gateway, health,
+ * authenticated catalog read -- and every line a child writes goes through the
+ * same drain the daemon uses.
+ */
+async function authServices(opts: { bearer: string }): Promise<AuthHarness> {
+  const configDir = mkdtempSync(join(tmpdir(), "ompd-auth-services-test-"));
+  // Where the gateway writes its own inbound bearer, and the only file this
+  // module reads.
+  writeFileSync(join(configDir, "auth-gateway.token"), `${opts.bearer}\n`, { mode: 0o600 });
+
+  // The broker's port is claimed before the gateway's is asked for, so the
+  // kernel cannot hand out the same number twice.
+  const brokerPort = await freePort();
+  const broker = fakeOmpService(brokerPort, BROKER_HEALTH_PATH);
+  const gatewayPort = await freePort();
+  const gateway = fakeOmpService(gatewayPort, GATEWAY_HEALTH_PATH);
+
+  const logs: string[] = [];
+  const children: Partial<Record<"auth-broker" | "auth-gateway", FakeChild>> = {};
+  /** Resolved by the next forwarded line, so `say` awaits the drain rather than a delay. */
+  let waiting: ((line: string) => void) | null = null;
+  const services = new OmpAuthServices({
+    // Never spawned: `spawn` below is injected. A path that cannot exist is
+    // deliberate, so an injection that stopped taking fails naming this string
+    // instead of quietly starting two real omp children against the operator's
+    // own vault.
+    ompPath: "/nonexistent/ompctl-test-omp",
+    configDir,
+    brokerPort,
+    gatewayPort,
+    readyTimeoutMs: 10_000,
+    onLog: line => {
+      logs.push(line);
+      const resolve = waiting;
+      waiting = null;
+      resolve?.(line);
+    },
+    spawn: argv => {
+      const name = at(argv, 1, "the service name in a child's argv");
+      if (name !== "auth-broker" && name !== "auth-gateway") {
+        throw new Error(`the module spawned an unexpected subcommand ${JSON.stringify(name)}`);
+      }
+      const child = fakeChild();
+      children[name] = child;
+      return child.process;
+    },
+  });
+
+  cleanups.push(async () => {
+    await services.close();
+    await broker.stop();
+    await gateway.stop();
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  await services.ensure();
+
+  return {
+    logs,
+    authorizations: gateway.authorizations,
+    say: async (name, line) => {
+      const child = children[name];
+      if (child === undefined) throw new Error(`no fake ${name} child was spawned`);
+      const forwarded = Promise.withResolvers<string>();
+      waiting = forwarded.resolve;
+      child.say(line);
+      // Awaiting the drain's own forward rather than a delay: the signal is the
+      // thing under test, and a test that slept would pass or flake on timing.
+      return await forwarded.promise;
+    },
+  };
+}
+
+/**
+ * A gateway bearer that every pattern in `scrub` misses.
+ *
+ * Dots and slashes, and no unbroken run longer than two characters: it is under
+ * the segmented rule's length floor, it carries no `Bearer` prefix, it sits
+ * behind no credential-like field name, it is not JWT-shaped, and it has no
+ * 32-character run. Nothing but knowing the value can catch it, which is the
+ * point: a provider's opaque handle is under no obligation to look like one.
+ */
+const UNPATTERNED_BEARER = "gw/ab.cd/ef.gh";
+
+describe("omp auth services child output", () => {
+  test("a bearer this daemon holds is redacted from a child's line by identity", async () => {
+    const h = await authServices({ bearer: UNPATTERNED_BEARER });
+
+    const forwarded = await h.say("auth-gateway", `resolved the operator credential ${UNPATTERNED_BEARER} once`);
+
+    expect(forwarded).toContain("[redacted]");
+    expect(forwarded).not.toContain(UNPATTERNED_BEARER);
+    // Including the startup lines, one of which is written after the module has
+    // used this very value to authenticate its own catalog read.
+    expect(h.logs.filter(line => line.includes(UNPATTERNED_BEARER))).toEqual([]);
+    expect(h.authorizations).toEqual([`Bearer ${UNPATTERNED_BEARER}`]);
+    expect(h.logs.some(line => line.includes("accepted its bearer and offers 1 models"))).toBe(true);
+  });
+
+  test("the same value survives when this daemon does not hold it, which is the gap the comment admits", async () => {
+    const h = await authServices({ bearer: "some-other-gateway-bearer-entirely" });
+
+    const forwarded = await h.say("auth-gateway", `resolved the operator credential ${UNPATTERNED_BEARER} once`);
+
+    // Not an aspiration and not a defect to fix with another pattern: it is
+    // what "best-effort over unpinned child output" means, and it is why the
+    // exact-match layer is the half worth relying on. A test that only asserted
+    // the redaction would pass just as happily against a pattern that ate the
+    // whole line, and would prove nothing about identity.
+    expect(forwarded).toContain(UNPATTERNED_BEARER);
+  });
+
+  test("a short JWT is redacted, though no run in it is long enough for the other rules", async () => {
+    const h = await authServices({ bearer: GATEWAY_BEARER });
+    // Three ten-character segments. Under the 32-character floor for an
+    // unbroken run and under the 16-character floor the segmented rule wants
+    // for one of its runs, so the JWT rule is the only thing that can see it.
+    const jwt = "eyJ0eXAiOi.eyJzdWIiOj.SflKxwRJSM";
+
+    const forwarded = await h.say("auth-broker", `the vault answered ${jwt} for the operator`);
+
+    expect(forwarded).not.toContain("eyJ0eXAiOi");
+    expect(forwarded).toBe("omp auth-broker: the vault answered [redacted] for the operator");
+  });
+
+  test("a dotted opaque token is redacted with no prefix and no field name", async () => {
+    const h = await authServices({ bearer: GATEWAY_BEARER });
+    // The shape a review named: a Google-style handle whose separators break
+    // every run below the 32-character floor, with no `Bearer` in front of it
+    // and no `token=` behind it.
+    const opaque = "ya29.a0AfB1byC3xQ9mNpLkJ.hGfDsAqWeRtYu";
+
+    const forwarded = await h.say("auth-gateway", `dispatching with ${opaque} to the provider`);
+
+    expect(forwarded).not.toContain("a0AfB1byC3xQ9mNpLkJ");
+    expect(forwarded).toBe("omp auth-gateway: dispatching with [redacted] to the provider");
+  });
+
+  test("the diagnostic the redaction exists to protect survives it", async () => {
+    const h = await authServices({ bearer: GATEWAY_BEARER });
+    // The one line on this whole path that says where a child's credential came
+    // from. It contains the word `token`, it contains the word `bearer`, and it
+    // contains a slashed path of exactly the shape the segmented rule looks at,
+    // so all three of the loose rules get a chance at it and none may take it.
+    const said = '{"msg":"auth-broker bearer token loaded","path":"/Users/jwaldrip/.omp/auth-broker.token"}';
+
+    const forwarded = await h.say("auth-broker", said);
+
+    expect(forwarded).toBe(`omp auth-broker: ${said}`);
   });
 });

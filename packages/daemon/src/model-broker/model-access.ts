@@ -300,9 +300,15 @@ export class DaemonModelAccess implements ModelAccessProvider {
         ttlMs: this.#grantTtlMs ?? DEFAULT_GRANT_TTL_MS,
       }).token;
     } catch (err) {
-      // `issue` refuses an unusable grant rather than minting one, and its
-      // messages name the input that was wrong. None of them contains the token,
-      // which is generated after every check it makes.
+      // `issue` performs every check it makes before it generates a token, so a
+      // refusal here means nothing was minted, and its messages name the input
+      // that was wrong and never the token.
+      //
+      // There is exactly one way it can throw with a grant already live, and it
+      // is not an input at all: `issue` inserts the grant and then announces it,
+      // so a log sink that throws would leave a bearer this daemon never
+      // receives. `#brokerFor` wraps that sink for this reason, which is what
+      // keeps this catch meaning what it says.
       this.#fail("model.grant", { model, network }, [`the model broker refused to mint a grant: ${reasonOf(err)}`]);
     }
 
@@ -318,21 +324,73 @@ export class DaemonModelAccess implements ModelAccessProvider {
     // -- its own loopback, inside the container, where nothing is listening.
     const endpoint = `http://${plan.guestHost}:${this.#brokerPort}`;
 
-    this.#issued.set(createHash("sha256").update(token).digest("hex"), { model, address });
-    this.#onAudit({ action: "model.grant", outcome: "ok", detail: { model, network, bridge: bridge.kind } });
-    this.#log(`granted ${model} to container network ${network ?? "(unnamed)"} on ${endpoint}`);
-    if (plan.peerCidr === null) {
-      // Said out loud, every time, because it is the one confinement property
-      // this daemon knowingly gives up. See `#planFor` for the residual risk it
-      // leaves and what is left holding the line.
-      this.#log(
-        `the peer-address check is OFF for this grant: the ${bridge.kind} shape NATs every request, so the ` +
-          `broker cannot tell one caller on ${plan.bindHost} from another. The bearer, the single allowlisted ` +
-          `model and the request, token, body and concurrency ceilings are what confine it.`,
+    // Recorded, then announced, and the whole announcement is unwound if it
+    // throws.
+    //
+    // Everything from here to the return is bookkeeping over a bearer that
+    // already exists, and `issue` has no way to know it minted one for a caller
+    // that never received it. So a throw anywhere in this block leaves a live
+    // credential the provisioner never saw, cannot release, and which nothing
+    // withdraws until its TTL expires a day later. Both sinks belong to this
+    // daemon, which makes a throw here a defect in its own wiring rather than
+    // anything a container can cause, but "a credential nobody can revoke" is
+    // not a consequence a defect gets to have.
+    const digest = createHash("sha256").update(token).digest("hex");
+    this.#issued.set(digest, { model, address });
+    try {
+      this.#onAudit({ action: "model.grant", outcome: "ok", detail: { model, network, bridge: bridge.kind } });
+      this.#log(`granted ${model} to container network ${network ?? "(unnamed)"} on ${endpoint}`);
+      if (plan.peerCidr === null) {
+        // Said out loud, every time, because it is the one confinement property
+        // this daemon knowingly gives up. See `#planFor` for the residual risk
+        // it leaves and what is left holding the line.
+        this.#log(
+          `the peer-address check is OFF for this grant: the ${bridge.kind} shape NATs every request, so the ` +
+            `broker cannot tell one caller on ${plan.bindHost} from another. The bearer, the single allowlisted ` +
+            `model and the request, token, body and concurrency ceilings are what confine it.`,
+        );
+      }
+    } catch (err) {
+      this.#unwind(digest, token, address);
+      // Thrown directly rather than through `#fail`: `#fail` records a refusal
+      // through the sink that has just failed, which would replace this reason
+      // with that one and lose the only account of what happened.
+      throw new Error(
+        `the model grant for ${model} on ${address} was minted and then withdrawn, because recording it failed: ` +
+          `${reasonOf(err)}. The audit and log sinks are this daemon's own, so that is a defect in its wiring and ` +
+          `not something a container did. The grant is undone rather than kept, because a token this daemon minted ` +
+          `and never returned is a live credential nothing can release.`,
       );
     }
 
     return { endpoint, token, model };
+  }
+
+  /**
+   * Undo a grant that was minted and never handed over.
+   *
+   * Revoking it is the whole job, and it cannot fail to take. `#brokerFor` wires
+   * the broker's log sink through a wrapper that swallows, so the sink that just
+   * threw cannot throw again from inside `revoke`; and `ModelBroker.revoke`
+   * drops the digest from its own map before it logs anything, so the credential
+   * is dead even if some future version of it throws for a reason this file does
+   * not own. The `catch` is for that second case, and the error worth reporting
+   * is the first one either way.
+   *
+   * The listener is deliberately left up. A broker holding no grants answers 401
+   * to everything, the address stays in `#brokers` exactly as it does when
+   * `issue` itself refuses, and `release` and `close` stay the only two places
+   * that take a listener down. That last part matters here: `grant` starts the
+   * bind and does not await it, so closing the socket from inside a failing
+   * grant would race an in-flight retry for no gain.
+   */
+  #unwind(digest: string, token: string, address: string): void {
+    this.#issued.delete(digest);
+    try {
+      this.#brokers.get(address)?.revoke(token);
+    } catch {
+      // The log sink is what failed. The grant was gone before it was called.
+    }
   }
 
   /**
@@ -552,7 +610,9 @@ export class DaemonModelAccess implements ModelAccessProvider {
     if (!HOSTNAME.test(bridge.hostname)) {
       this.#fail("model.grant", { model: this.#configuredModel(), network, bridge: bridge.kind }, [
         `${JSON.stringify(bridge.hostname)} is not a hostname a guest can be pointed at: it goes into a URL and`,
-        `into the guest's models.yml, so it is restricted to letters, digits, dot, dash and underscore.`,
+        `into the guest's models.yml, and the guest has to resolve it. It has to be dot-separated labels of`,
+        `letters and digits, with dashes allowed inside a label but not at either end, no empty label, at most`,
+        `63 characters per label and 253 overall.`,
       ]);
     }
     return { bindHost: bridge.bindHost, guestHost: bridge.hostname, peerCidr: null };
@@ -663,8 +723,30 @@ export class DaemonModelAccess implements ModelAccessProvider {
           this.#gatewayUrl = (await this.#services.ensure()).gatewayUrl;
           return await this.#services.gatewayBearer();
         },
+        // Isolated, and this is the one place in this file where swallowing is
+        // the right answer rather than the lazy one.
+        //
+        // `ModelBroker` logs from inside `issue`, `revoke` and every request
+        // path, always after it has already changed its own state: `issue`
+        // inserts the grant and then announces it. So a throw carried back into
+        // the broker abandons the operation halfway, and the specific halfway
+        // that matters is an `issue` that minted a live grant and then threw,
+        // leaving this daemon without the token and therefore without any way
+        // to revoke it for a day. Measured against the broker as it stands: a
+        // log sink that throws turns `grant` into exactly that.
+        //
+        // There is also nowhere to report the throw. The sink that would carry
+        // the report is the one that just failed. So the trade is a lost log
+        // line against a lost lifecycle event, and the line is the cheaper of
+        // the two by a wide margin. A broken sink is still loud: the direct
+        // `#log` calls in `grant` are not wrapped, and they turn it into a
+        // refusal that names it.
         onLog: line => {
-          this.#log(line);
+          try {
+            this.#log(line);
+          } catch {
+            // Deliberately dropped. See above.
+          }
         },
       });
     this.#brokers.set(address, broker);
@@ -722,12 +804,30 @@ const WILDCARD_HOSTS: Record<string, true> = {
 const LOOPBACK_V4 = "127.0.0.0/8";
 
 /**
- * What a guest may be told to dial. It is interpolated into a URL and written
- * into the guest's `models.yml`, so it is held to letters, digits, dot, dash and
- * underscore: no scheme, no port, no path, no credentials, nothing that could
- * turn `http://<host>:<port>` into a different address than it reads as.
+ * What a guest may be told to dial.
+ *
+ * Two jobs, and the second is why this is a grammar rather than a character
+ * class. The value is interpolated into a URL and written into the guest's
+ * `models.yml`, so it may carry no scheme, no port, no path and no credentials:
+ * nothing that could turn `http://<host>:<port>` into a different address than
+ * it reads as. A restricted character set does that much, and the character set
+ * here is still restricted to exactly what a hostname can hold.
+ *
+ * What a character set does not do is keep out a value that cannot resolve.
+ * `.`, `-`, `a..b`, `-lead` and `trail-` all satisfy one, and each of them
+ * provisions a container whose every prompt fails on a name its resolver
+ * rejects. That is the same defect this whole seam exists to remove, and it is
+ * harder to read than a refusal naming the form. So this is RFC 1123's grammar
+ * instead: labels of letters and digits, dashes allowed only inside a label, no
+ * empty label, 63 characters per label and 253 overall.
+ *
+ * `host.docker.internal`, the only value this path produces in practice, passes.
+ * Underscore no longer does, and that is the one deliberate narrowing: a
+ * resolver will not accept it either, so allowing it only moves the failure
+ * from a refusal here to a container that cannot reach its broker.
  */
-const HOSTNAME = /^[A-Za-z0-9._-]+$/;
+const HOSTNAME =
+  /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
 
 /**
  * Whether a listener may bind `host` at all.

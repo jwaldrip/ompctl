@@ -31,6 +31,19 @@
  * grant to every other container and to the local network. The gateway address
  * is reachable only from containers on that one network, which is exactly the
  * blast radius a per-container grant is supposed to have.
+ *
+ * The ceilings are not all the same kind of promise, and the difference decides
+ * how to size the blast radius of a stolen bearer. `maxConcurrent` and
+ * `maxRequests` are exact: each request reserves both in the same synchronous
+ * block that checks them, before the handler yields for the first time, so a
+ * burst of concurrent requests cannot all read a stale count and all slip past.
+ * `maxTokens` is not exact and cannot be. A turn's cost is only knowable from
+ * the response, so the check at admission lets through a turn that then
+ * overshoots, and a response whose usage this process cannot read -- no `usage`
+ * block, a truncated or malformed stream, a body past the metering buffer --
+ * advances the counter by nothing while still spending a request. `maxTokens`
+ * therefore bounds spend loosely and `maxRequests` is the ceiling that always
+ * binds. Size the exposure in requests.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -53,23 +66,41 @@ const TOKEN_BYTES = 32;
 const ALLOWED_ROUTES: Record<string, true> = { "/v1/messages": true, "/v1/messages/count_tokens": true };
 
 /**
- * Headers that describe one hop of a connection rather than the message, so
- * forwarding them describes the wrong connection. `host` goes too: it names the
- * bridge address, and the upstream is loopback. `content-length` goes because
- * the body is re-sent from a buffer and `fetch` computes the length itself; a
- * copied one that disagrees is a request smuggling primitive.
+ * The only request headers forwarded to the gateway.
+ *
+ * This was a denylist -- `authorization` plus the hop-by-hop set -- and the
+ * problem with that shape is what it bets on. The gateway is an external `omp`
+ * child process whose inbound-header handling this repo neither pins nor
+ * versions, so a denylist is a standing bet that no omp release ever grows a
+ * header selecting a credential, a provider, an organisation or a project. The
+ * bet was already losing: `x-api-key`, `openai-organization` and
+ * `openai-project` each mean something to one provider or another, a guest can
+ * set every one of them, and every one of them reached the gateway.
+ *
+ * So it is inverted. What stays is what an Anthropic Messages turn genuinely
+ * needs from the caller: the content type of the body, the response shape the
+ * client is asking for, and the two Anthropic protocol version headers, which
+ * select wire-format behaviour rather than a credential and which omp's own
+ * client sends. Everything else is dropped, `authorization` included, and the
+ * gateway's own bearer is set afterwards.
+ *
+ * The cost of this list being too narrow is a header a turn wanted arriving
+ * absent, which surfaces as a broken request that names itself. The cost of the
+ * denylist being too narrow was a guest choosing which of this host's
+ * credentials the gateway spends. Those are not the same size of mistake, so
+ * add to this list only with the reason written beside it.
+ *
+ * The hop-by-hop request headers are now absent by construction rather than by
+ * exclusion, and two of them are worth keeping on the record: a copied
+ * `content-length` is a request smuggling primitive, because the body is
+ * re-sent from a buffer and `fetch` computes the real length itself, and `host`
+ * names the bridge address while the upstream is loopback.
  */
-const HOP_BY_HOP_REQUEST_HEADERS: Record<string, true> = {
-  connection: true,
-  "content-length": true,
-  host: true,
-  "keep-alive": true,
-  "proxy-authenticate": true,
-  "proxy-authorization": true,
-  te: true,
-  trailer: true,
-  "transfer-encoding": true,
-  upgrade: true,
+const FORWARDED_REQUEST_HEADERS: Record<string, true> = {
+  accept: true,
+  "anthropic-beta": true,
+  "anthropic-version": true,
+  "content-type": true,
 };
 
 /**
@@ -144,6 +175,13 @@ const IDLE_TIMEOUT_SECONDS = 255;
 /** Longest path echoed into a log line. */
 const MAX_LOGGED_PATH = 120;
 
+/**
+ * Why an in-flight upstream request was cancelled, carried as the abort reason
+ * so the rejection a revoked grant's handler catches says what happened rather
+ * than surfacing as a bare `AbortError` indistinguishable from a network fault.
+ */
+const REVOKED_ABORT_REASON = "the model grant was revoked while the request was in flight";
+
 export interface ModelGrant {
   /** Returned once; the caller writes it into the guest's token file. */
   token: string;
@@ -192,6 +230,26 @@ interface Grant {
   inFlight: number;
   requestsUsed: number;
   tokensUsed: number;
+  /**
+   * Cancels every upstream request this grant still has in flight, and is
+   * aborted by `revoke` and `revokeAll`.
+   *
+   * Without it, revocation only stopped the next request from authenticating.
+   * A turn already dispatched to the gateway kept running: the provider kept
+   * working, the operator kept paying, and both outlived the container that
+   * asked for it, because `close`'s `stop(true)` drops the server-side
+   * connection without touching the `fetch` the handler is awaiting. One
+   * controller per grant rather than one per request, because the lifecycle
+   * event that matters is "this container's grant is over", and that has to
+   * reach requests the revoking code has no handle on.
+   *
+   * Expiry deliberately does not abort. A grant past its TTL cannot admit
+   * another turn, but the turn it already admitted was admitted legitimately
+   * and is bounded by `maxConcurrent`; killing it would make a long turn fail
+   * on a clock rather than on anything the guest did. Revocation is the event
+   * that means the container is gone and the spend is now pure waste.
+   */
+  abort: AbortController;
 }
 
 export class ModelBroker {
@@ -386,6 +444,7 @@ export class ModelBroker {
       inFlight: 0,
       requestsUsed: 0,
       tokensUsed: 0,
+      abort: new AbortController(),
     });
     this.#log(
       `granted ${input.model} on ${endpoint} to ` +
@@ -414,14 +473,29 @@ export class ModelBroker {
     const grant = this.#grants.get(key);
     if (grant === undefined) return;
     this.#grants.delete(key);
-    this.#log(`revoked a grant for ${grant.model} (${grant.requestsUsed} requests, ${grant.tokensUsed} tokens used)`);
+    // Read before the abort, because the release the abort triggers runs the
+    // handler's `finally` and decrements this on its way out.
+    const cancelled = grant.inFlight;
+    grant.abort.abort(new Error(REVOKED_ABORT_REASON));
+    this.#log(
+      `revoked a grant for ${grant.model} (${grant.requestsUsed} requests, ${grant.tokensUsed} tokens used` +
+        `${cancelled === 0 ? "" : `, cancelling ${cancelled} in flight`})`,
+    );
   }
 
   revokeAll(): void {
     const count = this.#grants.size;
     if (count === 0) return;
+    let cancelled = 0;
+    for (const grant of this.#grants.values()) {
+      cancelled += grant.inFlight;
+      grant.abort.abort(new Error(REVOKED_ABORT_REASON));
+    }
     this.#grants.clear();
-    this.#log(`revoked ${count} grant${count === 1 ? "" : "s"}`);
+    this.#log(
+      `revoked ${count} grant${count === 1 ? "" : "s"}` +
+        `${cancelled === 0 ? "" : `, cancelling ${cancelled} in flight`}`,
+    );
   }
 
   /**
@@ -442,6 +516,13 @@ export class ModelBroker {
    * lifecycle event that ends them, and folding it in here would make whether
    * the audit records a revocation depend on shutdown ordering. The daemon calls
    * both.
+   *
+   * That split is also why this does not abort in-flight upstream work.
+   * Cancellation rides on revocation, which is the event that means the grant
+   * is over; `close` only stops the listener, and a broker whose bind failed is
+   * meant to be reusable. Aborting here would leave a still-live grant holding
+   * a permanently aborted controller, so every later turn on it would fail
+   * instantly with nothing in the log to explain why.
    */
   async close(): Promise<void> {
     const server = this.#server;
@@ -579,6 +660,21 @@ export class ModelBroker {
       }
     }
 
+    // Admission and reservation, in one synchronous block, and that is the
+    // whole mechanism rather than a detail of it.
+    //
+    // These ceilings used to be checked here and incremented after
+    // `readBounded` and `#upstreamBearer`, both of which yield. Fifty
+    // concurrent requests against `maxConcurrent: 2` therefore all observed
+    // `inFlight: 0`, all passed admission, and all forwarded; the same race let
+    // a burst walk straight through `maxRequests`. Reserving in the same
+    // synchronous block that checks makes the count each request reads include
+    // every request already admitted, because nothing can run in between.
+    //
+    // Which is also a constraint on the code above: everything from the route
+    // test through the peer check is deliberately await-free, and an `await`
+    // introduced anywhere in it reopens the burst. Nothing would fail loudly if
+    // it were; the ceilings would simply stop being ceilings.
     if (grant.inFlight >= grant.limits.maxConcurrent) {
       return await this.#deny(
         req,
@@ -603,91 +699,135 @@ export class ModelBroker {
         `${method} ${path} exhausted the ${grant.limits.maxTokens}-token ceiling (${grant.tokensUsed} counted)`,
       );
     }
-
-    const body = await readBounded(req, MAX_REQUEST_BODY_BYTES);
-    if (body === null) {
-      return await this.#deny(
-        req,
-        413,
-        "payload_too_large",
-        `${method} ${path} body exceeds the ${MAX_REQUEST_BODY_BYTES}-byte ceiling`,
-      );
-    }
-    // Parsed once, here, and the same bytes are forwarded verbatim. Re-encoding
-    // the parsed object instead would let a body that parses differently at the
-    // two ends past the model check.
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(new TextDecoder().decode(body));
-    } catch {
-      return await this.#deny(req, 400, "bad_request", `${method} ${path} body is not JSON`);
-    }
-    const asked = isRecord(parsed) ? parsed.model : undefined;
-    if (typeof asked !== "string") {
-      return await this.#deny(req, 400, "bad_request", `${method} ${path} body names no model`);
-    }
-    // The granted model is named; the requested one is not. It is body content,
-    // and body content does not go in a log line.
-    if (asked !== grant.model) {
-      return await this.#deny(
-        req,
-        403,
-        "forbidden",
-        `${method} ${path} asked for a model other than the granted ${grant.model}`,
-      );
-    }
-
-    let upstreamBearer: string;
-    try {
-      upstreamBearer = await this.#upstreamBearer();
-    } catch (err) {
-      // Relaying the reason is safe only because the credential reader's
-      // contract is that it never surfaces the credential, including in its own
-      // errors. Its failures are "the token file is not there", which is the
-      // one thing an operator needs to read here.
-      this.#log(`the upstream credential is unavailable: ${reasonOf(err)}`);
-      return Response.json({ error: "bad_gateway" }, { status: 502 });
-    }
-
     grant.inFlight += 1;
-    // Counted before the forward, so a request that fails upstream still spends
-    // its slot. The ceiling only ever tightens by being wrong in that
-    // direction, which is the side to be wrong on.
     grant.requestsUsed += 1;
-    let released = false;
+
+    // Two ways to give that reservation back, and which one an exit takes is
+    // the difference between a ceiling that tightens and one that eats a
+    // well-behaved container's budget.
+    //
+    // `refund` is for a request refused locally after the reservation: an
+    // over-cap body, a body that is not JSON, a body naming another model, an
+    // unreadable gateway credential. Not one of those reached the gateway, so
+    // neither the slot nor the request was spent, and keeping the request would
+    // let a guest that never got a turn spend its whole ceiling on refusals.
+    //
+    // `release` is for a request that was dispatched. It hands back the slot
+    // and keeps the request spent, because the gateway may have done the work
+    // and charged for it whatever came back. This ceiling is then only ever
+    // wrong in the tightening direction, which is the side to be wrong on.
+    //
+    // Both are idempotent. `release` is also handed to the meter, which calls
+    // it from `flush` or from `cancel` depending on how the stream ended.
+    let settled = false;
+    const refund = () => {
+      if (settled) return;
+      settled = true;
+      grant.inFlight -= 1;
+      grant.requestsUsed -= 1;
+    };
     const release = () => {
-      if (released) return;
-      released = true;
+      if (settled) return;
+      settled = true;
       grant.inFlight -= 1;
     };
-    let handedToStream = false;
+
+    // Defaulted to the exit that costs the guest least, so a refusal added
+    // later inside this block refunds without anyone remembering that it has
+    // to. That direction leaves a guest holding a request it never spent; the
+    // other one leaks a concurrency slot for the life of the container.
+    let reached: "local" | "gateway" | "stream" = "local";
     try {
-      const upstream = await fetch(`${this.#upstreamUrl()}${path}`, {
-        method: "POST",
-        headers: forwardHeaders(req.headers, upstreamBearer),
-        body,
-      });
-      const headers = responseHeaders(upstream.headers);
-      const upstreamBody = upstream.body;
-      if (upstreamBody === null) {
-        return new Response(null, { status: upstream.status, statusText: upstream.statusText, headers });
+      const body = await readBounded(req, MAX_REQUEST_BODY_BYTES);
+      if (body === null) {
+        return await this.#deny(
+          req,
+          413,
+          "payload_too_large",
+          `${method} ${path} body exceeds the ${MAX_REQUEST_BODY_BYTES}-byte ceiling`,
+        );
       }
-      // Streamed through unchanged, byte for byte, so SSE arrives incrementally
-      // rather than at the end of the turn. The meter reads the bytes on their
-      // way past and never holds them up.
-      const metered = upstreamBody.pipeThrough(meter(grant, upstream.headers.get("content-type"), release));
-      handedToStream = true;
-      return new Response(metered, { status: upstream.status, statusText: upstream.statusText, headers });
-    } catch (err) {
-      this.#log(`forwarding ${path} to the auth gateway failed: ${reasonOf(err)}`);
-      return Response.json({ error: "bad_gateway" }, { status: 502 });
+      // Parsed once, here, and the same bytes are forwarded verbatim.
+      // Re-encoding the parsed object instead would let a body that parses
+      // differently at the two ends past the model check.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(new TextDecoder().decode(body));
+      } catch {
+        return await this.#deny(req, 400, "bad_request", `${method} ${path} body is not JSON`);
+      }
+      const asked = isRecord(parsed) ? parsed.model : undefined;
+      if (typeof asked !== "string") {
+        return await this.#deny(req, 400, "bad_request", `${method} ${path} body names no model`);
+      }
+      // The granted model is named; the requested one is not. It is body
+      // content, and body content does not go in a log line.
+      if (asked !== grant.model) {
+        return await this.#deny(
+          req,
+          403,
+          "forbidden",
+          `${method} ${path} asked for a model other than the granted ${grant.model}`,
+        );
+      }
+
+      let upstreamBearer: string;
+      try {
+        upstreamBearer = await this.#upstreamBearer();
+      } catch (err) {
+        // Relaying the reason is safe only because the credential reader's
+        // contract is that it never surfaces the credential, including in its
+        // own errors. Its failures are "the token file is not there", which is
+        // the one thing an operator needs to read here.
+        this.#log(`the upstream credential is unavailable: ${reasonOf(err)}`);
+        return Response.json({ error: "bad_gateway" }, { status: 502 });
+      }
+
+      reached = "gateway";
+      try {
+        const upstream = await fetch(`${this.#upstreamUrl()}${path}`, {
+          method: "POST",
+          headers: forwardHeaders(req.headers, upstreamBearer),
+          body,
+          // How revocation reaches a turn that is already running. Without it,
+          // `revoke` only stopped the next request from authenticating: this
+          // one kept going against the provider, on the operator's quota,
+          // after the container that asked for it was destroyed.
+          signal: grant.abort.signal,
+        });
+        const headers = responseHeaders(upstream.headers);
+        const upstreamBody = upstream.body;
+        if (upstreamBody === null) {
+          return new Response(null, { status: upstream.status, statusText: upstream.statusText, headers });
+        }
+        // Streamed through unchanged, byte for byte, so SSE arrives
+        // incrementally rather than at the end of the turn. The meter reads the
+        // bytes on their way past and never holds them up.
+        const metered = upstreamBody.pipeThrough(meter(grant, upstream.headers.get("content-type"), release));
+        reached = "stream";
+        return new Response(metered, { status: upstream.status, statusText: upstream.statusText, headers });
+      } catch (err) {
+        // A revoked grant is reported as the revocation it is rather than as a
+        // gateway fault: the abort is this daemon's own decision, and calling it
+        // a 502 sends an operator to read the gateway's logs for a failure that
+        // is not there. 401 because it is now true of the credential -- the
+        // grant it named has been deleted.
+        if (grant.abort.signal.aborted) {
+          this.#log(`cancelled an in-flight ${path}: ${REVOKED_ABORT_REASON}`);
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+        this.#log(`forwarding ${path} to the auth gateway failed: ${reasonOf(err)}`);
+        return Response.json({ error: "bad_gateway" }, { status: 502 });
+      }
     } finally {
-      // The stream owns the slot once it has it, and gives it back when the body
-      // ends, is cancelled by the guest, or errors mid-flight. Every other exit
-      // -- a thrown forward, a bodyless response, a refusal added later -- lands
-      // here, so a failure upstream cannot wedge the concurrency ceiling closed
-      // for the life of the container.
-      if (!handedToStream) release();
+      // The stream owns the slot once it has it, and gives it back when the
+      // body ends, is cancelled, or errors mid-flight. Every other exit lands
+      // here: a local refusal refunds, and anything dispatched -- a bodyless
+      // reply, a failed forward, an aborted one -- releases. So no failure
+      // upstream can wedge the concurrency ceiling closed for the life of the
+      // container, and no refusal here can quietly spend the guest's budget.
+      if (reached === "local") refund();
+      else if (reached === "gateway") release();
     }
   }
 
@@ -877,16 +1017,26 @@ async function drainBody(req: Request): Promise<void> {
   }
 }
 
-/** The guest's headers, with its bearer swapped for the upstream one. */
+/**
+ * The subset of the guest's headers `FORWARDED_REQUEST_HEADERS` names, with the
+ * gateway's bearer put on afterwards.
+ *
+ * Nothing outside that list survives, which is the point: this is the boundary
+ * between the least trusted thing on the machine and the process that holds a
+ * real provider credential, and the guest chooses every byte of every header it
+ * sends.
+ */
 function forwardHeaders(from: Headers, upstreamBearer: string): Headers {
   const headers = new Headers();
   for (const [name, value] of from) {
-    const lower = name.toLowerCase();
-    if (lower === "authorization" || HOP_BY_HOP_REQUEST_HEADERS[lower] === true) continue;
+    if (FORWARDED_REQUEST_HEADERS[name.toLowerCase()] !== true) continue;
     headers.set(name, value);
   }
-  // The guest's bearer stops here. What goes on is the gateway's, which the
-  // guest has never seen and cannot reach the gateway to use.
+  // Set last, and unconditionally, so it cannot be reached by anything above:
+  // the guest's bearer stops here, and what goes on is the gateway's, which the
+  // guest has never seen and cannot reach the gateway to use. A guest sending
+  // two `authorization` headers gets neither -- `Headers` folds duplicates into
+  // one entry, and that entry is not on the allowlist.
   headers.set("authorization", `Bearer ${upstreamBearer}`);
   return headers;
 }
@@ -920,13 +1070,26 @@ interface CancellableTransformer<I, O> extends Transformer<I, O> {
 /**
  * A pass-through that reads `usage` off the bytes going past.
  *
- * The ceiling this feeds is best-effort and upward-only, deliberately. A
- * response with no usage block, a malformed one, a stream the guest cancels
- * halfway, a body larger than the buffer -- each of those counts less than the
- * turn really cost, and none of them throws or delays a byte of the response.
- * Accounting is not the boundary here; the model allowlist, the peer range and
- * the request ceiling are, and they hold regardless of what this counts. What
- * it must never do is break a turn to balance its books.
+ * What it feeds is a best-effort figure, and the shape of the error is always
+ * the same: it counts no more than the turn cost and often less. A response
+ * with no usage block, a malformed or truncated one, a stream that errors
+ * halfway, a non-SSE body past `MAX_METERED_JSON_BYTES` -- each of those
+ * advances `tokensUsed` by nothing at all. None of them throws, and none of
+ * them delays a byte of the response.
+ *
+ * So `maxTokens` is a loose bound and not an enforced one. It is checked at
+ * admission, so it overshoots by whatever the turns already in flight go on to
+ * spend, and repeating a request whose reply this cannot parse spends request
+ * slots while leaving `tokensUsed` where it was. `maxRequests` is the ceiling
+ * that always binds, and it is the one to size a grant by.
+ *
+ * A conservative floor for the unparseable cases was considered and refused: a
+ * token count is not derivable from bytes without the provider's tokenizer, and
+ * a made-up number in this counter would read exactly like a measured one to
+ * whoever trusts it next. Counting nothing is at least legible. Accounting is
+ * not the boundary here anyway -- the model allowlist, the peer range and the
+ * request ceiling are, and they hold whatever this counts. What this must never
+ * do is break a turn to balance its books.
  */
 function meter(grant: Grant, contentType: string | null, release: () => void): TransformStream<Uint8Array, Uint8Array> {
   const sse = (contentType ?? "").toLowerCase().includes("text/event-stream");

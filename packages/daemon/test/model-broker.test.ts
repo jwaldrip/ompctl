@@ -106,6 +106,13 @@ interface UpstreamCall {
   url: string;
   method: string;
   authorization: string | null;
+  /**
+   * Every header the fake gateway was presented with, lowercased by `Headers`
+   * iteration. Kept whole rather than as a handful of named fields, because the
+   * property under test is which headers a guest can get through here at all,
+   * and a fixed field list can only ever check the ones somebody thought of.
+   */
+  headers: Record<string, string>;
   body: string;
 }
 
@@ -400,6 +407,8 @@ function requestHead(input: {
   host: string;
   contentLength: number;
   token?: string;
+  /** Verbatim extra header lines, for shapes `fetch` and `Headers` refuse to send. */
+  extra?: string[];
 }): string {
   const lines = [
     `${input.method ?? "POST"} ${input.path} HTTP/1.1`,
@@ -408,6 +417,7 @@ function requestHead(input: {
     `Content-Length: ${input.contentLength}`,
   ];
   if (input.token !== undefined) lines.push(`Authorization: Bearer ${input.token}`);
+  for (const line of input.extra ?? []) lines.push(line);
   return `${lines.join("\r\n")}\r\n\r\n`;
 }
 
@@ -498,7 +508,13 @@ beforeEach(async () => {
     idleTimeout: 60,
     async fetch(req) {
       const body = await req.text();
-      upstreamSeen.push({ url: req.url, method: req.method, authorization: req.headers.get("authorization"), body });
+      upstreamSeen.push({
+        url: req.url,
+        method: req.method,
+        authorization: req.headers.get("authorization"),
+        headers: Object.fromEntries(req.headers),
+        body,
+      });
       return await upstreamReply(req, body);
     },
   });
@@ -784,6 +800,268 @@ describe("ceilings", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Admission is atomic, or the ceilings are decorations
+//
+// The ceilings used to be checked at the top of the handler and incremented
+// after `readBounded` and `#upstreamBearer`, both of which yield. Every
+// request in a burst therefore read the same stale zero, every one passed
+// admission, and every one forwarded. A sequential test cannot see that: one
+// request at a time passes either version. So these fire a burst an order of
+// magnitude past the ceiling at a gateway that answers nothing until the test
+// lets it, which is the only shape where the race is the difference between
+// pass and fail.
+// ---------------------------------------------------------------------------
+
+/** Far enough past any ceiling here that one stale read shows up as a pile-up. */
+const BURST = 50;
+
+/** Long enough for fifty loopback requests, which bun:test's 5s default is not. */
+const BURST_DEADLINE_MS = 15_000;
+
+interface Burst {
+  /** Opens as soon as the fake gateway is holding more than the ceiling allows. */
+  readonly overshot: Gate;
+  /** Opens once the broker has answered every request it refused. */
+  readonly refused: Gate;
+  /** The most the fake gateway ever held at once. */
+  peak(): number;
+  /** Lets the held requests complete. */
+  finish(): void;
+  /** Every response, once the held ones have drained. */
+  drain(): Promise<Response[]>;
+}
+
+/**
+ * `BURST` requests fired without awaiting any of them, at a fake gateway that
+ * holds every request it receives.
+ *
+ * Holding is what makes the count meaningful: nothing the broker admitted can
+ * finish and free its slot while the burst is still arriving, so the number the
+ * gateway is holding is exactly the number that got through admission.
+ */
+function burst(input: { token: string; ceiling: number }): Burst {
+  const overshot = gate();
+  const refused = gate();
+  const finish = gate();
+  let holding = 0;
+  let peak = 0;
+  let answered = 0;
+
+  upstreamReply = async () => {
+    holding += 1;
+    peak = Math.max(peak, holding);
+    if (holding > input.ceiling) overshot.open();
+    await finish.promise;
+    holding -= 1;
+    return Response.json({ usage: { input_tokens: 1, output_tokens: 1 } });
+  };
+
+  const flight = Array.from({ length: BURST }, () =>
+    request("/v1/messages", { token: input.token }).then(response => {
+      // Only refusals can resolve before `finish`, so this counts refusals
+      // without having to read a status to know one.
+      answered += 1;
+      if (answered >= BURST - input.ceiling) refused.open();
+      return response;
+    }),
+  );
+
+  return {
+    overshot,
+    refused,
+    peak: () => peak,
+    finish: () => {
+      finish.open();
+    },
+    drain: () => withDeadline(Promise.all(flight), "the burst to drain", BURST_DEADLINE_MS),
+  };
+}
+
+/** Responses counted by status, so a failure names the shape and not just a number. */
+function byStatus(answers: Response[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const answer of answers) {
+    const key = String(answer.status);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+describe("atomic admission", () => {
+  test("a burst past maxConcurrent never puts more than the ceiling on the wire", async () => {
+    const ceiling = 2;
+    const granted = issueGrant({ limits: { maxRequests: BURST, maxTokens: 1_000_000, maxConcurrent: ceiling } });
+    const fired = burst({ token: granted.token, ceiling });
+
+    // Whichever happens first. A broker with the race loses on `overshot` and
+    // loses immediately, with the peak in the failure message, rather than as an
+    // anonymous timeout.
+    await withDeadline(
+      Promise.race([fired.refused.promise, fired.overshot.promise]),
+      "the burst to be refused or to overshoot the concurrency ceiling",
+      BURST_DEADLINE_MS,
+    );
+    expect(fired.peak()).toBeLessThanOrEqual(ceiling);
+
+    fired.finish();
+    const answers = await fired.drain();
+    // Exact, not a bound: the burst is only released after every refusal has
+    // been answered, so nothing can arrive late and find a free slot.
+    expect(byStatus(answers)).toEqual({ "200": ceiling, "429": BURST - ceiling });
+    expect(upstreamSeen).toHaveLength(ceiling);
+    await Promise.all(answers.map(answer => answer.text()));
+  });
+
+  test("a burst past maxRequests never puts more than the ceiling on the wire", async () => {
+    const ceiling = 3;
+    // Concurrency deliberately wide open, so the request ceiling is the only
+    // thing that can hold this burst back and the assertion is about that
+    // counter rather than about the other one.
+    const granted = issueGrant({ limits: { maxRequests: ceiling, maxTokens: 1_000_000, maxConcurrent: BURST } });
+    const fired = burst({ token: granted.token, ceiling });
+
+    await withDeadline(
+      Promise.race([fired.refused.promise, fired.overshot.promise]),
+      "the burst to be refused or to overshoot the request ceiling",
+      BURST_DEADLINE_MS,
+    );
+    expect(fired.peak()).toBeLessThanOrEqual(ceiling);
+
+    fired.finish();
+    const answers = await fired.drain();
+    expect(byStatus(answers)).toEqual({ "200": ceiling, "402": BURST - ceiling });
+    expect(upstreamSeen).toHaveLength(ceiling);
+    await Promise.all(answers.map(answer => answer.text()));
+  });
+
+  test(
+    "a refusal after admission gives back both the slot and the request",
+    async () => {
+      const ceiling = 3;
+      const granted = issueGrant({ limits: { maxRequests: ceiling, maxTokens: 100_000, maxConcurrent: 1 } });
+
+      // Every refusal that lands after the reservation is taken: a body naming
+      // another model, a body that is not JSON, a body naming no model, and a
+      // body over the cap. None of them reached the gateway.
+      //
+      // With `maxConcurrent: 1`, a leaked slot fails this on the second line
+      // with a 429, and a request charged for a refusal fails it below on the
+      // count. Both counters are covered.
+      const other = { model: "a-model-this-grant-does-not-allow" };
+      expect((await post("/v1/messages", { token: granted.token, body: other })).status).toBe(403);
+      expect((await post("/v1/messages", { token: granted.token, body: "{not json" })).status).toBe(400);
+      expect((await post("/v1/messages", { token: granted.token, body: '{"messages":[]}' })).status).toBe(400);
+      // A kilobyte over the cap, not the doubled body the drain tests use: the
+      // doubling there exists to leave bytes outstanding for a `pending()`
+      // assertion, and this test only needs the refusal itself.
+      const overCap = "a".repeat(REQUEST_BODY_CAP + 1024);
+      expect((await post("/v1/messages", { token: granted.token, body: overCap })).status).toBe(413);
+
+      // Four requests against a budget of three. If any refusal above had kept
+      // its reservation, one of the first three is a 402 instead.
+      expect((await post("/v1/messages", { token: granted.token })).status).toBe(200);
+      expect((await post("/v1/messages", { token: granted.token })).status).toBe(200);
+      expect((await post("/v1/messages", { token: granted.token })).status).toBe(200);
+      const spent = await post("/v1/messages", { token: granted.token });
+      expect(spent.status).toBe(402);
+      expect(JSON.parse(spent.text)).toEqual({ error: "quota_exhausted" });
+      expect(upstreamSeen).toHaveLength(ceiling);
+    },
+    LARGE_BODY_TEST_TIMEOUT_MS,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// What the guest can put in front of the gateway
+//
+// The gateway is an external `omp` child holding a real provider credential,
+// and this repo pins neither its version nor its inbound-header handling. So
+// the assertion is not "the headers we thought of are stripped", it is "only
+// the four on the allowlist arrive". A denylist passes the first and fails the
+// second.
+// ---------------------------------------------------------------------------
+
+describe("forwarded request headers", () => {
+  test("forwards only the allowlisted headers, with the gateway's own bearer", async () => {
+    const granted = issueGrant();
+    // Each of these means something to some provider or proxy, and the guest
+    // chose every byte of every one of them.
+    const planted: Record<string, string> = {
+      "x-api-key": "guest-planted-provider-key",
+      "x-forwarded-for": "10.9.9.9",
+      "x-forwarded-host": "gateway.guest.example",
+      "openai-organization": "org-the-guest-picked",
+      "openai-project": "proj-the-guest-picked",
+      "x-goog-user-project": "billing-project-the-guest-picked",
+    };
+
+    const res = await fetch(`${brokerBase}/v1/messages`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${granted.token}`,
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "prompt-caching-2024-07-31",
+        ...planted,
+      },
+      body: JSON.stringify({ model: MODEL }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const call = upstreamSeen[0];
+    if (call === undefined) throw new Error("the fake gateway saw no call to check headers on");
+
+    for (const name of Object.keys(planted)) {
+      expect({ name, forwarded: call.headers[name] }).toEqual({ name, forwarded: undefined });
+    }
+
+    // And the four a turn genuinely needs arrive verbatim, values included:
+    // dropping these would break streaming and protocol version selection.
+    expect(call.headers["content-type"]).toBe("application/json");
+    expect(call.headers.accept).toBe("text/event-stream");
+    expect(call.headers["anthropic-version"]).toBe("2023-06-01");
+    expect(call.headers["anthropic-beta"]).toBe("prompt-caching-2024-07-31");
+    expect(call.headers.authorization).toBe(`Bearer ${UPSTREAM_BEARER}`);
+
+    // Nowhere in the forwarded request, under any header name.
+    expect(JSON.stringify(call.headers)).not.toContain(granted.token);
+  });
+
+  test("a smuggled second authorization header authenticates as nothing", async () => {
+    const granted = issueGrant();
+    const smuggled = "smuggled-second-credential";
+    const host = `127.0.0.1:${brokerPort}`;
+    const connection = await rawConnect("127.0.0.1", brokerPort);
+    connections.push(connection);
+
+    const body = encoder.encode(JSON.stringify({ model: MODEL }));
+    connection.send(
+      requestHead({
+        path: "/v1/messages",
+        host,
+        contentLength: body.byteLength,
+        token: granted.token,
+        extra: [`Authorization: Bearer ${smuggled}`],
+      }),
+    );
+    connection.send(body);
+
+    // Over a raw socket because `Headers` will not let `fetch` send a duplicate
+    // at all. Measured on Bun 1.3.14: the server folds the two into one
+    // comma-joined value, so the smuggled credential does not select anything,
+    // it corrupts the real one, and the request dies at authentication before
+    // any forwarding decision is reached.
+    const answer = await connection.next("the refusal of a request carrying two authorization headers");
+    expect(answer.status).toBe(401);
+    expect(JSON.parse(answer.body)).toEqual({ error: "unauthorized" });
+    expect(upstreamSeen).toHaveLength(0);
+    expect(logs.join("\n")).not.toContain(smuggled);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Metering, and the stream it must not hold up
 // ---------------------------------------------------------------------------
 
@@ -892,6 +1170,51 @@ describe("concurrency slot", () => {
     expect(empty.text).toBe("");
 
     upstreamReply = () => Response.json({ ok: true });
+    expect((await post("/v1/messages", { token: granted.token })).status).toBe(200);
+  });
+
+  test("hands the slot back when the gateway's stream dies mid-body", async () => {
+    const die = gate();
+    upstreamReply = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(SSE_HEAD));
+            void die.promise.then(() => {
+              controller.error(new Error("the gateway's stream died mid-turn"));
+            });
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    const granted = issueGrant({ limits: { maxRequests: 5, maxTokens: 100_000, maxConcurrent: 1 } });
+
+    const res = await request("/v1/messages", { token: granted.token });
+    expect(res.status).toBe(200);
+    const body = res.body;
+    if (body === null) throw new Error("the broker answered an SSE forward with no body");
+    const reader = body.getReader();
+    const first = await withDeadline(reader.read(), "the first SSE chunk before the gateway kills the stream");
+    expect(decoder.decode(first.value)).toBe(SSE_HEAD);
+
+    // The exit the meter's `cancel` hook exists for, and the only one that
+    // never reaches `flush`: the response has already been handed to the
+    // stream, so the handler's `finally` has run and released nothing.
+    die.open();
+    try {
+      for (;;) {
+        const step = await withDeadline(reader.read(), "the guest's stream to end after the gateway killed it");
+        if (step.done) break;
+      }
+    } catch {
+      // Expected: a body that stops mid-stream is what a dead gateway looks
+      // like from the guest's side.
+    }
+
+    upstreamReply = () => Response.json({ ok: true });
+    // 429 here is a slot leaked for the life of the container by one failed
+    // stream, which is the whole reason the ceiling has to be released from
+    // both stream terminations and not just the tidy one.
     expect((await post("/v1/messages", { token: granted.token })).status).toBe(200);
   });
 });
@@ -1190,5 +1513,90 @@ describe("lifecycle", () => {
 
     await broker.close();
     expect(broker.liveGrants()).toBe(1);
+  });
+
+  test("revoke cancels a turn already dispatched to the gateway", async () => {
+    const reached = gate();
+    const cancelled = gate();
+    upstreamReply = async req => {
+      req.signal.addEventListener("abort", () => {
+        cancelled.open();
+      });
+      reached.open();
+      // Held until the cancellation arrives, so the only way this test
+      // completes is the gateway actually being told to stop.
+      await cancelled.promise;
+      return Response.json({ usage: { input_tokens: 1, output_tokens: 1 } });
+    };
+    const granted = issueGrant({ limits: { maxRequests: 5, maxTokens: 100_000, maxConcurrent: 1 } });
+
+    const held = request("/v1/messages", { token: granted.token });
+    await withDeadline(reached.promise, "the turn to reach the fake gateway");
+
+    broker.revoke(granted.token);
+
+    // The load-bearing assertion, and it is about the gateway rather than about
+    // the guest's answer: until the grant carried an `AbortController`,
+    // revocation stopped the next request from authenticating and left this one
+    // running, so provider work and operator quota outlived the container that
+    // asked for it. The fake gateway's own `req.signal` is the only place that
+    // is observable from.
+    await withDeadline(cancelled.promise, "the fake gateway to see the turn cancelled");
+
+    const answer = await withDeadline(held, "the cancelled turn to be answered");
+    expect(answer.status).toBe(401);
+    expect(await answer.json()).toEqual({ error: "unauthorized" });
+    expect(logs.join("\n")).toContain("cancelling 1 in flight");
+    expect(logs.join("\n")).toContain("cancelled an in-flight /v1/messages");
+    // Not a 502: an abort this daemon asked for is not a gateway fault, and
+    // reporting it as one sends an operator to read the gateway's logs for a
+    // failure that is not there.
+    expect(logs.join("\n")).not.toContain("forwarding /v1/messages to the auth gateway failed");
+    expect(broker.liveGrants()).toBe(0);
+  });
+
+  test("revoke cancels a turn that is already streaming to the guest", async () => {
+    const cancelled = gate();
+    upstreamReply = req => {
+      req.signal.addEventListener("abort", () => {
+        cancelled.open();
+      });
+      // Headers and one event, then nothing, which is what a long turn looks
+      // like from here. This is the expensive case: an SSE turn can hold a
+      // provider busy for minutes after the container is gone.
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(SSE_HEAD));
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    };
+    const granted = issueGrant();
+
+    const res = await request("/v1/messages", { token: granted.token });
+    expect(res.status).toBe(200);
+    const body = res.body;
+    if (body === null) throw new Error("the broker answered an SSE forward with no body");
+    const reader = body.getReader();
+    const first = await withDeadline(reader.read(), "the first SSE chunk of the turn about to be revoked");
+    expect(decoder.decode(first.value)).toBe(SSE_HEAD);
+
+    broker.revoke(granted.token);
+
+    await withDeadline(cancelled.promise, "the fake gateway to see the streaming turn cancelled");
+    expect(logs.join("\n")).toContain("cancelling 1 in flight");
+
+    // And the guest's copy ends rather than hanging on a stream nothing will
+    // ever write to again.
+    try {
+      for (;;) {
+        const step = await withDeadline(reader.read(), "the guest's stream to end once the turn was revoked");
+        if (step.done) break;
+      }
+    } catch {
+      // Expected: the body dies mid-stream when the turn behind it is killed.
+    }
   });
 });
