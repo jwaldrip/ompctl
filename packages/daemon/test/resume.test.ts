@@ -209,6 +209,20 @@ describe("resumeAgent", () => {
     expect(h.fake.loads).toEqual([priorSessionId]);
   });
 
+  test("stopping an agent releases its durable session for a later resume", async () => {
+    const h = harness();
+    const admin = h.pair("admin", [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
+    const sessionId = "routine-finished-session";
+
+    const first = await h.sup.resumeAgent({ name: "first", cwd: "/work", sessionId }, admin);
+    await h.sup.stopAgent(first.id, admin);
+    const second = await h.sup.resumeAgent({ name: "second", cwd: "/work", sessionId }, admin);
+
+    expect(second.id).not.toBe(first.id);
+    expect(second.acpSessionId).toBe(sessionId);
+    expect(h.fake.loads).toEqual([sessionId, sessionId]);
+  });
+
   test("prompt scope may resume a known session; read alone is refused before touching a host", async () => {
     const h = harness();
     const prompter = h.pair("prompter", [SCOPE_READ, SCOPE_PROMPT]);

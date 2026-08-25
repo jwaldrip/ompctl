@@ -674,6 +674,7 @@ export class Supervisor {
     // granted prompt can interact only until its agent process exits, after
     // which the same conversation becomes a permanent permission error.
     const who = this.#authorize(actor, SCOPE_PROMPT, "agent.resume");
+
     const heldBy = this.#sessionAgent.get(input.sessionId);
     if (heldBy) {
       throw new Error(`session ${input.sessionId} is already held by agent ${heldBy}`);
@@ -911,7 +912,14 @@ export class Supervisor {
   async stopAgent(agentId: AgentId, actor: Actor): Promise<void> {
     this.#authorize(actor, SCOPE_MANAGE, "agent.stop", agentId);
     const { agent, entry } = this.#resolve(agentId);
-    if (agent.acpSessionId) await entry.host.client.closeSession(agent.acpSessionId);
+    if (agent.acpSessionId) {
+      await entry.host.client.closeSession(agent.acpSessionId);
+      // A stopped agent no longer owns this durable session. Leaving its id in
+      // the in-process lock turns a later ordinary resume into "already held"
+      // even though the row is terminal and the host just closed it, which is
+      // exactly the state routine actions leave behind.
+      if (this.#sessionAgent.get(agent.acpSessionId) === agentId) this.#sessionAgent.delete(agent.acpSessionId);
+    }
     entry.agents.delete(agentId);
     this.#setState(agentId, "stopped");
     this.#store.audit({ action: "agent.stop", agentId, outcome: "ok" });
