@@ -667,7 +667,7 @@ describe("POST /v1/sync/import", () => {
     expect(rows[0]?.outcome).toBe("error");
     // One landed of three attempted, which is the only number that tells an
     // operator what state the machine is in.
-    expect(rows[0]?.detail).toMatchObject({ routines: 1, attempted: 3 });
+    expect(rows[0]?.detail).toMatchObject({ completed: 1, failedAt: 1, attempted: 3 });
     expect(store.listRoutines().map(routine => routine.id)).toEqual(["rtn_first"]);
   });
 

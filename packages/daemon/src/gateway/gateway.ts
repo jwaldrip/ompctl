@@ -2299,7 +2299,7 @@ export class Gateway {
       // leaves a machine holding some of another daemon's catalogue. The 400
       // below says the import failed, which is true and is also the reading that
       // sends someone looking for a machine that changed nothing.
-      let landed = 0;
+      let completed = 0;
       try {
         config.apply({ policyMode: document.policyMode, keepAwake: document.keepAwake });
         for (const routine of document.routines) {
@@ -2314,7 +2314,7 @@ export class Gateway {
             ...routine,
             actions: routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
           });
-          landed += 1;
+          completed += 1;
         }
         // One row for the one decision that was made. Restoring a catalogue
         // arms every automation in it, so a door that wrote them all and
@@ -2326,25 +2326,41 @@ export class Gateway {
           action: "sync.import",
           actorDeviceId: actor.deviceId,
           outcome: "ok",
-          detail: { routines: landed, policyMode: document.policyMode },
+          detail: { routines: completed, policyMode: document.policyMode },
         });
-        return Response.json({ ok: true, routines: landed });
+        return Response.json({ ok: true, routines: completed });
       } catch (err) {
         const reason = err instanceof Error ? err.message : "sync import failed";
         // The row a partial restore needs most. Recording only the successes
         // would leave the one case where the log matters, a machine holding half
         // of somebody else's configuration, as the one case with nothing in it.
-        this.#store.audit({
-          action: "sync.import",
-          actorDeviceId: actor.deviceId,
-          outcome: "error",
-          detail: {
-            routines: landed,
-            attempted: document.routines.length,
-            policyMode: document.policyMode,
-            reason,
-          },
-        });
+        //
+        // `completed` counts iterations that returned, and `failedAt` names the
+        // one that did not. It is deliberately not called "landed": a routine's
+        // definition is committed before its credential withdrawal, so the
+        // routine at `failedAt` may be on disk or may not, and reporting one
+        // number as though that were settled would be the same overclaiming this
+        // row exists to fix. Two fields and the ambiguity stated beats one field
+        // that is sometimes wrong.
+        try {
+          this.#store.audit({
+            action: "sync.import",
+            actorDeviceId: actor.deviceId,
+            outcome: "error",
+            detail: {
+              completed,
+              failedAt: completed,
+              attempted: document.routines.length,
+              policyMode: document.policyMode,
+              reason,
+            },
+          });
+        } catch {
+          // A store that cannot take an audit row is very likely the cause of
+          // the failure being recorded. Swallowed on purpose: the caller's 400
+          // has to carry the original reason, and an audit failure thrown from
+          // here would replace it with a second, less useful one.
+        }
         return Response.json({ error: reason }, { status: 400 });
       }
     }
