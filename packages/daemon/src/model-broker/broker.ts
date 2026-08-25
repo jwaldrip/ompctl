@@ -1071,13 +1071,24 @@ function responseHeaders(from: Headers): Headers {
  * `Transformer` plus the `cancel` hook the streams spec grew and the ambient
  * type has not caught up to.
  *
- * The runtime honours it. Measured on Bun 1.3.14, `cancel` fires both when the
- * reader is cancelled from downstream and when the source errors, with the
- * error as the reason, and `flush` correctly does not fire in either case. It
- * is only the declaration that is behind, so the shape is stated here rather
- * than asserted away with a cast: everything else about the transformer stays
- * fully checked, and a fresh object literal typed as this still gets its excess
- * properties checked.
+ * This runtime does not call it. Measured on Bun 1.3.14 by instrumenting both
+ * hooks and running every termination this file's tests can produce -- a body
+ * that ends, a source that errors mid-stream, an upstream `fetch` aborted while
+ * streaming, an upstream `fetch` aborted before its headers arrive -- `flush`
+ * fired 33 times and `cancel` fired not once. Bun runs `flush` even when the
+ * source errors, which is the opposite of what a spec-compliant implementation
+ * does, and it is what actually returns the concurrency slot today.
+ *
+ * The hook stays anyway, and the reason is the direction of the risk. A Bun
+ * that implements `transformer.cancel` will call it INSTEAD of `flush` on an
+ * errored or cancelled stream, so the day that lands, a meter without this hook
+ * silently stops releasing slots on every failed turn and a container wedges at
+ * its concurrency ceiling. The hook costs nothing while unreachable and is the
+ * difference between that upgrade being uneventful and it being a hang.
+ *
+ * Declared rather than cast away because a cast would also silence the excess
+ * property checks on the object literal below, which is where a typo in a hook
+ * name would otherwise become another silently unreachable hook.
  */
 interface CancellableTransformer<I, O> extends Transformer<I, O> {
   cancel?: (reason?: unknown) => void;
@@ -1189,16 +1200,22 @@ function meter(grant: Grant, contentType: string | null, release: () => void): T
       } catch {
         // A truncated or non-JSON body counts nothing. See above: upward-only.
       }
+      // The release that actually happens. Measured on Bun 1.3.14, this runs on
+      // every termination this broker can produce, including the ones it has no
+      // business running on: a source that errors mid-stream and an upstream
+      // `fetch` aborted while streaming both arrive here rather than at
+      // `cancel`. A guest also cannot free its slot early or strand one by
+      // hanging up -- measured, a client abandoning the response body does not
+      // abort `req.signal`, the server drains the rest of the upstream stream,
+      // and this runs normally.
       release();
     },
     cancel() {
-      // The upstream erroring mid-stream, which is the one termination `flush`
-      // does not cover. Not a guest disconnect: measured on Bun 1.3.14, a
-      // client abandoning the response body does not reach here and does not
-      // abort `req.signal` either -- the server drains the rest of the upstream
-      // stream and `flush` runs normally. So a guest cannot free its own
-      // concurrency slot early by hanging up, and it cannot strand one either.
-      // Whatever was counted before the error stands.
+      // Unreachable on Bun 1.3.14 and kept deliberately: see
+      // `CancellableTransformer` for the instrumented counts and for why a
+      // runtime that starts honouring this hook would otherwise stop releasing
+      // slots on every failed turn. Whatever was counted before the error
+      // stands.
       release();
     },
   };

@@ -1240,9 +1240,13 @@ describe("concurrency slot", () => {
     const first = await withDeadline(reader.read(), "the first SSE chunk before the gateway kills the stream");
     expect(decoder.decode(first.value)).toBe(SSE_HEAD);
 
-    // The exit the meter's `cancel` hook exists for, and the only one that
-    // never reaches `flush`: the response has already been handed to the
-    // stream, so the handler's `finally` has run and released nothing.
+    // The response is already a stream, so the handler's `finally` has run and
+    // released nothing: whatever gives the slot back has to come from the
+    // stream ending. Which hook delivers that is measured rather than assumed
+    // -- on Bun 1.3.14 it is `flush`, even here, and the transformer's `cancel`
+    // hook is never called at all -- so this asserts the observable and not the
+    // mechanism. Deleting the `release()` from `cancel` does not fail this test,
+    // and cannot, because nothing on this runtime reaches it.
     die.open();
     try {
       for (;;) {
@@ -1256,8 +1260,8 @@ describe("concurrency slot", () => {
 
     upstreamReply = () => Response.json({ ok: true });
     // 429 here is a slot leaked for the life of the container by one failed
-    // stream, which is the whole reason the ceiling has to be released from
-    // both stream terminations and not just the tidy one.
+    // stream. This is the assertion that would catch a Bun upgrade that stops
+    // running `flush` on an errored source.
     expect((await post("/v1/messages", { token: granted.token })).status).toBe(200);
   });
 });
