@@ -20,9 +20,23 @@
  * imported before anything that generates a key, which is why it is first and
  * why nothing else may be placed above it. There is no JS fallback on purpose:
  * seeding key material from `Math.random` would be worse than failing.
+ *
+ * ## So is the second, for the same class of reason
+ *
+ * Hermes has no Streams API either. `assistant-stream`, underneath
+ * `@assistant-ui/react-native`, evaluates `class extends TransformStream` at
+ * module scope, so this app died with `Property 'TransformStream' doesn't
+ * exist` the moment a session opened on a real simulator. See
+ * `src/platform/streams.ts` for the measurement and for what it installs.
+ *
+ * Both are side-effect imports above `App` on purpose. `import` is hoisted, so
+ * a function call placed between these lines and the `App` import would run
+ * after `App`'s own graph had already been evaluated, which is exactly too
+ * late.
  */
 
 import "react-native-get-random-values";
+import "./src/platform/streams.ts";
 import { AppRegistry } from "react-native";
 import { App } from "./src/App.tsx";
 import { name } from "./app.json";

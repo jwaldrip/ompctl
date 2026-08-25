@@ -662,6 +662,54 @@ function userTurn(shell: Shell, seq: number, text: string): void {
   });
 }
 
+describe("a session joined after its turn ended", () => {
+  /**
+   * The device found this one. Attaching to an agent that is ALREADY idle never
+   * produces a busy -> idle transition, and the daemon replays the transcript
+   * as ordinary update frames, so the last assistant chunk of a turn that
+   * finished before this device arrived stayed marked streaming. On an iPhone
+   * 17 simulator against a real daemon the agent reported `idle` while the app
+   * drew a "Working" row and offered the interrupt in place of send.
+   *
+   * The roster is the authority on liveness. A non-busy agent has nothing in
+   * flight whether or not this device watched it stop.
+   */
+  test("shows no working row and offers send, not interrupt", () => {
+    // Split width, so the detail pane and its composer are on screen without a
+    // navigation press: the same shape the neighbouring cases use.
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      // Idle from the first frame: this device never sees `busy`.
+      shell.emit("agents", { agents: ROSTER });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      userTurn(shell, 1, "what did you find?");
+      // A replayed assistant chunk. No `message_end` follows, because the turn
+      // was already over when we joined.
+      shell.emit("update", {
+        agentId: "agt_a",
+        seq: 2,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "The mount policy imports node:path." },
+          messageId: "m1",
+        },
+      });
+      // Deliberately NO trailing roster frame. A settled session sends none,
+      // which is exactly what made the device fail while a test that emitted
+      // one passed.
+
+      expect(shell.rowLabel()).toBeNull();
+      expect(shell.rowCount()).toBe(0);
+      // The composer's own claim has to agree with the roster.
+      expect(shell.el("composer-send")).not.toBeNull();
+      expect(shell.el("composer-cancel")).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+});
+
 describe("the turn underway sits after the operator's prompt and above the composer", () => {
   test("an idle session has no row at all: chat carries turns, not status", () => {
     setWindowSize(1024, 1366);

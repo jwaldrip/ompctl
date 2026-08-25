@@ -596,7 +596,23 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // roster snapshot in flight over the relay, so a session still receiving
       // updates can never be reaped by a stale roster.
       const rosterMisses = clearMiss(state.rosterMisses, agentId);
-      const next = withSession(state, agentId, session => reduce(session, update));
+      // An update for an agent the roster says is not busy is HISTORY, not a
+      // live stream. The daemon replays a settled transcript as ordinary
+      // update frames, and a settled session then sends no further roster
+      // push, so settling on the next `agents` frame is settling on a frame
+      // that never comes. Measured on an iPhone 17 simulator against a real
+      // daemon: the agent reported `idle` and the app drew a "Working" row and
+      // offered the interrupt for as long as the session stayed open.
+      //
+      // `endTurn` is identity-stable when nothing is streaming, so this costs
+      // one check per frame on the live path, where the roster IS busy and the
+      // caret must stay.
+      const live = state.agents.find(candidate => candidate.id === agentId);
+      const applied = withSession(state, agentId, session => reduce(session, update));
+      const next =
+        live !== undefined && live.state !== "busy"
+          ? withSession(applied, agentId, session => endTurn(session))
+          : applied;
       return { ...settleLoad(next, agentId), watermarks, rosterMisses };
     }
     case "approval": {
@@ -917,7 +933,20 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
   for (const agent of agents) {
     // A turn that has stopped leaves nothing streaming, whatever the last
     // chunk claimed. Without this an interrupted turn keeps its caret forever.
-    if (agent.state !== "busy" && before.get(agent.id)?.state === "busy") {
+    //
+    // Not gated on having WATCHED it stop. That gate was here, as
+    // `before.get(agent.id)?.state === "busy"`, and it assumed this device saw
+    // the busy state at least once. Attaching to an agent that is already idle
+    // never produces that transition, and the daemon replays the transcript as
+    // ordinary update frames -- so the last assistant chunk of a turn that
+    // ended before we arrived stayed marked streaming for as long as the
+    // session was open. Measured on an iPhone 17 simulator against a real
+    // daemon: the agent reported `idle`, and the app drew a "Working" row and
+    // offered the interrupt instead of send.
+    //
+    // `endTurn` returns the same object when nothing is streaming, so running
+    // it on every non-busy agent every roster frame costs an identity check.
+    if (agent.state !== "busy") {
       const session = sessions.get(agent.id);
       if (session !== undefined) sessions.set(agent.id, endTurn(session));
     }
