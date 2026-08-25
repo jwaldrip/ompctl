@@ -146,8 +146,8 @@ final class PairingUITests: XCTestCase {
         XCTAssertTrue(fleet.waitForExistence(timeout: 5), "session fleet did not appear after pairing")
         XCTAssertTrue(app.staticTexts["fleet-count"].exists, "session fleet count did not appear after pairing")
 
-        let agent = app.descendants(matching: .any)["session-open-\(agentID)"]
-        XCTAssertTrue(agent.waitForExistence(timeout: 20), "requested daemon agent was not present in the session fleet")
+        let agent = app.descendants(matching: .any)["session-open-first"]
+        XCTAssertTrue(agent.waitForExistence(timeout: 20), "scratch agent \(agentID) was not present in the session fleet")
         agent.tap()
 
         let session = app.otherElements["session"]
