@@ -5,9 +5,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type Agent,
   DefaultPolicy,
@@ -234,6 +234,27 @@ describe("resolveMountPath", () => {
   // rows are the same rows on a machine with a different operator name.
   const HOME = homedir();
 
+  /**
+   * The canonical spelling of a protected path differs by OS, and the tests
+   * have to say which they are asserting or they only pass where they were
+   * written.
+   *
+   * macOS routes several of these through firmlinks, so `/etc` canonicalizes to
+   * `/private/etc` and `/var/root` to `/private/var/root`. Linux canonicalizes
+   * both to themselves. The property under test, that the path is refused, is
+   * the same everywhere; only the spelling in the message moves. Naming the
+   * spelling per platform keeps the assertion real on both rather than skipping
+   * it on one, which is what a `describe.if` would have done.
+   */
+  const ON_DARWIN = process.platform === "darwin";
+  const ETC = ON_DARWIN ? "/private/etc" : "/etc";
+  const VAR = ON_DARWIN ? "/private/var" : "/var";
+  const VAR_ROOT = `${VAR}/root`;
+  /** `/Users` on macOS, `/home` on Linux. Derived so a different operator name changes nothing. */
+  const HOME_PARENT = dirname(HOME);
+  /** Where `mkdtemp` actually lands once canonicalized. */
+  const TMP_CANONICAL = realpathSync(tmpdir());
+
   describe("the reviewer's probe rows, every one of which the old check allowed", () => {
     test("the filesystem root", () => {
       expect(refusal("/")).toContain("/ is a protected directory");
@@ -260,19 +281,19 @@ describe("resolveMountPath", () => {
     test("a home directory's parent reached with a dot-dot segment", () => {
       const reason = refusal(`${HOME}/..`);
       expect(reason).toContain("is a protected directory");
-      expect(reason).toContain("canonicalizes to /Users");
+      expect(reason).toContain(`canonicalizes to ${HOME_PARENT}`);
     });
 
     test("/etc, whose canonical form on macOS is /private/etc", () => {
       const reason = refusal("/etc");
-      expect(reason).toContain("/private/etc is a protected directory");
-      expect(reason).toContain("canonicalizes to /private/etc");
+      expect(reason).toContain(`${ETC} is a protected directory`);
+      expect(reason).toContain(`canonicalizes to ${ETC}`);
     });
 
     test("/var/root, root's own home directory", () => {
       const reason = refusal("/var/root");
-      expect(reason).toContain("/private/var/root is a protected directory");
-      expect(reason).toContain("canonicalizes to /private/var/root");
+      expect(reason).toContain(`${VAR_ROOT} is a protected directory`);
+      expect(reason).toContain(`canonicalizes to ${VAR_ROOT}`);
     });
 
     test("a home directory reached through a doubled leading separator", () => {
@@ -290,12 +311,16 @@ describe("resolveMountPath", () => {
     });
 
     test("/private/var and /private/etc in their canonical spelling", () => {
+      // Literal, not platform-derived: these ARE the canonical spellings of
+      // their own inputs on both platforms. On Linux neither exists, so the
+      // ancestor walk re-appends the tail verbatim and the exact rules still
+      // catch them, which is the point of having both spellings in the set.
       expect(refusal("/private/var")).toContain("/private/var is a protected directory");
       expect(refusal("/private/etc")).toContain("/private/etc is a protected directory");
     });
 
     test("inside a protected tree, not just the tree itself", () => {
-      expect(refusal("/etc/ssh")).toContain("it is inside the protected directory /private/etc");
+      expect(refusal("/etc/ssh")).toContain(`it is inside the protected directory ${ETC}`);
       expect(refusal("/usr/local/bin")).toContain("it is inside the protected directory /usr");
     });
 
@@ -305,17 +330,21 @@ describe("resolveMountPath", () => {
       }
     });
 
-    test("/home, which macOS routes through autofs onto the data volume", () => {
-      // Verified on darwin 25.5.0: `realpathSync("/home")` returns
-      // `/System/Volumes/Data/home`, so on this platform `/home` is refused
-      // for landing inside `/System` rather than by its own entry in
-      // `PROTECTED_EXACT`. Both refuse. The entry stays because a Linux
-      // daemon's `/home` resolves to itself and needs the exact rule.
-      expect(refusal("/home")).toContain("/System/Volumes/Data/home");
-      expect(refusal("/home/someoperator")).toContain("it is inside the protected directory /System");
+    test("/home, whichever way the OS routes it", () => {
+      // Both platforms refuse it, by different mechanisms, and the test says
+      // which rather than asserting one platform's spelling everywhere. On
+      // darwin 25.5.0 `realpathSync("/home")` returns
+      // `/System/Volumes/Data/home`, so it is refused for landing inside
+      // `/System`. On Linux it resolves to itself and the exact `/home` rule is
+      // what catches it. The entry stays for the Linux case.
+      expect(refusal("/home")).toContain(ON_DARWIN ? "/System/Volumes/Data/home" : "/home is a protected directory");
+      expect(refusal("/home/someoperator")).toContain(
+        ON_DARWIN ? "it is inside the protected directory /System" : "protected root",
+      );
     });
 
-    test("the data-volume spelling of a home directory, which realpath folds back", () => {
+    test.if(ON_DARWIN)("the data-volume spelling of a home directory, which realpath folds back", () => {
+      // macOS only, because the firmlink is what creates the second spelling.
       // `/Users` is a firmlink onto the APFS data volume, and the long way
       // round is a real spelling an attacker would try. Verified:
       // `realpathSync("/System/Volumes/Data/Users")` returns `/Users`, so the
@@ -335,7 +364,12 @@ describe("resolveMountPath", () => {
     });
   });
 
-  describe("case folding on a case-insensitive volume", () => {
+  // Case folding is a property of the volume, not of the policy. APFS on this
+  // Mac is case-insensitive, so `/USERS` and `/Users` are one directory and the
+  // check has to treat them as one. A case-sensitive Linux volume genuinely has
+  // two different paths there, so asserting the fold on Linux would assert
+  // something false rather than something untested.
+  describe.if(ON_DARWIN)("case folding on a case-insensitive volume", () => {
     test("/USERS and /users are the same directory as /Users", () => {
       // Refused by `realpathSync` alone: measured on this APFS volume, it
       // normalizes case for every component that exists, so `/USERS` comes
@@ -361,8 +395,8 @@ describe("resolveMountPath", () => {
       // left holding `/private/var/ROOT` against a protected
       // `/private/var/root`. Case-sensitive, that is a miss, and the directory
       // is the same one: `existsSync("/var/ROOT")` is true.
-      expect(refusal("/var/ROOT")).toContain("/private/var/root is a protected directory");
-      expect(refusal("/private/var/ROOT")).toContain("/private/var/root is a protected directory");
+      expect(refusal("/var/ROOT")).toContain(`${VAR_ROOT} is a protected directory`);
+      expect(refusal("/private/var/ROOT")).toContain(`${VAR_ROOT} is a protected directory`);
     });
   });
 
@@ -397,23 +431,23 @@ describe("resolveMountPath", () => {
       // exercises the firmlink spelling and the symlink resolution at once,
       // because /tmp is itself a symlink to /private/tmp.
       const reason = refusal(join(base, "etc-link"));
-      expect(reason).toContain("/private/etc is a protected directory");
-      expect(reason).toContain("canonicalizes to /private/etc");
+      expect(reason).toContain(`${ETC} is a protected directory`);
+      expect(reason).toContain(`canonicalizes to ${ETC}`);
     });
 
     test("a symlink in a non-final component, which is the ancestor-walk case", () => {
       // `<base>/escape/etc` where `escape -> /`. Nothing in the literal string
       // names a protected directory. Only resolving the parent finds `/etc`.
       const reason = refusal(join(base, "escape", "etc"));
-      expect(reason).toContain("/private/etc is a protected directory");
-      expect(reason).toContain("canonicalizes to /private/etc");
+      expect(reason).toContain(`${ETC} is a protected directory`);
+      expect(reason).toContain(`canonicalizes to ${ETC}`);
     });
 
     test("a symlinked parent cannot smuggle a path that does not exist yet", () => {
       // `realpath` fails outright on an absent path, so without the ancestor
       // walk this would be judged as its own literal string and allowed.
       const reason = refusal(join(base, "escape", "etc", "no-such-file"));
-      expect(reason).toContain("it is inside the protected directory /private/etc");
+      expect(reason).toContain(`it is inside the protected directory ${ETC}`);
     });
 
     test("dot-dot segments escape through a component that does not exist", () => {
@@ -428,8 +462,8 @@ describe("resolveMountPath", () => {
       // Built as a string rather than with `join`, which would collapse the
       // `..` segments itself and test nothing.
       const reason = refusal("/tmp/absent-6f2c9b/../../etc/passwd");
-      expect(reason).toContain("it is inside the protected directory /private/etc");
-      expect(reason).toContain("canonicalizes to /private/etc/passwd");
+      expect(reason).toContain(`it is inside the protected directory ${ETC}`);
+      expect(reason).toContain(`canonicalizes to ${ETC}/passwd`);
     });
   });
 
@@ -559,12 +593,12 @@ describe("resolveMountPath", () => {
       const reason = refusal(absent, { mustExist: true });
       expect(reason).toContain("does not exist");
       // Named in its canonical form, because that is the path that was checked.
-      expect(reason).toContain("/private/var/folders/");
+      expect(reason).toContain(TMP_CANONICAL);
     });
 
     test("allows the same absent path when the caller does not require it", () => {
       const absent = join(tmpdir(), "definitely-not-here-9d3f1a");
-      expect(accepted(absent)).toContain("/private/var/folders/");
+      expect(accepted(absent)).toContain(TMP_CANONICAL);
     });
 
     test("an absent path inside a protected tree is refused for being protected", () => {
