@@ -192,7 +192,8 @@ export function Console({
   useEffect(() => {
     if (pendingRouteSession === null || state.selected === null) return;
     const selected = agentFor(state, state.selected);
-    if (selected?.acpSessionId !== pendingRouteSession) return;
+    const confirmedSessionId = selected?.acpSessionId ?? state.sessionIds.get(state.selected);
+    if (confirmedSessionId !== pendingRouteSession) return;
     setOpenedFromRoute(true);
     setPendingRouteSession(null);
   }, [pendingRouteSession, state]);

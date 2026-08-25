@@ -171,6 +171,8 @@ export const READY_LOAD: SessionLoad = { phase: "ready", generation: 0, error: n
 export interface ConsoleState {
   readonly agents: readonly Agent[];
   readonly sessions: ReadonlyMap<AgentId, SessionState>;
+  /** The durable ACP session identity last confirmed for each attached agent. */
+  readonly sessionIds: ReadonlyMap<AgentId, string>;
   /**
    * Every session on this machine, as the daemon's index last reported it.
    *
@@ -434,6 +436,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
   return {
     agents: [],
     sessions: new Map(),
+    sessionIds: new Map(),
     sessionIndex: [],
     watermarks: new Map(),
     rosterMisses: new Map(),
@@ -824,17 +827,22 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     }
 
     case "session_history": {
-      const { agentId, entries, nextBefore } = event.event;
+      const { agentId, sessionId, entries, nextBefore } = event.event;
       const next = withSession(state, agentId, session => mergeSessionHistory(session, entries));
       const historyBefore = new Map(next.historyBefore);
       historyBefore.set(agentId, nextBefore);
       const historyLoading = new Set(next.historyLoading);
       historyLoading.delete(agentId);
+      const sessionIds = new Map(next.sessionIds);
+      sessionIds.set(agentId, sessionId);
       // The page the open asked for. It always comes back, empty or not,
       // which is what makes it the settle a session log can rely on: a
       // session with no transcript reaches its honest empty state here
-      // rather than sitting under a spinner forever.
-      return { ...settleLoad(next, agentId), historyBefore, historyLoading };
+      // rather than sitting under a spinner forever. The same frame is the
+      // durable agent-to-session association a route-resumed session needs:
+      // a roster snapshot may arrive later or never, and a stand-in agent
+      // must still name the exact session the daemon just opened.
+      return { ...settleLoad(next, agentId), historyBefore, historyLoading, sessionIds };
     }
 
     case "open_failed": {
