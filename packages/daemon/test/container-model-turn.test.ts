@@ -255,7 +255,7 @@ afterEach(async () => {
   if (failures.length > 0) throw new Error(`cleanup failed: ${failures.map(String).join("; ")}`);
 });
 
-async function harness(opts: { enabled?: boolean; model?: string } = {}): Promise<Harness> {
+async function harness(opts: { enabled?: boolean; model?: string; ownBroker?: boolean } = {}): Promise<Harness> {
   // Off unless a test turns it on. Read live by both sinks below rather than
   // captured, so a test can break them after construction.
   let brokenSink: { which: "audit" | "log"; reason: string } | null = null;
@@ -313,7 +313,11 @@ async function harness(opts: { enabled?: boolean; model?: string } = {}): Promis
       if (brokenSink?.which === "audit") throw new Error(brokenSink.reason);
     },
     services: services as unknown as OmpAuthServices,
-    broker,
+    // Omitted when a test asks for `ownBroker`, so the first grant is served by
+    // a broker `DaemonModelAccess` constructs itself. That is the only shape
+    // production ever has, and the injected spare bypasses the sink wrapping
+    // and the live gateway url wiring that go with it.
+    broker: opts.ownBroker === true ? undefined : broker,
   });
 
   cleanups.push(async () => {
@@ -356,29 +360,51 @@ function hostAlias(overrides: Omit<Partial<HostAlias>, "kind"> = {}): HostAlias 
 }
 
 /**
- * A loopback port nobody is using.
+ * A loopback port for a broker in these tests.
  *
- * Asked of the kernel and handed straight back, which is racy in principle and
- * has no better answer here: `brokerPort` is a fixed number in daemon config,
- * and `issue` refuses to grant an endpoint on port 0 because an ephemeral port
- * is not knowable before the bind completes.
+ * Two constraints collide, and the obvious answer to them is wrong.
+ * `brokerPort` is a fixed number in daemon config and `issue` refuses to name
+ * an endpoint on port 0, because an ephemeral port is not knowable before the
+ * bind completes; so a test has to choose a number up front. But choosing it by
+ * opening a listener on port 0 and closing it again chooses a number the kernel
+ * is then free to hand to the next asker, and the next asker is another harness
+ * in this file or in one of the sibling test files running in the same process.
+ * That is not theoretical: it cost a real failure. The close-and-rebind tests
+ * below give their port up for a moment between the release and the second
+ * grant, and a harness that had been handed the same number bound it in the gap,
+ * so the grant failed with a bind error where the assertion wanted a refusal.
+ *
+ * So candidates come from a fixed band well below macOS's ephemeral range,
+ * where `net.inet.ip.portrange.first` is 49152: nothing that asks the kernel for
+ * a port can be given one of these, which takes every sibling file's port-zero
+ * probe out of the picture entirely. A process-wide cursor means two harnesses
+ * in one process can never be handed the same number, the start is offset by pid
+ * so two `bun test` processes running at once mostly do not overlap either, and
+ * each candidate is confirmed bindable before it is handed out so a port
+ * something else on this machine already holds is skipped rather than assigned.
  */
+const PORT_BAND_FIRST = 24_101;
+const PORT_BAND_LAST = 24_999;
+let portCursor = PORT_BAND_FIRST + (process.pid % 400);
+
 async function freePort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
+  for (;;) {
+    if (portCursor > PORT_BAND_LAST) {
+      throw new Error(`no test broker port is left in ${PORT_BAND_FIRST}-${PORT_BAND_LAST}`);
+    }
+    const candidate = portCursor;
+    portCursor += 1;
+    if (await bindableNow(candidate)) return candidate;
+  }
+}
+
+/** Whether `port` can be bound on loopback right now. Released immediately: see above. */
+async function bindableNow(port: number): Promise<boolean> {
+  return await new Promise<boolean>(resolve => {
     const probe = createServer();
-    probe.on("error", reject);
-    probe.listen(0, LOOPBACK, () => {
-      const address = probe.address();
-      if (address === null || typeof address === "string") {
-        probe.close();
-        reject(new Error(`the kernel answered with ${JSON.stringify(address)} instead of a numbered loopback port`));
-        return;
-      }
-      const { port } = address;
-      probe.close(err => {
-        if (err === undefined || err === null) resolve(port);
-        else reject(err);
-      });
+    probe.on("error", () => resolve(false));
+    probe.listen(port, LOOPBACK, () => {
+      probe.close(() => resolve(true));
     });
   });
 }
@@ -988,21 +1014,23 @@ describe("daemon model access", () => {
   }
 
   test("a throwing log sink cannot reach back into the broker's own operations", async () => {
-    const h = await harness();
-    const bridge = hostBridge();
-    // Consume the injected spare and then release it, so the next grant is
-    // served by a broker `DaemonModelAccess` builds itself. That is the only
-    // shape production has, and the one where a throwing sink could otherwise
-    // abandon `issue` after it had already inserted a live grant: the token
-    // never reaches this daemon, so nothing can ever revoke it.
-    const first = await h.access.grant({ network: "ompd-net", bridge });
-    await h.access.release({ token: first.token });
+    // No injected spare, so this grant is served by a broker
+    // `DaemonModelAccess` constructs itself and whose log sink it wraps. That
+    // wrapping is the thing under test: `ModelBroker.issue` announces a grant
+    // after inserting it, so a sink that threw back into it would leave a live
+    // bearer this daemon never receives and can therefore never revoke.
+    //
+    // Done on the first grant rather than by releasing one and granting again,
+    // deliberately: a release closes the listener, and a test that gave its port
+    // up mid-way would be asserting this property through a window where
+    // something else on the machine can take the port.
+    const h = await harness({ ownBroker: true });
     h.breakSink("log", "the log sink is broken");
 
-    const err = await rejection(h.access.grant({ network: "ompd-net", bridge }));
+    const err = await rejection(h.access.grant({ network: "ompd-net", bridge: hostBridge() }));
 
-    // The refusal comes from this daemon's own `#log` call, which is not
-    // wrapped and must stay loud, rather than from inside the broker.
+    // The refusal comes from this daemon's own `#log` call, which is not wrapped
+    // and has to stay loud, rather than from inside the broker.
     expect(err.message).toContain("was minted and then withdrawn");
     expect(err.message).toContain("the log sink is broken");
     expect(h.access.status().liveGrants).toBe(0);
