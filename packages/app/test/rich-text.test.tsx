@@ -24,7 +24,7 @@ import type { Entry } from "../src/session/model.ts";
 // Dynamic on purpose: `./rnw.ts` must mock react-native before the component
 // modules load, so these cannot be static imports (see rnw.ts).
 const { parseRich } = await import("../src/components/rich/parse.ts");
-const { Transcript } = await import("../src/components/Transcript.tsx");
+const { OmpEntryRow } = await import("../src/assistant/renderers.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -200,7 +200,13 @@ describe("the transcript seam", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => {
-      root.render(<Transcript entries={entries} canApprove onDecide={() => {}} spoken={null} />);
+      root.render(
+        <>
+          {entries.map(entry => (
+            <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+          ))}
+        </>,
+      );
     });
     return {
       host,
@@ -215,8 +221,8 @@ describe("the transcript seam", () => {
 
   test("the assistant row's accessibility label is still the full raw reply", () => {
     const entries: readonly Entry[] = [
-      { kind: "assistant", id: "thought-1", text: REPLY, streaming: true, thought: true },
-      { kind: "assistant", id: "reply-1", text: REPLY, streaming: true, thought: false },
+      { kind: "assistant", id: "thought-1", rowId: "thought-1", text: REPLY, streaming: true, thought: true },
+      { kind: "assistant", id: "reply-1", rowId: "reply-1", text: REPLY, streaming: true, thought: false },
     ];
     const { host, dispose } = mount(entries);
     // Both rows carry the same id on purpose: the path scenario enumerates
@@ -256,7 +262,7 @@ describe("repeated blocks keep distinct keys", () => {
   test("a reply with repeated rules and identical lists draws no duplicate-key complaint", () => {
     const repeated = ["1. only", "", "---", "", "1. only", "", "---", "", "same line", "", "same line"].join("\n");
     const entries: readonly Entry[] = [
-      { kind: "assistant", id: "r1", text: repeated, streaming: false, thought: false },
+      { kind: "assistant", id: "r1", rowId: "r1", text: repeated, streaming: false, thought: false },
     ];
 
     const complaints: string[] = [];
@@ -270,7 +276,13 @@ describe("repeated blocks keep distinct keys", () => {
     const root = createRoot(host);
     try {
       act(() => {
-        root.render(<Transcript entries={entries} canApprove onDecide={() => {}} spoken={null} />);
+        root.render(
+          <>
+            {entries.map(entry => (
+              <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+            ))}
+          </>,
+        );
       });
     } finally {
       console.error = original;

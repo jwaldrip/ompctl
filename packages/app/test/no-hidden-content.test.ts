@@ -228,7 +228,7 @@ async function labelledColumns(): Promise<readonly LabelledColumn[]> {
     },
     {
       what: "the transcript's attribution gutter",
-      file: "src/components/Transcript.tsx",
+      file: "src/assistant/renderers.tsx",
       style: "gutter",
       type: "kicker",
       labels: ["you", "agent", "thinking"],

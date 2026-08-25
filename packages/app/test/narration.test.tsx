@@ -46,7 +46,7 @@ class RecordingSpeech {
 }
 
 function assistant(text: string, streaming = true): Entry {
-  return { kind: "assistant", id: "answer", text, streaming, thought: false };
+  return { kind: "assistant", id: "answer", rowId: "answer", text, streaming, thought: false };
 }
 
 function session(entries: readonly Entry[]): SessionState {
@@ -149,7 +149,14 @@ describe("session narration", () => {
       },
       { kind: "unknown", id: "system", label: "system notice", payload: { text: "Do not say this." } },
       { kind: "user", id: "user", text: "Do not echo me." },
-      { kind: "assistant", id: "thought", text: "Private reasoning.", streaming: true, thought: true },
+      {
+        kind: "assistant",
+        id: "thought",
+        rowId: "thought",
+        text: "Private reasoning.",
+        streaming: true,
+        thought: true,
+      },
       assistant("This is the answer."),
     ];
 

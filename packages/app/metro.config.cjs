@@ -1,5 +1,11 @@
 const path = require("node:path");
 const { getDefaultConfig, mergeConfig } = require("@react-native/metro-config");
+const { assertNoAssistantCloudEnv } = require("./scripts/assistant-cloud-env.cjs");
+
+// Before anything else: a native bundle must not be produced in an environment
+// that would have armed the cloud client, even though the redirect below makes
+// it inert. See the guard's own header for why both exist.
+assertNoAssistantCloudEnv(process.env, "metro.config.cjs");
 
 /**
  * The app lives inside the ompd workspace and imports `@ompd/core` from a sibling
@@ -19,6 +25,20 @@ const { getDefaultConfig, mergeConfig } = require("@react-native/metro-config");
 const projectRoot = __dirname;
 const repoRoot = path.resolve(projectRoot, "..", "..");
 
+/**
+ * `@assistant-ui/core`'s cloud modules, redirected to a stub.
+ *
+ * `dist/react/runtimes/cloud/useCloudThreadListAdapter.js` reads
+ * `process.env.NEXT_PUBLIC_ASSISTANT_BASE_URL` at MODULE scope and constructs
+ * an anonymous `AssistantCloud` if it is set, and `dist/react/index.js` imports
+ * it statically -- so it runs the moment anything reaches
+ * `useExternalStoreRuntime`. Nothing in this app imports a cloud symbol,
+ * because the daemon owns sessions. Redirecting removes the client class and
+ * the environment read from the bundle rather than watching for them.
+ */
+const ASSISTANT_UI_CLOUD = /@assistant-ui[/\\]core[/\\]dist[/\\]react[/\\]runtimes[/\\]cloud[/\\]/;
+const CLOUD_STUB = path.join(projectRoot, "stubs", "assistant-ui-cloud.js");
+
 const config = {
   projectRoot,
   watchFolders: [repoRoot],
@@ -31,6 +51,18 @@ const config = {
      * by a native bundle by accident.
      */
     platforms: ["ios", "android", "macos", "windows", "native"],
+    /**
+     * The redirect itself. `context.resolveRequest` is Metro's own resolver, so
+     * everything else behaves exactly as before; only the cloud subtree is
+     * swapped, and only when something asks for it.
+     */
+    resolveRequest: (context, moduleName, platform) => {
+      const resolved = context.resolveRequest(context, moduleName, platform);
+      if (resolved.type === "sourceFile" && ASSISTANT_UI_CLOUD.test(resolved.filePath)) {
+        return { type: "sourceFile", filePath: CLOUD_STUB };
+      }
+      return resolved;
+    },
   },
 };
 
