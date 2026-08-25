@@ -168,6 +168,15 @@ export function Console({
    */
   const [openedFromRoute, setOpenedFromRoute] = useState(false);
   /**
+   * A dormant session has no agent until the daemon accepts its asynchronous
+   * resume claim. The stack cannot present it merely because the request left:
+   * a deleted session can be stale between local index resolution and that
+   * claim, and treating the request as an open hides the tablet fleet pane for
+   * a route that never exists. This remembers the subject until a selected
+   * agent confirms the daemon actually opened that exact session.
+   */
+  const [pendingRouteSession, setPendingRouteSession] = useState<string | null>(null);
+  /**
    * Which surface presents the open session: the stack, or the tablet's own
    * detail pane. Exactly one of the two, always, so no session screen is
    * mounted twice over one agent and no selection is left with nowhere to be
@@ -179,6 +188,14 @@ export function Console({
   // for the life of the console.
   const latest = useRef({ state, actions });
   latest.current = { state, actions };
+
+  useEffect(() => {
+    if (pendingRouteSession === null || state.selected === null) return;
+    const selected = agentFor(state, state.selected);
+    if (selected?.acpSessionId !== pendingRouteSession) return;
+    setOpenedFromRoute(true);
+    setPendingRouteSession(null);
+  }, [pendingRouteSession, state]);
 
   const onSort = useCallback((field: SortField) => {
     dispatchBrowser({ t: "sort", field });
@@ -233,14 +250,20 @@ export function Console({
    * act is presentation: the model is opened the single way, and the shell is
    * told that the pane which would otherwise show it is buried.
    *
-   * `unopenable` is not an open. It names a deleted or stale session and the
-   * shared action turns it into the existing unavailable notice without putting
-   * a route on the stack. Marking the fleet pane buried before that resolution
-   * left an iPad with no route, no detail, and a permanently hidden fleet pane.
+   * `unopenable` is not an open. A dormant target is also not open yet: its
+   * resume claim has to come back as an agent selection before the stack can
+   * hide the fleet pane. Agent and live-TUI targets are already present and
+   * select synchronously, so their presentation can move immediately.
    */
   const openSessionFromRoute = useCallback(
     (sessionId: string) => {
       const target = openSessionById(sessionId);
+      if (target.kind === "dormant") {
+        setOpenedFromRoute(false);
+        setPendingRouteSession(target.sessionId);
+        return;
+      }
+      setPendingRouteSession(null);
       setOpenedFromRoute(target.kind !== "unopenable");
     },
     [openSessionById],
@@ -252,6 +275,7 @@ export function Console({
    */
   const leaveSelection = useCallback(() => {
     setOpenedFromRoute(false);
+    setPendingRouteSession(null);
     latest.current.actions.back();
   }, []);
   const onOpenAgent = useCallback((agent: Agent) => {
