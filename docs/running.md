@@ -513,6 +513,18 @@ ompd new ~/dev/some-repo --container \
   --mounts ~/dev/shared-lib:ro,~/dev/scratch:rw
 ```
 
+**The browser tool is a local-host capability.** An agent on a container host
+gets no `ompd-webview` MCP server, and the daemon logs one line saying so when
+it omits it. The reason is an address, not a policy: that server binds
+`127.0.0.1`, which is the daemon's machine from a local host and the container
+from a provisioned one. Handing it to a container did not merely disable the
+tool, it failed the whole session -- omp refused `session/new` with
+`ompd-webview: Unable to connect. Is the computer able to access the url?`, so
+every container create answered HTTP 500. Making it reachable would mean binding
+a surface that drives the operator's own browser somewhere other than loopback,
+which is a decision on its own merits rather than a side effect of fixing that
+500. Everything else about a container session is unaffected.
+
 **There is no fallback order.** On macOS the only runtime ompd will pick for
 itself is Apple's `container`. On Linux it is `podman`. Nothing else is ever
 chosen implicitly, and if the one native runtime is absent, or its service is
