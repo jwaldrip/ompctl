@@ -164,23 +164,22 @@ describe("open and archive are visually distinct actions", () => {
   const dormant = WINDOWED.find(s => s.status === "dormant") as BrowserSession;
   const html = render(windowedState());
 
-  test("a dormant row's open action reads Resume, not Archive or Delete", () => {
-    expect(html).toContain(`data-testid="session-open-action-${dormant.id}"`);
+  test("a dormant row's canonical open action reads Resume, not Archive or Delete", () => {
+    expect(html).toContain(`data-testid="session-open-${dormant.id}"`);
     expect(html).toContain(`Resume ${dormant.title}`);
   });
 
-  test("a live-tui row's open action reads Prompt, distinct from a dormant Resume", () => {
-    expect(html).toContain(`data-testid="session-open-action-${live.id}"`);
+  test("a live-tui row's canonical open action reads Prompt, distinct from a dormant Resume", () => {
+    expect(html).toContain(`data-testid="session-open-${live.id}"`);
     expect(html).toContain(`Prompt ${live.title}`);
   });
 
   test("archive is a separate control from open, with its own testID and label", () => {
     expect(html).toContain(`data-testid="session-archive-${dormant.id}"`);
     expect(html).toContain(`Archive ${dormant.title}`);
-    // The two actions are not the same pressable: distinct testIDs prove it.
-    expect(html).not.toContain(
-      `data-testid="session-archive-${dormant.id}"data-testid="session-open-action-${dormant.id}"`,
-    );
+    // The open and archive actions are separate pressables with distinct
+    // canonical identities.
+    expect(html).not.toContain(`data-testid="session-archive-${dormant.id}"data-testid="session-open-${dormant.id}"`);
   });
 
   test("archive's label never says delete, remove, or destroy", () => {
