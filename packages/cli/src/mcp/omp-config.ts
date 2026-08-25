@@ -21,7 +21,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /** The name ompd registers itself under inside `mcpServers`. */
@@ -180,10 +180,23 @@ export function applyOmpMcpInstall(plan: OmpMcpInstallPlan): void {
 
   // Read once, before anything is written, so a config the operator tightened
   // stays tightened.
+  //
+  // ENOENT is the only absence this may infer. An EACCES, EPERM or ELOOP here
+  // would otherwise be read as "no file yet", which is the one reading that
+  // skips the backup and then renames over whatever was really there. The
+  // planner has already read this path successfully, so a different errno
+  // means something changed underneath us and stopping is the only answer
+  // that cannot destroy it.
   let existingMode: number | null = null;
   try {
     existingMode = statSync(plan.path).mode & 0o777;
-  } catch {
+  } catch (err) {
+    const code = err !== null && typeof err === "object" && "code" in err ? err.code : undefined;
+    if (code !== "ENOENT") {
+      throw new Error(
+        `cannot read ${plan.path} to back it up (${String(code ?? err)}); refusing to overwrite a config this command cannot copy first`,
+      );
+    }
     // No file yet. A new one starts at 0600 below, because omp's own config
     // holds server URLs with credentials embedded in them.
   }
@@ -192,7 +205,15 @@ export function applyOmpMcpInstall(plan: OmpMcpInstallPlan): void {
   // Copied, not moved: omp keeps reading the real path until the rename
   // below, and the operator keeps a copy of what they had in case this
   // command's idea of the entry was wrong.
-  if (existingMode !== null) copyFileSync(plan.path, `${plan.path}.bak`);
+  //
+  // Written through the same temp-and-rename dance as the config itself, for
+  // two reasons a plain `copyFileSync` gets wrong. It would inherit whatever
+  // mode a `.bak` already sitting there had, and on Linux `copyFileSync`
+  // opens an existing destination `O_TRUNC` with the mode argument ignored,
+  // so a loose-moded file planted at that name would keep its bits and hold a
+  // copy of a config that carries credentials. And a copy straight to the
+  // final name is readable half-written.
+  if (existingMode !== null) writeBackup(plan.path, mode);
 
   const temp = `${plan.path}.${randomUUID()}.tmp`;
   try {
@@ -206,6 +227,28 @@ export function applyOmpMcpInstall(plan: OmpMcpInstallPlan): void {
   } finally {
     // Unconditional. After a successful rename there is nothing at this path,
     // so a branch here could only ever forget a case.
+    rmSync(temp, { force: true });
+  }
+}
+
+/**
+ * Copy `path` to `path.bak`, at exactly `mode`, without ever exposing a
+ * partially written backup or inheriting the bits of a `.bak` that was already
+ * there.
+ *
+ * Overwrites the previous backup, which is deliberate but worth knowing: this
+ * is a copy of the config as it was immediately before the most recent change,
+ * not an archive. Two installs in a row leave only the second one's input, so
+ * it recovers a bad entry this command just wrote, not a config from last week.
+ */
+function writeBackup(path: string, mode: number): void {
+  const backup = `${path}.bak`;
+  const temp = `${backup}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp, readFileSync(path), { mode, flag: "wx" });
+    renameSync(temp, backup);
+    chmodSync(backup, mode);
+  } finally {
     rmSync(temp, { force: true });
   }
 }

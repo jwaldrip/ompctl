@@ -205,6 +205,33 @@ describe("POST /v1/routines", () => {
         body: { name: "n", trigger: { kind: "webhook", secretRef: "whsec_mine" }, actions: [ACTION] },
         matches: /must not carry secretRef/,
       },
+      // Accepted here and unrunnable on the first tick is the shape this
+      // validation exists to prevent: `formatterFor` throws on an empty or
+      // unknown zone the moment the scheduler arms the routine, and nothing
+      // would be listening by then.
+      {
+        body: { name: "n", trigger: { kind: "cron", expression: "0 3 * * *", timezone: "" }, actions: [ACTION] },
+        matches: /trigger\.timezone/,
+      },
+      {
+        body: {
+          name: "n",
+          trigger: { kind: "cron", expression: "0 3 * * *", timezone: "Mars/Olympus_Mons" },
+          actions: [ACTION],
+        },
+        matches: /unknown timezone/,
+      },
+      // A fraction of a second is a schedule the MCP surface cannot express and
+      // the store has no column semantics for. Two write doors disagreeing
+      // about what is legal is a shared contract in name only.
+      {
+        body: { name: "n", trigger: { kind: "interval", seconds: 1.5 }, actions: [ACTION] },
+        matches: /trigger\.seconds must be a whole number/,
+      },
+      {
+        body: { name: "n", trigger: cron, actions: [{ ...ACTION, timeoutSeconds: 0.5 }] },
+        matches: /actions\[0\]\.timeoutSeconds must be a whole number/,
+      },
     ];
 
     for (const { body, matches } of refusals) {
@@ -479,5 +506,185 @@ describe("routine write scopes", () => {
     const body = (await read.json()) as { routine: Routine };
     expect(body.routine.name).toBe("nightly");
     expect(h.daemon.store.listRoutines().map(r => r.name)).toEqual(["nightly"]);
+  });
+});
+
+describe("withdrawing a webhook capability", () => {
+  test("deleting the routine destroys the credential row, not only the definition", async () => {
+    const h = await harness();
+    const routine = await create(h, { name: "inbound", trigger: { kind: "webhook" }, actions: [ACTION] });
+    const secretRef = refOf(routine);
+    await post(h, `/v1/routines/${routine.id}/webhook-secret`, {});
+    expect(h.daemon.store.getWebhookSecret(secretRef)).not.toBeNull();
+
+    const response = await post(h, "/v1/routines/delete", { routineIds: [routine.id] });
+    expect(response.status).toBe(200);
+    const { results } = (await response.json()) as { results: Array<{ deleted: boolean }> };
+    expect(results[0]?.deleted).toBe(true);
+
+    // Deleting the routine is the largest withdrawal of the capability there
+    // is, so it has to take the credential with it. A surviving hash is a live
+    // secret nothing in the catalogue names any more: nothing lists it, nothing
+    // can rotate it, and no read anywhere would ever show it again.
+    expect(h.daemon.store.getWebhookSecret(secretRef)).toBeNull();
+  });
+
+  test("a refusal in the same batch leaves the surviving routine's credential alone", async () => {
+    const h = await harness();
+    const kept = await create(h, { name: "kept", trigger: { kind: "webhook" }, actions: [ACTION] });
+    const keptRef = refOf(kept);
+    await post(h, `/v1/routines/${kept.id}/webhook-secret`, {});
+
+    // One id nothing holds, and the live one is not named at all. The mirror
+    // image of the test above: a delete sweep must withdraw exactly what it
+    // deleted.
+    const response = await post(h, "/v1/routines/delete", { routineIds: ["rtn_never_was"] });
+    expect(response.status).toBe(200);
+    const { results } = (await response.json()) as { results: Array<{ deleted: boolean; refusal?: string }> };
+    expect(results[0]).toMatchObject({ deleted: false, refusal: "not_found" });
+
+    expect(h.daemon.store.getWebhookSecret(keptRef)).not.toBeNull();
+  });
+
+  test("a write that throws leaves the credential the stored definition still names", async () => {
+    const h = await harness();
+    const routine = await create(h, { name: "inbound", trigger: { kind: "webhook" }, actions: [ACTION] });
+    const secretRef = refOf(routine);
+    await post(h, `/v1/routines/${routine.id}/webhook-secret`, {});
+
+    // The ordering, which is invisible until the day the store fails. Withdraw
+    // the credential before the definition that no longer names it is on disk
+    // and a failed write leaves a routine that still says `webhook`, pointed at
+    // a row that is gone: every call to the endpoint is refused, and the secret
+    // cannot be recovered or even rotated back into existence by that door.
+    const store = h.daemon.store;
+    const real = store.upsertRoutine.bind(store);
+    let failed = false;
+    Object.defineProperty(store, "upsertRoutine", {
+      configurable: true,
+      value: () => {
+        failed = true;
+        throw new Error("store went away mid-write");
+      },
+    });
+
+    const response = await patch(h, `/v1/routines/${routine.id}`, { trigger: { kind: "manual" } });
+    expect(failed).toBe(true);
+    expect(response.status).toBeGreaterThanOrEqual(500);
+
+    Object.defineProperty(store, "upsertRoutine", { configurable: true, value: real });
+
+    // Still a webhook routine, so its credential must still exist.
+    expect(store.listRoutines()[0]?.trigger).toEqual({ kind: "webhook", secretRef });
+    expect(store.getWebhookSecret(secretRef)).not.toBeNull();
+  });
+});
+
+describe("POST /v1/sync/import", () => {
+  test("records the restore, with the actor and the count, and no per-routine arming", async () => {
+    const h = await harness();
+
+    const response = await post(h, "/v1/sync/import", {
+      policyMode: "standard",
+      keepAwake: false,
+      skills: [],
+      connectors: [],
+      routines: [
+        {
+          id: "rtn_imported",
+          name: "imported",
+          enabled: true,
+          trigger: { kind: "manual" },
+          actions: [{ id: "act_imported", ...ACTION, labels: {} }],
+          singleton: true,
+          labels: {},
+          createdAt: "2026-08-19T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, routines: 1 });
+
+    // A door that writes routine definitions and records nothing is how
+    // `routine.create` came to be a declared action nothing emitted. This one
+    // writes a whole catalogue at once, so it is recorded as the one decision
+    // that was actually made: a restore, by whom, of how many.
+    const rows: AuditEntry[] = h.daemon.store.listAudit().filter(row => row.action === "sync.import");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.outcome).toBe("ok");
+    expect(rows[0]?.actorDeviceId).not.toBeNull();
+    expect(rows[0]?.detail).toMatchObject({ routines: 1 });
+
+    // Not fifty arming decisions nobody made: the restore is one row, and the
+    // per-routine actions stay out of it.
+    expect(h.daemon.store.listAudit().filter(row => row.action.startsWith("routine."))).toEqual([]);
+  });
+
+  test("a restore that moves a routine off webhook withdraws its credential", async () => {
+    const h = await harness();
+    const routine = await create(h, { name: "inbound", trigger: { kind: "webhook" }, actions: [ACTION] });
+    const secretRef = refOf(routine);
+    await post(h, `/v1/routines/${routine.id}/webhook-secret`, {});
+    expect(h.daemon.store.getWebhookSecret(secretRef)).not.toBeNull();
+
+    const response = await post(h, "/v1/sync/import", {
+      policyMode: "standard",
+      keepAwake: false,
+      skills: [],
+      connectors: [],
+      routines: [
+        {
+          id: routine.id,
+          name: "inbound, now by hand",
+          enabled: true,
+          trigger: { kind: "manual" },
+          actions: [{ id: routine.actions[0]?.id ?? "act_x", ...ACTION, labels: {} }],
+          singleton: true,
+          labels: {},
+          createdAt: routine.createdAt,
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+
+    // The credential lifecycle belongs to every door that writes a definition,
+    // not only the two that were built for a terminal. A restore is the door
+    // most likely to move a trigger off `webhook` without anyone thinking about
+    // the secret at all.
+    expect(h.daemon.store.listRoutines()[0]?.trigger).toEqual({ kind: "manual" });
+    expect(h.daemon.store.getWebhookSecret(secretRef)).toBeNull();
+  });
+
+  test("an imported webhook routine gets a locally minted ref, never the document's", async () => {
+    const h = await harness();
+
+    const response = await post(h, "/v1/sync/import", {
+      policyMode: "standard",
+      keepAwake: false,
+      skills: [],
+      connectors: [],
+      routines: [
+        {
+          id: "rtn_from_elsewhere",
+          name: "inbound",
+          enabled: true,
+          // A ref minted by whichever daemon exported this document. Its hash
+          // lives in that daemon's store and nowhere near this one, so honouring
+          // it here names a row that does not exist and cannot be made to.
+          trigger: { kind: "webhook", secretRef: "whsec_from_elsewhere" },
+          actions: [{ id: "act_imported", ...ACTION, labels: {} }],
+          singleton: true,
+          labels: {},
+          createdAt: "2026-08-19T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+
+    const imported = h.daemon.store.listRoutines()[0];
+    expect(imported?.trigger.kind).toBe("webhook");
+    const localRef = imported === undefined ? "" : refOf(imported);
+    expect(localRef).toMatch(/^whsec_[0-9a-f]{16}$/);
+    expect(localRef).not.toBe("whsec_from_elsewhere");
   });
 });

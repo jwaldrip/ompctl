@@ -24,6 +24,12 @@
  *   collapsed them into one message would be useless at exactly the moment
  *   somebody needed it. Each is provoked and checked on its own.
  *
+ * The artifact under test is named rather than guessed: the compiled binary is
+ * the default and the source entry is an explicit opt-in. A check that
+ * substituted the source entry whenever the binary was absent could not see the
+ * one regression it exists to catch, a dependency `bun build --compile` leaves
+ * out of the bundle, and its output did not say which artifact it had driven.
+ *
  * The daemon runs on a scratch OMPD_HOME with its own store and its own
  * operator token, so nothing here can touch the real one.
  */
@@ -36,17 +42,46 @@ import { join } from "node:path";
 
 const repo = join(import.meta.dir, "..");
 const keep = process.argv.includes("--keep");
+const fromSource = process.argv.includes("--from-source");
 const PORT = 47991;
 
 /** Distinguishes this run's artifacts from an earlier run's orphans. */
 const MARKER_PREFIX = "mcp-roundtrip-canary";
 const marker = `${MARKER_PREFIX}-${crypto.randomUUID().slice(0, 8)}`;
 
-/** The CLI under test: the shipped binary when built, else the source entry. */
-function cli(): string[] {
-  const built = join(repo, "dist", "ompd");
-  return existsSync(built) ? [built] : ["bun", join(repo, "packages", "cli", "src", "main.ts")];
+const COMPILED = join(repo, "dist", "ompd");
+const SOURCE_ENTRY = join(repo, "packages", "cli", "src", "main.ts");
+
+/** Printed twice on a source-entry run, because scrollback loses a single line. */
+const SOURCE_ONLY = "!! SOURCE ENTRY ONLY: the compiled binary was NOT exercised (--from-source).";
+
+/**
+ * Resolve the artifact under test, refusing rather than substituting.
+ *
+ * The compiled binary is the only artifact that can fail the way this check
+ * exists to catch, so an absent `dist/ompd` is an operator error with a known
+ * remedy, not a reason to quietly prove something else.
+ */
+function artifact(): { argv: string[]; label: string; path: string; compiled: boolean } {
+  if (fromSource) return { argv: ["bun", SOURCE_ENTRY], label: "source entry", path: SOURCE_ENTRY, compiled: false };
+  if (!existsSync(COMPILED)) {
+    console.error(
+      `No compiled binary at ${COMPILED}.\n\n` +
+        "Build it first:\n\n  bun run build:cli\n\n" +
+        "The source entry is deliberately not a fallback. This check exists to drive\n" +
+        "the compiled artifact's MCP surface, which is the only place a dependency\n" +
+        "`bun build --compile` fails to bundle can show up, and the source entry\n" +
+        "cannot prove that. Pass --from-source for a fast local loop, and read the\n" +
+        "result as proving nothing about the binary.",
+    );
+    process.exit(2);
+  }
+  return { argv: [COMPILED], label: "compiled binary", path: COMPILED, compiled: true };
 }
+
+const under = artifact();
+console.log(`artifact under test: ${under.label} at ${under.path}`);
+if (!under.compiled) console.log(SOURCE_ONLY);
 
 const failures: string[] = [];
 function check(label: string, ok: boolean, detail = ""): void {
@@ -102,7 +137,7 @@ class StdioMcp {
   #dead = false;
 
   constructor(env: Record<string, string>) {
-    const [cmd, ...pre] = cli();
+    const [cmd, ...pre] = under.argv;
     this.#proc = spawn(cmd as string, [...pre, "mcp"], {
       env: { ...process.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
@@ -230,7 +265,7 @@ const base = `http://127.0.0.1:${PORT}`;
 const home = mkdtempSync(join(tmpdir(), "ompd-mcp-rt-"));
 const workdir = mkdtempSync(join(tmpdir(), "ompd-mcp-cwd-"));
 
-const [cmd, ...pre] = cli();
+const [cmd, ...pre] = under.argv;
 const daemon = spawn(cmd as string, [...pre, "start", "--host", "127.0.0.1", "--port", String(PORT), "--foreground"], {
   env: { ...process.env, OMPD_HOME: home },
   stdio: ["ignore", "pipe", "pipe"],
@@ -548,5 +583,7 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "\nMCP round trip proven over raw stdio: tools/list -> create -> read -> update -> run -> rotate -> delete -> gone.",
+  `\nMCP round trip proven over raw stdio against the ${under.label} (${under.path}):` +
+    " tools/list -> create -> read -> update -> run -> rotate -> delete -> gone.",
 );
+if (!under.compiled) console.log(SOURCE_ONLY);

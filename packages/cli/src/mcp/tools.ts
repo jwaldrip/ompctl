@@ -251,7 +251,9 @@ const updateShape = {
     .optional()
     .describe(
       "Replaces the whole action list, in this order. There is no per-action patch: an insert would retarget " +
-        "every later action. Send the full list, carrying each action's existing `id` where you mean the same step.",
+        "every later action. Send the full list, carrying each action's existing `id` where you mean the same " +
+        "step. An action sent without an id is a new action: the daemon mints one on every write, so a patch " +
+        "that omits ids cannot be retried without replacing the ids that past run outcomes name.",
     ),
   singleton: z.boolean().optional().describe("Replaces the singleton setting."),
   labels: labelsSchema
@@ -641,15 +643,21 @@ export function registerRoutineTools(server: McpServer, ctx: CliContext): void {
         "Change parts of an existing routine. Only the fields you send are touched: leave a field out and it " +
         "keeps its current value, which is how you flip `enabled` without restating the actions. `actions` and " +
         "`labels` replace what is there rather than merging, so send the whole list; an empty `labels` object " +
-        "clears every label.",
+        "clears every label. Repeating this call is only safe when every action carries its existing `id`: " +
+        "without one the daemon mints a fresh action id on each write, so read the routine first if you have " +
+        "to retry.",
       inputSchema: updateShape,
       outputSchema: { routine: routineViewSchema },
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        // Sending the same patch twice leaves the same routine behind, which
-        // is the property a client retrying a lost response depends on.
-        idempotentHint: true,
+        // A patch whose actions omit ids is not repeatable. The daemon mints a
+        // fresh action id on every write, so the second identical call leaves a
+        // routine equal field by field but not the same routine, and past run
+        // outcomes stop naming the action that produced them. A caller that
+        // carries each action's existing `id`, which `ompctl_routine_get`
+        // reports, gets a write it can repeat.
+        idempotentHint: false,
         openWorldHint: false,
       },
     },
@@ -751,17 +759,22 @@ export function registerRoutineTools(server: McpServer, ctx: CliContext): void {
       title: "Run a routine now",
       description:
         "Fire a routine immediately, whatever its trigger says. Its own schedule is untouched: a nightly " +
-        "routine started this way still runs tonight. Use it to prove a routine works without waiting for its " +
-        "trigger. The reply carries each action's outcome, so a run where one action failed and the rest " +
-        "succeeded reads as exactly that.",
+        "routine started this way still runs tonight. Each action starts a fresh agent with the routine's own " +
+        "prompt and working directory, so this does whatever those prompts do on this machine: read the " +
+        "routine with `ompctl_routine_get` before firing one you did not write. The reply carries each " +
+        "action's outcome, so a run where one action failed and the rest succeeded reads as exactly that.",
       inputSchema: routineIdShape,
       outputSchema: { run: runViewSchema },
       annotations: {
         readOnlyHint: false,
-        // The run itself does whatever its prompts do, which this tool cannot
-        // know. What it does not do is destroy the routine or its history.
-        destructiveHint: false,
+        // This starts arbitrary prompts on this machine, so what it may destroy
+        // is whatever those prompts reach: files, branches, external services.
+        // An annotation that cannot bound the effect must not claim the effect
+        // is additive, so the honest value is the one that makes a client ask.
+        destructiveHint: true,
         idempotentHint: false,
+        // False despite that: the tool itself talks to one known local daemon.
+        // What the prompts inside the run reach is not this tool's world.
         openWorldHint: false,
       },
     },

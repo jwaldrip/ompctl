@@ -1407,6 +1407,16 @@ export type AuditAction =
   /** An existing routine definition was edited. Same `detail` rules as `routine.create`. */
   | "routine.update"
   | "routine.run"
+  /**
+   * A whole configuration was restored from another daemon over
+   * `/v1/sync/import`. One row for the restore, not one per routine: importing
+   * a catalogue arms every automation in it, and fifty `routine.create` rows
+   * would be fifty arming decisions nobody made. `detail` carries the routine
+   * count and the policy mode, so a reader can see how much of the machine's
+   * behaviour changed and under what policy, without a credential reaching a
+   * log meant to be safe to print.
+   */
+  | "sync.import"
   | "proposal.submit"
   | "proposal.promote"
   | "proposal.reject"

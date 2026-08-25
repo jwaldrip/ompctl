@@ -1142,6 +1142,67 @@ describe("routine socket frames", () => {
     expect(rotated.routineId).toBe("rtn_socket");
     expect(rotated.secret.length).toBeGreaterThan(20);
   });
+
+  test("the frame cannot choose its own secretRef, and moving off webhook withdraws the credential", async () => {
+    const h = await harness({
+      routines: {
+        runNow: async () => {
+          throw new Error("no run was asked for");
+        },
+        fireWebhook: async () => ({ accepted: false, reason: "not_found" }),
+        deleteRoutines: async () => [],
+      },
+    });
+    const token = await h.pair("phone", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT]);
+    const socket = await connect(h.port, token);
+    if (!socket) throw new Error("socket did not open");
+    await socket.next(frame => frame.t === "hello", "hello");
+
+    const definition = {
+      id: "rtn_frame",
+      name: "Incoming call",
+      enabled: true,
+      actions: [{ id: "text-back", name: "Text back", prompt: "send text", cwd: "/work", labels: {} }],
+      singleton: false,
+      labels: {},
+      createdAt: "2026-08-19T00:00:00.000Z",
+    };
+
+    // A ref the caller made up. Honouring it is how two routines come to share
+    // one credential row, where rotating either silently breaks the other, and
+    // the HTTP door refuses this outright. This door has to reach the same
+    // answer, or the boundary is only as strong as which road a request took.
+    socket.send({
+      t: "routine_write",
+      routine: { ...definition, trigger: { kind: "webhook", secretRef: "whsec_mine" } },
+    });
+    await socket.next(frame => frame.t === "routines", "routine snapshot");
+
+    const stored = h.store.listRoutines()[0];
+    if (stored?.trigger.kind !== "webhook") throw new Error("expected a webhook trigger");
+    const minted = stored.trigger.secretRef;
+    expect(minted).toMatch(/^whsec_[0-9a-f]{16}$/);
+    expect(minted).not.toBe("whsec_mine");
+
+    socket.send({ t: "routine_secret_rotate", routineId: "rtn_frame" });
+    await socket.next(frame => frame.t === "routine_secret", "routine secret");
+    expect(h.store.getWebhookSecret(minted)).not.toBeNull();
+
+    // Re-sending the routine unchanged is the app's ordinary round trip: it
+    // reads a snapshot and writes it back. The ref it carries is the one the
+    // daemon minted, so it has to survive verbatim, or every edit to a webhook
+    // routine would break a URL already handed out.
+    socket.send({ t: "routine_write", routine: { ...definition, trigger: { kind: "webhook", secretRef: minted } } });
+    await socket.next(frame => frame.t === "routines", "routine snapshot after a no-op edit");
+    expect(h.store.getWebhookSecret(minted)).not.toBeNull();
+
+    // And moving the trigger off webhook withdraws the capability, so the
+    // credential goes with it here exactly as it does through PATCH.
+    socket.send({ t: "routine_write", routine: { ...definition, trigger: { kind: "manual" } } });
+    await socket.next(frame => frame.t === "routines", "routine snapshot after the retarget");
+    expect(h.store.listRoutines()[0]?.trigger).toEqual({ kind: "manual" });
+    expect(h.store.getWebhookSecret(minted)).toBeNull();
+  });
 });
 
 describe("requests with no Host header", () => {

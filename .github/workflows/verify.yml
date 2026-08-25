@@ -57,6 +57,18 @@ jobs:
         env:
           OMPD_TEST_REDIS_URL: redis://127.0.0.1:6379
         run: bun run test
+      # The only check in this repository that exercises a compiled artifact.
+      # Everything above runs from source, so `bun build --compile` failing to
+      # bundle a dependency, the seven-tool MCP surface changing, and a stray
+      # stdout write corrupting the stdio framing are all invisible to it: the
+      # binary is what a user installs and nothing was driving it. The canary
+      # refuses to run without `dist/ompd` rather than falling back to the
+      # source entry, so the build step below is load bearing, not a
+      # convenience.
+      - name: MCP round trip against the compiled binary
+        run: |
+          bun run build:cli
+          bun run check:mcp
       # Guards the scrubbed history. Runs on every PR because a single careless
       # paste into any file would reintroduce what a history rewrite removed, and
       # the published repo is public.

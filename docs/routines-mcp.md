@@ -42,9 +42,9 @@ being written.
 | `ompctl_routines_list` | read | false | true |
 | `ompctl_routine_get` | read | false | true |
 | `ompctl_routine_create` | write | false | false |
-| `ompctl_routine_update` | write | false | true |
+| `ompctl_routine_update` | write | false | false |
 | `ompctl_routine_delete` | write | **true** | true |
-| `ompctl_routine_run` | write | false | false |
+| `ompctl_routine_run` | write | **true** | false |
 | `ompctl_routine_rotate_webhook_secret` | write | **true** | false |
 
 `openWorldHint` is false on all seven. The daemon is one known local process
@@ -55,6 +55,24 @@ the previous secret stops working the instant it returns and cannot be
 recovered, so anything already holding that credential breaks. Annotating it
 `false` because "it only creates a secret" would hide the one consequence a
 human needs to approve.
+
+**Run is marked destructive because nothing here can bound what it does.**
+Firing a routine starts its prompts on this machine, each with a working
+directory, so the run can delete files, push a branch, or call an external
+service. `destructiveHint: false` means the tool performs only additive
+updates, which is a claim about the prompts rather than about the call, and
+this tool has no way to make it. The honest value is the one that makes a
+client ask first. `openWorldHint` stays false: the tool talks to one known
+local daemon, and what the prompts inside a run reach is not the tool's world.
+
+**Update is not idempotent, because an action without an id is a new action.**
+The daemon mints an action id on every write for any action that arrives
+without one, so sending the same patch twice leaves a routine that is equal
+field by field but whose action ids differ from the first call's, and past run
+outcomes are keyed to the ids they were recorded against. A caller that carries
+each action's existing `id`, which `ompctl_routine_get` reports, gets a write
+it can repeat; a caller that omits them cannot retry safely, and the annotation
+says so rather than promising a property the write does not have.
 
 **Delete is annotated, not double-confirmed.** OMP's own approval gate is the
 human boundary for a destructive tool call. A `confirm: true` argument on top

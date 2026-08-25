@@ -32,9 +32,9 @@ import {
   type EndpointOffer,
   type HostMount,
   type HostSpec,
+  nextFireTime,
   type PersistCollabVoiceNoteInput,
   PROMPT_IMAGE_REFUSAL_REASONS,
-  parseCron,
   parsePromptImages,
   type QueuedIntent,
   ROUTINE_DELETE_REFUSAL_REASONS,
@@ -773,9 +773,14 @@ function parseTriggerDraft(value: unknown): TriggerDraft | string {
         return `an interval trigger takes kind and seconds, so "${unknown}" cannot be honoured`;
       }
       const seconds = value.seconds;
+      // Whole seconds, matching what the MCP schema accepts and what the store
+      // has column semantics for. Two write doors that disagree about what is
+      // legal is a shared contract in name only: a fraction accepted here is a
+      // routine an MCP caller cannot restate and a reader cannot reason about.
       if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
         return "trigger.seconds must be a finite number greater than 0";
       }
+      if (!Number.isInteger(seconds)) return "trigger.seconds must be a whole number of seconds";
       return { kind: "interval", seconds };
     }
     case "cron": {
@@ -788,17 +793,19 @@ function parseTriggerDraft(value: unknown): TriggerDraft | string {
       if (typeof expression !== "string" || expression.trim().length === 0) {
         return "trigger.expression must be a non-empty cron expression";
       }
-      if (timezone !== undefined && typeof timezone !== "string") {
-        return "trigger.timezone must be a string when present";
+      if (timezone !== undefined && (typeof timezone !== "string" || timezone.trim().length === 0)) {
+        return "trigger.timezone must be a non-empty IANA timezone name when present";
       }
-      // The scheduler's own parser, not a second one: an expression accepted
-      // here and refused on the first tick would arm nothing and say so
+      // The scheduler's own call, not a second parser: `nextFireTime` is what
+      // arms every fire, and it resolves the zone through `Intl` as well as
+      // parsing the expression. Checking only the expression left an unknown or
+      // empty zone to throw on the first tick, which arms nothing and says so
       // nowhere a caller is listening.
       try {
-        parseCron(expression);
+        nextFireTime(expression, new Date(), timezone);
       } catch (err) {
         const detail = err instanceof Error ? err.message : "unparsable";
-        return `trigger.expression is not a cron expression this daemon can run: ${detail}`;
+        return `trigger is not a schedule this daemon can run: ${detail}`;
       }
       return timezone === undefined ? { kind: "cron", expression } : { kind: "cron", expression, timezone };
     }
@@ -834,6 +841,12 @@ function parseRoutineActionDraft(value: unknown, index: number): RoutineActionDr
     (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)
   ) {
     return `actions[${index}].timeoutSeconds must be a finite number greater than 0 when present`;
+  }
+  // Whole seconds, for the reason `trigger.seconds` is: the MCP schema accepts
+  // only integers, and a surface that takes a fraction the other one refuses
+  // means a routine one door created cannot be restated through the other.
+  if (timeoutSeconds !== undefined && !Number.isInteger(timeoutSeconds)) {
+    return `actions[${index}].timeoutSeconds must be a whole number of seconds`;
   }
   if (labels !== undefined && !isLabelMap(labels)) {
     return `actions[${index}].labels must be an object whose every value is a string`;
@@ -2391,12 +2404,29 @@ export class Gateway {
         config.apply({ policyMode: document.policyMode, keepAwake: document.keepAwake });
         for (const routine of document.routines) {
           // Execution hosts never travel. Imported actions execute locally,
-          // through the receiving daemon's own supervisor.
-          this.#store.upsertRoutine({
+          // through the receiving daemon's own supervisor. The webhook
+          // `secretRef` does not travel either: only the exporting daemon holds
+          // the hash it names, so honouring it here names a row that does not
+          // exist and cannot be made to. `#persistRoutine` mints a local ref
+          // instead, and withdraws a local credential a restore has moved a
+          // routine off.
+          this.#persistRoutine({
             ...routine,
             actions: routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
           });
         }
+        // One row for the one decision that was made. Restoring a catalogue
+        // arms every automation in it, so a door that wrote them all and
+        // recorded nothing left the operator's own log unable to answer why a
+        // machine started running work nobody scheduled on it. Per-routine
+        // `routine.create` rows would be fifty arming decisions nobody made,
+        // which reads worse than one restore recorded as a restore.
+        this.#store.audit({
+          action: "sync.import",
+          actorDeviceId: actor.deviceId,
+          outcome: "ok",
+          detail: { routines: document.routines.length, policyMode: document.policyMode },
+        });
         return Response.json({ ok: true, routines: document.routines.length });
       } catch (err) {
         return Response.json({ error: err instanceof Error ? err.message : "sync import failed" }, { status: 400 });
@@ -2420,25 +2450,28 @@ export class Gateway {
       if (typeof draft === "string") {
         return Response.json({ error: "invalid_routine", reason: draft }, { status: 400 });
       }
-      const routine: Routine = {
-        id: mintId("rtn"),
-        name: draft.name,
-        // Enabled and singleton default on: a routine defined and left off is
-        // the rarer intent, and overlapping runs of the same automation is
-        // the rarer want.
-        enabled: draft.enabled ?? true,
-        // The `secretRef` is minted; the secret VALUE is not. A create that
-        // returned one would put a credential in a response nobody asked for
-        // it in, and into whatever record the caller keeps of its own
-        // requests. `POST /v1/routines/:id/webhook-secret` is the one place a
-        // value is issued, and it issues it exactly once.
-        trigger: draft.trigger.kind === "webhook" ? { kind: "webhook", secretRef: mintId("whsec") } : draft.trigger,
-        actions: draft.actions.map(materialiseAction),
-        singleton: draft.singleton ?? true,
-        labels: draft.labels ?? {},
-        createdAt: new Date().toISOString(),
-      };
-      this.#writeRoutine({ routine, created: true, actorDeviceId: actor.deviceId });
+      const routine = this.#writeRoutine({
+        routine: {
+          id: mintId("rtn"),
+          name: draft.name,
+          // Enabled and singleton default on: a routine defined and left off is
+          // the rarer intent, and overlapping runs of the same automation is
+          // the rarer want.
+          enabled: draft.enabled ?? true,
+          // The draft names no `secretRef` and the seam mints one for a webhook
+          // trigger. The secret VALUE is never minted here: a create that
+          // returned one would put a credential in a response nobody asked for
+          // it in, and into whatever record the caller keeps of its own
+          // requests. `POST /v1/routines/:id/webhook-secret` is the one place a
+          // value is issued, and it issues it exactly once.
+          trigger: draft.trigger,
+          actions: draft.actions.map(materialiseAction),
+          singleton: draft.singleton ?? true,
+          labels: draft.labels ?? {},
+          createdAt: new Date().toISOString(),
+        },
+        actorDeviceId: actor.deviceId,
+      });
       return Response.json({ routine }, { status: 201 });
     }
 
@@ -2543,20 +2576,23 @@ export class Gateway {
       // undefined.
       //
       // `trigger` and `actions` are then overwritten, because a draft is not
-      // what the store holds: a drafted action names no execution host and a
-      // drafted webhook names no `secretRef`, both of which are the daemon's
-      // to decide rather than a caller's to assert. Those two read
-      // `undefined` for absence rather than testing presence, which is safe
-      // where it would not be above: a trigger is never an empty object, and
-      // an empty `actions` array is refused outright, so neither field has an
-      // empty-versus-absent distinction left to lose.
-      const routine: Routine = {
-        ...existing,
-        ...patch,
-        trigger: this.#retargetTrigger(existing.trigger, patch.trigger),
-        actions: (patch.actions ?? existing.actions).map(materialiseAction),
-      };
-      this.#writeRoutine({ routine, created: false, actorDeviceId: actor.deviceId });
+      // what the store holds: a drafted action names no execution host, which
+      // `materialiseAction` forces local. Those two read `undefined` for
+      // absence rather than testing presence, which is safe where it would not
+      // be above: a trigger is never an empty object, and an empty `actions`
+      // array is refused outright, so neither field has an empty-versus-absent
+      // distinction left to lose. The webhook `secretRef` is the seam's, not
+      // this route's: a patch that leaves a webhook alone keeps the stored ref,
+      // and one that moves off webhook withdraws the row after the write lands.
+      const routine = this.#writeRoutine({
+        routine: {
+          ...existing,
+          ...patch,
+          trigger: patch.trigger ?? existing.trigger,
+          actions: (patch.actions ?? existing.actions).map(materialiseAction),
+        },
+        actorDeviceId: actor.deviceId,
+      });
       return Response.json({ routine });
     }
 
@@ -4388,17 +4424,18 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "bad_frame", message: "routine_write needs one complete routine" });
           return;
         }
-        // `created` is decided by looking, not by trusting the frame: this is
-        // an upsert, so the same frame both creates and edits, and only the
-        // store knows which one this is. Execution hosts are forced local for
-        // the reason `/v1/sync/import` forces them.
-        const known = this.#store.listRoutines().some(candidate => candidate.id === frame.routine.id);
+        // Execution hosts are forced local for the reason `/v1/sync/import`
+        // forces them. Everything else this frame carries that is the daemon's
+        // to decide, rather than a caller's to assert, belongs to the seam:
+        // whether this is a create, and the webhook `secretRef`. The frame's
+        // wire type requires a ref on a webhook trigger, and the app round
+        // trips a snapshot it read, so honouring the value would work right up
+        // until a client sent one that named another routine's credential row.
         this.#writeRoutine({
           routine: {
             ...frame.routine,
             actions: frame.routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
           },
-          created: !known,
           actorDeviceId: ws.data.deviceId,
         });
         this.#send(ws, this.#routineSnapshot());
@@ -5313,33 +5350,92 @@ export class Gateway {
   }
 
   /**
-   * The one place a single routine definition is written, for every door that
-   * writes one: the app's `routine_write` frame, `POST /v1/routines`, and
-   * `PATCH /v1/routines/:id`.
+   * The one place a routine definition reaches the store, for every door that
+   * writes one: `POST /v1/routines`, `PATCH /v1/routines/:id`, the app's
+   * `routine_write` frame, and `/v1/sync/import`.
    *
-   * Shared for the same reason as `#deleteRoutines`, and with more cause.
-   * Before this seam existed the socket frame wrote no audit row at all,
-   * which is how `routine.create` came to be a declared audit action nothing
-   * ever emitted: whether arming an automation on this machine was recorded
-   * depended on which road the request took. One seam means it cannot.
+   * Two things live here because they cannot be trusted to a caller, and
+   * because a door that skips either one is indistinguishable from a door that
+   * does not.
    *
-   * `/v1/sync/import` deliberately stays outside. It is a whole-state restore
-   * and answers with a count, so putting fifty routines through here would
-   * record fifty separate arming decisions nobody made, which is worse for a
-   * reader than one restore recorded as a restore.
+   * **Whether this is a create.** Decided by looking, never by what a caller
+   * says. `routine_write` and sync import are both upserts, so the same request
+   * shape arms a new automation or edits an existing one and only the store
+   * knows which.
    *
-   * `detail` never carries a webhook secret nor the `secretRef` that names
-   * one. It is the single free-form field on an audit row, so it is the one
-   * place a credential could reach a log meant to be safe to read, print, and
-   * hand to whoever is diagnosing a machine. The trigger is recorded by kind
-   * alone, which is all a reader needs to know what armed the routine.
+   * **The webhook credential.** A caller never chooses a `secretRef`. The
+   * socket frame and a sync document both carry one in their wire type, and
+   * honouring it lets two routines point at one credential row, where rotating
+   * either silently breaks the other. So the incoming value is read for its
+   * kind and discarded, and the ref is either the one already on disk or a
+   * freshly minted one. See `#adoptTrigger`.
+   *
+   * The withdrawal is ordered deliberately: the row goes only after the
+   * definition that no longer names it is committed. Deleting first and then
+   * failing the write leaves a routine that still says `webhook`, pointed at a
+   * row that is gone, and there is no door that can put it back.
    */
-  #writeRoutine(input: { routine: Routine; created: boolean; actorDeviceId: string }): void {
-    const { routine, created, actorDeviceId } = input;
+  #persistRoutine(input: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] }): {
+    routine: Routine;
+    created: boolean;
+  } {
+    const existing = this.#store.listRoutines().find(candidate => candidate.id === input.id);
+    const routine: Routine = { ...input, trigger: this.#adoptTrigger(existing?.trigger, input.trigger) };
     this.#store.upsertRoutine(routine);
+    if (existing?.trigger.kind === "webhook" && routine.trigger.kind !== "webhook") {
+      // The capability is exactly what was just withdrawn, so the credential
+      // goes with it. A surviving hash is a live secret nothing in the
+      // catalogue names any more: nothing lists it and nothing can rotate it.
+      this.#store.deleteWebhookSecret(existing.trigger.secretRef);
+    }
+    return { routine, created: existing === undefined };
+  }
+
+  /**
+   * The `secretRef` a written routine ends up with, given what is already on
+   * disk. Pure: the withdrawal of a row belongs to `#persistRoutine`, after the
+   * write it depends on has committed.
+   *
+   * - webhook staying webhook keeps the stored ref verbatim, whatever the
+   *   incoming definition claims. It is the public half of the endpoint's
+   *   identity, so re-minting it on an edit that never mentioned the webhook
+   *   would break a URL already handed out and every secret rotated against it.
+   * - anything else becoming webhook mints a fresh ref, so no two routines can
+   *   be made to share one credential row, and so a ref minted by some other
+   *   daemon and carried in a sync document never names a row here.
+   */
+  #adoptTrigger(current: Routine["trigger"] | undefined, next: TriggerDraft | Routine["trigger"]): Routine["trigger"] {
+    if (next.kind !== "webhook") return next;
+    return current?.kind === "webhook" ? current : { kind: "webhook", secretRef: mintId("whsec") };
+  }
+
+  /**
+   * One routine written and recorded, which is every door except sync import.
+   *
+   * Before this seam existed the socket frame wrote no audit row at all, which
+   * is how `routine.create` came to be a declared audit action nothing ever
+   * emitted: whether arming an automation on this machine was recorded depended
+   * on which road the request took.
+   *
+   * `/v1/sync/import` writes through `#persistRoutine` and records itself as
+   * one `sync.import` row instead. It is a whole-state restore and answers with
+   * a count, so fifty rows here would be fifty separate arming decisions nobody
+   * made, which reads worse than one restore recorded as a restore.
+   *
+   * `detail` never carries a webhook secret nor the `secretRef` that names one.
+   * It is the single free-form field on an audit row, so it is the one place a
+   * credential could reach a log meant to be safe to read, print, and hand to
+   * whoever is diagnosing a machine. The trigger is recorded by kind alone,
+   * which is all a reader needs to know what armed the routine.
+   */
+  #writeRoutine(input: {
+    routine: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] };
+    actorDeviceId: string;
+  }): Routine {
+    const { routine, created } = this.#persistRoutine(input.routine);
     this.#store.audit({
       action: created ? "routine.create" : "routine.update",
-      actorDeviceId,
+      actorDeviceId: input.actorDeviceId,
       outcome: "ok",
       detail: {
         routineId: routine.id,
@@ -5348,33 +5444,7 @@ export class Gateway {
         actions: routine.actions.length,
       },
     });
-  }
-
-  /**
-   * The trigger a patched routine ends up with, plus the credential lifecycle
-   * that has to move with it.
-   *
-   * `undefined` means the patch named no trigger, so nothing about it changes.
-   * Otherwise three cases, and the first is why this is a method rather than
-   * part of the merge:
-   *
-   * - webhook staying webhook keeps the existing `secretRef` verbatim. It is
-   *   the public half of the endpoint's identity, so re-minting it on an edit
-   *   that never mentioned the webhook would silently break a URL already
-   *   handed out and every secret already rotated against it.
-   * - anything else becoming webhook mints a fresh ref, so no two routines
-   *   can be made to share one credential row.
-   * - webhook becoming anything else deletes the credential row, because the
-   *   capability is exactly what the operator just withdrew. A surviving hash
-   *   would be a live secret nothing in the catalogue names any more.
-   */
-  #retargetTrigger(current: Routine["trigger"], next: TriggerDraft | undefined): Routine["trigger"] {
-    if (next === undefined) return current;
-    if (next.kind === "webhook") {
-      return current.kind === "webhook" ? current : { kind: "webhook", secretRef: mintId("whsec") };
-    }
-    if (current.kind === "webhook") this.#store.deleteWebhookSecret(current.secretRef);
-    return next;
+    return routine;
   }
 
   /**

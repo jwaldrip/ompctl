@@ -282,19 +282,75 @@ describe("the tool surface", () => {
     await h.close();
   });
 
-  test("the annotation matrix says which tools read, which destroy, and that none reach outside", async () => {
+  test("the full annotation matrix is pinned for every registered tool", async () => {
     const h = await harness();
     const listed = await h.client.listTools();
 
-    const readOnly = listed.tools.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => tool.name);
-    const destructive = listed.tools.filter(tool => tool.annotations?.destructiveHint === true).map(tool => tool.name);
+    // Keyed by name and checked against the live registry rather than walked in
+    // registration order, so a renamed or added tool fails here instead of
+    // shifting into a neighbour's row and passing.
+    const expected: Record<string, Record<string, boolean | undefined>> = {
+      ompctl_routines_list: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      ompctl_routine_get: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      ompctl_routine_create: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      // An action sent without an id gets a fresh one on every write, so a
+      // repeated patch does not leave the same routine behind.
+      ompctl_routine_update: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      ompctl_routine_delete: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      // Firing a routine starts arbitrary prompts on this machine, so nothing
+      // here can bound what they touch.
+      ompctl_routine_run: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      ompctl_routine_rotate_webhook_secret: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    };
 
-    expect(readOnly).toEqual(["ompctl_routines_list", "ompctl_routine_get"]);
-    // Delete destroys the routine and its history; rotate destroys the
-    // credential every existing caller holds. Nothing else destroys anything.
-    expect(destructive).toEqual(["ompctl_routine_delete", "ompctl_routine_rotate_webhook_secret"]);
-    // Every one of these talks to one local daemon and nothing else.
-    expect(listed.tools.every(tool => tool.annotations?.openWorldHint === false)).toBe(true);
+    // Both directions: the registry holds exactly these names, and each one's
+    // four hints are exactly what this table says.
+    expect(listed.tools.map(tool => tool.name).sort()).toEqual(Object.keys(expected).sort());
+    for (const [name, want] of Object.entries(expected)) {
+      const tool = listed.tools.find(candidate => candidate.name === name);
+      const hints: Record<string, boolean | undefined> = {
+        readOnlyHint: tool?.annotations?.readOnlyHint,
+        destructiveHint: tool?.annotations?.destructiveHint,
+        idempotentHint: tool?.annotations?.idempotentHint,
+        openWorldHint: tool?.annotations?.openWorldHint,
+      };
+      expect(hints, `${name} annotations`).toEqual(want);
+    }
     await h.close();
   });
 });
@@ -367,6 +423,39 @@ describe("writing routines", () => {
     // empty object has to reach the daemon as an empty object.
     await h.call("ompctl_routine_update", { routineId: "rtn_cron", labels: {} });
     expect(h.calls[1]?.body).toBe('{"labels":{}}');
+    await h.close();
+  });
+
+  test("a repeated update whose action omits an id sends no id either time, so the daemon mints a new one", async () => {
+    const h = await harness({ routes: { "PATCH /v1/routines/rtn_cron": { body: { routine: CRON_ROUTINE } } } });
+
+    const patch = {
+      routineId: "rtn_cron",
+      actions: [{ name: "sweep", prompt: "Delete merged branches.", cwd: "/tmp/repo" }],
+    };
+    await h.call("ompctl_routine_update", patch);
+    await h.call("ompctl_routine_update", patch);
+
+    // This is why `idempotentHint` is false on update. The tool forwards the
+    // action exactly as the caller wrote it, so both identical calls arrive
+    // carrying no action id, and the gateway mints a fresh one each time:
+    // packages/daemon/test/gateway-routines.test.ts proves the minting itself.
+    // The second call therefore leaves a routine equal field by field but with
+    // an action id that no earlier run outcome names.
+    const sent = h.calls.map(call => JSON.parse(call.body ?? "null") as { actions?: Array<{ id?: string }> });
+    expect(sent).toHaveLength(2);
+    for (const body of sent) {
+      expect(body.actions).toHaveLength(1);
+      expect(body.actions?.[0]).not.toHaveProperty("id");
+    }
+
+    // Carrying the id back is what makes the write repeatable, and the tool
+    // has to pass it through for that advice to be worth anything.
+    await h.call("ompctl_routine_update", {
+      routineId: "rtn_cron",
+      actions: [{ id: "act_1", name: "sweep", prompt: "Delete merged branches.", cwd: "/tmp/repo" }],
+    });
+    expect(h.calls[2]?.body).toContain('"id":"act_1"');
     await h.close();
   });
 
