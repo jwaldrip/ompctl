@@ -137,7 +137,25 @@ export interface UserEntry {
 
 export interface AssistantEntry {
   kind: "assistant";
+  /**
+   * The wire's current message id. It CHANGES mid-reply: omp's chunks carry
+   * ids that rotate mid-sentence, and `findChunkTarget` adopts the newest one
+   * so a later chunk naming it can resume a settled row after a tool call.
+   */
   id: string;
+  /**
+   * The row's identity, assigned once and never reassigned.
+   *
+   * Separate from `id` because `id` follows the wire and any consumer keying
+   * on it sees one reply as several messages. assistant-ui does exactly that:
+   * it keys on the converted message's id, so five chunk-id rotations made it
+   * mount five assistant messages and strand four as permanent sibling
+   * branches, each holding its own snapshot -- an unbounded leak on a long
+   * reply, and invisible to a test that only counts our own entries. Measured
+   * before this field existed: the reducer held 2 entries while
+   * `thread.export()` returned 6.
+   */
+  rowId: string;
   text: string;
   streaming: boolean;
   /** Reasoning rather than reply. Rendered quieter, and never spoken aloud. */
@@ -204,7 +222,7 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
       item.kind === "user"
         ? { kind: "user", id: item.id, text: item.text }
         : item.kind === "assistant"
-          ? { kind: "assistant", id: item.id, text: item.text, thought: item.thought, streaming: false }
+          ? { kind: "assistant", id: item.id, rowId: item.id, text: item.text, thought: item.thought, streaming: false }
           : {
               kind: "tool",
               id: item.id,
@@ -368,7 +386,12 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
   const settled = channel === "user" ? state.entries : closeStreams(state.entries);
   const id = messageId ?? `${channel}-${state.ordinal}`;
   const entry: Entry =
-    channel === "user" ? { kind: "user", id, text } : { kind: "assistant", id, text, streaming: true, thought };
+    channel === "user"
+      ? { kind: "user", id, text }
+      : // `rowId` is the id this row was born with and keeps. `id` goes on
+        // following the wire so `findChunkTarget` can still resume a settled
+        // row by the id a later chunk names.
+        { kind: "assistant", id, rowId: id, text, streaming: true, thought };
   return {
     ...state,
     entries: [...settled, entry],

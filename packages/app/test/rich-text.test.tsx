@@ -215,8 +215,8 @@ describe("the transcript seam", () => {
 
   test("the assistant row's accessibility label is still the full raw reply", () => {
     const entries: readonly Entry[] = [
-      { kind: "assistant", id: "thought-1", text: REPLY, streaming: true, thought: true },
-      { kind: "assistant", id: "reply-1", text: REPLY, streaming: true, thought: false },
+      { kind: "assistant", id: "thought-1", rowId: "thought-1", text: REPLY, streaming: true, thought: true },
+      { kind: "assistant", id: "reply-1", rowId: "reply-1", text: REPLY, streaming: true, thought: false },
     ];
     const { host, dispose } = mount(entries);
     // Both rows carry the same id on purpose: the path scenario enumerates
@@ -256,7 +256,7 @@ describe("repeated blocks keep distinct keys", () => {
   test("a reply with repeated rules and identical lists draws no duplicate-key complaint", () => {
     const repeated = ["1. only", "", "---", "", "1. only", "", "---", "", "same line", "", "same line"].join("\n");
     const entries: readonly Entry[] = [
-      { kind: "assistant", id: "r1", text: repeated, streaming: false, thought: false },
+      { kind: "assistant", id: "r1", rowId: "r1", text: repeated, streaming: false, thought: false },
     ];
 
     const complaints: string[] = [];

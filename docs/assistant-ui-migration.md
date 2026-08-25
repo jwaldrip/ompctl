@@ -6,16 +6,17 @@ All numbers below were measured in a real worktree (`ompctl.worktrees/aui-compat
 
 ---
 
-## 1. Verdict up front
+## 1. Decision
 
-Adoption is **technically viable** and there is a real architecture for it that keeps the daemon authoritative. It is **not** a drop-in, and two facts should decide whether we do it now:
+**Adopted.** Jason gave the go on 2026-08-24, with the alpha risk in this document read and accepted. The owned session's chat runtime becomes assistant-ui. What follows is the record of what that costs and how it is contained, not an argument for or against.
 
-1. A **packaging defect** in the published package means `assistant-cloud` must be declared as our own direct dependency or every bundler build fails. bun is silent, `tsc` is clean, Metro and Vite both hard-fail. It is fixable in one line of `package.json`, but it is a signal about release quality.
-2. The architecture **requires importing `@assistant-ui/core/react` directly**, and that package's own README says *"Most users do not install `@assistant-ui/core` directly"*, framing itself as a base for integration libraries rather than apps. We would be depending on an entry point the maintainers discourage. That, not the `0.1.x` number, is the real stability exposure.
+Adoption is technically viable and the architecture keeps the daemon authoritative. It is not a drop-in, and three facts define the risk being accepted:
 
-`[JASON: go / no-go on adopting an alpha UI runtime whose recommended entry point does not expose the runtime we need]`
+1. A **packaging defect** means `assistant-cloud` must be declared as our own direct dependency or every bundler build fails, while bun and `tsc` both report green. §4.
+2. The architecture **requires importing `@assistant-ui/core/react` directly**, and that package's own README says *"Most users do not install `@assistant-ui/core` directly"*, framing itself as a base for integration libraries rather than apps. §9.
+3. Importing that entry point **reads `process.env` at module scope and can construct a network client**. §4a.
 
-Everything below is what I would do if the answer is go.
+Containment, all three: one boundary module (`packages/app/src/assistant/runtime.ts`) is the only place the app reaches into core, literal pins with no carets, and a dependency integrity check in CI that fails on a missing `assistant-cloud`, a duplicated core or store, or a second React. §3, §4, §11.
 
 ---
 
@@ -128,6 +129,33 @@ Fix: declare `assistant-cloud` ourselves. One line. But note what it means — t
 
 ---
 
+## 4a. `assistant-cloud` is more than a packaging defect
+
+An earlier draft of this document called it only a packaging defect. That undersells it, and the correction came out of the adversarial review.
+
+`@assistant-ui/core/dist/react/runtimes/cloud/useCloudThreadListAdapter.js`, lines 11-14, at **module scope**:
+
+```js
+const baseUrl = typeof process !== "undefined" && process?.env?.NEXT_PUBLIC_ASSISTANT_BASE_URL;
+const autoCloud = baseUrl ? new AssistantCloud({ baseUrl, anonymous: true }) : void 0;
+```
+
+That module is **statically imported** by `@assistant-ui/core/dist/react/index.js`. So importing `useExternalStoreRuntime` — the one symbol this whole architecture needs — executes an environment read and, if that variable is set, constructs an anonymous cloud client before any of our code runs.
+
+What is actually true in our app, measured on the shipped iOS bundle:
+
+| | |
+| --- | --- |
+| `NEXT_PUBLIC_ASSISTANT_BASE_URL` occurrences in `/tmp/aui-real-ios.jsbundle` | **1** — the env read ships |
+| `AssistantCloud` occurrences | 15 — the client class ships |
+| Is a client constructed? | **No.** The variable is unset, nothing in `metro.config.cjs` defines `NEXT_PUBLIC_*`, so `autoCloud` is `undefined` |
+
+So there is no live cloud client in the app today, and no evidence of a call being made. The exposure is narrower and worth stating exactly: **a signed app ships a cloud client class and an import-time env read that would construct it, from a dependency we wanted one hook from.** One build tool that injects `NEXT_PUBLIC_*` variables would flip it on with nothing in our code changing.
+
+Accepted, with the boundary module as containment and this recorded so nobody has to rediscover it. If it ever needs closing, the fix is a Metro `resolver.blockList` or an alias stubbing that module, not a patch to core.
+
+---
+
 ## 5. Second hazard: Metro silently serves the wrong core
 
 `metro.config.cjs` sets `disableHierarchicalLookup: true` with `nodeModulesPaths` limited to two roots. Metro therefore cannot see **any** nested `node_modules`, so every nested resolution flattens to the hoisted copy.
@@ -201,23 +229,37 @@ Not portable from web: RN `ThreadPrimitive` has **no** `Viewport`, `ViewportFoot
 
 ---
 
-## 8. The terminal pane: do not force it
+## 8. The terminal pane: stays custom, and here is the actual reason
 
-The live-terminal pane is not an ACP session. It has `sent`/`reply` **transient hint rows**, a served history tail, and its own cursor on `tui.historyCursor`.
+Jason asked for this to be proven rather than inferred, and proving it overturned two things an earlier draft of this document asserted.
 
-Mechanically, a shrinking snapshot is fine — the adapter owns `messages`, and the doc comment on `setMessages` confirms the runtime only needs telling about removals *it* made. So the hint rows *could* be fed in.
+**The false-affordance objection does not hold.** An earlier draft claimed assistant-ui attaches edit/reload/branch actions to every message, so feeding hint rows in would ship controls that cannot work. Measured with an adapter carrying `onNew` and nothing else, `thread.capabilities` reads:
 
-They should not be, and the reason is semantic rather than mechanical:
+```json
+{"switchToBranch":false,"switchBranchDuringRun":false,"edit":false,"delete":false,"reload":false,
+ "refetchThread":false,"cancel":false,"speech":false,"dictation":false,"voice":false,
+ "unstable_copy":true,"attachments":false,"feedback":false,"queue":false}
+```
 
-1. A hint row **has no durable identity**. Giving it a synthetic id puts a non-turn into a repository keyed by message id.
-2. assistant-ui attaches per-message **actions** — edit, reload, branch, delete — to every message. On a hint row none of those can work, so we would ship affordances that cannot function.
-3. The terminal's pagination cursor is `tui.historyCursor`, which is not the thread's message list.
+Every capability is false except `unstable_copy`. **Omitting a callback really does remove the affordance.** That objection is withdrawn.
 
-**Recommendation: phase 1 is the owned session only.** Terminal stays on its current components, which already share `useTopHistoryPagination` and `ActivityRow` with the owned surface. Revisit only with a specific answer for hint-row identity.
+**A sibling agent's claimed blocker also does not hold.** It reported that terminal keys renumber when an older history page prepends. They do not. `logRows()` derives `key: turn:${newest - index}` with `newest = history.length - 1`, so a prepend of *k* shifts `newest` and `index` by the same *k* and every existing key is unchanged. Verified:
 
-That is the honest blocker the brief asked for: not "primitives cannot support external rows", they can. It is that the terminal's rows are not messages.
+| | keys |
+| --- | --- |
+| base `[A,B,C]` | `A=turn:2  B=turn:1  C=turn:0` |
+| after prepend `[Y,Z,A,B,C]` | `A=turn:2  B=turn:1  C=turn:0` — **no drift** |
+| after append `[A,B,C,D]` | `A=turn:3  B=turn:2  C=turn:1` — **all three drifted** |
 
----
+**The real blocker is append.** Those keys count backward from the newest, so the newest turn is always `turn:0` and **every existing row is renumbered every time a turn arrives** — which is the common case, not the rare one. Fed into assistant-ui, whose repository keys on message id, that remounts every row on every turn and strands a sibling branch per row per turn. It is the same leak §11 describes for the owned surface's rotating wire id, multiplied by the number of rows on screen.
+
+So the one-sentence limitation, and note what it is NOT about:
+
+> The terminal's row keys are positional and count backward from the newest turn, so every append renumbers every row; assistant-ui keys messages on that id, so the terminal cannot be represented until its keys are derived from row identity instead of position.
+
+That is **our** key scheme, not a library limitation. The terminal is therefore migratable, behind one separable prerequisite: give `LogRow` an identity-derived key. Doing that inside this cutover would mean changing the terminal's model and its pagination anchor (`useTopHistoryPagination` compares `rows[0].key` to detect a prepend) in the same change that moves the owned surface to a new runtime. Two risky changes at once, for no user-visible gain.
+
+**Decision: `TerminalSessionScreen` stays on its own components for this cutover.** It is a distinct live-terminal surface, not a hidden dual implementation of the owned thread: it renders a different thing (a terminal someone else owns, steered without taking ownership), and it keeps sharing `useTopHistoryPagination` and `ActivityRow` with the owned surface so there is one pagination machine and one activity row in the app, not two.
 
 ## 9. Alpha assessment
 

@@ -1,69 +1,165 @@
 /**
- * The owned session's log, rendered by assistant-ui's primitives.
+ * The owned session's log and composer, on assistant-ui's primitives.
  *
- * What is being proven here is narrow and worth stating: assistant-ui owns the
- * list, message identity and part dispatch, and it owns no state. Every row is
- * still one of our components, because the source `Entry` rides along on
- * `metadata.custom` and the renderer reads it back rather than re-deriving
- * anything from assistant-ui's vocabulary. So a tool card keeps its kind, its
- * locations and its status, and a clearance keeps its decision, without any of
- * it having to survive a round trip.
+ * assistant-ui owns the list, message identity and part dispatch. It owns no
+ * state: `messages` is the reducer's `Entry[]`, the converter is ours, and every
+ * action dispatches back through `OmpdClient`. Each row is still one of our
+ * components, because the source `Entry` rides on `metadata.custom` and
+ * `OmpEntryRow` reads it back rather than re-deriving anything from
+ * assistant-ui's vocabulary.
  *
- * Three props are handed straight to the underlying `FlatList` and they are the
- * reason this can replace `Transcript` without giving anything up:
+ * Four props go straight to the underlying `FlatList`, and they are why this
+ * replaces `Transcript` without giving anything up:
  *
- *  - `ListHeaderComponent` carries the "Load earlier" control, so #129's shared
- *    top-history machine still drives it.
- *  - `ListFooterComponent` carries `ActivityRow`, so #133's inline working row
- *    still sits under the operator's turn and above the composer, inside the
- *    list where the follower counts it as content.
- *  - `maintainVisibleContentPosition` plus `onScroll` / `onContentSizeChange`
- *    and a real `FlatList` ref keep the prepend anchor working.
+ *  - `ref`, `onScroll`, `onContentSizeChange`, `scrollEventThrottle` and
+ *    `maintainVisibleContentPosition` from `useTopHistoryPagination`, so #129's
+ *    shared machine drives the prepend anchor and cursor dedup here exactly as
+ *    it does on the terminal.
+ *  - `ListHeaderComponent` carries the "Load earlier" control.
+ *  - `ListFooterComponent` carries `ActivityRow`, so #133's working row stays
+ *    inside the list under the operator's turn and above the composer, where
+ *    the follower counts it as content.
  *
- * All four of assistant-ui's own scroll flags are turned OFF on purpose. Its
- * `autoScroll` and `scrollToBottomOn*` default to true and would fight
- * `useFollowNewest`, whose behaviour we have tests for: a reader scrolled up to
- * read history is not dragged to the bottom when a turn starts. Two followers
- * on one list is one too many, and ours is the one with proof behind it.
+ * All four of assistant-ui's own scroll flags are OFF. They default true and
+ * would fight `useFollowNewest`, whose behaviour has tests: a reader scrolled up
+ * to read history is not dragged to the bottom when a turn starts. Measured with
+ * the flags false, the library installs nothing on the list -- the only props it
+ * adds are `data`, `keyExtractor`, `renderItem` and its own `ref` plumbing -- so
+ * ours are the only scroll handlers in play.
  */
 
-import { useExternalStoreRuntime } from "@assistant-ui/core/react";
-import { AssistantRuntimeProvider, ComposerPrimitive, ThreadPrimitive } from "@assistant-ui/react-native";
-import { type JSX, type ReactNode, useMemo } from "react";
-import { StyleSheet, View } from "react-native";
+import { AssistantRuntimeProvider, ThreadPrimitive } from "@assistant-ui/react-native";
+import type { JSX, ReactElement } from "react";
+import { useMemo, useRef } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { useFollowNewest } from "../components/useFollowNewest.ts";
+import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
+import { Glyph } from "../design/icons.tsx";
 import { Label } from "../design/text.tsx";
-import { ground, ink, signal, space } from "../design/tokens.ts";
+import { ground, ink, space } from "../design/tokens.ts";
+import type { ImageAttachmentPicker } from "../platform/attachments.ts";
 import type { Entry } from "../session/model.ts";
 import { entryOf, type OmpStoreInput, ompStore } from "./adapter.ts";
+import { OmpComposer, type OmpComposerProps } from "./OmpComposer.tsx";
+import { OmpEntryRow } from "./renderers.tsx";
+import { useOmpRuntime } from "./runtime.ts";
 
 /**
- * The runtime, from `@assistant-ui/core/react` because that is the only place
- * `useExternalStoreRuntime` is exported. Memoised on the inputs that actually
- * change the store, so a re-render that changed nothing does not hand the
- * runtime a fresh adapter object.
+ * The runtime, built once per meaningful state change.
+ *
+ * The actions go through a ref rather than the dependency list, and that is a
+ * correctness fix rather than a tidy-up. Every callsite passes inline arrows
+ * (`Console.tsx` does), so a memo depending on them rebuilt the store on every
+ * single render and the memo's stated purpose did not hold for its only caller.
+ * Capturing them once instead would dispatch through a stale closure. A ref is
+ * the only shape that is both stable and current: the store identity survives a
+ * re-render, and a press always reaches the newest handler.
  */
 export function useOmpAssistantRuntime(input: OmpStoreInput) {
+  const actions = useRef(input);
+  actions.current = input;
+
+  const { agent, session, connection, load, promptAccess, canApprove, refusal } = input;
   const store = useMemo(
-    () => ompStore(input),
-    // biome-ignore lint/correctness/useExhaustiveDependencies: the store is a
-    // projection of exactly these; including `input` itself would rebuild on
-    // every render because callers pass a fresh object literal.
-    [input.agent, input.session, input.connection, input.load, input.promptAccess, input.onSubmit, input.onCancel],
+    () =>
+      ompStore({
+        agent,
+        session,
+        connection,
+        load,
+        promptAccess,
+        canApprove,
+        refusal,
+        onSubmit: (text, images) => actions.current.onSubmit(text, images),
+        onCancel: () => actions.current.onCancel(),
+        onDecide: (requestId, choice, scope) => actions.current.onDecide(requestId, choice, scope),
+        onDecidePlan: (requestId, choice) => actions.current.onDecidePlan(requestId, choice),
+      }),
+    [agent, session, connection, load, promptAccess, canApprove, refusal],
   );
-  return useExternalStoreRuntime(store);
+  return useOmpRuntime(store);
 }
 
 export interface OmpThreadProps extends OmpStoreInput {
-  /** The "Load earlier" control, from the shared top-history machine. */
-  header?: ReactNode;
-  /** The inline activity row. Absent when no turn is underway. */
-  footer?: ReactNode;
-  /** Rendered per row, given the entry this message was built from. */
-  renderEntry: (entry: Entry) => ReactNode;
+  /**
+   * The inline activity row. Absent when no turn is underway. An element rather
+   * than a `ReactNode`: the list's footer slot takes an element or a component,
+   * so a string would be a type error at the boundary instead of a render
+   * surprise.
+   */
+  footer?: ReactElement | null;
+  /**
+   * The same three the shipped `Transcript` takes, so a screen swapping to this
+   * surface changes one element and no props. The pagination machine lives in
+   * here for the same reason it lived in there: the head key it compares has to
+   * come from the same key space the list uses, and only this component knows
+   * both.
+   */
+  canLoadEarlier?: boolean;
+  loadingEarlier?: boolean;
+  onLoadEarlier?: () => void;
+  /** The cursor identifying the page on screen, which makes a repeat detectable. */
+  historyCursor?: number | null;
+  /** The composer's picker seam. Not Expo: `react-native-image-picker`. */
+  picker: ImageAttachmentPicker;
+  /** What the empty field says: where this screen states its own gate. */
+  placeholder: string;
+  /** What assistive technology hears on send, with the target named. */
+  sendLabel: string;
+  /**
+   * The microphone, whole. One object rather than several props so a caller
+   * cannot wire half of it; see `OmpComposerProps.voice`.
+   */
+  voice: OmpComposerProps["voice"];
+  /** This session's resolved model and thinking level, already formatted. */
+  model: string | null;
+  /** Open this session's config surface. Absent where there is none. */
+  onOpenConfig?: () => void;
 }
 
 export function OmpThread(props: OmpThreadProps): JSX.Element {
   const runtime = useOmpAssistantRuntime(props);
+
+  // Opening a session lands on the newest entry, and a streaming turn keeps it
+  // there, unless the operator has scrolled up to read.
+  const follow = useFollowNewest();
+
+  /**
+   * The head row's key, in the same key space the list uses. `MessagesFlatList`
+   * keys on the converted message id, and `convertEntry` emits `rowId` for an
+   * assistant row and `id` for every other kind -- so this has to be that same
+   * derivation, not `transcriptRowKey`, or a prepend and a re-render would be
+   * indistinguishable to the shared machine.
+   */
+  const first = props.session.entries[0];
+  const headKey = first === undefined ? null : first.kind === "assistant" ? first.rowId : first.id;
+
+  const pagination = useTopHistoryPagination({
+    canLoadEarlier: props.canLoadEarlier === true,
+    loadingEarlier: props.loadingEarlier === true,
+    onLoadEarlier: props.onLoadEarlier,
+    cursor: props.historyCursor,
+    headKey,
+    follow,
+  });
+
+  const earlier =
+    props.canLoadEarlier === true && props.onLoadEarlier !== undefined ? (
+      <View style={styles.header}>
+        {props.loadingEarlier === true && <ActivityIndicator size="small" />}
+        <Pressable
+          testID="history-load-earlier"
+          accessibilityRole="button"
+          accessibilityLabel="Load earlier transcript entries"
+          disabled={props.loadingEarlier === true}
+          onPress={pagination.onPressLoadEarlier}
+          style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
+        >
+          <Glyph name="resume" size={11} color={ink.muted} />
+          <Label color={ink.muted}>{props.loadingEarlier === true ? "Loading earlier…" : "Load earlier"}</Label>
+        </Pressable>
+      </View>
+    ) : null;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -76,88 +172,76 @@ export function OmpThread(props: OmpThreadProps): JSX.Element {
           scrollToBottomOnRunStart={false}
           scrollToBottomOnInitialize={false}
           scrollToBottomOnThreadSwitch={false}
-          ListHeaderComponent={props.header === undefined ? null : <>{props.header}</>}
-          ListFooterComponent={props.footer === undefined ? null : <>{props.footer}</>}
+          ref={pagination.ref}
+          onScroll={pagination.onScroll}
+          onContentSizeChange={pagination.onContentSizeChange}
+          scrollEventThrottle={pagination.scrollEventThrottle}
+          maintainVisibleContentPosition={MAINTAIN_VISIBLE_CONTENT_POSITION}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          automaticallyAdjustKeyboardInsets
+          ListHeaderComponent={earlier}
+          ListFooterComponent={props.footer ?? null}
         >
-          {({ message }) => <OmpRow message={message} renderEntry={props.renderEntry} />}
+          {({ message }) => (
+            <OmpRow message={message} canApprove={props.canApprove} refusal={props.refusal} onDecide={props.onDecide} />
+          )}
         </ThreadPrimitive.MessagesFlatList>
 
-        <ComposerPrimitive.Root style={styles.composer} testID="aui-composer">
-          <ComposerPrimitive.Input
-            testID="aui-composer-input"
-            style={styles.input}
-            multiline
-            placeholder="Say something to this agent"
-            placeholderTextColor={ink.faint}
-          />
-          <ComposerPrimitive.Send testID="aui-composer-send" style={styles.send}>
-            <Label color={ink.plain}>Send</Label>
-          </ComposerPrimitive.Send>
-          <ComposerPrimitive.Cancel testID="aui-composer-cancel" style={styles.cancel}>
-            <Label color={ink.plain}>Stop</Label>
-          </ComposerPrimitive.Cancel>
-        </ComposerPrimitive.Root>
+        <OmpComposer
+          prefix="composer"
+          picker={props.picker}
+          placeholder={props.placeholder}
+          sendLabel={props.sendLabel}
+          voice={props.voice}
+          model={props.model}
+          onOpenConfig={props.onOpenConfig}
+          refusal={props.refusal}
+        />
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
   );
 }
 
 /**
- * One row. The entry is read back off the message rather than reconstructed,
- * which is what makes this conversion lossless.
+ * One row, rendered by our own component from the entry the message carries.
  *
- * A message with no entry is not ours, and there is exactly one producer of
- * those: while `isRunning` is true and the newest message is the operator's,
- * the external-store runtime synthesizes a placeholder assistant message of
- * its own. Measured, not assumed -- the same session renders
- * `["aui-row-user", "aui-row-foreign"]` with `state: "busy"` and
- * `["aui-row-user"]` with `state: "idle"`.
- *
- * It renders nothing, deliberately. That placeholder is assistant-ui's answer
- * to the same question `ActivityRow` answers, and the two disagree about the
- * part that matters: the placeholder is replaced the moment assistant text
- * starts streaming, while omp's own TUI keeps its loader running for the whole
- * turn (`#handleMessageUpdate` -> `#ensureWorkingLoaderWhileStreaming`, stopped
- * only in `#finishAgentEnd`). #133 shipped the TUI's semantics after reading
- * that source, so the footer row owns the claim and this one is suppressed.
- * Rendering both would put two working indicators on one turn.
- *
- * `isRunning` is still reported, because it is what enables
- * `ComposerPrimitive.Cancel`.
+ * A message with no entry renders nothing, and there is exactly one producer of
+ * those: while `isRunning` is true and the newest message is the operator's, the
+ * external-store runtime synthesizes a placeholder assistant message (identified
+ * by `metadata.isOptimistic`). It answers the same question `ActivityRow`
+ * answers, and disagrees on the part that matters -- the placeholder is replaced
+ * when text starts streaming, while omp's own TUI keeps its loader for the whole
+ * turn, which is the semantics #133 shipped. So the footer row owns the claim
+ * and this one is suppressed. `isRunning` is still reported, because it is what
+ * enables the composer's interrupt.
  */
 function OmpRow({
   message,
-  renderEntry,
+  canApprove,
+  refusal,
+  onDecide,
 }: {
   message: { metadata?: { custom?: Record<string, unknown> } };
-  renderEntry: (entry: Entry) => ReactNode;
+  canApprove: boolean;
+  refusal?: string;
+  onDecide: OmpStoreInput["onDecide"];
 }): JSX.Element | null {
-  const entry = entryOf(message);
+  const entry: Entry | null = entryOf(message);
   if (entry === null) return null;
-  return (
-    <View style={styles.row} testID={`aui-row-${entry.kind}`}>
-      {renderEntry(entry)}
-    </View>
-  );
+  return <OmpEntryRow entry={entry} canApprove={canApprove} refusal={refusal} onDecide={onDecide} />;
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
   list: { flex: 1, backgroundColor: ground.base },
-  row: { flexDirection: "row", gap: space.step },
-  composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: space.snug,
-    padding: space.step,
-    backgroundColor: ground.surface,
-  },
-  input: { flex: 1, color: ink.plain, minHeight: 44 },
-  send: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.step },
-  cancel: {
+  header: { flexDirection: "row", alignItems: "center", gap: space.step, paddingVertical: space.tight },
+  earlier: {
     minHeight: 44,
-    justifyContent: "center",
+    alignSelf: "center",
     paddingHorizontal: space.step,
-    backgroundColor: signal.oxide,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
   },
 });
