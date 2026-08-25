@@ -60,11 +60,14 @@ import { spawnLocalHost } from "@ompd/acp";
 import { type HostKind, type HostMount, type HostSpec, resolveMountPath } from "@ompd/core";
 import { execCommand } from "./exec.ts";
 import { type GateWrapper, requireSafePath, writeGateWrapper } from "./gate-wrapper.ts";
+import { GUEST_HOME_MOUNT, type GuestModelAccess, seedGuestHome } from "./guest-config.ts";
 import { type EnsureToolchainOptions, ensureToolchain, type ResolvedToolchain } from "./image.ts";
 import { type RuntimeCapability, selectRuntime } from "./runtime.ts";
 import {
   type CommandRunner,
+  type GuestBridge,
   type HostHandle,
+  type ModelAccessProvider,
   ProvisionError,
   type ProvisionerBackend,
   type SpawnHost,
@@ -137,6 +140,16 @@ export interface ContainerBackendOptions {
    * uses when nothing overrides it.
    */
   home?: string;
+  /**
+   * How this container gets a model, and how it loses it again.
+   *
+   * Optional only because the unit tests and the cloud/local paths have no
+   * broker to hand over. When it IS present, it is not best-effort: a grant
+   * that fails fails the provision. The alternative is the defect this exists
+   * to remove, which is a container agent that reaches `idle` with a live ACP
+   * session and then answers every prompt with "No model selected".
+   */
+  modelAccess?: ModelAccessProvider;
   run?: CommandRunner;
   spawn?: SpawnHost;
   /** Toolchain resolution seam, so tests never download or extract anything. */
@@ -159,6 +172,21 @@ interface ContainerRecord {
    * host is gone.
    */
   gateDir: string;
+  /**
+   * The daemon-side directory mounted as the guest's `HOME`, or `null` when
+   * the host was provisioned with no model access. Removed on teardown for a
+   * stronger reason than the gate directory: it holds the guest's bearer.
+   */
+  guestHome: string | null;
+  /**
+   * The bearer the broker issued for this container, held in memory only.
+   *
+   * Never written to `HostRef.resolved`, because the store persists that. So
+   * this field, and the ability to revoke the grant by name, does not survive
+   * a daemon restart -- which is why a restart withdraws model access rather
+   * than leaving a token live with nobody able to name it.
+   */
+  modelToken: string | null;
 }
 
 /**
@@ -218,6 +246,231 @@ function refuseIfFlagShaped(image: string): void {
       "container",
     );
   }
+}
+
+/**
+ * Hostname a Docker Desktop guest resolves to the host it runs on.
+ *
+ * Docker's own, injected by the Desktop VM's resolver rather than by anything
+ * ompd does. Not available on Linux docker, where it is also not needed
+ * because the bridge gateway is a real host interface.
+ */
+const DOCKER_HOST_ALIAS = "host.docker.internal";
+
+/**
+ * Addresses that are never a usable answer from `network inspect`.
+ *
+ * A wildcard reaching the broker would bind a listener on every interface,
+ * which the design forbids outright: the whole containment argument for the
+ * bridge shape is that only containers on that one network can reach it.
+ * `0.0.0.0` was measured reachable from every container network AND the host
+ * LAN. So a runtime that reports one is treated as reporting nothing, and the
+ * provision refuses with a reason rather than widening silently.
+ */
+const WILDCARD_ADDRESSES: Record<string, true> = { "0.0.0.0": true, "::": true, "[::]": true, "*": true };
+
+/**
+ * A `network inspect` address this backend is willing to act on, or null.
+ *
+ * Four call sites need the same answer in lockstep, and the rule it applies is
+ * not obvious from the expression: an empty string and a wildcard are both
+ * "the runtime told us nothing usable", and the wildcard case is a security
+ * decision rather than a tidiness one.
+ */
+function usableAddress(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" || WILDCARD_ADDRESSES[trimmed] === true ? null : trimmed;
+}
+
+/**
+ * What a runtime's `network inspect` said, in whichever shape it says it.
+ *
+ * Two spellings, both parsed, because the runtimes disagree and the difference
+ * is not cosmetic. Apple `container` 0.4.1, measured:
+ * `[{"status":{"gateway":"192.168.65.1","address":"192.168.65.0/24"}, ...}]`.
+ * Docker and podman: `[{"IPAM":{"Config":[{"Gateway":"172.17.0.1",
+ * "Subnet":"172.17.0.0/16"}]}, ...}]`.
+ *
+ * Both answer immediately after `network create`, before any container has
+ * run, which is what makes the grant-then-bind ordering in `provision`
+ * possible: the guest's config has to name an endpoint before the container
+ * that reads it starts, and BINDING that address does not work until a
+ * container is attached to the network.
+ *
+ * Nothing here guesses. Subnets are handed out in network creation order and
+ * have nothing to do with the network's name, so the second container on a
+ * machine gets a different subnet from the first. A hardcoded `192.168.65.1`
+ * would work once and then hand a container an address belonging to another,
+ * so no default exists anywhere in this path.
+ */
+async function inspectNetwork(
+  run: CommandRunner,
+  runtime: string,
+  network: string,
+): Promise<{ gateway: string | null; cidr: string | null }> {
+  const unknown = { gateway: null, cidr: null };
+  const inspected = await run([runtime, "network", "inspect", network]).catch(() => null);
+  if (inspected === null || inspected.code !== 0) return unknown;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(inspected.stdout);
+  } catch {
+    return unknown;
+  }
+  const first: unknown = Array.isArray(parsed) ? parsed[0] : undefined;
+  if (typeof first !== "object" || first === null) return unknown;
+
+  // Apple's spelling first, and narrowed rather than asserted onto. Docker
+  // answers this same key with a literal `null` rather than omitting it,
+  // measured on docker 29.4.0, so `"status" in first` is true there and a cast
+  // to `{ status?: { gateway?: unknown } }` would sail straight past it and
+  // then read `.gateway` off `null`.
+  if ("status" in first) {
+    const status = first.status;
+    if (typeof status === "object" && status !== null && "gateway" in status) {
+      const gateway = usableAddress(status.gateway);
+      if (gateway !== null) {
+        return { gateway, cidr: "address" in status ? usableAddress(status.address) : null };
+      }
+    }
+  }
+
+  // The OCI spelling, shared by docker and podman. Measured on docker 29.4.0:
+  // `{"IPAM":{"Config":[{"Subnet":"192.168.147.0/24","Gateway":"192.168.147.1"}]}}`.
+  if ("IPAM" in first) {
+    const ipam = first.IPAM;
+    if (typeof ipam === "object" && ipam !== null && "Config" in ipam && Array.isArray(ipam.Config)) {
+      const entry: unknown = ipam.Config[0];
+      if (typeof entry === "object" && entry !== null && "Gateway" in entry) {
+        const gateway = usableAddress(entry.Gateway);
+        if (gateway !== null) {
+          return { gateway, cidr: "Subnet" in entry ? usableAddress(entry.Subnet) : null };
+        }
+      }
+    }
+  }
+  return unknown;
+}
+
+/**
+ * Whether podman is running rootless, which decides whether its bridge gateway
+ * is an address this host can bind.
+ *
+ * Rootful podman creates a real bridge on the host, exactly like docker on
+ * Linux. Rootless podman does not: its network lives in a user namespace
+ * behind slirp4netns or pasta, and the gateway `network inspect` reports is
+ * inside that namespace, so a listener on the host can never bind it and a
+ * guest can never reach one that did. Getting this backwards would hand a
+ * container an endpoint nothing answers, so every uncertain answer -- probe
+ * failed, output unparseable, field absent -- is reported as rootless.
+ *
+ * `podman info` is the runtime's own answer to this question rather than an
+ * inference from uid, which matters because ompd can be running as a different
+ * user from the podman that will create the network.
+ */
+async function podmanIsRootless(run: CommandRunner, runtime: string): Promise<boolean> {
+  const info = await run([runtime, "info", "--format", "json"]).catch(() => null);
+  if (info === null || info.code !== 0) return true;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(info.stdout);
+  } catch {
+    return true;
+  }
+  if (typeof parsed !== "object" || parsed === null || !("host" in parsed)) return true;
+  const host = parsed.host;
+  if (typeof host !== "object" || host === null || !("security" in host)) return true;
+  const security = host.security;
+  if (typeof security !== "object" || security === null || !("rootless" in security)) return true;
+  return typeof security.rootless === "boolean" ? security.rootless : true;
+}
+
+/**
+ * Work out how, if at all, a guest on this network can reach a listener on this
+ * host.
+ *
+ * Three shapes, and which one applies is a property of the runtime AND the
+ * host platform rather than of either alone. That is a different claim from the
+ * one `runtime.ts` refuses to make: confinement flags are not derivable from a
+ * runtime's name and are therefore read off `run --help`, but no `--help` text
+ * says whether this binary's bridge lives in a VM. Docker Desktop on macOS and
+ * docker on Linux are the same CLI, the same flags and the same `network
+ * inspect` shape, and only one of them puts the gateway on a host interface.
+ * So this decides from the name plus the platform, and says why each time.
+ *
+ * `unsupported` is a first-class answer rather than an error. It carries a
+ * reason written for an operator, and the provider turns it into a refusal:
+ * there is no branch anywhere that provisions a container without model access
+ * once a provider is configured.
+ */
+async function resolveGuestBridge(input: {
+  run: CommandRunner;
+  runtime: string;
+  platform: string;
+  network: string | null;
+}): Promise<GuestBridge> {
+  const { run, runtime, platform, network } = input;
+
+  // A `"none"` policy created nothing to reach the host over, and that is a
+  // refusal rather than a missing address: an agent on a sealed network cannot
+  // reach a model endpoint by any route.
+  if (network === null) {
+    return {
+      kind: "unsupported",
+      reason:
+        `this host was asked for a "none" network policy, so no bridge exists and nothing on it can reach a ` +
+        `model endpoint. Ask for the "isolated" policy, or provision without model access.`,
+    };
+  }
+
+  // Docker Desktop runs the engine inside a Linux VM, so the bridge gateway
+  // `network inspect` reports is an address in that VM and not on this host.
+  // Binding it fails, and a guest pointed at it reaches the VM's own bridge
+  // rather than ompd. The guest CAN reach the host by Docker's injected alias,
+  // so the broker binds loopback and the guest is given the name. Peers arrive
+  // NAT'd through the VM on that path, which is why the peer-address check is
+  // not available under this shape and `host-alias` exists to say so instead
+  // of quietly weakening a check the other shapes still enforce.
+  if (runtime === "docker" && platform !== "linux") {
+    return { kind: "host-alias", hostname: DOCKER_HOST_ALIAS, bindHost: "127.0.0.1" };
+  }
+
+  // Podman off Linux is `podman machine`, which is a VM for the same reasons,
+  // but podman injects no equivalent of Docker's alias that has been measured
+  // here. Refused rather than guessed at.
+  if (runtime === "podman" && platform !== "linux") {
+    return {
+      kind: "unsupported",
+      reason:
+        `podman on ${platform} runs its engine inside a \`podman machine\` VM, so the bridge gateway is not an ` +
+        `address this host can bind, and no host alias has been established for it. Use Apple \`container\` on ` +
+        `darwin, or docker, or run ompd on the same Linux host as a rootful podman.`,
+    };
+  }
+
+  if (runtime === "podman" && (await podmanIsRootless(run, runtime))) {
+    return {
+      kind: "unsupported",
+      reason:
+        `this podman is rootless (or would not answer \`podman info\`), so the gateway it reports for a network ` +
+        `lives inside a user namespace and cannot be bound from this host. Rootful podman on Linux is supported; ` +
+        `rootless is refused rather than given an endpoint nothing can listen on.`,
+    };
+  }
+
+  const { gateway, cidr } = await inspectNetwork(run, runtime, network);
+  if (gateway === null || cidr === null) {
+    return {
+      kind: "unsupported",
+      reason:
+        `${runtime} reported no usable gateway for network ${network}: \`${runtime} network inspect\` returned ` +
+        `neither Apple's \`status.gateway\`/\`status.address\` nor the OCI \`IPAM.Config[0].Gateway\`/\`Subnet\` ` +
+        `shape. Without an address the guest can reach, model access cannot be provisioned.`,
+    };
+  }
+  return { kind: "host-bridge", gateway, cidr };
 }
 
 /**
@@ -314,6 +567,7 @@ export class ContainerBackend implements ProvisionerBackend {
   #toolchainRoot: string | undefined;
   #platform: string | undefined;
   #home: string;
+  #modelAccess: ModelAccessProvider | undefined;
   #run: CommandRunner;
   #spawn: SpawnHost;
   #toolchain: (opts: EnsureToolchainOptions) => Promise<ResolvedToolchain>;
@@ -328,6 +582,7 @@ export class ContainerBackend implements ProvisionerBackend {
     this.#toolchainRoot = opts.toolchainRoot;
     this.#platform = opts.platform;
     this.#home = opts.home ?? join(homedir(), ".ompd");
+    this.#modelAccess = opts.modelAccess;
     this.#run = opts.run ?? execCommand;
     this.#spawn = opts.spawn ?? spawnLocalHost;
     this.#toolchain = opts.toolchain ?? ensureToolchain;
@@ -447,6 +702,98 @@ export class ContainerBackend implements ProvisionerBackend {
       }
     }
 
+    // How a guest on this network can reach a listener on this host, decided
+    // per runtime and per platform. `resolveGuestBridge` owns the three shapes
+    // and why each applies; `GuestBridge` owns what each one costs.
+    //
+    // Resolved even under a `"none"` policy, because "sealed network" is one of
+    // the answers rather than a reason to skip the question: it comes back
+    // `unsupported` with a reason, and the provider turns that into the same
+    // refusal every other unusable answer gets. Nothing is special-cased into a
+    // silent skip, because a silent skip is how a container reaches idle
+    // unable to answer.
+    const bridge = await resolveGuestBridge({
+      run: this.#run,
+      runtime,
+      platform: this.#platform ?? process.platform,
+      network: createdNetwork,
+    });
+
+    // Model access, or no container at all.
+    //
+    // Never proceed to `container run` without model access when a provider is
+    // configured: a container that cannot answer a prompt is the defect this
+    // change exists to remove. Before this, a container agent reached `idle`
+    // holding a live ACP session and then failed every single prompt with "No
+    // model selected. Use /login, set an API key environment variable, or
+    // create /root/.omp/agent/agent.db" -- advice that names three things the
+    // operator cannot do from outside a sandbox. Failing the provision instead
+    // costs the operator a container they were never going to be able to use,
+    // and says why.
+    //
+    // Both failure shapes are fatal and both unwind the same way. A `null`
+    // result means the provider is not configured to serve this container; a
+    // throw means it tried and could not. There is no third branch that
+    // provisions anyway, and no fallback to a local model or an invented
+    // default: either would hand the operator an agent whose answers came from
+    // somewhere they did not choose.
+    //
+    // Read into a local once, so `grant` and the `activate` below are provably
+    // the same provider even though a `#`-private read is not narrowed across
+    // the statements between them.
+    const modelAccess = this.#modelAccess;
+    let access: GuestModelAccess | null = null;
+    if (modelAccess !== undefined) {
+      try {
+        access = await modelAccess.grant({ network: createdNetwork, bridge });
+      } catch (err) {
+        discard(gateDir);
+        await this.#removeNetwork(runtime, createdNetwork);
+        // The provider's own message names what is missing -- a config key, a
+        // model that would not resolve, a bridge that does not exist -- so it
+        // is carried through rather than replaced with a generic one.
+        throw err instanceof ProvisionError
+          ? err
+          : new ProvisionError(`container model access could not be granted: ${String(err)}`, "container", {
+              cause: err,
+            });
+      }
+      if (access === null) {
+        discard(gateDir);
+        await this.#removeNetwork(runtime, createdNetwork);
+        throw new ProvisionError(
+          `container model access is not configured, so this container would reach idle unable to answer a ` +
+            `prompt. Provisioning is refused rather than producing an agent that cannot work.`,
+          "container",
+        );
+      }
+    }
+
+    // The guest's HOME, seeded on the daemon's filesystem before the container
+    // that mounts it exists. `guest-config.ts` owns what goes in it, and why
+    // the bearer lands in one 0600 file rather than in this argv.
+    //
+    // A failure here is the first point at which unwinding has to release the
+    // grant as well: the broker has already minted a token, and leaving it live
+    // for a container that will never start is a credential nobody is holding.
+    let guestHome: string | null = null;
+    if (access !== null) {
+      try {
+        guestHome = seedGuestHome({ access });
+      } catch (err) {
+        discard(gateDir);
+        // `seedGuestHome` removes its own directory before it throws, so there
+        // is nothing left on disk here; what has to be unwound is the grant.
+        await this.#discardAccess(access.token, null);
+        await this.#removeNetwork(runtime, createdNetwork);
+        throw err instanceof ProvisionError
+          ? err
+          : new ProvisionError(`the container's guest home could not be seeded: ${String(err)}`, "container", {
+              cause: err,
+            });
+      }
+    }
+
     // Each named mount lands at the identical absolute path inside, the same
     // property `--volume workspace:workspace` already relies on. Read-only
     // unless the operator opted a path into "rw" explicitly.
@@ -471,6 +818,39 @@ export class ContainerBackend implements ProvisionerBackend {
     // per-runtime caveat. `gate-wrapper.ts` owns why the overlay is delivered
     // this way rather than written into the container.
     mountArgs.push("--volume", `${gateDir}:${GATE_MOUNT}:ro`);
+    // The seeded guest home, and the one mount this backend adds that is NOT
+    // read-only.
+    //
+    // Read-write because omp writes into its own config directory as a matter
+    // of course: `agent.db`, session state and caches all land beside the two
+    // files seeded here, so a read-only mount would break omp at startup
+    // rather than confine anything. The obvious narrower alternative -- mount
+    // the individual config files read-only -- does not exist on this runtime:
+    // Apple `container` rejects `--volume host_file:/a/b/f` with
+    // `NSPOSIXErrorDomain Code=20 "Not a directory"`, so a directory is the
+    // only channel there is.
+    //
+    // What the guest can therefore write into is a `mkdtemp` directory this
+    // daemon created for this one container and removes on destroy. It is not
+    // operator data, nothing else reads it, and nothing from `~/.omp` was
+    // copied into it. The read-only rule this breaks exists to stop a guest
+    // rewriting things the operator owns, and this directory is not one.
+    //
+    // Placed with the other `mountArgs` rather than given its own argv slot,
+    // which is safe for two independent reasons: the argv below already
+    // spreads `mountArgs` after `tmpfsArgs`, so this lands exactly where the
+    // gate mount does; and `GUEST_HOME_MOUNT` shares a prefix with neither the
+    // scratch tmpfs nor the toolchain mount, so no ordering the runtime could
+    // choose lets one shadow the other.
+    if (guestHome !== null) {
+      mountArgs.push("--volume", `${guestHome}:${GUEST_HOME_MOUNT}`);
+      // The mount does nothing on its own. Without this, omp reads the image's
+      // own HOME, finds no provider, and every prompt fails with "No model
+      // selected" -- the mount would be present and useless, which is the
+      // hardest version of this to diagnose. No secret is in this value: it is
+      // a path, and the bearer is in a 0600 file underneath it.
+      env.push("--env", `HOME=${GUEST_HOME_MOUNT}`);
+    }
 
     // `tail -f /dev/null` keeps the container alive so exec has something to
     // attach to, so the ACP host is not the container's main process. It serves
@@ -497,6 +877,7 @@ export class ContainerBackend implements ProvisionerBackend {
     ]);
     if (created.code !== 0) {
       discard(gateDir);
+      await this.#discardAccess(access?.token ?? null, guestHome);
       await this.#removeNetwork(runtime, createdNetwork);
       throw new ProvisionError(
         `${runtime} run failed (exit ${created.code}): ${created.stderr.trim() || created.stdout.trim()}`,
@@ -509,10 +890,62 @@ export class ContainerBackend implements ProvisionerBackend {
       // Something is running that we cannot name, so it cannot be removed by
       // id. Removing the network it is attached to is the only handle left,
       // and it fails while the container holds it, which is the loud version
-      // of this going wrong.
+      // of this going wrong. The grant is revoked regardless: the token is the
+      // one thing here that can be withdrawn without naming the container.
       discard(gateDir);
+      await this.#discardAccess(access?.token ?? null, guestHome);
       await this.#removeNetwork(runtime, createdNetwork);
       throw new ProvisionError(`${runtime} run returned no usable container id`, "container");
+    }
+
+    // The broker binds here, and not a line earlier.
+    //
+    // This is the second half of the ordering `resolveGuestBridge` describes.
+    // The address was readable the moment the network existed, but nothing can
+    // bind it until a container is attached: before that, `bind()` fails
+    // `EADDRNOTAVAIL (49)`. The container is now running, so the bridge address
+    // exists, and the endpoint already written into the guest's config finally
+    // has something listening on it.
+    //
+    // Fatal on failure, and the unwind is the widest in this function because
+    // by now everything exists. The guest is holding an endpoint that nothing
+    // answers, so letting it start would produce precisely the agent this
+    // change exists to stop shipping: reachable, idle, and unable to answer.
+    //
+    // Gated on the GRANT rather than on the provider, which is the difference
+    // between a check and a hole. Gating on the bridge shape alone would
+    // silently skip the bind for a provider that had already handed out a
+    // token, and a skipped bind looks exactly like a working provision until
+    // the first prompt. A provider that granted against an `unsupported`
+    // bridge is refused here instead: it is the same defect as a missing
+    // grant, arriving one step later.
+    if (modelAccess !== undefined && access !== null) {
+      if (bridge.kind === "unsupported") {
+        discard(gateDir);
+        await this.#run([runtime, "rm", "--force", containerId]).catch(() => undefined);
+        await this.#discardAccess(access.token, guestHome);
+        await this.#removeNetwork(runtime, createdNetwork);
+        throw new ProvisionError(
+          `container ${containerId} was granted model access over a bridge this host cannot serve, so nothing ` +
+            `can listen on the endpoint the guest was given: ${bridge.reason}`,
+          "container",
+        );
+      }
+      try {
+        await modelAccess.activate({ bridge });
+      } catch (err) {
+        discard(gateDir);
+        await this.#run([runtime, "rm", "--force", containerId]).catch(() => undefined);
+        await this.#discardAccess(access.token, guestHome);
+        await this.#removeNetwork(runtime, createdNetwork);
+        throw err instanceof ProvisionError
+          ? err
+          : new ProvisionError(
+              `container ${containerId} model access could not be activated: ${String(err)}`,
+              "container",
+              { cause: err },
+            );
+      }
     }
 
     // No `exec` into the container, and no path inside it: the overlay is
@@ -538,6 +971,7 @@ export class ContainerBackend implements ProvisionerBackend {
       // still attached cannot be removed.
       discard(gateDir);
       await this.#run([runtime, "rm", "--force", containerId]).catch(() => undefined);
+      await this.#discardAccess(access?.token ?? null, guestHome);
       await this.#removeNetwork(runtime, createdNetwork);
       throw err instanceof ProvisionError
         ? err
@@ -546,7 +980,18 @@ export class ContainerBackend implements ProvisionerBackend {
           });
     }
 
-    this.#live.set(containerId, { runtime, containerId, network: createdNetwork, wrapper, gateDir });
+    this.#live.set(containerId, {
+      runtime,
+      containerId,
+      network: createdNetwork,
+      wrapper,
+      gateDir,
+      guestHome,
+      // In memory and nowhere else. `ref.resolved` below deliberately omits
+      // it, so this is the only record of which grant belongs to which
+      // container and it dies with the process.
+      modelToken: access?.token ?? null,
+    });
     const spawn = this.#spawn;
     // One ACP connection per container, and this is where it is enforced.
     //
@@ -571,6 +1016,21 @@ export class ContainerBackend implements ProvisionerBackend {
       // `tail -f /dev/null`, so `--rm` never fires on its own. It is also the
       // audit record, because `spec.image` is the caller's value and is
       // `undefined` on the default path.
+      //
+      // `guestHome` is here for exactly that reason and the token is not. The
+      // directory has to be reclaimable after a restart, because it is a
+      // daemon-side `mkdtemp` holding the guest's config and its bearer, and
+      // nothing else would ever remove it. The bearer itself must never be
+      // written here: the store persists `HostRef`, so a token in `resolved`
+      // would outlive both the container and the broker that could revoke it.
+      //
+      // The consequence is deliberate rather than a gap. Grants live only in
+      // the broker's memory, so a daemon restart withdraws model access from
+      // every container it did not start. That is the safe direction: a
+      // restarted daemon can still remove the container and delete the
+      // directory, and a container left running against a broker that has
+      // forgotten it gets 401s rather than unbounded use of the operator's
+      // credential.
       ref: {
         kind: "container",
         id: containerId,
@@ -581,6 +1041,7 @@ export class ContainerBackend implements ProvisionerBackend {
           image: toolchain.image,
           ompSha256: toolchain.ompSha256 ?? undefined,
           caSha256: toolchain.caSha256 ?? undefined,
+          guestHome,
           createdAt: new Date().toISOString(),
         },
       },
@@ -626,6 +1087,12 @@ export class ContainerBackend implements ProvisionerBackend {
 
     const runtime = record?.runtime ?? resolved?.runtime ?? "";
     const network = record === undefined ? (resolved?.network ?? null) : record.network;
+    // Reclaimed from the record when this process created the host, and from
+    // the persisted `HostRef` when it did not. Unlike the gate and wrapper
+    // directories this one survives a restart, because it holds the guest's
+    // bearer and its whole configuration rather than an overlay nobody can
+    // reach any more.
+    const guestHome = record === undefined ? (resolved?.guestHome ?? null) : record.guestHome;
     this.#live.delete(handle.ref.id);
     if (record !== undefined) {
       // Both daemon-side directories, and the gate one matters more than the
@@ -633,7 +1100,8 @@ export class ContainerBackend implements ProvisionerBackend {
       // restart there is no record, so neither is reclaimed here; they are
       // `mkdtemp` directories under the temp root, which is litter of the same
       // class the wrapper dir has always been. What restart teardown does still
-      // reclaim, from `resolved` alone, is the container and its network.
+      // reclaim, from `resolved` alone, is the container, its network and the
+      // guest home.
       discard(record.wrapper.dir);
       discard(record.gateDir);
     }
@@ -644,9 +1112,41 @@ export class ContainerBackend implements ProvisionerBackend {
     // attached to. A leftover empty network is litter rather than a risk, so
     // its failure is logged by the caller's audit entry, not thrown here.
     await this.#removeNetwork(runtime, network);
+    // The grant and the guest home, before the `rm` result is inspected, so a
+    // runtime that answered and refused still costs the token its life. Only
+    // the token comes from the record: it is deliberately absent from
+    // `resolved`, so after a restart there is nothing here to revoke and
+    // nothing that needs revoking -- the broker forgot every grant when the
+    // process it lived in exited.
+    await this.#discardAccess(record?.modelToken ?? null, guestHome);
     if (removed.code !== 0 && !isAlreadyGone(removed.stderr)) {
       throw new ProvisionError(`${runtime} rm failed (exit ${removed.code}): ${removed.stderr.trim()}`, "container");
     }
+  }
+
+  /**
+   * Withdraw a container's model access and remove the home it was seeded in.
+   *
+   * Both halves are best effort, for the same reason `discard` is: this runs on
+   * every unwind path in `provision` as well as on `destroy`, and a failure
+   * here would mask the error that made us unwind. What it must never do is
+   * throw, and what it must always be is safe when this process did not create
+   * the host -- after a restart the token is gone by design and `guestHome`
+   * arrives from the persisted `HostRef` instead.
+   *
+   * Revoking first is deliberate. If removing the directory fails, the token is
+   * already dead and the leftover directory is inert; the other order would
+   * leave a live grant behind whenever an `rmSync` lost a race.
+   *
+   * The token reaches this method and stops here. It is not logged, not put in
+   * the error the caller is about to throw, and not written anywhere the store
+   * can see.
+   */
+  async #discardAccess(token: string | null, guestHome: string | null): Promise<void> {
+    if (token !== null && this.#modelAccess !== undefined) {
+      await this.#modelAccess.release({ token }).catch(() => undefined);
+    }
+    if (guestHome !== null) discard(guestHome);
   }
 
   /**

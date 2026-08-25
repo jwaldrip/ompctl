@@ -143,6 +143,11 @@ reads of secret paths.
 `keepAwake` holds a macOS idle-sleep assertion while any agent is working, so
 the machine does not sleep through a turn. See "The Mac has to be awake".
 
+Container hosts add four keys of their own, `containerRuntime`,
+`containerImage`, `containerModelAccess` and `containerModel`. They are
+documented where they matter rather than here, under "Run an agent in a
+container".
+
 Speech needs no configuration. The daemon calls OMP's own speech libraries in
 process: Parakeet TDT v3 through sherpa-onnx for recognition, Kokoro-82M for
 synthesis, both on device and both the same models the TUI uses. There is no
@@ -523,7 +528,10 @@ tool, it failed the whole session -- omp refused `session/new` with
 every container create answered HTTP 500. Making it reachable would mean binding
 a surface that drives the operator's own browser somewhere other than loopback,
 which is a decision on its own merits rather than a side effect of fixing that
-500. Everything else about a container session is unaffected.
+500. Everything else about a container session is unaffected. The model broker
+described below does bind an address a container can reach, for exactly the
+reachability reason this paragraph is about, and the difference is what sits
+behind it: two model routes, not a surface that drives your browser.
 
 **There is no fallback order.** On macOS the only runtime ompd will pick for
 itself is Apple's `container`. On Linux it is `podman`. Nothing else is ever
@@ -626,8 +634,11 @@ delivered as a read-only bind mount at `/opt/ompd`, cached under
 - `omp-shim`, the same `scripts/omp-home-shim.sh` that picks up an OMP home
   seeded on the workspace mount.
 - `ca-certificates.crt`, extracted once from `alpine:3.20`, because neither
-  `debian:bookworm-slim` nor `debian:bookworm` ships one and omp reaches a
-  model over TLS. `SSL_CERT_FILE` points at it.
+  `debian:bookworm-slim` nor `debian:bookworm` ships one and omp needs a trust
+  store the moment it makes an HTTPS request. `SSL_CERT_FILE` points at it.
+  Model traffic is no longer what needs it: that leaves the guest as plain HTTP
+  to the broker on the container network, and the TLS to the provider happens
+  on the host.
 
 The directory name carries the binary's digest, so a changed input is a
 different directory and a stale toolchain cannot be silently reused. The
@@ -657,6 +668,157 @@ approval gate end to end against docker. The run command itself is exercised
 per capability by the unit tests in `packages/daemon/test/provisioner.test.ts`,
 and the capability parse against recorded `run --help` output from docker
 29.4.0, podman 4.8.2 and Apple 0.4.1 in `container-runtime.test.ts`.
+
+### How a container agent reaches a model
+
+A container agent can answer a prompt. That is worth stating plainly, because
+until this landed it could not: it reached `idle`, accepted a session, and then
+failed every turn with `No model selected`, which is a sandbox that cannot do
+the one thing it was created for.
+
+Why it could not is also why the fix looks the way it does. omp in the guest
+needs a provider credential, and the guest is the last place on this machine to
+put one. Egress out of it is not filtered, and on Apple's runtime it is
+measured wide open: TCP to `1.1.1.1:443`, `example.com:80` and
+`api.anthropic.com:443` all connect from inside, and DNS resolves public names
+through the bridge. That runtime also rejects `--cap-drop` and
+`--security-opt`, so the guest holds the full capability set. Anything reusable
+that reaches it can leave, and there is no second control to fall back on. So
+nothing reusable goes in. A request goes out instead.
+
+The path, guest to provider:
+
+```
+guest omp
+  -> ompd's model broker, on the one host address this runtime lets a guest reach
+  -> omp auth-gateway serve, on 127.0.0.1
+  -> omp auth-broker serve, on 127.0.0.1, over the existing ~/.omp/agent/agent.db
+  -> the provider
+```
+
+The two loopback services are omp's own, not something this repo invented.
+`omp auth-broker serve` is a credential vault over the `agent.db` you already
+have, `omp auth-gateway serve` is a proxy that speaks the provider APIs in
+front of it, and omp documents the pair in `omp://auth-broker-gateway.md`,
+naming containerised omp as an intended client and stating that clients "never
+see the access token". ompd starts both on loopback ports of its own choosing
+on the first container provision, and stops them with the daemon. Your
+credential store is read where it already lives; nothing about it is copied,
+exported, or mounted.
+
+What the guest holds is one bearer: 32 random bytes, minted for that container,
+valid for exactly one model, written to a single file with mode `0600` inside a
+`0700` directory the daemon seeds and mounts. The broker keeps only its SHA-256
+digest, and the plaintext never enters an argv, an environment variable, a log
+line, an audit row, or the store. Releasing the host revokes it, and it dies
+with the daemon. It is not a provider credential and not an OAuth grant:
+presented to a provider directly it is nothing, and off this machine there is
+nothing left for it to talk to.
+
+The broker is not a proxy you could use for anything else, and that is the
+design rather than an accident of it. It accepts exactly two routes,
+`POST /v1/messages` and `POST /v1/messages/count_tokens`, and answers `404` to
+every other path and method. It requires the bearer, requires the model named
+in the body to be the model the grant allows, checks the peer address wherever
+that check is available at all, and bounds requests in flight, requests in
+total, tokens in total, and the size of one body. A guest that has gone wrong
+can spend its own ceiling on its own model. It cannot reach a second model, a
+second provider, or an unrelated URL through this.
+
+**Which host address the guest dials depends on the runtime, and there are
+three answers rather than one.** The runtime layer settles that before anything
+is seeded, because no `run --help` text says whether a runtime's bridge lives
+inside a virtual machine: Docker Desktop on macOS and docker on Linux are the
+same CLI with the same flags and the same `network inspect` output, and only
+one of them puts the gateway on a host interface.
+
+`host-bridge` is the strong shape and the default here: Apple `container` on
+darwin, docker on Linux, rootful podman on Linux. The gateway address the
+network reports is a real address on this host, so the broker binds it and the
+guest dials the same string. Peers arrive un-NAT'd, so the peer-address check
+means something and it is enforced: a request from outside that network's own
+subnet is refused. This is the shape every measurement here was taken on. A
+container on the network connects, a container on a different network times
+out, an attempt at the host's LAN address times out, a listener on `127.0.0.1`
+is unreachable from the guest at every address tried, and no magic hostname
+resolves to route around it (`host.containers.internal`,
+`host.docker.internal` and `gateway.containers.internal` all fail). Apple
+`container` 0.4.1 with omp 18.0.4.
+
+`host-alias` is Docker Desktop on macOS or Windows, which is what pinning
+`"containerRuntime": "docker"` gets you there. Desktop runs its bridge inside a
+Linux VM, so the gateway is not an address this host can bind at all. The
+broker binds loopback instead and the guest dials `host.docker.internal`, which
+Desktop forwards to it. The two addresses differ on purpose: seeding the bind
+address into the guest config would produce a container that cannot reach its
+own broker.
+
+**That shape costs a real check, which is worth naming rather than leaving to
+be inferred.** Desktop's forward is a NAT, so every request reaches the broker
+from the host's own loopback and it cannot tell one caller from another. The
+peer-address check is therefore unavailable on that path, and it is turned off
+by passing an explicit null rather than a permissive `0.0.0.0/0`, because a
+permissive range would be indistinguishable inside the broker from a subnet
+misread out of a foreign `network inspect`, and a confinement property should
+never be lost by accident. What that leaves is a broker reachable by every
+process and every local user on the machine, where the bridge shape was
+reachable only from containers on one network. What still holds the line is the
+bearer, the single allowlisted model, the two-route allowlist, and the
+ceilings. So the honest exposure is this: a local process that can already read
+another user's `0600` file can spend some of this host's model quota until that
+container goes away. Materially weaker than the bridge shape, and materially
+stronger than injecting a provider credential, which is the only other way
+Desktop works at all.
+
+`unsupported` is the third answer, and it fails the provision rather than
+degrading it. Podman anywhere but Linux is `podman machine`, a VM for the same
+reason Desktop is, and no host alias has been established for it. Rootless
+podman reports a gateway that lives inside a user namespace and cannot be bound
+from this host. A `"none"` network policy created no bridge to reach anything
+over. And a `network inspect` that reports neither Apple's `status.gateway` /
+`status.address` nor the OCI `IPAM.Config[0]` `Gateway` / `Subnet` is not
+something to guess at. Each of those comes back carrying the runtime layer's
+own reason, and provisioning refuses with that text verbatim, because the layer
+that asked the runtime is the only one that knows what it ran and what came
+back. There is no branch anywhere that provisions a container without model
+access once model access is configured. Reaching `idle` unable to answer is the
+failure this removes, not a state to fall back into.
+
+**No shape binds a wildcard.** `0.0.0.0` was measured reachable from every
+container network on this machine and from the host's LAN, so it is refused
+twice over, by the layer that chose the address and again by the broker, along
+with `::`, `::0`, `[::]`, `0:0:0:0:0:0:0:0`, an empty host, `*` and
+`::ffff:0.0.0.0`, each with a message naming what was asked for. On the
+`host-alias` shape the bind must further be a loopback literal, `localhost`
+included, because `/etc/hosts` is editable by anything holding the permissions
+to edit it and that bind is the only thing narrowing reach on that path.
+
+On the bridge shape the gateway address exists only while a container is
+running on the network, which explains an ordering an operator may notice as a
+brief pause on the first container of a host. `network inspect` reports the
+gateway as soon as the network is created, but binding it fails with
+`EADDRNOTAVAIL` until something is attached to it. So the daemon creates the
+network, reads the gateway, seeds the guest home and its two config files,
+starts the container, and only then binds the broker, retrying for a short
+while as the bridge comes up. The alias shape binds loopback, which is always
+available, and still goes through that same step, because a caller that skips
+it for one shape and not the other is a caller that will eventually skip the
+one that matters. Subnets are handed out in creation order rather than by
+network name, so the address differs per host and nothing anywhere may hardcode
+it.
+
+Two keys control this, in `~/.ompd/config.json` like the others:
+
+```json
+{ "containerModelAccess": true, "containerModel": "claude-haiku-4-5" }
+```
+
+`containerModelAccess` defaults to true. `containerModel` names the one model a
+grant allows; absent, the daemon uses your own `modelRoles.default` from
+`~/.omp/agent/config.yml`. If neither resolves there is no invented default and
+no local fallback: provisioning fails with a message naming both keys. Handing
+back an agent that cannot answer is the failure this subsection exists to
+remove, so the daemon will not do it quietly.
 
 ### Extra mounts
 
@@ -691,7 +853,7 @@ running the command, and the Apple column is `container` 0.4.1 specifically.
 | A fork bomb stays inside the sandbox | yes -- `--pids-limit 1024` | no pid cap. `--memory` and `--cpus` are the only ceiling, and they are sent: verified biting rather than ignored, with `--memory 512M --cpus 2` giving a guest that reports 2 cpus and 490 MB |
 | Scratch is tmpfs and dies with the container | yes -- `--tmpfs <path>:rw,exec,...` | yes, but **bare path only**. The docker-style option suffix parses, exits 0, and then mounts nothing at all, so the spelling is chosen per runtime and the check script asserts the mount exists from inside rather than trusting the flag |
 | A network per host, isolated from other hosts | yes | yes, `mode: nat`, and networks are isolated from one another |
-| Network egress can be denied | not attempted: the agent has to reach a model endpoint | **not expressible at all.** There is no `--network none` (`notFound: "network none not found"`), and `--no-dns` only deletes `/etc/resolv.conf` while leaving IP egress open |
+| Network egress can be denied | not attempted: ompd does not filter egress, so a guest reaches the internet | **not expressible at all.** There is no `--network none` (`notFound: "network none not found"`), and `--no-dns` only deletes `/etc/resolv.conf` while leaving IP egress open. Measured open rather than assumed: TCP to `1.1.1.1:443`, `example.com:80` and `api.anthropic.com:443` all connect from inside, and DNS resolves public names through the bridge. That is why a provider credential never goes into a guest; see "How a container agent reaches a model" |
 | Host environment is withheld | yes: no `-e` is passed | yes, verified: a canary exported on the host is absent inside |
 | Host filesystem beyond the mounts | not visible | not visible, verified |
 | Extra mounts default to read-only | yes | yes, and enforced: a write reports `Read-only file system` |
@@ -734,6 +896,15 @@ Known-failing hosts: `kernel.unprivileged_userns_clone=0`, RHEL 7-era kernels,
 subuid range is exhausted. Docker remains available on Linux by explicit pin,
 not as a fallback.
 
+One interaction is worth knowing before you rely on it: rootless podman is the
+shape ompd selects for itself on Linux, and it is the one shape that cannot
+carry model access. The gateway it reports for a network lives inside a user
+namespace, so nothing on this host can bind it, and container provisioning
+refuses with that reason rather than handing back an agent that cannot answer.
+Rootful podman on Linux, and docker on Linux by explicit pin, both put the
+gateway on a host interface and both work. See "How a container agent reaches a
+model" above.
+
 ### The threat model, which is the part worth reading
 
 Assume the agent inside has gone wrong: a prompt injection out of a file it
@@ -771,32 +942,60 @@ not.
   a container host at a directory you would be willing to hand over whole. An
   extra mount is different: it defaults to read-only, and a subpath is exactly
   what naming one directory instead of another already is.
-- **One live model credential.** omp inside the container needs one, and the
-  backend injects only the image, the workspace, any mounts an operator
-  explicitly named, and `OMPD_REPO` / `OMPD_REF`. The check script narrows
-  that to a single provider's OAuth row copied out of
-  `~/.omp/agent/agent.db` into a snapshot it deletes afterwards, with every
-  other credential and the usage and cache tables emptied out of the copy, and
-  the image's shim copies that seed to a container-local path so a refresh is
-  discarded with the container rather than written back over yours. It is still
-  a credential that can spend your money and read your model history for as
-  long as the container runs.
-- **The internet.** Egress is not filtered. The agent has to reach a model
-  endpoint, and Docker cannot express "that host and nothing else" without a
-  proxy in the path, so anything it can reach, it can reach. That includes
-  posting your workspace somewhere.
-- **The daemon's port.** "The daemon binds `127.0.0.1` so only this machine can
-  reach it" is not true from inside a container. On Docker for Mac
-  `host.docker.internal` resolves to an address that reaches services bound to
-  the host's loopback, which was measured rather than assumed. It cannot be
-  closed without also closing the model endpoint. What stops it being useful is
+- **Model access, scoped to one model.** It no longer holds a provider
+  credential at all. It holds a per-container bearer for the single model its
+  grant allows, presented to the broker at the one host address its runtime
+  allows, as described in "How a container agent reaches a model" above. That
+  still spends your money: within the grant's request and token ceilings, on
+  that one model, for as long as the host lives. What it does not carry is
+  anything reusable, so a leak out of the guest is worth nothing off this
+  machine and nothing after the host is released. On the `host-alias` shape,
+  which is Docker Desktop only, the broker is loopback-bound and reachable by
+  any local process, so there the `0600` token file is the only thing between
+  another local user and some of this host's model quota; that trade is named
+  in full above. The daemon injects the image, the workspace, any mounts an
+  operator explicitly named, `OMPD_REPO` / `OMPD_REF`, and the seeded home
+  holding that token file and two omp config files. Your `~/.omp` is not
+  mounted, not copied, and not readable from inside.
+  `scripts/check-container-host.ts`, which proves the approval gate against
+  docker, is a separate arrangement: it seeds a narrowed snapshot of one
+  provider's OAuth row and deletes it afterwards. That is a check script, not
+  the path a provisioned agent takes.
+- **The internet.** Egress is not filtered, and on Apple's runtime it is
+  measured wide open: TCP to `1.1.1.1:443`, `example.com:80` and
+  `api.anthropic.com:443` all connect from inside, and DNS resolves public
+  names through the bridge. That includes posting your workspace somewhere.
+  Neither runtime can express "that host and nothing else" without a proxy in
+  the path, and the model broker is not that proxy: it fronts one API, it is
+  not a chokepoint for the guest's traffic. This is the property that decides
+  the shape of everything above. With egress open and no capability
+  confinement to fall back on, a credential placed inside the guest is a
+  credential that can leave, which is why the model path forwards a request
+  instead of handing over a secret.
+- **One host address, decided by the runtime.** "The daemon binds `127.0.0.1`,
+  so only this machine can reach it" needs care from inside a container, and so
+  does the opposite reading that a container cannot reach the host at all.
+  Neither is right as stated. On Apple's runtime, `host.docker.internal`,
+  `host.containers.internal` and `gateway.containers.internal` all fail to
+  resolve and a listener on the host's `127.0.0.1` was unreachable from the
+  guest at every address tried; what a guest can reach there is its own
+  network's gateway address, which is deliberately the address the model broker
+  binds. On Docker Desktop, `host.docker.internal` resolves to an address that
+  reaches services bound to the host's loopback, measured rather than assumed,
+  and that is the whole mechanism the `host-alias` shape rests on. Either way
+  the only thing listening for the guest is two model routes behind a bearer, a
+  model check, a peer check where the shape allows one, and a set of ceilings.
+  Where the daemon's own port is reachable, what stops it being useful is
   authentication: every route except `/v1/health` answers `401` without a
   token, and the token lives in `~/.ompd`, which is not mounted. **A container
   escape into the daemon is bounded by authentication, not by the network.**
 
 So a container host is a filesystem boundary and a privilege boundary. It is
-not a network boundary and not an account boundary. It bounds the blast radius
-rather than eliminating it, and on a `local` host there is no boundary at all.
+not a network boundary, and it is not an account boundary either, though the
+model path narrows that one: the guest spends your provider account through a
+single API, under a ceiling, holding nothing it could reuse. It bounds the
+blast radius rather than eliminating it, and on a `local` host there is no
+boundary at all.
 
 ## Day to day
 
