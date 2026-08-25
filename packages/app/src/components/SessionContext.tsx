@@ -23,11 +23,14 @@
 import type { Agent } from "@ompd/core/contracts";
 import { type JSX, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Chip, Divider, Surface } from "react-native-paper";
 import { shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
+import { rhythm } from "../design/rhythm.ts";
 import { Body, Data, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, type SignalName, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { radius, type SignalName, space, type as typeScale } from "../design/tokens.ts";
+import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { PlanEntry, PlanStatus, SessionState } from "../session/model.ts";
 import { AgentHubBranch, type AgentHubNode, subagentsOf } from "./AgentHub.tsx";
 
@@ -139,6 +142,7 @@ export const TODO_ABSENT_WHILE_BUSY = "No todo list yet. One appears as soon as 
 
 export function SessionContext(props: SessionContextProps): JSX.Element | null {
   const { agent, session } = props;
+  const theme = useOmpTheme();
   const tablet = useIsTablet();
   const [open, setOpen] = useState(props.defaultOpen ?? tablet);
 
@@ -172,7 +176,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
     .join(" · ");
 
   return (
-    <View style={styles.panel} testID="session-context">
+    <Surface elevation={0} mode="flat" style={{ backgroundColor: theme.ground.surface }} testID="session-context">
       <Pressable
         accessibilityLabel={
           open ? "Hide this session's context" : `Show this session's context${summary === "" ? "" : `: ${summary}`}`
@@ -182,118 +186,162 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
         onPress={() => {
           setOpen(current => !current);
         }}
-        style={({ pressed }) => [styles.head, pressed && { backgroundColor: ground.active }]}
+        style={({ pressed }) => [styles.head, pressed && { backgroundColor: theme.ground.active }]}
         testID="session-context-toggle"
       >
-        <Glyph name="tasks" size={13} color={ink.muted} />
-        <Kicker color={ink.muted} style={styles.headTitle}>
-          Session
-        </Kicker>
+        <View style={styles.headTitle}>
+          <Glyph name="tasks" size={13} color={theme.ink.muted} />
+          <Kicker color={theme.ink.muted}>Session</Kicker>
+        </View>
         {summary === "" ? null : (
-          <Data color={ink.plain} testID="session-context-summary">
+          <Data color={theme.ink.plain} numberOfLines={1} style={styles.summary} testID="session-context-summary">
             {summary}
           </Data>
         )}
         <View style={[styles.chevron, !open && styles.chevronClosed]}>
-          <Glyph name="chevron" size={12} color={ink.faint} />
+          <Glyph name="chevron" size={12} color={theme.ink.faint} />
         </View>
       </Pressable>
 
       {!open ? null : (
-        // Bounded and scrollable: a forty-item todo list under nine subagents
-        // would otherwise push the transcript off a phone entirely, and this
-        // panel is never allowed to become the screen.
-        <ScrollView
-          contentContainerStyle={styles.bodyContent}
-          style={[styles.body, tablet ? styles.bodyTablet : styles.bodyPhone]}
-          testID="session-context-body"
-        >
-          {session.plan.length === 0 ? (
-            explainMissingTodos ? (
-              <View style={styles.section}>
-                <Kicker color={ink.muted}>Todos</Kicker>
-                <Label color={ink.muted} testID="session-context-todos-absent">
-                  {TODO_ABSENT_WHILE_BUSY}
-                </Label>
-              </View>
-            ) : null
-          ) : (
-            <View style={styles.section} testID="session-context-todos">
-              <View style={styles.sectionHead}>
-                <Kicker color={ink.muted}>Todos</Kicker>
-                <Data color={ink.plain} testID="session-context-todo-progress">
-                  {`${progress.done}/${progress.total}`}
-                </Data>
-              </View>
-              {phases.map((phase, index) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: a phase has no id and the same heading may legitimately appear twice, so position is its only identity; the whole list is replaced on every change and never reordered in place.
-                <View key={`${index}-${phase.name ?? ""}`} style={styles.phase}>
-                  {phase.name === null ? null : (
-                    <Label color={ink.plain} testID={`session-context-phase-${index}`}>
-                      {phase.name}
-                    </Label>
-                  )}
-                  {phase.todos.map((todo, position) => (
-                    <TodoRow
-                      // biome-ignore lint/suspicious/noArrayIndexKey: a todo carries no id; the list is replaced wholesale on every change, never reordered in place.
-                      key={`${position}-${todo.content}`}
-                      todo={todo}
-                    />
-                  ))}
-                </View>
-              ))}
-            </View>
-          )}
-
-          {subagents.length === 0 ? null : (
-            <View style={styles.section} testID="session-context-subagents">
-              <View style={styles.sectionHead}>
-                <Kicker color={ink.muted}>Subagents</Kicker>
-                <Data color={ink.plain}>{String(subagents.length)}</Data>
-              </View>
-              {subagents.map((node: AgentHubNode) => (
-                <AgentHubBranch
-                  key={node.agent.id}
-                  node={node}
-                  depth={0}
-                  now={props.now ?? Date.now()}
-                  onOpen={props.onOpenSubagent}
-                />
-              ))}
-            </View>
-          )}
-
-          {rows.length === 0 ? null : (
-            <View style={styles.section} testID="session-context-state">
-              <Kicker color={ink.muted}>State</Kicker>
-              {rows.map(row => (
-                // One node per pair, labelled with both. Read as two siblings
-                // a screen reader announces "Model" and "Claude Opus 5" with
-                // nothing joining them, which on a dense band is a list of
-                // words rather than a reading of the session.
-                <View accessible accessibilityLabel={`${row.label}: ${row.value}`} key={row.label} style={styles.row}>
-                  <Label color={ink.muted} style={styles.rowLabel}>
-                    {row.label}
+        <>
+          <Divider />
+          {/*
+           * Bounded and scrollable: a forty-item todo list under nine
+           * subagents would otherwise push the transcript off a phone
+           * entirely, and this panel is never allowed to become the screen.
+           */}
+          <ScrollView
+            contentContainerStyle={styles.bodyContent}
+            style={tablet ? styles.bodyTablet : styles.bodyPhone}
+            testID="session-context-body"
+          >
+            {session.plan.length === 0 ? (
+              explainMissingTodos ? (
+                <View style={styles.section}>
+                  <Kicker color={theme.ink.muted}>Todos</Kicker>
+                  <Label color={theme.ink.muted} testID="session-context-todos-absent">
+                    {TODO_ABSENT_WHILE_BUSY}
                   </Label>
-                  <Label
-                    color={row.tone === undefined ? ink.bright : signal[row.tone]}
-                    numberOfLines={1}
-                    style={styles.rowValue}
-                    testID={`session-context-${row.testID}`}
+                </View>
+              ) : null
+            ) : (
+              <View style={styles.section} testID="session-context-todos">
+                <View style={styles.sectionHead}>
+                  <Kicker color={theme.ink.muted}>Todos</Kicker>
+                  <Chip
+                    accessibilityRole="text"
+                    compact
+                    style={[styles.countChip, { backgroundColor: theme.ground.raised }]}
+                    testID="session-context-todo-progress"
+                    textStyle={[typeScale.data, { color: theme.ink.plain }]}
                   >
-                    {row.value}
-                  </Label>
+                    {`${progress.done}/${progress.total}`}
+                  </Chip>
                 </View>
-              ))}
-            </View>
-          )}
-        </ScrollView>
+                {phases.map((phase, index) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a phase has no id and the same heading may legitimately appear twice, so position is its only identity; the whole list is replaced on every change and never reordered in place.
+                  <View key={`${index}-${phase.name ?? ""}`} style={styles.phase}>
+                    {phase.name === null ? null : (
+                      <Label color={theme.ink.plain} testID={`session-context-phase-${index}`}>
+                        {phase.name}
+                      </Label>
+                    )}
+                    {phase.todos.map((todo, position) => (
+                      <TodoRow
+                        // biome-ignore lint/suspicious/noArrayIndexKey: a todo carries no id; the list is replaced wholesale on every change, never reordered in place.
+                        key={`${position}-${todo.content}`}
+                        todo={todo}
+                      />
+                    ))}
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {subagents.length === 0 ? null : (
+              <View style={styles.section} testID="session-context-subagents">
+                <View style={styles.sectionHead}>
+                  <Kicker color={theme.ink.muted}>Subagents</Kicker>
+                  <Chip
+                    accessibilityRole="text"
+                    compact
+                    style={[styles.countChip, { backgroundColor: theme.ground.raised }]}
+                    testID="session-context-subagent-count"
+                    textStyle={[typeScale.data, { color: theme.ink.plain }]}
+                  >
+                    {String(subagents.length)}
+                  </Chip>
+                </View>
+                {subagents.map((node: AgentHubNode) => (
+                  <AgentHubBranch
+                    key={node.agent.id}
+                    node={node}
+                    depth={0}
+                    now={props.now ?? Date.now()}
+                    onOpen={props.onOpenSubagent}
+                  />
+                ))}
+              </View>
+            )}
+
+            {rows.length === 0 ? null : (
+              <View style={styles.section} testID="session-context-state">
+                <Kicker color={theme.ink.muted}>State</Kicker>
+                {rows.map(row => (
+                  // One node per pair, labelled with both. Read as two siblings
+                  // a screen reader announces "Model" and "Claude Opus 5" with
+                  // nothing joining them, which on a dense band is a list of
+                  // words rather than a reading of the session.
+                  <View accessible accessibilityLabel={`${row.label}: ${row.value}`} key={row.label} style={styles.row}>
+                    <Label color={theme.ink.muted} style={styles.rowLabel}>
+                      {row.label}
+                    </Label>
+                    {row.tone === undefined ? (
+                      // A directory or a model name is as long as the machine
+                      // says it is, so the value truncates inside its row
+                      // rather than pushing the row wider than the band.
+                      <Label
+                        color={theme.ink.bright}
+                        numberOfLines={1}
+                        style={styles.rowValue}
+                        testID={`session-context-${row.testID}`}
+                      >
+                        {row.value}
+                      </Label>
+                    ) : (
+                      // A count the operator may have to act on. Not a
+                      // control: it reads as a chip and announces as text,
+                      // because tapping it does nothing.
+                      <Chip
+                        accessibilityRole="text"
+                        compact
+                        style={[styles.countChip, { backgroundColor: theme.signalWash[row.tone] }]}
+                        testID={`session-context-${row.testID}`}
+                        textStyle={{ color: theme.signal[row.tone] }}
+                      >
+                        {row.value}
+                      </Chip>
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
+          </ScrollView>
+        </>
       )}
-    </View>
+      {/*
+       * Where the band ends and the transcript begins. `outline` rather than
+       * the divider's own `outlineVariant`: this is a section genuinely
+       * ending, not a division inside one.
+       */}
+      <Divider style={{ backgroundColor: theme.colors.outline }} />
+    </Surface>
   );
 }
 
 function TodoRow({ todo }: { todo: PlanEntry }): JSX.Element {
+  const theme = useOmpTheme();
   const tone = TODO_SIGNALS[todo.status];
   const label = TODO_LABELS[todo.status];
   return (
@@ -303,18 +351,18 @@ function TodoRow({ todo }: { todo: PlanEntry }): JSX.Element {
       style={styles.todo}
     >
       <View style={styles.todoHead}>
-        <View style={[styles.todoState, { backgroundColor: signalWash[tone] }]}>
-          <Kicker color={signal[tone]}>{label}</Kicker>
+        <View style={[styles.todoState, { backgroundColor: theme.signalWash[tone] }]}>
+          <Kicker color={theme.signal[tone]}>{label}</Kicker>
         </View>
         <Body
-          color={todo.status === "completed" || todo.status === "abandoned" ? ink.muted : ink.bright}
+          color={todo.status === "completed" || todo.status === "abandoned" ? theme.ink.muted : theme.ink.bright}
           style={styles.todoText}
         >
           {todo.content}
         </Body>
       </View>
       {todo.blocker === undefined ? null : (
-        <Label color={signal.ochre} style={styles.blocker}>
+        <Label color={theme.signal.ochre} style={styles.blocker}>
           {`Blocked on ${todo.blocker}`}
         </Label>
       )}
@@ -394,37 +442,55 @@ const ORIGIN_LABELS: Record<SessionOrigin, string> = {
   watching: "watching a shared terminal",
 };
 
+/**
+ * The state swatch's column, so the blocker line under a todo starts where the
+ * todo's own words do. Not a rhythm job: it is the width of the widest state
+ * word at `type.kicker`, and a `minWidth` so a longer one grows the swatch
+ * rather than being cut by it.
+ */
+const TODO_STATE_COLUMN = 78;
+
 const styles = StyleSheet.create({
-  panel: {
-    backgroundColor: ground.surface,
-    borderBottomWidth: stroke.hair,
-    borderBottomColor: ground.edge,
-  },
+  // One row, collapsed or open: a `minHeight` so dynamic type grows the header
+  // instead of clipping the kicker, and the screen gutter so the band's words
+  // start on the same column as the transcript's below it.
   head: {
     alignItems: "center",
     flexDirection: "row",
-    gap: space.snug,
-    minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.wide,
+    gap: rhythm.rowGapTight,
+    minHeight: rhythm.minTarget,
+    paddingHorizontal: rhythm.gutter,
   },
-  headTitle: { flex: 1 },
-  chevron: { paddingLeft: space.tight, transform: [{ rotate: "0deg" }] },
+  headTitle: { alignItems: "center", flex: 1, flexDirection: "row", gap: rhythm.glyphGap },
+  summary: { flexShrink: 1 },
+  chevron: { transform: [{ rotate: "0deg" }] },
   chevronClosed: { transform: [{ rotate: "-90deg" }] },
   // A ceiling, not a height: a one-todo session takes one todo's worth of
-  // space, and only a long list ever scrolls.
-  body: { borderTopWidth: stroke.hair, borderTopColor: ground.line },
+  // space, and only a long list ever scrolls. Neither number is a rhythm job:
+  // they are how much of a phone and of a tablet this band may ever take.
   bodyPhone: { maxHeight: 220 },
   bodyTablet: { maxHeight: 360 },
-  bodyContent: { gap: space.step, padding: space.wide },
-  section: { gap: space.snug },
-  sectionHead: { alignItems: "baseline", flexDirection: "row", justifyContent: "space-between" },
-  phase: { gap: space.tight },
-  todo: { gap: space.hair },
-  todoHead: { flexDirection: "row", gap: space.snug, alignItems: "flex-start" },
-  todoState: { minWidth: 78, paddingHorizontal: space.tight, paddingVertical: space.hair, alignItems: "center" },
+  bodyContent: { gap: rhythm.sectionGap, padding: rhythm.gutter },
+  section: { gap: rhythm.rowGap },
+  sectionHead: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  phase: { gap: rhythm.rowGapTight },
+  todo: { gap: rhythm.pairGap },
+  todoHead: { flexDirection: "row", gap: rhythm.rowGapTight, alignItems: "flex-start" },
+  todoState: {
+    alignItems: "center",
+    minWidth: TODO_STATE_COLUMN,
+    paddingHorizontal: space.tight,
+    paddingVertical: space.hair,
+  },
   todoText: { flex: 1 },
-  blocker: { paddingLeft: 78 + space.snug },
-  row: { flexDirection: "row", gap: space.snug },
-  rowLabel: { width: 96 },
+  blocker: { paddingLeft: TODO_STATE_COLUMN + rhythm.rowGapTight },
+  row: { alignItems: "center", flexDirection: "row", gap: rhythm.rowGapTight },
+  // A floor, not a width: the labels are a closed set today, and a floor keeps
+  // the column aligned without cutting one at a larger type size.
+  rowLabel: { minWidth: 96 },
   rowValue: { flex: 1 },
+  // Paper's chip rounds to twice the theme's roundness, which on a count badge
+  // is a Material pill. A count is a small object in this app, so it takes the
+  // same corner every other one does.
+  countChip: { borderRadius: radius.control },
 });

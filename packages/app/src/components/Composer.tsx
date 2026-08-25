@@ -65,6 +65,7 @@ import type { JSX, ReactNode } from "react";
 import { useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
+import { rhythm } from "../design/rhythm.ts";
 import { ground, ink, radius, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { ImageAttachmentPicker } from "../platform/attachments.ts";
 import { AttachmentControl, AttachmentsBar, useImageAttachments } from "./AttachmentsBar.tsx";
@@ -213,7 +214,12 @@ export function Composer({
 }
 
 const styles = StyleSheet.create({
-  dock: { paddingHorizontal: space.step, paddingTop: space.snug, paddingBottom: space.snug },
+  // The terminal's composer sat at 12 across while its own header, the agent's
+  // composer and every other band on the screen sat at 16. Four points of
+  // misalignment between the message box and the header directly above it, on
+  // the one screen a person types on. Both 8s were already `dockPad`; only the
+  // 12 was wrong, and it was wrong because it was a step picked by size.
+  dock: { paddingHorizontal: rhythm.gutter, paddingTop: rhythm.dockPad, paddingBottom: rhythm.dockPad },
   // The one box on this control. Everything inside it is borderless, which is
   // the difference between a message surface and a control panel.
   surface: {

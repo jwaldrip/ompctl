@@ -32,8 +32,9 @@
 
 import { type JSX, memo, useEffect, useRef, useState } from "react";
 import { AccessibilityInfo, StyleSheet, View } from "react-native";
+import { rhythm } from "../design/rhythm.ts";
 import { Kicker, Label } from "../design/text.tsx";
-import { ground, ink, type SignalName, signal, space, stroke } from "../design/tokens.ts";
+import { ground, ink, type SignalName, signal, stroke } from "../design/tokens.ts";
 import type { ConversationActivity, ConversationActivityKind } from "../session/activity.ts";
 
 /**
@@ -175,28 +176,37 @@ function useSystemReduceMotion(override: boolean | undefined): boolean {
 }
 
 const styles = StyleSheet.create({
-  // Laid out like the rows above it, and held to one line's height so the
-  // composer does not move when the label changes from a word to a phrase.
-  row: {
-    flexDirection: "row",
-    gap: space.step,
-    minHeight: 28,
-    alignItems: "center",
-  },
+  // This IS the next agent row, so its geometry is the entry row's geometry,
+  // token for token: `renderers.tsx` styles `row` and `gutter` exactly this
+  // way. One point of divergence and the working row stops being the turn
+  // beginning and starts being chrome that happens to be inside the list.
+  //
+  // It pays no gutter and no vertical inset on purpose. The list's content
+  // container pays both -- `paddingHorizontal: rhythm.gutter` and
+  // `gap: rhythm.rowGap` in `OmpThread.tsx`, `padding: rhythm.gutter` in
+  // `TerminalSessionScreen.tsx` -- and this row renders inside it, so paying
+  // again would indent the one row of the conversation that must not be
+  // indented: 16 here plus 16 there is 32, and the working row would sit a
+  // step right of the prompt it is answering.
+  //
+  // Held to one line's height so the composer does not move when the label
+  // changes from a word to a phrase.
+  row: { flexDirection: "row", gap: rhythm.rowGapTight, minHeight: 28, alignItems: "center" },
   gutter: {
-    width: 76,
+    width: rhythm.attribution,
     borderLeftWidth: stroke.heavy,
-    paddingLeft: space.snug,
+    paddingLeft: rhythm.glyphGap,
     alignItems: "flex-start",
     alignSelf: "stretch",
     justifyContent: "center",
   },
-  body: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.snug,
-  },
+  // The dots are the label's own indicator rather than a sibling of it, which
+  // is the same relationship a glyph has to its word.
+  body: { flex: 1, flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
+  // Glyph geometry, not layout spacing: the three dots and the air between
+  // them are how this one indicator is DRAWN, the same way `size={14}` draws a
+  // Glyph. `rhythm` prices the space between things on screen, and pricing the
+  // inside of a five-point dot off the four-point grid would round it away.
   dots: { flexDirection: "row", gap: 3 },
   dot: { width: 5, height: 5, backgroundColor: ground.edge },
 });

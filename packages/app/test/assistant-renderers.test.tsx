@@ -31,6 +31,8 @@ import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { OmpEntryRowProps } from "../src/assistant/renderers.tsx";
 import type { Entry } from "../src/session/model.ts";
+// Pure data with no `react-native` in its graph, so this one can stay static.
+import { advance } from "./type-metrics.ts";
 
 // Dynamic on purpose, the same way `pair-connections-consistency.test.tsx`
 // loads its screens: bun evaluates a file's whole static import graph before
@@ -40,10 +42,14 @@ import type { Entry } from "../src/session/model.ts";
 // above are erased, so they cost nothing at runtime.
 const { OmpEntryRow } = await import("../src/assistant/renderers.tsx");
 const { APPROVAL_OPTIONS, ompStore } = await import("../src/assistant/adapter.ts");
+const { ApprovalCard } = await import("../src/components/ApprovalCard.tsx");
+const { ToolCard } = await import("../src/components/ToolCard.tsx");
 const { GLYPHS } = await import("../src/design/icons.tsx");
+const { rhythm } = await import("../src/design/rhythm.ts");
 const { ink, signal } = await import("../src/design/tokens.ts");
 const { EMPTY_SESSION, appendApproval, endTurn, reduce, resolveApproval } = await import("../src/session/model.ts");
 const { READY_LOAD } = await import("../src/console/state.ts");
+const { WithOmpTheme } = await import("./theme.tsx");
 const { StyleSheet } = await import("react-native");
 
 declare global {
@@ -640,3 +646,201 @@ function colourOfProse(rowEl: HTMLElement, text: string): string | undefined {
   }
   return undefined;
 }
+
+// ---------------------------------------------------------------------------
+// The spacing the operator complained about, read off what actually rendered
+// ---------------------------------------------------------------------------
+
+/**
+ * A mount with ompctl's design system above it.
+ *
+ * The bare `mount` is enough for the transcript's own rows, whose measurements
+ * are static `StyleSheet` values. Anything asserting a Paper component's output
+ * has to wrap: without the provider a `Button` or a `Chip` comes out in
+ * Material's palette and its icon slot falls back to a font this app does not
+ * ship, so an unwrapped assertion would be measuring the wrong component.
+ */
+function themed(element: ReactElement): Mounted {
+  return mount(<WithOmpTheme>{element}</WithOmpTheme>);
+}
+
+/** What RNW serialises `transparent` to, which is what "no fill" reads as here. */
+const NO_FILL = "rgba(0,0,0,0.00)";
+
+/** One declaration off a rendered element, or a thrown error naming what is missing. */
+function pixels(el: Element, property: string): number {
+  const written = declarationsFor(el).get(property);
+  if (written === undefined) throw new Error(`nothing rendered ${property} on this element`);
+  const value = Number.parseFloat(written);
+  if (Number.isNaN(value)) throw new Error(`${property} rendered as "${written}", which is not a length`);
+  return value;
+}
+
+/** The child at `index`, or a thrown error rather than a silent `undefined`. */
+function childAt(el: Element, index: number): Element {
+  const child = el.children[index];
+  if (child === undefined) throw new Error(`no child ${index}: this element has ${el.children.length}`);
+  return child;
+}
+
+describe("the attribution column costs what the rhythm says and not a point more", () => {
+  test("the gutter is `rhythm.attribution` wide, not the 76 it was", () => {
+    // The whole defect, in one number. 76 plus a 12 point gap took 88 points of
+    // a 390 point phone before a word of the conversation. Read off the
+    // rendered element rather than the source, and compared to the token rather
+    // than to a literal, so putting 76 back fails here and moving the token
+    // does not.
+    const mounted = row(userEntry("a turn"));
+    try {
+      const gutter = byTestID(mounted.host, "entry-user").firstElementChild;
+      if (gutter === null) throw new Error("the row rendered without its gutter");
+      expect(pixels(gutter, "width")).toBe(rhythm.attribution);
+      expect(pixels(gutter, "width")).not.toBe(76);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("the column plus its gap costs 80 points, where it used to cost 88", () => {
+    const mounted = row(assistantEntry("a reply"));
+    try {
+      const rowEl = byTestID(mounted.host, "entry-assistant");
+      const gutter = rowEl.firstElementChild;
+      if (gutter === null) throw new Error("the row rendered without its gutter");
+      const cost = pixels(gutter, "width") + pixels(rowEl, "gap");
+      expect(cost).toBe(rhythm.attribution + rhythm.rowGapTight);
+      expect(cost).toBe(80);
+      expect(cost).toBeLessThan(88);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("the narrowed column still cannot break the widest word it holds", () => {
+    // The other half of the same change, and the half a width assertion cannot
+    // see: "thinking" is the longest label this column ever carries, and the
+    // room it has is the width less the signal rule and the inset. Measured
+    // advances come from the repo's own CoreText table, so a token shrunk to a
+    // number that clips the word fails here rather than on a device.
+    const mounted = row(assistantEntry("reasoning", { thought: true }));
+    try {
+      const gutter = byTestID(mounted.host, "entry-assistant").firstElementChild;
+      if (gutter === null) throw new Error("the row rendered without its gutter");
+      const room = pixels(gutter, "width") - pixels(gutter, "padding-left") - pixels(gutter, "border-left-width");
+      expect(room).toBeGreaterThanOrEqual(advance("kicker", "thinking"));
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+describe("a card spends the card's own steps, never a number of its own", () => {
+  test("a tool card pays `cardPad` inside and `cardGap` between its parts", () => {
+    const entry = toolEntry("bun run check");
+    const mounted = themed(<ToolCard entry={entry} />);
+    try {
+      // Child 0 is the status rail, child 1 the body: the rail is the one thing
+      // that moves and it sits outside the padding on purpose.
+      const body = childAt(byTestID(mounted.host, `tool-${entry.id}`), 1);
+      expect(pixels(body, "padding")).toBe(rhythm.cardPad);
+      expect(pixels(body, "gap")).toBe(rhythm.cardGap);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("the touched paths are a band that wraps, not a column of truncations", () => {
+    const entry = {
+      ...toolEntry("edit five files"),
+      locations: ["a/one.ts", "b/two.ts", "c/three.ts", "d/four.ts", "e/five.ts", "f/six.ts"],
+    };
+    const mounted = themed(<ToolCard entry={entry} />);
+    try {
+      // Head, then the band: the band is the second child of the body.
+      const band = childAt(childAt(byTestID(mounted.host, `tool-${entry.id}`), 1), 1);
+      expect(declarationsFor(band).get("flex-wrap")).toBe("wrap");
+      expect(pixels(band, "gap")).toBe(rhythm.cardGap);
+      // Four paths and one chip carrying the count of the rest, so six paths
+      // never push the card wider than the phone.
+      expect(band.children).toHaveLength(5);
+      expect(band.textContent).toContain("+2 more");
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a clearance pays the same two steps, and pays each of them once", () => {
+    const mounted = themed(<ApprovalCard canApprove entry={approvalEntry("rm -rf build")} onDecide={() => {}} />);
+    try {
+      const card = byTestID(mounted.host, "approval-r1");
+      const head = childAt(card, 0);
+      const body = childAt(card, 1);
+      const actions = childAt(card, 2);
+      expect(pixels(head, "padding")).toBe(rhythm.cardPad);
+      expect(pixels(body, "padding")).toBe(rhythm.cardPad);
+      expect(pixels(body, "gap")).toBe(rhythm.cardGap);
+      // The row of decisions is inside the card's pad on three sides and
+      // deliberately not on the fourth: the body above already paid it.
+      expect(pixels(actions, "gap")).toBe(rhythm.cardGap);
+      expect(pixels(actions, "padding-top")).toBe(0);
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+describe("a clearance's three answers are three different weights", () => {
+  test("allow is filled, reject is outlined, always is neither", () => {
+    // The property, not the pixels: three controls that look identical teach an
+    // operator that they are interchangeable, and `always` grants a standing
+    // permission that outlives the card. Emphasis is Paper's `mode` doing the
+    // work, so this reads the fill and the outline each mode produced.
+    const mounted = themed(<ApprovalCard canApprove entry={approvalEntry("rm -rf build")} onDecide={() => {}} />);
+    try {
+      const surfaceOf = (testID: string): Element => byTestID(mounted.host, `${testID}-container`);
+      const allow = surfaceOf("approval-allow-r1");
+      const deny = surfaceOf("approval-deny-r1");
+      const always = surfaceOf("approval-always-r1");
+
+      expect(declarationsFor(allow).get("background-color")).toBe(rgb(signal.sage));
+      expect(pixels(allow, "border-width")).toBe(0);
+
+      expect(declarationsFor(deny).get("background-color")).toBe(NO_FILL);
+      expect(declarationsFor(deny).get("border-color")).toBe(rgb(signal.oxide));
+      expect(pixels(deny, "border-width")).toBeGreaterThan(0);
+
+      expect(declarationsFor(always).get("background-color")).toBe(NO_FILL);
+      expect(pixels(always, "border-width")).toBe(0);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("every one of them is a full finger target, which Paper's own button is not", () => {
+    // Paper draws a 40 point button. A decision an operator has to hit while
+    // watching an agent run gets the 44 the rest of the app gets.
+    const mounted = themed(<ApprovalCard canApprove entry={approvalEntry("rm -rf build")} onDecide={() => {}} />);
+    try {
+      for (const testID of ["approval-allow-r1", "approval-deny-r1", "approval-always-r1"]) {
+        const content = childAt(byTestID(mounted.host, testID), 0);
+        expect(pixels(content, "min-height")).toBe(rhythm.minTarget);
+      }
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("the disclosure on a clamped tool output is a finger target too", () => {
+    const entry = { ...toolEntry("bun run check"), output: "1\n2\n3\n4\n5\n6\n7\n8" };
+    const mounted = themed(<ToolCard entry={entry} />);
+    try {
+      const control = [...mounted.host.querySelectorAll("*")].find(
+        node => node.getAttribute("aria-label") === "Show all 8 lines",
+      );
+      if (control === undefined) throw new Error("a clamped output rendered no way to open it");
+      expect(pixels(control, "min-height")).toBe(rhythm.minTarget);
+    } finally {
+      mounted.unmount();
+    }
+  });
+});

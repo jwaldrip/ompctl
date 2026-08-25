@@ -24,6 +24,7 @@
 import type { JSX, ReactNode } from "react";
 import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
+import { rhythm } from "../../design/rhythm.ts";
 import { Body, Code, Display, Kicker, Label, Title } from "../../design/text.tsx";
 import { face, ground, ink, space, stroke } from "../../design/tokens.ts";
 import { AttachmentBlock } from "./AttachmentBlock.tsx";
@@ -201,27 +202,32 @@ function spansText(spans: readonly RichSpan[]): string {
 export const RichText = memo(RichTextBase);
 
 const styles = StyleSheet.create({
-  stack: { flex: 1, gap: space.snug },
+  // The gap between blocks. A heading and the paragraph under it, a paragraph
+  // and its list: consecutive pieces of ONE reply, not siblings in a list, so
+  // the tight step rather than the row rhythm.
+  stack: { flex: 1, gap: rhythm.rowGapTight },
   strong: { fontFamily: face.semibold },
   em: { fontStyle: "italic" },
   codeSpan: { fontFamily: face.mono },
   link: { textDecorationLine: "underline" },
   list: { gap: space.tight },
   listRow: { flexDirection: "row", gap: space.snug },
-  // A floor, not a fixed width. 20 points aligns every one- and two-digit
-  // marker, which is all but the longest lists, but `100.` measures 25.00 in
+  // A floor, not a fixed width, and one step of nesting rather than a number
+  // measured against the markers it happened to hold. `100.` measures 25.00 in
   // this face (Archivo-Medium at the label's 12 points with its 0.3 tracking,
-  // measured with CoreText) and a fixed 20 would have broken it across two
-  // lines. A minimum keeps the alignment it was for and still cannot cut a
-  // marker, however long the list runs.
-  listMarker: { minWidth: 20, textAlign: "right" },
+  // measured with CoreText), so no fixed width survives a long enough list; a
+  // minimum aligns every short marker and still cannot cut one.
+  // `test/no-hidden-content.test.ts` pins that this stays a `minWidth`.
+  listMarker: { minWidth: rhythm.indent, textAlign: "right" },
   listItem: { flex: 1 },
+  // A quoted block, edge to content: the same job and the same answer as a
+  // card's own inset, which is what a clearance's command preview also pays.
   quote: {
     borderLeftWidth: stroke.heavy,
     borderLeftColor: ground.edge,
     backgroundColor: ground.surface,
-    padding: space.step,
+    padding: rhythm.cardPad,
   },
-  code: { backgroundColor: ground.surface, padding: space.step, gap: space.tight },
+  code: { backgroundColor: ground.surface, padding: rhythm.cardPad, gap: space.tight },
   rule: { height: stroke.hair, backgroundColor: ground.edge, marginVertical: space.tight },
 });

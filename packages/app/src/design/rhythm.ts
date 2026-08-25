@@ -45,6 +45,32 @@ export const rhythm = {
   sectionGap: space.loose,
 
   /**
+   * A glyph to its own label, inside one control.
+   *
+   * Tighter than the gap between two controls on purpose: past about four
+   * points an icon and its word stop reading as one object and start reading as
+   * two things that happen to be adjacent, which is how a row of controls turns
+   * into a row of orphaned glyphs. `controls.ts` already spent this value on
+   * exactly this job before it had a name.
+   */
+  glyphGap: space.tight,
+
+  /**
+   * Two lines that are one thought: a headline and its subline, a value and its
+   * unit. Closer than `rowGap`, because those two lines are not siblings -- the
+   * second one only means anything under the first.
+   */
+  pairGap: space.hair,
+
+  /**
+   * A labelled control's own horizontal padding, edge to text.
+   *
+   * Control geometry rather than layout: it belongs to the button, not to the
+   * surface the button sits on, which is why it does not follow `cardPad`.
+   */
+  controlPad: space.snug,
+
+  /**
    * Inside a card, edge to content. Tool cards are the densest thing in the app
    * and they read as dense rather than cramped only because this is a step
    * tighter than the screen gutter: a card already sits inside one, and paying
@@ -62,13 +88,25 @@ export const rhythm = {
    * The transcript's attribution column: the gutter carrying "you" / "agent" /
    * "thinking" beside the prose.
    *
-   * It was 76 plus a 12 point gap, so 88 points of a 390 point phone -- 22% of
-   * the width -- went to a label before a single word of the conversation. The
-   * widest word it holds is "thinking" at `type.kicker` (11pt, tracked 1.1),
-   * which measures about 56 points, so 64 clears it and hands 24 points back to
-   * every line of prose.
+   * It was 76 wide with an 8 point left pad and a 12 point gap to the prose, so
+   * 88 points of a 390 point phone -- 22% of the width -- went to a label before
+   * a single word of the conversation.
+   *
+   * The number is set by one word and the arithmetic is not a guess. The gate in
+   * `test/no-hidden-content.test.ts` computes the room a fixed column really has
+   * as `width - paddingLeft - borderLeftWidth`, and the widest label is
+   * "thinking" at `type.kicker`, which the repo's own CoreText table
+   * (`test/type-metrics.ts`) measures at **61.974** points. With the column's 2
+   * point signal rule and a `glyphGap` left pad that leaves 72 - 4 - 2 = 66, so
+   * it clears by 4 and the gate can prove it.
+   *
+   * An earlier draft of this token said 64, on a guessed 56 point measurement.
+   * It would have left 54 against 61.974 and clipped the word on every thought
+   * row. Paired with the prose gap dropping from `rowGap` to `rowGapTight`, the
+   * column now costs 80 rather than 88: 8 points back on every line of prose,
+   * which is less than the first draft claimed and is what the metrics allow.
    */
-  attribution: 64,
+  attribution: 72,
 
   /** One step of nesting: a subagent under its parent. */
   indent: space.loose,

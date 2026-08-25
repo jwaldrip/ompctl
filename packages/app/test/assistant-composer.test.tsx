@@ -40,6 +40,8 @@ const { AssistantRuntimeProvider } = await import("@assistant-ui/react-native");
 const { useOmpRuntime } = await import("../src/assistant/runtime.ts");
 const { OmpComposer } = await import("../src/assistant/OmpComposer.tsx");
 const { ground, radius, signal } = await import("../src/design/tokens.ts");
+const { rhythm } = await import("../src/design/rhythm.ts");
+const { WithOmpTheme } = await import("./theme.tsx");
 const { StyleSheet } = await import("react-native");
 
 declare global {
@@ -114,18 +116,24 @@ function Composed(props: {
 }): React.JSX.Element {
   const runtime = useOmpRuntime(props.store);
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <OmpComposer
-        prefix="composer"
-        picker={LIVE_PICKER}
-        placeholder="Say something to this agent"
-        sendLabel="Send"
-        voice={{ ...READY_VOICE }}
-        model="claude-opus-5 high"
-        onOpenConfig={() => {}}
-        {...props.composer}
-      />
-    </AssistantRuntimeProvider>
+    // The composer reads its colours off `useOmpTheme()` and its controls are
+    // Paper's, so the provider is part of the surface under test rather than
+    // scaffolding: without it Paper's own components fall back to Material's
+    // palette, which is the one thing #131 must never render.
+    <WithOmpTheme>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <OmpComposer
+          prefix="composer"
+          picker={LIVE_PICKER}
+          placeholder="Say something to this agent"
+          sendLabel="Send"
+          voice={{ ...READY_VOICE }}
+          model="claude-opus-5 high"
+          onOpenConfig={() => {}}
+          {...props.composer}
+        />
+      </AssistantRuntimeProvider>
+    </WithOmpTheme>
   );
 }
 
@@ -191,14 +199,26 @@ function open(options: StoreOptions = {}, composer: Partial<React.ComponentProps
  */
 const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
 
-/** Every emitted declaration that addresses one element's own classes. */
+/**
+ * Everything one element's own style actually says, from both places
+ * react-native-web puts it.
+ *
+ * Only `StyleSheet.create` values are compiled into the atomic sheet.
+ * Anything built at render time -- which is every colour, now that the
+ * composer reads them off `useOmpTheme()` -- is written to the element's own
+ * `style` attribute instead. Reading the sheet alone made this "what did the
+ * element render statically", which is not the claim any test here makes. The
+ * inline half is whitespace-stripped so `background-color: rgba(36, 33, 27,
+ * 1.00)` matches the sheet's own `background-color:rgba(36,33,27,1.00)`.
+ */
 function renderedStyle(element: HTMLElement): string {
   const classes = element.className.split(/\s+/).filter(name => name.length > 0);
-  return rnwStyleSheet
+  const fromSheet = rnwStyleSheet
     .getSheet()
     .textContent.split("\n")
     .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
     .join("\n");
+  return `${fromSheet}\n${(element.getAttribute("style") ?? "").replace(/\s+/g, "")}`;
 }
 
 /** Every element inside `root` whose own rules contain `declaration`. */
@@ -321,6 +341,69 @@ describe("the composer is one rounded box and nothing inside it is a second one"
       // rather than the surface's.
       expect(idsOf(inside(m.need("composer-surface"), "border-top-width:1px"))).toEqual(["composer-attachment-0"]);
       expect(renderedStyle(m.need("composer-attachment-0"))).toContain(`border-top-left-radius:${radius.control}px`);
+    } finally {
+      m.unmount();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The air around it, in the vocabulary the whole app spends
+// ---------------------------------------------------------------------------
+
+/**
+ * The report was "spacing looks off", and the composer is where it was most
+ * visible: the dock paid 12 horizontally while the header and the readout
+ * above it paid 16, so the message box started four points left of everything
+ * it sat under, on every screen that renders one.
+ *
+ * Both numbers below are read off the sheet react-native-web actually emitted
+ * and both are named against `rhythm`, never typed in. A literal that happens
+ * to equal today's value passes nothing here: move `gutter` or `dockPad` and
+ * this fails until the dock follows, which is the whole point of a scale whose
+ * entries are jobs.
+ */
+describe("the composer's dock spends the app's spacing vocabulary", () => {
+  test("the surface is inset by the screen gutter and floats above the edge by the dock pad", () => {
+    const m = open();
+    try {
+      // The dock is the view that pays the margin around the box, so the
+      // surface's own inset from the screen edge is its padding.
+      const dock = renderedStyle(m.need("composer-dock"));
+      expect(dock).toContain(`padding-left:${rhythm.gutter}px`);
+      expect(dock).toContain(`padding-right:${rhythm.gutter}px`);
+      // Deliberately snug rather than a full gutter: the home indicator
+      // already reserves its own space below this.
+      expect(dock).toContain(`padding-bottom:${rhythm.dockPad}px`);
+      // And it really is the box's parent, so the inset above is the one the
+      // surface pays rather than some other view's.
+      expect(m.need("composer-dock").contains(m.need("composer-surface"))).toBe(true);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("the bands stacked inside the surface are one rowGapTight apart", () => {
+    const m = open();
+    try {
+      // A chip band, a refusal and the action row all belong to the words
+      // above them, which is the job `rowGapTight` names.
+      expect(renderedStyle(m.need("composer-surface"))).toContain(`gap:${rhythm.rowGapTight}px`);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("every control in the action row clears the 44-point floor", () => {
+    const m = open({ running: true }, { voice: { ...READY_VOICE } });
+    try {
+      // The interrupt, not the send, because a turn is in flight: the two wear
+      // one geometry and this is the half the idle cases never see.
+      for (const id of ["composer-attach", "composer-mic", "session-open-config", "composer-cancel"]) {
+        const control = renderedStyle(m.need(id));
+        const floor = `${rhythm.minTarget}px`;
+        expect(control.includes(`height:${floor}`) || control.includes(`min-height:${floor}`)).toBe(true);
+      }
     } finally {
       m.unmount();
     }

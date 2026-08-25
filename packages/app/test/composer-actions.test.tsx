@@ -119,19 +119,49 @@ function mount(element: React.JSX.Element): Mounted {
  */
 const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
 
-/** Every emitted declaration that addresses one element's own classes. */
+/**
+ * Everything one element's own style actually says, from both places
+ * react-native-web puts it.
+ *
+ * Only `StyleSheet.create` values are compiled into the atomic sheet. Anything
+ * built at render time -- which is every colour now that surfaces read
+ * `useOmpTheme()` -- is written to the element's own `style` attribute
+ * instead. Reading the sheet alone made this "what did the element render
+ * statically", which is not the claim any test here is making. The inline half
+ * is whitespace-stripped so `background-color: rgba(36, 33, 27, 1.00)` matches
+ * the sheet's own `background-color:rgba(36,33,27,1.00)` spelling.
+ */
 function renderedStyle(element: HTMLElement): string {
   const classes = element.className.split(/\s+/).filter(name => name.length > 0);
-  return rnwStyleSheet
+  const fromSheet = rnwStyleSheet
     .getSheet()
     .textContent.split("\n")
     .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
     .join("\n");
+  return `${fromSheet}\n${(element.getAttribute("style") ?? "").replace(/\s+/g, "")}`;
 }
 
-/** The testIDs of one element's direct children, in order. */
+/** How Paper names the box it wraps a control in. */
+const PAPER_CONTAINER = "-container";
+
+/**
+ * The testIDs of one element's direct children, in order, naming the CONTROL
+ * in each slot rather than the box a library wrapped it in.
+ *
+ * Paper's `IconButton` renders its pressable inside a `Surface` and hard-codes
+ * that outer element to `<testID>-container`, with no prop to move it. The
+ * control is the pressable -- it carries the label, the disabled state and the
+ * press -- so membership is read by the pressable's own testID. The claim is
+ * unchanged and still fails on everything it used to: a control missing, a
+ * control out of order, or a control that drifted out of its group.
+ */
 function childIDs(element: HTMLElement): (string | null)[] {
-  return [...element.children].map(child => child.getAttribute("data-testid"));
+  return [...element.children].map(child => {
+    const own = child.getAttribute("data-testid");
+    if (own === null || !own.endsWith(PAPER_CONTAINER)) return own;
+    const inner = own.slice(0, -PAPER_CONTAINER.length);
+    return child.querySelector(`[data-testid="${inner}"]`) === null ? own : inner;
+  });
 }
 
 /**

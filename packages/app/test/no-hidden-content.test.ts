@@ -49,6 +49,7 @@ import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
+import { rhythm } from "../src/design/rhythm.ts";
 import { space, stroke } from "../src/design/tokens.ts";
 import { advance, type TypeStyleName, unbreakable } from "./type-metrics.ts";
 
@@ -154,6 +155,15 @@ describe("a composer's surface reaches the edge it pads to", () => {
  * spacing token. Read out of the real style block, so narrowing a container or
  * growing its padding fails the rule instead of sliding past it. Comments are
  * stripped first: several of these blocks quote widths in prose.
+ *
+ * `rhythm` is resolvable here as well as `space` and `stroke`, and that is the
+ * whole reason this rule still works after the design system landed. A fixed
+ * width that a surface reads from `useOmpTheme()` at render time is invisible to
+ * a source scrape, so the convention is: STRUCTURAL measurements a container is
+ * built from stay in the `StyleSheet` block written as `rhythm.<job>` from the
+ * direct import, and only values that genuinely vary at runtime come off the
+ * hook. Break that convention and this rule stops seeing the column it exists
+ * to protect -- it will not fail, which is worse.
  */
 function styleNumber(block: string, property: string): number {
   const found = new RegExp(`(?<![A-Za-z])${property}\\s*:\\s*([A-Za-z0-9_.]+)`).exec(block.replace(/\/\/.*$/gm, ""));
@@ -161,7 +171,7 @@ function styleNumber(block: string, property: string): number {
   const written = found[1] as string;
   if (/^[0-9.]+$/.test(written)) return Number(written);
   const [table, key] = written.split(".");
-  const tokens: Record<string, Record<string, number>> = { space, stroke };
+  const tokens: Record<string, Record<string, number>> = { space, stroke, rhythm };
   const value = tokens[table as string]?.[key as string];
   if (value === undefined) throw new Error(`cannot resolve ${property}: ${written}`);
   return value;
