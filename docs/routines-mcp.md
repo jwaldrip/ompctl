@@ -89,14 +89,17 @@ first, clamped to `runLimit`. Each action outcome inside a run carries the
 `linkedSessionCount`: how many distinct sessions that run created.
 
 **A session id is a handle, not a credential.** It is the same id an ordinary
-session open takes, and opening one is still gated: resuming a dormant session
-needs `prompt` scope, taking over a live one needs `manage`, and either way the
-claim is verified against the daemon's own session index. So returning the id
-grants nothing a caller did not already have. That is why it is not stripped
-the way a webhook `secretRef` is: withholding it would cost someone the ability
-to look at what a run actually did while protecting nothing. A run's action
-outcome carries no credential and no execution host, so there is nothing else
-in that half of the response to strip.
+session open takes, and the ordinary opener decides what it can do from the
+daemon's own session index. Resuming a dormant session needs `prompt` scope and
+the daemon verifies the index row's cwd against the claim. A live TUI session is
+not taken over: it is opened through `openCollab()`, whose gate is `read`, and
+when that terminal cannot collaborate the app falls back to its local
+view-and-steer surface. An owned live agent attaches through its existing read
+path. So returning the id grants nothing a caller did not already have. That is
+why it is not stripped the way a webhook `secretRef` is: withholding it would
+cost someone the ability to look at what a run actually did while protecting
+nothing. A run's action outcome carries no credential and no execution host, so
+there is nothing else in that half of the response to strip.
 
 **The count is distinct and non-blank, not the action count.** The scheduler
 creates one agent per prompt action, so a two-action run is normally two
