@@ -267,14 +267,74 @@ function loadBaseline(): Set<string> {
 }
 
 const baseline = loadBaseline();
-const unexpected = hits.filter(h => !baseline.has(h));
-const stale = [...baseline].filter(b => !hits.includes(b));
+/**
+ * Hits this branch is not answerable for.
+ *
+ * Sweeping the checked-out tree means the tree includes everything the base
+ * already had, so contamination sitting in `main` would fail every open pull
+ * request -- the same wrong-person failure as sweeping every ref, arriving from
+ * a different direction. A hit is inherited when its path also hits at the base
+ * *and* this branch did not touch that path. Touch it and you own it, which is
+ * what stops this from hiding a new hit added to an already-dirty file.
+ *
+ * Inherited hits are reported, never dropped silently, and the base's own run
+ * still fails on them. Nothing is excluded by path and no term is weakened.
+ */
+function inheritedPaths(base: string | undefined): Set<string> {
+  if (base === undefined) return new Set();
+  const baseHits = sweep(repo, [base]);
+  if (baseHits.failures.length > 0) return new Set();
+  const touched = new Set(
+    git(["diff", "--name-only", base, "HEAD"], repo)
+      .stdout.split("\n")
+      .filter(l => l.length > 0),
+  );
+  const paths = new Set<string>();
+  for (const hit of baseHits.hits) {
+    const path = hit.slice(hit.indexOf(":") + 1);
+    if (!touched.has(path)) paths.add(path);
+  }
+  return paths;
+}
+
+const inherited = inheritedPaths(scope.base);
+const ownHits = hits.filter(h => !inherited.has(h.slice(h.indexOf(":") + 1)));
+const inheritedCount = hits.length - ownHits.length;
+if (inheritedCount > 0) {
+  const names = [...new Set(hits.map(h => h.slice(h.indexOf(":") + 1)).filter(p => inherited.has(p)))];
+  console.log(
+    `  note ${inheritedCount} hit(s) are in files this branch never touched and already hit at ${scope.base}; ` +
+      "they belong to that branch's own run",
+  );
+  for (const name of names.slice(0, 10)) console.log(`       ${name}`);
+}
+const unexpected = ownHits.filter(h => !baseline.has(h));
+
+/**
+ * Staleness is only decidable for what this run actually swept.
+ *
+ * The rule that a baseline entry which no longer hits must be removed is what
+ * stops the file outliving the exposure it describes, and it depends on the
+ * sweep having looked. Once the sweep is scoped to one branch's commits, an
+ * entry for a commit outside that range was never examined: calling it stale
+ * would fail every pull request for acknowledgements about history it did not
+ * touch, which is the same wrong-person failure the scoping fixed. So the rule
+ * applies to entries inside the scope, and the rest are reported as untested
+ * rather than silently counted as either.
+ */
+const swept = new Set(scope.revs);
+const inScope = [...baseline].filter(b => swept.has(b.slice(0, b.indexOf(":"))));
+const outOfScope = baseline.size - inScope.length;
+const stale = inScope.filter(b => !hits.includes(b));
 
 if (baseline.size > 0) {
   console.log(
     `\n  NOTE ${baseline.size} acknowledged hit(s) in already-published history; ` +
       "removing them needs a history rewrite and a force-push",
   );
+  if (outOfScope > 0) {
+    console.log(`       ${outOfScope} of them sit outside this run's scope and were not re-checked here`);
+  }
 }
 
 if (stale.length > 0) {

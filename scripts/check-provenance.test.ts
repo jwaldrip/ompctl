@@ -109,15 +109,44 @@ describe("the sweep's scope", () => {
     expect(result.out).toContain("mine.md");
   });
 
-  test("a branch that adds no commits of its own is still swept, because HEAD is its tree", () => {
+  test("a branch identical to its base inherits the base's hits rather than failing on them", () => {
     const dir = repo();
     commitFile(dir, "main.md", `a note about ${TERM}\n`, "main: contaminated");
-    // `mine` == `main`, so the range is empty and only HEAD remains. A scope
-    // that dropped HEAD would report clean on a tree that plainly is not.
+    // `mine` == `main`, so this branch introduced nothing and touched nothing.
+    // HEAD is still swept -- the hit is found -- and then attributed to the
+    // base, which is where the run that must fail on it lives.
     git(dir, "checkout", "-q", "-b", "mine");
 
     const result = run(dir);
-    expect(result.status).toBe(1);
     expect(result.out).toContain("main.md");
+    expect(result.out).toContain("belong to that branch's own run");
+    expect(result.status).toBe(0);
+  });
+
+  test("a hit already in the base, in a file this branch never touched, does not fail this branch", () => {
+    const dir = repo();
+    commitFile(dir, "theirs.md", `a note about ${TERM}\n`, "main: contaminated before this branch existed");
+    git(dir, "checkout", "-q", "-b", "mine");
+    commitFile(dir, "mine.md", "nothing private here\n", "mine: clean");
+
+    // The base's own run still fails on `theirs.md`. This branch cannot fix it
+    // and must not be blocked by it.
+    const result = run(dir);
+    expect(result.out).toContain("belong to that branch's own run");
+    expect(result.status).toBe(0);
+  });
+
+  test("touching an already-dirty file makes the hit this branch's own", () => {
+    const dir = repo();
+    commitFile(dir, "theirs.md", `a note about ${TERM}\n`, "main: contaminated");
+    git(dir, "checkout", "-q", "-b", "mine");
+    commitFile(dir, "theirs.md", `a note about ${TERM}, now edited here\n`, "mine: edited it");
+
+    // Inheritance is by untouched path, not by term. Edit the file and the hit
+    // is yours, which is what stops this from hiding a new hit added to a file
+    // that already had one.
+    const result = run(dir);
+    expect(result.status).toBe(1);
+    expect(result.out).toContain("theirs.md");
   });
 });
