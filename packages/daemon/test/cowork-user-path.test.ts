@@ -38,7 +38,7 @@ const stores: Store[] = [];
 const sups: Supervisor[] = [];
 
 afterEach(async () => {
-  for (const sup of sups.splice(0)) await sup.close?.().catch(() => undefined);
+  while (sups.length) await sups.pop()?.shutdown();
   for (const store of stores.splice(0)) store.close();
   for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
