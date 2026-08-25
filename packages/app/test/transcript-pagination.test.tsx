@@ -42,6 +42,7 @@ interface ListProps {
   scrollEventThrottle?: number;
   maintainVisibleContentPosition?: { minIndexForVisible?: number; autoscrollToTopThreshold?: number };
   ListHeaderComponent?: unknown;
+  ListFooterComponent?: unknown;
   data?: readonly Entry[];
 }
 
@@ -502,6 +503,95 @@ describe("Transcript follow-newest composition", () => {
     h.contentSize(1300);
 
     expect(h.list.scrollToEnd.length).toBeGreaterThan(1);
+    h.unmount();
+  });
+});
+
+/**
+ * The activity row is content of the log, not chrome over it.
+ *
+ * That distinction is the whole reason it moved out of the header, and it is
+ * only true if the row goes through the list: the follower watches content
+ * size, so a row rendered outside the list would grow nothing, pin nothing,
+ * and sit over the transcript while the transcript scrolled underneath it.
+ *
+ * The first version of this block asserted `ListFooterComponent` was defined,
+ * which `main` already satisfies because the same slot carries the spoken
+ * summary. It passed on the unfixed build, so it was measuring nothing. What
+ * discriminates is the footer's CONTENT, so these walk it.
+ */
+describe("the turn underway rides the list like any other row", () => {
+  const WORKING = {
+    kind: "working",
+    label: "Working",
+    announcement: "Working",
+    live: true,
+    actionable: false,
+  } as const;
+
+  /** Whether a rendered element tree contains a node carrying `testID`. */
+  function contains(node: unknown, testID: string): boolean {
+    if (node === null || node === undefined || typeof node !== "object") return false;
+    if (Array.isArray(node)) return node.some(child => contains(child, testID));
+    const element = node as { props?: Record<string, unknown> };
+    const props = element.props;
+    if (props === undefined) return false;
+    if (props.testID === testID) return true;
+    return contains(props.children, testID);
+  }
+
+  test("the row is inside the footer the list is handed, not beside the list", () => {
+    const h = mount({ entries: [entry("a")] });
+
+    // Nothing in flight: the slot may exist for the spoken summary, but the
+    // row must not be in it.
+    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(false);
+
+    h.render({ activity: WORKING });
+    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(true);
+
+    // And it leaves again, rather than being a row that arrives once and stays
+    // for the rest of the session.
+    h.render({ activity: null });
+    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(false);
+    h.unmount();
+  });
+
+  /*
+    The two below are guards rather than discriminators: they describe the
+    follower's existing behaviour, which this change must not alter, and they
+    pass on `main` for that reason. Kept because the row is new content in the
+    one slot that grows the list on every turn, which is exactly where a
+    follower regression would show up first.
+  */
+  test("a reader scrolled up to read is not dragged down when the row arrives", () => {
+    const h = mount({ entries: [entry("a"), entry("b")] });
+    h.contentSize(4000);
+    const before = h.list.scrollToEnd.length;
+
+    h.scrollTo(10, 4000);
+    h.render({ activity: WORKING });
+    h.contentSize(4040);
+
+    expect(h.list.scrollToEnd).toHaveLength(before);
+    h.unmount();
+  });
+
+  test("the row leaving does not scroll anything either", () => {
+    const h = mount({ entries: [entry("a")] });
+    h.contentSize(1000);
+    h.scrollTo(10, 4000);
+    h.render({ activity: WORKING });
+    h.contentSize(1040);
+    const before = h.list.scrollToEnd.length;
+
+    // Turn end removes the row and the content shrinks. A follower that
+    // treated a shrink as new content would yank a reader to the bottom at
+    // exactly the moment the agent stopped talking.
+    h.render({ activity: null });
+    h.contentSize(1000);
+
+    expect(h.list.scrollToEnd).toHaveLength(before);
     h.unmount();
   });
 });

@@ -251,19 +251,28 @@ describe("a prompted terminal renders its hints", () => {
     // Read from the screen rather than spelled out again: the gutter is 66
     // points wide and the word that goes in it is chosen by what fits there.
     expect(html).toContain(HINT_WORDS.sent);
-    expect(html).not.toContain('data-testid="terminal-busy"');
+    // The row IS here, and that is the point of having one producer. The
+    // kicker this replaced was gated on `tui.busy` alone, so a steer this
+    // device had sent and nothing had answered read as a dead screen, while
+    // the header's own indicator said "Working" from `awaitingReply` at the
+    // same moment. `tuiActivity` counts an outstanding steer as work, and now
+    // exactly one thing on screen reports it.
+    expect(html).toContain('data-testid="session-activity"');
     expect(html).not.toContain('data-testid="terminal-reply"');
   });
 
-  test("a turn_start shows the busy mark; the turn ending clears it", () => {
+  test("a turn_start shows the working row; the turn ending clears it", () => {
+    // The claim used to be a kicker below the log, in the hints block. It is
+    // now a row of the log itself, under the last turn and above the composer:
+    // same fact, in the conversation where the operator is looking.
     const working = drive([{ t: "tui_activity", event: { sessionId: SESSION, kind: "turn_start" } }]);
-    expect(renderScreen(working)).toContain('data-testid="terminal-busy"');
+    expect(renderScreen(working)).toContain('data-testid="session-activity"');
 
     const done = drive([
       { t: "tui_activity", event: { sessionId: SESSION, kind: "turn_start" } },
       { t: "tui_activity", event: { sessionId: SESSION, kind: "turn_end" } },
     ]);
-    expect(renderScreen(done)).not.toContain('data-testid="terminal-busy"');
+    expect(renderScreen(done)).not.toContain('data-testid="session-activity"');
   });
 
   test("a full turn renders the reply and clears the busy state", () => {
@@ -276,7 +285,7 @@ describe("a prompted terminal renders its hints", () => {
     const html = renderScreen(state);
     expect(html).toContain('data-testid="terminal-reply"');
     expect(html).toContain("all green");
-    expect(html).not.toContain('data-testid="terminal-busy"');
+    expect(html).not.toContain('data-testid="session-activity"');
   });
   test("a never-prompted terminal says what the surface is instead of nothing", () => {
     const html = renderScreen(emptyConsole([]));

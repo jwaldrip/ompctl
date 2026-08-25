@@ -21,7 +21,9 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from "react-
 import { Glyph } from "../design/icons.tsx";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
+import type { ConversationActivity } from "../session/activity.ts";
 import { type Entry, transcriptRowKey } from "../session/model.ts";
+import { ActivityRow } from "./ActivityRow.tsx";
 import { ApprovalCard } from "./ApprovalCard.tsx";
 import { RichText } from "./rich/RichText.tsx";
 import { ToolCard } from "./ToolCard.tsx";
@@ -36,6 +38,16 @@ export interface TranscriptProps {
   onDecide: (requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   /** The daemon's prose summary of the last settled turn, when there is one. */
   spoken?: string | null;
+  /**
+   * The turn that is underway, when one is. Rendered as the list's last row so
+   * it sits under the operator's own prompt and above the composer, and so it
+   * is content of the log rather than chrome over it: the follower watches
+   * content size, so this arriving is what pins a reader at the bottom to the
+   * bottom, exactly as an assistant row would.
+   */
+  activity?: ConversationActivity | null;
+  /** Motion seam for the activity row. Unset in production. */
+  reduceMotion?: boolean;
   canLoadEarlier?: boolean;
   loadingEarlier?: boolean;
   onLoadEarlier?: () => void;
@@ -54,6 +66,8 @@ export function Transcript({
   refusal,
   onDecide,
   spoken,
+  activity,
+  reduceMotion,
   canLoadEarlier,
   loadingEarlier,
   onLoadEarlier,
@@ -121,8 +135,19 @@ export function Transcript({
           </View>
         ) : null
       }
+      /*
+        The tail, in the order the conversation happened: what the daemon said
+        about the LAST settled turn, then the turn that is running NOW. So the
+        activity row is the newest thing on screen, which is what makes the
+        follower treat it as content to stay pinned to.
+      */
       ListFooterComponent={
-        spoken === null || spoken === undefined || spoken.length === 0 ? null : <Spoken text={spoken} />
+        <>
+          {spoken === null || spoken === undefined || spoken.length === 0 ? null : <Spoken text={spoken} />}
+          {activity === null || activity === undefined ? null : (
+            <ActivityRow activity={activity} reduceMotion={reduceMotion} testID="session-activity" />
+          )}
+        </>
       }
       ListEmptyComponent={<Empty />}
     />

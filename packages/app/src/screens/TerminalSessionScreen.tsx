@@ -42,7 +42,7 @@ import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback } from "react";
 import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, View } from "react-native";
-import { ActivityPip } from "../components/ActivityPip.tsx";
+import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
@@ -50,13 +50,12 @@ import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../c
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
-import { useIsTablet } from "../design/layout.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
-import { tuiActivity } from "../session/activity.ts";
+import { conversationActivity, tuiActivity } from "../session/activity.ts";
 import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 
 export interface TerminalSessionScreenProps {
@@ -163,11 +162,13 @@ function logRows(tui: TuiSessionState): LogRow[] {
 
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
   const { tui, connection, status, promptAccess, load } = props;
-  const tablet = useIsTablet();
   // The latest index row, not the row that opened this route, decides whether
   // steering is still safe. A terminal can close while the screen remains.
   const liveTerminal = status === "live-tui";
-  const activity = tuiActivity(tui, connection, load, liveTerminal);
+  // Gated to the conversation: a terminal that is merely ready, not live, or
+  // refused adds no row here. "Not live" and a refusal already have bands of
+  // their own below that say more than a word and can be acted on.
+  const activity = conversationActivity(tuiActivity(tui, connection, load, liveTerminal));
   const tone = status === null ? signal.oxide : signal[SESSION_STATUS_SIGNALS[status]];
   const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
   const ownedBottom = useOwnedBottomInset();
@@ -294,9 +295,23 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
       </Pressable>
     );
 
+  /**
+   * The turn underway, built once because it has two places to go: the log's
+   * footer when there are rows, and the log's place when there are none.
+   *
+   * `agent` rather than a terminal-specific word, because the gutter word is
+   * the conversation's attribution and this row is the agent's turn beginning;
+   * the label is where the narrower truth lives, and on this path it says
+   * "Working" with no tool named, because the bridge forwards no tool events.
+   */
+  const activityRow =
+    activity === null ? null : (
+      <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
+    );
+
   return (
     <SafeScreen edges={{ top: true, bottom: false, left: true, right: true }} testID="terminal-session">
-      <View style={[styles.head, { borderBottomColor: tone }]}>
+      <View style={[styles.head, { borderBottomColor: tone }]} testID="terminal-head">
         <Pressable
           testID="terminal-back"
           accessibilityRole="button"
@@ -322,12 +337,6 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           </View>
         </View>
 
-        {/*
-          The terminal's own activity, from its turn boundaries. Narrower than
-          an owned agent's because the bridge forwards no tool events; see
-          `tuiActivity` for the missing producer.
-        */}
-        <ActivityPip activity={activity} compact={!tablet} reduceMotion={props.reduceMotion} />
         <Kicker color={tone} testID="terminal-state">
           {statusLabel}
         </Kicker>
@@ -367,8 +376,21 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           onContentSizeChange={pagination.onContentSizeChange}
           onScroll={pagination.onScroll}
           scrollEventThrottle={pagination.scrollEventThrottle}
+          // After the log's own rows -- history, this device's sent hint, the
+          // reply hint -- and before the hints block below, which is where the
+          // bare "Working in the terminal" kicker used to sit. In the list, so
+          // it scrolls with the turns and the follower counts it as content.
+          ListFooterComponent={activityRow}
         />
       )}
+
+      {/*
+        The same row when there is no list to hold it. A turn someone else
+        started on a session whose recent screenfuls are pure tool traffic has
+        work in flight and no rows yet, and the honest answer is still a row
+        between the log's place and the hints rather than nothing.
+      */}
+      {rows.length === 0 && load.phase === "ready" ? activityRow : null}
 
       {/*
         Every hint and refusal below is a claim about a session this pane has.
@@ -424,12 +446,6 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
                   owning terminal.
                 </Body>
               </View>
-            ) : null}
-
-            {tui.busy ? (
-              <Kicker color={tone} testID="terminal-busy">
-                Working in the terminal
-              </Kicker>
             ) : null}
 
             {liveTerminal &&
