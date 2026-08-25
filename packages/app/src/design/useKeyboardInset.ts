@@ -20,11 +20,23 @@ export function useKeyboardInset(): number {
   const [inset, setInset] = useState(0);
 
   useEffect(() => {
-    const shown = Keyboard.addListener("keyboardDidShow", event => setInset(event.endCoordinates.height));
-    const hidden = Keyboard.addListener("keyboardDidHide", () => setInset(0));
+    const update = (event: { endCoordinates: { height: number } }) => setInset(event.endCoordinates.height);
+    // iOS delivers a frame change while the input is still focused. That is the
+    // event which has to move the dock before the keyboard covers it; waiting
+    // for `keyboardDidShow` leaves a fixed composer under the first frame.
+    const willShow = Keyboard.addListener("keyboardWillShow", update);
+    const willChangeFrame = Keyboard.addListener("keyboardWillChangeFrame", update);
+    const didShow = Keyboard.addListener("keyboardDidShow", update);
+    const didChangeFrame = Keyboard.addListener("keyboardDidChangeFrame", update);
+    const willHide = Keyboard.addListener("keyboardWillHide", () => setInset(0));
+    const didHide = Keyboard.addListener("keyboardDidHide", () => setInset(0));
     return () => {
-      shown.remove();
-      hidden.remove();
+      willShow.remove();
+      willChangeFrame.remove();
+      didShow.remove();
+      didChangeFrame.remove();
+      willHide.remove();
+      didHide.remove();
     };
   }, []);
 

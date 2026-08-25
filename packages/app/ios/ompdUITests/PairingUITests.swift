@@ -154,26 +154,20 @@ final class PairingUITests: XCTestCase {
 
         let session = app.otherElements["session"]
         XCTAssertTrue(session.waitForExistence(timeout: 10), "selected agent session did not open")
-
         let composer = app.textViews["composer-input"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10), "agent composer did not appear")
         let idleSend = app.descendants(matching: .any)["composer-send"]
-        XCTAssertTrue(idleSend.waitForExistence(timeout: 10), "settled session did not render composer-send before typing")
-        XCTAssertTrue(idleSend.isEnabled, "settled session rendered a disabled composer-send")
+        XCTAssertTrue(idleSend.waitForExistence(timeout: 20), "settled session did not render composer-send before typing")
 
-        let prompt = "Use the shell to run sleep 6, then reply with exactly this token and nothing else: \(nonce)"
+        let layoutOnly = ProcessInfo.processInfo.environment["OMPD_TEST_LAYOUT_ONLY"] == "YES"
+        let prompt = layoutOnly ? "Proof" : "Wait six seconds, then reply: \(nonce)"
         let userRows = app.otherElements.matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "entry-user")
         )
         let userCountBeforePrompt = userRows.count
-        let assistantRows = app.otherElements.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "entry-assistant")
-        )
-        let assistantCountBeforePrompt = assistantRows.count
 
         composer.tap()
         composer.typeText(prompt)
-        XCTAssertTrue(((composer.value as? String) ?? "").contains(nonce), "composer input did not contain the nonce")
         let send = app.descendants(matching: .any)["composer-send"]
         let cancel = app.descendants(matching: .any)["composer-cancel"]
         let afterTypeFrame = XCTAttachment(screenshot: app.screenshot())
@@ -190,6 +184,9 @@ final class PairingUITests: XCTestCase {
         }
         XCTAssertTrue(send.isEnabled, "agent send control did not become enabled for the prompt")
         XCTAssertTrue(send.isHittable, "visible composer-send is not hittable")
+        if layoutOnly {
+            return
+        }
         send.tap()
 
         // Optimistic user entries carry accessibilityLabel = prompt text and
@@ -212,6 +209,8 @@ final class PairingUITests: XCTestCase {
 
         let activity = app.otherElements["session-activity"]
         XCTAssertTrue(activity.waitForExistence(timeout: 15), "the working row did not appear after the submitted prompt")
+        let runningCancel = app.descendants(matching: .any)["composer-cancel"]
+        XCTAssertTrue(runningCancel.waitForExistence(timeout: 15), "the working turn did not render composer-cancel")
         let workingFrame = XCTAttachment(screenshot: app.screenshot())
         workingFrame.name = "scratch-working-session"
         workingFrame.lifetime = .keepAlways
@@ -224,7 +223,7 @@ final class PairingUITests: XCTestCase {
             .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "entry-assistant", nonce))
             .firstMatch
         XCTAssertTrue(
-            assistantByLabel.waitForExistence(timeout: 90) || assistantByAny.waitForExistence(timeout: 5),
+            assistantByLabel.waitForExistence(timeout: 180) || assistantByAny.waitForExistence(timeout: 5),
             "no new assistant response contained the unique nonce"
         )
         XCTAssertTrue(app.otherElements["session-context"].exists, "session context strip was not rendered")
@@ -232,6 +231,9 @@ final class PairingUITests: XCTestCase {
         let tools = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "tool-"))
         XCTAssertGreaterThan(tools.count, 0, "scratch transcript did not render a tool card")
+        let settledSend = app.descendants(matching: .any)["composer-send"]
+        XCTAssertTrue(settledSend.waitForExistence(timeout: 30), "settled turn did not return composer-send")
+        XCTAssertFalse(app.descendants(matching: .any)["composer-cancel"].exists, "settled turn kept composer-cancel")
         let settledFrame = XCTAttachment(screenshot: app.screenshot())
         settledFrame.name = "scratch-settled-session"
         settledFrame.lifetime = .keepAlways

@@ -416,19 +416,11 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           ) : (
             <>
               {/*
-              Above the plan card and the transcript, inside the scroll-free
-              part of the column: collapsed it is one row, so the log keeps
-              every point it had, and it never becomes a rail the transcript
-              has to share its width with.
-            */}
+                Session identity stays fixed above the log. A pending plan is
+                transcript context, so it scrolls with the transcript instead
+                of consuming the composer's fixed working space.
+              */}
               <SessionContext {...props.context} agent={agent} now={props.now} session={session} />
-              <PlanCard
-                canApprove={props.canApprove}
-                onRespond={props.onDecidePlan}
-                plan={session.plan}
-                refusal={props.refusal}
-                review={session.planReview}
-              />
 
               <OmpThreadList
                 entries={session.entries}
@@ -436,6 +428,15 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
                 refusal={props.refusal}
                 onDecide={props.onDecide}
                 spoken={props.spoken}
+                header={
+                  <PlanCard
+                    canApprove={props.canApprove}
+                    onRespond={props.onDecidePlan}
+                    plan={session.plan}
+                    refusal={props.refusal}
+                    review={session.planReview}
+                  />
+                }
                 footer={
                   activity === null ? null : (
                     <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
@@ -556,7 +557,7 @@ const styles = StyleSheet.create({
   // the same kind: instruments. Before this they had no gap at all and each
   // one made up its own margin, which is the vertical half of what the
   // operator was reporting.
-  body: { flex: 1, paddingTop: rhythm.sectionGap, gap: rhythm.rowGap },
+  body: { flex: 1, minHeight: 0, paddingTop: rhythm.sectionGap, gap: rhythm.rowGap },
   // The band that owns the screen's bottom edge, composer to home
   // indicator. It paints the composer's surface because it is the view that
   // pays the inset below the composer: a parent's padding is outside every

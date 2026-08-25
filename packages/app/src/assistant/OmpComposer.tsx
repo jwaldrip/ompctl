@@ -99,7 +99,7 @@ import type { Attachment, CreateAttachment } from "@assistant-ui/core";
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react-native";
 import type { PromptImage } from "@ompd/core/contracts";
 import { type JSX, useMemo } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, useWindowDimensions, View } from "react-native";
 import { IconButton, Surface, TouchableRipple } from "react-native-paper";
 import { AttachmentControl, AttachmentsBar, useImageAttachments } from "../components/AttachmentsBar.tsx";
 import { Glyph } from "../design/icons.tsx";
@@ -198,6 +198,12 @@ export function OmpComposer({
 }: OmpComposerProps): JSX.Element {
   const aui = useAui();
   const theme = useOmpTheme();
+  const { fontScale } = useWindowDimensions();
+  // A larger face owns more vertical room per line, so a fixed pixel ceiling
+  // buries the action row behind the keyboard at accessibility sizes. Keep the
+  // same baseline field at 1x and reduce the visible line count as the face
+  // grows; the multiline input scrolls instead of taking the action away.
+  const fieldMaxHeight = Math.max(rhythm.minTarget, FIELD_MAX_HEIGHT / (fontScale * fontScale));
   /**
    * Every gate on this surface, from the runtime rather than a prop.
    *
@@ -312,10 +318,12 @@ export function OmpComposer({
       >
         <ComposerPrimitive.Input
           testID={`${prefix}-input`}
-          style={[styles.field, { color: isDisabled ? theme.ink.faint : theme.ink.bright }]}
+          style={[styles.field, { color: isDisabled ? theme.ink.faint : theme.ink.bright, maxHeight: fieldMaxHeight }]}
           // The value and its setter are the runtime's; the primitive holds
           // both and its props type forbids passing either.
           editable={!isDisabled}
+          numberOfLines={2}
+          scrollEnabled
           multiline
           placeholder={placeholder}
           placeholderTextColor={theme.ink.faint}

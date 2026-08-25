@@ -128,6 +128,8 @@ export interface OmpThreadListProps {
    * surprise.
    */
   footer?: ReactElement | null;
+  /** A non-message card which belongs above the transcript and must scroll with it. */
+  header?: ReactElement | null;
   /**
    * The same three the shipped `Transcript` takes, so a screen swapping to this
    * surface changes one element and no props. The pagination machine lives in
@@ -218,6 +220,16 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
       </View>
     ) : null;
 
+  const header =
+    props.header === null || props.header === undefined ? (
+      earlier
+    ) : (
+      <>
+        {props.header}
+        {earlier}
+      </>
+    );
+
   return (
     <ThreadPrimitive.Root style={styles.root} testID="aui-thread">
       <ThreadPrimitive.MessagesFlatList
@@ -237,7 +249,7 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         automaticallyAdjustKeyboardInsets
-        ListHeaderComponent={earlier}
+        ListHeaderComponent={header}
         // In the order the conversation happened: what the daemon said about
         // the LAST settled turn, then the turn running NOW. So the activity row
         // is the newest thing on screen, which is what makes the follower treat
@@ -360,8 +372,8 @@ const PAPER_ICON_OVERHANG = 8;
  * geometry stays in the sheet so a source-scraping check can still read it.
  */
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  list: { flex: 1 },
+  root: { flex: 1, minHeight: 0 },
+  list: { flex: 1, minHeight: 0 },
   /**
    * The screen gutter and the row rhythm, paid once for the whole log.
    *
