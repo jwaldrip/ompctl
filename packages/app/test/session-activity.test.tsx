@@ -39,7 +39,7 @@ const { EMPTY_SESSION, reduce } = await import("../src/session/model.ts");
 const { READY_LOAD } = await import("../src/console/state.ts");
 const { Console } = await import("../src/console/Console.tsx");
 const { StyleSheet } = await import("react-native");
-const { rhythm } = await import("../src/design/rhythm.ts");
+const { attributionWidth } = await import("../src/design/rhythm.ts");
 const { ground, stroke } = await import("../src/design/tokens.ts");
 
 /**
@@ -1182,8 +1182,19 @@ describe("the row holds its place on a phone as well as a tablet", () => {
 describe("the working row is shaped like the turn it precedes", () => {
   const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
 
-  /** One declaration's value for an element, last-wins out of the sheet. */
+  /**
+   * One declaration's value for an element, last-wins, from BOTH places
+   * react-native-web puts one: the atomic class for a value it registered at
+   * module scope, and the `style` attribute for one the component computed at
+   * render time. Reading only the sheet was enough until the attribution column
+   * started scaling with `fontScale`, at which point the width moved inline and
+   * a sheet-only read returned null -- a pass turning into a crash rather than
+   * into a wrong answer, which is the lucky version.
+   */
   function declared(el: HTMLElement, property: string): string | null {
+    const inline = el.getAttribute("style") ?? "";
+    const direct = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`).exec(inline);
+    if (direct !== null) return (direct[1] as string).trim();
     const classes = el.className.split(/\s+/).filter(Boolean);
     let found: string | null = null;
     for (const rule of rnwStyleSheet.getSheet().textContent.split("\n")) {
@@ -1221,7 +1232,10 @@ describe("the working row is shaped like the turn it precedes", () => {
       // started at, which is 12 points handed back to every line of prose.
       const workingColumn = declared(attribution(working, "the working row"), "width");
       const turnColumn = declared(attribution(turn, "the operator's turn"), "width");
-      expect(workingColumn).toBe(`${rhythm.attribution}px`);
+      // `attributionWidth(1)` rather than the raw token: the column is 72 at the
+      // default text size and grows from there, so the number this asserts is
+      // the one an operator on default settings actually gets.
+      expect(workingColumn).toBe(`${attributionWidth(1)}px`);
       expect(turnColumn).toBe(workingColumn);
 
       // And the rows themselves pay no horizontal inset: the list's content

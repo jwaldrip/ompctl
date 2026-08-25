@@ -34,12 +34,12 @@
 
 import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, useWindowDimensions, View } from "react-native";
 import { ApprovalCard } from "../components/ApprovalCard.tsx";
 import { RichText } from "../components/rich/RichText.tsx";
 import { ToolCard } from "../components/ToolCard.tsx";
 import { Glyph } from "../design/icons.tsx";
-import { rhythm } from "../design/rhythm.ts";
+import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { Kicker, Label } from "../design/text.tsx";
 import { stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
@@ -55,6 +55,11 @@ export interface OmpEntryRowProps {
 }
 
 export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRowProps): JSX.Element {
+  // The attribution column grows with the text rather than the text being
+  // capped to fit it: at the default size 72 leaves 66 points for a 61.974
+  // point "thinking", which is 1.065x of headroom, so any accessibility size
+  // at all broke the word while a default-size-only gate kept passing.
+  const { fontScale } = useWindowDimensions();
   // Colour is the one thing here that genuinely varies at render time: the two
   // ramps invert between the light and dark themes, and a row that read `ink`
   // straight off `tokens.ts` would draw the dark ramp in daylight. Measurement
@@ -65,7 +70,7 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
     case "user":
       return (
         <View style={styles.row} testID="entry-user" accessible accessibilityLabel={`you: ${entry.text}`}>
-          <View style={[styles.gutter, { borderLeftColor: ink.faint }]}>
+          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: ink.faint }]}>
             <Kicker color={ink.muted}>you</Kicker>
           </View>
           <RichText text={entry.text} />
@@ -80,7 +85,12 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
           accessible
           accessibilityLabel={`${entry.thought ? "thinking" : "agent"}: ${entry.text}`}
         >
-          <View style={[styles.gutter, { borderLeftColor: entry.thought ? signal.violet : signal.sage }]}>
+          <View
+            style={[
+              styles.gutter,
+              { width: attributionWidth(fontScale), borderLeftColor: entry.thought ? signal.violet : signal.sage },
+            ]}
+          >
             <Kicker color={entry.thought ? signal.violet : signal.sage}>{entry.thought ? "thinking" : "agent"}</Kicker>
             {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
           </View>
@@ -107,7 +117,7 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
       // is owed the truth that something happened, even unnamed.
       return (
         <View style={styles.row} testID={`entry-unknown-${entry.id}`}>
-          <View style={[styles.gutter, { borderLeftColor: ground.edge }]}>
+          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: ground.edge }]}>
             <Glyph name="unknown" size={11} color={ink.faint} />
           </View>
           <View style={styles.prose}>

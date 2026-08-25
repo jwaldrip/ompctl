@@ -31,8 +31,8 @@
  */
 
 import { type JSX, memo, useEffect, useRef, useState } from "react";
-import { AccessibilityInfo, StyleSheet, View } from "react-native";
-import { rhythm } from "../design/rhythm.ts";
+import { AccessibilityInfo, StyleSheet, useWindowDimensions, View } from "react-native";
+import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { Kicker, Label } from "../design/text.tsx";
 import { ground, ink, type SignalName, signal, stroke } from "../design/tokens.ts";
 import type { ConversationActivity, ConversationActivityKind } from "../session/activity.ts";
@@ -69,6 +69,11 @@ export const ActivityRow = memo(function ActivityRow({
   speaker = "agent",
   testID = "session-activity",
 }: ActivityRowProps): JSX.Element {
+  // The attribution column grows with the text rather than the text being
+  // capped to fit it: at the default size 72 leaves 66 points for a 61.974
+  // point "thinking", which is 1.065x of headroom, so any accessibility size
+  // at all broke the word while a default-size-only gate kept passing.
+  const { fontScale } = useWindowDimensions();
   const tone = signal[TONES[activity.kind]];
   const systemReduceMotion = useSystemReduceMotion(reduceMotion);
   const animate = activity.live && !systemReduceMotion;
@@ -90,7 +95,7 @@ export const ActivityRow = memo(function ActivityRow({
         same word: this IS the next agent row, in the only state it can be in
         before it has anything to say.
       */}
-      <View style={[styles.gutter, { borderLeftColor: tone }]}>
+      <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: tone }]}>
         <Kicker color={tone}>{speaker}</Kicker>
       </View>
       <View style={styles.body}>

@@ -111,9 +111,6 @@ export const rhythm = {
   /** One step of nesting: a subagent under its parent. */
   indent: space.loose,
 
-  /** Between the two panes of a split screen. */
-  paneGutter: space.wide,
-
   /** Smallest square a finger can reliably hit, so a surface needs one import. */
   minTarget: TOUCH_TARGET,
 
@@ -126,3 +123,29 @@ export const rhythm = {
 } as const;
 
 export type Rhythm = typeof rhythm;
+
+/**
+ * The attribution column's width at a given font scale.
+ *
+ * `rhythm.attribution` is the DEFAULT-SIZE answer, and the gate in
+ * `test/no-hidden-content.test.ts` proves it holds there: 72 - 4 - 2 leaves 66
+ * for a 61.974 point "thinking". That is 1.065x of headroom, so an operator on
+ * any accessibility text size at all would have had the word broken mid-word,
+ * while a gate that only ever measures the default size kept passing. Review
+ * caught it; nothing in the suite could have.
+ *
+ * So the column grows with the text rather than the text being capped to fit the
+ * column. The multiplier stops at 1.5 because past that the column is taking a
+ * third of a 390 point phone from the conversation, and beyond the cap the label
+ * truncates with an ellipsis instead: "think..." is legible and a word broken
+ * across a boundary is not.
+ *
+ * A function rather than a token because the answer depends on a runtime value,
+ * and one function rather than three inline expressions because all three
+ * columns -- the transcript's, the working row's and the terminal log's -- have
+ * to move together or they drift apart again.
+ */
+export function attributionWidth(fontScale: number): number {
+  const scale = Number.isFinite(fontScale) ? Math.min(Math.max(fontScale, 1), 1.5) : 1;
+  return Math.round(rhythm.attribution * scale);
+}

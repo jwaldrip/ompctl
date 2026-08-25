@@ -25,7 +25,6 @@
  */
 
 import type { JSX, ReactNode } from "react";
-import { useColorScheme } from "react-native";
 import { PaperProvider } from "react-native-paper";
 import type { IconProps } from "react-native-paper/lib/typescript/components/MaterialCommunityIcon";
 import { GLYPHS, Glyph, type GlyphName } from "./icons.tsx";
@@ -47,17 +46,35 @@ function paperIcon({ name, color, size }: IconProps): JSX.Element | null {
 export interface OmpThemeProviderProps {
   children: ReactNode;
   /**
-   * Force a scheme. Unset in production, where the device decides; a test or a
-   * render harness passes one so a frame is not at the mercy of the host's
-   * appearance setting.
+   * Force a scheme. A harness seam, not a product setting: a theme test mounts
+   * this with `light` so a frame is not at the mercy of the host's appearance.
+   * Production passes nothing and gets dark, deliberately -- see below.
    */
   scheme?: "light" | "dark";
 }
 
+/**
+ * Production is dark, and does NOT ask the device.
+ *
+ * This provider used to resolve `useColorScheme()`, which made a phone set to
+ * light appearance draw an app that was half light and half dark: the header,
+ * the narration band and the status strip stayed on the dark ramp while the
+ * transcript, the context strip and the composer went cream. That is not a
+ * theming bug in one surface, it is the shape of an unfinished migration --
+ * 43 files still import `ground` / `ink` / `signal` straight from `tokens.ts`,
+ * which is the dark ramp and only the dark ramp, so the light theme reaches
+ * exactly the surfaces that read it through `useOmpTheme()` and no others.
+ *
+ * Shipping a partial light theme is worse than shipping none, so the device
+ * read is gone rather than the light theme: `ompLightTheme` stays defined and
+ * reachable through `scheme`, and the day the last static ramp import goes,
+ * consulting the device here is one line and a real feature. Until then the
+ * app makes no light-mode claim, and `test/omp-theme-root.test.tsx` holds that
+ * line by mounting the production tree under a light device and asserting the
+ * palette it actually paints.
+ */
 export function OmpThemeProvider({ children, scheme }: OmpThemeProviderProps): JSX.Element {
-  const device = useColorScheme();
-  const resolved = scheme ?? (device === "light" ? "light" : "dark");
-  const theme = resolved === "light" ? ompLightTheme : ompDarkTheme;
+  const theme = scheme === "light" ? ompLightTheme : ompDarkTheme;
   return (
     <PaperProvider theme={theme} settings={{ icon: paperIcon }}>
       {children}

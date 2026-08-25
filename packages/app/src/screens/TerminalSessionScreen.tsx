@@ -49,7 +49,7 @@ import type { PromptImage, SessionLiveStatus, TranscriptTailMessage } from "@omp
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback } from "react";
-import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, View } from "react-native";
+import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Button } from "react-native-paper";
 import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
@@ -59,7 +59,7 @@ import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../c
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
-import { rhythm } from "../design/rhythm.ts";
+import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, radius, signal, space, stroke } from "../design/tokens.ts";
@@ -189,6 +189,11 @@ function logRows(tui: TuiSessionState): LogRow[] {
 }
 
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
+  // The attribution column grows with the text rather than the text being
+  // capped to fit it: at the default size 72 leaves 66 points for a 61.974
+  // point "thinking", which is 1.065x of headroom, so any accessibility size
+  // at all broke the word while a default-size-only gate kept passing.
+  const { fontScale } = useWindowDimensions();
   const { tui, connection, status, promptAccess, load } = props;
   // Colour and geometry that can change under the app: the light theme swaps
   // `ground` and `ink` wholesale. Spacing is read from `rhythm` directly, at
@@ -274,7 +279,12 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
       // the usable width on a phone.
       const row = (
         <>
-          <View style={[styles.gutter, { borderLeftColor: mine ? theme.ink.faint : theme.signal.sage }]}>
+          <View
+            style={[
+              styles.gutter,
+              { width: attributionWidth(fontScale), borderLeftColor: mine ? theme.ink.faint : theme.signal.sage },
+            ]}
+          >
             <Kicker color={mine ? theme.ink.muted : theme.signal.sage}>{mine ? "you" : "agent"}</Kicker>
             {under}
           </View>
@@ -304,7 +314,10 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </View>
       );
     },
-    [theme],
+    // `fontScale` as well as the theme: the attribution column's width is
+    // derived from it, so a row memoised without it keeps the old column when
+    // an operator changes their text size mid-session.
+    [theme, fontScale],
   );
 
   /**

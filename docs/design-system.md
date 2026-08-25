@@ -108,9 +108,19 @@ app:
   because naming a face and a numeric weight together makes Android synthesise
   a bold on top of a face that already is one.
 
-Light and dark are both defined. Dark is the app; light is warm paper mirroring
-the dark ground's hue, and the signals do not change between them — an operator
-who learned that amber means working does not relearn it in daylight.
+**The app is dark, and light mode is not a feature yet.** Both ramps are
+defined — light is warm paper mirroring the dark ground's hue, and the signals
+do not change between them — but `OmpThemeProvider` does not consult the
+device. It cannot yet: 43 files still import `ground` / `ink` / `signal`
+straight from `tokens.ts`, which is the dark ramp and nothing else, so a light
+theme reaches only the surfaces that read it through `useOmpTheme()`. A phone
+set to light appearance rendered a dark header over a cream transcript, which
+is what a half-finished migration looks like from the outside. So the device
+read is gone and `ompLightTheme` stays reachable only through the provider's
+`scheme` prop, a harness seam for theme tests. Adoption of the hook by the
+remaining 43 files is what turns light into a claim; until then this document
+makes none, and `packages/app/test/omp-theme-root.test.tsx` fails if the
+production tree ever paints a light surface under a light device.
 
 ## `design/rhythm.ts`: the spacing fix
 

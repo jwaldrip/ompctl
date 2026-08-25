@@ -46,10 +46,34 @@ export interface StatusReadoutProps {
   clearances: number;
 }
 
+/**
+ * Context pressure as a fraction, or null when there is nothing to report.
+ *
+ * Two jobs in one place because they were two answers to one question before.
+ *
+ * `null` is not zero. A bar at zero claims the window is empty, which is the
+ * same lie the readout refuses to tell with a dash, so a session that has
+ * reported no usage draws no bar at all.
+ *
+ * And the value is CLAMPED, because Paper's `ProgressBar` interpolates over
+ * [0, 1] and clamps neither end. omp keeps counting past a model's nominal
+ * size, so an over-budget window handed Paper a number above 1 and got a fill
+ * wider than its own track plus an accessibility value above 100. The colour
+ * ramp is unaffected -- `pressureSignal` already saturates at oxide -- so only
+ * the drawing was wrong, which is exactly the kind of thing no assertion on the
+ * figure beside it would have caught.
+ */
+function pressureFraction(usage: Usage | null): number | null {
+  if (usage === null || usage.size === 0) return null;
+  const fraction = usage.used / usage.size;
+  if (!Number.isFinite(fraction)) return null;
+  return Math.min(Math.max(fraction, 0), 1);
+}
+
 export function StatusReadout({ state, attempt, delayMs, usage, clearances }: StatusReadoutProps): JSX.Element {
   const tone = signal[LINK_SIGNALS[state]];
   const wash = signalWash[LINK_SIGNALS[state]];
-  const fraction = usage === null || usage.size === 0 ? null : usage.used / usage.size;
+  const fraction = pressureFraction(usage);
   const pressure = fraction === null ? ink.faint : signal[pressureSignal(fraction)];
 
   return (
