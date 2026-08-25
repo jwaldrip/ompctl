@@ -11,6 +11,8 @@
  * carrying the approve scope.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type AcpAgentRegistrySnapshot,
   AcpClient,
@@ -30,6 +32,7 @@ import {
   type AgentId,
   type AgentState,
   DefaultPolicy,
+  type HostMount,
   type HostRef,
   type HostSpec,
   type PlanReviewChoice,
@@ -37,6 +40,7 @@ import {
   type Policy,
   type PolicyDecision,
   type PromptImage,
+  resolveMountPath,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
@@ -44,7 +48,7 @@ import {
   TERMINAL_AGENT_STATES,
   toAcpOption,
 } from "@ompd/core";
-import type { HostHandle, Provisioner } from "./provisioner/types.ts";
+import { type HostHandle, ProvisionError, type Provisioner } from "./provisioner/types.ts";
 
 /** Thrown when an actor lacks the scope for an operation, or its device is revoked. */
 export class UnauthorizedError extends Error {
@@ -122,6 +126,21 @@ export interface SupervisorOptions {
    * browser but can no longer call it.
    */
   mcpServersFor?: (agentId: AgentId) => unknown[];
+  /**
+   * The daemon's own state directory, so a requested mount can be refused for
+   * naming it. Defaults to `~/.ompd`, the same expression `Ompd` and
+   * `ContainerBackend` compute when nothing overrides it.
+   *
+   * The default is a convenience for tests and is a hazard everywhere else,
+   * which is worth saying plainly: `OMPD_HOME` moves the real directory, so a
+   * supervisor left on the default while the daemon runs elsewhere would
+   * happily hand an agent the token store it is supposed to refuse. Nothing
+   * about that fails to typecheck, and it is wrong only for the operators who
+   * moved their home. `host-reuse.test.ts` pins it from the other side: it
+   * proves the supervisor refuses a mount inside the home it was GIVEN, which
+   * fails if this stops being threaded through to `resolveMountPath`.
+   */
+  home?: string;
 }
 
 export interface CreateAgentInput {
@@ -179,6 +198,166 @@ export function createAgentId(): AgentId {
   return `agt_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
 
+/**
+ * A `HostSpec` with every field that decides what a host *is* reduced to one
+ * spelling, so two specs meaning the same thing compare equal and two that do
+ * not, do not.
+ *
+ * Two fields need it. `network` is optional in the contract with `"isolated"`
+ * as its documented default, so an omitted policy and an explicit
+ * `"isolated"` are one request written two ways. `mounts` carry an operator's
+ * literal string and an optional mode, and `/tmp/x`, `/tmp/x/`, `/tmp/./x`
+ * and a symlink to it are one directory, listable in any order.
+ */
+export interface NormalizedHostSpec extends HostSpec {
+  /** Never absent, so an omitted policy and an explicit "isolated" are one spec. */
+  network: "isolated" | "none";
+  /**
+   * Canonical host paths with the mode decided, ordered by path then mode.
+   *
+   * Duplicates are kept rather than merged. One directory named twice with
+   * two modes is the caller's own doing, and inventing a rule for which wins
+   * would silently change what gets mounted; this comparison has to be total,
+   * not opinionated.
+   */
+  mounts: Required<HostMount>[];
+}
+
+/**
+ * Every field of `HostSpec`, and therefore every field the reuse comparison
+ * must have an answer for.
+ *
+ * The `Record<keyof HostSpec, true>` annotation is the guard, and it is here
+ * because the omission it prevents already shipped. The merged comparison
+ * named `image`, `repo`, `ref` and `ttlSeconds` and silently left out
+ * `network` and `mounts`, which is two live bypasses rather than an
+ * inefficiency: a request for a container with no network was served by a NAT
+ * one without the provider's refusal ever being reached, and a request naming
+ * a new mount was served by a host that did not have it, with the mount never
+ * canonicalized and never policy-checked. Neither caller saw an error.
+ *
+ * A field added to `HostSpec` and not added here no longer compiles, and one
+ * added here without a case in `reuseValue` throws the first time any host is
+ * asked for. Both are loud on purpose: "this field does not affect reuse" has
+ * to be a decision somebody wrote down, not the default that falls out of
+ * forgetting.
+ */
+const HOST_SPEC_REUSE_FIELDS: Record<keyof HostSpec, true> = {
+  image: true,
+  kind: true,
+  mounts: true,
+  network: true,
+  ref: true,
+  repo: true,
+  ttlSeconds: true,
+};
+
+/**
+ * The field names above, in a fixed order.
+ *
+ * Exported so `host-reuse.test.ts` can pin them against a literal list: the
+ * compiler forces a new field to be LISTED, and that test forces it to be
+ * DECIDED, which are two different mistakes.
+ */
+export const HOST_SPEC_REUSE_KEYS: readonly string[] = Object.keys(HOST_SPEC_REUSE_FIELDS).sort();
+
+/**
+ * Resolve a caller's spec into the single form the reuse lookup, the
+ * provisioner and the stored `HostRef` all see.
+ *
+ * Running before the reuse lookup is the correction, not an implementation
+ * detail. `ContainerBackend.provision` does its own `resolveMountPath`, and
+ * that is precisely why the check was reachable only on the miss path: a
+ * reused host means no provision call, so a newly named mount was never
+ * canonicalized, never policy-checked and never actually mounted, and the
+ * agent got a host silently lacking the directory it asked for. Resolving
+ * here means a mount is refused identically whether or not a host already
+ * exists, which is the property that was missing.
+ *
+ * The backend keeps its own copy. It is reached by callers that never pass
+ * through the supervisor (the TTL sweep, reconciliation after a restart), and
+ * re-resolving an already-canonical path is idempotent, so the duplication
+ * costs a `realpath` and buys a boundary that holds from both directions.
+ *
+ * Applied to every kind, including `local`. A local host ignores mounts and
+ * network entirely, so refusing `/etc` here refuses something that would
+ * previously have been ignored -- which is the point: accepting a request you
+ * will not honour is the shape this whole slice exists to remove. What it
+ * does NOT fix, and nothing here claims to, is that `LocalBackend` also
+ * ignores `network: "none"` rather than refusing it. That gap is real and
+ * lives in the backend, not in this comparison.
+ *
+ * Throws `ProvisionError` with the message shape `ContainerBackend` uses, so
+ * a refused mount reads the same to a caller on both paths.
+ */
+export function normalizeHostSpec(spec: HostSpec, home: string): NormalizedHostSpec {
+  const mounts: Required<HostMount>[] = (spec.mounts ?? []).map(mount => {
+    const resolution = resolveMountPath(mount.hostPath, { home, mustExist: true });
+    if (!resolution.ok) {
+      throw new ProvisionError(`refusing to mount ${mount.hostPath}: ${resolution.reason}`, spec.kind);
+    }
+    return { hostPath: resolution.path, mode: mount.mode ?? "ro" };
+  });
+  // Ordered by path, then by mode so the order stays total when one directory
+  // is named twice. Without it `[a, b]` and `[b, a]` are two specs, and the
+  // same request made twice provisions a second container for nothing.
+  // Compared by code unit rather than by `localeCompare`, so the order does
+  // not move with the machine's collation.
+  mounts.sort((a, b) => {
+    if (a.hostPath !== b.hostPath) return a.hostPath < b.hostPath ? -1 : 1;
+    if (a.mode === b.mode) return 0;
+    return a.mode < b.mode ? -1 : 1;
+  });
+  return { ...spec, network: spec.network ?? "isolated", mounts };
+}
+
+/**
+ * A string two normalized specs are equal on exactly when one host may serve
+ * both.
+ *
+ * A token rather than a field-by-field comparison because `mounts` is an
+ * array, where `!==` compares identities and would answer "different" for two
+ * specs naming the same directories -- the same class of bug as the one being
+ * fixed, pointing the other way. Every field is encoded as JSON, so no value
+ * has two spellings and no separator can occur inside one.
+ */
+export function hostReuseKey(spec: NormalizedHostSpec): string {
+  return HOST_SPEC_REUSE_KEYS.map(key => `${key}=${reuseValue(spec, key)}`).join("\n");
+}
+
+/**
+ * One field's contribution to the token.
+ *
+ * The `default` throw is not defensive noise. `HOST_SPEC_REUSE_FIELDS` does
+ * not compile without a new field, so the only way to reach it is to list a
+ * field and then not decide what it means here, and failing loudly on the
+ * next `createAgent` beats a host quietly shared across a difference nobody
+ * considered.
+ */
+function reuseValue(spec: NormalizedHostSpec, key: string): string {
+  switch (key) {
+    case "kind":
+      return JSON.stringify(spec.kind);
+    case "image":
+      return JSON.stringify(spec.image ?? null);
+    case "repo":
+      return JSON.stringify(spec.repo ?? null);
+    case "ref":
+      return JSON.stringify(spec.ref ?? null);
+    case "ttlSeconds":
+      return JSON.stringify(spec.ttlSeconds ?? null);
+    case "network":
+      return JSON.stringify(spec.network);
+    case "mounts":
+      return JSON.stringify(spec.mounts.map(mount => [mount.hostPath, mount.mode]));
+    default:
+      throw new Error(
+        `HostSpec field ${JSON.stringify(key)} has no host-reuse rule: decide whether two specs ` +
+          "differing in it may share one host, and add a case to reuseValue",
+      );
+  }
+}
+
 interface HostEntry {
   /**
    * Key into `#hosts`. A pid for a local host, and `<kind>:<id>` for a
@@ -188,7 +367,19 @@ interface HostEntry {
    */
   key: string;
   host: LocalHost;
-  spec: HostSpec;
+  /**
+   * Normalized, never the caller's spec. The next comparison is therefore
+   * normalized against normalized: a host provisioned for an omitted network
+   * policy must match a later explicit `"isolated"`, and a host provisioned
+   * for `/tmp/x` must match a later request naming a symlink to it.
+   */
+  spec: NormalizedHostSpec;
+  /**
+   * `hostReuseKey(spec)`, computed once. `spec` is never mutated after the
+   * entry is built, so the two cannot drift, and every `createAgent` would
+   * otherwise re-encode every live host's spec to answer one question.
+   */
+  reuseKey: string;
   /** What the agent records. Carries the container or machine id, not the pid. */
   ref: HostRef;
   /** Present only for provisioned hosts; `destroy` releases the container. */
@@ -257,6 +448,8 @@ export class Supervisor {
   #spawnHost: (opts: SpawnLocalHostOptions) => LocalHost;
   #provisioner: Provisioner | undefined;
   #mcpServersFor: ((agentId: AgentId) => unknown[]) | undefined;
+  /** The daemon's state directory, so a mount naming it can be refused. */
+  #home: string;
 
   /** Keyed by `HostEntry.key`. One `omp acp` process serves many agents. */
   #hosts = new Map<string, HostEntry>();
@@ -284,6 +477,7 @@ export class Supervisor {
     this.#spawnHost = opts.spawnHost ?? spawnLocalHost;
     this.#provisioner = opts.provisioner;
     this.#mcpServersFor = opts.mcpServersFor;
+    this.#home = opts.home ?? join(homedir(), ".ompd");
   }
 
   listAgents(): Agent[] {
@@ -477,12 +671,17 @@ export class Supervisor {
       resolveExited(0);
     });
 
-    const spec: HostSpec = { kind: "local" };
+    // Written normalized rather than run through `normalizeHostSpec`: a TUI
+    // the daemon adopted has no caller spec to resolve, and it must still
+    // compare equal to a plain local request so `#hostFor` can reuse it the
+    // way it always has.
+    const spec: NormalizedHostSpec = { kind: "local", network: "isolated", mounts: [] };
     const host: LocalHost = { client, pid: input.pid, kill: () => transport.close(), exited };
     const entry: HostEntry = {
       key,
       host,
       spec,
+      reuseKey: hostReuseKey(spec),
       ref: { kind: "local", id: key, spec },
       handle: undefined,
       agents: new Set(),
@@ -1020,24 +1219,36 @@ export class Supervisor {
 
   // -- internals -----------------------------------------------------------
 
-  async #hostFor(spec: HostSpec, cwd: string, actor: Actor): Promise<HostEntry> {
+  async #hostFor(requested: HostSpec, cwd: string, actor: Actor): Promise<HostEntry> {
+    // Normalized and validated BEFORE the lookup, which is the ordering the
+    // whole method turns on. Doing it after, or leaving it to the provisioner,
+    // makes every check on this spec reachable only when no host happens to
+    // exist -- and "no host happens to exist" is not a security property, it
+    // is a race with whatever else the operator started.
+    //
+    // Concretely, that ordering produced two live bypasses. A `network:
+    // "none"` request was answered by an existing NAT host, so the provider's
+    // refusal for a runtime that cannot express no-network was never reached
+    // and the caller got open egress with no error. And a request naming a new
+    // mount was answered by a host without it, so `resolveMountPath` never ran
+    // on that path at all: not canonicalized, not policy-checked, not mounted.
+    //
+    // A refused mount now throws here, identically whether or not a host
+    // exists, which is the only version of that check worth having.
+    const spec = normalizeHostSpec(requested, this.#home);
+    const wanted = hostReuseKey(spec);
+
     // One host per cwd keeps a crash blast-radius to the agents sharing a repo,
     // which is also the natural boundary for OMP's own project config.
     for (const entry of this.#hosts.values()) {
-      if (entry.spec.kind !== spec.kind) continue;
       if (!entry.host.client.agentInfo || entry.agents.size >= 16) continue;
-      // A provisioned host is reused only for an identical spec. Two container
-      // specs naming different images are two different sandboxes, and two
-      // different TTLs are two different leases.
-      if (
-        spec.kind !== "local" &&
-        (entry.spec.image !== spec.image ||
-          entry.spec.repo !== spec.repo ||
-          entry.spec.ref !== spec.ref ||
-          entry.spec.ttlSeconds !== spec.ttlSeconds)
-      ) {
-        continue;
-      }
+      // Reused only for a spec that is equal on every field of `HostSpec`,
+      // `kind` included -- see `HOST_SPEC_REUSE_FIELDS` for why the list is a
+      // typed record rather than a hand-written conjunction. Two container
+      // specs naming different images are two different sandboxes, two TTLs
+      // are two leases, two network policies are two confinement claims, and
+      // two mount sets are two different views of the operator's disk.
+      if (entry.reuseKey !== wanted) continue;
       return entry;
     }
 
@@ -1050,6 +1261,9 @@ export class Supervisor {
       if (provisioner === undefined) {
         throw new Error(`host kind ${spec.kind} requires the provisioner`);
       }
+      // The normalized spec, never the caller's. The canonical mount paths are
+      // what must reach argv, and the `HostRef` the backend builds from this
+      // is what an operator reads back when they ask what was mounted.
       handle = await provisioner.provision(spec, actor);
     }
 
@@ -1094,6 +1308,7 @@ export class Supervisor {
       key,
       host,
       spec,
+      reuseKey: wanted,
       ref,
       handle,
       agents: new Set(),

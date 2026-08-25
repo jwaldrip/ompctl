@@ -31,7 +31,6 @@ import {
   type ConnectorSummary,
   type EndpointOffer,
   type HostMount,
-  type HostSpec,
   type PersistCollabVoiceNoteInput,
   PROMPT_IMAGE_REFUSAL_REASONS,
   parsePromptImages,
@@ -60,6 +59,7 @@ import {
   type TuiSteerDelivery,
   type WebViewAction,
   type WebViewActionResult,
+  type WireHostSpec,
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
 import { CollabGuests } from "../collab/guests.ts";
@@ -232,10 +232,16 @@ function validateSessionQuery(value: unknown): { query: SessionQuery } | { error
   return { query };
 }
 
-/** Fields a client may put in a `host`. Anything else is a refusal, not a pass-through. */
+/**
+ * Fields a client may put in a `host`. Anything else is a refusal, not a
+ * pass-through.
+ *
+ * `image` is deliberately absent, and is refused by name below rather than
+ * falling out of this table as an unknown field, because the reason matters
+ * more than the refusal.
+ */
 const HOST_SPEC_KEYS: Record<string, true> = {
   kind: true,
-  image: true,
   repo: true,
   ref: true,
   ttlSeconds: true,
@@ -247,14 +253,36 @@ const HOST_SPEC_KEYS: Record<string, true> = {
 const HOST_MOUNT_KEYS: Record<string, true> = { hostPath: true, mode: true };
 
 /**
- * Narrows an untrusted `host` into a `HostSpec`, or says why it is not one.
+ * The refusal `host.image` gets, spelled out because a bare "unknown field"
+ * would send someone looking for a typo instead of for the daemon's config.
+ */
+const WIRE_IMAGE_REFUSAL =
+  "host.image is not accepted from a paired device. Naming a container image is daemon-local supply-chain " +
+  "approval, and a device holding manage scope is not that: the image's ENTRYPOINT is the first thing the " +
+  'runtime executes, before ompd has a process to gate, so no approval can confine it. Set "containerImage" ' +
+  "in the daemon's config.json instead, on the machine that will run it. Omitting host.image uses ompd's " +
+  "digest-pinned default base plus its mounted toolchain, which is the remote path.";
+
+/**
+ * Narrows an untrusted `host` into a `WireHostSpec`, or says why it is not one.
  *
  * This replaces an `as HostSpec` cast. The cast was the whole check: whatever
  * a `manage`-scoped caller put in `host` reached the provisioner with its
  * declared type and none of its claims tested, and the provisioner puts those
- * fields into a runtime's argv. `image` is the sharp one, so it is refused
- * twice: here, and in the container backend's own `refuseIfFlagShaped`, which
- * a caller that is not the gateway cannot skip.
+ * fields into a runtime's argv.
+ *
+ * `image` is not one of the fields a device may set, at all. It used to be
+ * accepted here with a leading-dash check in front of it, which was the wrong
+ * shape of defence: every supply-chain control on the default path (a
+ * digest-pinned base, a reviewed omp binary, a verified CA bundle) is bypassed
+ * by naming any other image, and the gate cannot mitigate that because a
+ * generic OCI image's ENTRYPOINT runs before ompd has anything to gate. So the
+ * field moves to the daemon's own config, where it is an operator's decision
+ * on their own disk, and the wire refusal says so.
+ *
+ * The return type is `WireHostSpec`, not `HostSpec`, so a later change cannot
+ * re-open this by handing a wire value to something that sets `image`: the
+ * widening direction typechecks and the narrowing one does not.
  *
  * Every accepted field is copied onto a fresh object rather than the input
  * being cast. Rejecting unknown keys already refuses an extra field, so the
@@ -266,8 +294,12 @@ const HOST_MOUNT_KEYS: Record<string, true> = { hostPath: true, mode: true };
  * `home` is known and the canonical path goes straight into argv; a gateway
  * that pre-resolved would be a second, weaker copy of that decision.
  */
-function validateHostSpec(value: unknown): { host: HostSpec } | { error: string } {
+function validateHostSpec(value: unknown): { host: WireHostSpec } | { error: string } {
   if (!isRecord(value)) return { error: "host must be an object" };
+  // Ahead of the unknown-key sweep, so the answer names the trust boundary
+  // rather than reading as a spelling mistake. `in` rather than a defined
+  // check: `{ image: undefined }` is still a device asking for the field.
+  if ("image" in value) return { error: WIRE_IMAGE_REFUSAL };
   const unknownKey = Object.keys(value).find(key => HOST_SPEC_KEYS[key] !== true);
   if (unknownKey !== undefined) return { error: `host has an unknown field "${unknownKey}"` };
   // Narrowed by comparison rather than by a guard function, so `value.kind`
@@ -276,18 +308,8 @@ function validateHostSpec(value: unknown): { host: HostSpec } | { error: string 
     return { error: "host.kind must be one of local, container, cloud" };
   }
 
-  const host: HostSpec = { kind: value.kind };
+  const host: WireHostSpec = { kind: value.kind };
 
-  if (value.image !== undefined) {
-    if (typeof value.image !== "string") return { error: "host.image must be a string" };
-    // `image` lands in argv as the image positional, where a leading dash is
-    // consumed as a flag: `"--privileged"` produces
-    // `run --privileged tail -f /dev/null` and makes `tail` the image name.
-    if (value.image.startsWith("-")) {
-      return { error: "host.image cannot begin with a dash; a runtime would read it as a flag, not an image" };
-    }
-    host.image = value.image;
-  }
   if (value.repo !== undefined) {
     if (typeof value.repo !== "string") return { error: "host.repo must be a string" };
     host.repo = value.repo;
@@ -307,6 +329,22 @@ function validateHostSpec(value: unknown): { host: HostSpec } | { error: string 
   if (value.network !== undefined) {
     if (value.network !== "isolated" && value.network !== "none") {
       return { error: 'host.network must be "isolated" or "none"' };
+    }
+    // Refused for a local host rather than accepted and ignored. `LocalBackend`
+    // spawns a process on the daemon's own machine, which has no network
+    // namespace of its own to isolate or remove, so a caller who asked for
+    // `"none"` and got a `local` host would have been told yes and given a
+    // process with the operator's full network. The refusal belongs here
+    // rather than in the backend: it is a property of the request, and putting
+    // it in one backend would mean every other backend has to grow the same
+    // opinion separately.
+    if (value.kind === "local") {
+      return {
+        error:
+          "host.network cannot be set on a local host: it runs as a process on the daemon's own machine and has " +
+          "no network of its own to isolate or remove, so ompd will not accept a confinement it cannot apply. Ask " +
+          'for kind: "container" if the network is what matters.',
+      };
     }
     host.network = value.network;
   }
@@ -2477,7 +2515,9 @@ export class Gateway {
    * HostSpec }`, which is not a check at all: a `manage`-scoped caller's
    * `host` reached the provisioner with its declared type and none of its
    * claims tested, and the provisioner turns those fields into a container
-   * runtime's argv.
+   * runtime's argv. What survives that validation is a `WireHostSpec`, which
+   * is the narrower promise: it cannot carry an `image`, and the supervisor
+   * accepts it because widening to `HostSpec` is the safe direction.
    */
   async #createAgentOverWire(body: unknown, actor: Actor): Promise<AgentCreateOutcome> {
     const input = body as {
@@ -2493,7 +2533,7 @@ export class Gateway {
     // Validated before the replica branch, not inside the run path. A replica
     // queues the spec for a primary to run later, so a `host` checked only on
     // the run path would be persisted unchecked and validated by nobody.
-    let host: HostSpec | undefined;
+    let host: WireHostSpec | undefined;
     if (input.host !== undefined) {
       const validated = validateHostSpec(input.host);
       if ("error" in validated) return { kind: "bad", error: validated.error };

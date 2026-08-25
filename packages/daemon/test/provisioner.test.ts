@@ -1110,9 +1110,19 @@ describe("extra mounts", () => {
       // A custom OMPD_HOME that names neither `.omp` nor `.ompd`, so this can
       // only be caught by comparing against the daemon's actual configured
       // home, never by a static pattern -- proving that check runs at all.
+      //
+      // Under `/srv`, deliberately, and that choice is the test. It used to be
+      // `/opt/ompd-state`, and once `/opt` became a protected tree (the
+      // operator's toolchain lives at `/opt/homebrew`, a runtime at
+      // `/opt/podman`, so a writable mount there is host code execution) this
+      // row still passed while proving nothing: the static tree rule refused it
+      // before the home comparison was ever reached. `/srv` is deliberately not
+      // protected, holding no OS code, no credential store and no kernel
+      // interface, so it is the one place left where only the home comparison
+      // can produce the refusal.
       label: "the daemon's own configured state directory, wherever OMPD_HOME points",
-      hostPath: "/opt/ompd-state/token",
-      home: "/opt/ompd-state",
+      hostPath: "/srv/ompd-state/token",
+      home: "/srv/ompd-state",
     },
   ];
 

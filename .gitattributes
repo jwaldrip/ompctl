@@ -1,0 +1,15 @@
+# Upstream release checksum manifests, committed verbatim.
+#
+# These files are evidence, not source. A test recomputes each one's own sha256
+# and cross-checks the digests compiled into `toolchain-manifest.ts` against the
+# lines inside them, so a fabricated literal fails review rather than looking
+# plausible. Their byte identity is the whole point.
+#
+# `-text` disables every end-of-line conversion git would otherwise apply.
+# Without it a checkout configured with `core.autocrlf=true`, which is the
+# default on Windows, rewrites LF to CRLF on the way to the working tree, the
+# recomputed sha256 stops matching, and the failure looks like a tampered
+# fixture rather than a checkout setting. `binary` would also imply `-diff`,
+# and a reviewer needs to be able to read the diff when one of these changes,
+# so `-text` alone is the right tool.
+packages/daemon/test/fixtures/omp-releases/*.txt -text

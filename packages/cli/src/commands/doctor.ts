@@ -366,8 +366,8 @@ function stateCheck(ctx: CliContext): Check {
 }
 
 /**
- * Which container runtime the provisioner would actually select, and what
- * confinement it can express.
+ * Which container runtime the provisioner would actually select, what
+ * confinement it can express, and which image it would run.
  *
  * Every candidate is reported rather than just the winner, because "docker is
  * installed but you also have Apple's runtime" is exactly the thing an
@@ -381,24 +381,40 @@ function stateCheck(ctx: CliContext): Check {
  * `--version` perfectly well with its apiserver stopped, and then fails every
  * provision.
  *
- * `OMPD_CONTAINER_RUNTIME` is honoured here for the same reason the line exists
- * at all. A review found this reporting the platform's native runtime while a
- * pin sent every provision somewhere else, which is worse than saying nothing:
- * the one question this answers is "which runtime is my agent actually on".
+ * The pin is read from the daemon's own `config.json`, not from this process's
+ * environment. It used to be `ctx.env.OMPD_CONTAINER_RUNTIME`, which is the
+ * doctor reporting on its own shell: a launchd-started daemon inherits no
+ * shell, so the value this command saw and the value the daemon used were two
+ * different things, and this is the one line whose entire job is answering
+ * "which runtime is my agent actually on".
+ *
+ * A pin that cannot be satisfied is a `fail`, not a `warn`, and that is a
+ * deliberate split from the unpinned case. No runtime installed is a
+ * capability that is absent; a pin naming a runtime that is not usable is
+ * broken now, because every container provision will throw rather than fall
+ * back, which is the behaviour that was chosen on purpose.
  */
 async function runtimeCheck(ctx: CliContext): Promise<Check> {
-  // Read from the CLI's own env view rather than `process.env`, so a test can
-  // drive both branches without mutating the process.
-  const pinned = ctx.env.OMPD_CONTAINER_RUNTIME;
-  if (pinned !== undefined && !KNOWN_RUNTIMES.includes(pinned)) {
+  const configPath = join(ctx.home, "config.json");
+  let pinned: string;
+  let image: string;
+  try {
+    const config = loadConfig(ctx.home);
+    pinned = config.containerRuntime;
+    image = config.containerImage;
+  } catch (err) {
+    // `loadConfig` already refuses an unknown runtime naming the valid set and
+    // an unusable image saying why, so repeating either check here would be a
+    // second copy that can disagree with the daemon's.
     return {
       label: "containers",
       severity: "fail",
-      detail: `OMPD_CONTAINER_RUNTIME=${pinned} names no runtime ompd knows`,
-      advice: [`unset it or set it to one of ${KNOWN_RUNTIMES.join(", ")}`],
+      detail: `${configPath} is not loadable: ${err instanceof Error ? err.message : err}`,
+      advice: ["fix or delete that file; the daemon refuses to start on it too"],
     };
   }
-  const candidates = pinned === undefined ? runtimeOrder(process.platform) : [pinned];
+
+  const candidates = pinned === "" ? runtimeOrder(process.platform) : [pinned];
   if (candidates.length === 0) {
     return {
       label: "containers",
@@ -412,10 +428,23 @@ async function runtimeCheck(ctx: CliContext): Promise<Check> {
   const usable = probes.find((probe): probe is RuntimeCapability => !("reason" in probe));
   const unusable = probes.filter((probe): probe is RuntimeUnavailable => "reason" in probe);
   if (usable === undefined) {
+    const reasons = unusable.map(probe => `${probe.runtime}: ${probe.reason}`).join(", ");
+    if (pinned !== "") {
+      return {
+        label: "containers",
+        severity: "fail",
+        detail: `containerRuntime is pinned to ${pinned} and ${reasons}; every container host will fail to provision`,
+        advice: [
+          ...unusable.map(probe => `${probe.runtime}: ${probe.hint}`),
+          `or remove "containerRuntime" from ${configPath} for the platform default, ` +
+            `or set it to one of ${KNOWN_RUNTIMES.join(", ")} that is installed`,
+        ],
+      };
+    }
     return {
       label: "containers",
       severity: "warn",
-      detail: unusable.map(probe => `${probe.runtime}: ${probe.reason}`).join(", "),
+      detail: reasons,
       advice: [
         "local hosts still work; container hosts need one of these",
         ...unusable.map(probe => `${probe.runtime}: ${probe.hint}`),
@@ -437,13 +466,38 @@ async function runtimeCheck(ctx: CliContext): Promise<Check> {
     .filter(probe => probe.runtime !== usable.runtime)
     .map(probe => ("reason" in probe ? `${probe.runtime} ${probe.reason}` : probe.runtime));
   const also = others.length > 0 ? ` (also present: ${others.join(", ")})` : "";
+  const how = pinned === "" ? "platform default" : "pinned in config.json";
   return {
     label: "containers",
     severity: "ok",
     detail:
-      `${usable.runtime} ${usable.version}, confines with ` +
-      `${confinement.length > 0 ? confinement.join(" ") : "its own VM per container"}${also}`,
+      `${usable.runtime} ${usable.version} (${how}), confines with ` +
+      `${confinement.length > 0 ? confinement.join(" ") : "its own VM per container"}${also}, ` +
+      `${imageLine(image)}`,
+    // Advice on an ok line, because a trusted image is not a problem to fix,
+    // it is a claim the operator made that they should be able to read back.
+    ...(image === ""
+      ? {}
+      : {
+          advice: [
+            "ompd mounts nothing over that image and pins no digest for it, and its ENTRYPOINT runs " +
+              "before ompd has a process to gate, so the approval gate cannot confine what is inside it",
+          ],
+        }),
   };
+}
+
+/**
+ * How the image half of the containers line reads.
+ *
+ * Split out so the two cases are visibly different sentences rather than one
+ * sentence with a value substituted into it: "the pinned default" and "an
+ * image an operator vouched for" are different security claims, and a reader
+ * skimming this line has to be able to tell which one they are looking at.
+ */
+function imageLine(image: string): string {
+  if (image === "") return "image: ompd's pinned default base plus its mounted toolchain";
+  return `image: ${image}, trusted by whoever configured it and checked by nothing ompd does`;
 }
 
 /**

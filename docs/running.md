@@ -523,10 +523,24 @@ Docker or OrbStack. Silently running on the thing this work exists to remove is
 worse than refusing, and the same reasoning that makes a pinned-but-absent
 runtime an error applies to a native runtime whose service is merely stopped.
 
-Docker and podman are still supported, deliberately rather than implicitly:
-`OMPD_CONTAINER_RUNTIME=docker` or `=podman` pins one. A pinned runtime that is
-missing is an error, never a fall back to whatever else happens to be
-installed.
+Docker and podman are still supported, deliberately rather than implicitly, and
+the way you ask for one is the daemon's own config file rather than an
+environment variable. In `~/.ompd/config.json`:
+
+```json
+{ "containerRuntime": "podman" }
+```
+
+Empty or absent means the platform default above. A name ompd does not know is
+refused when the config loads, naming the valid set, rather than at the first
+provision. A configured runtime that is missing is an error, never a fall back
+to whatever else happens to be installed.
+
+It is config rather than `OMPD_CONTAINER_RUNTIME` for a reason worth stating: a
+launchd-started daemon does not inherit your shell, so an environment variable
+set in a terminal was silently absent in the one place it had to work, while
+`ompd doctor` read it and reported a runtime the daemon would never pick. The
+config file is one value that the daemon and the CLI both read.
 
 ompd then starts a detached container, mounts the workspace at the same
 absolute path it has here so a cwd means the same thing on both sides, and
@@ -557,12 +571,33 @@ runtime whatever its help says. That last one stays false even for 1.3.0, whose
 documentation says `--user` accepts `name|uid[:gid]`, until somebody runs it
 against a real 1.3.0 binary and records the result.
 
-### The image, and why nothing private is pulled
+### The image, and why a paired device cannot name one
 
-ompd does not build or publish an image. Naming one is still supported and
-still wins: `spec.image`, or `OMPD_CONTAINER_IMAGE` for the daemon default, is
-pulled exactly as written and nothing is mounted over it. That image needs
-`omp` on its `PATH` and a root certificate store.
+ompd does not build or publish an image.
+
+**A remote caller cannot name one either.** `image` on a `POST /v1/agents` host
+spec is refused, and that is a deliberate narrowing after a security review.
+Everything below about pinned digests and verified checksums is bypassed by
+naming an image, and an image's `ENTRYPOINT` runs before the approval gate
+exists, so the gate cannot mitigate what is inside it. A device holding
+`SCOPE_MANAGE` is authorised to ask for work; that is not the same act as
+deciding which supply chain the operator trusts.
+
+Naming an image is therefore daemon-local configuration, in the same file:
+
+```json
+{ "containerImage": "registry.example/your-omp@sha256:..." }
+```
+
+That image is **trusted**. Be clear-eyed about what that means: the approval
+gate does not confine its contents and cannot, because a generic OCI image runs
+its own entrypoint before any code ompd controls. Configuring one is a
+statement that you trust its publisher the way you trust a package you install,
+and it needs `omp` on its `PATH` and a root certificate store. Nothing is
+mounted over it and no digest of it is checked, because it is yours.
+
+Empty or absent means the pinned default below, which is the path a remote
+Cowork request always takes. `ompd doctor` says which of the two is in force.
 
 Name nothing and there is no build and no private registry in the path. The
 default is a public base image (`debian:bookworm-slim`) with the toolchain
