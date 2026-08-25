@@ -613,7 +613,7 @@ describe("POST /v1/sync/import", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.outcome).toBe("ok");
     expect(rows[0]?.actorDeviceId).not.toBeNull();
-    expect(rows[0]?.detail).toMatchObject({ routines: 1 });
+    expect(rows[0]?.detail).toMatchObject({ stage: "record", completed: 1, attempted: 1 });
 
     // Not fifty arming decisions nobody made: the restore is one row, and the
     // per-routine actions stay out of it.
@@ -740,5 +740,40 @@ describe("POST /v1/sync/import", () => {
     const localRef = imported === undefined ? "" : refOf(imported);
     expect(localRef).toMatch(/^whsec_[0-9a-f]{16}$/);
     expect(localRef).not.toBe("whsec_from_elsewhere");
+  });
+});
+
+describe("a routine write and its record are one transaction", () => {
+  test("an audit insert that throws rolls the routine back rather than arming it unrecorded", async () => {
+    const h = await harness();
+    const store = h.daemon.store;
+    const real = store.audit.bind(store);
+
+    // The invariant this seam claims is that no door arms an automation without
+    // leaving a record. Across two independent writes that was a hope rather
+    // than an invariant: the definition committed, the audit insert failed, and
+    // the only trace of the automation was the automation. One transaction makes
+    // the claim true, and the way to see it is to break the second write and
+    // then look for the first.
+    Object.defineProperty(store, "audit", {
+      configurable: true,
+      value: () => {
+        throw new Error("audit table went away");
+      },
+    });
+
+    const response = await post(h, "/v1/routines", {
+      name: "unrecorded",
+      trigger: { kind: "manual" },
+      actions: [ACTION],
+    });
+    expect(response.status).toBeGreaterThanOrEqual(500);
+
+    Object.defineProperty(store, "audit", { configurable: true, value: real });
+
+    // Neither half landed. A routine surviving here would be one that nothing in
+    // the log accounts for, which is the exact shape this branch set out to
+    // remove from the socket frame in the first place.
+    expect(store.listRoutines()).toEqual([]);
   });
 });

@@ -23,6 +23,7 @@ import {
   type Actor,
   type Agent,
   type AgentId,
+  type AuditInput,
   type ClientFrame,
   COLLAB_REFUSAL_REASONS,
   type CollabRefusal,
@@ -2331,11 +2332,24 @@ export class Gateway {
         // machine started running work nobody scheduled on it. Per-routine
         // `routine.create` rows would be fifty arming decisions nobody made,
         // which reads worse than one restore recorded as a restore.
+        //
+        // The same fields as the failure row below, deliberately. They were
+        // once `routines` here and `completed`/`attempted` there, which meant
+        // anything counting imports had to special-case the outcome to find the
+        // same number under a different name. On success `stage` is always
+        // `record` and `completed` always equals `attempted`, and both are
+        // carried anyway so the shape of a `sync.import` row does not depend on
+        // how it went.
         this.#store.audit({
           action: "sync.import",
           actorDeviceId: actor.deviceId,
           outcome: "ok",
-          detail: { routines: completed, policyMode: document.policyMode },
+          detail: {
+            stage,
+            completed,
+            attempted: document.routines.length,
+            policyMode: document.policyMode,
+          },
         });
         return Response.json({ ok: true, routines: completed });
       } catch (err) {
@@ -5327,25 +5341,39 @@ export class Gateway {
    * kind and discarded, and the ref is either the one already on disk or a
    * freshly minted one. See `#adoptTrigger`.
    *
-   * The withdrawal is ordered deliberately: the row goes only after the
-   * definition that no longer names it is committed. Deleting first and then
-   * failing the write leaves a routine that still says `webhook`, pointed at a
-   * row that is gone, and there is no door that can put it back.
+   * The definition, the credential a retarget withdraws, and the audit row all
+   * go through `store.commitRoutineWrite` as one transaction. Separately they
+   * were three writes, and the invariant this seam exists to hold, that no door
+   * arms an automation without leaving a record, was a hope: a committed
+   * definition followed by a failed audit insert left the automation as the only
+   * trace of itself. The withdrawal keeps the ordering it had, after the write,
+   * and inside a transaction that ordering now survives a rollback rather than
+   * only a clean run.
+   *
+   * `audit` is passed through rather than built here, because only the caller
+   * knows whether this write is one arming decision to record or one routine
+   * inside a restore that records itself once for the whole catalogue.
    */
-  #persistRoutine(input: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] }): {
-    routine: Routine;
-    created: boolean;
-  } {
+  #persistRoutine(
+    input: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] },
+    audit?: (created: boolean, routine: Routine) => AuditInput,
+  ): { routine: Routine; created: boolean } {
     const existing = this.#store.listRoutines().find(candidate => candidate.id === input.id);
+    const created = existing === undefined;
     const routine: Routine = { ...input, trigger: this.#adoptTrigger(existing?.trigger, input.trigger) };
-    this.#store.upsertRoutine(routine);
-    if (existing?.trigger.kind === "webhook" && routine.trigger.kind !== "webhook") {
-      // The capability is exactly what was just withdrawn, so the credential
-      // goes with it. A surviving hash is a live secret nothing in the
-      // catalogue names any more: nothing lists it and nothing can rotate it.
-      this.#store.deleteWebhookSecret(existing.trigger.secretRef);
-    }
-    return { routine, created: existing === undefined };
+    // The capability is exactly what a retarget withdraws, so the credential
+    // goes with it. A surviving hash is a live secret nothing in the catalogue
+    // names any more: nothing lists it and nothing can rotate it.
+    const withdrawn =
+      existing?.trigger.kind === "webhook" && routine.trigger.kind !== "webhook"
+        ? existing.trigger.secretRef
+        : undefined;
+    this.#store.commitRoutineWrite({
+      routine,
+      ...(withdrawn === undefined ? {} : { withdrawSecretRef: withdrawn }),
+      ...(audit === undefined ? {} : { audit: audit(created, routine) }),
+    });
+    return { routine, created };
   }
 
   /**
@@ -5389,18 +5417,17 @@ export class Gateway {
     routine: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] };
     actorDeviceId: string;
   }): Routine {
-    const { routine, created } = this.#persistRoutine(input.routine);
-    this.#store.audit({
+    const { routine } = this.#persistRoutine(input.routine, (created, written) => ({
       action: created ? "routine.create" : "routine.update",
       actorDeviceId: input.actorDeviceId,
       outcome: "ok",
       detail: {
-        routineId: routine.id,
-        name: routine.name,
-        trigger: routine.trigger.kind,
-        actions: routine.actions.length,
+        routineId: written.id,
+        name: written.name,
+        trigger: written.trigger.kind,
+        actions: written.actions.length,
       },
-    });
+    }));
     return routine;
   }
 

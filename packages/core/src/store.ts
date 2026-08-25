@@ -1210,6 +1210,36 @@ export class Store {
       );
   }
 
+  /**
+   * One routine definition, the credential a retarget withdraws, and the record
+   * of the write, as a single transaction.
+   *
+   * Three separate writes is how a routine can end up armed with nothing saying
+   * who armed it: the definition commits, the audit insert then fails, and the
+   * only trace of an automation on this machine is the automation. The gateway
+   * asserts that every door writing a routine leaves a row, and across two
+   * independent writes that is a hope rather than an invariant.
+   *
+   * `withdrawSecretRef` is the credential row a trigger moving off `webhook`
+   * gives up, or undefined when the write withdraws nothing. It is deleted
+   * after the definition is written, which is the same ordering as before and
+   * now means something stronger: a rollback takes the deletion with it, so
+   * there is no window where a routine still says `webhook` while the row it
+   * names is gone.
+   *
+   * `audit` is optional because one door deliberately records itself
+   * differently. `/v1/sync/import` restores a whole catalogue and writes one
+   * `sync.import` row for the restore rather than one row per routine, so it
+   * passes none here and records its own.
+   */
+  commitRoutineWrite(input: { routine: Routine; withdrawSecretRef?: string; audit?: AuditInput }): void {
+    this.#db.transaction(() => {
+      this.upsertRoutine(input.routine);
+      if (input.withdrawSecretRef !== undefined) this.deleteWebhookSecret(input.withdrawSecretRef);
+      if (input.audit !== undefined) this.audit(input.audit);
+    })();
+  }
+
   listAudit(limit = 200): AuditEntry[] {
     const rows = this.#db.query(`SELECT * FROM audit ORDER BY id DESC LIMIT ?`).all(limit) as Array<
       Record<string, string | number | null>
