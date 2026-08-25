@@ -485,4 +485,22 @@ describe("routine deletion cascade", () => {
     const s = fresh();
     expect(s.deleteRoutine("rtn_never_was")).toBe(false);
   });
+
+  test("withdrawing a webhook credential leaves the routine and its siblings alone", () => {
+    const s = fresh();
+    s.upsertWebhookSecret("whsec_withdrawn", "hash-of-the-withdrawn-secret");
+    s.upsertWebhookSecret("whsec_survivor", "hash-of-the-surviving-secret");
+
+    // The edit this serves keeps the routine and drops only the capability, so
+    // the row must go while everything else stays exactly where it was.
+    expect(s.deleteWebhookSecret("whsec_withdrawn")).toBe(true);
+    expect(s.getWebhookSecret("whsec_withdrawn")).toBeNull();
+    expect(s.getWebhookSecret("whsec_survivor")?.secretHash).toBe("hash-of-the-surviving-secret");
+
+    // False, not true: a caller has to be able to tell a withdrawal from a ref
+    // that never had a credential behind it, and a second call on a ref that
+    // is already gone is the same question.
+    expect(s.deleteWebhookSecret("whsec_withdrawn")).toBe(false);
+    expect(s.deleteWebhookSecret("whsec_never_minted")).toBe(false);
+  });
 });
