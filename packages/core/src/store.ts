@@ -785,6 +785,24 @@ export class Store {
     };
   }
 
+  /**
+   * Drop the credential row a `secretRef` names, and report whether one went.
+   *
+   * This exists for the edit that moves a routine's trigger off `webhook`.
+   * `deleteRoutine` already takes the credential with the definition, but a
+   * patch keeps the definition and withdraws only the capability, so nothing
+   * else would ever remove the row. A surviving hash is a live secret that
+   * nothing in the catalogue names any more: unreachable through the routine
+   * it was minted for, invisible to an operator reading their routines, and
+   * still a valid credential in the table the webhook door hashes against.
+   *
+   * False for a ref no row matched, so a caller can tell "withdrawn" from
+   * "there was never a credential here" rather than assuming the first.
+   */
+  deleteWebhookSecret(secretRef: string): boolean {
+    return this.#db.query(`DELETE FROM webhook_secrets WHERE secret_ref=?`).run(secretRef).changes > 0;
+  }
+
   upsertRun(run: Run): void {
     this.#db
       .query(

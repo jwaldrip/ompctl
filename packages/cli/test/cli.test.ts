@@ -1736,3 +1736,24 @@ describe("doctor", () => {
     return target;
   }
 });
+
+describe("mcp argv", () => {
+  test("the bare verb serves and the sub-action installs", () => {
+    // Two very different jobs behind one verb: the bare form is what omp
+    // spawns and speaks JSON-RPC to, and it must never be reachable by typo.
+    expect(parseCommand(["mcp"])).toEqual({ kind: "mcp" });
+    expect(parseCommand(["mcp", "install"])).toEqual({ kind: "mcp-install" });
+  });
+
+  test("an unknown sub-action names both spellings instead of serving", () => {
+    // The failure this prevents: falling back to serve would leave omp's
+    // JSON-RPC stream open on a terminal, printing nothing, looking hung.
+    expect(() => parseCommand(["mcp", "instal"])).toThrow(UsageError);
+    expect(() => parseCommand(["mcp", "instal"])).toThrow(/use mcp or mcp install/);
+    expect(() => parseCommand(["mcp", "install", "extra"])).toThrow(/mcp install takes 0 arguments/);
+  });
+
+  test("usage lists both, so `ompd help` is where you find them", () => {
+    expect(USAGE).toContain("mcp install");
+  });
+});
