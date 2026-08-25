@@ -177,6 +177,7 @@ export function Console({
   const [pendingRouteSession, setPendingRouteSession] = useState<{
     sessionId: string;
     selectedBefore: AgentId | null;
+    failureRevision: number;
   } | null>(null);
   /**
    * Which surface presents the open session: the stack, or the tablet's own
@@ -192,8 +193,13 @@ export function Console({
   latest.current = { state, actions };
 
   useEffect(() => {
-    if (pendingRouteSession === null || state.selected === null) return;
-    if (state.selected === pendingRouteSession.selectedBefore) return;
+    if (pendingRouteSession === null) return;
+    const failed = state.lastFailedSessionOpen;
+    if (failed?.sessionId === pendingRouteSession.sessionId && failed.revision > pendingRouteSession.failureRevision) {
+      setPendingRouteSession(null);
+      return;
+    }
+    if (state.selected === null || state.selected === pendingRouteSession.selectedBefore) return;
     const selected = agentFor(state, state.selected);
     const confirmedSessionId = selected?.acpSessionId ?? state.sessionIds.get(state.selected);
     if (confirmedSessionId !== pendingRouteSession.sessionId) return;
@@ -264,7 +270,11 @@ export function Console({
       const target = openSessionById(sessionId);
       if (target.kind === "dormant") {
         setOpenedFromRoute(false);
-        setPendingRouteSession({ sessionId: target.sessionId, selectedBefore: latest.current.state.selected });
+        setPendingRouteSession({
+          sessionId: target.sessionId,
+          selectedBefore: latest.current.state.selected,
+          failureRevision: latest.current.state.lastFailedSessionOpen?.revision ?? 0,
+        });
         return;
       }
       setPendingRouteSession(null);
