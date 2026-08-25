@@ -508,19 +508,21 @@ describe("resolveMountPath", () => {
       rmSync(base, { recursive: true, force: true });
     });
 
-    test.if(process.getuid?.() !== 0)("is refused, not approved on a half-resolved string", () => {
-      // Skipped as root, and the skip is the honest answer rather than a gap:
-      // root bypasses the mode bits entirely, so `realpathSync` succeeds and
-      // there is no EACCES to observe. Linux CI runs as root. The property
-      // still holds for the unprivileged daemon this code actually runs as,
-      // and the symlink-loop test below covers the same guard through a path
-      // root cannot resolve either.
+    // Gated on darwin, and on the OS rather than on the uid, because the
+    // difference is `realpath` semantics and not privilege. macOS resolves a
+    // final component by opening it, so a mode-000 directory answers EACCES.
+    // Linux resolves it from the parent's entry and succeeds, so there is no
+    // unresolvable path to refuse and asserting one would assert something
+    // false. The guard itself is not darwin-only: the symlink-loop test below
+    // reaches it on both platforms through ELOOP, which is what keeps this
+    // branch covered where EACCES is unavailable.
+    test.if(ON_DARWIN)("is refused, not approved on a half-resolved string", () => {
       const reason = refusal(locked);
       expect(reason).toContain("cannot canonicalize");
       expect(reason).toContain("(EACCES)");
     });
 
-    test.if(process.getuid?.() !== 0)("and so is anything under it, which existsSync cannot see", () => {
+    test.if(ON_DARWIN)("and so is anything under it, which existsSync cannot see", () => {
       // The trap: `existsSync` cannot stat through an unopenable parent, so it
       // answers false for a path that may well be there. Gating the refusal on
       // existence let this one through as an unverified path.
@@ -584,11 +586,14 @@ describe("resolveMountPath", () => {
       }
     });
 
-    test("a scratch directory under $TMPDIR resolves, which /private/var must not block", () => {
+    test("a scratch directory under $TMPDIR resolves, which the /var rule must not block", () => {
       // `os.tmpdir()` is `/var/folders/<hash>/T` on macOS and canonicalizes
       // under `/private/var`. Protecting that whole tree would refuse every
-      // ordinary scratch mount, which is why it is an exact-match rule.
-      expect(accepted(scratch, { mustExist: true })).toContain("/folders/");
+      // ordinary scratch mount, which is why it is an exact-match rule. On
+      // Linux `$TMPDIR` is `/tmp` and no `/var` rule is in the way, so the
+      // assertion is that it resolves under the canonical tmpdir rather than
+      // that the path contains `/folders/`, which is a macOS layout detail.
+      expect(accepted(scratch, { mustExist: true }).startsWith(TMP_CANONICAL)).toBe(true);
     });
 
     test("dot segments, doubled separators, and a trailing slash all land on one path", () => {
@@ -660,7 +665,14 @@ describe("resolveMountPath", () => {
     test("compares canonical against canonical, so a symlinked OMPD_HOME still matches", () => {
       // `OMPD_HOME=/tmp/ompd-home-x` against a canonical
       // `/private/tmp/ompd-home-x` would compare unequal if only one side were
-      // resolved, and the daemon's token store would be mountable.
+      // resolved, and the daemon's token store would be mountable. Only
+      // meaningful where `/tmp` is itself a symlink, which is macOS: on Linux
+      // `/tmp` is a real directory, there is no second spelling to disagree
+      // about, and asserting one would be inventing a path.
+      if (!ON_DARWIN) {
+        expect(realpathSync("/tmp")).toBe("/tmp");
+        return;
+      }
       expect(refusal(`/private${home}`, { home })).toContain("daemon's own state directory");
       expect(refusal(home, { home: `/private${home}` })).toContain("daemon's own state directory");
     });
@@ -669,7 +681,10 @@ describe("resolveMountPath", () => {
       const sibling = `${home}-evil`;
       mkdirSync(sibling, { recursive: true });
       try {
-        expect(accepted(sibling, { home, mustExist: true })).toBe(`/private${sibling}`);
+        // Compared against the real canonical form rather than a hardcoded
+        // `/private` prefix, so the assertion is "it resolved and was allowed"
+        // on both platforms rather than "macOS spelled it this way".
+        expect(accepted(sibling, { home, mustExist: true })).toBe(realpathSync(sibling));
       } finally {
         rmSync(sibling, { recursive: true, force: true });
       }
