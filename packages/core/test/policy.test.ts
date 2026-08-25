@@ -4,12 +4,17 @@
  * scope that is declared but never consulted, a mode that quietly escalates.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type Agent,
   DefaultPolicy,
+  dangerousMountReason,
   isInside,
   type PolicyContext,
+  resolveMountPath,
   SCOPE_APPROVE,
   SCOPE_PROMPT,
   SCOPE_READ,
@@ -199,5 +204,421 @@ describe("toAcpOption", () => {
     expect(toAcpOption({ action: "prompt", reason: "" }, { choice: "allow" })).toBe("allow_once");
     expect(toAcpOption({ action: "prompt", reason: "" }, { choice: "allow", scope: "always" })).toBe("allow_always");
     expect(toAcpOption({ action: "prompt", reason: "" }, { choice: "deny" })).toBe("reject_once");
+  });
+});
+
+/**
+ * The mount check. Every case here is a spelling of a directory the review
+ * demonstrated being mounted read-write against the old check, which applied
+ * policy to the operator's literal string instead of to the directory that
+ * string names. A test that only asserts "refused" would pass against a check
+ * that refuses everything, so each one also asserts the CANONICAL path in the
+ * reason: the proof that canonicalization ran, not just that a string matched.
+ */
+describe("resolveMountPath", () => {
+  /** The reason a path was refused. Throws, loudly, if it was allowed. */
+  function refusal(hostPath: string, opts?: { home?: string; mustExist?: boolean }): string {
+    const outcome = resolveMountPath(hostPath, opts);
+    if (outcome.ok) throw new Error(`expected ${hostPath} to be refused, it resolved to ${outcome.path}`);
+    return outcome.reason;
+  }
+
+  /** The canonical path a mount resolved to. Throws if it was refused. */
+  function accepted(hostPath: string, opts?: { home?: string; mustExist?: boolean }): string {
+    const outcome = resolveMountPath(hostPath, opts);
+    if (!outcome.ok) throw new Error(`expected ${hostPath} to resolve, it was refused: ${outcome.reason}`);
+    return outcome.path;
+  }
+
+  // `homedir()` rather than a hardcoded `/Users/jwaldrip` so the reviewer's
+  // rows are the same rows on a machine with a different operator name.
+  const HOME = homedir();
+
+  describe("the reviewer's probe rows, every one of which the old check allowed", () => {
+    test("the filesystem root", () => {
+      expect(refusal("/")).toContain("/ is a protected directory");
+    });
+
+    test("/Users, which is every operator's home at once", () => {
+      // ALLOWED before this change. The old pattern list only knew
+      // `/Users/<name>`, so the directory containing all of them walked past.
+      expect(refusal("/Users")).toContain("/Users is a protected directory");
+    });
+
+    test("a home directory named directly", () => {
+      expect(refusal(HOME)).toContain("protected root");
+    });
+
+    test("a home directory named with a trailing dot segment", () => {
+      // The exact argv the review produced:
+      // `--volume /Users/jwaldrip/.:/Users/jwaldrip/.:rw`.
+      const reason = refusal(`${HOME}/.`);
+      expect(reason).toContain("protected root");
+      expect(reason).toContain(`canonicalizes to ${HOME}`);
+    });
+
+    test("a home directory's parent reached with a dot-dot segment", () => {
+      const reason = refusal(`${HOME}/..`);
+      expect(reason).toContain("is a protected directory");
+      expect(reason).toContain("canonicalizes to /Users");
+    });
+
+    test("/etc, whose canonical form on macOS is /private/etc", () => {
+      const reason = refusal("/etc");
+      expect(reason).toContain("/private/etc is a protected directory");
+      expect(reason).toContain("canonicalizes to /private/etc");
+    });
+
+    test("/var/root, root's own home directory", () => {
+      const reason = refusal("/var/root");
+      expect(reason).toContain("/private/var/root is a protected directory");
+      expect(reason).toContain("canonicalizes to /private/var/root");
+    });
+
+    test("a home directory reached through a doubled leading separator", () => {
+      const reason = refusal(`/${HOME}`);
+      expect(reason).toContain("protected root");
+      expect(reason).toContain(`canonicalizes to ${HOME}`);
+    });
+  });
+
+  describe("directories the probe did not name but reach the same places", () => {
+    test("/private, which contains both firmlinked trees", () => {
+      // The ancestor rule, not the descendant rule: `/private` names no
+      // protected directory, it merely holds all of them.
+      expect(refusal("/private")).toContain("it contains the protected directory");
+    });
+
+    test("/private/var and /private/etc in their canonical spelling", () => {
+      expect(refusal("/private/var")).toContain("/private/var is a protected directory");
+      expect(refusal("/private/etc")).toContain("/private/etc is a protected directory");
+    });
+
+    test("inside a protected tree, not just the tree itself", () => {
+      expect(refusal("/etc/ssh")).toContain("it is inside the protected directory /private/etc");
+      expect(refusal("/usr/local/bin")).toContain("it is inside the protected directory /usr");
+    });
+
+    test("the OS trees", () => {
+      for (const dir of ["/System", "/Library", "/usr", "/bin", "/sbin"]) {
+        expect(refusal(dir)).toContain(`${dir} is a protected directory`);
+      }
+    });
+
+    test("/home, which macOS routes through autofs onto the data volume", () => {
+      // Verified on darwin 25.5.0: `realpathSync("/home")` returns
+      // `/System/Volumes/Data/home`, so on this platform `/home` is refused
+      // for landing inside `/System` rather than by its own entry in
+      // `PROTECTED_EXACT`. Both refuse. The entry stays because a Linux
+      // daemon's `/home` resolves to itself and needs the exact rule.
+      expect(refusal("/home")).toContain("/System/Volumes/Data/home");
+      expect(refusal("/home/someoperator")).toContain("it is inside the protected directory /System");
+    });
+
+    test("the data-volume spelling of a home directory, which realpath folds back", () => {
+      // `/Users` is a firmlink onto the APFS data volume, and the long way
+      // round is a real spelling an attacker would try. Verified:
+      // `realpathSync("/System/Volumes/Data/Users")` returns `/Users`, so the
+      // fold happens in the filesystem and the one `/Users` rule catches both.
+      expect(refusal("/System/Volumes/Data/Users")).toContain("/Users is a protected directory");
+      const reason = refusal(`/System/Volumes/Data${HOME}`);
+      expect(reason).toContain("protected root");
+      expect(reason).toContain(`canonicalizes to ${HOME}`);
+    });
+
+    test("the credential directories, which are checked on the canonical path", () => {
+      expect(refusal(`${HOME}/.ssh`)).toContain("secret path pattern");
+      expect(refusal(`${HOME}/.omp`)).toContain("protected root");
+      expect(refusal(`${HOME}/.ompd`)).toContain("secret path pattern");
+      // The spelling the old check missed: a dot segment in the middle.
+      expect(refusal(`${HOME}/./.aws`)).toContain("secret path pattern");
+    });
+  });
+
+  describe("case folding on a case-insensitive volume", () => {
+    test("/USERS and /users are the same directory as /Users", () => {
+      // Refused by `realpathSync` alone: measured on this APFS volume, it
+      // normalizes case for every component that exists, so `/USERS` comes
+      // back as `/Users` before any comparison runs. The fold is not what
+      // catches these, and saying otherwise would overstate it.
+      expect(refusal("/USERS")).toContain("is a protected directory");
+      expect(refusal("/users")).toContain("is a protected directory");
+    });
+
+    test("a home directory spelled in the wrong case", () => {
+      expect(refusal(HOME.toUpperCase())).toContain("protected root");
+    });
+
+    test("/ETC", () => {
+      expect(refusal("/ETC")).toContain("protected directory");
+    });
+
+    test("a wrong-case tail that realpath cannot normalize, which is what the fold is for", () => {
+      // The one shape on this machine where case folding decides the answer.
+      // `/var/root` is mode 0700, so `realpathSync` answers EACCES rather than
+      // a canonical path (measured), the ancestor walk resolves `/var` to
+      // `/private/var` and re-appends `ROOT` verbatim, and the comparison is
+      // left holding `/private/var/ROOT` against a protected
+      // `/private/var/root`. Case-sensitive, that is a miss, and the directory
+      // is the same one: `existsSync("/var/ROOT")` is true.
+      expect(refusal("/var/ROOT")).toContain("/private/var/root is a protected directory");
+      expect(refusal("/private/var/ROOT")).toContain("/private/var/root is a protected directory");
+    });
+  });
+
+  describe("symlinks, which no lexical check can see", () => {
+    let base = "";
+
+    beforeAll(() => {
+      // Created here rather than found on the real filesystem: a test that
+      // depends on a symlink someone happens to have is not a test.
+      base = mkdtempSync(join(tmpdir(), "mount-policy-"));
+      symlinkSync("/etc", join(base, "etc-link"));
+      symlinkSync("/", join(base, "escape"));
+      mkdirSync(join(base, "work", "repo"), { recursive: true });
+    });
+
+    afterAll(() => {
+      // The symlinks go first and by name. `rmSync` recursive does not follow
+      // them (verified), but `escape` points at `/` and a recursive delete that
+      // ever did follow it would take the machine with it.
+      for (const link of ["etc-link", "escape"]) {
+        try {
+          unlinkSync(join(base, link));
+        } catch {
+          // Already gone; nothing to reclaim.
+        }
+      }
+      rmSync(base, { recursive: true, force: true });
+    });
+
+    test("a symlink whose target is a protected directory", () => {
+      // The lead's named case: a link under /tmp pointing at /etc. It
+      // exercises the firmlink spelling and the symlink resolution at once,
+      // because /tmp is itself a symlink to /private/tmp.
+      const reason = refusal(join(base, "etc-link"));
+      expect(reason).toContain("/private/etc is a protected directory");
+      expect(reason).toContain("canonicalizes to /private/etc");
+    });
+
+    test("a symlink in a non-final component, which is the ancestor-walk case", () => {
+      // `<base>/escape/etc` where `escape -> /`. Nothing in the literal string
+      // names a protected directory. Only resolving the parent finds `/etc`.
+      const reason = refusal(join(base, "escape", "etc"));
+      expect(reason).toContain("/private/etc is a protected directory");
+      expect(reason).toContain("canonicalizes to /private/etc");
+    });
+
+    test("a symlinked parent cannot smuggle a path that does not exist yet", () => {
+      // `realpath` fails outright on an absent path, so without the ancestor
+      // walk this would be judged as its own literal string and allowed.
+      const reason = refusal(join(base, "escape", "etc", "no-such-file"));
+      expect(reason).toContain("it is inside the protected directory /private/etc");
+    });
+
+    test("dot-dot segments escape through a component that does not exist", () => {
+      // A real attack shape, and two mechanisms cover it: the lexical
+      // `resolve` up front, and this runtime's `realpathSync`, which collapses
+      // `..` even through an absent component (measured: Bun 1.3.14 returns
+      // `/private/tmp` for `realpathSync("/tmp/absent/..")` rather than
+      // throwing ENOENT). So this pins the OUTCOME, not the mechanism, and it
+      // cannot fail if only one of the two regresses. Said plainly because
+      // "it is guarded twice" and "it is tested twice" are different claims.
+      //
+      // Built as a string rather than with `join`, which would collapse the
+      // `..` segments itself and test nothing.
+      const reason = refusal("/tmp/absent-6f2c9b/../../etc/passwd");
+      expect(reason).toContain("it is inside the protected directory /private/etc");
+      expect(reason).toContain("canonicalizes to /private/etc/passwd");
+    });
+  });
+
+  describe("a path that cannot be canonicalized at all", () => {
+    let base = "";
+    let locked = "";
+
+    beforeAll(() => {
+      base = mkdtempSync(join(tmpdir(), "mount-locked-"));
+      locked = join(base, "locked");
+      mkdirSync(locked);
+      // Mode 000 on a directory this process owns is still unopenable, and
+      // `realpathSync` answers EACCES on it: macOS resolves the final
+      // component by opening it. This is the same error `/var/root` gives.
+      chmodSync(locked, 0o000);
+    });
+
+    afterAll(() => {
+      chmodSync(locked, 0o700);
+      rmSync(base, { recursive: true, force: true });
+    });
+
+    test("is refused, not approved on a half-resolved string", () => {
+      const reason = refusal(locked);
+      expect(reason).toContain("cannot canonicalize");
+      expect(reason).toContain("(EACCES)");
+    });
+
+    test("and so is anything under it, which existsSync cannot see", () => {
+      // The trap: `existsSync` cannot stat through an unopenable parent, so it
+      // answers false for a path that may well be there. Gating the refusal on
+      // existence let this one through as an unverified path.
+      const reason = refusal(join(locked, "inner"));
+      expect(reason).toContain("cannot canonicalize");
+    });
+
+    test("a symlink loop, which has no canonical form to find", () => {
+      const loopA = join(base, "loop-a");
+      const loopB = join(base, "loop-b");
+      symlinkSync(loopB, loopA);
+      symlinkSync(loopA, loopB);
+      try {
+        expect(refusal(loopA)).toContain("(ELOOP)");
+      } finally {
+        unlinkSync(loopA);
+        unlinkSync(loopB);
+      }
+    });
+  });
+
+  describe("a legitimate mount", () => {
+    let scratch = "";
+
+    beforeAll(() => {
+      scratch = mkdtempSync(join(tmpdir(), "mount-ok-"));
+      mkdirSync(join(scratch, "sub"), { recursive: true });
+    });
+
+    afterAll(() => {
+      rmSync(scratch, { recursive: true, force: true });
+    });
+
+    test("resolves, and returns the canonical path rather than the input", () => {
+      // The whole point of returning a path at all. `/tmp/...` canonicalizes
+      // to `/private/tmp/...`; handing the caller back its own string would
+      // reintroduce the bug one layer down, where the runtime resolves it
+      // again on its own side.
+      const under = mkdtempSync("/tmp/mount-canon-");
+      try {
+        const resolved = accepted(under, { mustExist: true });
+        expect(resolved).toBe(`/private${under}`);
+        expect(resolved).not.toBe(under);
+      } finally {
+        rmSync(under, { recursive: true, force: true });
+      }
+    });
+
+    test("the accepted path carries no dot segments, whatever spelling arrived", () => {
+      // The invariant the segment comparison in `protectedPathReason` relies
+      // on, asserted where it is produced rather than assumed. A `..` that
+      // survived into the returned path would be judged as a literal segment
+      // here and re-resolved by the runtime on the far side, which is the two
+      // -different-decisions bug this whole function exists to remove.
+      for (const spelling of [`${scratch}/sub/..`, `${scratch}/./sub/../.`, `//${scratch}//sub//..//`]) {
+        const resolved = accepted(spelling, { mustExist: true });
+        expect(resolved.split("/")).not.toContain("..");
+        expect(resolved.split("/")).not.toContain(".");
+        expect(resolved).not.toContain("//");
+      }
+    });
+
+    test("a scratch directory under $TMPDIR resolves, which /private/var must not block", () => {
+      // `os.tmpdir()` is `/var/folders/<hash>/T` on macOS and canonicalizes
+      // under `/private/var`. Protecting that whole tree would refuse every
+      // ordinary scratch mount, which is why it is an exact-match rule.
+      expect(accepted(scratch, { mustExist: true })).toContain("/folders/");
+    });
+
+    test("dot segments, doubled separators, and a trailing slash all land on one path", () => {
+      const canonical = accepted(scratch, { mustExist: true });
+      expect(accepted(`${scratch}/sub/..`, { mustExist: true })).toBe(canonical);
+      expect(accepted(`${scratch}//sub/.//..`, { mustExist: true })).toBe(canonical);
+      expect(accepted(`${scratch}/`, { mustExist: true })).toBe(canonical);
+      expect(accepted(`/${scratch}`, { mustExist: true })).toBe(canonical);
+    });
+  });
+
+  describe("shape refusals", () => {
+    test("a relative path", () => {
+      // Wording the daemon's own tests match on; a mount has no cwd to resolve
+      // a relative path against on the far side.
+      expect(refusal("etc")).toContain("must be absolute");
+    });
+
+    test("an empty path", () => {
+      expect(refusal("")).toContain("empty");
+    });
+
+    test("a NUL byte, which truncates the path at the syscall boundary", () => {
+      expect(refusal("/tmp/ok\0/etc")).toContain("NUL byte");
+    });
+  });
+
+  describe("mustExist", () => {
+    test("refuses a path that is not there, naming it", () => {
+      const absent = join(tmpdir(), "definitely-not-here-9d3f1a");
+      const reason = refusal(absent, { mustExist: true });
+      expect(reason).toContain("does not exist");
+      // Named in its canonical form, because that is the path that was checked.
+      expect(reason).toContain("/private/var/folders/");
+    });
+
+    test("allows the same absent path when the caller does not require it", () => {
+      const absent = join(tmpdir(), "definitely-not-here-9d3f1a");
+      expect(accepted(absent)).toContain("/private/var/folders/");
+    });
+
+    test("an absent path inside a protected tree is refused for being protected", () => {
+      // Order matters: "protected" tells the operator the path was never going
+      // to be allowed, where "does not exist" invites them to create it.
+      expect(refusal("/etc/no-such-file", { mustExist: true })).toContain("inside the protected directory");
+    });
+  });
+
+  describe("the daemon's own state directory", () => {
+    let home = "";
+
+    beforeAll(() => {
+      home = mkdtempSync("/tmp/ompd-home-");
+      mkdirSync(join(home, "tokens"), { recursive: true });
+    });
+
+    afterAll(() => {
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("refuses the state directory itself", () => {
+      expect(refusal(home, { home })).toContain("daemon's own state directory");
+    });
+
+    test("refuses anything inside it", () => {
+      expect(refusal(join(home, "tokens"), { home })).toContain("daemon's own state directory");
+    });
+
+    test("compares canonical against canonical, so a symlinked OMPD_HOME still matches", () => {
+      // `OMPD_HOME=/tmp/ompd-home-x` against a canonical
+      // `/private/tmp/ompd-home-x` would compare unequal if only one side were
+      // resolved, and the daemon's token store would be mountable.
+      expect(refusal(`/private${home}`, { home })).toContain("daemon's own state directory");
+      expect(refusal(home, { home: `/private${home}` })).toContain("daemon's own state directory");
+    });
+
+    test("a sibling of the state directory sharing its prefix is not inside it", () => {
+      const sibling = `${home}-evil`;
+      mkdirSync(sibling, { recursive: true });
+      try {
+        expect(accepted(sibling, { home, mustExist: true })).toBe(`/private${sibling}`);
+      } finally {
+        rmSync(sibling, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test("dangerousMountReason still answers for its own callers", () => {
+    // Kept working, and kept as the single list of credential patterns that
+    // `resolveMountPath` layers canonicalization on top of rather than
+    // restating.
+    expect(dangerousMountReason("/Users/someoperator")).toContain("protected root");
+    expect(dangerousMountReason("/Users/someoperator/.ssh")).toContain("secret path pattern");
+    expect(dangerousMountReason("/srv/build-cache")).toBeNull();
   });
 });

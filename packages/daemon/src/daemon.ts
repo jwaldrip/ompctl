@@ -504,10 +504,16 @@ export class Ompd {
       workspace: opts.repoRoot ?? process.cwd(),
       backends: {
         local: new LocalBackend({ ompPath: this.#config.ompPath, spawn: this.#hosts.spawn }),
+        // `OMPD_CONTAINER_RUNTIME` and `OMPD_CONTAINER_IMAGE` are read here as
+        // well as in `HostProvisioner`'s own defaults, because the daemon names
+        // its backends explicitly and therefore never reaches those defaults.
+        // Without this the pin worked in tests and did nothing in the product.
         container: new ContainerBackend({
           workspace: opts.repoRoot ?? process.cwd(),
           home: this.#home,
           spawn: this.#hosts.spawn,
+          runtime: process.env.OMPD_CONTAINER_RUNTIME,
+          image: process.env.OMPD_CONTAINER_IMAGE,
         }),
       },
       onLog: this.#onLog,
@@ -869,6 +875,29 @@ export class Ompd {
       }
       if (interruptedAgents > 0) {
         this.#onLog?.(`settled ${interruptedAgents} agent(s) whose ACP hosts belonged to a previous daemon`);
+      }
+
+      // Settling the agent rows is not the same as reclaiming what they were
+      // running on. A container host outlives the daemon that made it: its
+      // command is `tail -f /dev/null`, so `--rm` never fires, and before
+      // `HostRef.resolved` existed there was nothing recorded to address it
+      // with. Reclaim them here, from the store, while the rows are still
+      // readable. Failures are logged and audited rather than fatal: a daemon
+      // that will not start because a stale container cannot be removed is
+      // worse than one that starts and says so.
+      const stale = this.#store.listAgents().map(agent => agent.host);
+      const { reclaimed, unreclaimable } = await this.#provisioner.reconcile(stale).catch((err: unknown) => {
+        this.#onLog?.(`host reconciliation failed: ${String(err)}`);
+        return { reclaimed: [] as string[], unreclaimable: [] as string[] };
+      });
+      if (reclaimed.length > 0) {
+        this.#onLog?.(`reclaimed ${reclaimed.length} host(s) left by a previous daemon`);
+      }
+      if (unreclaimable.length > 0) {
+        this.#onLog?.(
+          `${unreclaimable.length} host(s) could not be reclaimed automatically and may still be running: ` +
+            unreclaimable.join(", "),
+        );
       }
     }
 

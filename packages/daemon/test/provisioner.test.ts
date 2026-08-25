@@ -7,18 +7,25 @@
  *    laptop has lost the isolation they asked for with no way to notice.
  * 2. A remote host keeps the approval gate. `spawnLocalHost` writes the overlay
  *    and passes `--config` itself; the backend only points it at a wrapper that
- *    carries that exact file to the far side and refuses to start anything if
- *    it cannot.
+ *    makes that exact file reachable from the far side and refuses to start
+ *    anything if it cannot. For a container that means a read-only mount of a
+ *    daemon-side directory rather than a write into the container, and it means
+ *    one ACP connection per container. Both are load-bearing and both have a
+ *    test here; `gate-substitution.test.ts` is where the attack they prevent is
+ *    demonstrated against the mechanism they replaced.
  *
  * Every subprocess and network call is mocked: the container runtime and ssh
  * are a `CommandRunner` the test supplies, and the host factory is a stub. No
  * process is launched from this file, so the gate assertions below inspect the
  * seam and the generated script rather than running it. Executing the wrapper
- * against a live runtime belongs in the opt-in live lane.
+ * for real, with a hostile process in place, is `gate-substitution.test.ts`;
+ * executing it against a live runtime belongs in the opt-in live lane.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AcpClient, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 import { type HostKind, type HostMount, type HostSpec, Store } from "@ompd/core";
 import {
@@ -509,7 +516,9 @@ describe("runtime selection reaches the backend", () => {
 
 describe("container hosts keep the approval gate", () => {
   const CONTAINER_ID = "abcdef012345";
-  const REMOTE_CONFIG = `/far/ompd-${CONTAINER_ID}/gate.yml`;
+  /** Where the daemon's gate directory is mounted inside the container. */
+  const GATE_MOUNT = "/run/ompd-gate";
+  const REMOTE_CONFIG = `${GATE_MOUNT}/gate.yml`;
 
   interface GateHarness {
     backend: ContainerBackend;
@@ -567,60 +576,117 @@ describe("container hosts keep the approval gate", () => {
     await gate.backend.destroy(handle);
   });
 
-  test("the wrapper carries, locks, and verifies the overlay before exec", async () => {
+  test("the overlay is delivered by mount, with no write into the container", async () => {
     const gate = harness();
     const handle = await gate.backend.provision({ kind: "container" });
     handle.spawn(SPAWN_OPTS);
     const script = readFileSync(gate.recorder.opts[0]?.ompPath ?? "", "utf8");
 
-    const exec = `docker exec -i ${CONTAINER_ID}`;
-    expect(script).toContain(`${exec} tee '${REMOTE_CONFIG}' < "$config" > /dev/null || fail`);
-    expect(script).toContain(`${exec} chmod 600 '${REMOTE_CONFIG}' < /dev/null > /dev/null || fail`);
+    // The gate directory is a mount source in the run argv, read-only, and the
+    // wrapper writes the overlay into the daemon's own copy of it.
+    const run = gate.calls.find(argv => argv[1] === "run") ?? [];
+    const volume = run.find(arg => arg.endsWith(`:${GATE_MOUNT}:ro`)) ?? "";
+    expect(volume).not.toBe("");
+    const gateDir = volume.slice(0, volume.length - `:${GATE_MOUNT}:ro`.length);
+    expect(script).toContain(`cat < "$config" > '${gateDir}/gate.yml' || fail`);
+    expect(script).toContain(`chmod 600 '${gateDir}/gate.yml' || fail`);
     // The verify step is what turns a partial or missing copy into a refusal.
-    expect(script).toContain(`${exec} cat '${REMOTE_CONFIG}' < /dev/null | cmp -s - "$config" || fail`);
-    // The rewritten flag, and only then the far-side omp.
+    expect(script).toContain(`cmp -s '${gateDir}/gate.yml' "$config" || fail`);
+    // The rewritten flag points inside the mount, and only then the far-side omp.
     expect(script).toContain(`set -- "$@" --config '${REMOTE_CONFIG}'`);
-    expect(script).toContain(`exec ${exec} /usr/local/bin/omp "$@"`);
+    expect(script).toContain(`exec docker exec -i ${CONTAINER_ID} /usr/local/bin/omp "$@"`);
 
-    // The scratch directory is created and locked down before any of that.
-    expect(gate.calls).toContainEqual(["docker", "exec", CONTAINER_ID, "mkdir", "-p", `/far/ompd-${CONTAINER_ID}`]);
-    expect(gate.calls).toContainEqual(["docker", "exec", CONTAINER_ID, "chmod", "700", `/far/ompd-${CONTAINER_ID}`]);
+    // The mechanism, stated as an absence: the overlay reaches the container
+    // through no far-side command at all. Every step of the substitution in
+    // `gate-substitution.test.ts` needed one of these.
+    expect(script).not.toContain("tee ");
+    expect(script.match(/docker exec/g) ?? []).toHaveLength(1);
+
+    // And no `exec` into the container during provision either. The two calls
+    // that used to create and lock down a scratch directory for the overlay are
+    // gone with the directory.
+    expect(gate.calls.filter(argv => argv[1] === "exec")).toEqual([]);
 
     await gate.backend.destroy(handle);
   });
 
-  test("destroying a container removes both the container and its wrapper", async () => {
+  test("a second ACP connection to the same container is refused, not served", async () => {
+    // This is the security property, not housekeeping. Every step of the
+    // overlay substitution demonstrated in `gate-substitution.test.ts` needs a
+    // process already running inside the container, and a second connection is
+    // exactly when one exists: the first connection's agent can leave a watcher
+    // behind. On Apple's runtime that watcher can mount over the gate mount, so
+    // the read-only delivery does not save it either. Relaxing this reopens the
+    // bypass.
+    const gate = harness();
+    const handle = await gate.backend.provision({ kind: "container" });
+
+    handle.spawn(SPAWN_OPTS);
+    expect(gate.recorder.opts).toHaveLength(1);
+
+    expect(() => handle.spawn(SPAWN_OPTS)).toThrow(ProvisionError);
+    expect(() => handle.spawn(SPAWN_OPTS)).toThrow(/already served an ACP connection/);
+    // Refused, not quietly served: no second host was spawned.
+    expect(gate.recorder.opts).toHaveLength(1);
+
+    await gate.backend.destroy(handle);
+  });
+
+  test("destroying a container removes the container, the wrapper, and the gate directory", async () => {
     const gate = harness();
     const handle = await gate.backend.provision({ kind: "container" });
     handle.spawn(SPAWN_OPTS);
     const wrapper = gate.recorder.opts[0]?.ompPath ?? "";
+    const run = gate.calls.find(argv => argv[1] === "run") ?? [];
+    const volume = run.find(arg => arg.endsWith(`:${GATE_MOUNT}:ro`)) ?? "";
+    const gateDir = volume.slice(0, volume.length - `:${GATE_MOUNT}:ro`.length);
+    expect(statSync(gateDir).isDirectory()).toBe(true);
 
     await gate.backend.destroy(handle);
 
     expect(gate.calls).toContainEqual(["docker", "rm", "--force", CONTAINER_ID]);
     expect(() => statSync(wrapper)).toThrow();
-    await expect(gate.backend.destroy(handle)).rejects.toThrow(ProvisionError);
+    // The gate directory held the overlay the daemon wrote for this host, so it
+    // goes with the host rather than lingering readable in the temp root.
+    expect(() => statSync(gateDir)).toThrow();
+    // Destroying twice is not an error. It used to be, and the assertion here
+    // used to say so; `resolved` changed that deliberately, because a caller
+    // racing the TTL sweep or reconciling at startup must not get an error for
+    // work already done. What is still refused is a handle carrying neither a
+    // record nor resolved state, covered by "a ref carrying no resolved state
+    // says so rather than pretending it reclaimed anything" below.
+    await gate.backend.destroy(handle);
+    expect(gate.calls.filter(argv => argv[1] === "rm")).toHaveLength(2);
   });
 
   test("the wrapper refuses hostile tokens instead of escaping them", () => {
+    const state = mkdtempSync(join(tmpdir(), "ompd-gate-state-"));
+    cleanups.push(() => rmSync(state, { recursive: true, force: true }));
+
     expect(() =>
-      renderGateWrapper({
-        shell: ["ssh", "-T", "host; rm -rf /"],
-        attach: ["ssh", "-T", "host", "omp"],
-        remoteConfigPath: "/tmp/ompd-x/gate.yml",
-        label: "cloud x",
-        kind: "cloud",
-      }),
+      renderGateWrapper(
+        {
+          shell: ["ssh", "-T", "host; rm -rf /"],
+          attach: ["ssh", "-T", "host", "omp"],
+          remoteConfigPath: "/tmp/ompd-x/gate.yml",
+          label: "cloud x",
+          kind: "cloud",
+        },
+        state,
+      ),
     ).toThrow(ProvisionError);
 
     expect(() =>
-      renderGateWrapper({
-        shell: ["ssh", "-T", "host"],
-        attach: ["ssh", "-T", "host", "omp"],
-        remoteConfigPath: "/tmp/ompd-x/gate.yml; cat /etc/shadow",
-        label: "cloud x",
-        kind: "cloud",
-      }),
+      renderGateWrapper(
+        {
+          shell: ["ssh", "-T", "host"],
+          attach: ["ssh", "-T", "host", "omp"],
+          remoteConfigPath: "/tmp/ompd-x/gate.yml; cat /etc/shadow",
+          label: "cloud x",
+          kind: "cloud",
+        },
+        state,
+      ),
     ).toThrow(ProvisionError);
   });
 });
@@ -751,18 +817,202 @@ describe("the run command is shaped by capability, not assumed docker", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Durable lifecycle: teardown must survive a daemon restart
+// ---------------------------------------------------------------------------
+
+describe("a host outlives the process that made it", () => {
+  function toolchainWithDigests(): typeof stubToolchain {
+    return async () => ({
+      ...(await stubToolchain()),
+      toolsDir: "/home/operator/.ompd/toolchain/omp-18.0.4-arm64-f2b7c8a01968",
+      ompPath: "/opt/ompd/omp-shim",
+      env: { SSL_CERT_FILE: "/opt/ompd/ca-certificates.crt" },
+      ompSha256: "f2b7c8a019681ede314ac165aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      caSha256: "61efbd6d3f82aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  }
+
+  test("the HostRef names the runtime, network, image and toolchain digests", async () => {
+    // Before this, `HostRef.spec` carried neither the runtime nor the network,
+    // so the backend's process map was the only record of them and a restart
+    // orphaned the container. `Agent.host` is already persisted as JSON, so
+    // putting them on the ref makes them durable with no schema change.
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({
+      capability: APPLE_CAP,
+      run: runner.run,
+      toolchain: toolchainWithDigests(),
+    });
+
+    const handle = await backend.provision({ kind: "container" });
+    const resolved = handle.ref.resolved;
+    expect(resolved?.runtime).toBe("container");
+    expect(resolved?.network).toMatch(/^ompd-[0-9a-f]{12}$/);
+    expect(resolved?.image).toBe("debian:bookworm-slim");
+    expect(resolved?.ompSha256).toStartWith("f2b7c8a01968");
+    expect(resolved?.caSha256).toStartWith("61efbd6d3f82");
+    expect(resolved?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test("a fresh backend destroys a host it never provisioned, from the ref alone", async () => {
+    // The restart. `first` provisions and is thrown away without destroying,
+    // exactly as a killed daemon does; `second` has an empty process map and
+    // has to work from the persisted ref. The reviewer's reproduction of the
+    // old behaviour was `destroy after restart: THREW -> unknown container
+    // handle`.
+    const firstRunner = containerRunner("cnt000000001");
+    const first = new ContainerBackend({
+      capability: APPLE_CAP,
+      run: firstRunner.run,
+      toolchain: toolchainWithDigests(),
+    });
+    const handle = await first.provision({ kind: "container" });
+    const network = handle.ref.resolved?.network ?? "";
+
+    // Round-tripped through JSON, because that is what the store does to it.
+    const persisted: HostHandle = {
+      ref: JSON.parse(JSON.stringify(handle.ref)),
+      spawn: () => {
+        throw new Error("a rehydrated handle cannot spawn");
+      },
+    };
+
+    const secondRunner = containerRunner("cnt000000001");
+    const second = new ContainerBackend({ capability: APPLE_CAP, run: secondRunner.run });
+
+    await second.destroy(persisted);
+    expect(secondRunner.calls).toContainEqual(["container", "rm", "--force", "cnt000000001"]);
+    expect(secondRunner.calls).toContainEqual(["container", "network", "rm", network]);
+  });
+
+  test("destroying a host whose container is already gone is success, not an error", async () => {
+    // Reconciliation after a reboot hits this on every host, and treating it as
+    // a failure would stop the rest of the list being cleared.
+    const runner: CommandRunner = async argv =>
+      argv[1] === "rm"
+        ? { code: 1, stdout: "", stderr: 'Error: notFound: "container cnt1 not found"' }
+        : { code: 0, stdout: "", stderr: "" };
+    const backend = new ContainerBackend({ capability: APPLE_CAP, run: runner });
+
+    await backend.destroy({
+      ref: {
+        kind: "container",
+        id: "cnt1",
+        spec: { kind: "container" },
+        resolved: { runtime: "container", network: "ompd-abc123def456", image: "x", createdAt: "2026-08-25T00:00:00Z" },
+      },
+      spawn: () => {
+        throw new Error("unused");
+      },
+    });
+  });
+
+  test("a ref carrying no resolved state says so rather than pretending it reclaimed anything", async () => {
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({ capability: APPLE_CAP, run: runner.run });
+
+    await expect(
+      backend.destroy({
+        ref: { kind: "container", id: "cnt-legacy", spec: { kind: "container" } },
+        spawn: () => {
+          throw new Error("unused");
+        },
+      }),
+    ).rejects.toThrow(/carries no resolved runtime/);
+    // And it did not guess at a runtime to shell out to.
+    expect(runner.calls).toEqual([]);
+  });
+
+  test("reconcile reclaims a persisted host and audits it, and reports one it cannot", async () => {
+    const store = tempStore();
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({ capability: APPLE_CAP, run: runner.run });
+    const prov = new HostProvisioner({ store, backends: { container: backend } });
+    closables.push(prov);
+
+    const result = await prov.reconcile([
+      // Reclaimable: it names its runtime and network.
+      {
+        kind: "container",
+        id: "cnt-orphan",
+        spec: { kind: "container" },
+        resolved: { runtime: "container", network: "ompd-aaaaaaaaaaaa", image: "i", createdAt: "2026-08-25T00:00:00Z" },
+      },
+      // Not reclaimable: predates resolved state.
+      { kind: "container", id: "cnt-legacy", spec: { kind: "container" } },
+      // Never touched: a pid from a previous boot is not ours to kill.
+      { kind: "local", id: "4242", spec: { kind: "local" } },
+    ]);
+
+    expect(result.reclaimed).toEqual(["cnt-orphan"]);
+    expect(result.unreclaimable).toEqual(["cnt-legacy"]);
+    expect(runner.calls).toContainEqual(["container", "rm", "--force", "cnt-orphan"]);
+    expect(runner.calls).toContainEqual(["container", "network", "rm", "ompd-aaaaaaaaaaaa"]);
+    expect(runner.calls.some(argv => argv[3] === "4242")).toBe(false);
+
+    const audited = store.listAudit().filter(entry => entry.action === "host.reconcile");
+    expect(audited).toHaveLength(1);
+  });
+
+  test("the provision audit records the resolved image and digests, not the caller's undefined", async () => {
+    // The reviewer's finding: the row carried `image: spec.image`, which is
+    // `undefined` on the default path, so the audit could not answer what a
+    // container was actually given.
+    const store = tempStore();
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({
+      capability: APPLE_CAP,
+      run: runner.run,
+      toolchain: toolchainWithDigests(),
+    });
+    const prov = new HostProvisioner({ store, backends: { container: backend } });
+    closables.push(prov);
+
+    await prov.provision({ kind: "container" });
+
+    const entry = store.listAudit().find(row => row.action === "host.provision" && row.outcome === "ok");
+    const detail = entry?.detail as Record<string, unknown> | undefined;
+    expect(detail?.image).toBe("debian:bookworm-slim");
+    expect(detail?.runtime).toBe("container");
+    expect(String(detail?.network)).toMatch(/^ompd-[0-9a-f]{12}$/);
+    expect(String(detail?.ompSha256)).toStartWith("f2b7c8a01968");
+    expect(String(detail?.caSha256)).toStartWith("61efbd6d3f82");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mounts
 // ---------------------------------------------------------------------------
 
 describe("extra mounts", () => {
+  /**
+   * Real directories, not invented paths.
+   *
+   * `resolveMountPath` canonicalizes and requires the source to exist, which is
+   * deliberate: the alternative is docker's behaviour of implicitly creating a
+   * missing source, which leaves a root-owned empty directory on the operator's
+   * host. That means these tests have to name directories that are actually
+   * there, and it also means they now assert the CANONICAL path, which on macOS
+   * is not the path `mkdtemp` returned (`/var/folders/...` realpaths to
+   * `/private/var/folders/...`). Asserting the canonical form is the point: it
+   * is what goes into argv.
+   */
+  function realDir(label: string): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), `ompd-mount-${label}-`)));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    return dir;
+  }
+
   function harnessWithMounts(home = "/home/operator/.ompd") {
     const runner = containerRunner("cnt000000001");
+    const workspace = realDir("ws");
     return {
       runner,
+      workspace,
       backend: new ContainerBackend({
         capability: DOCKER_CAP,
         toolchain: stubToolchain,
-        workspace: "/work/repo",
+        workspace,
         home,
         run: runner.run,
       }),
@@ -770,41 +1020,57 @@ describe("extra mounts", () => {
   }
 
   test("each mount lands at the identical absolute path inside, workspace included", async () => {
-    const { backend, runner } = harnessWithMounts();
+    const { backend, runner, workspace } = harnessWithMounts();
+    const shared = realDir("shared");
+    const tools = realDir("tools");
     await backend.provision({
       kind: "container",
-      mounts: [{ hostPath: "/data/shared" }, { hostPath: "/opt/tools", mode: "rw" }],
+      mounts: [{ hostPath: shared }, { hostPath: tools, mode: "rw" }],
     });
     const run = runner.calls.find(argv => argv[1] === "run") ?? [];
     expect(run).toContain("--volume");
-    expect(run).toContain("/work/repo:/work/repo");
-    expect(run).toContain("/data/shared:/data/shared:ro");
-    expect(run).toContain("/opt/tools:/opt/tools:rw");
+    expect(run).toContain(`${workspace}:${workspace}`);
+    expect(run).toContain(`${shared}:${shared}:ro`);
+    expect(run).toContain(`${tools}:${tools}:rw`);
   });
 
   test("read-only is the default; only an explicit mode opts into rw", async () => {
     const { backend, runner } = harnessWithMounts();
+    const shared = realDir("shared");
+    const handle = await backend.provision({ kind: "container", mounts: [{ hostPath: shared }] });
+    const run = runner.calls.find(argv => argv[1] === "run") ?? [];
+    expect(run).toContain(`${shared}:${shared}:ro`);
+    expect(run).not.toContain(`${shared}:${shared}:rw`);
+    // The effective set an operator reads back has the default filled in and
+    // the path canonicalized, not merely what they typed.
+    expect(handle.ref.spec.mounts ?? []).toEqual([{ hostPath: shared, mode: "ro" }]);
+  });
+
+  test("a mount is recorded canonicalized, so the ref names what was really mounted", async () => {
+    // The bug this guards: policy used to be applied to the operator's literal
+    // string, so `/Users/<name>/.` slipped past a rule that only matched
+    // `/Users/<name>`. Canonicalizing first is the fix, and recording the
+    // canonical form is what stops the argv and the ref disagreeing.
+    const { backend, runner } = harnessWithMounts();
+    const shared = realDir("shared");
     const handle = await backend.provision({
       kind: "container",
-      mounts: [{ hostPath: "/data/shared" }],
+      mounts: [{ hostPath: `${shared}/./sub/..` }],
     });
+    expect(handle.ref.spec.mounts ?? []).toEqual([{ hostPath: shared, mode: "ro" }]);
     const run = runner.calls.find(argv => argv[1] === "run") ?? [];
-    expect(run).toContain("/data/shared:/data/shared:ro");
-    expect(run).not.toContain("/data/shared:/data/shared:rw");
-    // The effective set an operator reads back has the default filled in,
-    // not merely what they typed.
-    const mounts = handle.ref.spec.mounts ?? [];
-    expect(mounts).toEqual([{ hostPath: "/data/shared", mode: "ro" }]);
+    expect(run).toContain(`${shared}:${shared}:ro`);
+    expect(run.some(token => token.includes("/./") || token.includes("/.."))).toBe(false);
   });
 
   test("omitting mounts leaves the workspace volume exactly as it was", async () => {
-    const { backend, runner } = harnessWithMounts();
+    const { backend, runner, workspace } = harnessWithMounts();
     await backend.provision({ kind: "container" });
     const run = runner.calls.find(argv => argv[1] === "run") ?? [];
     // Same two tokens, same lack of a mode suffix, as every caller that never
     // asked for an extra mount relied on before this feature existed.
     const volIndex = run.indexOf("--volume");
-    expect(run[volIndex + 1]).toBe("/work/repo:/work/repo");
+    expect(run[volIndex + 1]).toBe(`${workspace}:${workspace}`);
   });
 
   interface RefusalCase {
@@ -814,12 +1080,32 @@ describe("extra mounts", () => {
     home?: string;
   }
 
+  // Every row the security review demonstrated as ALLOWED against the old
+  // literal-string policy is here, alongside the rows that already worked.
+  // The reviewer's probe output was:
+  //   ALLOWED  /Users              ALLOWED  /Users/jwaldrip/.
+  //   ALLOWED  /Users/jwaldrip/..  ALLOWED  /etc
+  //   ALLOWED  /var/root           ALLOWED  //Users/jwaldrip
+  // and the argv it produced was
+  //   --volume /Users/jwaldrip/.:/Users/jwaldrip/.:rw
+  // which is the whole home directory, `~/.ssh` and `~/.ompd` included.
   const REFUSED: RefusalCase[] = [
     { label: "the filesystem root", hostPath: "/" },
     { label: "a home directory root", hostPath: "/Users/someoperator" },
     { label: "~/.ssh", hostPath: "/Users/someoperator/.ssh" },
     { label: "~/.omp", hostPath: "/Users/someoperator/.omp" },
     { label: "~/.ompd", hostPath: "/Users/someoperator/.ompd" },
+    { label: "the container of every home directory", hostPath: "/Users" },
+    { label: "the linux container of every home directory", hostPath: "/home" },
+    { label: "a home root reached through a dot segment", hostPath: "/Users/someoperator/." },
+    { label: "a home root reached through a parent segment", hostPath: "/Users/someoperator/.." },
+    { label: "a home root reached through a doubled separator", hostPath: "//Users/someoperator" },
+    { label: "a home root with a trailing slash", hostPath: "/Users/someoperator/" },
+    { label: "/etc", hostPath: "/etc" },
+    { label: "/etc by its macOS firmlink spelling", hostPath: "/private/etc" },
+    { label: "/var/root", hostPath: "/var/root" },
+    { label: "/usr", hostPath: "/usr" },
+    { label: "/System", hostPath: "/System" },
     {
       // A custom OMPD_HOME that names neither `.omp` nor `.ompd`, so this can
       // only be caught by comparing against the daemon's actual configured
@@ -852,7 +1138,9 @@ describe("extra mounts", () => {
       const failures = store.listAudit().filter(e => e.action === "host.provision");
       expect(failures).toHaveLength(1);
       expect(failures[0]?.outcome).toBe("error");
-      expect(String(failures[0]?.detail.reason)).toContain(hostPath);
+      // The reason names the path the operator asked for, canonical or not, so
+      // the message matches what they typed rather than what it resolved to.
+      expect(String(failures[0]?.detail.reason)).toContain("refusing to mount");
     });
   }
 
@@ -864,9 +1152,13 @@ describe("extra mounts", () => {
   });
 
   test("a mount outside every protected root is accepted as written", async () => {
-    const mounts: HostMount[] = [{ hostPath: "/srv/build-cache", mode: "rw" }];
+    // `realDir` rather than a literal path, for the reason documented on it:
+    // `resolveMountPath` requires the source to exist, and the assertion is on
+    // the canonical form because that is what goes into argv.
+    const dir = realDir("accepted");
+    const mounts: HostMount[] = [{ hostPath: dir, mode: "rw" }];
     const { backend } = harnessWithMounts();
     const handle = await backend.provision({ kind: "container", mounts });
-    expect(handle.ref.spec.mounts).toEqual([{ hostPath: "/srv/build-cache", mode: "rw" }]);
+    expect(handle.ref.spec.mounts).toEqual([{ hostPath: dir, mode: "rw" }]);
   });
 });

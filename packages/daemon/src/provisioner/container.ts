@@ -12,9 +12,15 @@
  * The approval gate is preserved, not reimplemented. `spawn` delegates to
  * `spawnLocalHost` with `ompPath` pointing at a generated wrapper, so
  * `spawnLocalHost` still writes the overlay and still passes its own
- * `--config`; the wrapper copies that file into the container, verifies it,
- * and rewrites the flag. See `gate-wrapper.ts`. ompd never passes `--config`
- * and never authors the overlay.
+ * `--config`. ompd never passes `--config` and never authors the overlay.
+ *
+ * Two things about that are load-bearing here rather than in
+ * `gate-wrapper.ts`, which explains why. The overlay is delivered by mounting
+ * a daemon-side directory read-only at `GATE_MOUNT`, never by writing into the
+ * container. And a container serves exactly ONE ACP connection: the `spawn`
+ * closure refuses a second, because the substitution attack that mode replaces
+ * needs a process already running inside the container, and the first
+ * connection's agent is how one gets there.
  *
  * Two things this file used to get wrong, both of which cost an operator a
  * working sandbox rather than merely a warning.
@@ -46,14 +52,14 @@
  * only when that CLI's own `--user` description documents a numeric uid.
  */
 
-import { rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LocalHost, SpawnLocalHostOptions } from "@ompd/acp";
 import { spawnLocalHost } from "@ompd/acp";
-import { dangerousMountReason, type HostKind, type HostMount, type HostSpec, isInside } from "@ompd/core";
+import { type HostKind, type HostMount, type HostSpec, resolveMountPath } from "@ompd/core";
 import { execCommand } from "./exec.ts";
-import { type GateWrapper, writeGateWrapper } from "./gate-wrapper.ts";
+import { type GateWrapper, requireSafePath, writeGateWrapper } from "./gate-wrapper.ts";
 import { type EnsureToolchainOptions, ensureToolchain, type ResolvedToolchain } from "./image.ts";
 import { type RuntimeCapability, selectRuntime } from "./runtime.ts";
 import {
@@ -64,8 +70,25 @@ import {
   type SpawnHost,
 } from "./types.ts";
 
-/** Directory inside the container holding ompd's per-host scratch. */
+/**
+ * Where the container's scratch tmpfs is mounted.
+ *
+ * omp's own scratch, not ompd's. ompd used to keep a per-host directory under
+ * here for the approval-gate overlay; it does not any more, because a path the
+ * container can write is not somewhere the gate can live. See `GATE_MOUNT`.
+ */
 const DEFAULT_SCRATCH_ROOT = "/tmp";
+
+/**
+ * Where the daemon's gate directory appears inside the container.
+ *
+ * Not under the scratch tmpfs and not under the toolchain mount, because it
+ * must not be shadowed by either of them. `/run` exists in the base images
+ * used here, and both runtimes create the mount point themselves even under
+ * docker's `--read-only` root: verified by reading the overlay back from inside
+ * a container started with the full docker flag set.
+ */
+const GATE_MOUNT = "/run/ompd-gate";
 
 /**
  * Memory and CPU ceiling for a container host.
@@ -124,26 +147,91 @@ interface ContainerRecord {
    */
   network: string | null;
   wrapper: GateWrapper;
+  /**
+   * The daemon-side directory the container has mounted read-only, holding the
+   * approval-gate overlay. Removed on teardown: it is the overlay the daemon
+   * wrote for this host, and nothing else should be able to read it once the
+   * host is gone.
+   */
+  gateDir: string;
 }
 
 /**
- * Refuse a mount that would hand the sandbox the credentials that make it a
- * sandbox, rather than trusting an operator never to name one by mistake.
+ * Remove a daemon-side directory this backend created, best effort.
  *
- * Reuses `dangerousMountReason`, the project's one list of paths a mount must
- * never name, and adds only what that list cannot know: the daemon's own
- * `home`, which moves with `OMPD_HOME` and cannot be a static pattern.
+ * Best effort because the alternative is worse: a failure here would mask the
+ * error that made us unwind in the first place, and a leftover directory under
+ * the temp root is litter rather than a live container nobody has reclaimed.
  */
-function refuseIfDangerous(hostPath: string, home: string): void {
-  if (!hostPath.startsWith("/")) {
-    throw new ProvisionError(`mount path must be absolute, got ${JSON.stringify(hostPath)}`, "container");
+function discard(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Litter, not a risk.
   }
-  const reason =
-    dangerousMountReason(hostPath) ??
-    (isInside(home, hostPath) ? `inside the daemon's own state directory ${home}` : null);
-  if (reason !== null) {
-    throw new ProvisionError(`refusing to mount ${hostPath}: ${reason}`, "container");
+}
+
+/**
+ * Resolve a mount to the canonical path that will be mounted, or refuse it.
+ *
+ * Delegates to `resolveMountPath`, which canonicalizes before deciding. The
+ * order is the whole point and the reason this no longer calls
+ * `dangerousMountReason` directly: the old code applied policy to the
+ * operator's literal string, so `/Users/<name>/.` and `/Users/<name>/..` and
+ * `//Users/<name>` all slipped past a rule that only recognised
+ * `/Users/<name>`, and the review demonstrated `/Users/jwaldrip/.` being
+ * mounted read-write, home directory and `~/.ssh` and `~/.ompd` included.
+ *
+ * The CANONICAL path is what goes into argv. Mounting the operator's original
+ * string would reintroduce the same hole one layer down, because the runtime
+ * would resolve it again on the far side.
+ */
+function resolveMount(hostPath: string, home: string): string {
+  const resolution = resolveMountPath(hostPath, { home, mustExist: true });
+  if (!resolution.ok) {
+    throw new ProvisionError(`refusing to mount ${hostPath}: ${resolution.reason}`, "container");
   }
+  return resolution.path;
+}
+
+/**
+ * Refuse an image reference the runtime would read as a flag.
+ *
+ * `spec.image` reaches argv as the image positional, and a `-`-prefixed value
+ * is consumed as a flag there: `spec.image: "--privileged"` produces
+ * `... --privileged tail -f /dev/null`, which makes `tail` the image name. That
+ * is denial-shaped rather than privilege-shaped, because the command word is
+ * eaten as the image, but an unchecked field reaching argv is worth closing at
+ * both ends. The gateway validates it too; this is the backend's own guard, so
+ * a caller that is not the gateway cannot skip it.
+ */
+function refuseIfFlagShaped(image: string): void {
+  if (image.startsWith("-")) {
+    throw new ProvisionError(
+      `refusing image reference ${JSON.stringify(image)}: an image reference cannot begin with a dash, ` +
+        `the runtime would read it as a flag rather than an image`,
+      "container",
+    );
+  }
+}
+
+/**
+ * Whether a failed `rm` means the container was already gone.
+ *
+ * Reconciliation after a restart removes hosts the store still lists, and some
+ * of those are legitimately absent: the operator removed the container by hand,
+ * or the whole machine rebooted. Treating that as an error would make startup
+ * noisy and would stop reconciliation clearing the rest of the list, so it is
+ * folded into success. A runtime that answered and refused for any other reason
+ * still throws, because that is a container nobody has reclaimed.
+ *
+ * Matched on the runtimes' own wording, quoted from each: Apple `container`
+ * says `notFound`, docker says `No such container`, podman says
+ * `no such container`.
+ */
+function isAlreadyGone(stderr: string): boolean {
+  const text = stderr.toLowerCase();
+  return text.includes("no such container") || text.includes("notfound") || text.includes("not found");
 }
 
 /**
@@ -249,10 +337,15 @@ export class ContainerBackend implements ProvisionerBackend {
     // to clean up. The reason lands on the same "host.provision" audit entry
     // `HostProvisioner` already writes for any provision failure -- nothing
     // new to wire, because a thrown `ProvisionError` is already audited there.
-    const mounts: HostMount[] = (spec.mounts ?? []).map(mount => {
-      refuseIfDangerous(mount.hostPath, this.#home);
-      return { hostPath: mount.hostPath, mode: mount.mode ?? "ro" };
-    });
+    //
+    // `hostPath` is replaced by its canonical form, not merely checked, so the
+    // `HostRef` an operator reads back names the directory that was actually
+    // mounted rather than the string they typed.
+    const mounts: HostMount[] = (spec.mounts ?? []).map(mount => ({
+      hostPath: resolveMount(mount.hostPath, this.#home),
+      mode: mount.mode ?? "ro",
+    }));
+    if (spec.image !== undefined) refuseIfFlagShaped(spec.image);
 
     // Capability, not a name. `selectRuntime` throws a `ProvisionError` naming
     // every candidate and its specific reason, so "not installed" and
@@ -269,6 +362,12 @@ export class ContainerBackend implements ProvisionerBackend {
     // fail before.
     const toolchain = await this.#toolchain({
       runtime,
+      // Handed over rather than re-probed. The CA extraction runs its own
+      // confined container and needs to know which confinement flags this
+      // runtime accepts; the answer is already in scope here, and probing again
+      // inside `image.ts` would re-run `--version`, the liveness check and
+      // `run --help` for facts the caller already holds.
+      capability: cap,
       spec,
       run: this.#run,
       cacheRoot: this.#toolchainRoot,
@@ -299,6 +398,23 @@ export class ContainerBackend implements ProvisionerBackend {
       );
     }
 
+    // The gate directory, created on the daemon's own filesystem before
+    // anything else exists, because it becomes a mount source in the `run`
+    // argv below.
+    //
+    // Validated here rather than at render time, which is what
+    // `requireSafePath` is exported for. `mkdtemp` under a hostile `TMPDIR`
+    // could produce a path the wrapper would have to quote for, and finding
+    // that out after the container had already been started with that path as
+    // a mount source would be too late.
+    const gateDir = mkdtempSync(join(tmpdir(), "ompd-gate-"));
+    try {
+      requireSafePath(gateDir, "gate directory", "container");
+    } catch (err) {
+      discard(gateDir);
+      throw err;
+    }
+
     // Otherwise a network of its own, created before the container that joins
     // it.
     //
@@ -318,6 +434,7 @@ export class ContainerBackend implements ProvisionerBackend {
     if (createdNetwork !== null) {
       const madeNetwork = await this.#run([runtime, "network", "create", createdNetwork]);
       if (madeNetwork.code !== 0) {
+        discard(gateDir);
         throw new ProvisionError(
           `${runtime} network create failed (exit ${madeNetwork.code}): ${madeNetwork.stderr.trim()}`,
           "container",
@@ -332,16 +449,27 @@ export class ContainerBackend implements ProvisionerBackend {
     for (const mount of mounts) {
       mountArgs.push("--volume", `${mount.hostPath}:${mount.hostPath}:${mount.mode}`);
     }
-    // The toolchain, read-only, and verified to be so: a write into it reports
-    // `Read-only file system`. It carries omp itself, so it is the one mount
-    // the container must not be able to rewrite.
+    // The toolchain, read-only. A write into it reports `Read-only file system`
+    // on every runtime here. What is NOT true, and used to be claimed on this
+    // line, is that the container cannot rewrite it: Apple rejects `--cap-drop`
+    // and `--security-opt`, so its guest holds the full capability set and
+    // `mount --bind /tmp/evil /opt/ompd` succeeds from inside. Measured: a
+    // binary at that path printed `real-omp`, and after the bind mount the same
+    // path printed `SUBSTITUTED-omp`. Under the flags docker and podman accept
+    // the same container has `CapEff 0000000000000000` and both `mount -o
+    // remount,rw` and `mount --bind` fail with `must be superuser`, so the
+    // mount is a real boundary there and defence in depth on Apple.
     if (toolchain.toolsDir !== null) {
       mountArgs.push("--volume", `${toolchain.toolsDir}:${toolchain.mountPath}:ro`);
     }
+    // The gate directory, read-only, for the same reasons and with the same
+    // per-runtime caveat. `gate-wrapper.ts` owns why the overlay is delivered
+    // this way rather than written into the container.
+    mountArgs.push("--volume", `${gateDir}:${GATE_MOUNT}:ro`);
 
     // `tail -f /dev/null` keeps the container alive so exec has something to
-    // attach to. The ACP host is not the container's main process: one
-    // container serves however many connections the supervisor opens.
+    // attach to, so the ACP host is not the container's main process. It serves
+    // exactly one ACP connection all the same: see the `spawn` closure below.
     const created = await this.#run([
       runtime,
       "run",
@@ -363,6 +491,7 @@ export class ContainerBackend implements ProvisionerBackend {
       "/dev/null",
     ]);
     if (created.code !== 0) {
+      discard(gateDir);
       await this.#removeNetwork(runtime, createdNetwork);
       throw new ProvisionError(
         `${runtime} run failed (exit ${created.code}): ${created.stderr.trim() || created.stdout.trim()}`,
@@ -376,18 +505,24 @@ export class ContainerBackend implements ProvisionerBackend {
       // id. Removing the network it is attached to is the only handle left,
       // and it fails while the container holds it, which is the loud version
       // of this going wrong.
+      discard(gateDir);
       await this.#removeNetwork(runtime, createdNetwork);
       throw new ProvisionError(`${runtime} run returned no usable container id`, "container");
     }
 
-    const scratch = `${this.#scratchRoot}/ompd-${containerId.slice(0, 12)}`;
+    // No `exec` into the container, and no path inside it: the overlay is
+    // delivered through `gateDir`, which the container has mounted read-only at
+    // `GATE_MOUNT`. The two `exec` calls that used to create and lock down a
+    // scratch directory for it are gone with the directory, because the four
+    // `exec` round trips they served were the FIFO substitution primitive
+    // `gate-wrapper.ts` documents.
     let wrapper: GateWrapper;
     try {
-      await this.#prepareScratch(runtime, containerId, scratch);
       wrapper = writeGateWrapper({
-        shell: [runtime, "exec", "-i", containerId],
+        via: "mount",
         attach: [runtime, "exec", "-i", containerId, toolchain.ompPath],
-        remoteConfigPath: `${scratch}/gate.yml`,
+        gateDir,
+        mountPath: GATE_MOUNT,
         label: `container ${containerId.slice(0, 12)}`,
         kind: "container",
       });
@@ -396,6 +531,7 @@ export class ContainerBackend implements ProvisionerBackend {
       // container that nobody holds a handle to is never reclaimed. The network
       // goes with it, and only after it, because a network with a container
       // still attached cannot be removed.
+      discard(gateDir);
       await this.#run([runtime, "rm", "--force", containerId]).catch(() => undefined);
       await this.#removeNetwork(runtime, createdNetwork);
       throw err instanceof ProvisionError
@@ -405,43 +541,106 @@ export class ContainerBackend implements ProvisionerBackend {
           });
     }
 
-    this.#live.set(containerId, { runtime, containerId, network: createdNetwork, wrapper });
+    this.#live.set(containerId, { runtime, containerId, network: createdNetwork, wrapper, gateDir });
     const spawn = this.#spawn;
+    // One ACP connection per container, and this is where it is enforced.
+    //
+    // This is the security property, not a tidiness rule. Every step of the
+    // substitution attack `gate-wrapper.ts` documents needs a process already
+    // running inside the container, and a second connection is exactly when one
+    // exists: the first connection's agent can leave a watcher behind that
+    // pre-plants a FIFO on the overlay path, or on Apple's runtime mounts over
+    // `GATE_MOUNT` and serves its own `gate.yml`. Refusing here means no such
+    // process has ever run when omp opens the overlay. Relaxing it reopens the
+    // bypass, whatever the delivery mode does.
+    let served = false;
     return {
-      // Mounts are normalized (default mode filled in) so an operator reading
-      // this ref back sees exactly what the container can see, not merely
-      // what they happened to type. The image is recorded too: on the default
-      // path it is a public base rather than whatever the daemon's default
-      // happened to be at the time, and a transcript should say which.
-      ref: { kind: "container", id: containerId, spec: { ...spec, image: toolchain.image, mounts } },
+      // Mounts are normalized (canonical path, default mode filled in) so an
+      // operator reading this ref back sees exactly what the container can
+      // see, not merely what they happened to type.
+      //
+      // `resolved` is the part that makes teardown survive a restart. Before
+      // it existed, `#live` was the only record of the runtime and the network,
+      // so a restarted daemon threw `unknown container handle` and left a
+      // running container and an `ompd-*` network behind: the command is
+      // `tail -f /dev/null`, so `--rm` never fires on its own. It is also the
+      // audit record, because `spec.image` is the caller's value and is
+      // `undefined` on the default path.
+      ref: {
+        kind: "container",
+        id: containerId,
+        spec: { ...spec, image: toolchain.image, mounts },
+        resolved: {
+          runtime,
+          network: createdNetwork,
+          image: toolchain.image,
+          ompSha256: toolchain.ompSha256 ?? undefined,
+          caSha256: toolchain.caSha256 ?? undefined,
+          createdAt: new Date().toISOString(),
+        },
+      },
       // `ompPath` is overridden rather than merged: the caller's omp path is a
       // path on the daemon's machine and means nothing inside the container.
-      spawn: (opts: SpawnLocalHostOptions): LocalHost => spawn({ ...opts, ompPath: wrapper.path }),
+      spawn: (opts: SpawnLocalHostOptions): LocalHost => {
+        if (served) {
+          throw new ProvisionError(
+            `container ${containerId} has already served an ACP connection and will not serve another: a ` +
+              `process the first connection left behind can substitute the approval-gate overlay for the ` +
+              `second. Provision a new container.`,
+            "container",
+          );
+        }
+        served = true;
+        return spawn({ ...opts, ompPath: wrapper.path });
+      },
     };
   }
 
+  /**
+   * Release a container, from memory when this process created it and from the
+   * persisted `HostRef` when it did not.
+   *
+   * Idempotent on purpose. A caller racing the TTL sweep, retrying after a
+   * timeout, or reconciling at startup must not get an error for work already
+   * done, and `rm --force` on an id the runtime has never heard of is the
+   * ordinary case during reconciliation rather than a fault. What is still an
+   * error is a runtime that answered and refused, because that is a container
+   * nobody has reclaimed.
+   */
   async destroy(handle: HostHandle): Promise<void> {
     const record = this.#live.get(handle.ref.id);
-    if (record === undefined) {
-      throw new ProvisionError(`unknown container handle ${handle.ref.id}`, "container");
+    const resolved = handle.ref.resolved;
+    if (record === undefined && resolved === undefined) {
+      throw new ProvisionError(
+        `cannot destroy container ${handle.ref.id}: this process did not create it and its HostRef carries no ` +
+          `resolved runtime, so there is nothing to address. A host provisioned before resolved state existed ` +
+          `has to be removed by hand.`,
+        "container",
+      );
     }
-    this.#live.delete(record.containerId);
-    try {
-      rmSync(record.wrapper.dir, { recursive: true, force: true });
-    } catch {
-      // Best effort. A leftover script in the temp dir is litter, not a risk.
+
+    const runtime = record?.runtime ?? resolved?.runtime ?? "";
+    const network = record === undefined ? (resolved?.network ?? null) : record.network;
+    this.#live.delete(handle.ref.id);
+    if (record !== undefined) {
+      // Both daemon-side directories, and the gate one matters more than the
+      // wrapper: it holds the overlay the daemon wrote for this host. After a
+      // restart there is no record, so neither is reclaimed here; they are
+      // `mkdtemp` directories under the temp root, which is litter of the same
+      // class the wrapper dir has always been. What restart teardown does still
+      // reclaim, from `resolved` alone, is the container and its network.
+      discard(record.wrapper.dir);
+      discard(record.gateDir);
     }
-    const removed = await this.#run([record.runtime, "rm", "--force", record.containerId]);
+
+    const removed = await this.#run([runtime, "rm", "--force", handle.ref.id]);
     // The network is removed whether or not the container went cleanly, and
     // always after it: docker refuses to remove a network something is still
     // attached to. A leftover empty network is litter rather than a risk, so
     // its failure is logged by the caller's audit entry, not thrown here.
-    await this.#removeNetwork(record.runtime, record.network);
-    if (removed.code !== 0) {
-      throw new ProvisionError(
-        `${record.runtime} rm failed (exit ${removed.code}): ${removed.stderr.trim()}`,
-        "container",
-      );
+    await this.#removeNetwork(runtime, network);
+    if (removed.code !== 0 && !isAlreadyGone(removed.stderr)) {
+      throw new ProvisionError(`${runtime} rm failed (exit ${removed.code}): ${removed.stderr.trim()}`, "container");
     }
   }
 
@@ -455,21 +654,5 @@ export class ContainerBackend implements ProvisionerBackend {
   async #removeNetwork(runtime: string, network: string | null): Promise<void> {
     if (network === null) return;
     await this.#run([runtime, "network", "rm", network]).catch(() => undefined);
-  }
-
-  async #prepareScratch(runtime: string, containerId: string, scratch: string): Promise<void> {
-    // A private directory created before the overlay is copied, so the copy
-    // never lands somewhere another process in the image could have prepared.
-    const made = await this.#run([runtime, "exec", containerId, "mkdir", "-p", scratch]);
-    if (made.code !== 0) {
-      throw new ProvisionError(`could not create ${scratch} in ${containerId}: ${made.stderr.trim()}`, "container");
-    }
-    const locked = await this.#run([runtime, "exec", containerId, "chmod", "700", scratch]);
-    if (locked.code !== 0) {
-      throw new ProvisionError(
-        `could not lock down ${scratch} in ${containerId}: ${locked.stderr.trim()}`,
-        "container",
-      );
-    }
   }
 }

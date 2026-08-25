@@ -509,21 +509,32 @@ ompd new ~/dev/some-repo --container --image your/omp:tag \
   --mounts ~/dev/shared-lib:ro,~/dev/scratch:rw
 ```
 
-The daemon picks a runtime in platform order, native first: on macOS
-`container` (Apple's), then `podman`, then `docker`. That order is the fix for
-a real failure. It used to probe `docker` first and take whatever answered, so
-on any Mac with Docker or OrbStack installed the native runtime was never
-chosen no matter what else was present, and an operator had no way to ask for
-it. `OMPD_CONTAINER_RUNTIME=<name>` pins one instead, and a pinned runtime that
-is missing is an error rather than a quiet fall back to whatever else happens to
-be installed. On Linux the order is `podman` then `docker`, because podman is
-daemonless and rootless by design; see "Linux" below for what the host still
-has to provide.
+**There is no fallback order.** On macOS the only runtime ompd will pick for
+itself is Apple's `container`. On Linux it is `podman`. Nothing else is ever
+chosen implicitly, and if the one native runtime is absent, or its service is
+down, or its `run --help` cannot be read, provisioning fails with a message
+naming that runtime and the command that fixes it.
 
-It then starts a detached container, mounts the workspace at the same absolute
-path it has here so a cwd means the same thing on both sides, and speaks ACP
-over `<runtime> exec -i <id> <omp>`. Stopping the last agent on a host removes
-the container and the network it was given.
+That is stricter than it first was, and the reason is a defect a security
+review found in the first attempt. An ordered list with docker at the end still
+reached docker: whenever Apple's `container` answered `--version` but its
+apiserver was stopped, an unpinned selection walked past it and landed on
+Docker or OrbStack. Silently running on the thing this work exists to remove is
+worse than refusing, and the same reasoning that makes a pinned-but-absent
+runtime an error applies to a native runtime whose service is merely stopped.
+
+Docker and podman are still supported, deliberately rather than implicitly:
+`OMPD_CONTAINER_RUNTIME=docker` or `=podman` pins one. A pinned runtime that is
+missing is an error, never a fall back to whatever else happens to be
+installed.
+
+ompd then starts a detached container, mounts the workspace at the same
+absolute path it has here so a cwd means the same thing on both sides, and
+speaks ACP over `<runtime> exec -i <id> <omp>`. Stopping the last agent on a
+host removes the container and the network it was given, and a daemon restart
+no longer orphans either: the runtime, the network and the resolved image are
+recorded on the host's own record, so a fresh daemon reclaims them at startup
+from the store rather than from memory it no longer has.
 
 **Confinement is read off the runtime, not off its name.** Every flag ompd
 sends is one it saw in that binary's own `run --help`. That is not pedantry:
@@ -532,9 +543,19 @@ Apple `container` 0.4.1 rejects `--cap-drop`, `--read-only`, `--pids-limit` and
 `--cap-drop`, `--read-only` and `--ulimit`. One table keyed on the name
 `container` cannot be right for both, and the failure mode of getting it wrong
 is silently withholding a real security control from a runtime that has it. A
-CLI whose help cannot be parsed is refused rather than guessed at, and
-`ompd doctor` prints which runtime would be selected and which flags it is
-actually being asked for.
+CLI whose help cannot be parsed is refused rather than guessed at, and so is
+one whose `run --help` exits non-zero while still printing an option list.
+`ompd doctor` prints which runtime would be selected, honouring any pin, and
+which flags it is actually being asked for.
+
+Two capabilities are recorded knowledge rather than parsed, because a flag that
+parses and is then ignored is invisible to help text. Apple accepts a
+docker-style `--tmpfs <path>:<options>` suffix and mounts nothing, so it gets a
+bare path. And its `--user` takes a name: a numeric one does not fail to parse,
+it kills the container, so ompd never sends a numeric identity flag to that
+runtime whatever its help says. That last one stays false even for 1.3.0, whose
+documentation says `--user` accepts `name|uid[:gid]`, until somebody runs it
+against a real 1.3.0 binary and records the result.
 
 ### The image, and why nothing private is pulled
 
@@ -643,11 +664,24 @@ tarball cannot carry and only root can apply; `/etc/subuid` and `/etc/subgid`
 entries need root; unprivileged user namespaces are a kernel build option; and
 cgroups v2 delegation needs host systemd and a user D-Bus session. Podman
 documents exactly these prerequisites rather than pretending to remove them,
-and podman is itself daemonless, so on Linux ompd selects it first and reports
-the specific missing prerequisite when rootless containers are unavailable.
+and podman is itself daemonless, so on Linux it is the one runtime ompd selects
+for itself.
+
+When podman is installed and cannot run rootless, ompd says which prerequisite
+is missing rather than guessing. It checks four things, each with its own
+remedy:
+
+| Prerequisite | Checked by |
+| --- | --- |
+| unprivileged user namespaces | `/proc/sys/kernel/unprivileged_userns_clone` non-zero where that Debian/Ubuntu sysctl exists, and `/proc/sys/user/max_user_namespaces` above zero. A kernel exposing neither is reported as unknown rather than as a pass or a failure. |
+| a subordinate id range | a line in `/etc/subuid` and `/etc/subgid` for this user or uid with a non-zero count |
+| `newuidmap` / `newgidmap` **privileged** | both on `PATH`, and each actually setuid-root or carrying `cap_setuid`/`cap_setgid`. Presence is not the prerequisite: the kernel restricts multi-entry `/proc/self/uid_map` writes to privileged code, so the bit is what matters. |
+| cgroups v2 with delegation | `/sys/fs/cgroup/cgroup.controllers` present, and the user's own slice delegating at least `memory` and `pids` |
+
 Known-failing hosts: `kernel.unprivileged_userns_clone=0`, RHEL 7-era kernels,
 `user.max_user_namespaces=0`, non-systemd distros, and nested containers whose
-subuid range is exhausted.
+subuid range is exhausted. Docker remains available on Linux by explicit pin,
+not as a fallback.
 
 ### The threat model, which is the part worth reading
 

@@ -17,6 +17,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
+  KNOWN_RUNTIMES,
   loadConfig,
   OMPD_VERSION,
   probeRuntime,
@@ -379,9 +380,25 @@ function stateCheck(ctx: CliContext): Check {
  * reason this is not just a `--version` loop: Apple's runtime answers
  * `--version` perfectly well with its apiserver stopped, and then fails every
  * provision.
+ *
+ * `OMPD_CONTAINER_RUNTIME` is honoured here for the same reason the line exists
+ * at all. A review found this reporting the platform's native runtime while a
+ * pin sent every provision somewhere else, which is worse than saying nothing:
+ * the one question this answers is "which runtime is my agent actually on".
  */
 async function runtimeCheck(ctx: CliContext): Promise<Check> {
-  const candidates = runtimeOrder(process.platform);
+  // Read from the CLI's own env view rather than `process.env`, so a test can
+  // drive both branches without mutating the process.
+  const pinned = ctx.env.OMPD_CONTAINER_RUNTIME;
+  if (pinned !== undefined && !KNOWN_RUNTIMES.includes(pinned)) {
+    return {
+      label: "containers",
+      severity: "fail",
+      detail: `OMPD_CONTAINER_RUNTIME=${pinned} names no runtime ompd knows`,
+      advice: [`unset it or set it to one of ${KNOWN_RUNTIMES.join(", ")}`],
+    };
+  }
+  const candidates = pinned === undefined ? runtimeOrder(process.platform) : [pinned];
   if (candidates.length === 0) {
     return {
       label: "containers",
@@ -391,7 +408,7 @@ async function runtimeCheck(ctx: CliContext): Promise<Check> {
     };
   }
 
-  const probes = await Promise.all(candidates.map(runtime => probeRuntime(runtime, ctx.exec)));
+  const probes = await Promise.all(candidates.map(runtime => probeRuntime(runtime, ctx.exec, process.platform)));
   const usable = probes.find((probe): probe is RuntimeCapability => !("reason" in probe));
   const unusable = probes.filter((probe): probe is RuntimeUnavailable => "reason" in probe);
   if (usable === undefined) {

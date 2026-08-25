@@ -133,11 +133,48 @@ export interface HostMount {
   mode?: "ro" | "rw";
 }
 
+/**
+ * What the provisioner actually resolved for a host, as opposed to what the
+ * caller asked for.
+ *
+ * This exists because the process maps were the only record of it, and that
+ * made teardown depend on the daemon never restarting. `Agent.host` is already
+ * persisted as JSON in the `agents` table, so everything here survives a
+ * restart for free and `destroy` can work from the store instead of from
+ * memory. Without it a restarted daemon leaves a running container and an
+ * `ompd-*` network for a human to find by hand, because the container's command
+ * is `tail -f /dev/null` and `--rm` therefore never fires.
+ *
+ * It is also the audit record: an operator asking what a container was given
+ * needs the resolved image and the toolchain digests, not the caller's
+ * `spec.image`, which is `undefined` on the default path.
+ */
+export interface ResolvedHost {
+  /** Runtime CLI that owns this host. Required to destroy it after a restart. */
+  runtime: string;
+  /** Network created for this host, or null when it ran under a "none" policy and nothing was created. */
+  network: string | null;
+  /** Image actually used. Digest-pinned on the default path. */
+  image: string;
+  /** sha256 of the omp binary the container was given, when a toolchain was mounted. */
+  ompSha256?: string;
+  /** sha256 of the CA bundle the container was given, when a toolchain was mounted. */
+  caSha256?: string;
+  /** ISO timestamp, so reconciliation can tell a fresh host from an orphan. */
+  createdAt: string;
+}
+
 export interface HostRef {
   kind: HostKind;
   /** pid for local, container id for container, machine id for cloud. */
   id: string;
   spec: HostSpec;
+  /**
+   * Absent for a local host, and for any container host provisioned before
+   * this field existed. A `destroy` that finds it absent falls back to the
+   * process map and says so rather than pretending it reclaimed anything.
+   */
+  resolved?: ResolvedHost;
 }
 
 // ---------------------------------------------------------------------------
@@ -1300,6 +1337,13 @@ export type AuditAction =
   | "proposal.reject"
   | "host.provision"
   | "host.destroy"
+  /**
+   * A host the store still listed was reclaimed at daemon start, or could not
+   * be. Distinct from `host.destroy` because nobody asked for it: it is the
+   * daemon noticing that a previous process left something running, and the
+   * `error` outcome is the one an operator has to act on by hand.
+   */
+  | "host.reconcile"
   /**
    * A device asked what is in one of the operator's directories, or was
    * refused. Recorded on every exit, refusals included: reading someone's
