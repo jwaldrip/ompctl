@@ -168,14 +168,16 @@ export function Console({
    */
   const [openedFromRoute, setOpenedFromRoute] = useState(false);
   /**
-   * A dormant session has no agent until the daemon accepts its asynchronous
-   * resume claim. The stack cannot present it merely because the request left:
-   * a deleted session can be stale between local index resolution and that
-   * claim, and treating the request as an open hides the tablet fleet pane for
-   * a route that never exists. This remembers the subject until a selected
-   * agent confirms the daemon actually opened that exact session.
+   * A dormant resume has to be confirmed by a NEW selection. The fleet can
+   * already have the terminal holder selected when its index row becomes
+   * dormant; that old stopped agent still names the same ACP id, and accepting
+   * it as the answer to a later resume request hides the pane before the daemon
+   * has accepted anything. `selectedBefore` rules that old selection out.
    */
-  const [pendingRouteSession, setPendingRouteSession] = useState<string | null>(null);
+  const [pendingRouteSession, setPendingRouteSession] = useState<{
+    sessionId: string;
+    selectedBefore: AgentId | null;
+  } | null>(null);
   /**
    * Which surface presents the open session: the stack, or the tablet's own
    * detail pane. Exactly one of the two, always, so no session screen is
@@ -191,9 +193,10 @@ export function Console({
 
   useEffect(() => {
     if (pendingRouteSession === null || state.selected === null) return;
+    if (state.selected === pendingRouteSession.selectedBefore) return;
     const selected = agentFor(state, state.selected);
     const confirmedSessionId = selected?.acpSessionId ?? state.sessionIds.get(state.selected);
-    if (confirmedSessionId !== pendingRouteSession) return;
+    if (confirmedSessionId !== pendingRouteSession.sessionId) return;
     setOpenedFromRoute(true);
     setPendingRouteSession(null);
   }, [pendingRouteSession, state]);
@@ -261,7 +264,7 @@ export function Console({
       const target = openSessionById(sessionId);
       if (target.kind === "dormant") {
         setOpenedFromRoute(false);
-        setPendingRouteSession(target.sessionId);
+        setPendingRouteSession({ sessionId: target.sessionId, selectedBefore: latest.current.state.selected });
         return;
       }
       setPendingRouteSession(null);
