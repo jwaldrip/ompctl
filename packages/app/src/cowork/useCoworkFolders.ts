@@ -19,7 +19,7 @@
  * one sealed socket the relay carries.
  */
 
-import type { AgentId, HostMount, HostSpec } from "@ompd/core/contracts";
+import type { AgentId, HostMount, WireHostSpec } from "@ompd/core/contracts";
 import type { AgentCreatedEvent, ClientErrorEvent } from "@ompd/core/ompd-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { directoryLabel } from "../remote/model.ts";
@@ -59,8 +59,16 @@ export interface CoworkFoldersActions {
   start: () => void;
 }
 
-/** The `host` slice of an `agent_create`, in the exact shape the provisioner validates. */
-export function coworkHostSpec(folders: readonly BoundFolder[]): HostSpec {
+/**
+ * The `host` slice of an `agent_create`, in the exact shape the provisioner
+ * validates.
+ *
+ * `WireHostSpec`, so this cannot name an `image`: the daemon refuses that
+ * field from a paired device, and the image a container host runs is the
+ * daemon's own `containerImage` config. A phone is authenticated, not trusted
+ * with the daemon's supply chain.
+ */
+export function coworkHostSpec(folders: readonly BoundFolder[]): WireHostSpec {
   const mounts: HostMount[] = folders.map(folder => ({ hostPath: folder.hostPath, mode: folder.mode }));
   return { kind: "container", mounts };
 }

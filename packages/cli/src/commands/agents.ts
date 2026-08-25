@@ -7,7 +7,7 @@
  */
 
 import { basename, resolve } from "node:path";
-import type { Agent, HostSpec } from "@ompd/core";
+import type { Agent, WireHostSpec } from "@ompd/core";
 import type { Command } from "../args.ts";
 import { api, type CliContext } from "../client.ts";
 import { age, table } from "../format.ts";
@@ -41,9 +41,10 @@ export async function newCommand(ctx: CliContext, cmd: Extract<Command, { kind: 
   // Resolved here, against the shell's cwd. A relative path means nothing to a
   // daemon that may have been started from anywhere, or by launchd from `/`.
   const cwd = resolve(ctx.cwd, cmd.cwd);
-  const host: HostSpec | undefined = cmd.container
-    ? { kind: "container", image: cmd.image, mounts: cmd.mounts }
-    : undefined;
+  // `WireHostSpec`, not `HostSpec`: no `image`. The daemon refuses that field
+  // on the wire, and this is a wire client like any other. Which image a
+  // container host runs is `containerImage` in the daemon's own config.json.
+  const host: WireHostSpec | undefined = cmd.container ? { kind: "container", mounts: cmd.mounts } : undefined;
   const response = await api<CreateAgentResponse>(ctx, "/v1/agents", {
     method: "POST",
     body: { name: cmd.name ?? basename(cwd), cwd, host },

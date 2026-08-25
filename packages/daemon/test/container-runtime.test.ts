@@ -890,7 +890,11 @@ describe("selectRuntime", () => {
     // Where to get it, and the statement that ompd will not choose another.
     expect(message).toContain("https://github.com/apple/container/releases");
     expect(message).toContain("will not fall back to Docker");
-    expect(message).toContain("OMPD_CONTAINER_RUNTIME=docker");
+    // The advice names the durable config field, not an environment variable:
+    // a launchd-started daemon inherits no shell, so env-only advice pointed an
+    // operator at a setting that could not reach the process that needed it.
+    expect(message).toContain("`containerRuntime` to `docker` or `podman`");
+    expect(message).not.toContain("OMPD_CONTAINER_RUNTIME");
     expect(fake.argv).toEqual([["container", "--version"]]);
   });
 
@@ -927,7 +931,8 @@ describe("selectRuntime", () => {
     const message = String(failure);
     expect(message).toContain("podman (absent)");
     expect(message).toContain("will not fall back to Docker on linux");
-    expect(message).toContain("OMPD_CONTAINER_RUNTIME=docker");
+    expect(message).toContain("`containerRuntime` to `docker`");
+    expect(message).not.toContain("OMPD_CONTAINER_RUNTIME");
     expect(fake.argv).toEqual([["podman", "--version"]]);
   });
 

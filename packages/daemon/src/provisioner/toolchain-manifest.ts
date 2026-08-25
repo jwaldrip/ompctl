@@ -106,11 +106,26 @@
  * toolchain path now fails closed and says which digest it got. That is the
  * intended behaviour and not a bug to route around.
  *
- * omp release digests come from upstream, not from our own download
- * ----------------------------------------------------------------
- * Each release publishes a `SHA256SUMS.txt` asset, so the expectation below is
+ * omp release digests come from upstream, and the proof of that is committed
+ * --------------------------------------------------------------------------
+ * Each release publishes a `SHA256SUMS.txt` asset, so every `sha256` below is
  * upstream's own statement about its artefacts and not our arithmetic on
- * whatever the CDN served us (2026-08-24):
+ * whatever the CDN served us. A comment claiming that is not checkable,
+ * though, and that gap is worth naming: a fabricated or transposed digest
+ * literal reads exactly as plausibly as a correct one, so review cannot tell
+ * them apart, and the constant it is compared against downstream is itself.
+ *
+ * So the asset is committed rather than quoted. One verbatim file per tag under
+ * `packages/daemon/test/fixtures/omp-releases/`, recorded in `UPSTREAM_SUMS`
+ * with its source URL, its fetch date and its own sha256, and
+ * `container-image.test.ts` parses those files and compares them against
+ * `OMP_RELEASES` in both directions: every reviewed entry must equal upstream's
+ * line for the same asset, and every `omp-linux-*` line upstream publishes for
+ * a supported tag must either have an entry or be named in
+ * `UNSUPPORTED_LINUX_ASSETS`. A wrong digit fails a named test instead of
+ * passing review, and a quietly dropped architecture fails too.
+ *
+ * Fetched on 2026-08-24, and byte-identical on an independent re-fetch:
  *
  *   $ curl -sSL https://github.com/can1357/oh-my-pi/releases/download/v18.0.4/SHA256SUMS.txt
  *     f2b7c8a019681ede314ac165100c1c5b5cd4900139075948da809c004bec5ce7  omp-linux-arm64
@@ -120,13 +135,41 @@
  *     omp-linux-arm64: OK
  *     omp-linux-x64: OK
  *
- * Byte counts are from the release API, and are pinned alongside the digests so
- * a truncated transfer is caught by a cheap comparison before 145MB is hashed:
+ * What the committed asset is and is not: it is upstream's published list, not
+ * a signature. Nobody countersigned it, and a publisher who re-cuts a release
+ * can replace it. What committing it buys is that such a change becomes a
+ * mismatch a reviewer can see, rather than an invisible edit to a string
+ * literal, and there is no runtime fetch of it anywhere. It is test-time
+ * evidence for a compiled-in constant; the provisioner downloads the asset
+ * itself and nothing else.
+ *
+ * Byte counts rest on a weaker record, said out loud rather than implied
+ * ---------------------------------------------------------------------
+ * `bytes` is a cheap cross-check so a truncated transfer is refused before
+ * 145MB is hashed. It is not provenance, and it does not have the same standing
+ * as `sha256`. Two reasons, both of which matter:
+ *
+ *   - It does not appear in `SHA256SUMS.txt`, which carries digests only. It
+ *     comes from GitHub's release API, which is the host describing a blob it
+ *     stores rather than the publisher attesting to what it uploaded.
+ *   - That API response cannot be committed as equal-standing evidence,
+ *     because it is not reproducible. It carries `download_count` (599 for
+ *     v17.3.4's arm64 asset when this was written) and `reactions`, so its own
+ *     digest moves without the release moving, and a reviewer re-fetching it
+ *     could never compare against a recorded hash. Committing it would look
+ *     like proof and supply none.
+ *
+ * So byte counts are re-derivable rather than committed, and reviewing a new
+ * entry means running this (2026-08-24):
  *
  *   $ curl -sS https://api.github.com/repos/can1357/oh-my-pi/releases/tags/v18.0.4 \
- *       | jq -r '.assets[] | "\(.name)  \(.size)"'
+ *       | jq -r '.assets[] | select(.name|startswith("omp-linux")) | "\(.name)  \(.size)"'
  *     omp-linux-arm64  145082360
  *     omp-linux-x64    179881160
+ *
+ * A wrong `bytes` is caught by the digest check moments later, which is why it
+ * can rest on a weaker record. A wrong `sha256` is caught by nothing
+ * downstream, which is why that one is the value the committed asset covers.
  *
  * Adding a release
  * ----------------
@@ -135,29 +178,46 @@
  * pasting whatever the URL currently returns:
  *
  *   1. Read `SHA256SUMS.txt` for the tag and take the digests from it.
- *   2. Download each asset and confirm `shasum -a 256 -c SHA256SUMS.txt` passes,
+ *   2. Commit that file verbatim as
+ *      `packages/daemon/test/fixtures/omp-releases/v<tag>-SHA256SUMS.txt` and
+ *      add an `UPSTREAM_SUMS` entry carrying its URL, the fetch date and its
+ *      own sha256. Skipping this fails the cross-check test rather than
+ *      merging quietly.
+ *   3. Download each asset and confirm `shasum -a 256 -c SHA256SUMS.txt` passes,
  *      so the published sums and the served bytes agree.
- *   3. Record the byte count from the release API.
- *   4. Add one `OMP_RELEASES` entry per architecture, with the commands and the
+ *   4. Record the byte count from the release API.
+ *   5. Add one `OMP_RELEASES` entry per architecture, with the commands and the
  *      date, in the style above.
  *
  * The musl builds (`omp-linux-musl-arm64`, `omp-linux-musl-x64`) are published
  * and deliberately absent: the pinned base is glibc-based debian, so the glibc
  * builds are the ones that run on it. They would belong here alongside an
- * alpine base, which is not what this module mounts.
+ * alpine base, which is not what this module mounts. That decision is written
+ * down in `UNSUPPORTED_LINUX_ASSETS` rather than expressed as an absence,
+ * because an absence is what a mistake looks like too.
  */
 
 /** One reviewed `omp-linux-<arch>` release asset. */
 export interface OmpRelease {
   /** As printed by `omp --version`, with the `omp/` prefix stripped. */
-  version: string;
+  readonly version: string;
   /** As spelled in the release asset name: `arm64` or `x64`. */
-  arch: string;
-  /** From upstream's `SHA256SUMS.txt`, not from our own download. */
-  sha256: string;
-  /** From the release API. Checked before hashing, so a short transfer is cheap to catch. */
-  bytes: number;
-  url: string;
+  readonly arch: string;
+  /**
+   * From upstream's `SHA256SUMS.txt`, not from our own download, and checkable:
+   * the asset is committed under `UPSTREAM_SUMS` and a test compares this
+   * against it. This is the value the whole pin rests on.
+   */
+  readonly sha256: string;
+  /**
+   * From the GitHub release API. Checked before hashing, so a short transfer is
+   * cheap to catch. Weaker evidence than `sha256` on purpose, and the module
+   * comment says why: it is not in `SHA256SUMS.txt` and the API response it
+   * comes from is not reproducible, so it is re-derivable rather than
+   * committed.
+   */
+  readonly bytes: number;
+  readonly url: string;
 }
 
 /**
@@ -170,10 +230,10 @@ export interface OmpRelease {
  */
 export interface PinnedImage {
   /** Runnable, digest-pinned: `<repo>:<tag>@sha256:<digest>`. */
-  ref: string;
+  readonly ref: string;
   /** The OCI image index digest. Arch-independent; see the module comment. */
-  digest: string;
-  description: string;
+  readonly digest: string;
+  readonly description: string;
 }
 
 const RELEASE_BASE = "https://github.com/can1357/oh-my-pi/releases/download";
@@ -181,15 +241,16 @@ const RELEASE_BASE = "https://github.com/can1357/oh-my-pi/releases/download";
 /**
  * Every omp release the default toolchain is allowed to mount.
  *
- * 18.0.4 only, because that is the release that was reviewed and the one whose
- * bytes were run against the pinned base. An `omp --version` reporting anything
- * else is a refusal with instructions rather than a download, which is the
- * whole point: a version nobody has looked at cannot arrive by accident.
+ * Two releases, 18.0.4 and 17.3.4, because those are the ones that were
+ * reviewed. An `omp --version` reporting anything else is a refusal with
+ * instructions rather than a download, which is the whole point: a version
+ * nobody has looked at cannot arrive by accident.
  *
- * Both entries verified on 2026-08-24 by the commands in the module comment:
- * upstream `SHA256SUMS.txt` for the digests, the release API for the sizes, and
- * `shasum -a 256 -c SHA256SUMS.txt` reporting `OK` for both assets after
- * download. The arm64 build was additionally executed on the pinned base:
+ * Every entry's digest is checked against the committed `SHA256SUMS.txt` for
+ * its tag (`UPSTREAM_SUMS`) by `container-image.test.ts`, so what follows is
+ * evidence a reviewer can re-run rather than a claim. Sizes are from the
+ * release API. The 18.0.4 arm64 build was additionally executed on the pinned
+ * base on 2026-08-24:
  *
  *   $ container run --rm --volume /tmp/pin-evidence/tools:/opt/ompd:ro \
  *       debian:bookworm-slim@sha256:88200866...4171 /opt/ompd/omp --version
@@ -239,6 +300,86 @@ export const OMP_RELEASES: readonly OmpRelease[] = [
     url: `${RELEASE_BASE}/v17.3.4/omp-linux-x64`,
   },
 ];
+
+/**
+ * One committed, verbatim copy of an upstream `SHA256SUMS.txt` release asset.
+ *
+ * This exists so that `OMP_RELEASES.sha256` is comparable against something
+ * other than itself. The recorded fields are all load-bearing rather than
+ * decorative, and `container-image.test.ts` uses each of them:
+ *
+ *   - `path` is checked by reading it, so a moved or misnamed fixture fails.
+ *   - `fileSha256` is recomputed from the bytes on disk, so a fixture edited
+ *     to make a bad manifest digest pass fails here instead.
+ *   - `url` and `fetched` are what a reviewer needs to re-fetch and compare.
+ *     Nothing at runtime reads them; there is no code path in the provisioner
+ *     that fetches a checksum file, and a test asserts that too.
+ */
+export interface UpstreamSums {
+  /** The release tag's version, matching `OmpRelease.version`. */
+  readonly version: string;
+  /** Exactly where the committed bytes came from. */
+  readonly url: string;
+  /** Repo-relative path of the verbatim copy. */
+  readonly path: string;
+  /** sha256 of the `SHA256SUMS.txt` file itself, so a re-fetch is comparable. */
+  readonly fileSha256: string;
+  /** ISO date the file was fetched. */
+  readonly fetched: string;
+}
+
+/**
+ * The committed upstream checksum assets, one per supported tag.
+ *
+ * Fetched and verified byte-identical against an independent second fetch on
+ * 2026-08-24:
+ *
+ *   $ curl -sSL --fail \
+ *       https://github.com/can1357/oh-my-pi/releases/download/v17.3.4/SHA256SUMS.txt \
+ *       -o packages/daemon/test/fixtures/omp-releases/v17.3.4-SHA256SUMS.txt
+ *   $ curl -sSL --fail \
+ *       https://github.com/can1357/oh-my-pi/releases/download/v18.0.4/SHA256SUMS.txt \
+ *       -o packages/daemon/test/fixtures/omp-releases/v18.0.4-SHA256SUMS.txt
+ *   $ shasum -a 256 packages/daemon/test/fixtures/omp-releases/*.txt
+ *     cc94db788640e46acce8f6e0470d1b9831b8b0822b1c9205fc0c018d59ffefb1  v17.3.4-SHA256SUMS.txt
+ *     c13aeff9f2b01b6224c56b91909224e877e97076300e84f61cffb89dea6c5931  v18.0.4-SHA256SUMS.txt
+ *
+ * Every supported version in `OMP_RELEASES` must appear here and vice versa,
+ * which is asserted rather than assumed: adding a release without committing
+ * its asset is exactly the shortcut this record exists to stop.
+ */
+export const UPSTREAM_SUMS: readonly UpstreamSums[] = [
+  {
+    version: "17.3.4",
+    url: `${RELEASE_BASE}/v17.3.4/SHA256SUMS.txt`,
+    path: "packages/daemon/test/fixtures/omp-releases/v17.3.4-SHA256SUMS.txt",
+    fileSha256: "cc94db788640e46acce8f6e0470d1b9831b8b0822b1c9205fc0c018d59ffefb1",
+    fetched: "2026-08-24",
+  },
+  {
+    version: "18.0.4",
+    url: `${RELEASE_BASE}/v18.0.4/SHA256SUMS.txt`,
+    path: "packages/daemon/test/fixtures/omp-releases/v18.0.4-SHA256SUMS.txt",
+    fileSha256: "c13aeff9f2b01b6224c56b91909224e877e97076300e84f61cffb89dea6c5931",
+    fetched: "2026-08-24",
+  },
+];
+
+/**
+ * Linux assets upstream publishes that this module deliberately will not mount,
+ * and why not.
+ *
+ * The reverse-direction check reads every `omp-linux-*` line out of a committed
+ * asset and demands that each one either has an `OMP_RELEASES` entry or is
+ * named here. Without this record the two cases are indistinguishable: an
+ * architecture nobody wants and an architecture somebody forgot both look like
+ * an absence, and only one of them is a decision. Writing the reason down is
+ * what makes the other one a test failure.
+ */
+export const UNSUPPORTED_LINUX_ASSETS: Record<string, string> = {
+  "omp-linux-musl-arm64": "musl build; the pinned base image is glibc-based debian, so it cannot execute here",
+  "omp-linux-musl-x64": "musl build; the pinned base image is glibc-based debian, so it cannot execute here",
+};
 
 /**
  * The base image every default container host runs.

@@ -67,13 +67,67 @@ export function dangerousMountReason(hostPath: string): string | null {
  * is root's home directory and therefore root's credentials; `/System`,
  * `/usr`, `/bin`, `/sbin`, and `/Library` are the OS itself.
  *
+ * The kernel and device interfaces are here for a different reason, and `/dev`
+ * is the one the review demonstrated. A read-write `/dev` is not a file leak,
+ * it is the host's block devices: the raw disks (`/dev/rdisk0` here,
+ * `/dev/sda` on Linux), which make every filesystem permission on the host
+ * advisory; `/dev/mem` and `/dev/kmem` where a kernel still exposes them,
+ * which is the host's live memory; and, because the guest runs as root with
+ * `mknod`, the ability to hand ITSELF a device node for anything it can name.
+ * That is why `/dev` is a tree and not an exact match: an exact rule refuses
+ * the directory and then allows `--volume /dev/rdisk0:/dev/rdisk0:rw`, which
+ * is the whole attack in one argument. `/proc` and `/sys` are the same shape
+ * by other means, since `/proc/sys/kernel`, `/proc/<pid>/mem` and
+ * `/sys/kernel/security` are writes into the running kernel. Both are listed
+ * even though macOS has neither, because this daemon is meant to run on Linux
+ * too and a set that is right on one platform only has to be got right twice.
+ *
+ * `/boot`, `/lib` and `/lib64` are code the machine executes on the next boot
+ * or the next `execve`. `/run` is its runtime state: systemd's private
+ * sockets, the D-Bus system bus, udev's database, and on many systems the
+ * docker or podman socket, which is a container runtime handing out root.
+ * `/var/lib` is where packages keep their databases, `/var/lib/docker` and
+ * `/var/lib/containers` included, so it is the same escalation by a slower
+ * road, and `/var/run` is the older spelling of `/run`.
+ *
+ * `/opt` is a decision rather than a reflex, and it goes in. On this machine
+ * `/opt/homebrew` is the operator's entire toolchain and `/opt/podman` is a
+ * container runtime install (both verified present: darwin 25.5.0, arm64), and
+ * on Linux `/opt` is where vendor packages put their binaries. A writable
+ * mount there does not read a secret, it replaces a program the operator, and
+ * this daemon, which finds its runtime by name on PATH, will later execute.
+ * That is host code execution arriving through a mount instead of through a
+ * gated tool call. The cost is over-refusing an operator who genuinely keeps a
+ * project in `/opt/thing`; they get a reason naming the directory and can move
+ * it, which is the cheap side of the trade.
+ *
+ * `/srv` is the same question and the answer is no, which is the asymmetry
+ * worth stating out loud. It does not exist on macOS at all (verified), and
+ * the FHS defines it as site-specific data served by this system, explicitly
+ * the one tree a distribution must not write into. No OS code to swap, no
+ * credential store, no kernel interface: the mechanism that justifies every
+ * entry above is simply absent there, while a served web root or git mirror
+ * under `/srv` is a plausible workspace. Refusing it would cost the ordinary
+ * case and buy nothing nameable.
+ *
  * Both spellings of the macOS firmlinked directories are listed on purpose.
- * `realpathSync("/etc")` returns `/private/etc` and `realpathSync("/var")`
- * returns `/private/var` on this machine (verified: darwin 25.5.0, APFS), so
- * canonicalization moves the path to the `/private` spelling and a list that
- * named only `/etc` would match nothing after canonicalizing. The unprefixed
- * spelling stays because canonicalization is allowed to fail (see
+ * `realpathSync("/etc")` returns `/private/etc`, `realpathSync("/var")`
+ * returns `/private/var`, and `/var/lib` and `/var/run` return
+ * `/private/var/lib` and `/private/var/run` (all verified: darwin 25.5.0,
+ * APFS), so canonicalization moves the path to the `/private` spelling and a
+ * list that named only `/etc` would match nothing after canonicalizing. The
+ * unprefixed spelling stays because canonicalization is allowed to fail (see
  * `canonicalizeAsFarAsPossible`) and the check must still refuse in that case.
+ * The other new entries get no `/private` twin, because macOS has no firmlink
+ * for them: `/private/dev` and `/private/run` do not exist here (verified), so
+ * an entry for either would defend nothing.
+ *
+ * An entry for a directory that exists on neither platform still refuses, and
+ * that is the mechanism rather than an accident. `canonicalizeAsFarAsPossible`
+ * walks up to `/`, which resolves, and re-appends the missing tail verbatim,
+ * so an absent `/proc` is judged as the string `/proc` and caught by its own
+ * entry rather than sliding past as something unrecognised. The tests assert
+ * that walk instead of assuming it.
  */
 const PROTECTED_TREES: string[] = [
   "/etc",
@@ -86,6 +140,19 @@ const PROTECTED_TREES: string[] = [
   "/usr",
   "/bin",
   "/sbin",
+  "/dev",
+  "/proc",
+  "/sys",
+  "/run",
+  "/boot",
+  "/lib",
+  "/lib64",
+  "/var/lib",
+  "/private/var/lib",
+  "/var/run",
+  "/private/var/run",
+  "/opt",
+  "/Volumes/.timemachine",
 ];
 
 /**
@@ -103,9 +170,39 @@ const PROTECTED_TREES: string[] = [
  * `/var/folders/<hash>/T`, which canonicalizes under `/private/var`, so every
  * scratch directory a caller could legitimately mount lives inside that tree.
  * Refusing the tree would refuse the ordinary case; refusing the directory
- * itself, plus `/var/root` as a tree above, refuses what is actually dangerous.
+ * itself, plus `/var/root`, `/var/lib` and `/var/run` as trees above, refuses
+ * what is actually dangerous.
+ *
+ * `/Volumes` is the macOS spelling of the same shape, and it is exact for the
+ * same reason. Named itself it is every mounted volume at once: the system
+ * volume, a Time Machine store, and any disk image the operator or an attacker
+ * has attached. It must stay exact and must not be promoted to a tree later,
+ * because an external volume legitimately holds a workspace: on this machine
+ * the operator's own checkouts mirror onto an external SSD under
+ * `/Volumes/dev`, so a tree rule would refuse an ordinary mount and the
+ * refusal would read as a bug rather than as policy. Same trade as `/var` and
+ * `$TMPDIR`.
+ *
+ * The obvious dangerous descendant needs no rule, because the filesystem folds
+ * it already: `/Volumes/Macintosh HD` is a symlink whose `realpathSync` is `/`
+ * (verified: darwin 25.5.0), so the `/` entry refuses it before any comparison
+ * reaches this list. `/Volumes/.timemachine` does need one, and it is the one
+ * `/Volumes` descendant in `PROTECTED_TREES`: it is where macOS automounts
+ * backup destinations, so read-write it is every credential the operator has
+ * ever had at rest plus the ability to corrupt the backups, and nobody keeps a
+ * workspace in a dotted automount directory. That is the `/Users` argument
+ * about credentials at rest, not a second opinion about volumes.
+ *
+ * What is left uncovered, said plainly: a system or data volume an operator
+ * mounts under `/Volumes` by hand has its own filesystem root, so nothing
+ * canonicalizes it into `/` and it is judged on merit like any other volume.
+ * Telling one apart from an external disk needs content inspection, which is
+ * more mechanism than this list is, so it is named here rather than guessed at.
+ * Linux has no `/Volumes`, and the entry costs nothing there because the
+ * ancestor walk re-appends the absent tail and this rule refuses a directory
+ * nobody has.
  */
-const PROTECTED_EXACT: string[] = ["/", "/Users", "/home", "/var", "/private/var"];
+const PROTECTED_EXACT: string[] = ["/", "/Users", "/home", "/var", "/private/var", "/Volumes"];
 
 /**
  * A resolved mount path, or the reason it is refused. Never a throw: a caller
