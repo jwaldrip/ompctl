@@ -200,15 +200,15 @@
 /** One reviewed `omp-linux-<arch>` release asset. */
 export interface OmpRelease {
   /** As printed by `omp --version`, with the `omp/` prefix stripped. */
-  version: string;
+  readonly version: string;
   /** As spelled in the release asset name: `arm64` or `x64`. */
-  arch: string;
+  readonly arch: string;
   /**
    * From upstream's `SHA256SUMS.txt`, not from our own download, and checkable:
    * the asset is committed under `UPSTREAM_SUMS` and a test compares this
    * against it. This is the value the whole pin rests on.
    */
-  sha256: string;
+  readonly sha256: string;
   /**
    * From the GitHub release API. Checked before hashing, so a short transfer is
    * cheap to catch. Weaker evidence than `sha256` on purpose, and the module
@@ -216,8 +216,8 @@ export interface OmpRelease {
    * comes from is not reproducible, so it is re-derivable rather than
    * committed.
    */
-  bytes: number;
-  url: string;
+  readonly bytes: number;
+  readonly url: string;
 }
 
 /**
@@ -230,10 +230,10 @@ export interface OmpRelease {
  */
 export interface PinnedImage {
   /** Runnable, digest-pinned: `<repo>:<tag>@sha256:<digest>`. */
-  ref: string;
+  readonly ref: string;
   /** The OCI image index digest. Arch-independent; see the module comment. */
-  digest: string;
-  description: string;
+  readonly digest: string;
+  readonly description: string;
 }
 
 const RELEASE_BASE = "https://github.com/can1357/oh-my-pi/releases/download";
@@ -317,15 +317,15 @@ export const OMP_RELEASES: readonly OmpRelease[] = [
  */
 export interface UpstreamSums {
   /** The release tag's version, matching `OmpRelease.version`. */
-  version: string;
+  readonly version: string;
   /** Exactly where the committed bytes came from. */
-  url: string;
+  readonly url: string;
   /** Repo-relative path of the verbatim copy. */
-  path: string;
+  readonly path: string;
   /** sha256 of the `SHA256SUMS.txt` file itself, so a re-fetch is comparable. */
-  fileSha256: string;
+  readonly fileSha256: string;
   /** ISO date the file was fetched. */
-  fetched: string;
+  readonly fetched: string;
 }
 
 /**

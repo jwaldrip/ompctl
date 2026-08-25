@@ -188,6 +188,20 @@ export type ImageRefResult = { ok: true; ref: string } | { ok: false; reason: st
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
+ * The package's one object guard.
+ *
+ * Exported rather than redefined per call site because there were two copies of
+ * it, one here in core's validator and one private to the gateway, and a guard
+ * that decides whether untrusted input is even an object is exactly the wrong
+ * thing to have two subtly different versions of. It narrows to
+ * `Record<string, unknown>` and no further: the fields stay `unknown`, which is
+ * the point, so a caller still has to check each one it uses.
+ */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
  * The one place an image reference is normalized and checked, shared by the
  * gateway and by `loadConfig`.
  *

@@ -725,11 +725,27 @@ read, a model doing something stupid, a hostile dependency it just installed.
 
 **What it cannot reach.** The rest of your filesystem, unless you name it as
 an extra mount, and even then not the paths listed under "Extra mounts" above:
-`~/.ssh`, `~/.omp`, `~/.ompd`, a home directory root, and `/` are refused
-outright, not merely left off by default. Nothing outside the workspace and
-whatever you explicitly named is mounted, so `~/.aws` and your other
-repositories are not merely unreadable, they are not there. It cannot write
-the image, gain a capability, become root, or reach your other containers.
+`~/.ssh`, `~/.omp`, `~/.ompd`, a home directory root, `/`, the kernel and OS
+trees, and `/opt` are refused outright, not merely left off by default, and the
+refusal is applied to the canonicalized path so `/etc`, `/Users/you/.` and a
+symlink pointing at any of them are refused too. Nothing outside the workspace
+and whatever you explicitly named is mounted, so `~/.aws` and your other
+repositories are not merely unreadable, they are not there. It cannot reach
+your other containers: each host gets its own network.
+
+**Root and capabilities depend on the runtime, and the difference is real.**
+On docker or podman the container runs as your uid with `--cap-drop ALL` and
+`no-new-privileges`, so it cannot become root or gain a capability. On Apple
+`container` 0.4.1 it **is** root inside its own VM and holds the full
+capability set, because that CLI rejects `--cap-drop` and `--security-opt` and
+crashes on any numeric identity flag. What that buys an attacker is bounded by
+the VM rather than by a capability mask: there is no shared kernel to escape
+into, and files it creates in a mount land owned by you because virtiofs
+squashes ownership. What it does mean is that an in-guest root process can
+`mount --bind` over a read-only mount, which is measured and is why a
+gate-protected container serves exactly one ACP session rather than being
+reused. Do not read "it cannot become root" as true on Apple's runtime; it is
+not.
 
 **What it can reach, which is the honest part.**
 

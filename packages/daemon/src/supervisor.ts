@@ -1238,8 +1238,14 @@ export class Supervisor {
     const spec = normalizeHostSpec(requested, this.#home);
     const wanted = hostReuseKey(spec);
 
-    // One host per cwd keeps a crash blast-radius to the agents sharing a repo,
-    // which is also the natural boundary for OMP's own project config.
+    // Not "one host per cwd", which this comment used to claim and which the
+    // loop below has never implemented: the map is keyed by host, the entries
+    // are filtered by reuse key rather than by directory, and `cwd` is not part
+    // of the comparison at all. What actually bounds a crash is the reuse key
+    // plus the 16-agent cap, so two specs differing in any field share nothing
+    // even in the same directory, and two identical specs in different
+    // directories can share a host. Said accurately because the old sentence
+    // read as an isolation guarantee that was never being made.
     for (const entry of this.#hosts.values()) {
       if (!entry.host.client.agentInfo || entry.agents.size >= 16) continue;
       // Reused only for a spec that is equal on every field of `HostSpec`,
