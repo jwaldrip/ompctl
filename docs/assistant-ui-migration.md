@@ -376,9 +376,29 @@ Branch `feat/assistant-ui-proof`, off `1efcdd4`. **The owned session is cut over
 - `scripts/assistant-cloud-env.cjs` is a second, opposite-direction guard, called from Metro config, Vite config and the bun test preload. All three refuse with the real message, verified by setting the variable in a child process.
 - The stub throws rather than no-ops, so a caller asking for a cloud capability fails where the mistake is.
 
+**Rendered proof**
+
+Nine frames through `packages/app/test/render-frames.tsx`, which drives the real `Console` over a canned socket, so the props reaching `SessionScreen` are built by production code rather than by the harness. Three frames are new here: `iphone-owned-approval`, `ipad-owned-approval` and `iphone-owned-loading`.
+
+Measured in the browser, every frame: **`scrollHeight - height === 0`**, so nothing clips, and **exactly one emphasis control** — `composer-cancel` in all seven busy frames, `composer-send` in the idle one, and none at all while loading. That is #131's contract holding on the production surface, measured rather than asserted from source.
+
+| frame | list | composer | notable |
+| --- | --- | --- | --- |
+| iphone-owned-working | 156–583 | 642–836 | tool card + activity row at 256 |
+| iphone-owned-approval | 156–581 | 642–836 | clearance card 182–362, activity row 366 |
+| iphone-owned-idle | 156–583 | 642–836 | no activity row, send not interrupt |
+| iphone-owned-loading | — | — | load state owns 111–751; no list, no composer |
+| ipad-owned-working | 385–1137 (w 614) | 1196–1358 | bay 0–410, detail 410–1024 |
+| ipad-owned-approval | 385–1135 (w 614) | 1196–1358 | clearance card 411–591 |
+
+Looked at, not just measured: the approval card renders CLEARANCE / `bash` / the command payload / Allow, Reject, Always, with the activity row below it and `holding 1` in the readout. The loading frame carries the agent's identity in the header and nothing else, so a late frame from a previous session has no pane to land in. The iPad frame shows the session-context panel expanded with todos, model, directory and clearance count, beside the same clearance card.
+
+One harness artifact worth stating: the standalone HTML loads no webfont, so the frames render in the browser's serif fallback. The app ships its own stack; the geometry is real, the typeface in these pictures is not.
+
 **Not done**
 
-- **No iPhone or iPad simulator frames for the cut-over surface**, and no on-device interaction pass for prompt, stream, tool card, approval, attachment, cancel or top pagination. This is the one substantive gap and it is the reason the PR is still draft.
+- No iOS/Android **simulator or device** pass. `LaunchSmokeUITests` runs against a build with no daemon so it never opens a session, which is why this harness exists; it renders the real components through the same react-native-web substitution the shipped web build makes, but it is not a device.
+- No interaction pass on hardware for attachment pick, cancel mid-stream, or top pagination.
 - Terminal migration, deliberately, per §8 and its design note.
 
 ---
