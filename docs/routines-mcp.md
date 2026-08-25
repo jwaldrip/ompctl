@@ -81,6 +81,47 @@ people that passing gates is a formality. The description states plainly that
 the call also destroys the routine's run history and its webhook credential;
 the annotation carries the rest.
 
+## What a run reports
+
+`ompctl_routine_get` answers the routine plus its most recent runs, newest
+first, clamped to `runLimit`. Each action outcome inside a run carries the
+`sessionId` of the session its agent ran in, and each run carries
+`linkedSessionCount`: how many distinct sessions that run created.
+
+**A session id is a handle, not a credential.** It is the same id an ordinary
+session open takes, and opening one is still gated: resuming a dormant session
+needs `prompt` scope, taking over a live one needs `manage`, and either way the
+claim is verified against the daemon's own session index. So returning the id
+grants nothing a caller did not already have. That is why it is not stripped
+the way a webhook `secretRef` is: withholding it would cost someone the ability
+to look at what a run actually did while protecting nothing. A run's action
+outcome carries no credential and no execution host, so there is nothing else
+in that half of the response to strip.
+
+**The count is distinct and non-blank, not the action count.** The scheduler
+creates one agent per prompt action, so a two-action run is normally two
+sessions. But an action refused before it reached an agent has no session, and
+a run recorded before the daemon linked sessions has none at all. Counting
+actions instead would tell a caller there is something to open when there is
+not.
+
+**Zero is a real answer, and it is not a backfill.** Run rows serialize their
+action outcomes into a single column, so adding this field needed no schema
+change and no migration, and no row already on disk was rewritten. Those runs
+come back exactly as they were stored, with no `sessionId` key on any action
+and a count of zero. Nothing infers a session id from an agent id.
+
+The count is in the tool's text as well as its structured output, because the
+text is what a model reads. A field that appeared only in `structuredContent`
+is a field a caller has to already know to ask for.
+
+**`ompctl_routines_list` reports nothing about runs, on purpose.** The daemon's
+list route returns routines only, so a run fact in that summary would mean one
+HTTP call per routine behind a tool whose whole shape is a single cheap GET, or
+a count of zero for every routine whose runs were never fetched. The second is
+worse than the first: it is indistinguishable from a routine that genuinely
+produced none. Ask `ompctl_routine_get` for a routine you want the runs of.
+
 ## Omitted is not empty
 
 `ompctl_routine_update` takes every field as optional and sends only the keys
@@ -125,13 +166,14 @@ candidates that were considered and left off, ranked by how much I would want
 them next. Each is off because of what it would cost, not because it was
 missed.
 
-1. **Run and agent reads** (`GET /v1/agents`, `/v1/tasks`, transcript tails).
-   The most defensible next addition, and genuinely useful: "why did last
-   night's routine fail" currently means opening the app. Left off because it
-   is a separate capability with its own shape, and a first write surface
-   should not smuggle a read surface in beside it. Run records are already
-   reachable through `ompctl_routine_get`, which covers the routine-shaped half
-   of the question.
+1. **Transcript reads** (`GET /v1/agents`, `/v1/tasks`, transcript tails).
+   The most defensible next addition. Left off because it is a separate
+   capability with its own shape, and a first write surface should not smuggle
+   a read surface in beside it. What "why did last night's routine fail"
+   needs is now mostly here without it: `ompctl_routine_get` reports each
+   action's state, its error, and the `sessionId` it ran in, so the answer is
+   one ordinary session open away. Reading that transcript's contents through
+   a tool is the part still missing.
 2. **Agent lifecycle** (`POST /v1/agents`, `DELETE /v1/agents/:id`,
    `/v1/agents/:id/prompt`). Real value, real blast radius: this is "spawn a
    coding agent anywhere on this machine with a prompt of your choosing".

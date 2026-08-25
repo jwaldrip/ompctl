@@ -21,7 +21,7 @@
 import "./rnw.ts";
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import type { Agent, SessionSummary } from "@ompd/core/contracts";
+import type { Agent, RemoteRoutine, Run, SessionSummary } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -79,6 +79,11 @@ class CannedClient {
   startVoice(): void {}
   stopVoice(): void {}
   sendAudio(): void {}
+  readRoutines(): void {}
+  writeRoutine(): void {}
+  runRoutine(): void {}
+  deleteRoutines(): void {}
+  rotateRoutineSecret(): void {}
 }
 
 const AGENT: Agent = {
@@ -108,6 +113,139 @@ const TUI_ROW: SessionSummary = {
   archived: false,
   pid: 4_242,
 };
+
+/** A routine whose two prompt actions each opened their own session. */
+const BRIEF_ROUTINE: RemoteRoutine = {
+  id: "rtn_brief",
+  name: "Morning brief",
+  enabled: true,
+  trigger: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+  actions: [
+    { id: "gather", name: "Gather the facts", prompt: "gather", cwd: "/Users/jwaldrip/dev/src/ompctl", labels: {} },
+    { id: "render", name: "Render the brief", prompt: "render", cwd: "/Users/jwaldrip/dev/src/ompctl", labels: {} },
+  ],
+  singleton: true,
+  labels: {},
+  createdAt: "2026-08-20T09:00:00.000Z",
+};
+
+/**
+ * Five runs, so the card shows its first page and says how much it is holding
+ * back. The newest is the one the frame expands; the oldest carries no session
+ * ids, which is what a run recorded before the field existed looks like.
+ */
+const BRIEF_RUNS: Run[] = [
+  {
+    id: "run_0900",
+    routineId: "rtn_brief",
+    state: "succeeded",
+    startedAt: "2026-08-24T09:00:00.000Z",
+    finishedAt: "2026-08-24T09:03:20.000Z",
+    actions: [
+      {
+        actionId: "gather",
+        actionName: "Gather the facts",
+        index: 0,
+        state: "succeeded",
+        summary: "read 41 commits and 3 calendars",
+        startedAt: "2026-08-24T09:00:00.000Z",
+        finishedAt: "2026-08-24T09:01:40.000Z",
+        agentId: "agt_gather",
+        sessionId: "sess_gather",
+      },
+      {
+        actionId: "render",
+        actionName: "Render the brief",
+        index: 1,
+        state: "failed",
+        error: "the report template referenced a font that is not installed",
+        startedAt: "2026-08-24T09:01:40.000Z",
+        finishedAt: "2026-08-24T09:03:20.000Z",
+        agentId: "agt_render",
+        sessionId: "sess_render",
+      },
+    ],
+  },
+  {
+    id: "run_0800",
+    routineId: "rtn_brief",
+    state: "running",
+    startedAt: "2026-08-23T09:00:00.000Z",
+    actions: [
+      {
+        actionId: "gather",
+        actionName: "Gather the facts",
+        index: 0,
+        state: "running",
+        startedAt: "2026-08-23T09:00:00.000Z",
+        agentId: "agt_old_gather",
+        sessionId: "sess_old_gather",
+      },
+    ],
+  },
+  {
+    id: "run_0700",
+    routineId: "rtn_brief",
+    state: "skipped",
+    startedAt: "2026-08-22T09:00:00.000Z",
+    finishedAt: "2026-08-22T09:00:00.000Z",
+    error: "the previous run was still going, and this routine is a singleton",
+    actions: [],
+  },
+  {
+    id: "run_0600",
+    routineId: "rtn_brief",
+    state: "succeeded",
+    startedAt: "2026-08-21T09:00:00.000Z",
+    finishedAt: "2026-08-21T09:02:00.000Z",
+    actions: [
+      {
+        actionId: "gather",
+        actionName: "Gather the facts",
+        index: 0,
+        state: "succeeded",
+        startedAt: "2026-08-21T09:00:00.000Z",
+        finishedAt: "2026-08-21T09:02:00.000Z",
+      },
+    ],
+  },
+  {
+    id: "run_0500",
+    routineId: "rtn_brief",
+    state: "failed",
+    startedAt: "2026-08-20T09:00:00.000Z",
+    finishedAt: "2026-08-20T09:00:01.000Z",
+    actions: [
+      {
+        actionId: "gather",
+        actionName: "Gather the facts",
+        index: 0,
+        state: "refused",
+        refusal: { code: "unauthorized", reason: "the routine's device holds no prompt scope" },
+        startedAt: "2026-08-20T09:00:00.000Z",
+        finishedAt: "2026-08-20T09:00:01.000Z",
+      },
+    ],
+  },
+];
+
+const BRIEF_AGENT: Agent = {
+  ...AGENT,
+  id: "agt_gather",
+  name: "Gather the facts",
+  state: "idle",
+  acpSessionId: "sess_gather",
+};
+
+const GATHER_ROW: SessionSummary = {
+  ...TUI_ROW,
+  id: "sess_gather",
+  title: "Gather the facts",
+  status: "live-ompd",
+};
+
+/** Live in a terminal, so its link resolves to the co-driven surface. */
+const RENDER_ROW: SessionSummary = { ...TUI_ROW, id: "sess_render", title: "Render the brief" };
 
 interface Frame {
   name: string;
@@ -277,6 +415,84 @@ const FRAMES: Frame[] = [
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." }, messageId: "m1" },
       });
       emit("agents", { agents: [{ ...AGENT, state: "idle" }] });
+    },
+  },
+  // The run history, and then one of its linked sessions opened over it. The
+  // suites assert what these carry; what a picture answers is whether a run row
+  // and its action rows still read at a card's width, and whether the session
+  // pushed over the routines route covers it rather than sitting beside it.
+  {
+    name: "iphone-routine-runs",
+    width: 390,
+    height: 844,
+    drive: (emit, press) => {
+      emit("agents", { agents: [BRIEF_AGENT], scopes: CONNECTION.scopes });
+      emit("sessions", { sessions: [GATHER_ROW, RENDER_ROW] });
+      press("open-menu");
+      press("menu-routines");
+      emit("routines", { routines: [BRIEF_ROUTINE], runs: BRIEF_RUNS });
+      press("run-run_0900-toggle");
+    },
+  },
+  {
+    name: "ipad-routine-runs",
+    width: 1024,
+    height: 1366,
+    drive: (emit, press) => {
+      emit("agents", { agents: [BRIEF_AGENT], scopes: CONNECTION.scopes });
+      emit("sessions", { sessions: [GATHER_ROW, RENDER_ROW] });
+      press("open-menu");
+      press("menu-routines");
+      emit("routines", { routines: [BRIEF_ROUTINE], runs: BRIEF_RUNS });
+      press("run-run_0900-toggle");
+    },
+  },
+  {
+    name: "iphone-routine-run-session",
+    width: 390,
+    height: 844,
+    drive: (emit, press) => {
+      emit("agents", { agents: [BRIEF_AGENT], scopes: CONNECTION.scopes });
+      emit("sessions", { sessions: [GATHER_ROW, RENDER_ROW] });
+      press("open-menu");
+      press("menu-routines");
+      emit("routines", { routines: [BRIEF_ROUTINE], runs: BRIEF_RUNS });
+      press("run-run_0900-toggle");
+      press("run-run_0900-action-gather-open");
+      emit("session_history", { agentId: "agt_gather", sessionId: "sess_gather", entries: [], nextBefore: null });
+      emit("update", {
+        agentId: "agt_gather",
+        seq: 1,
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "gather this morning's facts" },
+          messageId: "u1",
+        },
+      });
+    },
+  },
+  {
+    name: "ipad-routine-run-session",
+    width: 1024,
+    height: 1366,
+    drive: (emit, press) => {
+      emit("agents", { agents: [BRIEF_AGENT], scopes: CONNECTION.scopes });
+      emit("sessions", { sessions: [GATHER_ROW, RENDER_ROW] });
+      press("open-menu");
+      press("menu-routines");
+      emit("routines", { routines: [BRIEF_ROUTINE], runs: BRIEF_RUNS });
+      press("run-run_0900-toggle");
+      press("run-run_0900-action-gather-open");
+      emit("session_history", { agentId: "agt_gather", sessionId: "sess_gather", entries: [], nextBefore: null });
+      emit("update", {
+        agentId: "agt_gather",
+        seq: 1,
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "gather this morning's facts" },
+          messageId: "u1",
+        },
+      });
     },
   },
 ];

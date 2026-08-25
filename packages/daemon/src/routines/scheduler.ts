@@ -598,6 +598,24 @@ export class Scheduler {
       );
       agentId = agent.id;
       outcome.agentId = agent.id;
+      // Read from the store rather than from the returned object, because the
+      // row is what the session surface itself answers from, and it is bound
+      // by the time `createAgent` resolves: the supervisor writes
+      // `acpSessionId` and upserts the agent before returning it. Capturing
+      // here rather than during teardown is what puts the id on the `running`
+      // record too, so a run in flight is openable while it is still worth
+      // watching, and it covers every later exit alike: a turn that times
+      // out, fails, or is cancelled opened its session before any of that.
+      // Retirement would not lose it either, since `setAgentState` leaves
+      // `acp_session_id` alone, but a record that only names the session once
+      // the run is over is a record nobody can act on.
+      //
+      // An action whose agent never came up throws above and leaves this
+      // absent, which is the honest answer: there is no session to name.
+      const sessionId = this.#store.getAgent(agent.id)?.acpSessionId;
+      // Guarded rather than assigned blind: an empty id would read as a link
+      // to a client, and lead it somewhere that does not exist.
+      if (sessionId !== undefined && sessionId.length > 0) outcome.sessionId = sessionId;
       outcome.state = "running";
       run.state = "running";
       this.#recordRun(run);

@@ -13,6 +13,7 @@ import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { RUNS_PER_PAGE, RunHistory } from "../components/RunHistory.tsx";
 import { scopeAccessOf } from "../console/state.ts";
 import { createOmpdClient } from "../console/useConsole.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -32,6 +33,10 @@ type RoutineStatus =
  * phone's zone because it is the same reading for every operator who opens it. */
 const DEFAULT_CRON: TriggerSpec = { kind: "cron", expression: "0 9 * * *", timezone: "UTC" };
 const DEFAULT_INTERVAL_SECONDS = 3600;
+
+/** One shared empty list for every routine that has never run, so a card with
+ * no history does not hand the run list a fresh array on each render. */
+const NO_RUNS: readonly Run[] = [];
 
 /** Interval units offered in human terms; the contract stores plain seconds. */
 const INTERVAL_UNITS = { seconds: 1, minutes: 60, hours: 3600, days: 86400 } as const;
@@ -190,10 +195,21 @@ function webhookUrl(routineId: string, connection: Connection): string {
 export function RoutinesScreen({
   connection,
   onBack,
+  onOpenSession,
   createClient = createOmpdClient,
 }: {
   connection: Connection;
   onBack: () => void;
+  /**
+   * Open one of a run's linked sessions, by ACP session id.
+   *
+   * Required rather than optional, because a run history whose links do
+   * nothing is worse than one with no links: the ids are real, and the whole
+   * point of holding them is that the session surface can already serve them.
+   * The caller resolves the transport, so this screen never decides between an
+   * owned log, a co-driven terminal, and a resume claim.
+   */
+  onOpenSession: (sessionId: string) => void;
   createClient?: (connection: Connection) => OmpdClient;
 }): JSX.Element {
   /**
@@ -238,6 +254,23 @@ export function RoutinesScreen({
   const [secret, setSecret] = useState<{ routineId: string; value: string } | null>(null);
   /** Which routine's copy control last fired, so its label can say what happened. */
   const [copied, setCopied] = useState<string | null>(null);
+  /**
+   * How many runs each routine's history is showing, by routine id. Absent is
+   * the first page rather than zero, so a routine nobody has expanded still
+   * shows its recent runs and the map only ever holds the routines an operator
+   * has actually asked for more of.
+   */
+  const [runsShown, setRunsShown] = useState<Record<string, number>>({});
+  /**
+   * The run whose per-action detail is open, or null. One at a time across the
+   * whole screen: a card is a routine, and two runs of one routine open at once
+   * is two answers to the same question about what happened.
+   *
+   * This is the state the shell preserves when a linked session is opened: the
+   * navigator keeps this screen mounted under the pushed session route, so
+   * coming back finds the same run open at the same scroll offset.
+   */
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
   const clientRef = useRef<OmpdClient | null>(null);
   if (clientRef.current === null) clientRef.current = createClient(connection);
   const client = clientRef.current;
@@ -342,6 +375,14 @@ export function RoutinesScreen({
     },
     [canManage, client],
   );
+
+  const showMoreRuns = useCallback((routineId: string) => {
+    setRunsShown(current => ({ ...current, [routineId]: (current[routineId] ?? RUNS_PER_PAGE) + RUNS_PER_PAGE }));
+  }, []);
+
+  const toggleRun = useCallback((runId: string) => {
+    setOpenRunId(current => (current === runId ? null : runId));
+  }, []);
 
   const retry = useCallback(() => {
     setStatus({ kind: "loading" });
@@ -489,6 +530,22 @@ export function RoutinesScreen({
 
   const ready = status.kind === "ready" ? status : null;
 
+  /**
+   * The runs each routine owns, in the order the daemon sent them: newest
+   * first. Grouped once rather than filtered inside the card loop, because that
+   * loop would otherwise walk every run on the daemon once per routine and the
+   * card needs the whole list anyway to say how much history it is withholding.
+   */
+  const runsByRoutine = useMemo(() => {
+    const grouped: Record<string, Run[]> = {};
+    for (const run of ready?.runs ?? []) {
+      const forRoutine = grouped[run.routineId] ?? [];
+      forRoutine.push(run);
+      grouped[run.routineId] = forRoutine;
+    }
+    return grouped;
+  }, [ready?.runs]);
+
   return (
     <SafeScreen style={styles.screen} testID="routines-screen">
       <View style={styles.header}>
@@ -544,7 +601,8 @@ export function RoutinesScreen({
             </Body>
           ) : null}
           {ready?.routines.map(routine => {
-            const latest = ready.runs.find(run => run.routineId === routine.id);
+            const runs = runsByRoutine[routine.id] ?? NO_RUNS;
+            const latest = runs[0];
             const armed = nextFirePreview(routine.trigger, new Date());
             return (
               <View key={routine.id} style={styles.card} testID={`routine-${routine.id}`}>
@@ -583,6 +641,16 @@ export function RoutinesScreen({
                     </View>
                   );
                 })}
+
+                <RunHistory
+                  routineId={routine.id}
+                  runs={runs}
+                  shown={runsShown[routine.id] ?? RUNS_PER_PAGE}
+                  onShowMore={showMoreRuns}
+                  openRunId={openRunId}
+                  onToggleRun={toggleRun}
+                  onOpenSession={onOpenSession}
+                />
 
                 {routine.trigger.kind === "webhook" ? (
                   <View style={styles.webhookBlock} testID={`routine-${routine.id}-webhook`}>
