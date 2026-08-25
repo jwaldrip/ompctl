@@ -745,12 +745,11 @@ describe("daemon model access", () => {
     expect(after.status).toBe(401);
     expect((await callBroker(h.brokerUrl, second.token, MODEL)).status).toBe(200);
     expect(h.broker.liveGrants()).toBe(1);
-    const revoke = at(
-      h.audit.filter(row => row.action === "model.revoke"),
-      0,
-      "a revoke row",
-    );
-    expect(revoke).toEqual({ action: "model.revoke", outcome: "ok", detail: { model: MODEL } });
+    // One row, naming the model, and nothing recorded for the sibling grant
+    // that is still live.
+    expect(h.audit.filter(row => row.action === "model.revoke")).toEqual([
+      { action: "model.revoke", outcome: "ok", detail: { model: MODEL } },
+    ]);
   });
 
   test("releasing a token this daemon never held resolves and says so", async () => {
@@ -766,17 +765,9 @@ describe("daemon model access", () => {
     // not start into a container that will not go away.
     await h.access.release({ token: "a-token-from-a-daemon-that-is-no-longer-running" });
 
-    expect(
-      at(
-        h.audit.filter(row => row.action === "model.revoke"),
-        0,
-        "a revoke row",
-      ),
-    ).toEqual({
-      action: "model.revoke",
-      outcome: "ok",
-      detail: { model: null },
-    });
+    expect(h.audit.filter(row => row.action === "model.revoke")).toEqual([
+      { action: "model.revoke", outcome: "ok", detail: { model: null } },
+    ]);
     expect(h.logs.some(line => line.includes("does not hold; nothing to revoke"))).toBe(true);
     // It disturbed nothing: the real grant still answers.
     expect((await callBroker(h.brokerUrl, granted.token, MODEL)).status).toBe(200);
