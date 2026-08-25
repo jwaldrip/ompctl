@@ -17,6 +17,14 @@ import { mock } from "bun:test";
 import { createRequire } from "node:module";
 
 const appRequire = createRequire(import.meta.url);
+
+// The third caller of the shared guard. A test process that would have armed the
+// cloud client must refuse too, otherwise the suite could go green in exactly
+// the environment the guard exists for.
+const { assertNoAssistantCloudEnv } = appRequire("../scripts/assistant-cloud-env.cjs") as {
+  assertNoAssistantCloudEnv: (env?: Record<string, string | undefined>, where?: string) => void;
+};
+assertNoAssistantCloudEnv(process.env, "test/preload-react.ts");
 const workspaceRequire = createRequire(new URL("../../../package.json", import.meta.url));
 
 // App code is intentionally on RN's exact React 19.1.4, while the monorepo

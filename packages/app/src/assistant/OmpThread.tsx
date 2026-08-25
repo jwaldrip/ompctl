@@ -29,18 +29,16 @@
  */
 
 import { AssistantRuntimeProvider, ThreadPrimitive } from "@assistant-ui/react-native";
-import type { JSX, ReactElement } from "react";
+import type { JSX, ReactElement, ReactNode } from "react";
 import { useMemo, useRef } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
 import { Glyph } from "../design/icons.tsx";
-import { Label } from "../design/text.tsx";
-import { ground, ink, space } from "../design/tokens.ts";
-import type { ImageAttachmentPicker } from "../platform/attachments.ts";
+import { Code, Label } from "../design/text.tsx";
+import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import type { Entry } from "../session/model.ts";
-import { entryOf, type OmpStoreInput, ompStore } from "./adapter.ts";
-import { OmpComposer, type OmpComposerProps } from "./OmpComposer.tsx";
+import { assistantRowId, entryOf, type OmpStoreInput, ompStore } from "./adapter.ts";
 import { OmpEntryRow } from "./renderers.tsx";
 import { useOmpRuntime } from "./runtime.ts";
 
@@ -80,7 +78,20 @@ export function useOmpAssistantRuntime(input: OmpStoreInput) {
   return useOmpRuntime(store);
 }
 
-export interface OmpThreadProps extends OmpStoreInput {
+/**
+ * What the LIST needs. The store's own fields are not here: the list reads the
+ * thread through the provider, so a screen cannot accidentally hand the list one
+ * session's rows while the provider holds another's.
+ */
+export interface OmpThreadListProps {
+  /** Whether this device may answer a clearance, and why not when it may not. */
+  canApprove: boolean;
+  refusal?: string;
+  onDecide: OmpStoreInput["onDecide"];
+  /** The rows this pane holds, for the pagination machine's head key only. */
+  entries: readonly Entry[];
+  /** The daemon's prose summary of the last settled turn, when there is one. */
+  spoken?: string | null;
   /**
    * The inline activity row. Absent when no turn is underway. An element rather
    * than a `ReactNode`: the list's footer slot takes an element or a component,
@@ -100,26 +111,24 @@ export interface OmpThreadProps extends OmpStoreInput {
   onLoadEarlier?: () => void;
   /** The cursor identifying the page on screen, which makes a repeat detectable. */
   historyCursor?: number | null;
-  /** The composer's picker seam. Not Expo: `react-native-image-picker`. */
-  picker: ImageAttachmentPicker;
-  /** What the empty field says: where this screen states its own gate. */
-  placeholder: string;
-  /** What assistive technology hears on send, with the target named. */
-  sendLabel: string;
-  /**
-   * The microphone, whole. One object rather than several props so a caller
-   * cannot wire half of it; see `OmpComposerProps.voice`.
-   */
-  voice: OmpComposerProps["voice"];
-  /** This session's resolved model and thinking level, already formatted. */
-  model: string | null;
-  /** Open this session's config surface. Absent where there is none. */
-  onOpenConfig?: () => void;
 }
 
-export function OmpThread(props: OmpThreadProps): JSX.Element {
-  const runtime = useOmpAssistantRuntime(props);
+/**
+ * The runtime, provided to everything under it.
+ *
+ * Separate from the list because `SessionScreen` puts a `StatusReadout` between
+ * its log and its composer, and `ComposerPrimitive` only works inside this
+ * provider. A component that rendered list-then-composer together would move
+ * that readout below the composer. So the provider spans the body and the two
+ * surfaces stay where they were.
+ */
+export function OmpThreadProvider({ children, ...input }: OmpStoreInput & { children: ReactNode }): JSX.Element {
+  const runtime = useOmpAssistantRuntime(input);
+  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
+}
 
+/** The log itself. Must be rendered inside `OmpThreadProvider`. */
+export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
   // Opening a session lands on the newest entry, and a streaming turn keeps it
   // there, unless the operator has scrolled up to read.
   const follow = useFollowNewest();
@@ -131,8 +140,8 @@ export function OmpThread(props: OmpThreadProps): JSX.Element {
    * derivation, not `transcriptRowKey`, or a prepend and a re-render would be
    * indistinguishable to the shared machine.
    */
-  const first = props.session.entries[0];
-  const headKey = first === undefined ? null : first.kind === "assistant" ? first.rowId : first.id;
+  const first = props.entries[0];
+  const headKey = first === undefined ? null : first.kind === "assistant" ? assistantRowId(first) : first.id;
 
   const pagination = useTopHistoryPagination({
     canLoadEarlier: props.canLoadEarlier === true,
@@ -162,44 +171,42 @@ export function OmpThread(props: OmpThreadProps): JSX.Element {
     ) : null;
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root style={styles.root} testID="aui-thread">
-        <ThreadPrimitive.MessagesFlatList
-          testID="aui-messages"
-          style={styles.list}
-          // Ours, not theirs. See the note at the top of this file.
-          autoScroll={false}
-          scrollToBottomOnRunStart={false}
-          scrollToBottomOnInitialize={false}
-          scrollToBottomOnThreadSwitch={false}
-          ref={pagination.ref}
-          onScroll={pagination.onScroll}
-          onContentSizeChange={pagination.onContentSizeChange}
-          scrollEventThrottle={pagination.scrollEventThrottle}
-          maintainVisibleContentPosition={MAINTAIN_VISIBLE_CONTENT_POSITION}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          automaticallyAdjustKeyboardInsets
-          ListHeaderComponent={earlier}
-          ListFooterComponent={props.footer ?? null}
-        >
-          {({ message }) => (
-            <OmpRow message={message} canApprove={props.canApprove} refusal={props.refusal} onDecide={props.onDecide} />
-          )}
-        </ThreadPrimitive.MessagesFlatList>
-
-        <OmpComposer
-          prefix="composer"
-          picker={props.picker}
-          placeholder={props.placeholder}
-          sendLabel={props.sendLabel}
-          voice={props.voice}
-          model={props.model}
-          onOpenConfig={props.onOpenConfig}
-          refusal={props.refusal}
-        />
-      </ThreadPrimitive.Root>
-    </AssistantRuntimeProvider>
+    <ThreadPrimitive.Root style={styles.root} testID="aui-thread">
+      <ThreadPrimitive.MessagesFlatList
+        testID="aui-messages"
+        style={styles.list}
+        // Ours, not theirs. See the note at the top of this file.
+        autoScroll={false}
+        scrollToBottomOnRunStart={false}
+        scrollToBottomOnInitialize={false}
+        scrollToBottomOnThreadSwitch={false}
+        ref={pagination.ref}
+        onScroll={pagination.onScroll}
+        onContentSizeChange={pagination.onContentSizeChange}
+        scrollEventThrottle={pagination.scrollEventThrottle}
+        maintainVisibleContentPosition={MAINTAIN_VISIBLE_CONTENT_POSITION}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets
+        ListHeaderComponent={earlier}
+        // In the order the conversation happened: what the daemon said about
+        // the LAST settled turn, then the turn running NOW. So the activity row
+        // is the newest thing on screen, which is what makes the follower treat
+        // it as content to stay pinned to.
+        ListFooterComponent={
+          <>
+            {props.spoken === null || props.spoken === undefined || props.spoken.length === 0 ? null : (
+              <Spoken text={props.spoken} />
+            )}
+            {props.footer}
+          </>
+        }
+      >
+        {({ message }) => (
+          <OmpRow message={message} canApprove={props.canApprove} refusal={props.refusal} onDecide={props.onDecide} />
+        )}
+      </ThreadPrimitive.MessagesFlatList>
+    </ThreadPrimitive.Root>
   );
 }
 
@@ -232,8 +239,34 @@ function OmpRow({
   return <OmpEntryRow entry={entry} canApprove={canApprove} refusal={refusal} onDecide={onDecide} />;
 }
 
+/**
+ * What the daemon would say out loud, shown as text because this build has no
+ * voice of its own. Lifted from `Transcript` rather than re-invented: the
+ * cutover must not silently drop a surface an operator already had.
+ */
+function Spoken({ text }: { text: string }): JSX.Element {
+  return (
+    <View style={styles.spoken} testID="transcript-say">
+      <Glyph name="link" size={11} color={signal.violet} />
+      <Code color={ink.plain} style={styles.spokenText}>
+        {text}
+      </Code>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  spoken: {
+    flexDirection: "row",
+    gap: space.snug,
+    padding: space.step,
+    marginTop: space.snug,
+    backgroundColor: ground.surface,
+    borderLeftWidth: stroke.heavy,
+    borderLeftColor: signal.violet,
+  },
+  spokenText: { flex: 1 },
   list: { flex: 1, backgroundColor: ground.base },
   header: { flexDirection: "row", alignItems: "center", gap: space.step, paddingVertical: space.tight },
   earlier: {

@@ -27,7 +27,8 @@ import { createRoot } from "react-dom/client";
 import { resetWindowSize } from "./rnw.ts";
 
 const { convertEntry, entryOf, ompStore } = await import("../src/assistant/adapter.ts");
-const { OmpThread, useOmpAssistantRuntime } = await import("../src/assistant/OmpThread.tsx");
+const { OmpThreadList, OmpThreadProvider, useOmpAssistantRuntime } = await import("../src/assistant/OmpThread.tsx");
+const { OmpComposer } = await import("../src/assistant/OmpComposer.tsx");
 const { EMPTY_SESSION, reduce } = await import("../src/session/model.ts");
 type SessionState = ReturnType<typeof reduce>;
 const { READY_LOAD } = await import("../src/console/state.ts");
@@ -350,37 +351,73 @@ function typeInto(input: HTMLElement, value: string): void {
   });
 }
 
-function thread(session: ReturnType<typeof withUserTurn>, extra: Record<string, unknown> = {}) {
+interface ThreadOverrides {
+  agent?: Agent;
+  refusal?: string;
+  canApprove?: boolean;
+  onSubmit?: (text: string) => void;
+  onCancel?: () => void;
+  onDecide?: (requestId: string, choice: "allow" | "deny", scope?: "once" | "always") => void;
+  footer?: ReactNode;
+  canLoadEarlier?: boolean;
+  loadingEarlier?: boolean;
+  onLoadEarlier?: () => void;
+  historyCursor?: number | null;
+}
+
+function thread(session: SessionState, extra: ThreadOverrides = {}) {
+  const { footer, canLoadEarlier, loadingEarlier, onLoadEarlier, historyCursor, ...rest } = extra;
+  const store = {
+    agent: agent({ state: "busy" }),
+    session,
+    connection: "connected" as const,
+    load: READY_LOAD,
+    promptAccess: "granted" as const,
+    onSubmit: () => {},
+    onCancel: () => {},
+    canApprove: true,
+    onDecide: () => {},
+    onDecidePlan: () => {},
+    ...rest,
+  };
   return (
-    <OmpThread
-      agent={agent({ state: "busy" })}
-      session={session}
-      connection="connected"
-      load={READY_LOAD}
-      promptAccess="granted"
-      onSubmit={() => {}}
-      onCancel={() => {}}
-      canApprove
-      onDecide={() => {}}
-      onDecidePlan={() => {}}
-      picker={{
-        availability: { available: false, reason: "no picker under bun test" },
-        pick: async () => ({ images: [], refused: [] }),
-      }}
-      placeholder="Say something to this agent"
-      sendLabel="Send to Alpha"
-      voice={{
-        access: "granted",
-        mic: { available: false, reason: "no microphone under bun test" },
-        speech: { available: false, reason: "no speech under bun test" },
-        dictation: null,
-        capturing: false,
-        busyElsewhere: false,
-        onToggle: () => {},
-      }}
-      model="claude-opus-5"
-      {...extra}
-    />
+    // The same composition `SessionScreen` uses: one provider spanning the
+    // body, the list where the transcript was, the composer where the composer
+    // was. A test that mounted only the list would not exercise the path the
+    // screen ships.
+    <OmpThreadProvider {...store}>
+      <OmpThreadList
+        canApprove={store.canApprove}
+        refusal={store.refusal}
+        onDecide={store.onDecide}
+        entries={store.session.entries}
+        footer={footer === undefined ? null : <>{footer}</>}
+        canLoadEarlier={canLoadEarlier}
+        loadingEarlier={loadingEarlier}
+        onLoadEarlier={onLoadEarlier}
+        historyCursor={historyCursor}
+      />
+      <OmpComposer
+        prefix="composer"
+        picker={{
+          availability: { available: false, reason: "no picker under bun test" },
+          pick: async () => ({ images: [], refused: [] }),
+        }}
+        placeholder="Say something to this agent"
+        sendLabel="Send to Alpha"
+        voice={{
+          access: "granted",
+          mic: { available: false, reason: "no microphone under bun test" },
+          speech: { available: false, reason: "no speech under bun test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        }}
+        model="claude-opus-5"
+        refusal={store.refusal}
+      />
+    </OmpThreadProvider>
   );
 }
 

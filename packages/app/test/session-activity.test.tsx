@@ -668,7 +668,7 @@ describe("the turn underway sits after the operator's prompt and above the compo
     const shell = mountShell();
     try {
       openOwned(shell);
-      expect(shell.el("transcript")).not.toBeNull();
+      expect(shell.el("aui-messages")).not.toBeNull();
       expect(shell.rowLabel()).toBeNull();
       expect(shell.rowCount()).toBe(0);
     } finally {
@@ -704,7 +704,7 @@ describe("the turn underway sits after the operator's prompt and above the compo
       userTurn(shell, 1, "ship it");
       shell.emit("agents", { agents: [{ ...ROSTER[0], state: "busy" } as Agent] });
 
-      expect(shell.within("session-activity", "transcript")).toBe(true);
+      expect(shell.within("session-activity", "aui-messages")).toBe(true);
     } finally {
       shell.unmount();
     }
@@ -913,7 +913,7 @@ describe("the header says what the session is, and nothing about the turn", () =
       expect(head).toContain("Alpha");
       expect(head).toContain("busy");
       expect(head).not.toContain("Working");
-      expect(shell.within("session-activity", "transcript")).toBe(true);
+      expect(shell.within("session-activity", "aui-messages")).toBe(true);
     } finally {
       shell.unmount();
     }

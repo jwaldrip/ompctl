@@ -443,7 +443,7 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
     }
   });
 
-  test("a subagent row opens its complete transcript surface", () => {
+  test("a subagent row opens its complete transcript surface", async () => {
     const shell = mountShell();
     try {
       act(() => {
@@ -525,10 +525,42 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
       expect(shell.el("tool-title-tc1")?.textContent).toBe("Read policy");
       expect(shell.el("tool-output-tc1")?.textContent).toContain("policy body");
 
+      // The turn has to settle before send exists, and settling is the roster
+      // going busy then not-busy: `applyAgents` calls `endTurn` on exactly that
+      // transition, which is what closes the streaming entry. Without it the
+      // reply above stays open, the store reports a turn in flight, and #131's
+      // one-emphasis contract shows the interrupt instead of send. Steering a
+      // subagent means steering it between turns.
+      const scout = {
+        id: "agt_scout" as AgentId,
+        name: "Policy Scout",
+        host: { kind: "local" as const, id: "1", spec: { kind: "local" as const } },
+        cwd: "/workspace",
+        createdAt: "2026-02-01T00:01:00.000Z",
+        lastActiveAt: "2026-02-01T00:01:00.000Z",
+        parentAgentId: "agt_main" as AgentId,
+        acpSessionId: "sub-session",
+        labels: {},
+      };
+      act(() => {
+        shell.client.emit("agents", { t: "agents", agents: [{ ...scout, state: "busy" }] });
+      });
+      act(() => {
+        shell.client.emit("agents", { t: "agents", agents: [{ ...scout, state: "idle" }] });
+      });
+
       const composer = shell.el("composer-input");
       if (composer === null) throw new Error("subagent composer did not render");
-      act(() => typeInto(composer, "Continue the subagent."));
-      shell.press("composer-send");
+      await act(async () => {
+        typeInto(composer, "Continue the subagent.");
+      });
+      // Awaited, because the runtime's send path is async: a sync `act` returns
+      // before `onNew` has run and the prompt has not left the device yet.
+      const send = shell.el("composer-send");
+      if (send === null) throw new Error("send did not render on a settled turn");
+      await act(async () => {
+        send.click();
+      });
       expect(shell.client.agentPrompts).toEqual([{ agentId: "agt_scout", text: "Continue the subagent." }]);
     } finally {
       shell.unmount();

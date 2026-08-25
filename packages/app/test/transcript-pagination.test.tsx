@@ -15,9 +15,10 @@
 import "./rnw.ts";
 
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { Agent } from "@ompd/core/contracts";
 import { act, type ComponentType, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { TranscriptProps } from "../src/components/Transcript.tsx";
+import type { OmpThreadListProps } from "../src/assistant/OmpThread.tsx";
 import type { Entry } from "../src/session/model.ts";
 
 declare global {
@@ -94,9 +95,18 @@ mock.module("react-native", () => ({
   FlatList: RecordingList,
 }));
 
-// Same reason: imported after `mock.module`, so `Transcript` closes over the
+// Same reason: imported after `mock.module`, so the primitive closes over the
 // recorder rather than the real list.
-const { Transcript } = await import("../src/components/Transcript.tsx");
+//
+// The subject moved from `Transcript` to the production surface: the provider
+// plus `OmpThreadList`. What is under test did not change -- which props the
+// component hands its list and how it responds when they are invoked -- and the
+// reason the recorder still works is measured: with all four of assistant-ui's
+// scroll flags false, the library adds only `data`, `keyExtractor`, `renderItem`
+// and its own ref plumbing, so every scroll and anchor prop reaching the list is
+// still ours.
+const { OmpThreadList, OmpThreadProvider } = await import("../src/assistant/OmpThread.tsx");
+const { EMPTY_SESSION } = await import("../src/session/model.ts");
 
 /** Everything one mounted list recorded, and the handle it recorded through. */
 interface ListRecorder {
@@ -127,7 +137,7 @@ function entry(id: string): Entry {
 }
 
 interface Harness {
-  render: (overrides?: Partial<TranscriptProps>) => void;
+  render: (overrides?: Partial<OmpThreadListProps>) => void;
   props: () => ListProps;
   loads: () => number;
   list: ListRecorder;
@@ -148,7 +158,7 @@ function mount(initial: {
   const root: Root = createRoot(host);
   const list = recorderList();
   let calls = 0;
-  let current: TranscriptProps = {
+  let current: OmpThreadListProps = {
     entries: initial.entries,
     canApprove: false,
     onDecide: () => {},
@@ -160,10 +170,38 @@ function mount(initial: {
     historyCursor: initial.historyCursor,
   };
 
+  const agent: Agent = {
+    id: "agt_a",
+    name: "Alpha",
+    state: "idle",
+    host: { kind: "local", id: "1", spec: { kind: "local" } },
+    cwd: "/w",
+    createdAt: "2026-08-24T11:00:00.000Z",
+    lastActiveAt: "2026-08-24T11:00:00.000Z",
+    labels: {},
+  };
+
   const render: Harness["render"] = overrides => {
     current = { ...current, ...(overrides ?? {}) };
     act(() => {
-      root.render(<Transcript {...current} />);
+      root.render(
+        // The rows reach the list through the runtime, which is the production
+        // path: the provider holds the session and the list reads the thread.
+        <OmpThreadProvider
+          agent={agent}
+          session={{ ...EMPTY_SESSION, entries: current.entries }}
+          connection="connected"
+          load={{ phase: "ready", generation: 0, error: null }}
+          promptAccess="granted"
+          canApprove={false}
+          onSubmit={() => {}}
+          onCancel={() => {}}
+          onDecide={() => {}}
+          onDecidePlan={() => {}}
+        >
+          <OmpThreadList {...current} />
+        </OmpThreadProvider>,
+      );
     });
   };
 
@@ -248,7 +286,7 @@ afterAll(() => {
   platformOS = "android";
 });
 
-describe("Transcript auto-load: request identity", () => {
+describe("owned thread auto-load: request identity", () => {
   test("a scroll bounce at the top asks once, not once per event", () => {
     const h = mount({ entries: [entry("a"), entry("b")], historyCursor: 100 });
 
@@ -340,7 +378,7 @@ describe("Transcript auto-load: request identity", () => {
   });
 });
 
-describe("Transcript prepend anchor", () => {
+describe("owned thread prepend anchor", () => {
   test("the anchor survives the parent clearing loading before the list reports its size", () => {
     // The ordering the old boolean effect lost. The parent delivers entries,
     // cursor and loading:false in one commit; the layout callback arrives
@@ -441,7 +479,7 @@ describe("Transcript prepend anchor", () => {
   });
 });
 
-describe("Transcript list configuration", () => {
+describe("owned thread list configuration", () => {
   test("nothing tells the list to jump to a newly inserted top", () => {
     const h = mount({ entries: [entry("a")], historyCursor: 100 });
     const config = h.props().maintainVisibleContentPosition;
@@ -460,7 +498,7 @@ describe("Transcript list configuration", () => {
   });
 });
 
-describe("Transcript follow-newest composition", () => {
+describe("owned thread follow-newest composition", () => {
   test("the list handle reaches the follower, so a streaming turn still lands on newest", () => {
     // The regression this suite exists to stop: overriding `ref` and
     // `onContentSizeChange` left `useFollowNewest` holding no list and never
@@ -521,14 +559,6 @@ describe("Transcript follow-newest composition", () => {
  * discriminates is the footer's CONTENT, so these walk it.
  */
 describe("the turn underway rides the list like any other row", () => {
-  const WORKING = {
-    kind: "working",
-    label: "Working",
-    announcement: "Working",
-    live: true,
-    actionable: false,
-  } as const;
-
   /** Whether a rendered element tree contains a node carrying `testID`. */
   function contains(node: unknown, testID: string): boolean {
     if (node === null || node === undefined || typeof node !== "object") return false;
@@ -536,24 +566,26 @@ describe("the turn underway rides the list like any other row", () => {
     const element = node as { props?: Record<string, unknown> };
     const props = element.props;
     if (props === undefined) return false;
-    if (props.testID === testID) return true;
+    // Either spelling: a react-native element carries `testID`, a DOM probe
+    // carries `data-testid`, and the footer slot legitimately holds both kinds.
+    if (props.testID === testID || props["data-testid"] === testID) return true;
     return contains(props.children, testID);
   }
 
   test("the row is inside the footer the list is handed, not beside the list", () => {
     const h = mount({ entries: [entry("a")] });
 
-    // Nothing in flight: the slot may exist for the spoken summary, but the
-    // row must not be in it.
-    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(false);
+    // Nothing in flight: the slot exists for the spoken summary, but no
+    // activity row is in it.
+    expect(contains(h.props().ListFooterComponent, "probe-activity")).toBe(false);
 
-    h.render({ activity: WORKING });
-    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(true);
+    h.render({ footer: <span data-testid="probe-activity">working</span> });
+    expect(contains(h.props().ListFooterComponent, "probe-activity")).toBe(true);
 
     // And it leaves again, rather than being a row that arrives once and stays
     // for the rest of the session.
-    h.render({ activity: null });
-    expect(contains(h.props().ListFooterComponent, "session-activity")).toBe(false);
+    h.render({ footer: null });
+    expect(contains(h.props().ListFooterComponent, "probe-activity")).toBe(false);
     h.unmount();
   });
 
@@ -570,7 +602,7 @@ describe("the turn underway rides the list like any other row", () => {
     const before = h.list.scrollToEnd.length;
 
     h.scrollTo(10, 4000);
-    h.render({ activity: WORKING });
+    h.render({ footer: <span data-testid="probe-activity">working</span> });
     h.contentSize(4040);
 
     expect(h.list.scrollToEnd).toHaveLength(before);
@@ -581,14 +613,14 @@ describe("the turn underway rides the list like any other row", () => {
     const h = mount({ entries: [entry("a")] });
     h.contentSize(1000);
     h.scrollTo(10, 4000);
-    h.render({ activity: WORKING });
+    h.render({ footer: <span data-testid="probe-activity">working</span> });
     h.contentSize(1040);
     const before = h.list.scrollToEnd.length;
 
     // Turn end removes the row and the content shrinks. A follower that
     // treated a shrink as new content would yank a reader to the bottom at
     // exactly the moment the agent stopped talking.
-    h.render({ activity: null });
+    h.render({ footer: null });
     h.contentSize(1000);
 
     expect(h.list.scrollToEnd).toHaveLength(before);

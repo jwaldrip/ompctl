@@ -261,6 +261,44 @@ That is **our** key scheme, not a library limitation. The terminal is therefore 
 
 **Decision: `TerminalSessionScreen` stays on its own components for this cutover.** It is a distinct live-terminal surface, not a hidden dual implementation of the owned thread: it renders a different thing (a terminal someone else owns, steered without taking ownership), and it keeps sharing `useTopHistoryPagination` and `ActivityRow` with the owned surface so there is one pagination machine and one activity row in the app, not two.
 
+### Design note: the prerequisite for migrating the terminal
+
+Recorded here rather than left as folklore, because the next person to look at
+this will otherwise re-derive it.
+
+**Prerequisite.** `LogRow.key` must be derived from row identity instead of
+position. Today `logRows()` builds `turn:${newest - index}` where
+`newest = tui.history.length - 1`, which is stable under prepend and unstable
+under append.
+
+**What a stable key would have to come from.** The served tail's own fields. A
+`TranscriptTailMessage` carries `role`, `text` and `at`, so `${at}:${role}` is a
+candidate, but `at` is `""` for some rows (`TerminalSessionScreen` already
+special-cases that when rendering the timestamp) and two identical lines in the
+same second would collide. The honest answer is that the daemon does not
+currently send a per-turn id on this path, so the prerequisite is a **producer
+change**: `session_tail` would need to carry one.
+
+**What else moves when it does.** `useTopHistoryPagination` detects a prepend by
+comparing `rows[0].key` against the key recorded when the request went out. That
+comparison is why the current scheme's prepend-stability matters, so changing the
+key space means re-proving the anchor on the terminal surface as well as the
+owned one. `terminal-pagination.test.tsx` is the suite that would have to fail
+first.
+
+**Sequence, if it is ever wanted.** One: daemon sends a per-turn id on
+`session_tail`. Two: `LogRow.key` uses it, with `terminal-pagination.test.tsx`
+proving the anchor still holds. Three: only then a terminal external store, with
+its hint rows as ordinary snapshot members, which is safe because omitting
+`onEdit`/`onReload`/`onDelete` really does remove those affordances (measured:
+every capability false except `unstable_copy`).
+
+Until step one exists, `TerminalSessionScreen` staying custom is the truthful
+option, and it is not a hidden dual implementation: it renders a terminal
+someone else owns, steered without taking ownership, and it shares
+`useTopHistoryPagination` and `ActivityRow` with the owned surface so there is
+one pagination machine and one activity row in the app.
+
 ## 9. Alpha assessment
 
 Treat as alpha. Every measurable signal says so:
@@ -314,33 +352,34 @@ Dependency guards:
 - our core pin satisfies the RN package's declared range.
 - `assistant-cloud` present (a check that fails if someone removes it, since bun and tsc will not).
 
-## 11a. What the proof establishes, and what it does not
+## 11a. Cutover status
 
-Built in `ompctl.worktrees/aui-proof`, branch `feat/assistant-ui-proof`, off `1efcdd4`.
+Branch `feat/assistant-ui-proof`, off `1efcdd4`. **The owned session is cut over.** `SessionScreen` renders `OmpThreadProvider` + `OmpThreadList` + `OmpComposer`; `components/Transcript.tsx` is **deleted**; `components/Composer.tsx` survives only for the live-terminal surface.
 
-`packages/app/src/assistant/adapter.ts` (converter + store projection) and `packages/app/src/assistant/OmpThread.tsx` (provider + `MessagesFlatList` + `ComposerPrimitive`). Not wired into any production screen: `SessionScreen` and `TerminalSessionScreen` are untouched, so there is no dual production path.
+**Proven**
 
-**Proven:**
+- **886 app tests, 1505 root tests**, types clean, `biome check .` clean across 449 files, dependency gate clean.
+- Every previously existing suite now drives the production path, not a dead component. `transcript-pagination.test.tsx` (the #129 proof, 21 tests) was retargeted from `Transcript` to `OmpThreadProvider` + `OmpThreadList` and still asserts request identity, the prepend anchor, list configuration and follow-newest composition. `rich-text`, `composer-submit` and `no-hidden-content` now target `OmpEntryRow`.
+- `assistant-cutover.test.tsx` asserts the screen mounts the provider, the primitive list and the primitive composer; that **no** `components/Transcript` import or `<Transcript>` element survives anywhere in `src`; that the owned screen does not render the terminal's composer; and that the terminal surface renders no assistant-ui thread. Each absence is paired with a presence in the same file.
+- The composition tests discriminate. Swapping the primitives for plain `FlatList`/`View`/`TextInput`/`Pressable` with identical testIDs fails two tests: the runtime-driven gating of send and the interrupt, and a real dispatch round trip. Everything else passed against that lookalike, which is why those two exist.
+- Metro bundles the assistant surface for **ios, android, macos, windows**. A scoped Vite build of the same entry: **782 modules, 553.57 kB / 164.06 kB gzip**.
+- `bun run build:web` is **red, pre-existing**: `react-native-qrcode-svg` ships JSX in a `.js` file that rollup's commonjs resolver rejects, and baseline `1efcdd4` fails identically. Not caused by this change and not fixed by it.
 
-- 19 tests pass. The mapping is asserted as a pure function; the composition is asserted by mounting the real provider, the real `MessagesFlatList` and the real `ComposerPrimitive` and reading react-native-web's own `css-view-*` / `css-textinput-*` output plus a real `<textarea>` for the composer input. Not wrapper source text.
-- Every entry kind converts and renders as our own row: user, assistant prose, reasoning, tool, approval, unknown.
-- A tool `title` carrying `Authorization: Bearer sk-live-…` never reaches the serialised part.
-- Session switch: A's row is gone, not merely below B's, and exactly one user row remains.
-- Header and footer render **inside** the list, so #129 pagination and the #133 activity row keep working.
-- Real adapter code bundles under Metro for **ios (1,763,477 B), android (1,768,647 B), macos (1,773,777 B), windows (1,734,283 B)**.
-- Full app suite 790 pass, root 1505 pass, types clean, biome clean, with the dependency installed.
+**Two defects the cutover itself surfaced**
 
-**Not proven, and therefore parity is NOT established:**
+- **A thought and a reply sharing a wire message id collided.** `transcriptRowKey` discriminates the channel; my converter keyed on `rowId` alone, so one silently won and a thought row vanished. Caught by an existing `nav-shell` assertion, fixed with `assistantRowId(entry)`.
+- **A subagent could not be steered mid-turn.** Under #131's one-emphasis contract the interrupt replaces send while a turn is in flight, and the old composer showed send regardless because it read only the roster. The store derives `isRunning` from roster, streaming entry and running tools, which is more truthful; the test now settles the turn through the roster transition that `applyAgents` uses to call `endTurn`.
 
-- No `AttachmentAdapter` — the image picker path is unbuilt, so attachments and chips do not exist on this surface.
-- No dictation/speech adapters — voice is unbuilt.
-- No model/thinking config control, no plan/todo rendering, no spoken summary, no subagents pane.
-- `onEdit`, `onReload`, `onAddToolResult`, `onRespondToToolApproval` are not implemented, so approvals render but cannot be answered through this path.
-- The #131 composer visual contract is not reproduced: this proof uses plain controls, not the ghost paperclip/mic/model plus one filled emphasis.
-- No simulator frames for this surface, and no interaction proof for prompt/stream/tool/attachment/cancel/pagination on device.
-- Terminal pane deliberately out of scope, per §8.
+**The cloud hazard is removed, not merely detected**
 
-So this is a **viability proof and a decision artifact**, not a migration. Shipping it into production now would mean either a half-migrated owned surface or two live paths, and the brief forbids both. The remaining phases are real work, not polish.
+- `metro.config.cjs` and `vite.config.ts` redirect `@assistant-ui/core`'s cloud subtree to `stubs/assistant-ui-cloud.js`. Result: **zero** occurrences of `NEXT_PUBLIC_ASSISTANT_BASE_URL` in the ios, android, macos, windows and web outputs, and the `AssistantCloud` class gone (the only residue is the re-export *name* `useAssistantCloudThreadHistoryAdapter` in core's barrel).
+- `scripts/assistant-cloud-env.cjs` is a second, opposite-direction guard, called from Metro config, Vite config and the bun test preload. All three refuse with the real message, verified by setting the variable in a child process.
+- The stub throws rather than no-ops, so a caller asking for a cloud capability fails where the mistake is.
+
+**Not done**
+
+- **No iPhone or iPad simulator frames for the cut-over surface**, and no on-device interaction pass for prompt, stream, tool card, approval, attachment, cancel or top pagination. This is the one substantive gap and it is the reason the PR is still draft.
+- Terminal migration, deliberately, per §8 and its design note.
 
 ---
 

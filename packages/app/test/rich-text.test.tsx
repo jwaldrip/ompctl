@@ -24,7 +24,7 @@ import type { Entry } from "../src/session/model.ts";
 // Dynamic on purpose: `./rnw.ts` must mock react-native before the component
 // modules load, so these cannot be static imports (see rnw.ts).
 const { parseRich } = await import("../src/components/rich/parse.ts");
-const { Transcript } = await import("../src/components/Transcript.tsx");
+const { OmpEntryRow } = await import("../src/assistant/renderers.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -200,7 +200,13 @@ describe("the transcript seam", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => {
-      root.render(<Transcript entries={entries} canApprove onDecide={() => {}} spoken={null} />);
+      root.render(
+        <>
+          {entries.map(entry => (
+            <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+          ))}
+        </>,
+      );
     });
     return {
       host,
@@ -270,7 +276,13 @@ describe("repeated blocks keep distinct keys", () => {
     const root = createRoot(host);
     try {
       act(() => {
-        root.render(<Transcript entries={entries} canApprove onDecide={() => {}} spoken={null} />);
+        root.render(
+          <>
+            {entries.map(entry => (
+              <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+            ))}
+          </>,
+        );
       });
     } finally {
       console.error = original;

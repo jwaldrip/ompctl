@@ -18,17 +18,17 @@ import {
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
+import { OmpComposer } from "../assistant/OmpComposer.tsx";
+import { OmpThreadList, OmpThreadProvider } from "../assistant/OmpThread.tsx";
 import { webViewCapability } from "../browser";
-import { Composer } from "../components/Composer.tsx";
+import { ActivityRow } from "../components/ActivityRow.tsx";
 import { PlanCard } from "../components/PlanCard.tsx";
 import { SessionContext, type SessionContextSource } from "../components/SessionContext.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
 import { StatusReadout } from "../components/StatusReadout.tsx";
-import { Transcript } from "../components/Transcript.tsx";
 import type { PendingWebViewAction, PromptScopeAccess, SessionLoad } from "../console/state.ts";
 import type { WebViewTarget } from "../console/webview.ts";
 import { routeWebViewAction } from "../console/webview.ts";
-import { ghost } from "../design/controls.ts";
 import { elapsed, modelLabel, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
@@ -133,7 +133,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   // carries "what this session IS".
   const activity = conversationActivity(agentActivity(agent, session, connection, load));
   const tone = signal[agentSignal(agent.state)];
-  const busy = agent.state === "busy";
   const terminal = TERMINAL_AGENT_STATES.includes(agent.state);
   const ownedBottom = useOwnedBottomInset();
   const narration = useNarration(session.entries, props.narrationSpeech);
@@ -176,32 +175,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
    * what turns it off.
    */
   const voice = props.voice;
-  const micGate = !voice.mic.available
-    ? "unavailable"
-    : voice.access === "missing"
-      ? "scope"
-      : voice.busyElsewhere
-        ? "busy"
-        : connection !== "connected"
-          ? "offline"
-          : "ready";
-  const micDisabled = micGate !== "ready" && !voice.capturing;
-  // The same ladder as the gate, restated so each branch reads its own
-  // availability object and TypeScript can narrow it: a gate label cannot
-  // carry the reason, the object can.
-  const micStatus = !voice.mic.available
-    ? voice.mic.reason
-    : voice.access === "missing"
-      ? "This device does not hold the prompt scope. Pair it again with prompt access to speak to this agent."
-      : voice.busyElsewhere
-        ? "The microphone is already open in another session."
-        : connection !== "connected"
-          ? "No link"
-          : voice.capturing
-            ? "Recording"
-            : voice.speech.available
-              ? "Tap to speak; the agent answers out loud."
-              : voice.speech.reason;
 
   /**
    * The same sentence, minus the one form of it that is an instruction rather
@@ -215,7 +188,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
    * microphone's accessibility hint now, where it costs no pixels and is still
    * available to anyone who cannot see the glyph.
    */
-  const micNotice = micGate === "ready" && !voice.capturing && voice.speech.available ? null : micStatus;
 
   /**
    * What this session actually runs, for the control that opens its config.
@@ -377,68 +349,90 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         iPad: the send control's frame was identical with the keyboard up and
         down, so the text was visible and the button was not.
       */}
-      <View style={styles.body}>
-        {/*
+      {/*
+        One provider for the whole body. The composer sits below the status
+        readout on this screen, and `ComposerPrimitive` only works inside the
+        provider, so wrapping here is what lets both surfaces stay exactly where
+        they were instead of the readout moving under the composer.
+      */}
+      <OmpThreadProvider
+        agent={agent}
+        session={session}
+        connection={connection}
+        load={load}
+        promptAccess={props.voice.access}
+        canApprove={props.canApprove}
+        refusal={props.refusal}
+        onSubmit={props.onSubmit}
+        onCancel={props.onCancel}
+        onDecide={props.onDecide}
+        onDecidePlan={props.onDecidePlan}
+      >
+        <View style={styles.body}>
+          {/*
           One branch for the whole working half of the screen. While this
           session is arriving, or once its open has been refused, none of the
           instruments below may render: a context panel, a plan card and a
           transcript are all claims about a session this pane does not have
           yet, and the header above already carries whose pane it is.
         */}
-        {load.phase === "loading" ? (
-          <SessionLoading title={agent.name} />
-        ) : load.phase === "stalled" ? (
-          <SessionLoadStalled connection={connection} title={agent.name} />
-        ) : load.phase === "failed" ? (
-          <SessionLoadFailed message={load.error ?? "The daemon refused this session."} title={agent.name} />
-        ) : (
-          <>
-            {/*
+          {load.phase === "loading" ? (
+            <SessionLoading title={agent.name} />
+          ) : load.phase === "stalled" ? (
+            <SessionLoadStalled connection={connection} title={agent.name} />
+          ) : load.phase === "failed" ? (
+            <SessionLoadFailed message={load.error ?? "The daemon refused this session."} title={agent.name} />
+          ) : (
+            <>
+              {/*
               Above the plan card and the transcript, inside the scroll-free
               part of the column: collapsed it is one row, so the log keeps
               every point it had, and it never becomes a rail the transcript
               has to share its width with.
             */}
-            <SessionContext {...props.context} agent={agent} now={props.now} session={session} />
-            <PlanCard
-              canApprove={props.canApprove}
-              onRespond={props.onDecidePlan}
-              plan={session.plan}
-              refusal={props.refusal}
-              review={session.planReview}
-            />
+              <SessionContext {...props.context} agent={agent} now={props.now} session={session} />
+              <PlanCard
+                canApprove={props.canApprove}
+                onRespond={props.onDecidePlan}
+                plan={session.plan}
+                refusal={props.refusal}
+                review={session.planReview}
+              />
 
-            <Transcript
-              entries={session.entries}
-              canApprove={props.canApprove}
-              refusal={props.refusal}
-              onDecide={props.onDecide}
-              spoken={props.spoken}
-              activity={activity}
-              reduceMotion={props.reduceMotion}
-              canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
-              loadingEarlier={props.historyLoading}
-              onLoadEarlier={props.onLoadEarlier}
-              historyCursor={typeof props.historyBefore === "number" ? props.historyBefore : null}
-            />
-          </>
-        )}
+              <OmpThreadList
+                entries={session.entries}
+                canApprove={props.canApprove}
+                refusal={props.refusal}
+                onDecide={props.onDecide}
+                spoken={props.spoken}
+                footer={
+                  activity === null ? null : (
+                    <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
+                  )
+                }
+                canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
+                loadingEarlier={props.historyLoading}
+                onLoadEarlier={props.onLoadEarlier}
+                historyCursor={typeof props.historyBefore === "number" ? props.historyBefore : null}
+              />
+            </>
+          )}
 
-        {webViewCapability === null || !browserOpen ? null : (
-          <View style={styles.browser} testID="session-browser">
-            <webViewCapability.Driver ref={driver} style={styles.driver} />
-          </View>
-        )}
+          {webViewCapability === null || !browserOpen ? null : (
+            <View style={styles.browser} testID="session-browser">
+              <webViewCapability.Driver ref={driver} style={styles.driver} />
+            </View>
+          )}
 
-        <StatusReadout
-          state={connection}
-          attempt={props.attempt}
-          delayMs={props.delayMs}
-          usage={session.usage}
-          clearances={props.fleetClearances}
-        />
+          <StatusReadout
+            state={connection}
+            attempt={props.attempt}
+            delayMs={props.delayMs}
+            usage={session.usage}
+            clearances={props.fleetClearances}
+          />
 
-        {/*
+          {/*
           Below the composer sits either the keyboard or the home indicator,
           never both: while the keyboard is up it covers that inset entirely,
           so paying both would leave a gap the height of the indicator.
@@ -451,145 +445,64 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           last inset down to the screen edge instead of stopping short and
           showing the shell's base beneath the message box.
         */}
-        <View
-          style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
-          testID="session-composer-safe"
-        >
-          {load.phase !== "ready" ? (
-            // No actions on a session this pane does not have. A composer here
-            // would take a prompt for a session that may turn out to be
-            // refused, and a cancel control would offer to interrupt a turn
-            // nobody has seen.
-            <View style={styles.resume} testID="session-actions-withheld">
-              <Label color={ink.muted}>
-                {load.phase === "loading"
-                  ? "Opening this session. Its controls appear with its transcript."
-                  : load.phase === "stalled"
-                    ? "The link dropped before this session arrived. Its controls return with it."
-                    : "This session did not open, so there is nothing to steer."}
-              </Label>
-            </View>
-          ) : props.watchOnly !== undefined ? (
-            // The band takes the composer's place rather than sitting above
-            // it: every steer from a view-only guest is refused, and a
-            // control that can only fail is a refusal with extra steps.
-            <View style={styles.resume} testID="session-watch-only">
-              <Label color={ink.muted}>{props.watchOnly}</Label>
-            </View>
-          ) : terminal ? (
-            <View style={styles.resume}>
-              <Label color={ink.muted}>This agent stopped. Its complete transcript stays available.</Label>
-              {props.onResume === undefined ? null : (
-                <Pressable
-                  testID="session-resume"
-                  accessibilityRole="button"
-                  accessibilityLabel={`Resume ${agent.name}`}
-                  onPress={props.onResume}
-                  style={({ pressed }) => [styles.resumeButton, pressed && { backgroundColor: ground.active }]}
-                >
-                  <Glyph name="resume" size={13} color={tone} />
-                  <Label color={ink.plain}>Resume session</Label>
-                </Pressable>
-              )}
-            </View>
-          ) : (
-            <View testID="session-voice">
-              <Composer
-                prefix="composer"
-                picker={imageAttachmentPicker}
-                enabled={connection === "connected"}
-                placeholder={connection === "connected" ? "Say something to this agent" : "No link"}
-                sendLabel="Send"
-                busy={busy}
-                onSubmit={props.onSubmit}
-                onCancel={props.onCancel}
-                actions={
-                  <>
-                    {/*
-                      This session's model, in the row with the words it will
-                      be spent on, named rather than labelled `Config`. The
-                      daemon already tells this device the resolved model and
-                      the thinking level, and `SessionContext` renders both, so
-                      a control that opens that surface can say which model it
-                      is about instead of naming the screen behind it. Falls
-                      back to the surface's own name when the daemon has told
-                      this device neither, because inventing a model here would
-                      be worse than a generic word.
-                    */}
-                    {props.onOpenConfig === undefined ? null : (
-                      <Pressable
-                        testID="session-open-config"
-                        accessibilityRole="button"
-                        accessibilityLabel={
-                          model === null
-                            ? "Open this session's mode and model"
-                            : `Open this session's mode and model, now ${model}`
-                        }
-                        onPress={props.onOpenConfig}
-                        style={({ pressed }) => [ghost.labelled, pressed && ghost.pressed]}
-                      >
-                        <Label color={ink.muted} numberOfLines={1} testID="session-model-label">
-                          {model ?? "Config"}
-                        </Label>
-                        <Glyph name="chevron" size={11} color={ink.faint} />
-                      </Pressable>
-                    )}
-                    <Pressable
-                      testID="composer-mic"
-                      accessibilityRole="button"
-                      accessibilityLabel={voice.capturing ? "Stop the microphone and send" : "Speak to this agent"}
-                      // The sentence that used to sit permanently under the
-                      // field. It costs nothing here and it is the whole of
-                      // what a screen reader needs.
-                      accessibilityHint={micStatus}
-                      accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
-                      disabled={micDisabled}
-                      onPress={voice.onToggle}
-                      style={({ pressed }) => [
-                        ghost.icon,
-                        voice.capturing && ghost.live,
-                        pressed && !micDisabled && ghost.pressed,
-                      ]}
-                    >
-                      <Glyph
-                        name="mic"
-                        size={15}
-                        color={voice.capturing ? signal.amber : micDisabled ? ink.faint : ink.plain}
-                      />
-                    </Pressable>
-                  </>
-                }
-                notes={
-                  micNotice === null && voice.dictation === null ? null : (
-                    <>
-                      {/*
-                        Prose in the column, never a layer over it, and never
-                        permanently: a refusal or a live dictation occupies real
-                        space between the words and the action row, so a long one
-                        pushes the row down rather than painting across it. The
-                        idle instruction that used to live here is on the
-                        microphone's accessibility hint instead, because a
-                        sentence explaining a control is chrome and this surface
-                        is meant to read as one message box.
-                      */}
-                      {micNotice === null ? null : (
-                        <Label color={ink.plain} testID="composer-mic-status">
-                          {micNotice}
-                        </Label>
-                      )}
-                      {voice.dictation === null ? null : (
-                        <Label color={ink.bright} testID="composer-dictation">
-                          {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
-                        </Label>
-                      )}
-                    </>
-                  )
-                }
-              />
-            </View>
-          )}
+          <View
+            style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
+            testID="session-composer-safe"
+          >
+            {load.phase !== "ready" ? (
+              // No actions on a session this pane does not have. A composer here
+              // would take a prompt for a session that may turn out to be
+              // refused, and a cancel control would offer to interrupt a turn
+              // nobody has seen.
+              <View style={styles.resume} testID="session-actions-withheld">
+                <Label color={ink.muted}>
+                  {load.phase === "loading"
+                    ? "Opening this session. Its controls appear with its transcript."
+                    : load.phase === "stalled"
+                      ? "The link dropped before this session arrived. Its controls return with it."
+                      : "This session did not open, so there is nothing to steer."}
+                </Label>
+              </View>
+            ) : props.watchOnly !== undefined ? (
+              // The band takes the composer's place rather than sitting above
+              // it: every steer from a view-only guest is refused, and a
+              // control that can only fail is a refusal with extra steps.
+              <View style={styles.resume} testID="session-watch-only">
+                <Label color={ink.muted}>{props.watchOnly}</Label>
+              </View>
+            ) : terminal ? (
+              <View style={styles.resume}>
+                <Label color={ink.muted}>This agent stopped. Its complete transcript stays available.</Label>
+                {props.onResume === undefined ? null : (
+                  <Pressable
+                    testID="session-resume"
+                    accessibilityRole="button"
+                    accessibilityLabel={`Resume ${agent.name}`}
+                    onPress={props.onResume}
+                    style={({ pressed }) => [styles.resumeButton, pressed && { backgroundColor: ground.active }]}
+                  >
+                    <Glyph name="resume" size={13} color={tone} />
+                    <Label color={ink.plain}>Resume session</Label>
+                  </Pressable>
+                )}
+              </View>
+            ) : (
+              <View testID="session-voice">
+                <OmpComposer
+                  prefix="composer"
+                  picker={imageAttachmentPicker}
+                  placeholder={connection === "connected" ? "Say something to this agent" : "No link"}
+                  sendLabel="Send"
+                  voice={props.voice}
+                  model={model}
+                  onOpenConfig={props.onOpenConfig}
+                  refusal={props.refusal}
+                />
+              </View>
+            )}
+          </View>
         </View>
-      </View>
+      </OmpThreadProvider>
     </SafeScreen>
   );
 }

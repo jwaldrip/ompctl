@@ -79,6 +79,16 @@ const APPROVAL_BY_OPTION: Readonly<Record<string, { choice: ApprovalChoice; scop
   "omp:allow-always": { choice: "allow", scope: "always" },
 };
 
+/**
+ * An assistant row's identity: the row id it was born with, discriminated by
+ * channel. Exported because the list's pagination machine has to derive the head
+ * key the same way, and two derivations would make a prepend and a re-render
+ * indistinguishable.
+ */
+export function assistantRowId(entry: { rowId: string; thought: boolean }): string {
+  return entry.thought ? `thought:${entry.rowId}` : entry.rowId;
+}
+
 /** Where a custom renderer finds the entry a message was built from. */
 export const OMP_ENTRY = "ompEntry";
 
@@ -127,7 +137,13 @@ export function convertEntry(entry: Entry): ThreadMessageLike {
         // that nothing reaps, each holding its own `metadata.custom` snapshot.
         // Measured before `rowId` existed: 2 entries in the reducer,
         // `thread.export()` returning 6.
-        id: entry.rowId,
+        // The channel is part of the identity, not just the row id. A thought
+        // and a reply can carry the SAME wire message id -- `findChunkTarget`
+        // keeps them as separate rows precisely because they are different
+        // channels -- so keying on `rowId` alone made them collide and one
+        // silently won. `transcriptRowKey` already draws this distinction; this
+        // is the same discrimination in the same shape.
+        id: assistantRowId(entry),
         // A thought is reasoning, which assistant-ui models as its own part
         // kind rather than as prose with a flag. The distinction is the one the
         // transcript already draws with a violet gutter.
