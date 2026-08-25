@@ -332,7 +332,8 @@ describe("a run's linked session opens through the console's own resolver", () =
     }
   });
 
-  test("a session the index no longer describes reads as unavailable and the screen survives", () => {
+  test("a session the index no longer describes reads as unavailable without hiding the tablet fleet pane", () => {
+    setWindowSize(1024, 1366);
     const shell = mountRoutines({ rows: [], agents: [] });
     try {
       shell.press("run-run_1-toggle");
@@ -349,6 +350,7 @@ describe("a run's linked session opens through the console's own resolver", () =
       // showing the run whose link could not be honoured.
       expect(shell.el("routines-screen")).not.toBeNull();
       expect(shell.el("run-run_1-action-gather-open")).not.toBeNull();
+      expect(shell.el("session")).toBeNull();
     } finally {
       shell.unmount();
     }

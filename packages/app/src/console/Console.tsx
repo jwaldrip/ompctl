@@ -52,7 +52,7 @@ import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
 import { deviceMemoVoice } from "../voice/memo.ts";
-import type { ConsoleState } from "./state.ts";
+import type { ConsoleState, SessionOpenTarget } from "./state.ts";
 import {
   agentFor,
   browserSessionsOf,
@@ -216,9 +216,11 @@ export function Console({
    * go through here rather than each resolving for itself, so the fleet list
    * and Routines can never disagree about which transport a session takes.
    */
-  const openSessionById = useCallback((sessionId: string) => {
+  const openSessionById = useCallback((sessionId: string): SessionOpenTarget => {
     const current = latest.current;
-    current.actions.openSession(openSessionTarget(current.state, sessionId));
+    const target = openSessionTarget(current.state, sessionId);
+    current.actions.openSession(target);
+    return target;
   }, []);
   const onOpen = useCallback(
     (session: BrowserSession) => {
@@ -230,11 +232,16 @@ export function Console({
    * The same opener, reached from a route pushed over the fleet. The one extra
    * act is presentation: the model is opened the single way, and the shell is
    * told that the pane which would otherwise show it is buried.
+   *
+   * `unopenable` is not an open. It names a deleted or stale session and the
+   * shared action turns it into the existing unavailable notice without putting
+   * a route on the stack. Marking the fleet pane buried before that resolution
+   * left an iPad with no route, no detail, and a permanently hidden fleet pane.
    */
   const openSessionFromRoute = useCallback(
     (sessionId: string) => {
-      setOpenedFromRoute(true);
-      openSessionById(sessionId);
+      const target = openSessionById(sessionId);
+      setOpenedFromRoute(target.kind !== "unopenable");
     },
     [openSessionById],
   );
