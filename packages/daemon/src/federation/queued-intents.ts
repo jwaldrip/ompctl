@@ -1,10 +1,10 @@
 import {
   type Actor,
-  type HostMount,
-  type HostSpec,
   parsePromptImages,
   type QueuedIntent,
   SCOPE_MANAGE,
+  validateWireHostSpec,
+  type WireHostSpec,
 } from "@ompd/core";
 import type { Supervisor } from "../supervisor.ts";
 
@@ -281,7 +281,7 @@ function newAgentPayload(
 ): {
   name: string;
   cwd: string;
-  host?: HostSpec;
+  host?: WireHostSpec;
   routineId?: string;
   labels?: Record<string, string>;
 } {
@@ -294,36 +294,44 @@ function newAgentPayload(
   return {
     name,
     cwd,
-    ...(fields.host !== undefined ? { host: parseHostSpec(fields.host, intentId) } : {}),
+    ...(fields.host !== undefined ? { host: revalidateHost(fields.host, intentId) } : {}),
     ...(typeof fields.routineId === "string" ? { routineId: fields.routineId } : {}),
     ...(fields.labels !== undefined ? { labels: stringMap(fields.labels, `intent ${intentId} labels`) } : {}),
   };
 }
 
-function parseHostSpec(value: unknown, intentId: string): HostSpec {
-  const fields = objectFields(value, `intent ${intentId} host`);
-  const kind = stringField(fields, "kind");
-  if (kind !== "local" && kind !== "container" && kind !== "cloud") {
-    throw new Error(`intent ${intentId} has unsupported host kind: ${kind}`);
+/**
+ * Revalidate a replayed host spec through the same validator the wire uses.
+ *
+ * This replaced a `parseHostSpec` and `parseMounts` pair local to this file,
+ * and the replacement is the point rather than the fixes. Those parsers were
+ * written before any of the current controls existed and were never revisited,
+ * while this file's own comment said the payload was revalidated. What they
+ * actually did, all of it reachable once `intentPeerUrl` and its token are
+ * configured:
+ *
+ *   - copied any string `image` straight through, so a replayed intent naming
+ *     one bypassed the digest-pinned base, the reviewed omp binary and the
+ *     verified CA bundle, and the approval gate could not mitigate it because
+ *     an OCI image's ENTRYPOINT runs before ompd has a process to gate
+ *   - dropped `network`, so a `"none"` intent replayed as `isolated` with open
+ *     egress and nothing anywhere saying so
+ *   - required a `containerPath` that `HostMount` no longer has, refusing a
+ *     current `{ hostPath, mode }` mount outright, while the legacy shape it
+ *     did accept discarded `mode` and turned `rw` into the default
+ *   - dropped `ref` and `ttlSeconds`
+ *
+ * A second validator for one trust boundary is the defect. There is now one,
+ * in core, and this door calls it. The wrapper exists only to attach the intent
+ * id, because every other failure in this file names the intent and a bare
+ * refusal would be the one that does not.
+ */
+function revalidateHost(value: unknown, intentId: string): WireHostSpec {
+  const validated = validateWireHostSpec(value);
+  if ("error" in validated) {
+    throw new Error(`intent ${intentId} host is not acceptable: ${validated.error}`);
   }
-  return {
-    kind,
-    ...(typeof fields.image === "string" ? { image: fields.image } : {}),
-    ...(typeof fields.repo === "string" ? { repo: fields.repo } : {}),
-    ...(fields.mounts !== undefined ? { mounts: parseMounts(fields.mounts, intentId) } : {}),
-  };
-}
-
-function parseMounts(value: unknown, intentId: string): HostMount[] {
-  if (!Array.isArray(value)) throw new Error(`intent ${intentId} host mounts must be an array`);
-  return value.map((entry, index) => {
-    const fields = objectFields(entry, `intent ${intentId} host mount ${index}`);
-    return {
-      hostPath: stringField(fields, "hostPath"),
-      containerPath: stringField(fields, "containerPath"),
-      ...(fields.readOnly === true ? { readOnly: true as const } : {}),
-    };
-  });
+  return validated.host;
 }
 
 function stringMap(value: unknown, label: string): Record<string, string> {

@@ -32,9 +32,11 @@
  * `Read-only file system`), and the mount must be a directory: a single-file
  * bind mount fails with `Not a directory` / `VZErrorDomain Code=2`.
  *
- * Precedence is operator-first. `spec.image`, then `OMPD_CONTAINER_IMAGE`
- * (handed in as `envImage` rather than read here, so this module stays a
- * function of its arguments), then the default base plus a mounted toolchain.
+ * Precedence is operator-first. An internally-resolved `spec.image`, then the
+ * daemon's `containerImage` config field (handed in as `envImage` rather than
+ * read here, so this module stays a function of its arguments), then the
+ * default base plus a mounted toolchain. Neither of those first two can come
+ * from a paired device: the wire refuses `image` outright.
  * An operator who names an image owns what is in it: nothing is mounted over
  * it, nothing is downloaded, nothing is checked against a manifest, and `omp`
  * is left to resolve on its PATH.
@@ -347,7 +349,11 @@ export interface EnsureToolchainOptions {
   spec: HostSpec;
   run?: CommandRunner;
   cacheRoot?: string;
-  /** The caller's `process.env.OMPD_CONTAINER_IMAGE`. */
+  /**
+   * The daemon's `containerImage` config value. Named `envImage` for historical
+   * reasons; it is no longer read from the environment, because a
+   * launchd-started daemon inherits no shell.
+   */
   envImage?: string;
   ompVersion?: string;
   arch?: string;
@@ -409,9 +415,8 @@ export async function ensureToolchain(opts: EnsureToolchainOptions): Promise<Res
   // Trimming is the one normalisation applied to an operator's image name: a
   // value read from a config file or a launchd plist can carry a trailing
   // newline, which would otherwise reach argv and be reported by the runtime as
-  // part of the image name. Whitespace-only counts as unset, because an empty
-  // OMPD_CONTAINER_IMAGE means "not configured" and must not defeat the default
-  // that now works.
+  // part of the image name. Whitespace-only counts as unset, because an unset
+  // `containerImage` must not defeat the default that now works.
   //
   // Deliberately ahead of every check in this file. An operator who names an
   // image owns it: it is pulled exactly as written, whether or not it carries a
@@ -1069,7 +1074,8 @@ function refuseCaBundle(runtime: string, text: string, bytes: number, sha256: st
     `altered the trust store on the way out. Refusing, because this file becomes SSL_CERT_FILE for every model ` +
     `call the host makes, so an unreviewed certificate authority in it can intercept all of them. Three ways ` +
     `forward: run a runtime that does not rewrite the trust store, which on macOS means Apple's \`container\` and ` +
-    `is one more reason it is the default; or set OMPD_CONTAINER_IMAGE (or spec.image) to an image carrying its ` +
+    `is one more reason it is the default; or set \`containerImage\` in \`<OMPD_HOME>/config.json\` to an image ` +
+    `carrying its ` +
     `own trust store, which is the operator-owned path where ompd mounts nothing and checks nothing; or review ` +
     `the new bundle yourself and update CA_BUNDLE_SHA256 in ` +
     `packages/daemon/src/provisioner/toolchain-manifest.ts.`

@@ -114,7 +114,12 @@ export interface ContainerBackendOptions {
    * `run --help`, and the fixtures behind that live in `container-runtime.test.ts`.
    */
   capability?: RuntimeCapability;
-  /** Default image when `spec.image` is absent. Normally `OMPD_CONTAINER_IMAGE`. */
+  /**
+   * Default image when the spec names none. Comes from the daemon's
+   * `containerImage` config field, which is the only surface that can name one:
+   * a paired device cannot, because an image's ENTRYPOINT runs before the
+   * approval gate exists.
+   */
   image?: string;
   /** Host directory mounted into the container at the same absolute path. */
   workspace?: string;

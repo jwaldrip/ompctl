@@ -39,6 +39,7 @@ import {
   DefaultPolicy,
   type Device,
   type EndpointOffer,
+  normalizeImageRef,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
@@ -50,7 +51,7 @@ import {
 import type { TunnelDaemon } from "@ompd/tunnel";
 import { type AwakeProcess, SleepGuard } from "./awake.ts";
 import { NO_TARGET, type WebViewApprovalGate, WebViewBridge, type WebViewDispatch } from "./browser/bridge.ts";
-import { mcpServerDescriptor, startWebViewMcpServer, type WebViewMcpServer } from "./browser/mcp-server.ts";
+import { startWebViewMcpServer, type WebViewMcpServer, webViewMcpServersFor } from "./browser/mcp-server.ts";
 import { endpointPath } from "./endpoint.ts";
 import { reachableEndpoints } from "./endpoints.ts";
 import { EvolutionEngine, ProposalStore } from "./evolution/index.ts";
@@ -59,7 +60,7 @@ import { Filesystem } from "./filesystem/index.ts";
 import { Gateway, GatewayEvents, type VoiceHandler } from "./gateway/index.ts";
 import { homeIdFor } from "./home-id.ts";
 import { HostRegistry } from "./hosts.ts";
-import { ContainerBackend, HostProvisioner, LocalBackend } from "./provisioner/index.ts";
+import { ContainerBackend, HostProvisioner, KNOWN_RUNTIMES, LocalBackend } from "./provisioner/index.ts";
 import { Scheduler } from "./routines/index.ts";
 import { SessionIndex } from "./sessions/session-index.ts";
 import { Supervisor } from "./supervisor.ts";
@@ -193,6 +194,44 @@ export interface OmpdConfig {
    * are the same refusal. See `filesystem/roots.ts`.
    */
   fsRoots: string[];
+  /**
+   * Container runtime this daemon uses, or empty for the platform default.
+   *
+   * Durable config rather than an environment variable, and that is the whole
+   * point of it: a launchd-started daemon does not inherit anyone's shell, so
+   * an env-only pin was reliably present while a developer tested it by hand
+   * and reliably absent in the one place it decides anything. It also has to
+   * be readable by `ompd doctor`, which is a different process and would
+   * otherwise be reporting its own environment rather than the daemon's.
+   *
+   * An unknown name is refused rather than ignored: falling back to the
+   * platform default when an operator asked for docker would run every agent
+   * somewhere they did not choose, with nothing saying so.
+   */
+  containerRuntime: string;
+  /**
+   * Container image every container host runs, or empty for ompd's pinned
+   * default base plus its mounted toolchain.
+   *
+   * Setting this is an act of **trust by the operator who sets it**, and the
+   * trust is not backed by anything ompd does. Nothing is mounted over a named
+   * image, no digest is pinned for it, and the approval gate cannot confine
+   * what is inside it: the image's ENTRYPOINT is the first thing the runtime
+   * executes, before ompd has a process to gate, so everything ompd controls
+   * is downstream of code that has already run. There is no pre-entrypoint
+   * hook to put a gate in; making this safe would need a different mechanism,
+   * such as accepting only signed images whose digest the operator approved
+   * out of band, and ompd has no such mechanism today.
+   *
+   * That is also exactly why it lives here and not on the wire. This is a
+   * decision made on the machine that will run it, by whoever has its disk. A
+   * paired device holding `manage` scope is authenticated, not trusted with
+   * supply chain, so `host.image` is refused at the gateway.
+   *
+   * Normalized and checked by `normalizeImageRef`, the same function the
+   * gateway uses, so the two doors cannot drift apart.
+   */
+  containerImage: string;
 }
 
 export const DEFAULT_CONFIG: OmpdConfig = {
@@ -208,6 +247,8 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   intentPeerToken: "",
   intentPollIntervalMs: 0,
   fsRoots: [],
+  containerRuntime: "",
+  containerImage: "",
 };
 
 export interface OmpdOptions {
@@ -376,7 +417,60 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
   // an empty list that silently means something.
   if (merged.fsRoots.length === 0) merged.fsRoots = [homedir()];
 
+  if (typeof merged.containerRuntime !== "string") {
+    throw new Error(`${path}: containerRuntime must be a string, got ${String(merged.containerRuntime)}`);
+  }
+  if (merged.containerRuntime !== "" && !KNOWN_RUNTIMES.includes(merged.containerRuntime)) {
+    throw new Error(
+      `${path}: containerRuntime must be empty for the platform default or one of ` +
+        `${KNOWN_RUNTIMES.join(", ")}, got ${merged.containerRuntime}`,
+    );
+  }
+  if (typeof merged.containerImage !== "string") {
+    throw new Error(`${path}: containerImage must be a string, got ${String(merged.containerImage)}`);
+  }
+  if (merged.containerImage !== "") {
+    // The same normalizer the gateway runs, so a value one door refuses cannot
+    // be a value the other accepts. The normalized form is written back, so
+    // everything downstream uses the string that was checked rather than the
+    // one that was typed.
+    const image = normalizeImageRef(merged.containerImage);
+    if (!image.ok) throw new Error(`${path}: containerImage is not usable: ${image.reason}`);
+    merged.containerImage = image.ref;
+  }
+
   return merged;
+}
+
+/**
+ * How this daemon's config resolves into the container backend's settings.
+ *
+ * Named rather than inlined at the construction site, because the
+ * empty-string convention is a rule and not formatting. `""` means "not
+ * configured", and `ContainerBackend` reads an absent `runtime` as "probe in
+ * platform order" and an absent `image` as "the pinned base plus the mounted
+ * toolchain". Passing the empty string straight through would turn both of
+ * those into a pin on a runtime named `""` and an image named `""`, which is
+ * the shape of bug that produces a runtime error a long way from its cause.
+ *
+ * These used to be `process.env.OMPD_CONTAINER_RUNTIME` and
+ * `OMPD_CONTAINER_IMAGE`, read here and again in `HostProvisioner`'s own
+ * defaults. Both reads are gone. A launchd-started daemon inherits launchd's
+ * environment rather than any shell, so an env-only setting was reliably
+ * present while a developer tested it by hand and reliably absent in the one
+ * place it decided anything; and `ompd doctor`, a different process, could
+ * only ever report on its own environment. There is no env override left on
+ * the product path, deliberately: an override that a second process cannot
+ * see is a setting that cannot be reported honestly.
+ *
+ * A configured image is trusted by whoever configured it and is confined by
+ * nothing ompd does. See `OmpdConfig.containerImage`.
+ */
+export function containerBackendSettings(config: OmpdConfig): { runtime?: string; image?: string } {
+  return {
+    ...(config.containerRuntime === "" ? {} : { runtime: config.containerRuntime }),
+    ...(config.containerImage === "" ? {} : { image: config.containerImage }),
+  };
 }
 
 /**
@@ -504,16 +598,13 @@ export class Ompd {
       workspace: opts.repoRoot ?? process.cwd(),
       backends: {
         local: new LocalBackend({ ompPath: this.#config.ompPath, spawn: this.#hosts.spawn }),
-        // `OMPD_CONTAINER_RUNTIME` and `OMPD_CONTAINER_IMAGE` are read here as
-        // well as in `HostProvisioner`'s own defaults, because the daemon names
-        // its backends explicitly and therefore never reaches those defaults.
-        // Without this the pin worked in tests and did nothing in the product.
+        // Runtime and image come from the validated config on disk, not from
+        // the environment. See `containerBackendSettings`.
         container: new ContainerBackend({
           workspace: opts.repoRoot ?? process.cwd(),
           home: this.#home,
           spawn: this.#hosts.spawn,
-          runtime: process.env.OMPD_CONTAINER_RUNTIME,
-          image: process.env.OMPD_CONTAINER_IMAGE,
+          ...containerBackendSettings(this.#config),
         }),
       },
       onLog: this.#onLog,
@@ -542,11 +633,38 @@ export class Ompd {
       ompPath: this.#config.ompPath,
       spawnHost: this.#hosts.spawn,
       provisioner: this.#provisioner,
+      // The daemon's real state directory, not the `~/.ompd` the supervisor
+      // would otherwise assume. A daemon started with `OMPD_HOME` elsewhere
+      // has to refuse mounts of *that* directory, and a default cannot know it.
+      home: this.#home,
       onLog: this.#onLog,
-      mcpServersFor: agentId => {
+      mcpServersFor: (agentId, host) => {
         const server = this.#webViewMcpServer;
         if (server === undefined) throw new Error("webview MCP server is not started");
-        return [mcpServerDescriptor(server, agentId)];
+        // Offered only to a host that can actually reach it. The server binds
+        // `127.0.0.1` and `urlFor` hands out `http://127.0.0.1:<port>/...`,
+        // which means the daemon's machine from a local host and the CONTAINER
+        // from a provisioned one. Handing it to a container did not degrade the
+        // browser tool, it failed the whole session: omp answers `session/new`
+        // with `ompd-webview: Unable to connect. Is the computer able to access
+        // the url?`, so every container create returned HTTP 500 while the same
+        // request with no `mcpServers` succeeded.
+        //
+        // Omitted rather than rewritten to a container-reachable address on
+        // purpose. Making it reachable means binding this surface off loopback,
+        // and that is a security decision about a tool that drives the
+        // operator's own browser -- not something to slip in as the fix for a
+        // 500. So the absence is stated here and in the log rather than being
+        // quietly papered over, and `docs/running.md` says the browser tool is
+        // a local-host capability.
+        if (host.kind !== "local") {
+          this.#onLog?.(
+            `agent ${agentId}: no browser tool on this ${host.kind} host. The WebView MCP server is bound to ` +
+              `the daemon's loopback, which a provisioned host cannot reach; everything else about the session ` +
+              `is unaffected.`,
+          );
+        }
+        return webViewMcpServersFor(server, agentId, host);
       },
     });
     const intentPeer =

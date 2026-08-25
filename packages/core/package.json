@@ -49,6 +49,10 @@
       "types": "./src/policy.ts",
       "import": "./src/policy.ts"
     },
+    "./mount-policy": {
+      "types": "./src/mount-policy.ts",
+      "import": "./src/mount-policy.ts"
+    },
     "./pairing": {
       "types": "./src/pairing.ts",
       "import": "./src/pairing.ts"

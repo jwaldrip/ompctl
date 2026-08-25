@@ -492,22 +492,38 @@ gives you the first one only.
 
 ## Run an agent in a container
 
-An agent is created on a container host by naming one in the spec:
+An agent is created on a container host by asking for the kind. Which image it
+runs is not part of the request: that is the daemon's own `containerImage`
+config, for the reason in [The image, and why a paired device cannot name
+one](#the-image-and-why-a-paired-device-cannot-name-one) below. `host.image` on
+the wire is refused, and `ompd new --image` is gone.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:7777/v1/agents \
   -H "authorization: Bearer $(cat ~/.ompd/token)" \
   -H 'content-type: application/json' \
-  -d '{"name":"sandboxed","cwd":"'"$PWD"'","host":{"kind":"container","image":"your/omp:tag"}}'
+  -d '{"name":"sandboxed","cwd":"'"$PWD"'","host":{"kind":"container"}}'
 ```
 
 or from the CLI, which can also name further directories the container gets
 to see:
 
 ```bash
-ompd new ~/dev/some-repo --container --image your/omp:tag \
+ompd new ~/dev/some-repo --container \
   --mounts ~/dev/shared-lib:ro,~/dev/scratch:rw
 ```
+
+**The browser tool is a local-host capability.** An agent on a container host
+gets no `ompd-webview` MCP server, and the daemon logs one line saying so when
+it omits it. The reason is an address, not a policy: that server binds
+`127.0.0.1`, which is the daemon's machine from a local host and the container
+from a provisioned one. Handing it to a container did not merely disable the
+tool, it failed the whole session -- omp refused `session/new` with
+`ompd-webview: Unable to connect. Is the computer able to access the url?`, so
+every container create answered HTTP 500. Making it reachable would mean binding
+a surface that drives the operator's own browser somewhere other than loopback,
+which is a decision on its own merits rather than a side effect of fixing that
+500. Everything else about a container session is unaffected.
 
 **There is no fallback order.** On macOS the only runtime ompd will pick for
 itself is Apple's `container`. On Linux it is `podman`. Nothing else is ever
@@ -523,10 +539,24 @@ Docker or OrbStack. Silently running on the thing this work exists to remove is
 worse than refusing, and the same reasoning that makes a pinned-but-absent
 runtime an error applies to a native runtime whose service is merely stopped.
 
-Docker and podman are still supported, deliberately rather than implicitly:
-`OMPD_CONTAINER_RUNTIME=docker` or `=podman` pins one. A pinned runtime that is
-missing is an error, never a fall back to whatever else happens to be
-installed.
+Docker and podman are still supported, deliberately rather than implicitly, and
+the way you ask for one is the daemon's own config file rather than an
+environment variable. In `~/.ompd/config.json`:
+
+```json
+{ "containerRuntime": "podman" }
+```
+
+Empty or absent means the platform default above. A name ompd does not know is
+refused when the config loads, naming the valid set, rather than at the first
+provision. A configured runtime that is missing is an error, never a fall back
+to whatever else happens to be installed.
+
+It is config rather than `OMPD_CONTAINER_RUNTIME` for a reason worth stating: a
+launchd-started daemon does not inherit your shell, so an environment variable
+set in a terminal was silently absent in the one place it had to work, while
+`ompd doctor` read it and reported a runtime the daemon would never pick. The
+config file is one value that the daemon and the CLI both read.
 
 ompd then starts a detached container, mounts the workspace at the same
 absolute path it has here so a cwd means the same thing on both sides, and
@@ -557,12 +587,33 @@ runtime whatever its help says. That last one stays false even for 1.3.0, whose
 documentation says `--user` accepts `name|uid[:gid]`, until somebody runs it
 against a real 1.3.0 binary and records the result.
 
-### The image, and why nothing private is pulled
+### The image, and why a paired device cannot name one
 
-ompd does not build or publish an image. Naming one is still supported and
-still wins: `spec.image`, or `OMPD_CONTAINER_IMAGE` for the daemon default, is
-pulled exactly as written and nothing is mounted over it. That image needs
-`omp` on its `PATH` and a root certificate store.
+ompd does not build or publish an image.
+
+**A remote caller cannot name one either.** `image` on a `POST /v1/agents` host
+spec is refused, and that is a deliberate narrowing after a security review.
+Everything below about pinned digests and verified checksums is bypassed by
+naming an image, and an image's `ENTRYPOINT` runs before the approval gate
+exists, so the gate cannot mitigate what is inside it. A device holding
+`SCOPE_MANAGE` is authorised to ask for work; that is not the same act as
+deciding which supply chain the operator trusts.
+
+Naming an image is therefore daemon-local configuration, in the same file:
+
+```json
+{ "containerImage": "registry.example/your-omp@sha256:..." }
+```
+
+That image is **trusted**. Be clear-eyed about what that means: the approval
+gate does not confine its contents and cannot, because a generic OCI image runs
+its own entrypoint before any code ompd controls. Configuring one is a
+statement that you trust its publisher the way you trust a package you install,
+and it needs `omp` on its `PATH` and a root certificate store. Nothing is
+mounted over it and no digest of it is checked, because it is yours.
+
+Empty or absent means the pinned default below, which is the path a remote
+Cowork request always takes. `ompd doctor` says which of the two is in force.
 
 Name nothing and there is no build and no private registry in the path. The
 default is a public base image (`debian:bookworm-slim`) with the toolchain
@@ -690,11 +741,27 @@ read, a model doing something stupid, a hostile dependency it just installed.
 
 **What it cannot reach.** The rest of your filesystem, unless you name it as
 an extra mount, and even then not the paths listed under "Extra mounts" above:
-`~/.ssh`, `~/.omp`, `~/.ompd`, a home directory root, and `/` are refused
-outright, not merely left off by default. Nothing outside the workspace and
-whatever you explicitly named is mounted, so `~/.aws` and your other
-repositories are not merely unreadable, they are not there. It cannot write
-the image, gain a capability, become root, or reach your other containers.
+`~/.ssh`, `~/.omp`, `~/.ompd`, a home directory root, `/`, the kernel and OS
+trees, and `/opt` are refused outright, not merely left off by default, and the
+refusal is applied to the canonicalized path so `/etc`, `/Users/you/.` and a
+symlink pointing at any of them are refused too. Nothing outside the workspace
+and whatever you explicitly named is mounted, so `~/.aws` and your other
+repositories are not merely unreadable, they are not there. It cannot reach
+your other containers: each host gets its own network.
+
+**Root and capabilities depend on the runtime, and the difference is real.**
+On docker or podman the container runs as your uid with `--cap-drop ALL` and
+`no-new-privileges`, so it cannot become root or gain a capability. On Apple
+`container` 0.4.1 it **is** root inside its own VM and holds the full
+capability set, because that CLI rejects `--cap-drop` and `--security-opt` and
+crashes on any numeric identity flag. What that buys an attacker is bounded by
+the VM rather than by a capability mask: there is no shared kernel to escape
+into, and files it creates in a mount land owned by you because virtiofs
+squashes ownership. What it does mean is that an in-guest root process can
+`mount --bind` over a read-only mount, which is measured and is why a
+gate-protected container serves exactly one ACP session rather than being
+reused. Do not read "it cannot become root" as true on Apple's runtime; it is
+not.
 
 **What it can reach, which is the honest part.**
 

@@ -44,12 +44,21 @@ export type Command =
   | { kind: "revoke"; deviceId: string }
   | { kind: "rotate"; deviceId?: string }
   | { kind: "agents" }
+  /**
+   * `new` deliberately has no `image` field.
+   *
+   * `ompd new` is a client, not the daemon. It authenticates over the same
+   * HTTP surface with the same kind of token and runs through the same
+   * validator as any paired phone, so "it is the local CLI" is not a
+   * statement about where an image came from. What makes an image trusted is
+   * an operator editing the daemon's own config, which is a different act on
+   * a different surface: `containerImage` in `<home>/config.json`.
+   */
   | {
       kind: "new";
       cwd: string;
       name?: string;
       container: boolean;
-      image?: string;
       mounts?: HostMount[];
     }
   | { kind: "stop-agent"; agentId: string }
@@ -106,8 +115,9 @@ devices
 
 agents
   agents                  list agents
-  new <cwd> [--name N] [--container [--image I] [--mounts P[:ro|rw],...]]
-                          create an agent; --mounts only with --container
+  new <cwd> [--name N] [--container [--mounts P[:ro|rw],...]]
+                          create an agent; --mounts only with --container.
+                          The image is the daemon's containerImage config, not a flag
   stop-agent <id>         stop an agent
   prompt <id> <text>      send a prompt and wait for the turn to settle
   tui [--host H] [--port N] [--token T]
@@ -365,16 +375,25 @@ export function parseCommand(argv: string[]): Command {
     case "new": {
       rejectExtra(rest, 1, "new");
       const container = flags.get("container") === true;
-      const image = stringFlag(flags, "image");
       const mountsRaw = stringFlag(flags, "mounts");
-      if (!container && image !== undefined) throw new UsageError("--image needs --container");
+      // Named rather than swept up by the unknown-flag path, because someone
+      // typing `--image` had a working flag yesterday and deserves the reason
+      // and the replacement, not "unknown flag". `ompd new` is a client: it
+      // goes through the same gateway validator as any paired device, and
+      // being local is not a statement about where an image came from.
+      if (stringFlag(flags, "image") !== undefined) {
+        throw new UsageError(
+          "--image is gone. Naming a container image is daemon-local supply-chain approval and an API client " +
+            'is not that, so the daemon refuses host.image on the wire. Set "containerImage" in the daemon\'s ' +
+            "config.json, on the machine that will run it, and check it with `ompd doctor`.",
+        );
+      }
       if (!container && mountsRaw !== undefined) throw new UsageError("--mounts needs --container");
       return {
         kind: "new",
         cwd: requirePositional(rest, 0, "cwd"),
         name: stringFlag(flags, "name"),
         container,
-        image,
         mounts: mountsRaw === undefined ? undefined : parseMounts(mountsRaw),
       };
     }

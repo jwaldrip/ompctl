@@ -178,6 +178,7 @@ interface AgentRow {
   task_title: string | null;
   model: string | null;
   metrics: string | null;
+  failure: string | null;
   labels: string;
 }
 
@@ -320,6 +321,9 @@ export class Store {
       ["task_title", "TEXT"],
       ["model", "TEXT"],
       ["metrics", "TEXT"],
+      // Why a terminal agent ended where it did. Added because "failed" with
+      // no reason sent an operator to a log that said nothing.
+      ["failure", "TEXT"],
     ] as const) {
       if (!columns.has(name)) this.#db.run(`ALTER TABLE agents ADD COLUMN ${name} ${type}`);
     }
@@ -446,8 +450,18 @@ export class Store {
       );
   }
 
-  setAgentState(id: AgentId, state: AgentState): void {
-    this.#db.query(`UPDATE agents SET state=?, last_active_at=? WHERE id=?`).run(state, new Date().toISOString(), id);
+  /**
+   * Move an agent's state, and record `failure` when one is supplied.
+   *
+   * A supplied reason overwrites; an omitted one CLEARS. That asymmetry is
+   * deliberate: an agent that goes back to `idle` after a failed turn must not
+   * keep showing the old reason, and a caller that has nothing to say is
+   * saying "no failure" rather than "leave whatever was there".
+   */
+  setAgentState(id: AgentId, state: AgentState, failure?: string): void {
+    this.#db
+      .query(`UPDATE agents SET state=?, failure=?, last_active_at=? WHERE id=?`)
+      .run(state, failure ?? null, new Date().toISOString(), id);
   }
 
   getAgent(id: AgentId): Agent | null {
@@ -1229,6 +1243,7 @@ function rowToAgent(row: AgentRow): Agent {
   if (row.task_title !== null) agent.taskTitle = row.task_title;
   if (row.model !== null) agent.model = row.model;
   if (row.metrics !== null) agent.metrics = JSON.parse(row.metrics);
+  if (row.failure !== null && row.failure !== undefined) agent.failure = row.failure;
   return agent;
 }
 
