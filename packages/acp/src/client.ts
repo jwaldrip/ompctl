@@ -232,14 +232,40 @@ export interface AcpClientOptions {
   maxLineBytes?: number;
 }
 
+/**
+ * A JSON-RPC error from the ACP peer.
+ *
+ * The message folds in `data.details` when the peer supplied one, and that is
+ * load-bearing rather than cosmetic. omp answers a failed `session/new` with
+ * the JSON-RPC spec's own generic text -- `code: -32603, message: "Internal
+ * error"` -- and puts the only useful sentence in `data.details`. Every layer
+ * above this reads `err.message`, so a daemon that surfaced the message alone
+ * turned `ompd-webview: Unable to connect. Is the computer able to access the
+ * url?` into `Internal error` at the gateway and logged nothing anywhere. That
+ * cost a container-host defect its entire diagnosis: the operator saw HTTP 500
+ * "Internal error" and the log was silent.
+ *
+ * `data` is still carried whole for anything that wants to inspect it. Only
+ * `details` is folded into the message, and only when it is a string, because
+ * a peer is free to put anything in `data` and a message is not the place to
+ * dump an arbitrary object.
+ */
 export class AcpError extends Error {
   constructor(
     message: string,
     readonly code?: number,
     readonly data?: unknown,
   ) {
-    super(message);
+    super(AcpError.#describe(message, data));
     this.name = "AcpError";
+  }
+
+  static #describe(message: string, data: unknown): string {
+    if (data === null || typeof data !== "object") return message;
+    const details = (data as { details?: unknown }).details;
+    if (typeof details !== "string" || details.length === 0) return message;
+    // Already said it: some peers put the same sentence in both.
+    return message.includes(details) ? message : `${message}: ${details}`;
   }
 }
 

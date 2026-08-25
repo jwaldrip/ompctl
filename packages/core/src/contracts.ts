@@ -53,6 +53,17 @@ export interface Agent {
   model?: string;
   /** Live or terminal usage accumulated by the agent. */
   metrics?: AgentMetrics;
+  /**
+   * Why a terminal agent ended where it did, when the daemon knows.
+   *
+   * Present on `failed` and absent everywhere else. It exists because `failed`
+   * on its own is not a diagnosis: a container host that could not reach the
+   * daemon's loopback MCP server produced exactly that state, an empty log and
+   * an HTTP 500 reading "Internal error", and there was nowhere for the real
+   * sentence to live. Redacted and length-bounded before it is stored, so it
+   * carries no token, no query string and no argv.
+   */
+  failure?: string;
   labels: Record<string, string>;
 }
 
@@ -1433,6 +1444,18 @@ export type ServerFrame =
 // ---------------------------------------------------------------------------
 
 export type AuditAction =
+  /**
+   * The ACP host for a provisioned host came up, or did not.
+   *
+   * Its own action rather than a second `host.provision`, which is what it used
+   * to be. Two sites wrote `host.provision` for one container -- the
+   * provisioner with the actor, the supervisor without one -- so a single
+   * create read as two provisions in the audit trail and cost a diagnosis real
+   * time. Provisioning a container and starting an ACP host inside it are
+   * different events that fail for different reasons, and the trail should say
+   * which one happened.
+   */
+  | "host.start"
   | "agent.create"
   | "agent.stop"
   | "agent.prompt"

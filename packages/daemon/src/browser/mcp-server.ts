@@ -20,7 +20,7 @@
  */
 
 import type { McpServer } from "@oh-my-pi/pi-utils/acp";
-import type { AgentId, WebViewAction } from "@ompd/core";
+import type { AgentId, HostRef, WebViewAction } from "@ompd/core";
 import type { WebViewBridge } from "./bridge.ts";
 
 interface JsonRpcRequest {
@@ -198,6 +198,36 @@ export function startWebViewMcpServer(bridge: WebViewBridge): WebViewMcpServer {
       server.stop(true);
     },
   };
+}
+
+/**
+ * The `mcpServers` a given host may be handed, which is not the same question
+ * as which ones exist.
+ *
+ * Every descriptor here is an ADDRESS, and an address is only meaningful from
+ * somewhere. This server binds `127.0.0.1`, so `urlFor` produces
+ * `http://127.0.0.1:<port>/...`: the daemon's machine seen from a local host,
+ * and the CONTAINER seen from a provisioned one.
+ *
+ * Handing it to a container did not merely disable the browser tool, it failed
+ * the whole session. Measured on 2026-08-25 against Apple `container` 0.4.1:
+ * `session/new` answered `-32603 Internal error` with
+ * `data.details = "ompd-webview: Unable to connect. Is the computer able to
+ * access the url?"`, so every `kind: "container"` create returned HTTP 500,
+ * while the identical request carrying no `mcpServers` succeeded in 1.2s. A
+ * container also cannot reach the host loopback at all: `/dev/tcp` to it from
+ * inside reports the port unreachable.
+ *
+ * Omitted rather than rewritten to a container-reachable address, deliberately.
+ * Making it reachable means binding a surface that drives the operator's own
+ * browser somewhere other than loopback, and that is a security decision on its
+ * own merits, not something to settle as a side effect of fixing a 500. The
+ * absence is stated in the log and in `docs/running.md` instead of being
+ * papered over.
+ */
+export function webViewMcpServersFor(server: WebViewMcpServer, agentId: AgentId, host: HostRef): McpServer[] {
+  if (host.kind !== "local") return [];
+  return [mcpServerDescriptor(server, agentId)];
 }
 
 /** The `session/new.mcpServers` entry ACP's `McpServer` (http variant) expects. */
