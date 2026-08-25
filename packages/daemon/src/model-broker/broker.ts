@@ -201,11 +201,22 @@ export interface ModelGrant {
 }
 
 export interface ModelGrantLimits {
-  /** Total requests this grant may make. */
+  /**
+   * Requests this grant may have FORWARDED to the gateway. Exact, and it counts
+   * only forwarded requests: one refused here -- wrong model, unparseable body,
+   * over the body cap -- costs the guest nothing, because it cost the operator
+   * nothing. A guest can therefore be refused as often as it likes, which is a
+   * load question about this daemon and not a quota question about the provider.
+   */
   maxRequests: number;
-  /** Total input+output tokens this grant may consume. */
+  /**
+   * Input plus output tokens this grant may consume, best-effort and checked at
+   * admission only. It overshoots by whatever the in-flight turns spend, and a
+   * reply whose usage cannot be read advances it by nothing: see `meter`.
+   * `maxRequests` is the ceiling that always binds.
+   */
   maxTokens: number;
-  /** In-flight ceiling. */
+  /** In-flight ceiling. Exact, reserved where it is checked. */
   maxConcurrent: number;
 }
 
@@ -680,12 +691,20 @@ export class ModelBroker {
     // whole mechanism rather than a detail of it.
     //
     // These ceilings used to be checked here and incremented after
-    // `readBounded` and `#upstreamBearer`, both of which yield. Fifty
-    // concurrent requests against `maxConcurrent: 2` therefore all observed
-    // `inFlight: 0`, all passed admission, and all forwarded; the same race let
-    // a burst walk straight through `maxRequests`. Reserving in the same
-    // synchronous block that checks makes the count each request reads include
-    // every request already admitted, because nothing can run in between.
+    // `readBounded` and `#upstreamBearer`, both of which yield, so a request
+    // parked on either had passed the check without moving the count. What that
+    // takes to exercise is worth recording, because it is not volume: measured
+    // on Bun 1.3.14, fifty concurrent `fetch` calls never overshot, since each
+    // body is already complete when the handler starts and the read resolves in
+    // a microtask. Fifty connections that send their head and then dribble the
+    // body do overshoot, every time -- Bun calls the handler as soon as the head
+    // lands, so all fifty sit inside `readBounded` already admitted, and the old
+    // code forwarded all fifty against `maxConcurrent: 2`. The guest owns its
+    // socket, so the guest owns that window.
+    //
+    // Reserving in the same synchronous block that checks makes the count each
+    // request reads include every request already admitted, because nothing can
+    // run in between.
     //
     // Which is also a constraint on the code above: everything from the route
     // test through the peer check is deliberately await-free, and an `await`
@@ -733,8 +752,9 @@ export class ModelBroker {
     // and charged for it whatever came back. This ceiling is then only ever
     // wrong in the tightening direction, which is the side to be wrong on.
     //
-    // Both are idempotent. `release` is also handed to the meter, which calls
-    // it from `flush` or from `cancel` depending on how the stream ended.
+    // Both are idempotent, because `release` is also handed to the meter, which
+    // calls it when the response stream ends; see `meter` for which hook that
+    // actually is on this runtime.
     let settled = false;
     const refund = () => {
       if (settled) return;
