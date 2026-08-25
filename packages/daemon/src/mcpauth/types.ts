@@ -114,6 +114,9 @@ export interface TokenResponse {
   scope?: string;
 }
 
+/** The authentication method registered for this OAuth client at its token endpoint. */
+export type ClientAuthMethod = "client_secret_basic" | "client_secret_post" | "none";
+
 /**
  * How a refresh attempt ended, classified before anything is written.
  *
@@ -158,6 +161,12 @@ export interface GrantRecord {
   authorizationUrl?: string;
   registrationUrl?: string;
   clientId: string;
+  /**
+   * The exact method registered for this client. Absent only in a database from
+   * before this field existed; the broker refuses such a row rather than guessing.
+   */
+  clientAuthMethod?: ClientAuthMethod;
+
   /** Space-separated granted scopes, as the provider reported them. */
   scopes: string;
   account?: string;
@@ -194,6 +203,8 @@ export interface GrantInput {
   authorizationUrl?: string;
   registrationUrl?: string;
   clientId: string;
+  /** Recorded at authorization/import, never inferred again during refresh. */
+  clientAuthMethod?: ClientAuthMethod;
   scopes: string;
   account?: string;
   supportsRefresh: boolean;
@@ -280,6 +291,7 @@ export interface RefreshRequest {
   tokenUrl: string;
   refreshToken: string;
   clientId: string;
+  clientAuthMethod: ClientAuthMethod;
   clientSecret?: string;
   /** RFC 8707 resource indicator, sent when the resource server published one. */
   resource?: string;

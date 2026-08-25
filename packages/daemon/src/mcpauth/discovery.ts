@@ -16,7 +16,12 @@
  * that only ever published the OIDC document.
  */
 
-import type { AuthorizationServerMetadata, DiscoveredAuth, ProtectedResourceMetadata } from "./types.ts";
+import type {
+  AuthorizationServerMetadata,
+  ClientAuthMethod,
+  DiscoveredAuth,
+  ProtectedResourceMetadata,
+} from "./types.ts";
 
 /** RFC 9728 section 3: the path a resource server publishes its own metadata under. */
 const PROTECTED_RESOURCE_WELL_KNOWN = "/.well-known/oauth-protected-resource";
@@ -29,6 +34,7 @@ const OPENID_WELL_KNOWN = "/.well-known/openid-configuration";
 export interface RegisteredClient {
   clientId: string;
   clientSecret?: string;
+  clientAuthMethod: ClientAuthMethod;
 }
 
 /**
@@ -161,21 +167,24 @@ export async function registerClient(
       `${metadata.issuer} publishes no registration_endpoint; a client id must be supplied for this server`,
     );
   }
-
+  const advertised = metadata.token_endpoint_auth_methods_supported ?? [];
+  const requestedMethod: ClientAuthMethod = advertised.includes("none")
+    ? "none"
+    : advertised.includes("client_secret_basic") || advertised.length === 0
+      ? "client_secret_basic"
+      : advertised.includes("client_secret_post")
+        ? "client_secret_post"
+        : (() => {
+            throw new Error(`${metadata.issuer} advertises no supported token endpoint client authentication method`);
+          })();
   const body: Record<string, unknown> = {
     client_name: clientName,
     redirect_uris: [redirectUri],
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
     application_type: "native",
+    token_endpoint_auth_method: requestedMethod,
   };
-  // Only claim to be a public client when the server says it accepts one. RFC
-  // 7591's default is `client_secret_basic`, so omitting this asks for a
-  // secret, which a daemon with a vault can hold; asking for `none` where it is
-  // unsupported is a registration error, not a downgrade.
-  if (metadata.token_endpoint_auth_methods_supported?.includes("none") === true) {
-    body.token_endpoint_auth_method = "none";
-  }
 
   const response = await fetchImpl(endpoint, {
     method: "POST",
@@ -191,13 +200,35 @@ export async function registerClient(
     throw new Error(`dynamic client registration at ${endpoint} failed with ${response.status}: ${detail}`);
   }
 
-  const registered = (await response.json()) as { client_id?: unknown; client_secret?: unknown };
+  const registered = (await response.json()) as {
+    client_id?: unknown;
+    client_secret?: unknown;
+    token_endpoint_auth_method?: unknown;
+  };
   if (!isNonEmptyString(registered.client_id)) {
     throw new Error(`dynamic client registration at ${endpoint} returned no client_id`);
   }
+  const returnedMethod = registered.token_endpoint_auth_method;
+  const clientAuthMethod =
+    returnedMethod === undefined
+      ? requestedMethod
+      : returnedMethod === "client_secret_basic" || returnedMethod === "client_secret_post" || returnedMethod === "none"
+        ? returnedMethod
+        : (() => {
+            throw new Error(
+              `dynamic client registration at ${endpoint} returned an unsupported token authentication method`,
+            );
+          })();
+  const clientSecret = isNonEmptyString(registered.client_secret) ? registered.client_secret : undefined;
+  if (clientAuthMethod !== "none" && clientSecret === undefined) {
+    throw new Error(
+      `dynamic client registration at ${endpoint} chose ${clientAuthMethod} but returned no client_secret`,
+    );
+  }
   return {
     clientId: registered.client_id,
-    clientSecret: isNonEmptyString(registered.client_secret) ? registered.client_secret : undefined,
+    clientSecret,
+    clientAuthMethod,
   };
 }
 

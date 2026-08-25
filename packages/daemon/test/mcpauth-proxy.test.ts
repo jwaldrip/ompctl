@@ -741,10 +741,22 @@ describe("MCP auth proxy: when the broker cannot mint", () => {
       expect(body.id).toBe(5);
       expect(body.error?.message).toContain(state);
       expect(body.error?.message).toContain("invalid_grant: session revoked");
-      expect(body.error?.message).toContain("ompd mcp-auth login notes");
+      expect(body.error?.message).toContain(`ompd mcp-auth login '${g.resourceUrl}'`);
     }
 
     expect(up.seen).toHaveLength(0);
+  });
+
+  test("the copy-paste reauth command keeps hostile resource text inside one POSIX argument", async () => {
+    const up = upstream(() => Response.json({}));
+    const g = grant(`${up.url}?query=$(id)'`, "hostile");
+    const p = proxy({
+      broker: stubBroker([{ ok: false, state: "reauth_required", detail: "authorization expired" }]),
+      grants: stubStore(g),
+    });
+
+    const body = await readJson(await post(p.urlFor(g.id), { jsonrpc: "2.0", id: 9, method: "tools/list" }));
+    expect(body.error?.message).toContain(`ompd mcp-auth login '${up.url}?query=$(id)'"'"''`);
   });
 
   test("a broker that cannot re-mint after a 401 answers 503 rather than replaying the token that just failed", async () => {
@@ -761,7 +773,7 @@ describe("MCP auth proxy: when the broker cannot mint", () => {
 
     expect(res.status).toBe(503);
     expect(body.error?.message).toContain("reauth_required");
-    expect(body.error?.message).toContain("ompd mcp-auth login tickets");
+    expect(body.error?.message).toContain(`ompd mcp-auth login '${g.resourceUrl}'`);
     expect(up.seen).toHaveLength(1);
   });
 

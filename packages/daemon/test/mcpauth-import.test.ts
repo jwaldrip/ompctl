@@ -434,7 +434,7 @@ describe("creating the grants", () => {
     expect(store.states[0]?.detail).toContain("no OAuth client id");
   });
 
-  test("a row that already carries its own material keeps it, and still takes supportsRefresh from discovery", async () => {
+  test("a row with no recorded client method is imported as reauth_required rather than guessed from discovery", async () => {
     const f = seed([{ provider: `mcp_oauth:profile:default:${GMAIL}`, data: longData(), updatedAt: 10 }]);
     const store = stubStore();
     const run = await importGrants(planFor(readOmpCredentials(f.path)), {
@@ -458,10 +458,35 @@ describe("creating the grants", () => {
     });
     expect(store.saved[0]?.secrets.clientSecret).toBe("client-secret-longshape");
     expect(run.outcomes[0]).toMatchObject({ tokenUrlRecovered: false, clientIdKnown: true, accessExpired: false });
-    // A stored client id is enough to attempt a refresh, so nothing is forced.
-    expect(store.states).toEqual([]);
+    expect(store.states).toHaveLength(1);
+    expect(store.states[0]).toMatchObject({ state: "reauth_required" });
+    expect(store.states[0]?.detail).toContain("no OAuth client authentication method");
   });
 
+  test("preserves an OMP-recorded client auth method instead of consulting fresh metadata", async () => {
+    const f = seed([
+      {
+        provider: `mcp_oauth:profile:default:${GMAIL}`,
+        data: longData("client_secret_post"),
+        updatedAt: 10,
+      },
+    ]);
+    const store = stubStore();
+    const run = await importGrants(planFor(readOmpCredentials(f.path)), {
+      discover: async () =>
+        discovered({
+          issuer: "https://mail.vendor.test",
+          metadata: metadata({ token_endpoint_auth_methods_supported: ["client_secret_basic"] }),
+          supportsRefresh: true,
+        }),
+      grants: store.store,
+      probe: async () => false,
+    });
+    if (!run.ok) throw new Error("expected the import to run");
+
+    expect(store.saved[0]?.clientAuthMethod).toBe("client_secret_post");
+    expect(store.states).toEqual([]);
+  });
   test("neither the row nor discovery naming a token endpoint fails that grant only", async () => {
     const f = seed([
       { provider: `mcp_oauth:profile:default:${notes}`, data: shortData(), updatedAt: 10 },
@@ -600,7 +625,7 @@ function shortData(): Record<string, unknown> {
 }
 
 /** The shape that carries its own refresh material, which is why those rows still work. */
-function longData(): Record<string, unknown> {
+function longData(clientAuthMethod?: "client_secret_basic" | "client_secret_post" | "none"): Record<string, unknown> {
   return {
     access: "access-secret-longshape",
     refresh: "refresh-secret-longshape",
@@ -608,6 +633,7 @@ function longData(): Record<string, unknown> {
     tokenUrl: "https://mail.vendor.test/oauth/token",
     clientId: "client-abc",
     clientSecret: "client-secret-longshape",
+    ...(clientAuthMethod === undefined ? {} : { clientAuthMethod }),
     resource: GMAIL,
     authorizationUrl: "https://mail.vendor.test/oauth/authorize",
     scope: "read write",

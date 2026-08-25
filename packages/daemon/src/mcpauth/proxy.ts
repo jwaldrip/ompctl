@@ -249,6 +249,11 @@ function authorizationHeader(token: { accessToken: string; tokenType: string }):
   return `${scheme} ${token.accessToken}`;
 }
 
+/** Render one untrusted string as exactly one POSIX shell argument for copy-paste guidance. */
+function shellArgument(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
 export function startMcpAuthProxy(opts: McpAuthProxyOptions): McpAuthProxy {
   const host = opts.host ?? "127.0.0.1";
   if (LOOPBACK_HOSTS[host] !== true) {
@@ -299,7 +304,7 @@ export function startMcpAuthProxy(opts: McpAuthProxyOptions): McpAuthProxy {
       id,
       CODE_BROKER,
       `MCP auth for "${grant.serverName}" is ${result.state}${because}. ` +
-        `Run \`ompd mcp-auth login ${grant.serverName}\` to re-authorize it.`,
+        `Run \`ompd mcp-auth login ${shellArgument(grant.resourceUrl)}\` to re-authorize it.`,
       503,
     );
   }

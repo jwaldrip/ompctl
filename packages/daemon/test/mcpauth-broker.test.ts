@@ -72,6 +72,7 @@ class MemoryGrantStore implements GrantStore {
       authorizationUrl: input.authorizationUrl,
       registrationUrl: input.registrationUrl,
       clientId: input.clientId,
+      ...(input.clientAuthMethod === undefined ? {} : { clientAuthMethod: input.clientAuthMethod }),
       scopes: input.scopes,
       account: input.account,
       // A fresh authorization keeps nothing from a previous row, which is
@@ -178,7 +179,7 @@ function harness(
     // The real client, over real HTTP, against the fake. Half of what these
     // tests assert is the classification of a 503 versus an `invalid_grant`,
     // and stubbing the client would assert that against itself.
-    tokens: new HttpTokenEndpointClient({ authMethod: opts.authMethod }),
+    tokens: new HttpTokenEndpointClient(),
     clock,
     onLog: line => {
       logs.push(line);
@@ -211,6 +212,7 @@ function harness(
         tokenUrl: `${fake.issuer}/token`,
         authorizationUrl: `${fake.issuer}/authorize`,
         clientId: "client_test",
+        clientAuthMethod: opts.authMethod ?? "none",
         scopes: "mcp offline_access",
         supportsRefresh: true,
         secrets: { refreshToken },
@@ -285,7 +287,10 @@ describe("McpAuthBroker: minting and caching", () => {
   test("sends a client secret in the body, and never anywhere it could be read", async () => {
     const h = harness();
     const secret = "client-secret-worth-stealing";
-    const id = h.grant("", { secrets: { refreshToken: h.fake.issueGrant().refreshToken, clientSecret: secret } });
+    const id = h.grant("", {
+      clientAuthMethod: "client_secret_post",
+      secrets: { refreshToken: h.fake.issueGrant().refreshToken, clientSecret: secret },
+    });
 
     expect((await h.broker.accessTokenFor(id)).ok).toBe(true);
     expect(h.fake.refreshRequests[0]?.clientSecretInBody).toBe(true);
@@ -307,16 +312,46 @@ describe("McpAuthBroker: minting and caching", () => {
     expect(h.logs.join("\n")).not.toContain(secret);
   });
 
-  test("picks the client authentication method from the server's own metadata", () => {
+  test("form-encodes every Basic credential component before base64", async () => {
+    let authorization = "";
+    const fetchImpl = (async (_url, init) => {
+      authorization = new Headers(init?.headers).get("authorization") ?? "";
+      return Response.json({ access_token: "access", expires_in: 60 });
+    }) as typeof fetch;
+    const client = new HttpTokenEndpointClient({ fetchImpl });
+
+    await client.refresh({
+      tokenUrl: "https://issuer.example.test/token",
+      refreshToken: "refresh",
+      clientId: "id with space!'()*",
+      clientSecret: "secret with space!'()*",
+      clientAuthMethod: "client_secret_basic",
+    });
+    const encoded = Buffer.from("id+with+space%21%27%28%29*:secret+with+space%21%27%28%29*", "utf8").toString("base64");
+    expect(authorization).toBe(`Basic ${encoded}`);
+  });
+  test("refuses to infer a pre-registered client method from ambiguous metadata", () => {
     const both = { token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"] };
     const postOnly = { token_endpoint_auth_methods_supported: ["client_secret_post"] };
-    // A public client has nothing to prove, whatever the server accepts.
-    expect(pickClientAuthMethod(both, false)).toBe("none");
-    expect(pickClientAuthMethod(both, true)).toBe("client_secret_basic");
+    const publicOnly = { token_endpoint_auth_methods_supported: ["none"] };
+
+    expect(pickClientAuthMethod(publicOnly, false)).toBe("none");
     expect(pickClientAuthMethod(postOnly, true)).toBe("client_secret_post");
-    // Silence is not consent to Basic: a server that published nothing gets the
-    // form it is least likely to reject outright.
-    expect(pickClientAuthMethod({}, true)).toBe("client_secret_post");
+    expect(() => pickClientAuthMethod(both, true)).toThrow(/ambiguous/);
+    expect(() => pickClientAuthMethod(both, false)).toThrow(/does not advertise public/);
+    expect(() => pickClientAuthMethod({}, true)).toThrow(/ambiguous or unsupported/);
+  });
+
+  test("uses none for a public client and fails closed when the persisted method is wrong", async () => {
+    const publicClient = harness({ server: { requiredTokenAuthMethod: "none" } });
+    const publicId = publicClient.grant(publicClient.fake.issueGrant().refreshToken);
+    expect((await publicClient.broker.accessTokenFor(publicId)).ok).toBe(true);
+    expect(publicClient.fake.refreshRequests[0]).toMatchObject({ basicAuth: false, clientSecretInBody: false });
+
+    const wrongMethod = harness({ server: { requiredTokenAuthMethod: "client_secret_basic" } });
+    const wrongId = wrongMethod.grant(wrongMethod.fake.issueGrant().refreshToken);
+    expect(await wrongMethod.broker.accessTokenFor(wrongId)).toMatchObject({ ok: false, state: "reauth_required" });
+    expect(wrongMethod.fake.tokenRequests).toHaveLength(1);
   });
 });
 
@@ -558,6 +593,21 @@ describe("McpAuthBroker: grants nothing can renew", () => {
     expect(h.fake.tokenRequests).toHaveLength(0);
   });
 
+  test("serves the login bearer for an unrenewable grant without writing it anywhere", async () => {
+    const h = harness();
+    const id = h.grant("", { secrets: {}, supportsRefresh: false });
+    const access = "access-from-login-only";
+
+    h.broker.acceptInitialAccessToken(id, {
+      accessToken: access,
+      tokenType: "Bearer",
+      expiresAt: h.clock.now() + TOKEN_LIFETIME_MS,
+    });
+
+    expect(await h.broker.accessTokenFor(id)).toEqual({ ok: true, accessToken: access, tokenType: "Bearer" });
+    expect(h.fake.tokenRequests).toHaveLength(0);
+    expect(JSON.stringify(h.broker.summaries())).not.toContain(access);
+  });
   test("an unknown grant id is refused without a network call", async () => {
     const h = harness();
     const result = await h.broker.accessTokenFor("mcpauth_deadbeefdeadbeef");

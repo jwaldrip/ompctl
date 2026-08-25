@@ -76,6 +76,10 @@ export interface FakeAuthorizationServerOptions {
   requireOfflineAccessForRefresh?: boolean;
   accessTokenLifetimeSeconds?: number;
   scopesSupported?: string[];
+  /** Reject token exchanges that use a different registered client-auth method. */
+  requiredTokenAuthMethod?: "client_secret_basic" | "client_secret_post" | "none";
+  /** Values published as `token_endpoint_auth_methods_supported`. */
+  tokenEndpointAuthMethods?: Array<"client_secret_basic" | "client_secret_post" | "none">;
 }
 
 /** The state of one refresh token, as the server sees it. */
@@ -135,6 +139,8 @@ export class FakeAuthorizationServer {
   codeChallengeMethods = ["S256"];
   accessTokenLifetimeSeconds: number;
   /** Answer without `expires_in`, which RFC 6749 permits and which forces the client to assume. */
+  requiredTokenAuthMethod: "client_secret_basic" | "client_secret_post" | "none" | undefined;
+  tokenEndpointAuthMethods: Array<"client_secret_basic" | "client_secret_post" | "none">;
   omitExpiresIn = false;
   scopesSupported: string[];
   protectedResourceDocuments: Set<ProtectedResourceShape>;
@@ -154,6 +160,12 @@ export class FakeAuthorizationServer {
     this.advertiseRefreshGrant = opts.advertiseRefreshGrant ?? true;
     this.rotateRefreshTokens = opts.rotateRefreshTokens ?? true;
     this.requireOfflineAccessForRefresh = opts.requireOfflineAccessForRefresh ?? true;
+    this.tokenEndpointAuthMethods = opts.tokenEndpointAuthMethods ?? [
+      "none",
+      "client_secret_post",
+      "client_secret_basic",
+    ];
+    this.requiredTokenAuthMethod = opts.requiredTokenAuthMethod;
     this.accessTokenLifetimeSeconds = opts.accessTokenLifetimeSeconds ?? 3600;
     this.scopesSupported = opts.scopesSupported ?? ["mcp", "offline_access"];
     this.protectedResourceDocuments = new Set(opts.protectedResourceDocuments ?? ["path"]);
@@ -259,8 +271,8 @@ export class FakeAuthorizationServer {
         ? ["authorization_code", "refresh_token"]
         : ["authorization_code"],
       scopes_supported: this.scopesSupported,
+      token_endpoint_auth_methods_supported: this.tokenEndpointAuthMethods,
       code_challenge_methods_supported: this.codeChallengeMethods,
-      token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
     };
     if (this.asDocumentsWithoutTokenEndpoint.has(shape)) delete document.token_endpoint;
     return document;
@@ -268,13 +280,20 @@ export class FakeAuthorizationServer {
 
   async #register(request: Request): Promise<Response> {
     this.registrations += 1;
-    const body = (await request.json()) as { redirect_uris?: unknown };
+    const body = (await request.json()) as { redirect_uris?: unknown; token_endpoint_auth_method?: unknown };
     const redirects = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
     if (redirects.length === 0) return json(400, { error: "invalid_redirect_uri" });
+    const method = body.token_endpoint_auth_method;
+    if (method !== "none" && method !== "client_secret_basic" && method !== "client_secret_post") {
+      return json(400, { error: "invalid_client_metadata" });
+    }
+    const clientId = `client_${++this.#seq}`;
     return json(201, {
-      client_id: `client_${++this.#seq}`,
+      client_id: clientId,
       client_id_issued_at: 0,
       redirect_uris: redirects,
+      token_endpoint_auth_method: method,
+      ...(method === "none" ? {} : { client_secret: `secret_${clientId}` }),
     });
   }
 
@@ -329,6 +348,15 @@ export class FakeAuthorizationServer {
       clientSecretInBody: form.get("client_secret") !== null,
       basicAuth: request.headers.get("authorization")?.startsWith("Basic ") === true,
     });
+
+    const actualAuthMethod = request.headers.get("authorization")?.startsWith("Basic ")
+      ? "client_secret_basic"
+      : form.has("client_secret")
+        ? "client_secret_post"
+        : "none";
+    if (this.requiredTokenAuthMethod !== undefined && actualAuthMethod !== this.requiredTokenAuthMethod) {
+      return json(401, { error: "invalid_client", error_description: "wrong token endpoint authentication method" });
+    }
 
     if (this.outageResponses > 0) {
       this.outageResponses -= 1;

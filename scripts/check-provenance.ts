@@ -1,5 +1,5 @@
 /**
- * Prove no private identifier is reachable from any ref in this repository.
+ * Prove no private identifier is introduced by the checked-out branch.
  *
  * This exists because the obvious one-liner is unsafe at scale:
  *
@@ -359,6 +359,6 @@ if (unexpected.length > 0) {
 
 console.log(
   baseline.size > 0
-    ? "\nProvenance holds: no NEW private identifier is reachable; only the acknowledged history remains."
-    : "\nProvenance clean: no private identifier is reachable from any ref.",
+    ? "\nProvenance holds: no new private identifier was found in this branch; acknowledged history is unchanged."
+    : "\nProvenance clean: no private identifier was found in this branch.",
 );

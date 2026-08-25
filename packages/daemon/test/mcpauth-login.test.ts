@@ -174,6 +174,32 @@ describe("discovery: dynamic client registration", () => {
     expect(fake.registrations).toBe(1);
   });
 
+  test("records the exact DCR client method: none only when advertised, then Basic or post", async () => {
+    const publicServer = serve({ tokenEndpointAuthMethods: ["none", "client_secret_basic"] });
+    const basicServer = serve({ tokenEndpointAuthMethods: ["client_secret_basic"] });
+    const postServer = serve({ tokenEndpointAuthMethods: ["client_secret_post"] });
+
+    expect(
+      (
+        await registerClient(
+          (
+            await discoverAuth(publicServer.mcpUrl)
+          ).metadata,
+          "http://127.0.0.1:1/callback",
+          "public",
+        )
+      ).clientAuthMethod,
+    ).toBe("none");
+    expect(
+      (await registerClient((await discoverAuth(basicServer.mcpUrl)).metadata, "http://127.0.0.1:1/callback", "basic"))
+        .clientAuthMethod,
+    ).toBe("client_secret_basic");
+    expect(
+      (await registerClient((await discoverAuth(postServer.mcpUrl)).metadata, "http://127.0.0.1:1/callback", "post"))
+        .clientAuthMethod,
+    ).toBe("client_secret_post");
+  });
+
   test("says so plainly when the server publishes no registration endpoint", async () => {
     const fake = serve();
     const auth = await discoverAuth(fake.mcpUrl);
@@ -249,13 +275,16 @@ describe("beginLogin: the browser round trip", () => {
     expect(fake.tokenRequests[0]?.redirectUri).toBe(started.redirectUri);
   });
 
-  test("uses a supplied client instead of registering one", async () => {
+  test("uses a supplied client only with its recorded registered method", async () => {
     const fake = serve();
-    const started = await login(fake, { clientId: "client_preregistered" });
+    const started = await login(fake, { clientId: "client_preregistered", clientAuthMethod: "none" });
     await walkBrowser(started.authorizationUrl);
 
     expect((await started.completed).clientId).toBe("client_preregistered");
     expect(fake.registrations).toBe(0);
+    await expect(
+      beginLogin({ resourceUrl: fake.mcpUrl, serverName: "fake", clientId: "unknown-method" }),
+    ).rejects.toThrow(/requires its recorded clientAuthMethod/);
   });
 
   test("answers exactly one callback, then stops accepting connections", async () => {
@@ -337,6 +366,8 @@ describe("beginLogin: honesty about what the provider gave us", () => {
     const grant = await started.completed;
     expect(grant.secrets.refreshToken).toBeUndefined();
     expect(grant.supportsRefresh).toBe(false);
+    expect(grant.initialAccessToken.accessToken).toBe(fake.lastAccessToken);
+    expect(grant.initialAccessToken.expiresAt).toBeGreaterThan(Date.now());
   });
 
   test("does not ask for offline_access a server never advertised, and reports the consequence", async () => {

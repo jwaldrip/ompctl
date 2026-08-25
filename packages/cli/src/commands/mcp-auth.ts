@@ -70,7 +70,7 @@ function remedy(grant: McpAuthSummary): string {
     case "degraded":
       return `retrying${grant.nextAttemptAt === undefined ? "" : ` at ${grant.nextAttemptAt}`}`;
     case "reauth_required":
-      return `ompd mcp-auth login ${grant.resourceUrl}`;
+      return "run `ompd mcp-auth login` with this row's RESOURCE URL";
     case "no_refresh_grant":
       return "provider issues no refresh token; nothing can renew this unattended";
   }

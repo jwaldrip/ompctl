@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS mcp_auth_grants (
   authorization_url TEXT,
   registration_url TEXT,
   client_id TEXT NOT NULL,
+  client_auth_method TEXT,
   scopes TEXT NOT NULL,
   account TEXT,
   state TEXT NOT NULL,
@@ -68,8 +69,8 @@ CREATE TABLE IF NOT EXISTS mcp_auth_grants (
  * by construction rather than by each call site remembering to leave it out.
  */
 const RECORD_COLUMNS = `id, server_name, resource_url, issuer, token_url, authorization_url, registration_url,
-  client_id, scopes, account, state, detail, supports_refresh, failures, next_attempt_at, last_refresh_at,
-  created_at, updated_at`;
+  client_id, client_auth_method, scopes, account, state, detail, supports_refresh, failures, next_attempt_at,
+  last_refresh_at, created_at, updated_at`;
 
 interface GrantRow {
   id: string;
@@ -80,6 +81,7 @@ interface GrantRow {
   authorization_url: string | null;
   registration_url: string | null;
   client_id: string;
+  client_auth_method: "client_secret_basic" | "client_secret_post" | "none" | null;
   scopes: string;
   account: string | null;
   state: string;
@@ -99,6 +101,23 @@ export class McpAuthStore implements GrantStore {
   constructor(path: string, vault: SecretVault) {
     this.#db = new Database(path, { create: true });
     this.#db.run(SCHEMA);
+    const columns = this.#db.query("PRAGMA table_info(mcp_auth_grants)").all() as Array<{ name: string }>;
+    if (!columns.some(column => column.name === "client_auth_method")) {
+      // A pre-release broker database cannot tell us the registered method.
+      // Leave it null: the broker turns that into reauthorization-required
+      // rather than substituting a method from current metadata.
+      this.#db.run("ALTER TABLE mcp_auth_grants ADD COLUMN client_auth_method TEXT");
+    }
+    this.#db
+      .query(
+        `UPDATE mcp_auth_grants
+         SET state='reauth_required',
+             detail='OAuth client authentication method was not recorded by this broker version; reauthorize to establish one',
+             next_attempt_at=NULL,
+             updated_at=?
+         WHERE client_auth_method IS NULL`,
+      )
+      .run(new Date().toISOString());
     this.#vault = vault;
   }
 
@@ -155,8 +174,14 @@ export class McpAuthStore implements GrantStore {
       issuer: input.issuer,
       tokenUrl: input.tokenUrl,
       clientId: input.clientId,
+      ...(input.clientAuthMethod === undefined ? {} : { clientAuthMethod: input.clientAuthMethod }),
       scopes: input.scopes,
-      state: input.secrets.refreshToken === undefined ? "no_refresh_grant" : "healthy",
+      state:
+        input.clientAuthMethod === undefined
+          ? "reauth_required"
+          : input.secrets.refreshToken === undefined
+            ? "no_refresh_grant"
+            : "healthy",
       supportsRefresh: input.supportsRefresh,
       failures: 0,
       createdAt: now,
@@ -170,9 +195,9 @@ export class McpAuthStore implements GrantStore {
       .query(
         `INSERT OR REPLACE INTO mcp_auth_grants
            (id, server_name, resource_url, issuer, token_url, authorization_url, registration_url,
-            client_id, scopes, account, state, detail, supports_refresh, failures, next_attempt_at,
+            client_id, client_auth_method, scopes, account, state, detail, supports_refresh, failures, next_attempt_at,
             last_refresh_at, created_at, updated_at, secret_blob)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,0,NULL,NULL,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,0,NULL,NULL,?,?,?)`,
       )
       .run(
         record.id,
@@ -183,6 +208,7 @@ export class McpAuthStore implements GrantStore {
         record.authorizationUrl ?? null,
         record.registrationUrl ?? null,
         record.clientId,
+        record.clientAuthMethod ?? null,
         record.scopes,
         record.account ?? null,
         record.state,
@@ -293,6 +319,7 @@ function rowToRecord(row: GrantRow): GrantRecord {
     updatedAt: row.updated_at,
   };
   if (row.authorization_url !== null) record.authorizationUrl = row.authorization_url;
+  if (row.client_auth_method !== null) record.clientAuthMethod = row.client_auth_method;
   if (row.registration_url !== null) record.registrationUrl = row.registration_url;
   if (row.account !== null) record.account = row.account;
   if (row.detail !== null) record.detail = row.detail;

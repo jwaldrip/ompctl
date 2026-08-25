@@ -182,6 +182,24 @@ export class McpAuthBrokerImpl implements McpAuthBroker {
     this.#skew.delete(id);
   }
 
+  /**
+   * Accept the bearer returned by a successful authorization-code exchange.
+   *
+   * It never enters the grant store. A provider that did not issue refresh
+   * material can still serve this daemon until this bearer expires, but a
+   * restart has no bearer to restore and remains truthfully `no_refresh_grant`.
+   */
+  acceptInitialAccessToken(id: string, token: MintedAccessToken): void {
+    this.#access.set(id, token);
+    this.#skew.set(id, this.#jittered(this.#skewMs));
+  }
+
+  /** Whether this process still has a bearer that can serve before its refresh window. */
+  hasUsableAccessToken(id: string): boolean {
+    const token = this.#access.get(id);
+    return token !== undefined && this.#clock.now() + this.#skewFor(id) < token.expiresAt;
+  }
+
   summaries(): McpAuthSummary[] {
     return this.#grants.list().map(grant => {
       const token = this.#access.get(grant.id);
@@ -323,12 +341,34 @@ export class McpAuthBrokerImpl implements McpAuthBroker {
       return { kind: "definitive", reason };
     }
 
+    const clientAuthMethod = grant.clientAuthMethod;
+    if (clientAuthMethod === undefined) {
+      const reason =
+        "no OAuth client authentication method is recorded for this grant, so its refresh token cannot be redeemed";
+      this.invalidate(id);
+      this.#grants.setState(id, "reauth_required", reason);
+      this.#log(`${id}: ${reason}`);
+      return { kind: "definitive", reason };
+    }
+
+    if (
+      clientAuthMethod !== "none" &&
+      (grant.secrets.clientSecret === undefined || grant.secrets.clientSecret === "")
+    ) {
+      const reason = `OAuth client authentication method ${clientAuthMethod} requires a client secret that is not recorded`;
+      this.invalidate(id);
+      this.#grants.setState(id, "reauth_required", reason);
+      this.#log(`${id}: ${reason}`);
+      return { kind: "definitive", reason };
+    }
+
     this.#grants.setState(id, "refreshing");
     try {
       const response = await this.#tokens.refresh({
         tokenUrl: grant.tokenUrl,
         refreshToken,
         clientId: grant.clientId,
+        clientAuthMethod,
         clientSecret: grant.secrets.clientSecret,
         // RFC 8707. The stored resource URL is the indicator the tokens were
         // bound to at authorization; renewing without it can hand back a token

@@ -62,10 +62,12 @@ const PROVIDER_PATTERN = /^mcp_oauth:profile:(?<profile>[^:]+):(?<url>.+)$/;
  */
 const MILLISECOND_FLOOR = 1e11;
 
-/** The two values on a credential row worth stealing, kept apart from everything else. */
+/** The credential material OMP may have retained, kept non-enumerable on its row. */
 export interface OmpCredentialSecrets {
   refreshToken?: string;
   clientSecret?: string;
+  /** OMP's recorded registered client method. Never inferred from current metadata. */
+  clientAuthMethod?: "client_secret_basic" | "client_secret_post" | "none";
 }
 
 /**
@@ -350,6 +352,9 @@ export async function importGrants(plan: ImportPlan, deps: ImportDeps): Promise<
     const authorizationUrl = row.authorizationUrl ?? discovered.metadata.authorization_endpoint;
     const registrationUrl = discovered.metadata.registration_endpoint;
     const grantId = deriveGrantId(row.resourceUrl, account);
+    const clientIdKnown = row.clientId !== undefined && row.clientId.length > 0;
+    const clientAuthMethod = row.secrets.clientAuthMethod;
+    const clientAuthMethodKnown = clientAuthMethod !== undefined;
     deps.grants.save({
       id: grantId,
       serverName,
@@ -359,6 +364,7 @@ export async function importGrants(plan: ImportPlan, deps: ImportDeps): Promise<
       ...(authorizationUrl !== undefined ? { authorizationUrl } : {}),
       ...(registrationUrl !== undefined ? { registrationUrl } : {}),
       clientId: row.clientId ?? "",
+      ...(clientAuthMethod !== undefined ? { clientAuthMethod } : {}),
       scopes: row.scope ?? "",
       ...(account !== undefined ? { account } : {}),
       supportsRefresh: discovered.supportsRefresh,
@@ -368,18 +374,17 @@ export async function importGrants(plan: ImportPlan, deps: ImportDeps): Promise<
       },
     });
 
-    const clientIdKnown = row.clientId !== undefined && row.clientId.length > 0;
     if (!clientIdKnown) {
-      // A refresh token belongs to the client it was issued to, and a public
-      // client's refresh request carries that client id. Discovery can hand back
-      // the token endpoint but nothing can hand back a client id OMP never
-      // stored, so this grant is imported with its metadata recovered and its
-      // health stated honestly rather than reported as healthy and failing at
-      // the first refresh.
       deps.grants.setState(
         grantId,
         "reauth_required",
         "OMP stored no OAuth client id for this credential, so its refresh token cannot be redeemed; reauthorize to establish one",
+      );
+    } else if (!clientAuthMethodKnown) {
+      deps.grants.setState(
+        grantId,
+        "reauth_required",
+        "OMP stored no OAuth client authentication method for this credential; reauthorize to establish one",
       );
     }
 
@@ -503,6 +508,7 @@ function parseCredentialRow(raw: unknown): OmpCredentialRow[] {
   const clientId = stringField(data.clientId);
   const resource = stringField(data.resource);
   const authorizationUrl = stringField(data.authorizationUrl);
+  const clientAuthMethod = clientAuthMethodField(data.clientAuthMethod);
   const scope = stringField(data.scope);
   const expires = Number(data.expires);
   const expiresAt = Number.isFinite(expires)
@@ -528,6 +534,7 @@ function parseCredentialRow(raw: unknown): OmpCredentialRow[] {
       {
         ...(refreshToken !== undefined ? { refreshToken } : {}),
         ...(clientSecret !== undefined ? { clientSecret } : {}),
+        ...(clientAuthMethod !== undefined ? { clientAuthMethod } : {}),
       },
     ),
   ];
@@ -545,6 +552,10 @@ function withSecrets(row: Omit<OmpCredentialRow, "secrets">, secrets: OmpCredent
 
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function clientAuthMethodField(value: unknown): OmpCredentialSecrets["clientAuthMethod"] {
+  return value === "client_secret_basic" || value === "client_secret_post" || value === "none" ? value : undefined;
 }
 
 function skip(row: OmpCredentialRow, reason: string): SkippedRow {

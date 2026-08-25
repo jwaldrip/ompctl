@@ -79,6 +79,7 @@ function grantInput(serverName: string, resourceUrl: string, secrets: GrantSecre
     authorizationUrl: "https://auth.example.test/authorize",
     registrationUrl: "https://auth.example.test/register",
     clientId: "client-abc",
+    clientAuthMethod: "none",
     scopes: "mcp:read mcp:write",
     supportsRefresh: true,
     secrets,
@@ -389,8 +390,13 @@ describe("surviving a restart", () => {
     // The daemon restarts on every upgrade. A store that lost grants across one
     // would send an operator to a browser for each server, every time.
     const { path, vault, store } = fresh();
+    const notes = grantInput("notes", "https://notes.example.test/mcp", {
+      refreshToken: "rt_notes",
+      clientSecret: "cs_notes",
+    });
+    notes.clientAuthMethod = "client_secret_basic";
     const inputs = [
-      grantInput("notes", "https://notes.example.test/mcp", { refreshToken: "rt_notes", clientSecret: "cs_notes" }),
+      notes,
       grantInput("docs", "https://docs.example.test/mcp", { refreshToken: "rt_docs" }),
       grantInput("clerk", "https://clerk.example.test/mcp", {}),
     ];
@@ -414,5 +420,27 @@ describe("surviving a restart", () => {
     expect(docs?.authorizationUrl).toBe("https://auth.example.test/authorize");
     expect(docs?.registrationUrl).toBe("https://auth.example.test/register");
     expect(docs?.supportsRefresh).toBe(true);
+    expect(reopened.get(notes.id)?.clientAuthMethod).toBe("client_secret_basic");
+  });
+
+  test("a legacy row with no recorded auth method is reauth_required before apply can see it", () => {
+    const { path, vault, store } = fresh();
+    const input = grantInput("legacy", "https://legacy.example.test/mcp", { refreshToken: "rt_legacy" });
+    store.save(input);
+    store.close();
+    stores.pop();
+
+    const raw = new Database(path);
+    raw.run(
+      `UPDATE mcp_auth_grants
+       SET client_auth_method=NULL, state='healthy', detail=NULL
+       WHERE id=?`,
+      [input.id],
+    );
+    raw.close();
+
+    const reopened = reopen(path, vault);
+    expect(reopened.get(input.id)).toMatchObject({ state: "reauth_required" });
+    expect(reopened.get(input.id)?.detail).toContain("not recorded");
   });
 });

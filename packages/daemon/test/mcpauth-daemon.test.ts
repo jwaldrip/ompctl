@@ -15,11 +15,13 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpAuthStatus } from "@ompd/core";
 import { Ompd } from "../src/daemon.ts";
+import { McpAuthSubsystem } from "../src/mcpauth/index.ts";
+import { applyBrokeredServers, readOmpMcpConfig } from "../src/mcpauth/omp-config.ts";
 import { MCP_AUTH_HEADER } from "../src/mcpauth/proxy.ts";
 import { McpAuthStore } from "../src/mcpauth/store.ts";
 import { openVault } from "../src/mcpauth/vault.ts";
@@ -155,6 +157,7 @@ describe("the composed broker", () => {
       issuer: "http://127.0.0.1/issuer",
       tokenUrl: token.url,
       clientId: "client-fixture",
+      clientAuthMethod: "none",
       scopes: "mcp:tools",
       supportsRefresh: true,
       secrets: { refreshToken: refresh },
@@ -212,6 +215,7 @@ describe("the composed broker", () => {
       issuer: "http://127.0.0.1/issuer",
       tokenUrl: token.url,
       clientId: "client-fixture",
+      clientAuthMethod: "none",
       scopes: "mcp:tools",
       supportsRefresh: true,
       secrets: { refreshToken: refresh },
@@ -269,6 +273,68 @@ describe("the composed broker", () => {
     expect(body.endpoint).toBeUndefined();
     expect(body.listenError).toContain(String(port));
     expect(await (await fetch(`http://127.0.0.1:${port}/`)).text()).toBe("not the broker");
+  });
+
+  test("forget restores an applied original MCP definition before removing its grant", () => {
+    const home = tempDir("ompd-mcpauth-forget-");
+    const configPath = join(home, "omp", "agent", "mcp.json");
+    const ownershipPath = join(home, "mcp-auth-config.json");
+    const callerTokenPath = join(home, "mcp-auth.token");
+    mkdirSync(join(home, "omp", "agent"), { recursive: true });
+    writeFileSync(
+      configPath,
+      `${JSON.stringify({ mcpServers: { fixture: { type: "http", url: "https://mcp.example.test/mcp" } } }, null, 2)}\n`,
+    );
+    writeFileSync(callerTokenPath, "test-loopback-token\n", { mode: 0o600 });
+
+    const seeded = new McpAuthStore(join(home, "mcp-auth.db"), openVault(home, { backend: "file" }));
+    const grant = seeded.save({
+      id: "mcpauth_forget00000001",
+      serverName: "fixture",
+      resourceUrl: "https://mcp.example.test/mcp",
+      issuer: "https://issuer.example.test",
+      tokenUrl: "https://issuer.example.test/token",
+      clientId: "fixture-client",
+      clientAuthMethod: "none",
+      scopes: "mcp",
+      supportsRefresh: true,
+      secrets: { refreshToken: "fixture-refresh-token" },
+    });
+    seeded.close();
+
+    const { token } = readOmpMcpConfig(configPath);
+    applyBrokeredServers(
+      configPath,
+      [
+        {
+          brokerName: "fixture-ompd",
+          originalName: "fixture",
+          grantId: grant.id,
+          port: 7778,
+          tokenPath: callerTokenPath,
+        },
+      ],
+      token,
+      { ownershipPath },
+    );
+
+    const subsystem = new McpAuthSubsystem({
+      home,
+      port: 0,
+      ompConfigPath: configPath,
+      ompAgentDbPath: join(home, "omp", "agent", "agent.db"),
+      vaultBackend: "file",
+      cwd: home,
+    });
+    try {
+      expect(subsystem.forget(grant.id)).toBe(true);
+      const after = readOmpMcpConfig(configPath).doc;
+      expect(after.mcpServers?.fixture).toEqual({ type: "http", url: "https://mcp.example.test/mcp" });
+      expect(after.mcpServers?.["fixture-ompd"]).toBeUndefined();
+      expect(after.disabledServers).toEqual([]);
+    } finally {
+      subsystem.stop();
+    }
   });
 
   test("the loopback caller credential survives a restart, because MCP config references it by path", async () => {

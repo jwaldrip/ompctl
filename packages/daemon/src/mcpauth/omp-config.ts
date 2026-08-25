@@ -361,9 +361,14 @@ export function removeBrokeredServers(
   }
   const nextDisabled = disabled.filter(name => !released.has(name));
 
-  writeOwnership(ownPath, nextOwned);
   const next = mergeDoc(fresh.doc, servers, nextDisabled);
-  return { written: true, token: writeConfig(path, next), removed, skipped };
+  const nextToken = writeConfig(path, next);
+  // The config must become safe before the ownership record disappears. If
+  // this write fails, the old record remains and a retry still knows exactly
+  // which entry to restore; the caller then keeps the grant instead of
+  // deleting the only repair handle.
+  writeOwnership(ownPath, nextOwned);
+  return { written: true, token: nextToken, removed, skipped };
 }
 
 /** What ompd currently claims to have written. */

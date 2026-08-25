@@ -22,6 +22,7 @@
 
 import {
   type AuthorizationServerMetadata,
+  type ClientAuthMethod,
   DEFINITIVE_OAUTH_ERRORS,
   type MintedAccessToken,
   type RefreshOutcome,
@@ -31,15 +32,7 @@ import {
   type TokenResponse,
 } from "./types.ts";
 
-/**
- * How the client proves who it is at the token endpoint.
- *
- * Taken as an argument rather than sniffed per request: the authorization
- * server publishes what it accepts once, at discovery, and a client that
- * re-guesses on every refresh is a client whose behaviour changes when a
- * provider edits its metadata.
- */
-export type ClientAuthMethod = "client_secret_basic" | "client_secret_post" | "none";
+export type { ClientAuthMethod } from "./types.ts";
 
 /**
  * A token whose lifetime the provider did not state expires in five minutes as
@@ -65,18 +58,34 @@ const MAX_ERROR_DETAIL = 200;
  */
 const MIN_SCRUBBABLE_SECRET = 8;
 
-/** Which client authentication method to use, from what the server said it accepts. */
+/**
+ * Validate a method recorded for a pre-registered client.
+ *
+ * Discovery advertises what an authorization server accepts, not the method an
+ * existing client was registered with. A fresh DCR flow chooses and records its
+ * own method in `registerClient`; this helper refuses when an existing client
+ * would require an inference.
+ */
 export function pickClientAuthMethod(
   metadata: Pick<AuthorizationServerMetadata, "token_endpoint_auth_methods_supported">,
   hasSecret: boolean,
 ): ClientAuthMethod {
-  if (!hasSecret) return "none";
-  // RFC 6749 section 2.3.1 requires servers to support Basic and only permits
-  // them to support the body form, so Basic is preferred where it is advertised
-  // and the body is the fallback for the servers that only take that.
-  return metadata.token_endpoint_auth_methods_supported?.includes("client_secret_basic") === true
-    ? "client_secret_basic"
-    : "client_secret_post";
+  const methods = metadata.token_endpoint_auth_methods_supported ?? [];
+  if (!hasSecret) {
+    if (methods.includes("none")) return "none";
+    throw new Error(
+      "the OAuth client has no secret and the authorization server does not advertise public client authentication",
+    );
+  }
+  const confidential = methods.filter(
+    (method): method is "client_secret_basic" | "client_secret_post" =>
+      method === "client_secret_basic" || method === "client_secret_post",
+  );
+  const method = confidential[0];
+  if (confidential.length === 1 && method !== undefined) return method;
+  throw new Error(
+    "the OAuth client authentication method is ambiguous or unsupported; use the method recorded at registration",
+  );
 }
 
 /**
@@ -117,11 +126,9 @@ export function toRefreshOutcome(response: TokenResponse, now: number): RefreshO
 
 /** The real thing. Every test in this subsystem replaces it with a `TokenEndpointClient` of its own. */
 export class HttpTokenEndpointClient implements TokenEndpointClient {
-  readonly #authMethod: ClientAuthMethod;
   readonly #fetch: typeof fetch;
 
-  constructor(opts: { authMethod?: ClientAuthMethod; fetchImpl?: typeof fetch } = {}) {
-    this.#authMethod = opts.authMethod ?? "client_secret_post";
+  constructor(opts: { fetchImpl?: typeof fetch } = {}) {
     this.#fetch = opts.fetchImpl ?? fetch;
   }
 
@@ -142,7 +149,7 @@ export class HttpTokenEndpointClient implements TokenEndpointClient {
       form,
       clientId: input.clientId,
       clientSecret: input.clientSecret,
-      authMethod: this.#authMethod,
+      authMethod: input.clientAuthMethod,
       fetchImpl: this.#fetch,
       signal: input.signal,
       secrets: [input.refreshToken, input.clientSecret],
@@ -159,7 +166,7 @@ export async function exchangeAuthorizationCode(input: {
   clientId: string;
   clientSecret?: string;
   resource?: string;
-  authMethod?: ClientAuthMethod;
+  clientAuthMethod: ClientAuthMethod;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<TokenResponse> {
@@ -177,11 +184,16 @@ export async function exchangeAuthorizationCode(input: {
     form,
     clientId: input.clientId,
     clientSecret: input.clientSecret,
-    authMethod: input.authMethod ?? "client_secret_post",
+    authMethod: input.clientAuthMethod,
     fetchImpl: input.fetchImpl ?? fetch,
     signal: input.signal,
     secrets: [input.code, input.codeVerifier, input.clientSecret],
   });
+}
+
+/** RFC 6749 requires form-component encoding inside HTTP Basic credentials, not URI-component encoding. */
+function formComponent(value: string): string {
+  return new URLSearchParams({ value }).toString().slice("value=".length);
 }
 
 async function postForm(args: {
@@ -200,16 +212,18 @@ async function postForm(args: {
     accept: "application/json",
   };
 
-  if (args.clientSecret !== undefined && args.clientSecret !== "") {
+  if (args.authMethod !== "none" && args.clientSecret !== undefined && args.clientSecret !== "") {
     if (args.authMethod === "client_secret_basic") {
       // RFC 6749 section 2.3.1: both halves are form-urlencoded before base64,
       // which matters for the generated secrets that contain `+` or `/`.
-      const credentials = `${encodeURIComponent(args.clientId)}:${encodeURIComponent(args.clientSecret)}`;
+      const credentials = `${formComponent(args.clientId)}:${formComponent(args.clientSecret)}`;
       headers.authorization = `Basic ${Buffer.from(credentials, "utf8").toString("base64")}`;
     } else {
       args.form.set("client_secret", args.clientSecret);
     }
   }
+
+  if (args.authMethod === "client_secret_basic") args.form.delete("client_id");
 
   let response: Response;
   try {

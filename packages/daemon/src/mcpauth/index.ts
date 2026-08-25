@@ -221,7 +221,12 @@ export class McpAuthSubsystem implements McpAuthCatalog {
   }): Promise<{ flowId: string; authorizationUrl: string }> {
     this.#reapFlows();
     const serverName = input.name ?? new URL(input.resourceUrl).hostname.replace(/\./g, "-");
-    const flow = await beginLogin({ resourceUrl: input.resourceUrl, serverName, timeoutMs: LOGIN_FLOW_TTL_MS });
+    const flow = await beginLogin({
+      resourceUrl: input.resourceUrl,
+      serverName,
+      timeoutMs: LOGIN_FLOW_TTL_MS,
+      clock: this.#clock,
+    });
     const flowId = randomBytes(9).toString("base64url");
     const entry: LoginFlowEntry = { flow, startedAt: this.#clock.now(), serverName };
     this.#flows.set(flowId, entry);
@@ -233,6 +238,7 @@ export class McpAuthSubsystem implements McpAuthCatalog {
     void flow.completed
       .then(grant => {
         this.#store.save(grant);
+        this.#broker.acceptInitialAccessToken(grant.id, grant.initialAccessToken);
         entry.settled = { ok: true, grantId: grant.id };
         this.#onLog(`mcp auth: authorized ${grant.serverName} as ${grant.id}`);
       })
@@ -267,8 +273,23 @@ export class McpAuthSubsystem implements McpAuthCatalog {
     if (outcome.kind === "ok") return { outcome: "ok", state };
     return { outcome: outcome.kind, state, detail: outcome.reason };
   }
-
   forget(grantId: string): boolean {
+    // Restore the original connector before deleting the only row that tells us
+    // which brokered entry owns it. Deleting first would leave OMP pointing at
+    // a 404 while its working original stays disabled.
+    const owned = readOwnership(this.#ownershipPath);
+    const brokerNames = Object.entries(owned.servers)
+      .filter(([, entry]) => entry.grantId === grantId)
+      .map(([name]) => name);
+    if (brokerNames.length > 0) {
+      const { token } = readOmpMcpConfig(this.#ompConfigPath);
+      const removed = removeBrokeredServers(this.#ompConfigPath, brokerNames, token, {
+        ownershipPath: this.#ownershipPath,
+      });
+      if (!removed.written) {
+        throw new Error(`${this.#ompConfigPath} changed while forgetting this grant; nothing was deleted. Try again.`);
+      }
+    }
     this.#broker.invalidate(grantId);
     return this.#store.remove(grantId);
   }
@@ -338,17 +359,23 @@ export class McpAuthSubsystem implements McpAuthCatalog {
     const nameByUrl: Record<string, string> = {};
     for (const server of configured) nameByUrl[normalizeMcpUrl(server.url)] = server.name;
 
-    // Only grants that can actually serve a request. Wiring a
-    // `reauth_required` or `no_refresh_grant` grant would do real damage
-    // rather than nothing: `apply` also writes the original server's name into
-    // `disabledServers`, so it would take down a definition that works today
-    // and put a 503 in its place. An unready grant is left exactly as it is,
-    // reported as skipped, and picked up by the next apply once a person has
-    // authorized it.
-    const grants = this.#store.list().filter(g => g.state !== "reauth_required" && g.state !== "no_refresh_grant");
-    const notReady = this.#store
-      .list()
-      .filter(g => g.state === "reauth_required" || g.state === "no_refresh_grant")
+    // Only grants that can actually serve a request. A no-refresh grant can be
+    // wired only while this process still holds the access token the browser
+    // returned. It is deliberately excluded after restart, when only its
+    // encrypted but unrenewable material remains. The other unready states
+    // would take down a working original server and replace it with a 503.
+    const records = this.#store.list();
+    const grants = records.filter(
+      grant =>
+        grant.state !== "reauth_required" &&
+        (grant.state !== "no_refresh_grant" || this.#broker.hasUsableAccessToken(grant.id)),
+    );
+    const notReady = records
+      .filter(
+        grant =>
+          grant.state === "reauth_required" ||
+          (grant.state === "no_refresh_grant" && !this.#broker.hasUsableAccessToken(grant.id)),
+      )
       .map(g => ({ serverName: g.serverName, state: g.state, detail: g.detail ?? "" }));
     const minted = mintBrokerNames(
       grants.map(grant => ({
