@@ -35,11 +35,21 @@ export class DaemonUnreachableError extends Error {
 /** Raised when the daemon answered and the answer was a refusal. */
 export class ApiError extends Error {
   readonly status: number;
+  /**
+   * The parsed error body, when the daemon sent one.
+   *
+   * `message` carries only the daemon's `error` name, and a 400 answers with
+   * `{ error, reason }` where the reason is the only part that names the field
+   * that was wrong. A caller holding just the name has to guess, so the body
+   * travels with the error for whoever wants the rest of it.
+   */
+  readonly body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -215,7 +225,9 @@ export async function api<T>(ctx: CliContext, path: string, opts: RequestOptions
       // holding one sends them to look in the wrong place.
       throw new ApiError(401, TOKEN_REJECTED_GUIDANCE);
     }
-    throw new ApiError(response.status, detail);
+    // The body rides along: `detail` is only the error name, and a 400's
+    // `reason` is the part that says what to fix.
+    throw new ApiError(response.status, detail, parsed);
   }
 
   return parsed as T;

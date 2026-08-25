@@ -26,6 +26,7 @@ import {
   rotateCommand,
 } from "./commands/devices.ts";
 import { doctorCommand } from "./commands/doctor.ts";
+import { mcpCommand, mcpInstallCommand } from "./commands/mcp.ts";
 import {
   mcpAuthApplyCommand,
   mcpAuthImportCommand,
@@ -117,6 +118,19 @@ export async function run(argv: string[], ctx: CliContext = defaultContext()): P
         return await routineDeleteCommand(ctx, command);
       case "sync-config":
         return await syncConfigCommand(ctx, command);
+      case "mcp":
+        // stdout in this process is omp's JSON-RPC stream, and one stray
+        // human-readable byte on it corrupts the framing: the client stops
+        // seeing responses and reports a dead server, with nothing anywhere to
+        // say why. So the serve path runs with `out` pointing at stderr.
+        // `serveRoutinesMcp` redirects again on its own side, and both stay:
+        // this is where the human-facing context is chosen, that is where the
+        // transport is owned, and a stdout write from either is unrecoverable,
+        // so neither layer should have to trust the other. `report` below
+        // writes only to `err`, so a thrown error cannot reach stdout either.
+        return await mcpCommand({ ...ctx, out: ctx.err });
+      case "mcp-install":
+        return await mcpInstallCommand(ctx);
       case "audit":
         return await auditCommand(ctx, command);
       case "open":

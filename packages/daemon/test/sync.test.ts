@@ -110,7 +110,7 @@ describe("configuration sync", () => {
     expect((document.routines as Array<Record<string, unknown>>)[0]?.trigger).toEqual(webhookRoutine.trigger);
   });
 
-  test("import into a fresh daemon reproduces exported routine ids, names, and trigger shapes", async () => {
+  test("import reproduces exported routine ids and names, and names the webhook credential locally", async () => {
     const source = await daemon({ policyMode: "trusted", keepAwake: false });
     source.store.upsertRoutine(webhookRoutine);
     const document = await (await source.request("/v1/sync/export")).json();
@@ -123,9 +123,25 @@ describe("configuration sync", () => {
 
     expect(response.status).toBe(200);
     expect(target.settings).toEqual({ policyMode: "trusted", keepAwake: false });
-    expect(target.store.listRoutines().map(({ id, name, trigger }) => ({ id, name, trigger }))).toEqual([
-      { id: webhookRoutine.id, name: webhookRoutine.name, trigger: webhookRoutine.trigger },
+
+    // The id and the name travel, because they are what a configuration is.
+    const imported = target.store.listRoutines();
+    expect(imported.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: webhookRoutine.id, name: webhookRoutine.name },
     ]);
+
+    // The `secretRef` does not travel, and this is the assertion that says so.
+    // It is a name for a row in one daemon's `webhook_secrets` table, and only
+    // that daemon holds the hash: the secret value itself is never exported.
+    // Honouring the exporter's name would write a routine pointed at a row that
+    // does not exist here, and if this target already held a webhook routine
+    // under this id, the row it really was using would survive with nothing
+    // naming it. So the trigger keeps its kind and gets a ref minted here.
+    const trigger = imported[0]?.trigger;
+    expect(trigger?.kind).toBe("webhook");
+    const localRef = trigger?.kind === "webhook" ? trigger.secretRef : "";
+    expect(localRef).toMatch(/^whsec_[0-9a-f]{16}$/);
+    expect(localRef).not.toBe("webhook-ref-morning-report");
   });
 
   test("import rejects a hand-crafted token-shaped field", async () => {

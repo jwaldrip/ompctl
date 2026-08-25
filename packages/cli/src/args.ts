@@ -72,6 +72,8 @@ export type Command =
   | { kind: "webhook-secret"; routineId: string }
   | { kind: "routine-delete"; routineId: string }
   | { kind: "sync-config"; targetUrl: string; token: string }
+  | { kind: "mcp" }
+  | { kind: "mcp-install" }
   | { kind: "audit"; limit: number }
   | { kind: "open" }
   | { kind: "self-install"; prefix?: string }
@@ -140,6 +142,10 @@ routines
                           delete a routine, its runs, and its webhook secret
   sync-config <target-url> --token <target-token>
                           import non-secret configuration from another daemon
+
+mcp
+  mcp                     serve the routines MCP server on stdio; OMP spawns this
+  mcp install             register this binary as an MCP server for every OMP session
 
 audit
   audit [--limit N]       recent privileged actions
@@ -466,6 +472,16 @@ export function parseCommand(argv: string[]): Command {
       const token = stringFlag(flags, "token");
       if (token === undefined) throw new UsageError("sync-config needs --token");
       return { kind: "sync-config", targetUrl: requirePositional(rest, 0, "target-url"), token };
+    }
+
+    case "mcp": {
+      const action = rest[0];
+      if (action === undefined) return { kind: "mcp" };
+      if (action !== "install") {
+        throw new UsageError(`unknown mcp action ${action}; use mcp or mcp install`);
+      }
+      rejectExtra(rest.slice(1), 0, "mcp install");
+      return { kind: "mcp-install" };
     }
 
     case "audit": {

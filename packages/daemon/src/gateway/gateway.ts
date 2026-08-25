@@ -23,6 +23,7 @@ import {
   type Actor,
   type Agent,
   type AgentId,
+  type AuditInput,
   type ClientFrame,
   COLLAB_REFUSAL_REASONS,
   type CollabRefusal,
@@ -33,13 +34,18 @@ import {
   isRecord,
   type McpAuthState,
   type McpAuthStatus,
+  nextFireTime,
   type PersistCollabVoiceNoteInput,
   PROMPT_IMAGE_REFUSAL_REASONS,
   parsePromptImages,
   type QueuedIntent,
   ROUTINE_DELETE_REFUSAL_REASONS,
   type Routine,
+  type RoutineAction,
+  type RoutineActionDraft,
   type RoutineDeleteResult,
+  type RoutineDraft,
+  type RoutinePatch,
   type Run,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
@@ -57,6 +63,7 @@ import {
   type Store,
   type SyncSettings,
   type Task,
+  type TriggerDraft,
   type TuiActivityKind,
   type TuiSteerDelivery,
   validateWireHostSpec,
@@ -627,6 +634,299 @@ function isSyncRoutine(value: unknown): value is SyncRoutine {
     typeof value.createdAt === "string"
   );
 }
+
+const ROUTINE_DRAFT_KEYS: Record<string, true> = {
+  name: true,
+  enabled: true,
+  trigger: true,
+  actions: true,
+  singleton: true,
+  labels: true,
+};
+const ROUTINE_ACTION_DRAFT_KEYS: Record<string, true> = {
+  id: true,
+  name: true,
+  prompt: true,
+  cwd: true,
+  timeoutSeconds: true,
+  labels: true,
+};
+const CRON_TRIGGER_KEYS: Record<string, true> = { kind: true, expression: true, timezone: true };
+const INTERVAL_TRIGGER_KEYS: Record<string, true> = { kind: true, seconds: true };
+const BARE_TRIGGER_KEYS: Record<string, true> = { kind: true };
+
+/**
+ * The first key a caller sent that the surface does not accept, or undefined.
+ *
+ * The key's name and not merely the fact of it, because these reasons are the
+ * whole of what a caller has to fix its request from: "invalid" tells an agent
+ * to guess, and an agent that guesses retries.
+ */
+function firstUnknownKey(value: Record<string, unknown>, allowed: Record<string, true>): string | undefined {
+  return Object.keys(value).find(key => allowed[key] !== true);
+}
+
+/** A flat label map, as a guard so a parsed draft is typed rather than asserted. */
+function isLabelMap(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every(label => typeof label === "string");
+}
+
+/**
+ * A caller-supplied trigger, or one sentence saying what is wrong with it.
+ *
+ * The whole draft/patch family answers with a reason string rather than
+ * `null`, because that reason is carried out on the 400 and is the only thing
+ * a caller has to correct its request from. A bare "invalid" costs a retry
+ * loop where a named field costs one fix.
+ *
+ * Unknown keys are refused rather than dropped, exactly as `isSyncRoutine`
+ * does and for the same reason: a body carrying a field this surface has never
+ * heard of comes from a caller that believes something is being configured,
+ * and quietly keeping the recognisable half reports success for a request that
+ * was only half understood.
+ */
+function parseTriggerDraft(value: unknown): TriggerDraft | string {
+  if (!isRecord(value)) return "trigger must be an object naming a kind";
+  switch (value.kind) {
+    case "manual": {
+      const unknown = firstUnknownKey(value, BARE_TRIGGER_KEYS);
+      if (unknown !== undefined) return `a manual trigger takes no other field, so "${unknown}" cannot be honoured`;
+      return { kind: "manual" };
+    }
+    case "webhook": {
+      // Refused rather than ignored, and named as the daemon's job rather than
+      // reported as an unknown key: a caller supplying its own `secretRef`
+      // believes it is choosing the credential row this endpoint checks
+      // against, and two routines pointed at one row means rotating either
+      // silently breaks the other.
+      if ("secretRef" in value) {
+        return (
+          "a webhook trigger must not carry secretRef: the daemon mints it, and " +
+          "POST /v1/routines/:id/webhook-secret is where a secret value is issued"
+        );
+      }
+      const unknown = firstUnknownKey(value, BARE_TRIGGER_KEYS);
+      if (unknown !== undefined) return `a webhook trigger takes no other field, so "${unknown}" cannot be honoured`;
+      return { kind: "webhook" };
+    }
+    case "interval": {
+      const unknown = firstUnknownKey(value, INTERVAL_TRIGGER_KEYS);
+      if (unknown !== undefined) {
+        return `an interval trigger takes kind and seconds, so "${unknown}" cannot be honoured`;
+      }
+      const seconds = value.seconds;
+      // Whole seconds, matching what the MCP schema accepts and what the store
+      // has column semantics for. Two write doors that disagree about what is
+      // legal is a shared contract in name only: a fraction accepted here is a
+      // routine an MCP caller cannot restate and a reader cannot reason about.
+      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+        return "trigger.seconds must be a finite number greater than 0";
+      }
+      if (!Number.isInteger(seconds)) return "trigger.seconds must be a whole number of seconds";
+      return { kind: "interval", seconds };
+    }
+    case "cron": {
+      const unknown = firstUnknownKey(value, CRON_TRIGGER_KEYS);
+      if (unknown !== undefined) {
+        return `a cron trigger takes kind, expression and timezone, so "${unknown}" cannot be honoured`;
+      }
+      const expression = value.expression;
+      const timezone = value.timezone;
+      if (typeof expression !== "string" || expression.trim().length === 0) {
+        return "trigger.expression must be a non-empty cron expression";
+      }
+      if (timezone !== undefined && (typeof timezone !== "string" || timezone.trim().length === 0)) {
+        return "trigger.timezone must be a non-empty IANA timezone name when present";
+      }
+      // The scheduler's own call, not a second parser: `nextFireTime` is what
+      // arms every fire, and it resolves the zone through `Intl` as well as
+      // parsing the expression. Checking only the expression left an unknown or
+      // empty zone to throw on the first tick, which arms nothing and says so
+      // nowhere a caller is listening.
+      try {
+        nextFireTime(expression, new Date(), timezone);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : "unparsable";
+        return `trigger is not a schedule this daemon can run: ${detail}`;
+      }
+      return timezone === undefined ? { kind: "cron", expression } : { kind: "cron", expression, timezone };
+    }
+    default:
+      return "trigger.kind must be one of cron, interval, manual, webhook";
+  }
+}
+
+function parseRoutineActionDraft(value: unknown, index: number): RoutineActionDraft | string {
+  if (!isRecord(value)) return `actions[${index}] must be an object`;
+  const unknown = firstUnknownKey(value, ROUTINE_ACTION_DRAFT_KEYS);
+  if (unknown !== undefined) {
+    return (
+      `actions[${index}] carries an unknown key "${unknown}": ` +
+      "an action takes id, name, prompt, cwd, timeoutSeconds and labels"
+    );
+  }
+  const { id, name, prompt, cwd, timeoutSeconds, labels } = value;
+  if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
+    return `actions[${index}].id must be a non-empty string when present`;
+  }
+  if (typeof name !== "string" || name.trim().length === 0) return `actions[${index}].name must be a non-empty string`;
+  if (typeof prompt !== "string" || prompt.trim().length === 0) {
+    return `actions[${index}].prompt must be a non-empty string`;
+  }
+  // Absolute, because a relative path is resolved against whatever directory
+  // the daemon happens to have been started in, which is not a place the
+  // caller can see and not the same place twice.
+  if (typeof cwd !== "string" || cwd.length === 0) return `actions[${index}].cwd must be a non-empty absolute path`;
+  if (!cwd.startsWith("/")) return `actions[${index}].cwd must be an absolute path, so "${cwd}" cannot be honoured`;
+  if (
+    timeoutSeconds !== undefined &&
+    (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)
+  ) {
+    return `actions[${index}].timeoutSeconds must be a finite number greater than 0 when present`;
+  }
+  // Whole seconds, for the reason `trigger.seconds` is: the MCP schema accepts
+  // only integers, and a surface that takes a fraction the other one refuses
+  // means a routine one door created cannot be restated through the other.
+  if (timeoutSeconds !== undefined && !Number.isInteger(timeoutSeconds)) {
+    return `actions[${index}].timeoutSeconds must be a whole number of seconds`;
+  }
+  if (labels !== undefined && !isLabelMap(labels)) {
+    return `actions[${index}].labels must be an object whose every value is a string`;
+  }
+  return {
+    ...(id === undefined ? {} : { id }),
+    name: name.trim(),
+    prompt,
+    cwd,
+    ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    ...(labels === undefined ? {} : { labels }),
+  };
+}
+
+function parseRoutineActionDrafts(value: unknown): RoutineActionDraft[] | string {
+  if (!Array.isArray(value)) return "actions must be an array of actions";
+  if (value.length === 0) {
+    return "actions must name at least one action: a routine with none is a schedule that does nothing";
+  }
+  const drafts: RoutineActionDraft[] = [];
+  for (const [index, action] of value.entries()) {
+    const draft = parseRoutineActionDraft(action, index);
+    if (typeof draft === "string") return draft;
+    drafts.push(draft);
+  }
+  return drafts;
+}
+
+/** A complete routine definition as a caller may state it, or the reason it was refused. */
+function parseRoutineDraft(value: unknown): RoutineDraft | string {
+  if (!isRecord(value)) return "a routine draft must be a JSON object";
+  const unknown = firstUnknownKey(value, ROUTINE_DRAFT_KEYS);
+  if (unknown !== undefined) {
+    return `unknown key "${unknown}": a routine draft takes name, enabled, trigger, actions, singleton and labels`;
+  }
+  const { name, enabled, singleton, labels } = value;
+  if (typeof name !== "string" || name.trim().length === 0) return "name must be a non-empty string";
+  if (enabled !== undefined && typeof enabled !== "boolean") return "enabled must be a boolean when present";
+  if (singleton !== undefined && typeof singleton !== "boolean") return "singleton must be a boolean when present";
+  if (labels !== undefined && !isLabelMap(labels)) return "labels must be an object whose every value is a string";
+  const trigger = parseTriggerDraft(value.trigger);
+  if (typeof trigger === "string") return trigger;
+  const actions = parseRoutineActionDrafts(value.actions);
+  if (typeof actions === "string") return actions;
+  return {
+    // Trimmed, so the name the store holds is the one validation approved
+    // rather than one with invisible padding a later lookup would miss.
+    name: name.trim(),
+    ...(enabled === undefined ? {} : { enabled }),
+    trigger,
+    actions,
+    ...(singleton === undefined ? {} : { singleton }),
+    ...(labels === undefined ? {} : { labels }),
+  };
+}
+
+/**
+ * A partial edit, or the reason it was refused.
+ *
+ * Every field is copied onto the result only when the caller actually sent
+ * the key, so the returned patch carries presence and not merely value. That
+ * is what lets the route apply it by spread: absent stays absent, and
+ * `labels: {}` stays a real instruction to clear every label.
+ */
+function parseRoutinePatch(value: unknown): RoutinePatch | string {
+  if (!isRecord(value)) return "a routine patch must be a JSON object";
+  const unknown = firstUnknownKey(value, ROUTINE_DRAFT_KEYS);
+  if (unknown !== undefined) {
+    return `unknown key "${unknown}": a routine patch takes name, enabled, trigger, actions, singleton and labels`;
+  }
+  const { name, enabled, singleton, labels } = value;
+  const patch: RoutinePatch = {};
+  if ("name" in value) {
+    if (typeof name !== "string" || name.trim().length === 0) return "name must be a non-empty string";
+    patch.name = name.trim();
+  }
+  if ("enabled" in value) {
+    if (typeof enabled !== "boolean") return "enabled must be a boolean";
+    patch.enabled = enabled;
+  }
+  if ("singleton" in value) {
+    if (typeof singleton !== "boolean") return "singleton must be a boolean";
+    patch.singleton = singleton;
+  }
+  if ("labels" in value) {
+    if (!isLabelMap(labels)) return "labels must be an object whose every value is a string";
+    patch.labels = labels;
+  }
+  if ("trigger" in value) {
+    const trigger = parseTriggerDraft(value.trigger);
+    if (typeof trigger === "string") return trigger;
+    patch.trigger = trigger;
+  }
+  if ("actions" in value) {
+    const actions = parseRoutineActionDrafts(value.actions);
+    if (typeof actions === "string") return actions;
+    patch.actions = actions;
+  }
+  return patch;
+}
+
+/**
+ * A daemon-minted id, in the one shape every other daemon-minted id uses:
+ * `createAgentId`'s `agt_`, the scheduler's `run_`, and here `rtn_`, `act_`
+ * and `whsec_`. The prefix names the kind, so an id read out of a log or an
+ * audit row says what it addresses without a lookup.
+ */
+function mintId(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+}
+
+/**
+ * A drafted action as the store holds it.
+ *
+ * The host is forced local rather than read from the draft, the same thing
+ * `/v1/sync/import` and the app's `routine_write` frame both do: an execution
+ * host carries image, mounts and network policy, so a definition allowed to
+ * name one turns "schedule a prompt" into "mount any path on this machine".
+ *
+ * An id is minted only when the draft named none, so an edit that re-sends an
+ * action keeps the id its recorded runs already point at.
+ */
+function materialiseAction(draft: RoutineActionDraft): RoutineAction {
+  return {
+    id: draft.id ?? mintId("act"),
+    name: draft.name,
+    prompt: draft.prompt,
+    cwd: draft.cwd,
+    host: { kind: "local" },
+    ...(draft.timeoutSeconds === undefined ? {} : { timeoutSeconds: draft.timeoutSeconds }),
+    labels: draft.labels ?? {},
+  };
+}
+
+/** Runs returned beside one routine when the caller names no `runLimit`. */
+const ROUTINE_RUNS_DEFAULT = 10;
+/** Ceiling on `runLimit`: one response answers "show me more", not "show me everything". */
+const ROUTINE_RUNS_MAX = 50;
 
 function parseSyncDocument(value: unknown): SyncDocument | null {
   if (!isRecord(value) || hasForbiddenSyncField(value)) return null;
@@ -2051,25 +2351,158 @@ export class Gateway {
       }
       const document = parseSyncDocument(body);
       if (document === null) return Response.json({ error: "invalid_sync_document" }, { status: 400 });
+      // Counted rather than assumed, because a restore is not atomic: settings
+      // land first, then each routine in turn, and a failure part way through
+      // leaves a machine holding some of another daemon's catalogue. The 400
+      // below says the import failed, which is true and is also the reading that
+      // sends someone looking for a machine that changed nothing.
+      //
+      // `stage` is what makes the count readable. A bare index cannot say
+      // whether zero completed means the settings failed before any routine was
+      // attempted, or whether a count equal to `attempted` means the last
+      // routine failed when in fact every one of them landed and only the record
+      // of it did not.
+      let stage: "settings" | "routines" | "record" = "settings";
+      let completed = 0;
       try {
         config.apply({ policyMode: document.policyMode, keepAwake: document.keepAwake });
+        stage = "routines";
         for (const routine of document.routines) {
           // Execution hosts never travel. Imported actions execute locally,
-          // through the receiving daemon's own supervisor.
-          this.#store.upsertRoutine({
+          // through the receiving daemon's own supervisor. The webhook
+          // `secretRef` does not travel either: only the exporting daemon holds
+          // the hash it names, so honouring it here names a row that does not
+          // exist and cannot be made to. `#persistRoutine` mints a local ref
+          // instead, and withdraws a local credential a restore has moved a
+          // routine off.
+          this.#persistRoutine({
             ...routine,
             actions: routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
           });
+          completed += 1;
         }
-        return Response.json({ ok: true, routines: document.routines.length });
+        stage = "record";
+        // One row for the one decision that was made. Restoring a catalogue
+        // arms every automation in it, so a door that wrote them all and
+        // recorded nothing left the operator's own log unable to answer why a
+        // machine started running work nobody scheduled on it. Per-routine
+        // `routine.create` rows would be fifty arming decisions nobody made,
+        // which reads worse than one restore recorded as a restore.
+        //
+        // The same fields as the failure row below, deliberately. They were
+        // once `routines` here and `completed`/`attempted` there, which meant
+        // anything counting imports had to special-case the outcome to find the
+        // same number under a different name. On success `stage` is always
+        // `record` and `completed` always equals `attempted`, and both are
+        // carried anyway so the shape of a `sync.import` row does not depend on
+        // how it went.
+        this.#store.audit({
+          action: "sync.import",
+          actorDeviceId: actor.deviceId,
+          outcome: "ok",
+          detail: {
+            stage,
+            completed,
+            attempted: document.routines.length,
+            policyMode: document.policyMode,
+          },
+        });
+        return Response.json({ ok: true, routines: completed });
       } catch (err) {
-        return Response.json({ error: err instanceof Error ? err.message : "sync import failed" }, { status: 400 });
+        const reason = err instanceof Error ? err.message : "sync import failed";
+        // The row a partial restore needs most. Recording only the successes
+        // would leave the one case where the log matters, a machine holding half
+        // of somebody else's configuration, as the one case with nothing in it.
+        //
+        // `completed` counts routines whose write committed, and `stage` says
+        // where the import stopped. A routine and its credential withdrawal now
+        // commit or roll back together, so the one that threw is not on disk and
+        // `completed` does not count it. What `stage` still carries that a bare
+        // count cannot is which of the three phases ended the restore, since
+        // settings land outside the store and outside any of those transactions.
+        //
+        // A restore is not atomic across routines: each one is its own
+        // transaction and this row is written after all of them. If this insert
+        // and the one above both fail, N routines are armed with nothing naming
+        // the restore, and the catch below says what that costs.
+        try {
+          this.#store.audit({
+            action: "sync.import",
+            actorDeviceId: actor.deviceId,
+            outcome: "error",
+            detail: {
+              stage,
+              completed,
+              attempted: document.routines.length,
+              policyMode: document.policyMode,
+              reason,
+            },
+          });
+        } catch {
+          // Suppressed so the caller's 400 keeps carrying the original reason,
+          // which is the part anyone diagnosing this needs, rather than being
+          // replaced by a second failure from the recording of the first.
+          //
+          // What this costs is worth naming: an audit row that could not be
+          // written leaves no trace anywhere, and the store failing is only one
+          // of the reasons it might not have been. `stage` in the row above is
+          // the closest thing to a substitute, and on this path even that is
+          // gone.
+        }
+        return Response.json({ error: reason }, { status: 400 });
       }
     }
 
     if (path === "/v1/routines" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
       return Response.json({ routines: this.#store.listRoutines() });
+    }
+
+    if (path === "/v1/routines" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const draft = parseRoutineDraft(body);
+      if (typeof draft === "string") {
+        return Response.json({ error: "invalid_routine", reason: draft }, { status: 400 });
+      }
+      // Minted against the catalogue, not merely minted. `#persistRoutine` is
+      // an upsert by design, because three of the four doors that reach it are,
+      // so an id that happened to already exist would make this create silently
+      // overwrite an unrelated routine. Sixteen hex characters make that
+      // vanishingly unlikely and "unlikely" is not a property a create route
+      // should rest an operator's automation on.
+      const taken: Record<string, true> = {};
+      for (const held of this.#store.listRoutines()) taken[held.id] = true;
+      let id = mintId("rtn");
+      while (taken[id] === true) id = mintId("rtn");
+      const routine = this.#writeRoutine({
+        routine: {
+          id,
+          name: draft.name,
+          // Enabled and singleton default on: a routine defined and left off is
+          // the rarer intent, and overlapping runs of the same automation is
+          // the rarer want.
+          enabled: draft.enabled ?? true,
+          // The draft names no `secretRef` and the seam mints one for a webhook
+          // trigger. The secret VALUE is never minted here: a create that
+          // returned one would put a credential in a response nobody asked for
+          // it in, and into whatever record the caller keeps of its own
+          // requests. `POST /v1/routines/:id/webhook-secret` is the one place a
+          // value is issued, and it issues it exactly once.
+          trigger: draft.trigger,
+          actions: draft.actions.map(materialiseAction),
+          singleton: draft.singleton ?? true,
+          labels: draft.labels ?? {},
+          createdAt: new Date().toISOString(),
+        },
+        actorDeviceId: actor.deviceId,
+      });
+      return Response.json({ routine }, { status: 201 });
     }
 
     const routineRun = /^\/v1\/routines\/([^/]+)\/run$/.exec(path);
@@ -2117,6 +2550,80 @@ export class Gateway {
       }
       const results = await this.#deleteRoutines(runner, ids as string[], actor.deviceId);
       return Response.json({ results });
+    }
+
+    // Last of the routine routes, deliberately. Every other one is either a
+    // literal path or two segments deep; this is the only matcher under
+    // `/v1/routines/` that accepts an arbitrary segment, so it has to be
+    // tried after `/v1/routines/delete` or it would swallow it. `:id/run` and
+    // `:id/webhook-secret` are two segments and cannot match here at all.
+    // A `GET /v1/routines/delete` does land here and answers `not_found`,
+    // which is the honest reply: there is no routine by that id.
+    const routineById = /^\/v1\/routines\/([^/]+)$/.exec(path);
+
+    if (routineById && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const routine = this.#store.listRoutines().find(candidate => candidate.id === routineById[1]);
+      if (!routine) return Response.json({ error: "not_found" }, { status: 404 });
+      // Clamped rather than refused: a caller naming a thousand runs has made
+      // a guess about a ceiling it cannot see, not an error, and the honest
+      // answer to "show me more" is as much as one response should carry.
+      // `parseInt` of a missing or unparsable value is NaN, which is how an
+      // absent parameter and `runLimit=soon` both reach the default.
+      const requested = Number.parseInt(url.searchParams.get("runLimit") ?? "", 10);
+      const runLimit = Number.isNaN(requested)
+        ? ROUTINE_RUNS_DEFAULT
+        : Math.min(Math.max(requested, 1), ROUTINE_RUNS_MAX);
+      // `listRuns` orders `started_at DESC`, so newest-first comes out of the
+      // store and nothing here reorders it.
+      return Response.json({ routine, runs: this.#store.listRuns(routine.id, runLimit) });
+    }
+
+    if (routineById && req.method === "PATCH") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const existing = this.#store.listRoutines().find(candidate => candidate.id === routineById[1]);
+      if (!existing) return Response.json({ error: "not_found" }, { status: 404 });
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const patch = parseRoutinePatch(body);
+      if (typeof patch === "string") {
+        return Response.json({ error: "invalid_patch", reason: patch }, { status: 400 });
+      }
+
+      // `{ ...existing, ...patch }` is the patch contract written out: a
+      // spread copies own keys only, so a key the caller sent replaces and a
+      // key it never sent is not touched. That is what keeps `labels: {}`
+      // clearing every label while an absent `labels` preserves them, and it
+      // is why the merge is a spread rather than six `patch.key !== undefined`
+      // tests: an undefined or truthiness test reads an empty object and an
+      // absent key as the same thing, and clearing a label would become
+      // impossible through this route. `parseRoutinePatch` sets a key only
+      // after validating a real value, so no key here is present-but-
+      // undefined.
+      //
+      // `trigger` and `actions` are then overwritten, because a draft is not
+      // what the store holds: a drafted action names no execution host, which
+      // `materialiseAction` forces local. Those two read `undefined` for
+      // absence rather than testing presence, which is safe where it would not
+      // be above: a trigger is never an empty object, and an empty `actions`
+      // array is refused outright, so neither field has an empty-versus-absent
+      // distinction left to lose. The webhook `secretRef` is the seam's, not
+      // this route's: a patch that leaves a webhook alone keeps the stored ref,
+      // and one that moves off webhook withdraws the row after the write lands.
+      const routine = this.#writeRoutine({
+        routine: {
+          ...existing,
+          ...patch,
+          trigger: patch.trigger ?? existing.trigger,
+          actions: (patch.actions ?? existing.actions).map(materialiseAction),
+        },
+        actorDeviceId: actor.deviceId,
+      });
+      return Response.json({ routine });
     }
 
     if (path === "/v1/skills" && req.method === "GET") {
@@ -4102,9 +4609,19 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "bad_frame", message: "routine_write needs one complete routine" });
           return;
         }
-        this.#store.upsertRoutine({
-          ...frame.routine,
-          actions: frame.routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
+        // Execution hosts are forced local for the reason `/v1/sync/import`
+        // forces them. Everything else this frame carries that is the daemon's
+        // to decide, rather than a caller's to assert, belongs to the seam:
+        // whether this is a create, and the webhook `secretRef`. The frame's
+        // wire type requires a ref on a webhook trigger, and the app round
+        // trips a snapshot it read, so honouring the value would work right up
+        // until a client sent one that named another routine's credential row.
+        this.#writeRoutine({
+          routine: {
+            ...frame.routine,
+            actions: frame.routine.actions.map(action => ({ ...action, host: { kind: "local" } })),
+          },
+          actorDeviceId: ws.data.deviceId,
         });
         this.#send(ws, this.#routineSnapshot());
         return;
@@ -5015,6 +5532,126 @@ export class Gateway {
       });
     }
     return results;
+  }
+
+  /**
+   * The one place a routine definition reaches the store, for every door that
+   * writes one: `POST /v1/routines`, `PATCH /v1/routines/:id`, the app's
+   * `routine_write` frame, and `/v1/sync/import`.
+   *
+   * Two things live here because they cannot be trusted to a caller, and
+   * because a door that skips either one is indistinguishable from a door that
+   * does not.
+   *
+   * **Whether this is a create.** Decided by looking, never by what a caller
+   * says. `routine_write` and sync import are both upserts, so the same request
+   * shape arms a new automation or edits an existing one and only the store
+   * knows which.
+   *
+   * **The webhook credential.** A caller never chooses a `secretRef`. The
+   * socket frame and a sync document both carry one in their wire type, and
+   * honouring it lets two routines point at one credential row, where rotating
+   * either silently breaks the other. So the incoming value is read for its
+   * kind and discarded, and the ref is either the one already on disk or a
+   * freshly minted one. See `#adoptTrigger`.
+   *
+   * The definition, the credential a retarget withdraws, and the audit row all
+   * go through `store.commitRoutineWrite` as one transaction. Separately they
+   * were three writes, and the invariant this seam exists to hold, that no door
+   * arms an automation without leaving a record, was a hope: a committed
+   * definition followed by a failed audit insert left the automation as the only
+   * trace of itself. All three now commit or roll back together, so a failed
+   * audit leaves no routine rather than an unrecorded one, and a withdrawal can
+   * no longer outlive the definition that stopped naming it.
+   *
+   * The withdrawal is still ordered after the write inside that transaction.
+   * That ordering no longer guards against a crash between them, because there
+   * is no longer a between; it is kept because a rollback undoes both and a
+   * reader should not have to reason about a delete that precedes the row it
+   * depends on.
+   *
+   * `audit` is a callback because only the caller knows whether this write is one
+   * arming decision to record or one routine inside a restore that records
+   * itself once for the whole catalogue. It is invoked here and its result is
+   * handed to the store, so it runs before the transaction opens and a throw
+   * from it writes nothing at all.
+   */
+  #persistRoutine(
+    input: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] },
+    audit?: (created: boolean, routine: Routine) => AuditInput,
+  ): { routine: Routine; created: boolean } {
+    const existing = this.#store.listRoutines().find(candidate => candidate.id === input.id);
+    const created = existing === undefined;
+    const routine: Routine = { ...input, trigger: this.#adoptTrigger(existing?.trigger, input.trigger) };
+    // The capability is exactly what a retarget withdraws, so the credential
+    // goes with it. A surviving hash is a live secret nothing in the catalogue
+    // names any more: nothing lists it and nothing can rotate it.
+    const withdrawn =
+      existing?.trigger.kind === "webhook" && routine.trigger.kind !== "webhook"
+        ? existing.trigger.secretRef
+        : undefined;
+    this.#store.commitRoutineWrite({
+      routine,
+      ...(withdrawn === undefined ? {} : { withdrawSecretRef: withdrawn }),
+      ...(audit === undefined ? {} : { audit: audit(created, routine) }),
+    });
+    return { routine, created };
+  }
+
+  /**
+   * The `secretRef` a written routine ends up with, given what is already on
+   * disk. Pure: it decides a value and touches nothing. The withdrawal of the
+   * row that value replaces belongs to `#persistRoutine`, in the same
+   * transaction as the write, so neither can land without the other.
+   *
+   * - webhook staying webhook keeps the stored ref verbatim, whatever the
+   *   incoming definition claims. It is the public half of the endpoint's
+   *   identity, so re-minting it on an edit that never mentioned the webhook
+   *   would break a URL already handed out and every secret rotated against it.
+   * - anything else becoming webhook mints a fresh ref, so no two routines can
+   *   be made to share one credential row, and so a ref minted by some other
+   *   daemon and carried in a sync document never names a row here.
+   */
+  #adoptTrigger(current: Routine["trigger"] | undefined, next: TriggerDraft | Routine["trigger"]): Routine["trigger"] {
+    if (next.kind !== "webhook") return next;
+    return current?.kind === "webhook" ? current : { kind: "webhook", secretRef: mintId("whsec") };
+  }
+
+  /**
+   * One routine written and recorded, which is every door except sync import.
+   *
+   * Before this seam existed the socket frame wrote no audit row at all, which
+   * is how `routine.create` came to be a declared audit action nothing ever
+   * emitted: whether arming an automation on this machine was recorded depended
+   * on which road the request took.
+   *
+   * `/v1/sync/import` writes through `#persistRoutine` and records itself as
+   * one `sync.import` row instead. It is a whole-state restore and answers with
+   * a count, so fifty rows here would be fifty separate arming decisions nobody
+   * made, which reads worse than one restore recorded as a restore.
+   *
+   * `detail` never carries a webhook secret nor the `secretRef` that names one.
+   * It is the single free-form field on an audit row, so it is the one place a
+   * credential could reach a log meant to be safe to read, print, and hand to
+   * whoever is diagnosing a machine. The trigger is recorded by kind alone,
+   * which is all a reader needs to know what armed the routine.
+   */
+  #writeRoutine(input: {
+    routine: Omit<Routine, "trigger"> & { trigger: TriggerDraft | Routine["trigger"] };
+    actorDeviceId: string;
+  }): Routine {
+    const { routine } = this.#persistRoutine(input.routine, (created, written) => ({
+      action: created ? "routine.create" : "routine.update",
+      actorDeviceId: input.actorDeviceId,
+      outcome: "ok",
+      detail: {
+        routineId: written.id,
+        name: written.name,
+        trigger: written.trigger.kind,
+        actions: written.actions.length,
+      },
+    }));
+    return routine;
   }
 
   /**
