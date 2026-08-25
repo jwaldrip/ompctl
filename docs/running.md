@@ -143,10 +143,10 @@ reads of secret paths.
 `keepAwake` holds a macOS idle-sleep assertion while any agent is working, so
 the machine does not sleep through a turn. See "The Mac has to be awake".
 
-Container hosts add four keys of their own, `containerRuntime`,
-`containerImage`, `containerModelAccess` and `containerModel`. They are
-documented where they matter rather than here, under "Run an agent in a
-container".
+Container hosts add five keys of their own, `containerRuntime`,
+`containerImage`, `containerModelAccess`, `containerModel` and
+`containerModelBrokerPort`. They are documented where they matter rather than
+here, under "Run an agent in a container".
 
 Speech needs no configuration. The daemon calls OMP's own speech libraries in
 process: Parakeet TDT v3 through sherpa-onnx for recognition, Kokoro-82M for
@@ -686,34 +686,43 @@ through the bridge. That runtime also rejects `--cap-drop` and
 that reaches it can leave, and there is no second control to fall back on. So
 nothing reusable goes in. A request goes out instead.
 
-The path, guest to provider:
+The path, guest to provider. Each hop names what it binds, because the addresses
+are the boundary:
 
 ```
-guest omp
-  -> ompd's model broker, on the one host address this runtime lets a guest reach
-  -> omp auth-gateway serve, on 127.0.0.1
-  -> omp auth-broker serve, on 127.0.0.1, over the existing ~/.omp/agent/agent.db
+guest omp                    on its own container network, full internet egress
+  -> ompd's model broker     bound to THAT network's own gateway address only,
+                             never a wildcard; two POST routes behind a bearer
+  -> omp auth-gateway serve  127.0.0.1
+  -> omp auth-broker serve   127.0.0.1, over the existing ~/.omp/agent/agent.db
   -> the provider
 ```
+
+Docker Desktop is the one exception to the first hop, and it is the whole reason
+the `host-alias` shape exists: there the broker binds `127.0.0.1` and the guest
+dials `host.docker.internal`. The matrix below says which runtime gets which.
 
 The two loopback services are omp's own, not something this repo invented.
 `omp auth-broker serve` is a credential vault over the `agent.db` you already
 have, `omp auth-gateway serve` is a proxy that speaks the provider APIs in
 front of it, and omp documents the pair in `omp://auth-broker-gateway.md`,
 naming containerised omp as an intended client and stating that clients "never
-see the access token". ompd starts both on loopback ports of its own choosing
-on the first container provision, and stops them with the daemon. Your
-credential store is read where it already lives; nothing about it is copied,
-exported, or mounted.
+see the access token". ompd starts both on loopback ports the OS hands back, on
+the first container provision, and stops them with the daemon. Your credential
+store is read where it already lives, by those two loopback children and by
+nothing else. **No part of `~/.omp` is mounted into a guest or copied anywhere
+near one**: not `agent.db`, not `history.db`, not memories, not MCP server
+secrets, not your omp config. The one directory a container does get is created
+fresh per container and holds three generated files, nothing else.
 
 What the guest holds is one bearer: 32 random bytes, minted for that container,
 valid for exactly one model, written to a single file with mode `0600` inside a
 `0700` directory the daemon seeds and mounts. The broker keeps only its SHA-256
 digest, and the plaintext never enters an argv, an environment variable, a log
-line, an audit row, or the store. Releasing the host revokes it, and it dies
-with the daemon. It is not a provider credential and not an OAuth grant:
-presented to a provider directly it is nothing, and off this machine there is
-nothing left for it to talk to.
+line, an audit row, or the store. It expires a day after it is minted, releasing
+the host revokes it, and it dies with the daemon. It is not a provider
+credential and not an OAuth grant: presented to a provider directly it is
+nothing, and off this machine there is nothing left for it to talk to.
 
 The broker is not a proxy you could use for anything else, and that is the
 design rather than an accident of it. It accepts exactly two routes,
@@ -731,6 +740,20 @@ is seeded, because no `run --help` text says whether a runtime's bridge lives
 inside a virtual machine: Docker Desktop on macOS and docker on Linux are the
 same CLI with the same flags and the same `network inspect` output, and only
 one of them puts the gateway on a host interface.
+
+| Runtime and platform | Shape | Broker binds | Guest dials | Peer check | Provisions |
+| --- | --- | --- | --- | --- | --- |
+| Apple `container` on darwin | `host-bridge` | that network's gateway | the same address | on | yes |
+| docker on Linux | `host-bridge` | that network's gateway | the same address | on | yes |
+| rootful podman on Linux | `host-bridge` | that network's gateway | the same address | on | yes |
+| Docker Desktop, macOS or Windows | `host-alias` | `127.0.0.1` | `host.docker.internal` | off, risk named below | yes |
+| rootless podman | `unsupported` | nothing | nothing | n/a | no, fails closed |
+| podman off Linux (`podman machine`) | `unsupported` | nothing | nothing | n/a | no, fails closed |
+| a `"none"` network policy | `unsupported` | nothing | nothing | n/a | no, fails closed |
+| `network inspect` output not recognised | `unsupported` | nothing | nothing | n/a | no, fails closed |
+
+"Fails closed" is literal: those four refuse the provision rather than handing
+back a container that has no model access.
 
 `host-bridge` is the strong shape and the default here: Apple `container` on
 darwin, docker on Linux, rootful podman on Linux. The gateway address the
@@ -798,27 +821,50 @@ running on the network, which explains an ordering an operator may notice as a
 brief pause on the first container of a host. `network inspect` reports the
 gateway as soon as the network is created, but binding it fails with
 `EADDRNOTAVAIL` until something is attached to it. So the daemon creates the
-network, reads the gateway, seeds the guest home and its two config files,
-starts the container, and only then binds the broker, retrying for a short
-while as the bridge comes up. The alias shape binds loopback, which is always
-available, and still goes through that same step, because a caller that skips
-it for one shape and not the other is a caller that will eventually skip the
-one that matters. Subnets are handed out in creation order rather than by
-network name, so the address differs per host and nothing anywhere may hardcode
-it.
+network, reads the gateway, seeds the guest home with its 0600 token file and
+two config files, starts the container, and only then binds the broker, retrying
+for a short while as the bridge comes up. The alias shape binds loopback, which
+is always available, and still goes through that same step, because a caller
+that skips it for one shape and not the other is a caller that will eventually
+skip the one that matters. Subnets are handed out in creation order rather than
+by network name, so the address differs per host and nothing anywhere may
+hardcode it.
 
-Two keys control this, in `~/.ompd/config.json` like the others:
+Three keys control this, in `~/.ompd/config.json` like the others:
 
 ```json
-{ "containerModelAccess": true, "containerModel": "claude-haiku-4-5" }
+{
+  "containerModelAccess": true,
+  "containerModel": "anthropic/claude-haiku-4-5",
+  "containerModelBrokerPort": 7788
+}
 ```
 
-`containerModelAccess` defaults to true. `containerModel` names the one model a
-grant allows; absent, the daemon uses your own `modelRoles.default` from
-`~/.omp/agent/config.yml`. If neither resolves there is no invented default and
-no local fallback: provisioning fails with a message naming both keys. Handing
-back an agent that cannot answer is the failure this subsection exists to
-remove, so the daemon will not do it quietly.
+`containerModelAccess` defaults to true. Turning it off does not produce a
+container agent that answers prompts some other way: it makes container
+provisioning refuse, naming the key. That is the only honest reading of "off",
+because the alternative is a mute agent sitting at `idle` with nothing saying
+why.
+
+`containerModel` names the one model a grant allows, provider-qualified, which
+is the form the gateway's own catalogue and `modelRoles.default` both use. A
+bare model name is not a valid value. Absent, the daemon reads your own
+`modelRoles.default` from `~/.omp/agent/config.yml`, dropping a trailing
+thinking level if there is one. If neither resolves there is no invented default
+and no local fallback: provisioning fails with a message naming both keys.
+Handing back an agent that cannot answer is the failure this subsection exists
+to remove, so the daemon will not do it quietly.
+
+`containerModelBrokerPort` defaults to `7788`. One fixed port serves every
+container network at once, which looks like a collision waiting to happen and is
+not: the broker binds the per-network gateway address, and each network gets its
+own subnet, so two listeners never share an address. It may not be `0`. Every
+other port in that file may be, meaning "whatever the OS hands back", and this
+one cannot, because the guest's `models.yml` carries the endpoint and is written
+before the container starts while the address the broker binds does not exist
+until the container is already running. The number is needed before the bind can
+happen, so it is chosen rather than discovered. Anything that is not an integer
+from 1 to 65535 is refused when the config is loaded.
 
 ### Extra mounts
 
