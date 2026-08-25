@@ -126,7 +126,7 @@ describe("terminal takeover states", () => {
     ]);
 
     const html = renderScreen(state);
-    expect(html).toContain('data-testid="terminal-busy"');
+    expect(html).toContain('data-testid="session-activity"');
     expect(html).toContain('data-testid="terminal-reply"');
     expect(html).toContain("checking now");
     expect(html).toContain('data-testid="terminal-transcript-limit"');

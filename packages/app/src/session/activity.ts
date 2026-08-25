@@ -52,12 +52,59 @@ export type SessionActivityKind =
 
 export interface SessionActivity {
   readonly kind: SessionActivityKind;
-  /** Compact label, for a phone header. Never carries tool arguments. */
+  /** Compact label. Never carries tool arguments. */
   readonly label: string;
   /** What a screen reader should say. Same facts, read as a sentence. */
   readonly announcement: string;
   /** True only while work is actually in flight, which is the only time anything may move. */
   readonly live: boolean;
+  /**
+   * Whether a real request is outstanding on THIS device that the operator can
+   * answer. Only `waiting` can set it, and only from a request that actually
+   * arrived: the daemon reporting `state: "waiting"` with no approval and no
+   * plan review on this pane is a session waiting on something this device
+   * cannot see, and a row inviting an answer that has no control attached
+   * would be a lie about what a tap can do.
+   */
+  readonly actionable: boolean;
+}
+
+/**
+ * The kinds that can appear as a row of the conversation, as a type.
+ *
+ * Stated here so the row component's colour table is total over exactly what
+ * can reach it, instead of carrying entries for resting states it must never
+ * render and a fallback that would quietly give one of them a colour.
+ */
+export type ConversationActivityKind = Extract<SessionActivityKind, "running" | "working" | "waiting">;
+
+export interface ConversationActivity extends SessionActivity {
+  readonly kind: ConversationActivityKind;
+}
+
+/**
+ * The same activity, reduced to what belongs in the conversation, or nothing.
+ *
+ * Chat carries turns. A turn in flight is a turn; "ready", "stopped" and a
+ * dropped link are not, and a permanent row saying `Ready` above the composer
+ * is the header badge this replaced wearing a different hat. So the states
+ * that are about the session rather than about a turn return null here and are
+ * left to the surfaces that already own them: the header's state kicker, and
+ * `SessionLoadStalled` / `SessionLoadFailed` / the terminal's refusal band,
+ * each of which says more than a word and can be acted on.
+ *
+ * `waiting` is the one state that is about the operator, so it stays -- but
+ * only when a request really is outstanding here, which is what `actionable`
+ * answers.
+ */
+export function conversationActivity(activity: SessionActivity): ConversationActivity | null {
+  return isConversational(activity) ? activity : null;
+}
+
+/** The gate itself, as a guard, so narrowing costs nothing at runtime. */
+function isConversational(activity: SessionActivity): activity is ConversationActivity {
+  if (activity.kind === "running" || activity.kind === "working") return true;
+  return activity.kind === "waiting" && activity.actionable;
 }
 
 /**
@@ -107,16 +154,22 @@ export function agentActivity(
   load: SessionLoad,
 ): SessionActivity {
   if (connection === "offline") {
-    return { kind: "offline", label: "No link", announcement: "No link to the daemon", live: false };
+    return { kind: "offline", label: "No link", announcement: "No link to the daemon", live: false, actionable: false };
   }
   if (connection === "connecting" || connection === "reconnecting" || load.phase === "stalled") {
-    return { kind: "linking", label: "Reconnecting", announcement: "Reconnecting to the daemon", live: false };
+    return {
+      kind: "linking",
+      label: "Reconnecting",
+      announcement: "Reconnecting to the daemon",
+      live: false,
+      actionable: false,
+    };
   }
   if (agent.state === "failed" || load.phase === "failed") {
-    return { kind: "failed", label: "Failed", announcement: "This session failed", live: false };
+    return { kind: "failed", label: "Failed", announcement: "This session failed", live: false, actionable: false };
   }
   // Either kind of decision the session can be blocked on. A plan review is a
-  // clearance in every way that matters to a person glancing at a header.
+  // clearance in every way that matters to a person glancing at the pane.
   const clearances = session.pendingApprovals.length + (session.planReview === null ? 0 : 1);
   if (clearances > 0 || agent.state === "waiting") {
     return {
@@ -124,26 +177,48 @@ export function agentActivity(
       label: "Waiting for you",
       announcement: clearances > 1 ? `Waiting for you, ${clearances} decisions` : "Waiting for you",
       live: false,
+      // The card the operator would answer is in this pane only when a request
+      // actually arrived here. `state: "waiting"` alone is the daemon saying a
+      // session is blocked on something this device was never sent.
+      actionable: clearances > 0,
     };
   }
   if (TERMINAL_AGENT_STATES.includes(agent.state)) {
-    return { kind: "stopped", label: "Stopped", announcement: "This session has stopped", live: false };
+    return {
+      kind: "stopped",
+      label: "Stopped",
+      announcement: "This session has stopped",
+      live: false,
+      actionable: false,
+    };
   }
   if (session.activity.running > 0) {
     const phrase = toolPhrase(session.activity);
-    return { kind: "running", label: phrase, announcement: `Working: ${phrase}`, live: true };
+    return { kind: "running", label: phrase, announcement: `Working: ${phrase}`, live: true, actionable: false };
   }
   // `busy` is the daemon's own word for a turn in flight, and a streaming
   // entry is the same fact one layer down: either is enough, and neither is
   // inferred from how long ago something happened.
+  //
+  // Streaming deliberately still counts, which is omp's own rule rather than a
+  // choice made here: its TUI ensures the working loader from
+  // `#handleMessageUpdate` -- the token handler -- and stops it only in
+  // `#finishAgentEnd`, so the indicator runs beside streaming text for the
+  // whole turn instead of being replaced at first content.
   const streaming = session.entries.some(entry => entry.kind === "assistant" && entry.streaming);
   if (agent.state === "busy" || streaming) {
-    return { kind: "working", label: "Working", announcement: "Working", live: true };
+    return { kind: "working", label: "Working", announcement: "Working", live: true, actionable: false };
   }
   if (agent.state === "provisioning" || agent.state === "starting") {
-    return { kind: "linking", label: "Starting", announcement: "Starting this session", live: false };
+    return {
+      kind: "linking",
+      label: "Starting",
+      announcement: "Starting this session",
+      live: false,
+      actionable: false,
+    };
   }
-  return { kind: "ready", label: "Ready", announcement: "Ready", live: false };
+  return { kind: "ready", label: "Ready", announcement: "Ready", live: false, actionable: false };
 }
 
 /**
@@ -166,26 +241,58 @@ export function tuiActivity(
   liveTerminal: boolean,
 ): SessionActivity {
   if (connection === "offline") {
-    return { kind: "offline", label: "No link", announcement: "No link to the daemon", live: false };
+    return { kind: "offline", label: "No link", announcement: "No link to the daemon", live: false, actionable: false };
   }
   if (connection === "connecting" || connection === "reconnecting" || load.phase === "stalled") {
-    return { kind: "linking", label: "Reconnecting", announcement: "Reconnecting to the daemon", live: false };
+    return {
+      kind: "linking",
+      label: "Reconnecting",
+      announcement: "Reconnecting to the daemon",
+      live: false,
+      actionable: false,
+    };
   }
   if (load.phase === "failed") {
-    return { kind: "failed", label: "Failed", announcement: "This session could not be opened", live: false };
+    return {
+      kind: "failed",
+      label: "Failed",
+      announcement: "This session could not be opened",
+      live: false,
+      actionable: false,
+    };
   }
   // A refusal is the terminal or the daemon declining, which the operator has
-  // to resolve; the screen states the reason in full below the header.
+  // to resolve. Not actionable in the conversation's sense: the refusal band
+  // below states the reason in full and carries whatever control exists, and a
+  // one-word row above it would add nothing and answer nothing.
   if (tui.refusal !== null) {
-    return { kind: "waiting", label: "Needs you", announcement: "This terminal needs your attention", live: false };
+    return {
+      kind: "waiting",
+      label: "Needs you",
+      announcement: "This terminal needs your attention",
+      live: false,
+      actionable: false,
+    };
   }
   if (!liveTerminal) {
-    return { kind: "stopped", label: "Not live", announcement: "This session is not live in a terminal", live: false };
+    return {
+      kind: "stopped",
+      label: "Not live",
+      announcement: "This session is not live in a terminal",
+      live: false,
+      actionable: false,
+    };
   }
   // The terminal's own turn boundary, and this device's own outstanding steer.
   // No tool vocabulary, because the bridge sends none.
   if (tui.busy || tui.awaitingReply) {
-    return { kind: "working", label: "Working", announcement: "Working in the terminal", live: true };
+    return {
+      kind: "working",
+      label: "Working",
+      announcement: "Working in the terminal",
+      live: true,
+      actionable: false,
+    };
   }
-  return { kind: "ready", label: "Ready", announcement: "Ready", live: false };
+  return { kind: "ready", label: "Ready", announcement: "Ready", live: false, actionable: false };
 }
