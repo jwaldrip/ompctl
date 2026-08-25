@@ -2299,9 +2299,17 @@ export class Gateway {
       // leaves a machine holding some of another daemon's catalogue. The 400
       // below says the import failed, which is true and is also the reading that
       // sends someone looking for a machine that changed nothing.
+      //
+      // `stage` is what makes the count readable. A bare index cannot say
+      // whether zero completed means the settings failed before any routine was
+      // attempted, or whether a count equal to `attempted` means the last
+      // routine failed when in fact every one of them landed and only the record
+      // of it did not.
+      let stage: "settings" | "routines" | "record" = "settings";
       let completed = 0;
       try {
         config.apply({ policyMode: document.policyMode, keepAwake: document.keepAwake });
+        stage = "routines";
         for (const routine of document.routines) {
           // Execution hosts never travel. Imported actions execute locally,
           // through the receiving daemon's own supervisor. The webhook
@@ -2316,6 +2324,7 @@ export class Gateway {
           });
           completed += 1;
         }
+        stage = "record";
         // One row for the one decision that was made. Restoring a catalogue
         // arms every automation in it, so a door that wrote them all and
         // recorded nothing left the operator's own log unable to answer why a
@@ -2335,31 +2344,35 @@ export class Gateway {
         // would leave the one case where the log matters, a machine holding half
         // of somebody else's configuration, as the one case with nothing in it.
         //
-        // `completed` counts iterations that returned, and `failedAt` names the
-        // one that did not. It is deliberately not called "landed": a routine's
-        // definition is committed before its credential withdrawal, so the
-        // routine at `failedAt` may be on disk or may not, and reporting one
-        // number as though that were settled would be the same overclaiming this
-        // row exists to fix. Two fields and the ambiguity stated beats one field
-        // that is sometimes wrong.
+        // `completed` counts routines whose write returned, and `stage` says
+        // where the import stopped. Neither is called "landed": a routine's
+        // definition is committed before its credential withdrawal, so when
+        // `stage` is `routines` the one that threw may be on disk or may not.
+        // Reporting a single settled number would be the same overclaiming this
+        // row exists to fix.
         try {
           this.#store.audit({
             action: "sync.import",
             actorDeviceId: actor.deviceId,
             outcome: "error",
             detail: {
+              stage,
               completed,
-              failedAt: completed,
               attempted: document.routines.length,
               policyMode: document.policyMode,
               reason,
             },
           });
         } catch {
-          // A store that cannot take an audit row is very likely the cause of
-          // the failure being recorded. Swallowed on purpose: the caller's 400
-          // has to carry the original reason, and an audit failure thrown from
-          // here would replace it with a second, less useful one.
+          // Suppressed so the caller's 400 keeps carrying the original reason,
+          // which is the part anyone diagnosing this needs, rather than being
+          // replaced by a second failure from the recording of the first.
+          //
+          // What this costs is worth naming: an audit row that could not be
+          // written leaves no trace anywhere, and the store failing is only one
+          // of the reasons it might not have been. `stage` in the row above is
+          // the closest thing to a substitute, and on this path even that is
+          // gone.
         }
         return Response.json({ error: reason }, { status: 400 });
       }

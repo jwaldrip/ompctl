@@ -620,7 +620,7 @@ describe("POST /v1/sync/import", () => {
     expect(h.daemon.store.listAudit().filter(row => row.action.startsWith("routine."))).toEqual([]);
   });
 
-  test("a restore that fails part way through records what actually landed", async () => {
+  test("a restore that fails part way through records where it stopped", async () => {
     const h = await harness();
     const store = h.daemon.store;
     const real = store.upsertRoutine.bind(store);
@@ -665,9 +665,12 @@ describe("POST /v1/sync/import", () => {
     const rows: AuditEntry[] = store.listAudit().filter(row => row.action === "sync.import");
     expect(rows).toHaveLength(1);
     expect(rows[0]?.outcome).toBe("error");
-    // One landed of three attempted, which is the only number that tells an
-    // operator what state the machine is in.
-    expect(rows[0]?.detail).toMatchObject({ completed: 1, failedAt: 1, attempted: 3 });
+    // One routine's write returned, of three attempted, and the import stopped
+    // inside the routine loop rather than in the settings or the recording. Not
+    // "one landed": the second routine is the one that threw, and a definition
+    // commits before its credential withdrawal, so which side of that line a
+    // failure fell on is exactly what a single number cannot say.
+    expect(rows[0]?.detail).toMatchObject({ stage: "routines", completed: 1, attempted: 3 });
     expect(store.listRoutines().map(routine => routine.id)).toEqual(["rtn_first"]);
   });
 
