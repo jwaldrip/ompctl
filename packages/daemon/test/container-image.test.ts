@@ -822,8 +822,11 @@ describe("populating the toolchain cache", () => {
     const shim = readFileSync(join(resolved.toolsDir ?? "", "omp-shim"), "utf8");
     expect(shim).toContain(`exec ${TOOLCHAIN_MOUNT_PATH}/omp "$@"`);
     expect(shim).not.toContain("/usr/local/lib/omp/omp");
-    // The rest of the shim is carried over, credential handling included.
-    expect(shim).toContain("refusing to fall back to the image's HOME");
+    // And it does nothing else. The workspace `.omp-home` branch is gone: it
+    // was the pre-broker credential channel, and once the daemon seeds HOME
+    // itself the branch could only run after that and override it.
+    expect(shim).not.toContain(".omp-home");
+    expect(shim).not.toContain("HOME=");
   });
 
   test("the cache directory is owner-only, holding unwritable files", async () => {
@@ -843,6 +846,36 @@ describe("populating the toolchain cache", () => {
     expect(statSync(join(dir, "omp")).mode & 0o777).toBe(0o555);
     expect(statSync(join(dir, "omp-shim")).mode & 0o777).toBe(0o555);
     expect(statSync(join(dir, "ca-certificates.crt")).mode & 0o777).toBe(0o444);
+  });
+
+  test("the landed modes hold under a hardened umask, not just the runner's", async () => {
+    // The assertions above pass on a machine with the common `umask 022` whether
+    // or not the code asserts its modes, because 022 strips nothing from 0555 or
+    // 0444. They only fail where the defect actually bites: an operator running
+    // the hardened `umask 077`, where a mode merely requested at `open` lands as
+    // 0500 and 0400. So this pins the umask rather than inheriting it, and it is
+    // the only reason CI can see this class of regression at all.
+    //
+    // Group and other bits are the whole point. A guest that maps the host owner
+    // onto root reads 0500 happily, which is why this went unnoticed; a container
+    // running as any other user cannot read the CA bundle it is told to trust.
+    const previous = process.umask(0o077);
+    try {
+      const h = harness();
+      const cacheRoot = tempDir("ompd-cache-");
+      const resolved = await provision(h, cacheRoot);
+      const dir = resolved.toolsDir ?? "";
+
+      expect(statSync(join(dir, "omp")).mode & 0o777).toBe(0o555);
+      expect(statSync(join(dir, "omp-shim")).mode & 0o777).toBe(0o555);
+      expect(statSync(join(dir, "ca-certificates.crt")).mode & 0o777).toBe(0o444);
+      // The directories stay owner-only, which the same umask cannot loosen and
+      // must not be relaxed by the fix above.
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(cacheRoot).mode & 0o777).toBe(0o700);
+    } finally {
+      process.umask(previous);
+    }
   });
 
   test("no staging directory survives a successful landing", async () => {
@@ -1534,7 +1567,8 @@ describe("a directory adopted after losing the rename", () => {
     const shim = readFileSync(join(race.dir, "omp-shim"), "utf8");
     expect(shim).not.toContain("written by an older ompd");
     expect(shim).toBe(renderOmpHomeShim(`${TOOLCHAIN_MOUNT_PATH}/omp`));
-    expect(shim).toContain("refusing to fall back to the image's HOME");
+    expect(shim).toContain(`exec ${TOOLCHAIN_MOUNT_PATH}/omp "$@"`);
+    expect(shim).not.toContain(".omp-home");
     // Nothing quarantined: the winner was fine.
     expect(readdirSync(cacheRoot).filter(entry => entry.startsWith(".untrusted-"))).toEqual([]);
   });
@@ -1796,7 +1830,7 @@ describe("a cached toolchain", () => {
     const shim = readFileSync(join(dir, "omp-shim"), "utf8");
     expect(shim).toBe(current);
     expect(shim).not.toContain("an older build");
-    expect(shim).toContain("refusing to fall back to the image's HOME");
+    expect(shim).toContain(`exec ${TOOLCHAIN_MOUNT_PATH}/omp "$@"`);
     expect(readdirSync(dir).sort()).toEqual(["ca-certificates.crt", "omp", "omp-shim"]);
     // Refreshed, not quarantined.
     expect(readdirSync(cacheRoot).filter(entry => entry.startsWith(".untrusted-"))).toEqual([]);
@@ -1858,18 +1892,26 @@ describe("a failed toolchain", () => {
 
     const shim = readFileSync(join(resolved.toolsDir ?? "", "omp-shim"), "utf8");
     expect(shim).toContain('exec /opt/ompd/omp "$@"');
-    // The security behaviour, not merely the exec target: a seeded home with no
-    // `.omp` in it must be refused rather than quietly downgraded to the
-    // image's own HOME, because that is the difference between "no credentials"
-    // and "the wrong credentials".
-    expect(shim).toContain("refusing to fall back to the image's HOME");
-    expect(shim).toContain("exit 78");
+    // The security behaviour, which is now an absence rather than a refusal.
+    // The shim used to pick up a credential-bearing OMP home from
+    // `<workspace>/.omp-home` and export HOME at a copy of it. Once the daemon
+    // seeds HOME itself and mounts a per-container home carrying a scoped
+    // broker bearer, that branch could only run afterwards and override it, so
+    // a workspace that merely contained a `.omp-home` would silently discard
+    // the model config and put the agent back to "No model selected". There is
+    // no code left in the shim that reads the workspace or assigns HOME.
+    expect(shim).not.toContain(".omp-home");
+    expect(shim).not.toContain("HOME=");
+    expect(shim).not.toContain("mktemp");
+    expect(shim).not.toContain("exit 78");
   });
 
   test("the same template serves the image path with a different exec target", async () => {
-    // `scripts/check-container-host.ts` builds an image that puts omp at a real
-    // path instead of mounting it, and both callers rendering from one function
-    // is what stops the two shims drifting apart.
+    // The exec target is a parameter rather than a line rewritten by string
+    // surgery, which is what removed the "asserted the match so a silent miss
+    // could not happen" machinery this replaced. `check-container-host.ts` used
+    // to be the second caller and no longer is, but a template whose target is
+    // a parameter is only worth having if rendering it for another path works.
     expect(renderOmpHomeShim("/usr/local/lib/omp/omp")).toContain('exec /usr/local/lib/omp/omp "$@"');
     expect(renderOmpHomeShim("/opt/ompd/omp")).toContain('exec /opt/ompd/omp "$@"');
     expect(renderOmpHomeShim("/usr/local/lib/omp/omp")).not.toContain("/opt/ompd/omp");

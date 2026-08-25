@@ -115,6 +115,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  fchmodSync,
   fsyncSync,
   mkdirSync,
   mkdtempSync,
@@ -245,7 +246,7 @@ const STDERR_TAIL = 800;
 const CACHE_MODE = 0o700;
 
 /**
- * The shim, embedded rather than read off disk.
+ * The container's entrypoint, embedded rather than read off disk.
  *
  * It used to be `scripts/omp-home-shim.sh`, resolved relative to this module.
  * That is wrong in the artifact ompd actually ships: inside the single-file
@@ -260,58 +261,51 @@ const CACHE_MODE = 0o700;
  * match so a silent miss could not produce a shim that execs a path which does
  * not exist. A template takes no such risk: the exec target is a parameter, so
  * there is nothing to match and nothing to assert. `renderOmpHomeShim` is
- * exported because the legacy docker-image path in
- * `scripts/check-container-host.ts` needs the same script pointed at
- * `/usr/local/lib/omp/omp` instead, and one source of truth for both is the
- * point.
+ * exported because `container-image.test.ts` pins the rendered script, and
+ * because the exec target being a parameter is only worth anything if a caller
+ * can render it for a different mount path.
  *
- * Every line below is load-bearing; see the original for the reasoning, which
- * is preserved verbatim.
+ * What this no longer does is the part worth recording, because it was a
+ * credential channel and it was removed rather than replaced.
+ *
+ * It used to look for an OMP home seeded at `<workspace>/.omp-home`, copy it
+ * into a private `mktemp` directory, and export `HOME` at the copy; a seed
+ * present but missing `.omp` was refused with exit 78. Before the model broker
+ * existed that was the only way to give a container credentials, and it was a
+ * poor one: what it carried was a reusable provider credential, readable by
+ * anything running in the container and by anything that could write to the
+ * workspace on the host.
+ *
+ * The daemon now seeds a per-container home itself, mounts it at
+ * `GUEST_HOME_MOUNT` and sets `HOME` to it in the `run` argv, carrying a bearer
+ * scoped to one model on the daemon's own broker. Keeping the old branch
+ * alongside that made it actively harmful rather than merely obsolete: this
+ * script runs AFTER the daemon set `HOME`, so a workspace that merely happened
+ * to contain a `.omp-home` directory would override it, silently discard the
+ * seeded model config, and put the agent back to failing every prompt with
+ * "No model selected" -- the exact defect the broker exists to remove. A
+ * credential channel with nothing left feeding it, whose only remaining effect
+ * is to break the channel that replaced it, is not worth keeping for symmetry.
+ *
+ * Nothing replaces it here. A container with no seeded home runs against the
+ * image's own `HOME` and has no credentials, which is left alone rather than
+ * refused so `omp --version` and every other local check keeps working. On the
+ * container path the provisioner has already refused before reaching this
+ * point, because a host that cannot get model access is not provisioned.
  */
 export function renderOmpHomeShim(ompPath: string): string {
+  // Deliberately two lines of behaviour and no branches. Everything this
+  // script used to decide now happens on the daemon side, where it can be
+  // audited and where a failure can refuse the provision instead of silently
+  // changing which credentials the agent runs with.
   return `#!/bin/sh
-# Point omp at an OMP home carried in on the workspace mount.
+# Run omp from the toolchain mount, against whatever HOME the daemon set.
 #
-# The container backend runs \`<runtime> exec -i <id> <omp>\`, and the only
-# things it injects at run time are the image, the workspace bind mount, the
-# toolchain mount, and OMPD_REPO / OMPD_REF. There is no flag for "give the
-# container credentials", so the workspace is the only channel: the daemon
-# mounts it at the same absolute path it has on the host and sets it as the
-# container's workdir, and \`exec\` inherits that workdir.
-#
-# So an OMP home seeded at \`<workspace>/.omp-home\` is picked up here. That is a
-# security fact, not a convenience: every credential in it is readable by
-# anything running in the container, and by anything that can write to the
-# workspace on the host.
-#
-# Absent, omp runs against the image's own HOME and has no credentials. That is
-# left alone rather than refused, because \`omp --version\` and any other local
-# check has to keep working, and the failure surfaces loudly at the first model
-# call. A seed that is present but has no \`.omp\` in it is different: someone
-# meant to pass credentials and the wiring is wrong, so that one is refused
-# rather than quietly downgraded to the image's config.
+# The daemon delivers model access by mounting a per-container home directory
+# and pointing HOME at it in the run argv, so there is nothing for this script
+# to resolve. See renderOmpHomeShim in image.ts for what it used to do and why
+# that was removed.
 set -eu
-
-SEED="$PWD/.omp-home"
-if [ -d "$SEED" ]; then
-  if [ ! -d "$SEED/.omp" ]; then
-    echo "omp shim: $SEED exists but holds no .omp; refusing to fall back to the image's HOME" >&2
-    exit 78
-  fi
-  # Under /tmp because that is the one writable filesystem a hardened container
-  # host has: the root filesystem is mounted read-only where the runtime can
-  # express it, and the scratch root is a tmpfs. \`mktemp -d\` rather than a fixed
-  # path so nothing already sitting there can be followed, since /tmp is shared
-  # and world-writable.
-  HOME="$(mktemp -d /tmp/omp-home.XXXXXXXX)"
-  export HOME
-  # Copied rather than used in place, for two reasons. The seed is a bind mount
-  # from the daemon's machine, so an ACP host that refreshed a credential in
-  # place would be writing the operator's own OMP home. And omp keeps its state
-  # in SQLite, whose locking is not dependable over a virtiofs mount.
-  cp -a "$SEED/." "$HOME/"
-  chmod -R go-rwx "$HOME"
-fi
 
 exec ${ompPath} "$@"
 `;
@@ -580,10 +574,14 @@ function resolved(hit: CachedToolchain, cached: boolean): ResolvedToolchain {
  * hit ran `probeCache` and then `refreshShim`. Adopting a directory after
  * losing the atomic rename ran `probeCache` and stopped, so a race winner
  * written by an older build of ompd kept its shim forever. That is not a
- * cosmetic staleness: the shim is the code deciding whether an OMP home seeded
- * on the workspace mount is honoured or refused, so an old copy pinned there is
- * a security behaviour going stale. Two call sites doing almost the same thing
- * is how that happened, and one function both call is the fix. The divergence
+ * cosmetic staleness: the shim is the container's entrypoint, so an old copy
+ * pinned there is whatever behaviour that ompd release had, running forever
+ * under a current one. It used to decide whether a credential-bearing OMP home
+ * on the workspace mount was honoured, which is how this was found; it no
+ * longer does, and the staleness argument does not depend on that -- an
+ * entrypoint nobody can update is the problem either way. Two call sites doing
+ * almost the same thing is how that happened, and one function both call is
+ * the fix. The divergence
  * left is only in what each caller does with a non-hit, which is genuinely
  * different: a hit-path miss rebuilds, an adopt-path miss refuses.
  *
@@ -748,11 +746,13 @@ function quarantine(dir: string, reason: string, onLog?: (line: string) => void)
  *
  * The directory is named after the omp binary, not the shim, so editing the
  * shim template does not change the directory name and every existing cache
- * entry would otherwise keep serving the old shim forever. The shim is the code
- * that decides whether an OMP home seeded on the workspace mount is picked up
- * or refused, so silently pinning an old copy of it is a security behaviour
- * going stale, not a cosmetic staleness. Two kilobytes, compared on every hit,
- * renamed over only when it actually differs.
+ * entry would otherwise keep serving the old shim forever. The shim is the
+ * container's entrypoint, so silently pinning an old copy of it runs whatever
+ * that ompd release did, under a current one, indefinitely. That mattered most
+ * when the shim still decided whether a credential-bearing OMP home on the
+ * workspace mount was honoured; it no longer does, and an unupdatable
+ * entrypoint is worth refreshing regardless. Two kilobytes, compared on every
+ * hit, renamed over only when it actually differs.
  *
  * A stale shim is not treated as tampering, which is worth being explicit
  * about: replacing it is exactly what an ompd upgrade needs, and quarantining
@@ -1212,6 +1212,21 @@ function writeDurable(path: string, bytes: Uint8Array, mode: number): void {
   const fd = openSync(path, "wx", mode);
   try {
     writeSync(fd, bytes);
+    // Asserted, not requested, and before the flush rather than after. The mode
+    // argument to `open` is masked by the process umask, so on a machine with
+    // the hardened `umask 077` that many operators run, a requested 0555 lands
+    // as 0500 and a 0444 CA bundle lands as 0400. Both still work for a guest
+    // that maps the host owner onto root, which is why this went unnoticed, and
+    // both break a container running as any other user: it can no longer read
+    // the bundle it is told to trust.
+    //
+    // `fchmod` on the open descriptor rather than `chmod` on the path, so
+    // nothing can be swapped in underneath between the write and the mode. It
+    // goes above the `fsync` because the mode is inode metadata: setting it
+    // afterwards would leave this function reporting a durable write whose
+    // permissions were still only in the page cache, which is the one property
+    // the name of this function promises.
+    fchmodSync(fd, mode);
     fsyncSync(fd);
   } finally {
     closeSync(fd);

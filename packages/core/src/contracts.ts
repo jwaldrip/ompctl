@@ -301,6 +301,21 @@ export interface ResolvedHost {
   ompSha256?: string;
   /** sha256 of the CA bundle the container was given, when a toolchain was mounted. */
   caSha256?: string;
+  /**
+   * Daemon-side directory seeded as the container's `HOME`, or null when the
+   * host was provisioned without model access. Recorded for the same reason
+   * `network` is: after a restart there is no process map, and this directory
+   * is the guest's whole configuration, so teardown has to be able to reclaim
+   * it from the store alone.
+   *
+   * It deliberately names the directory and nothing inside it. The bearer the
+   * broker issued lives only in a 0600 file under this path and in the
+   * broker's own memory, never here, because the store persists `HostRef` and
+   * a token written into it would outlive the container that held it. The
+   * consequence is intended: a daemon restart forgets every grant, so a
+   * restarted daemon withdraws model access from containers it did not start.
+   */
+  guestHome?: string | null;
   /** ISO timestamp, so reconciliation can tell a fresh host from an orphan. */
   createdAt: string;
 }
@@ -468,6 +483,74 @@ export interface Run {
   actions: ActionRun[];
   /** Event-level cause, used for singleton skips and daemon interruption. */
   error?: string;
+}
+
+/**
+ * What a caller may say when it defines a routine, as opposed to what the
+ * store holds.
+ *
+ * Three fields of {@link Routine} are absent on purpose, because each is the
+ * daemon's to decide rather than a caller's to assert:
+ *
+ * - `id` and `createdAt` are minted at the write. A caller that supplied them
+ *   could overwrite an unrelated routine by naming its id, which is an update
+ *   wearing a create's name.
+ * - `RoutineAction.host` is forced local. This mirrors what the app's own
+ *   `routine_write` frame does and what `/v1/sync/import` does, and the reason
+ *   is the same in all three: an execution host carries image, mounts, and
+ *   network policy, so letting a definition name one turns "schedule a prompt"
+ *   into "mount any path on this machine".
+ *
+ * A webhook trigger names no `secretRef` either. The daemon mints that, so two
+ * routines cannot be made to share one credential row -- which would be one
+ * secret opening two endpoints, and rotating either one silently breaking the
+ * other.
+ */
+export type TriggerDraft =
+  | { kind: "cron"; expression: string; timezone?: string }
+  | { kind: "interval"; seconds: number }
+  | { kind: "manual" }
+  | { kind: "webhook" };
+
+export interface RoutineActionDraft {
+  /** Minted when absent. Supplying one keeps an outcome named across a rename. */
+  id?: string;
+  name: string;
+  prompt: string;
+  cwd: string;
+  timeoutSeconds?: number;
+  labels?: Record<string, string>;
+}
+
+export interface RoutineDraft {
+  name: string;
+  /** Defaults true: a routine defined and left off is the rarer intent. */
+  enabled?: boolean;
+  trigger: TriggerDraft;
+  /** At least one. A routine with no actions is a schedule that does nothing. */
+  actions: RoutineActionDraft[];
+  /** Defaults true, matching the store's own column default. */
+  singleton?: boolean;
+  labels?: Record<string, string>;
+}
+
+/**
+ * A partial edit of an existing routine. Absent means unchanged; present
+ * means replace. That distinction is the whole contract, so `undefined` and
+ * "empty" must never be collapsed: `labels: {}` clears every label, while no
+ * `labels` key at all leaves them alone.
+ *
+ * `actions` replaces the whole array rather than patching members, because an
+ * ordered list has no stable per-index identity to patch against -- an edit
+ * that inserted an action would silently retarget every later one.
+ */
+export interface RoutinePatch {
+  name?: string;
+  enabled?: boolean;
+  trigger?: TriggerDraft;
+  actions?: RoutineActionDraft[];
+  singleton?: boolean;
+  labels?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,8 +1570,25 @@ export type AuditAction =
   | "tunnel.register"
   /** A client opened a tunnel session to this daemon, or was refused. */
   | "tunnel.attach"
+  /**
+   * A routine definition was written for the first time. `detail` carries the
+   * routine id, its name, and its trigger kind; never a webhook secret, and
+   * never the `secretRef` that names one.
+   */
   | "routine.create"
+  /** An existing routine definition was edited. Same `detail` rules as `routine.create`. */
+  | "routine.update"
   | "routine.run"
+  /**
+   * A whole configuration was restored from another daemon over
+   * `/v1/sync/import`. One row for the restore, not one per routine: importing
+   * a catalogue arms every automation in it, and fifty `routine.create` rows
+   * would be fifty arming decisions nobody made. `detail` carries the routine
+   * count and the policy mode, so a reader can see how much of the machine's
+   * behaviour changed and under what policy, without a credential reaching a
+   * log meant to be safe to print.
+   */
+  | "sync.import"
   | "proposal.submit"
   | "proposal.promote"
   | "proposal.reject"
@@ -1527,6 +1627,23 @@ export type AuditAction =
    * carries the routine id and, on a refusal, which refusal it was.
    */
   | "routine.delete"
+  /**
+   * A container host was granted scoped access to one model through the
+   * daemon's broker, or the grant failed. `detail` carries the model id, the
+   * container network, and on a failure the reason; it NEVER carries the
+   * bearer the guest was issued. A grant is the moment a guest gains the
+   * ability to spend the operator's model credential, so it is its own action
+   * rather than detail on `host.provision`: the two fail for different
+   * reasons, and "which container could talk to which model, and when" has to
+   * be answerable without reading provisioning records.
+   */
+  | "model.grant"
+  /**
+   * A container host's model grant was revoked, or the revocation failed.
+   * Paired with `model.grant` so the trail bounds the window in which a guest
+   * could spend the credential. Same rule on `detail`: model id, never a token.
+   */
+  | "model.revoke"
   /**
    * A device cloned a repository onto this machine, or was refused. `detail`
    * carries the url and the destination; a url carrying a credential is
