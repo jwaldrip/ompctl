@@ -69,6 +69,8 @@ import {
   CA_SOURCE_IMAGE_PIN,
   OMP_RELEASES,
   type OmpRelease,
+  UNSUPPORTED_LINUX_ASSETS,
+  UPSTREAM_SUMS,
 } from "../src/provisioner/toolchain-manifest.ts";
 import type { CommandResult, CommandRunner } from "../src/provisioner/types.ts";
 import { ProvisionError } from "../src/provisioner/types.ts";
@@ -364,25 +366,6 @@ describe("the toolchain manifest", () => {
     }
   });
 
-  test("the reviewed 18.0.4 releases are the ones upstream published", () => {
-    // Straight from that tag's SHA256SUMS.txt asset and the release API, so an
-    // edit to either constant has to be deliberate.
-    expect(OMP_RELEASES.find(r => r.version === "18.0.4" && r.arch === "arm64")).toEqual({
-      version: "18.0.4",
-      arch: "arm64",
-      sha256: "f2b7c8a019681ede314ac165100c1c5b5cd4900139075948da809c004bec5ce7",
-      bytes: 145082360,
-      url: "https://github.com/can1357/oh-my-pi/releases/download/v18.0.4/omp-linux-arm64",
-    });
-    expect(OMP_RELEASES.find(r => r.version === "18.0.4" && r.arch === "x64")).toEqual({
-      version: "18.0.4",
-      arch: "x64",
-      sha256: "94ec42d17d71975a381e20335bb3c005a7fd7eec19b319358df6d22f28e16b37",
-      bytes: 179881160,
-      url: "https://github.com/can1357/oh-my-pi/releases/download/v18.0.4/omp-linux-x64",
-    });
-  });
-
   test("the committed fixture is exactly the trust store the manifest pins", () => {
     // The test that stops `CA_BUNDLE_SHA256` from being a constant compared
     // against itself. The fixture was unpacked from the arm64 layer of the
@@ -405,6 +388,248 @@ describe("the toolchain manifest", () => {
       CA_BUNDLE_ORBSTACK_SHA256,
     );
     expect(ORBSTACK_CA).toContain(CA_PEM_HEADER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The omp digests are checkable against upstream's own committed asset
+// ---------------------------------------------------------------------------
+
+/**
+ * The gap these tests close, stated plainly because it is easy to miss.
+ *
+ * `OMP_RELEASES` used to carry each digest as a bare string literal with a
+ * comment saying it came from upstream's `SHA256SUMS.txt`. Every check
+ * downstream compares a download against that literal, so the literal is the
+ * root of the whole pin, and nothing compared it against anything. A digit
+ * transposed by accident, or a value invented outright, reads exactly as
+ * plausibly as the real thing: 64 hex characters look the same either way, and
+ * a reviewer has no artefact to check them against without leaving the diff.
+ * The version of this file that shipped even had a test asserting the 18.0.4
+ * entries equalled the same literals typed a second time, which is the defect
+ * with a passing test wrapped around it.
+ *
+ * So upstream's own asset is committed, verbatim, and parsed here. What that
+ * buys, precisely: a fabricated digest now fails a named test, and a reviewer
+ * can re-fetch the URL in `UPSTREAM_SUMS` and compare its sha256 against the
+ * recorded one without trusting this repo at all.
+ *
+ * What it does not buy, equally precisely: `SHA256SUMS.txt` is upstream's
+ * published list, not a signature. It is not countersigned, and a publisher who
+ * re-cuts a release can replace it. Committing it converts an invisible edit to
+ * a string literal into a visible disagreement between two artefacts, which is
+ * a smaller claim than "verified" and the one actually being made.
+ */
+const SUMS_DIR = join(import.meta.dir, "fixtures", "omp-releases");
+
+/**
+ * The worktree root, so `UpstreamSums.path` is exercised as written.
+ *
+ * Resolving the fixture by re-deriving its name from the version would make the
+ * recorded path decoration. Joining the recorded path onto the root means a
+ * moved or misnamed fixture fails here. `import.meta.dir` is
+ * `<root>/packages/daemon/test`, and `join` keeps this true on both platforms
+ * rather than assuming a separator or a canonical prefix.
+ */
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
+
+/** The committed asset for a version, read through the recorded path. */
+function committedSums(version: string): string {
+  const record = UPSTREAM_SUMS.find(entry => entry.version === version);
+  if (record === undefined) throw new Error(`no UPSTREAM_SUMS entry for ${version}`);
+  return readFileSync(join(REPO_ROOT, record.path), "utf8");
+}
+
+/**
+ * `<digest>  <asset>` lines, parsed the way `shasum -c` reads them.
+ *
+ * Both spellings are accepted because both are what the tool emits: two spaces
+ * for text mode, a space and an asterisk for binary. Anything else is skipped
+ * rather than guessed at, so a malformed line cannot silently become a digest.
+ *
+ * A trailing carriage return is tolerated so that the two failures stay
+ * separate. A checkout that line-ending-mangled the fixture has broken byte
+ * identity, and the `fileSha256` check is the one that should say so by name.
+ * Without this the parser would find nothing and every digest comparison would
+ * fail as well, burying the actual cause under six confusing failures.
+ */
+function parseSums(text: string): Record<string, string> {
+  const digests: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const match = /^([0-9a-f]{64}) [ *](\S+?)\r?$/.exec(line);
+    if (match?.[1] !== undefined && match[2] !== undefined) digests[match[2]] = match[1];
+  }
+  return digests;
+}
+
+describe("the committed upstream checksum assets", () => {
+  test("each one is the file UPSTREAM_SUMS records, by its own digest", () => {
+    expect(UPSTREAM_SUMS.length).toBeGreaterThan(0);
+    for (const record of UPSTREAM_SUMS) {
+      const bytes = readFileSync(join(REPO_ROOT, record.path));
+      // Recomputed rather than trusted: this is what stops someone editing the
+      // fixture to make a wrong manifest digest agree with it. Doing that now
+      // has to also edit `fileSha256`, which is a second deliberate act in the
+      // reviewed source file rather than a quiet change to a test fixture.
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(record.fileSha256);
+      expect(record.url).toBe(
+        `https://github.com/can1357/oh-my-pi/releases/download/v${record.version}/SHA256SUMS.txt`,
+      );
+      expect(record.path).toBe(`packages/daemon/test/fixtures/omp-releases/v${record.version}-SHA256SUMS.txt`);
+      expect(record.fetched).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      // Parseable at all, and carrying the assets a release is expected to have.
+      expect(Object.keys(parseSums(bytes.toString("utf8"))).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("every supported version has one, and there are no unrecorded files", () => {
+    // Both directions, because each failure is real. A version with no asset is
+    // a digest nobody can check; a file with no record is a fixture nobody
+    // reviewed sitting where the checkable evidence lives.
+    expect([...new Set(UPSTREAM_SUMS.map(r => r.version))].sort()).toEqual(
+      [...new Set(OMP_RELEASES.map(r => r.version))].sort(),
+    );
+    // Filtered to `.txt` so a Finder visit dropping a `.DS_Store` in here is
+    // not a macOS-only failure. What is being checked is that no unreviewed
+    // checksum asset is sitting where the checkable evidence lives, and an
+    // operating system's own metadata file is not that.
+    const committed = readdirSync(SUMS_DIR)
+      .filter(name => name.endsWith(".txt"))
+      .sort();
+    expect(committed).toEqual(UPSTREAM_SUMS.map(r => `v${r.version}-SHA256SUMS.txt`).sort());
+  });
+
+  test("every reviewed digest is the one upstream published for that asset", () => {
+    // The load-bearing one. Change a digit in any `OMP_RELEASES.sha256` and
+    // this fails, naming the version and the arch.
+    for (const release of OMP_RELEASES) {
+      const asset = `omp-linux-${release.arch}`;
+      const upstream = parseSums(committedSums(release.version))[asset];
+      // Thrown rather than expected, so the digest comparison below sees a
+      // narrowed string: a missing asset is a broken fixture, not a failed
+      // comparison, and the two deserve different messages.
+      if (upstream === undefined) {
+        throw new Error(`${asset} is missing from the committed v${release.version} asset`);
+      }
+      expect(release.sha256, `omp ${release.version} (linux/${release.arch}) disagrees with upstream`).toBe(upstream);
+    }
+  });
+
+  test("every linux asset upstream published is either reviewed or named unsupported", () => {
+    // The reverse direction, and the reason `UNSUPPORTED_LINUX_ASSETS` exists.
+    // Without it an architecture nobody wants and an architecture somebody
+    // forgot are the same observation: an absence. The musl builds are the
+    // former and have to say so.
+    for (const record of UPSTREAM_SUMS) {
+      const linuxAssets = Object.keys(parseSums(committedSums(record.version)))
+        .filter(name => name.startsWith("omp-linux-"))
+        .sort();
+      expect(linuxAssets.length).toBeGreaterThan(0);
+      for (const asset of linuxAssets) {
+        const reviewed = OMP_RELEASES.some(r => r.version === record.version && `omp-linux-${r.arch}` === asset);
+        const declined = asset in UNSUPPORTED_LINUX_ASSETS;
+        expect(
+          reviewed || declined,
+          `v${record.version} publishes ${asset}, which has no OMP_RELEASES entry and is not in UNSUPPORTED_LINUX_ASSETS`,
+        ).toBe(true);
+        // Never both, or the manifest is saying two things about one asset.
+        expect(reviewed && declined, `${asset} is both reviewed and declined`).toBe(false);
+      }
+    }
+    // And the decision that is actually being made, named rather than implied.
+    expect(Object.keys(UNSUPPORTED_LINUX_ASSETS).sort()).toEqual(["omp-linux-musl-arm64", "omp-linux-musl-x64"]);
+    for (const reason of Object.values(UNSUPPORTED_LINUX_ASSETS)) expect(reason).toContain("glibc");
+  });
+
+  test("byte counts are a weaker cross-check, and are not claimed to come from the asset", () => {
+    // Said out loud because conflating the two would be the dishonest part.
+    // `SHA256SUMS.txt` carries digests only, so nothing here can check `bytes`
+    // against upstream. It comes from the release API, which is not committed:
+    // that response carries `download_count` and `reactions`, so its own digest
+    // moves without the release moving and a recorded hash could never be
+    // re-compared. What is asserted is only that no committed asset mentions a
+    // size, so a reader cannot mistake one record for the other.
+    for (const record of UPSTREAM_SUMS) {
+      const text = committedSums(record.version);
+      for (const release of OMP_RELEASES.filter(r => r.version === record.version)) {
+        expect(text).not.toContain(String(release.bytes));
+        // The weak tripwire it is: a plausible size for a bun-compiled binary,
+        // caught by the digest a moment later if it is wrong.
+        expect(release.bytes).toBeGreaterThan(100_000_000);
+        expect(release.bytes).toBeLessThan(300_000_000);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The committed asset is test-time evidence, never consulted at runtime
+// ---------------------------------------------------------------------------
+
+describe("checksum provenance at runtime", () => {
+  /** Every provisioner source, so the claim is about the module and not one file. */
+  const PROVISIONER = join(import.meta.dir, "..", "src", "provisioner");
+  const SOURCES: Record<string, string> = Object.fromEntries(
+    readdirSync(PROVISIONER)
+      .filter(name => name.endsWith(".ts"))
+      .map(name => [name, readFileSync(join(PROVISIONER, name), "utf8")]),
+  );
+
+  test("a successful provision fetches the asset and nothing else", async () => {
+    const h = harness();
+    await provision(h, tempDir("ompd-cache-"));
+
+    // The behavioural half. If a checksum file were consulted during
+    // provisioning it would appear here, because every fetch goes through this
+    // one seam.
+    expect(h.fetched).toEqual([TEST_RELEASE.url]);
+    for (const url of h.fetched) expect(url).not.toContain("SHA256SUMS");
+    for (const command of h.argv) expect(command.join(" ")).not.toContain("SHA256SUMS");
+  });
+
+  test("no provisioner source reaches for the committed evidence", () => {
+    // The structural half, and the thing that would still hold if someone added
+    // a second fetch seam. The fixture is a test artefact: production code
+    // importing it would mean the pin was being checked against a file shipped
+    // beside it rather than against a reviewed constant.
+    //
+    // `toolchain-manifest.ts` is excluded on purpose, and only from the name
+    // checks: it declares both records and records the fixture path, which is
+    // where a reviewer should find them. What matters is that it declares them
+    // as data and never opens the file, which is the assertion below rather
+    // than an exemption.
+    for (const [name, source] of Object.entries(SOURCES)) {
+      if (name !== "toolchain-manifest.ts") {
+        // Narrow to this fixture directory on purpose. `runtime.ts` legitimately
+        // discusses its committed `run --help` captures in prose, and a check
+        // that fails on the word "fixtures" would be a check about writing
+        // style rather than about what the code reads.
+        expect(source, `${name} references the checksum fixtures`).not.toContain("fixtures/omp-releases");
+        expect(source, `${name} reads UPSTREAM_SUMS`).not.toContain("UPSTREAM_SUMS");
+        expect(source, `${name} reads UNSUPPORTED_LINUX_ASSETS`).not.toContain("UNSUPPORTED_LINUX_ASSETS");
+      }
+    }
+
+    // The manifest is data. No filesystem, no network, no imports at all, so
+    // the committed asset cannot be read from the code path that ships.
+    const manifest = SOURCES["toolchain-manifest.ts"] ?? "";
+    expect(manifest).not.toContain("readFileSync");
+    expect(manifest).not.toContain("node:fs");
+    expect(manifest).not.toContain("import ");
+    expect(manifest).not.toContain("require(");
+  });
+
+  test("the module has exactly one network seam, and it downloads the asset", () => {
+    // Grepped and pinned: `image.ts` holds the only `fetch(` in the provisioner,
+    // it takes the url it is handed, and `downloadOmp` only ever hands it
+    // `release.url`. So there is no code path that could fetch a checksum, which
+    // is a stronger statement than "the tests did not see one".
+    const withFetch = Object.entries(SOURCES).filter(([, source]) => source.includes("fetch("));
+    expect(withFetch.map(([name]) => name)).toEqual(["image.ts"]);
+    const image = SOURCES["image.ts"] ?? "";
+    expect(image.split("fetch(").length - 1).toBe(1);
+    expect(image).toContain("await fetch(url)");
+    expect(image).toContain("fetcher(release.url)");
   });
 });
 
@@ -822,8 +1047,12 @@ describe("the extracted trust store", () => {
 
     // Correct is not enough; an operator hitting this needs an exit.
     expect(message).toContain("Apple's `container`");
-    expect(message).toContain("OMPD_CONTAINER_IMAGE");
-    expect(message).toContain("spec.image");
+    // Names the config field, not the env var it used to name, and no longer
+    // offers `spec.image`: the wire refuses that field now, so advising it
+    // would send an operator down a path that 400s.
+    expect(message).toContain("`containerImage`");
+    expect(message).not.toContain("OMPD_CONTAINER_IMAGE");
+    expect(message).not.toContain("spec.image");
     expect(message).toContain("CA_BUNDLE_SHA256");
     expect(message).toContain("packages/daemon/src/provisioner/toolchain-manifest.ts");
   });

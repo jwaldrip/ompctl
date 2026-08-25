@@ -30,8 +30,7 @@ import {
   type CollabVoiceParticipant,
   type ConnectorSummary,
   type EndpointOffer,
-  type HostMount,
-  type HostSpec,
+  isRecord,
   type PersistCollabVoiceNoteInput,
   PROMPT_IMAGE_REFUSAL_REASONS,
   parsePromptImages,
@@ -58,8 +57,10 @@ import {
   type Task,
   type TuiActivityKind,
   type TuiSteerDelivery,
+  validateWireHostSpec,
   type WebViewAction,
   type WebViewActionResult,
+  type WireHostSpec,
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
 import { CollabGuests } from "../collab/guests.ts";
@@ -230,109 +231,6 @@ function validateSessionQuery(value: unknown): { query: SessionQuery } | { error
   }
 
   return { query };
-}
-
-/** Fields a client may put in a `host`. Anything else is a refusal, not a pass-through. */
-const HOST_SPEC_KEYS: Record<string, true> = {
-  kind: true,
-  image: true,
-  repo: true,
-  ref: true,
-  ttlSeconds: true,
-  mounts: true,
-  network: true,
-};
-
-/** Fields a client may put in a `host.mounts` entry. */
-const HOST_MOUNT_KEYS: Record<string, true> = { hostPath: true, mode: true };
-
-/**
- * Narrows an untrusted `host` into a `HostSpec`, or says why it is not one.
- *
- * This replaces an `as HostSpec` cast. The cast was the whole check: whatever
- * a `manage`-scoped caller put in `host` reached the provisioner with its
- * declared type and none of its claims tested, and the provisioner puts those
- * fields into a runtime's argv. `image` is the sharp one, so it is refused
- * twice: here, and in the container backend's own `refuseIfFlagShaped`, which
- * a caller that is not the gateway cannot skip.
- *
- * Every accepted field is copied onto a fresh object rather than the input
- * being cast. Rejecting unknown keys already refuses an extra field, so the
- * copy is belt and braces, but it means nothing a client sends can reach the
- * provisioner by a route this function did not walk.
- *
- * Mount paths are deliberately NOT resolved here. That is
- * `resolveMountPath`'s job in the container backend, where the daemon's own
- * `home` is known and the canonical path goes straight into argv; a gateway
- * that pre-resolved would be a second, weaker copy of that decision.
- */
-function validateHostSpec(value: unknown): { host: HostSpec } | { error: string } {
-  if (!isRecord(value)) return { error: "host must be an object" };
-  const unknownKey = Object.keys(value).find(key => HOST_SPEC_KEYS[key] !== true);
-  if (unknownKey !== undefined) return { error: `host has an unknown field "${unknownKey}"` };
-  // Narrowed by comparison rather than by a guard function, so `value.kind`
-  // reaches the fresh object as a `HostKind` with nothing asserted.
-  if (value.kind !== "local" && value.kind !== "container" && value.kind !== "cloud") {
-    return { error: "host.kind must be one of local, container, cloud" };
-  }
-
-  const host: HostSpec = { kind: value.kind };
-
-  if (value.image !== undefined) {
-    if (typeof value.image !== "string") return { error: "host.image must be a string" };
-    // `image` lands in argv as the image positional, where a leading dash is
-    // consumed as a flag: `"--privileged"` produces
-    // `run --privileged tail -f /dev/null` and makes `tail` the image name.
-    if (value.image.startsWith("-")) {
-      return { error: "host.image cannot begin with a dash; a runtime would read it as a flag, not an image" };
-    }
-    host.image = value.image;
-  }
-  if (value.repo !== undefined) {
-    if (typeof value.repo !== "string") return { error: "host.repo must be a string" };
-    host.repo = value.repo;
-  }
-  if (value.ref !== undefined) {
-    if (typeof value.ref !== "string") return { error: "host.ref must be a string" };
-    host.ref = value.ref;
-  }
-  if (value.ttlSeconds !== undefined) {
-    // A zero or negative TTL is an immediate self-destruct dressed as a
-    // lifetime, and NaN or Infinity reaches a timer as neither.
-    if (typeof value.ttlSeconds !== "number" || !Number.isFinite(value.ttlSeconds) || value.ttlSeconds <= 0) {
-      return { error: "host.ttlSeconds must be a positive finite number" };
-    }
-    host.ttlSeconds = value.ttlSeconds;
-  }
-  if (value.network !== undefined) {
-    if (value.network !== "isolated" && value.network !== "none") {
-      return { error: 'host.network must be "isolated" or "none"' };
-    }
-    host.network = value.network;
-  }
-  if (value.mounts !== undefined) {
-    if (!Array.isArray(value.mounts)) return { error: "host.mounts must be an array" };
-    const mounts: HostMount[] = [];
-    for (const entry of value.mounts) {
-      if (!isRecord(entry)) return { error: "each host.mounts entry must be an object" };
-      const unknownMountKey = Object.keys(entry).find(key => HOST_MOUNT_KEYS[key] !== true);
-      if (unknownMountKey !== undefined) {
-        return { error: `a host.mounts entry has an unknown field "${unknownMountKey}"` };
-      }
-      if (typeof entry.hostPath !== "string" || entry.hostPath.length === 0) {
-        return { error: "each host.mounts entry needs a non-empty hostPath string" };
-      }
-      if (entry.mode !== undefined && entry.mode !== "ro" && entry.mode !== "rw") {
-        return { error: 'a host.mounts mode must be "ro" or "rw"' };
-      }
-      mounts.push(
-        entry.mode === undefined ? { hostPath: entry.hostPath } : { hostPath: entry.hostPath, mode: entry.mode },
-      );
-    }
-    host.mounts = mounts;
-  }
-
-  return { host };
 }
 
 /**
@@ -583,10 +481,6 @@ const SYNC_ROUTINE_KEYS: Record<string, true> = {
   createdAt: true,
 };
 const FORBIDDEN_SYNC_KEY = /(token|credential|bearer|authorization|process|pid|host)/i;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 /**
  * Whether a client-supplied `deliverAs` is one omp's prompt flow accepts.
@@ -2477,7 +2371,9 @@ export class Gateway {
    * HostSpec }`, which is not a check at all: a `manage`-scoped caller's
    * `host` reached the provisioner with its declared type and none of its
    * claims tested, and the provisioner turns those fields into a container
-   * runtime's argv.
+   * runtime's argv. What survives that validation is a `WireHostSpec`, which
+   * is the narrower promise: it cannot carry an `image`, and the supervisor
+   * accepts it because widening to `HostSpec` is the safe direction.
    */
   async #createAgentOverWire(body: unknown, actor: Actor): Promise<AgentCreateOutcome> {
     const input = body as {
@@ -2493,9 +2389,9 @@ export class Gateway {
     // Validated before the replica branch, not inside the run path. A replica
     // queues the spec for a primary to run later, so a `host` checked only on
     // the run path would be persisted unchecked and validated by nobody.
-    let host: HostSpec | undefined;
+    let host: WireHostSpec | undefined;
     if (input.host !== undefined) {
-      const validated = validateHostSpec(input.host);
+      const validated = validateWireHostSpec(input.host);
       if ("error" in validated) return { kind: "bad", error: validated.error };
       host = validated.host;
     }

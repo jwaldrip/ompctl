@@ -15,7 +15,7 @@
  * whole surface a hub pairing can be promised.
  */
 
-import type { AgentId, HostSpec } from "@ompd/core/contracts";
+import type { AgentId, WireHostSpec } from "@ompd/core/contracts";
 import type {
   AgentCreatedEvent,
   ClientErrorEvent,
@@ -28,11 +28,18 @@ import type {
 } from "@ompd/core/ompd-client";
 import type { NewTaskInput } from "./tasks.ts";
 
-/** An agent creation as Cowork asks for it: a container host whose mounts were browsed on the daemon. */
+/**
+ * An agent creation as Cowork asks for it: a container host whose mounts were
+ * browsed on the daemon.
+ *
+ * `WireHostSpec`, so no `image`. The daemon refuses that field from a paired
+ * device, and a type that allowed it here would let this app ship a request
+ * that can only ever come back as a refusal.
+ */
 export interface AgentCreateRequest {
   name: string;
   cwd: string;
-  host: HostSpec;
+  host: WireHostSpec;
 }
 
 export interface CoworkClient {

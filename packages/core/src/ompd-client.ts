@@ -34,7 +34,6 @@ import type {
   CollabVoiceParticipant,
   ConnectorSummary,
   FsListing,
-  HostSpec,
   PlanReviewChoice,
   PromptImage,
   RemoteRoutine,
@@ -53,6 +52,7 @@ import type {
   TuiSteerDelivery,
   WebViewAction,
   WebViewActionResult,
+  WireHostSpec,
 } from "./contracts.ts";
 
 // ---------------------------------------------------------------------------
@@ -1194,11 +1194,16 @@ export class OmpdClient {
    * start rides. The agent arrives as the `agent_created` event, so a caller
    * renders confirmed state rather than its own request; a refusal arrives as
    * an `error` naming it. One-shot, for the reason `createSession` is.
+   *
+   * `host` is a `WireHostSpec`: no `image`. A client naming one is refused by
+   * the daemon at both doors, so this is the type refusing it at compile time
+   * rather than letting a caller ship a frame that can only be a 400. Which
+   * image a container host runs is the daemon's own `containerImage` config.
    */
   createAgent(request: {
     name: string;
     cwd: string;
-    host?: HostSpec;
+    host?: WireHostSpec;
     routineId?: string;
     labels?: Record<string, string>;
   }): void {

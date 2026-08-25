@@ -402,7 +402,6 @@ describe("argv parsing", () => {
       cwd: "/tmp/repo",
       name: undefined,
       container: false,
-      image: undefined,
       mounts: undefined,
     });
     expect(parseCommand(["new", "/tmp/repo", "--name", "build"])).toMatchObject({ name: "build" });
@@ -423,37 +422,42 @@ describe("argv parsing", () => {
     expect(() => parseCommand(["prompt"])).toThrow(/missing <agentId>/);
   });
 
-  test("new --container opts into a container host, --image and --mounts along with it", () => {
+  test("new --container opts into a container host, with --mounts along with it", () => {
     expect(parseCommand(["new", "/tmp/repo", "--container"])).toEqual({
       kind: "new",
       cwd: "/tmp/repo",
       name: undefined,
       container: true,
-      image: undefined,
       mounts: undefined,
     });
-    expect(
-      parseCommand([
-        "new",
-        "/tmp/repo",
-        "--container",
-        "--image",
-        "ghcr.io/example/omp:1",
-        "--mounts",
-        "/data,/tools:rw",
-      ]),
-    ).toEqual({
+    expect(parseCommand(["new", "/tmp/repo", "--container", "--mounts", "/data,/tools:rw"])).toEqual({
       kind: "new",
       cwd: "/tmp/repo",
       name: undefined,
       container: true,
-      image: "ghcr.io/example/omp:1",
       mounts: [{ hostPath: "/data" }, { hostPath: "/tools", mode: "rw" }],
     });
   });
 
-  test("--image and --mounts require --container: naming a mount on a local agent is a usage error, not a silent no-op", () => {
-    expect(() => parseCommand(["new", "/tmp/repo", "--image", "x"])).toThrow(/--image needs --container/);
+  test("--image is refused by name, with the config field that replaced it", () => {
+    // It was a real flag, so it gets a real answer rather than "unknown flag".
+    // Refused even alongside `--container`, because the objection is not that
+    // the flag was misplaced: an API client naming an image is not the daemon
+    // approving one, and `ompd new` is an API client like any other.
+    for (const argv of [
+      ["new", "/tmp/repo", "--image", "x"],
+      ["new", "/tmp/repo", "--container", "--image", "ghcr.io/example/omp:1"],
+    ]) {
+      expect(() => parseCommand(argv)).toThrow(/--image is gone/);
+      expect(() => parseCommand(argv)).toThrow(/containerImage/);
+    }
+
+    // And it is off the usage text too, so `--help` cannot advertise it.
+    expect(USAGE).not.toContain("--image");
+    expect(USAGE).toContain("containerImage");
+  });
+
+  test("--mounts requires --container: naming a mount on a local agent is a usage error, not a silent no-op", () => {
     expect(() => parseCommand(["new", "/tmp/repo", "--mounts", "/data"])).toThrow(/--mounts needs --container/);
   });
 
@@ -1328,7 +1332,6 @@ describe("reads and writes over the API", () => {
                 id: "cnt_1",
                 spec: {
                   kind: "container",
-                  image: "ghcr.io/example/omp:1",
                   // The daemon fills in the default mode before handing this back.
                   mounts: [
                     { hostPath: "/data", mode: "ro" },
@@ -1344,29 +1347,21 @@ describe("reads and writes over the API", () => {
     });
 
     const code = await run(
-      [
-        "new",
-        "/tmp/repo",
-        "--name",
-        "sandboxed",
-        "--container",
-        "--image",
-        "ghcr.io/example/omp:1",
-        "--mounts",
-        "/data,/tools:rw",
-      ],
+      ["new", "/tmp/repo", "--name", "sandboxed", "--container", "--mounts", "/data,/tools:rw"],
       h.ctx,
     );
     expect(code).toBe(0);
+    // No `image` on the wire, and not merely because none was typed: the flag
+    // that could put one there is gone, and the daemon refuses the field.
     expect(h.calls[0]?.body).toEqual({
       name: "sandboxed",
       cwd: "/tmp/repo",
       host: {
         kind: "container",
-        image: "ghcr.io/example/omp:1",
         mounts: [{ hostPath: "/data" }, { hostPath: "/tools", mode: "rw" }],
       },
     });
+    expect(JSON.stringify(h.calls[0]?.body)).not.toContain("image");
     expect(h.stdout()).toContain("host    container cnt_1");
     expect(h.stdout()).toContain("/data (ro)");
     expect(h.stdout()).toContain("/tools (rw)");
@@ -1714,9 +1709,176 @@ describe("doctor", () => {
     expect(h.stdout()).toContain(`run: chmod 600 ${join(h.home, "token")}`);
   });
 
-  /** The installed binary answering `--version`, as a real one would. */
+  test("the containers line reports the persisted runtime and the pinned default image", async () => {
+    const h = harness({ routes: healthy(), onExec: answering(reportsVersion(), usableRuntime("podman")) });
+    installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+    writeFileSync(join(h.home, "config.json"), JSON.stringify({ containerRuntime: "podman" }));
+
+    expect(await run(["doctor"], h.ctx)).toBe(0);
+    expect(h.stdout()).toContain("ok   containers");
+    // Both halves of the answer: which runtime, and that it is a pin rather
+    // than the platform's own choice.
+    expect(h.stdout()).toContain("podman 9.9.9 (pinned in config.json)");
+    expect(h.stdout()).toContain("image: ompd's pinned default base plus its mounted toolchain");
+    // The probe went to the runtime the file names, and only that one.
+    expect(h.commands.filter(command => command[0] === "podman").length).toBeGreaterThan(0);
+    expect(h.commands.some(command => command[0] === "docker")).toBe(false);
+  });
+
+  test("the persisted value wins over the process environment", async () => {
+    // The defect this replaced: doctor read `OMPD_CONTAINER_RUNTIME` from its
+    // own shell while the daemon, started by launchd, inherited no shell. The
+    // two processes could disagree, and this is the line whose whole job is
+    // saying which runtime an agent is actually on.
+    const h = harness({
+      routes: healthy(),
+      env: { OMPD_CONTAINER_RUNTIME: "docker", OMPD_CONTAINER_IMAGE: "ghcr.io/env/ignored:1" },
+      onExec: answering(reportsVersion(), usableRuntime("podman")),
+    });
+    installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+    writeFileSync(join(h.home, "config.json"), JSON.stringify({ containerRuntime: "podman" }));
+
+    expect(await run(["doctor"], h.ctx)).toBe(0);
+    expect(h.stdout()).toContain("podman 9.9.9 (pinned in config.json)");
+    expect(h.stdout()).not.toContain("docker");
+    expect(h.stdout()).not.toContain("ghcr.io/env/ignored:1");
+    expect(h.commands.some(command => command[0] === "docker")).toBe(false);
+  });
+
+  test("an operator-trusted image is reported as trusted rather than as fine", async () => {
+    const h = harness({ routes: healthy(), onExec: answering(reportsVersion(), usableRuntime("podman")) });
+    installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+    writeFileSync(
+      join(h.home, "config.json"),
+      JSON.stringify({ containerRuntime: "podman", containerImage: "ghcr.io/example/omp:1" }),
+    );
+
+    // Still `ok`, because an operator naming an image is a decision and not a
+    // fault. What it must not do is read as though ompd checked it.
+    expect(await run(["doctor"], h.ctx)).toBe(0);
+    expect(h.stdout()).toContain("image: ghcr.io/example/omp:1, trusted by whoever configured it");
+    expect(h.stdout()).toContain("checked by nothing ompd does");
+    expect(h.stdout()).toContain("ENTRYPOINT runs before ompd has a process to gate");
+    expect(h.stdout()).not.toContain("pinned default base");
+  });
+
+  test("a pin that cannot provision is a failure, not an ok line", async () => {
+    // `docker --version` exits non-zero, which is a runtime that is there and
+    // unusable. Unpinned that is a `warn`, because a missing capability is not
+    // a broken machine. Pinned it is a `fail`: the operator asked for docker,
+    // ompd will not fall back, and every container host will throw.
+    const h = harness({
+      routes: healthy(),
+      onExec: answering(reportsVersion(), command =>
+        command[0] === "docker" ? { code: 127, stdout: "", stderr: "docker: command not found" } : undefined,
+      ),
+    });
+    installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+    writeFileSync(join(h.home, "config.json"), JSON.stringify({ containerRuntime: "docker" }));
+
+    expect(await run(["doctor"], h.ctx)).toBe(1);
+    expect(h.stdout()).toContain("FAIL containers");
+    expect(h.stdout()).toContain("containerRuntime is pinned to docker");
+    expect(h.stdout()).toContain("every container host will fail to provision");
+    // The advice has to say how to get out of it, both ways.
+    expect(h.stdout()).toContain(`or remove "containerRuntime" from ${join(h.home, "config.json")}`);
+    expect(h.stdout()).toContain("container, podman, docker");
+  });
+
+  test("the same unusable runtime unpinned stays a warning", async () => {
+    // The control for the test above. Without it, `fail` could be what this
+    // check does whenever a probe fails, and the pin would be proving nothing.
+    const h = harness({
+      routes: healthy(),
+      onExec: answering(reportsVersion(), () => ({ code: 127, stdout: "", stderr: "not found" })),
+    });
+    installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+
+    expect(await run(["doctor"], h.ctx)).toBe(0);
+    expect(h.stdout()).toContain("warn containers");
+    expect(h.stdout()).toContain("local hosts still work");
+  });
+
+  test("a config the daemon would refuse is a failure on this line too", async () => {
+    const h = harness({ routes: healthy(), onExec: answering(reportsVersion(), usableRuntime("podman")) });
+    installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+    writeFileSync(join(h.home, "config.json"), JSON.stringify({ containerRuntime: "dokcer" }));
+
+    // One loader, so the message is the daemon's own and names the valid set
+    // rather than doctor keeping a second copy of the rule that can disagree.
+    expect(await run(["doctor"], h.ctx)).toBe(1);
+    expect(h.stdout()).toContain("FAIL containers");
+    expect(h.stdout()).toContain(`${join(h.home, "config.json")} is not loadable`);
+    expect(h.stdout()).toContain("containerRuntime must be empty for the platform default or one of");
+    // Nothing was probed: there is no answer to give until the file is fixed.
+    expect(h.commands.some(command => command[0] === "podman")).toBe(false);
+  });
+
+  /**
+   * Chain `onExec` answerers, first non-undefined wins.
+   *
+   * Needed because `doctor` shells out for two unrelated reasons in one run:
+   * the installed binary's `--version`, and a container runtime's probe.
+   */
+  function answering(
+    ...answerers: Array<(command: string[]) => ExecResult | undefined>
+  ): (command: string[]) => ExecResult | undefined {
+    return command => {
+      for (const answerer of answerers) {
+        const answer = answerer(command);
+        if (answer !== undefined) return answer;
+      }
+      return undefined;
+    };
+  }
+
+  /**
+   * One runtime answering every probe as a working install would: a version, a
+   * live service, and a `run --help` carrying the four confinement flags.
+   *
+   * Written out rather than shortened because `probeRuntime` refuses a help
+   * text it cannot parse, so a stub that merely exits zero reads as a runtime
+   * whose confinement is unknown.
+   */
+  function usableRuntime(runtime: string): (command: string[]) => ExecResult | undefined {
+    const help =
+      "Options:\n" +
+      "      --cap-drop list        Drop Linux capabilities\n" +
+      "      --network string       Connect a container to a network\n" +
+      "      --pids-limit int       Tune container pids limit\n" +
+      "      --read-only            Mount the root filesystem as read only\n" +
+      "      --security-opt list    Security options\n" +
+      "      --volume list          Bind mount a volume\n";
+    return command => {
+      if (command[0] !== runtime) return undefined;
+      const rest = command.slice(1).join(" ");
+      if (rest === "--version") return { code: 0, stdout: `${runtime} version 9.9.9\n`, stderr: "" };
+      if (rest === "info" || rest === "system status") {
+        return { code: 0, stdout: "apiserver is running\n", stderr: "" };
+      }
+      if (rest === "run --help") return { code: 0, stdout: help, stderr: "" };
+      return undefined;
+    };
+  }
+
+  /**
+   * The installed binary answering `--version`, as a real one would.
+   *
+   * Scoped to the `ompd` binary rather than to any `--version`, because the
+   * containers check probes a container runtime with `<runtime> --version` in
+   * the same run and would otherwise be told it is ompd.
+   */
   function reportsVersion(version = OMPD_VERSION): (command: string[]) => ExecResult | undefined {
-    return command => (command[1] === "--version" ? { code: 0, stdout: `${version}\n`, stderr: "" } : undefined);
+    return command =>
+      command[1] === "--version" && command[0]?.endsWith("ompd") === true
+        ? { code: 0, stdout: `${version}\n`, stderr: "" }
+        : undefined;
   }
 
   function healthy(): NonNullable<HarnessOptions["routes"]> {

@@ -76,19 +76,17 @@ export class HostProvisioner implements Provisioner {
     const supplied = opts.backends;
     if (supplied === undefined) {
       this.#backends.set("local", new LocalBackend());
-      // Runtime and default image come from the environment rather than being
-      // baked in: `OMPD_CONTAINER_RUNTIME` pins one (and a pinned runtime that
-      // is absent refuses instead of falling back), `OMPD_CONTAINER_IMAGE`
-      // replaces the public base image the toolchain path otherwise uses.
-      this.#backends.set(
-        "container",
-        new ContainerBackend({
-          workspace: opts.workspace,
-          home: opts.home,
-          runtime: process.env.OMPD_CONTAINER_RUNTIME,
-          image: process.env.OMPD_CONTAINER_IMAGE,
-        }),
-      );
+      // No runtime pin and no image here. Both are the daemon's durable
+      // config now (`containerRuntime` and `containerImage` in
+      // `<home>/config.json`), and the daemon always names its backends
+      // explicitly, so this branch only serves an embedder or a test. Reading
+      // `OMPD_CONTAINER_RUNTIME` and `OMPD_CONTAINER_IMAGE` here would put a
+      // second, environment-shaped source of the same two decisions in a
+      // second place, disagreeing with what `ompd doctor` reports and absent
+      // under launchd, which inherits no shell. An embedder that wants
+      // something other than the platform default and the pinned toolchain
+      // constructs `ContainerBackend` itself and says so.
+      this.#backends.set("container", new ContainerBackend({ workspace: opts.workspace, home: opts.home }));
       if (opts.cloudDriver !== undefined) {
         this.#backends.set("cloud", new CloudBackend({ driver: opts.cloudDriver }));
       }

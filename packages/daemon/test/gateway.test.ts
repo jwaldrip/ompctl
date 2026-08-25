@@ -26,12 +26,15 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type Agent,
   type AgentId,
   type ClientFrame,
   DefaultPolicy,
+  normalizeImageRef,
   ROUTINE_DELETE_REFUSAL_REASONS,
   type RoutineDeleteResult,
   SCOPE_APPROVE,
@@ -43,6 +46,7 @@ import {
   type WebViewActionResult,
   webhookPath,
 } from "@ompd/core";
+import { loadConfig } from "../src/daemon.ts";
 import { Gateway, GatewayEvents, type RoutineRunner } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { Supervisor } from "../src/supervisor.ts";
@@ -60,6 +64,8 @@ const stores: Store[] = [];
 const sups: Supervisor[] = [];
 const gateways: Gateway[] = [];
 const sockets: SocketClient[] = [];
+/** Temp `<home>` directories the `loadConfig` half of the image table writes into. */
+const configHomes: string[] = [];
 
 type UpdateFrame = Extract<ServerFrame, { t: "update" }>;
 
@@ -332,6 +338,7 @@ afterEach(async () => {
   while (sups.length) await sups.pop()?.shutdown();
   while (stores.length) stores.pop()?.close();
   while (paths.length) rmSync(paths.pop() ?? "", { force: true });
+  while (configHomes.length) rmSync(configHomes.pop() ?? "", { recursive: true, force: true });
 });
 
 describe("socket authentication", () => {
@@ -639,6 +646,12 @@ describe("http scopes", () => {
  * tested, and the provisioner turns those fields into a container runtime's
  * argv.
  *
+ * The sharpest field, `image`, is no longer a validated field at all: it is
+ * refused. A device holding `manage` scope is authenticated, not trusted with
+ * the daemon's supply chain, and the image's ENTRYPOINT runs before ompd has a
+ * process to gate, so no approval downstream of it can help. `MERGED_*` below
+ * is the code that shipped, kept here to prove the hole was real.
+ *
  * Every refusal here is paired with a positive control, because a validator
  * that refuses everything also produces a 400 and would pass a test that only
  * asserted the status.
@@ -675,24 +688,34 @@ describe("host spec validation on agent creation", () => {
     expect(h.sup.listAgents()).toHaveLength(1);
   });
 
-  test("an image reference beginning with a dash is refused", async () => {
+  test("an image named on the wire is refused, and the refusal says why", async () => {
     const h = await harness();
     const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
 
-    // `image` reaches argv as the image positional, so a runtime reads
-    // `--privileged` as a flag and makes the following word the image name.
-    const res = await create(h, manage, { kind: "container", image: "--privileged" });
+    // A perfectly well-formed reference, which is the whole point: this is not
+    // a shape check that a tidier string would pass. Every supply-chain
+    // control on the default path is bypassed by naming any image at all.
+    const res = await create(h, manage, { kind: "container", image: "ghcr.io/attacker/evil:1" });
     expect(res.status).toBe(400);
-    expect(await errorOf(res)).toContain("cannot begin with a dash");
+    const why = await errorOf(res);
+    // Not just "refused": the reader has to learn that this is a trust
+    // boundary and where the decision actually lives.
+    expect(why).toContain("host.image is not accepted from a paired device");
+    expect(why).toContain("ENTRYPOINT");
+    expect(why).toContain("containerImage");
     expect(h.sup.listAgents()).toHaveLength(0);
 
-    const single = await create(h, manage, { kind: "container", image: "-rm" });
-    expect(single.status).toBe(400);
+    // `undefined` is still the device asking for the field. JSON drops an
+    // undefined value, so this is sent as a literal null to keep the key.
+    const explicitNull = await create(h, manage, { kind: "container", image: null });
+    expect(explicitNull.status).toBe(400);
+    expect(await errorOf(explicitNull)).toContain("host.image is not accepted");
 
-    // Positive control: an ordinary reference passes validation. It then fails
-    // for a different, named reason, because this harness has no provisioner.
-    // A 500 saying so proves the validator let it through; a 400 would not.
-    const allowed = await create(h, manage, { kind: "container", image: "ghcr.io/example/omp:1" });
+    // Positive control: the same container host without `image` passes
+    // validation. It then fails for a different, named reason, because this
+    // harness has no provisioner. A 500 saying so proves the validator let it
+    // through; a 400 would not.
+    const allowed = await create(h, manage, { kind: "container" });
     expect(allowed.status).toBe(500);
     expect(await errorOf(allowed)).toContain("requires the provisioner");
   });
@@ -706,7 +729,6 @@ describe("host spec validation on agent creation", () => {
       { host: null, expect: "host must be an object" },
       { host: [], expect: "host must be an object" },
       { host: {}, expect: "host.kind must be one of" },
-      { host: { kind: "container", image: 7 }, expect: "host.image must be a string" },
       { host: { kind: "container", repo: {} }, expect: "host.repo must be a string" },
       { host: { kind: "container", ref: false }, expect: "host.ref must be a string" },
       { host: { kind: "container", ttlSeconds: 0 }, expect: "host.ttlSeconds must be a positive finite number" },
@@ -726,6 +748,10 @@ describe("host spec validation on agent creation", () => {
         host: { kind: "container", mounts: [{ hostPath: "/tmp", containerPath: "/etc" }] },
         expect: 'unknown field "containerPath"',
       },
+      // `image` is refused ahead of the unknown-key sweep, so a caller learns
+      // about the trust boundary rather than hunting for a typo. Even with a
+      // bad kind alongside it, the image answer is the one that comes back.
+      { host: { kind: "nonsense", image: "x" }, expect: "host.image is not accepted from a paired device" },
     ];
 
     for (const probe of cases) {
@@ -740,12 +766,11 @@ describe("host spec validation on agent creation", () => {
     const h = await harness();
     const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
 
-    // Every optional field, each in a shape the validator accepts. Reaching
-    // the provisioner check is what proves the whole spec passed: nothing here
-    // was refused, and nothing was silently dropped on the way.
+    // Every field a device may still set, each in a shape the validator
+    // accepts. Reaching the provisioner check is what proves the whole spec
+    // passed: nothing here was refused, and nothing was silently dropped.
     const res = await create(h, manage, {
       kind: "container",
-      image: "ghcr.io/example/omp:1",
       repo: "example/thing",
       ref: "main",
       ttlSeconds: 900,
@@ -765,36 +790,339 @@ describe("host spec validation on agent creation", () => {
     expect(h.sup.listAgents()).toHaveLength(1);
   });
 
+  test("network on a local host is refused rather than accepted and ignored", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    // `LocalBackend` used to accept this field and do nothing with it, which
+    // is the worst of the three options: a caller asking for no network was
+    // told yes and handed a process with the operator's full network. Both
+    // values are refused, because the objection is not to the value.
+    for (const network of ["none", "isolated"]) {
+      const res = await create(h, manage, { kind: "local", network });
+      expect(res.status, network).toBe(400);
+      const why = await errorOf(res);
+      expect(why, network).toContain("host.network cannot be set on a local host");
+      expect(why, network).toContain('kind: "container"');
+    }
+    expect(h.sup.listAgents()).toHaveLength(0);
+
+    // Two positive controls, because a validator that refused every `network`
+    // or every `local` would also produce those 400s. A container host may
+    // still name a network, and a local host with no network field is created.
+    const container = await create(h, manage, { kind: "container", network: "none" });
+    expect(container.status).toBe(500);
+    expect(await errorOf(container)).toContain("requires the provisioner");
+
+    const plainLocal = await create(h, manage, { kind: "local" });
+    expect(plainLocal.status).toBe(201);
+    expect(h.sup.listAgents()).toHaveLength(1);
+  });
+
   test("the socket door refuses the same host the route refuses", async () => {
     const h = await harness();
     const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
     const ws = await openSocket(h.port, manage);
 
     // One validator, both doors. A check on the HTTP route alone would leave
-    // the frame as the way in, which is the door a paired phone uses.
-    ws.send({ t: "agent_create", name: "x", cwd: "/work", host: { kind: "container", image: "--privileged" } });
+    // the frame as the way in, which is the door a paired phone uses, and the
+    // phone is the caller this refusal exists for.
+    //
+    // Sent as raw bytes rather than through `send`, because `ClientFrame` now
+    // types `host` as a `WireHostSpec` and this frame no longer typechecks.
+    // That is the compile-time half of the guard doing its job, and casting
+    // past it would only prove the cast works: an attacker is not writing
+    // TypeScript, so the runtime half has to be exercised over the wire.
+    ws.sendRaw(
+      JSON.stringify({
+        t: "agent_create",
+        name: "x",
+        cwd: "/work",
+        host: { kind: "container", image: "ghcr.io/attacker/evil:1" },
+      }),
+    );
     const frame = await ws.next(f => f.t === "error", "an error frame");
-    expect(JSON.stringify(frame)).toContain("cannot begin with a dash");
+    expect(JSON.stringify(frame)).toContain("host.image is not accepted from a paired device");
     expect(h.sup.listAgents()).toHaveLength(0);
+
+    // Positive control on the same socket: without `image` the frame gets past
+    // the validator and fails on the missing provisioner instead.
+    ws.send({ t: "agent_create", name: "x", cwd: "/work", host: { kind: "container" } });
+    const second = await ws.next(
+      f => f.t === "error" && JSON.stringify(f).includes("requires the provisioner"),
+      "the provisioner error",
+    );
+    expect(JSON.stringify(second)).toContain("requires the provisioner");
   });
 
-  test("a replica refuses a bad host instead of queueing it for a primary to run", async () => {
+  test("a replica refuses an image instead of queueing it for a primary to run", async () => {
     const h = await harness({ federation: { replica: true, syncToken: "cloud-sync-token" } });
     const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
 
     // A replica does not run the spec, it stores it. Validating on the run
     // path alone would persist an unchecked `host` here and hand it to a
-    // primary later, where nothing looks at it again.
-    const res = await create(h, manage, { kind: "container", image: "--privileged" });
+    // primary later, where nothing looks at it again: the image would have
+    // been approved by a queue rather than by an operator.
+    const res = await create(h, manage, { kind: "container", image: "ghcr.io/attacker/evil:1" });
     expect(res.status).toBe(400);
-    expect(await errorOf(res)).toContain("cannot begin with a dash");
+    expect(await errorOf(res)).toContain("host.image is not accepted from a paired device");
     expect(h.store.listPendingQueuedIntents()).toHaveLength(0);
 
     // Positive control: a valid host on a replica does queue, so the 400 above
     // is the validator and not a replica that refuses everything.
-    const queued = await create(h, manage, { kind: "container", image: "ghcr.io/example/omp:1" });
+    const queued = await create(h, manage, { kind: "container" });
     expect(queued.status).toBe(202);
     expect(h.store.listPendingQueuedIntents()).toHaveLength(1);
+  });
+});
+
+/**
+ * The merged code's accepted-key table, copied verbatim from
+ * `git show 1efcdd4:packages/daemon/src/gateway/gateway.ts`, and its `image`
+ * branch reproduced as `mergedAcceptsImage`.
+ *
+ * A fixture rather than an import, because that revision cannot be imported:
+ * it is the same module path this test already imports at HEAD, so both
+ * cannot be loaded at once, and a shallow CI checkout may not even hold the
+ * commit. `mergedTableStillMatches` below closes the gap the fixture opens by
+ * diffing it against the real object when the commit is reachable.
+ */
+const MERGED_HOST_SPEC_KEYS: Record<string, true> = {
+  kind: true,
+  image: true,
+  repo: true,
+  ref: true,
+  ttlSeconds: true,
+  mounts: true,
+  network: true,
+};
+
+/** The merge commit whose behaviour the fixture reproduces. */
+const MERGED_REVISION = "1efcdd4";
+
+/**
+ * The merged validator's whole treatment of `image`: accepted as a key,
+ * required to be a string, refused only for a leading dash, then copied onto
+ * the spec that reached the provisioner.
+ */
+function mergedAcceptsImage(value: Record<string, unknown>): { image?: string } | { error: string } {
+  const unknownKey = Object.keys(value).find(key => MERGED_HOST_SPEC_KEYS[key] !== true);
+  if (unknownKey !== undefined) return { error: `host has an unknown field "${unknownKey}"` };
+  if (value.image === undefined) return {};
+  if (typeof value.image !== "string") return { error: "host.image must be a string" };
+  if (value.image.startsWith("-")) {
+    return { error: "host.image cannot begin with a dash; a runtime would read it as a flag, not an image" };
+  }
+  return { image: value.image };
+}
+
+/**
+ * The merged source, or null when this checkout cannot produce it.
+ *
+ * Null is the honest answer for a shallow clone, and the caller skips rather
+ * than passing: a drift guard that silently succeeds when it cannot read
+ * anything is the failure this whole file is about.
+ */
+function mergedGatewaySource(): string | null {
+  const shown = Bun.spawnSync({
+    cmd: ["git", "show", `${MERGED_REVISION}:packages/daemon/src/gateway/gateway.ts`],
+    cwd: new URL("../../..", import.meta.url).pathname,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (shown.exitCode !== 0) return null;
+  return shown.stdout.toString();
+}
+
+/**
+ * The fail-before evidence for refusing `image` on the wire.
+ *
+ * This is the pair the change is worth nothing without: today's door refuses a
+ * well-formed image reference, and the door that actually shipped accepted the
+ * same string and handed it to the provisioner.
+ */
+describe("the merged gateway accepted an image from the wire", () => {
+  test("fail-before: a well-formed attacker image passed the merged validator", () => {
+    // `image` was in the accepted set, so it was not caught by the unknown-key
+    // sweep, and the only check in front of it was cosmetic.
+    expect(MERGED_HOST_SPEC_KEYS.image).toBe(true);
+    expect(mergedAcceptsImage({ kind: "container", image: "ghcr.io/attacker/evil:1" })).toEqual({
+      image: "ghcr.io/attacker/evil:1",
+    });
+
+    // And the dash check it did have does not touch the problem: an image with
+    // no dash is exactly the shape an attacker would name.
+    expect(mergedAcceptsImage({ kind: "container", image: "--privileged" })).toEqual({
+      error: "host.image cannot begin with a dash; a runtime would read it as a flag, not an image",
+    });
+  });
+
+  test("the fixture is still the merged code, when this checkout can show it", () => {
+    const source = mergedGatewaySource();
+    if (source === null) {
+      // A shallow checkout cannot hold the commit. Saying so beats a green
+      // assertion that read nothing.
+      expect(source).toBeNull();
+      return;
+    }
+    const table = `const HOST_SPEC_KEYS: Record<string, true> = {\n${Object.keys(MERGED_HOST_SPEC_KEYS)
+      .map(key => `  ${key}: true,\n`)
+      .join("")}};`;
+    expect(source).toContain(table);
+    expect(source).toContain("host.image cannot begin with a dash");
+    // The refusal that exists today is absent there, which is the delta.
+    expect(source).not.toContain("host.image is not accepted from a paired device");
+  });
+
+  test("today's door refuses the string the merged one accepted", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    const res = await h.http(
+      "/v1/agents",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: "x",
+          cwd: "/work",
+          host: { kind: "container", image: "ghcr.io/attacker/evil:1" },
+        }),
+      },
+      manage,
+    );
+    expect(res.status).toBe(400);
+    expect(h.sup.listAgents()).toHaveLength(0);
+  });
+});
+
+/**
+ * One table, both doors.
+ *
+ * The wire and `loadConfig` are the only two ways an image reference enters
+ * ompd, and the failure worth testing is not either door alone: it is the two
+ * of them disagreeing, so that a value the gateway refuses is a value the
+ * config quietly accepts. Driving both from the same list is what stops the
+ * two lists drifting, which is why this lives in one test file rather than
+ * being split across the file that owns each door.
+ *
+ * The doors refuse for different reasons, and that is correct rather than
+ * sloppy: the wire refuses *any* image, because naming one is not a paired
+ * device's decision, while the config refuses only unusable ones, because
+ * naming one there is exactly the operator's decision. The shared property is
+ * that none of these strings gets through either.
+ */
+describe("hostile image references are refused at both doors", () => {
+  /**
+   * Every probe carries the reason `normalizeImageRef` must give, since that
+   * is the function both doors are supposed to agree through. The wire's
+   * answer is the same for every row, so it is asserted once per row rather
+   * than listed per row.
+   *
+   * `""` is deliberately not in here: at the config door it is the "not
+   * configured" sentinel rather than a value, and the row below this describe
+   * pins that down. The normalizer itself still refuses it, which is what
+   * stops an empty string reaching anything downstream.
+   */
+  const PROBES: Array<{ label: string; raw: string; reason: RegExp }> = [
+    { label: "only spaces", raw: "   ", reason: /cannot be empty or only whitespace/ },
+    { label: "leading dash", raw: "-rm", reason: /cannot begin with a dash/ },
+    { label: "double dash flag", raw: "--privileged", reason: /cannot begin with a dash/ },
+    // Trimmed to a dash-leading value, which is the case a check that
+    // validated the raw string and used the trimmed one would wave through.
+    { label: "padded dash", raw: "  --privileged  ", reason: /cannot begin with a dash/ },
+    { label: "internal space", raw: "ghcr.io/x:1 --privileged", reason: /cannot contain whitespace/ },
+    { label: "internal tab", raw: "ghcr.io/x\t:1", reason: /control character U\+0009/ },
+    { label: "internal newline", raw: "ghcr.io/x\n:1", reason: /control character U\+000A/ },
+    { label: "carriage return", raw: "ghcr.io/x\r:1", reason: /control character U\+000D/ },
+    { label: "NUL", raw: "ghcr.io/x\u0000:1", reason: /control character U\+0000/ },
+    { label: "escape", raw: "ghcr.io/x\u001b[2J:1", reason: /control character U\+001B/ },
+    { label: "C1 NEL", raw: "ghcr.io/x\u0085:1", reason: /control character U\+0085/ },
+  ];
+
+  test("the shared normalizer refuses every one of them, empty included", () => {
+    // Asserted against the function itself as well as through the doors,
+    // because this is the thing the two doors have in common: a rule that
+    // held here and nowhere else would be the drift the table exists to stop.
+    for (const probe of PROBES) {
+      const result = normalizeImageRef(probe.raw);
+      expect(result.ok, probe.label).toBe(false);
+      expect(result.ok ? "" : result.reason, probe.label).toMatch(probe.reason);
+    }
+    const empty = normalizeImageRef("");
+    expect(empty.ok).toBe(false);
+    expect(empty.ok ? "" : empty.reason).toMatch(/cannot be empty or only whitespace/);
+
+    // Positive control: the normalizer is not a function that refuses
+    // everything, and it hands back the trimmed string rather than the raw one.
+    expect(normalizeImageRef("  ghcr.io/example/omp:1\n")).toEqual({ ok: true, ref: "ghcr.io/example/omp:1" });
+  });
+
+  test("the wire refuses every one of them, plus the empty string, and creates nothing", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+
+    for (const probe of [...PROBES, { label: "empty", raw: "" }]) {
+      const res = await h.http(
+        "/v1/agents",
+        {
+          method: "POST",
+          body: JSON.stringify({ name: "x", cwd: "/work", host: { kind: "container", image: probe.raw } }),
+        },
+        manage,
+      );
+      expect(res.status, probe.label).toBe(400);
+      const body = (await res.json()) as { error?: unknown };
+      expect(String(body.error), probe.label).toContain("host.image is not accepted from a paired device");
+    }
+    expect(h.sup.listAgents()).toHaveLength(0);
+  });
+
+  test("loadConfig refuses every one of them, naming the reason", () => {
+    const home = mkdtempSync(join(tmpdir(), "ompd-image-"));
+    configHomes.push(home);
+
+    for (const probe of PROBES) {
+      writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: probe.raw }));
+      expect(() => loadConfig(home), probe.label).toThrow(probe.reason);
+      // Named as a config problem, not as a bare normalizer complaint: the
+      // reader has to be able to find the file and the field.
+      expect(() => loadConfig(home), probe.label).toThrow(/containerImage is not usable/);
+    }
+
+    // Positive control on the same home: a reference that is actually usable
+    // loads, so the refusals above are the normalizer and not a config reader
+    // that throws on every `containerImage`.
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: "ghcr.io/example/omp:1" }));
+    expect(loadConfig(home).containerImage).toBe("ghcr.io/example/omp:1");
+  });
+
+  test("the normalizer returns the trimmed value, so no caller can use the raw one", () => {
+    const home = mkdtempSync(join(tmpdir(), "ompd-image-"));
+    configHomes.push(home);
+
+    // Surrounding whitespace is not itself hostile, and trimming it is the
+    // only reason the padded-dash probe above is refused rather than accepted
+    // as a name beginning with a space. What matters is that the trimmed form
+    // is what comes back out, because that is the string that reaches argv.
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: "  ghcr.io/example/omp:1\n" }));
+    expect(loadConfig(home).containerImage).toBe("ghcr.io/example/omp:1");
+  });
+
+  test('an explicit "" means unset rather than configured with nothing', () => {
+    const home = mkdtempSync(join(tmpdir(), "ompd-image-"));
+    configHomes.push(home);
+
+    // The one string the two doors treat differently, on purpose. `""` is the
+    // sentinel every caller already reads as "not configured", so writing it
+    // is how an operator goes back to ompd's pinned default rather than a
+    // typo that has to be caught. Whitespace-only is the typo, and the table
+    // above proves that one throws.
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: "" }));
+    expect(loadConfig(home).containerImage).toBe("");
+
+    // Nothing downstream can be handed an empty ref anyway, because the
+    // normalizer refuses it and the daemon only passes a non-empty value on.
+    expect(normalizeImageRef("").ok).toBe(false);
   });
 });
 

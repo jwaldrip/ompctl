@@ -92,6 +92,23 @@ export type HostKind = "local" | "container" | "cloud";
 
 export interface HostSpec {
   kind: HostKind;
+  /**
+   * A container image to run instead of the pinned default toolchain.
+   *
+   * Never wire-accepted. This is the *resolved* spec, and the only thing that
+   * may fill this field is the daemon's own `containerImage` config: see
+   * `WireHostSpec` below, and the gateway's refusal of `host.image`.
+   *
+   * An image named here is **trusted by the operator who configured it**, in
+   * the plain sense that nothing checks it. ompd mounts nothing over it, pins
+   * no digest for it, and cannot confine what is inside it: a generic OCI
+   * image's ENTRYPOINT is the first thing the runtime executes, before ompd
+   * has a process to gate, so the approval gate is downstream of code that
+   * has already run. There is no pre-entrypoint hook to put a gate in. Making
+   * one trustworthy would take a different mechanism entirely, something like
+   * requiring a signed image whose digest an operator approved out of band,
+   * and ompd does not have that.
+   */
   image?: string;
   repo?: string;
   ref?: string;
@@ -122,6 +139,31 @@ export interface HostSpec {
   network?: "isolated" | "none";
 }
 
+/**
+ * What a paired device is allowed to ask for. No `image`.
+ *
+ * This and `HostSpec` differ by one optional field, which is not why both
+ * exist. They exist because they carry different trust: a `HostSpec` is what
+ * this daemon resolved, from its own config, on its own disk; a
+ * `WireHostSpec` is what arrived over a socket from a device that holds
+ * `manage` scope. Naming a container image is daemon-local supply-chain
+ * approval, and a paired phone is not that, however well authenticated it is.
+ *
+ * `image?: never` rather than a bare `Omit`, and the difference is the whole
+ * point of the type. A plain `Omit<HostSpec, "image">` is structurally
+ * *bidirectionally* assignable with `HostSpec`: dropping an optional property
+ * removes nothing a `HostSpec` value cannot satisfy, so the compiler would
+ * have accepted a full `HostSpec` wherever a `WireHostSpec` was wanted and the
+ * two names would have been documentation rather than a check. Declaring the
+ * property as `never` makes only the widening direction legal: a
+ * `WireHostSpec` still goes anywhere a `HostSpec` is wanted, because it is the
+ * narrower promise, and a `HostSpec` no longer goes the other way, because
+ * `string | undefined` is not assignable to `undefined`. A future change that
+ * routes a value with an `image` back through the wire path fails to compile
+ * instead of quietly re-opening the hole.
+ */
+export type WireHostSpec = Omit<HostSpec, "image"> & { image?: never };
+
 export interface HostMount {
   /** Absolute host path. Relative paths are refused: there is no cwd to resolve them against on the far side. */
   hostPath: string;
@@ -131,6 +173,94 @@ export interface HostMount {
    * into per path rather than something that falls out of naming a folder.
    */
   mode?: "ro" | "rw";
+}
+
+/** A normalized image reference, or why the raw one is not usable as one. */
+export type ImageRefResult = { ok: true; ref: string } | { ok: false; reason: string };
+
+/**
+ * C0, DEL, and C1. Written as ranges rather than as the handful anyone thinks
+ * of, because "tab, newline, carriage return, NUL" is the list people write
+ * down by hand and U+000B and U+0085 are the ones that walk through it. The
+ * Unicode separators above this range (U+2028, U+2029) are not control
+ * characters and are caught by the whitespace check below instead.
+ */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * The package's one object guard.
+ *
+ * Exported rather than redefined per call site because there were two copies of
+ * it, one here in core's validator and one private to the gateway, and a guard
+ * that decides whether untrusted input is even an object is exactly the wrong
+ * thing to have two subtly different versions of. It narrows to
+ * `Record<string, unknown>` and no further: the fields stay `unknown`, which is
+ * the point, so a caller still has to check each one it uses.
+ */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The one place an image reference is normalized and checked, shared by the
+ * gateway and by `loadConfig`.
+ *
+ * Shared rather than duplicated because the two doors disagreeing is the
+ * actual failure: a value the wire refuses and the config accepts is a hole
+ * with a check standing next to it. Both callers must use `ref` from the
+ * result and never the string they passed in, which is why the trimmed value
+ * is returned rather than a boolean. Trim happens exactly once, here, so no
+ * caller can validate one string and then use a different one.
+ *
+ * What is refused, and why each one is not cosmetic:
+ *
+ * - Empty after trimming. `""` already means "not configured" to every caller,
+ *   so a whitespace-only value that survived would mean "configured with
+ *   nothing" and silently defeat the default it was meant to replace.
+ * - A leading `-`. The reference lands in argv as the image positional, where
+ *   a runtime reads it as a flag instead: `"--privileged"` produces
+ *   `run --privileged tail -f /dev/null` and makes `tail` the image name.
+ * - Any control character. Nothing legal contains one, and a value carrying a
+ *   newline reads as one thing in a log line or a config file and as another
+ *   to whatever parses it.
+ * - Internal whitespace. No legal reference contains a space, and every layer
+ *   that renders an argv as a string for a human, a log, or a shell splits it
+ *   into two arguments.
+ *
+ * This is a refusal set, not a grammar. It does not attempt to decide whether
+ * a reference names a real registry, repository, tag, or digest: the runtime
+ * is the authority on that and will say so. The claim here is only that what
+ * passes cannot be read as something other than one argv word.
+ */
+export function normalizeImageRef(raw: string): ImageRefResult {
+  const ref = raw.trim();
+  if (ref.length === 0) {
+    return { ok: false, reason: "an image reference cannot be empty or only whitespace" };
+  }
+  const control = CONTROL_CHARS.exec(ref);
+  if (control !== null) {
+    const point = control[0].codePointAt(0) ?? 0;
+    const code = `U+${point.toString(16).toUpperCase().padStart(4, "0")}`;
+    return {
+      ok: false,
+      reason: `an image reference cannot contain the control character ${code}; no legal reference has one, and a value carrying one reads differently to a human than to whatever parses it`,
+    };
+  }
+  if (ref.startsWith("-")) {
+    return {
+      ok: false,
+      reason:
+        "an image reference cannot begin with a dash; a runtime would read it as a flag, not an image, and take the next word as the image name",
+    };
+  }
+  if (/\s/.test(ref)) {
+    return {
+      ok: false,
+      reason:
+        "an image reference cannot contain whitespace; no legal reference has any, and anything that renders argv as a string splits it into two arguments",
+    };
+  }
+  return { ok: true, ref };
 }
 
 /**
@@ -1098,12 +1228,16 @@ export type ClientFrame =
    * Create an agent, the `POST /v1/agents` twin: the manage-scoped act that
    * provisions a host, which is how a Cowork container start crosses the
    * socket. Answered by `agent_created`, to the asking socket only.
+   *
+   * `host` is a `WireHostSpec`, so it cannot name an `image`. The daemon
+   * refuses that field at both doors and this is the type saying so before a
+   * client ships a frame that can only ever be a 400.
    */
   | {
       t: "agent_create";
       name: string;
       cwd: string;
-      host?: HostSpec;
+      host?: WireHostSpec;
       routineId?: string;
       labels?: Record<string, string>;
     }

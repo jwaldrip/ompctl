@@ -5,7 +5,17 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -250,8 +260,43 @@ describe("resolveMountPath", () => {
   const ETC = ON_DARWIN ? "/private/etc" : "/etc";
   const VAR = ON_DARWIN ? "/private/var" : "/var";
   const VAR_ROOT = `${VAR}/root`;
-  /** `/Users` on macOS, `/home` on Linux. Derived so a different operator name changes nothing. */
+  /**
+   * `/Users` on macOS and `/home` on an ordinary Linux account, derived so a
+   * different operator name changes nothing. It is `/` when the process runs as
+   * root, because root's home is `/root`, and that case is why `HOME_REFUSAL`
+   * exists below.
+   */
   const HOME_PARENT = dirname(HOME);
+
+  /**
+   * The sentence that names why this process's own home directory is refused,
+   * which is not the same rule on every account.
+   *
+   * For an ordinary account it is the per-home entry in
+   * `DANGEROUS_MOUNT_ROOT_PATTERNS`, whose source the reason quotes as
+   * "protected root". For root it is not: `homedir()` is `/root` there, `/root`
+   * is a whole protected tree, and `protectedPathReason` runs first, so the
+   * reason names the tree instead. Both refuse, which is the property these
+   * tests are about, and CI runs the Linux job as root while this file was
+   * written on a `/Users` account -- so the rule is derived from where the home
+   * actually is rather than assumed.
+   */
+  const HOME_REFUSAL =
+    HOME_PARENT === "/Users" || HOME_PARENT === "/home" ? "protected root" : `${HOME} is a protected directory`;
+
+  /**
+   * A home directory that is not this process's, for the cases that are about
+   * the SHAPE `/<Users|home>/<name>/<credential>` rather than about this
+   * machine's account. Using the real `homedir()` for those made them assert
+   * the per-home and secret patterns on a path that, under a root home, is
+   * caught earlier by the `/root` tree instead.
+   *
+   * The parent is chosen per platform because the other spelling is not inert:
+   * `realpathSync("/home")` answers `/System/Volumes/Data/home` on darwin
+   * 25.5.0, so a `/home/...` path there is refused for landing inside `/System`
+   * and would prove nothing about credentials.
+   */
+  const SYNTHETIC_HOME = ON_DARWIN ? "/Users/someoperator" : "/home/someoperator";
   /** Where `mkdtemp` actually lands once canonicalized. */
   const TMP_CANONICAL = realpathSync(tmpdir());
 
@@ -282,14 +327,17 @@ describe("resolveMountPath", () => {
     });
 
     test("a home directory named directly", () => {
-      expect(refusal(HOME)).toContain("protected root");
+      // `HOME_REFUSAL` rather than a literal "protected root": which rule
+      // catches this process's home depends on where that home is, and the
+      // refusal is the property either way.
+      expect(refusal(HOME)).toContain(HOME_REFUSAL);
     });
 
     test("a home directory named with a trailing dot segment", () => {
       // The exact argv the review produced:
       // `--volume /Users/jwaldrip/.:/Users/jwaldrip/.:rw`.
       const reason = refusal(`${HOME}/.`);
-      expect(reason).toContain("protected root");
+      expect(reason).toContain(HOME_REFUSAL);
       expect(reason).toContain(`canonicalizes to ${HOME}`);
     });
 
@@ -313,7 +361,7 @@ describe("resolveMountPath", () => {
 
     test("a home directory reached through a doubled leading separator", () => {
       const reason = refusal(`/${HOME}`);
-      expect(reason).toContain("protected root");
+      expect(reason).toContain(HOME_REFUSAL);
       expect(reason).toContain(`canonicalizes to ${HOME}`);
     });
   });
@@ -378,11 +426,243 @@ describe("resolveMountPath", () => {
     });
 
     test("the credential directories, which are checked on the canonical path", () => {
-      expect(refusal(`${HOME}/.ssh`)).toContain("secret path pattern");
-      expect(refusal(`${HOME}/.omp`)).toContain("protected root");
-      expect(refusal(`${HOME}/.ompd`)).toContain("secret path pattern");
+      // `SYNTHETIC_HOME`, not this process's own home, because these four are
+      // about the credential SHAPE and nothing else. Under a root home the real
+      // path is `/root/.ssh`, which the `/root` tree refuses before any secret
+      // pattern is consulted, so the test would pass while proving nothing
+      // about the patterns it names.
+      expect(refusal(`${SYNTHETIC_HOME}/.ssh`)).toContain("secret path pattern");
+      expect(refusal(`${SYNTHETIC_HOME}/.omp`)).toContain("protected root");
+      expect(refusal(`${SYNTHETIC_HOME}/.ompd`)).toContain("secret path pattern");
       // The spelling the old check missed: a dot segment in the middle.
-      expect(refusal(`${HOME}/./.aws`)).toContain("secret path pattern");
+      expect(refusal(`${SYNTHETIC_HOME}/./.aws`)).toContain("secret path pattern");
+      // And the operator's real home is covered too, by whichever rule applies
+      // where it lives, so dropping to a synthetic path does not drop coverage.
+      expect(refusal(`${HOME}/.ssh`)).toMatch(/secret path pattern|protected directory/);
+    });
+  });
+
+  /**
+   * The platform-generic trees the reviewer's probe rows did not reach.
+   *
+   * Every expectation here is derived rather than transcribed, because the
+   * last version of this file asserted this Mac's canonical spellings
+   * unconditionally and Linux CI went red on 40 tests after the merge. The
+   * topology genuinely differs: `/proc`, `/sys`, `/run`, `/boot`, `/lib` and
+   * `/lib64` do not exist on darwin 25.5.0 at all (measured: `lstat` answers
+   * ENOENT for all six), `/var/lib` and `/var/run` canonicalize under the
+   * firmlink here and to `/var/lib` and `/run` respectively on a usr-merge
+   * Linux, and `/lib` is a symlink into `/usr` there. So each test either
+   * asserts the property (refused, or refused for being inside something), or
+   * derives the spelling from `realpathSync`, or is gated on the platform
+   * whose mechanism it is actually about.
+   */
+  describe("the platform-generic trees, which the probe rows never reached", () => {
+    /** The canonical spelling of a path, or the path itself when it is not there to resolve. */
+    function canonicalOf(path: string): string {
+      try {
+        return realpathSync(path);
+      } catch {
+        return path;
+      }
+    }
+
+    /**
+     * Every tree added for B6. Each is asserted twice, as itself and one level
+     * in, because the two are different rules: the equal-length comparison and
+     * the ancestor prefix. A set that only refused the directory itself is the
+     * exact bug the `/dev` case below is about.
+     */
+    const NEW_TREES = [
+      "/dev",
+      "/proc",
+      "/sys",
+      "/run",
+      "/boot",
+      "/lib",
+      "/lib64",
+      "/var/lib",
+      "/var/run",
+      "/opt",
+      "/Volumes/.timemachine",
+    ];
+
+    for (const tree of NEW_TREES) {
+      test(`${tree} is refused as itself and one level inside`, () => {
+        // Which of the two reasons appears is topology, not policy. On a
+        // usr-merge Linux `/lib` canonicalizes to `/usr/lib`, so it is refused
+        // for being inside `/usr` rather than by its own entry, and both are
+        // the right answer. Asserting the reason exactly would be asserting
+        // the distro's symlink layout.
+        expect(refusal(tree)).toMatch(/is a protected directory|is inside the protected directory/);
+        // One level in is unambiguous: whatever the tree canonicalizes to, a
+        // child of it is inside a protected directory and never equal to one.
+        expect(refusal(`${tree}/probe-9d3f1a`)).toContain("is inside the protected directory");
+      });
+    }
+
+    test("a read-write /dev is not constructible, which is the case the review demonstrated", () => {
+      // `resolveMountPath` takes no mode, and that is why this is the right
+      // place to assert it. The container backend builds
+      // `--volume <canonical>:<canonical>:<mode>` out of the path this
+      // function RETURNS, so a refusal means there is no argv for a mode to
+      // attach to: `{ hostPath: "/dev", mode: "rw" }` dies in `resolveMount`
+      // before any string is assembled.
+      expect(refusal("/dev")).toContain("/dev is a protected directory");
+
+      // The reason it is a tree and not an exact match. An exact rule refuses
+      // the directory and then allows the raw disk one level down, which is
+      // the whole escalation: the host's block devices make every filesystem
+      // permission on the machine advisory, `/dev/mem` is its live memory
+      // where a kernel still exposes it, and a root guest with `mknod` can
+      // hand itself a node for anything it can name.
+      const rawDisk = ON_DARWIN ? "/dev/rdisk0" : "/dev/sda";
+      for (const node of [rawDisk, "/dev/mem", "/dev/kmem", "/dev/null"]) {
+        expect(refusal(node)).toContain("it is inside the protected directory /dev");
+      }
+      // `/dev` is a real directory on both platforms, mounted devfs here and
+      // devtmpfs there, so it canonicalizes to itself and the reason names no
+      // second spelling. That is asserted rather than assumed, because if it
+      // ever stopped being true the loop above would be checking the wrong
+      // tree's name.
+      expect(canonicalOf("/dev")).toBe("/dev");
+    });
+
+    test("/var/lib and /var/run, whose canonical form moves on both platforms", () => {
+      // The pair that punishes a transcribed expectation. macOS: both are real
+      // directories under the firmlink, so they answer `/private/var/lib` and
+      // `/private/var/run` (measured). Linux: `/var/lib` is real and answers
+      // itself, while `/var/run` is a symlink to `/run` and is therefore
+      // caught by a completely different entry in the set. All three outcomes
+      // are correct, so the spelling comes from `realpathSync` and only the
+      // refusal is asserted as policy.
+      for (const input of ["/var/lib", "/var/run"]) {
+        const reason = refusal(input);
+        expect(reason).toContain(`${canonicalOf(input)} is a protected directory`);
+        expectCanonicalClause(reason, input, canonicalOf(input));
+      }
+    });
+
+    test("the firmlink spellings of the /var trees, which is what a canonical path becomes", () => {
+      // Literal on purpose, exactly like the `/private/etc` case above: these
+      // ARE the canonical spelling of their own input on macOS, and on Linux
+      // neither exists, so the ancestor walk re-appends the tail verbatim and
+      // the same entries still catch them. That is the point of carrying both
+      // spellings rather than only the one this machine produces.
+      expect(refusal("/private/var/lib")).toContain("/private/var/lib is a protected directory");
+      expect(refusal("/private/var/run")).toContain("/private/var/run is a protected directory");
+    });
+
+    test("a tail under an existing tree is re-appended, not resolved away", () => {
+      // The ancestor walk asserted where it is cheap and portable: `/dev`
+      // exists on both platforms and `/dev/no-such-node-9d3f1a` does not, so
+      // `realpath` fails on the full path and only succeeds on the parent. The
+      // refusal proves the tail came back.
+      expect(existsSync("/dev/no-such-node-9d3f1a")).toBe(false);
+      expect(refusal("/dev/no-such-node-9d3f1a")).toContain("it is inside the protected directory /dev");
+    });
+
+    test.if(ON_DARWIN)("a tree this platform does not have at all is still refused by the walk", () => {
+      // Gated to darwin because being absent is the mechanism under test and
+      // these directories exist on Linux. `realpath` fails outright on a path
+      // that is not there, so the ONLY reason these are refused is that
+      // `canonicalizeAsFarAsPossible` walked up to `/`, which resolves, and
+      // re-appended the tail. The absence of a "canonicalizes to" clause is
+      // what proves the walk landed on the original string rather than moving
+      // it somewhere that happened to be protected.
+      const absent = ["/proc", "/sys", "/lib64", "/boot", "/run", "/lib"].filter(dir => !existsSync(dir));
+      expect(absent.length).toBeGreaterThan(0);
+      for (const dir of absent) {
+        const reason = refusal(dir);
+        expect(reason).toContain(`${dir} is a protected directory`);
+        expect(reason).not.toContain("canonicalizes to");
+      }
+    });
+
+    test("/opt is protected, because it is where the machine keeps programs it will run", () => {
+      // The decision, asserted so it is not just a comment. On this machine
+      // `/opt/homebrew` is the operator's entire toolchain and `/opt/podman`
+      // is a container runtime install; on Linux it is where vendor packages
+      // put their binaries. A writable mount there does not read a secret, it
+      // replaces a program the operator and this daemon will later execute.
+      expect(refusal("/opt")).toContain("/opt is a protected directory");
+      expect(refusal("/opt/homebrew")).toContain("it is inside the protected directory /opt");
+      expect(refusal("/opt/podman")).toContain("it is inside the protected directory /opt");
+    });
+
+    test("/srv is deliberately NOT protected, and the asymmetry with /opt is the mechanism", () => {
+      // The other half of the same decision, asserted so a later reflex cannot
+      // quietly add it. Nothing under `/srv` is OS code the operator will
+      // execute, a credential store, or a kernel interface, and the FHS
+      // defines it as site-specific data a distribution must not write into,
+      // so a served web root or git mirror there is a plausible workspace.
+      // `/opt` fails all three of those tests, which is the difference.
+      const srv = accepted("/srv");
+      expect(srv).toBe(canonicalOf("/srv"));
+      expect(accepted("/srv/build-cache")).toBe(`${srv}/build-cache`);
+      expect(refusal("/opt")).toContain("is a protected directory");
+    });
+
+    test("/Volumes is refused as itself, because it is every mounted volume at once", () => {
+      // Named itself it is the system volume, a Time Machine store, and any
+      // disk image the operator or an attacker has attached.
+      expect(refusal("/Volumes")).toContain("/Volumes is a protected directory");
+    });
+
+    test("a workspace on an external volume still resolves, which is why /Volumes is not a tree", () => {
+      // The cost of promoting `/Volumes` to a tree, asserted rather than
+      // argued: this operator keeps real checkouts on an external SSD under
+      // `/Volumes/dev`. Nothing has to be attached for the assertion to hold,
+      // because the check only requires existence when the caller asks for it,
+      // and the path is judged the same way on Linux where `/Volumes` is
+      // simply a directory nobody has.
+      const workspace = "/Volumes/dev/src/github.com/jwaldrip/ompctl";
+      expect(accepted(workspace)).toBe(workspace);
+    });
+
+    test("the Time Machine automount tree, which the /Volumes rule alone would allow", () => {
+      // The one `/Volumes` descendant with an entry of its own, and the reason
+      // it needs one: descendants of `/Volumes` are judged on merit, and on
+      // merit a backup store is every credential the operator has ever had, at
+      // rest, plus the ability to corrupt the backups. Nobody keeps a
+      // workspace in a dotted automount directory, so this costs nothing. It
+      // is the `/Users` argument about credentials at rest rather than a
+      // second opinion about volumes.
+      expect(refusal("/Volumes/.timemachine")).toContain("/Volumes/.timemachine is a protected directory");
+      expect(refusal("/Volumes/.timemachine/2026-08-24-000000")).toContain(
+        "it is inside the protected directory /Volumes/.timemachine",
+      );
+    });
+
+    test.if(ON_DARWIN)("the boot volume under /Volumes is refused by the filesystem folding it to /", () => {
+      // Why `/Volumes` needs no tree rule for the dangerous case, and gated to
+      // darwin because the symlink is what makes the claim true. The volume
+      // name is derived rather than typed, so renaming the boot volume does
+      // not turn this into a false failure; what is asserted is that macOS
+      // still exposes it this way at all.
+      const folded = readdirSync("/Volumes").filter(name => {
+        try {
+          return realpathSync(join("/Volumes", name)) === "/";
+        } catch {
+          return false;
+        }
+      });
+      expect(folded.length).toBeGreaterThan(0);
+      for (const name of folded) {
+        const reason = refusal(join("/Volumes", name));
+        expect(reason).toContain("/ is a protected directory");
+        expect(reason).toContain("canonicalizes to /");
+      }
+    });
+
+    test("the scratch tree the new /var entries must not have swallowed", () => {
+      // `/var/lib` and `/var/run` became trees in the same change, and
+      // `os.tmpdir()` lives under `/private/var` on macOS, so this asserts the
+      // near miss directly rather than relying on the legitimate-mount test
+      // further down to notice. Derived on both platforms: `/var/folders/...`
+      // here, `/tmp` there.
+      expect(accepted(TMP_CANONICAL)).toBe(TMP_CANONICAL);
+      expect(accepted(join(TMP_CANONICAL, "scratch-9d3f1a"))).toBe(join(TMP_CANONICAL, "scratch-9d3f1a"));
     });
   });
 

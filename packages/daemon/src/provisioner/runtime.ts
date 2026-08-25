@@ -1006,10 +1006,10 @@ function isCapability(probed: RuntimeCapability | RuntimeUnavailable): probed is
  */
 function noFallbackNote(platform: string): string {
   if (platform === "darwin") {
-    return "ompd will not fall back to Docker, OrbStack, Colima, or podman on darwin: walking a fallback order is what put an unpinned selection on Docker/OrbStack whenever Apple `container` answered `--version` with its apiserver down, and removing that dependency is the reason container hosts exist. Apple's `container` is at https://github.com/apple/container/releases, and `container system start` brings its apiserver up. To use a different runtime, ask for it: `OMPD_CONTAINER_RUNTIME=docker` or `OMPD_CONTAINER_RUNTIME=podman`.";
+    return "ompd will not fall back to Docker, OrbStack, Colima, or podman on darwin: walking a fallback order is what put an unpinned selection on Docker/OrbStack whenever Apple `container` answered `--version` with its apiserver down, and removing that dependency is the reason container hosts exist. Apple's `container` is at https://github.com/apple/container/releases, and `container system start` brings its apiserver up. To use a different runtime, ask for it in the daemon's own config: set `containerRuntime` to `docker` or `podman` in `<OMPD_HOME>/config.json`. It is config rather than an environment variable because a launchd-started daemon inherits no shell, so an env var was absent in the one place it had to work.";
   }
   if (platform === "linux") {
-    return "ompd will not fall back to Docker on linux, for the same reason it does not on darwin: an implicit move to a root daemon changes the security posture of every container it runs. To use it, ask for it: `OMPD_CONTAINER_RUNTIME=docker`.";
+    return "ompd will not fall back to Docker on linux, for the same reason it does not on darwin: an implicit move to a root daemon changes the security posture of every container it runs. To use it, ask for it: set `containerRuntime` to `docker` in `<OMPD_HOME>/config.json`.";
   }
   return "";
 }
@@ -1052,7 +1052,7 @@ export async function selectRuntime(opts: ProbeOptions = {}): Promise<RuntimeCap
   const order = runtimeOrder(platform);
   if (order.length === 0) {
     throw new ProvisionError(
-      `no container runtime is available on platform ${platform}; ompd selects ${DARWIN_RUNTIME_ORDER.join(", ")} on darwin and ${LINUX_RUNTIME_ORDER.join(", ")} on linux, and can be pinned with OMPD_CONTAINER_RUNTIME to any of ${KNOWN_RUNTIMES.join(", ")} on those platforms`,
+      `no container runtime is available on platform ${platform}; ompd selects ${DARWIN_RUNTIME_ORDER.join(", ")} on darwin and ${LINUX_RUNTIME_ORDER.join(", ")} on linux, and can be pinned by setting \`containerRuntime\` in \`<OMPD_HOME>/config.json\` to any of ${KNOWN_RUNTIMES.join(", ")} on those platforms`,
       "container",
     );
   }
