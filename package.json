@@ -34,7 +34,7 @@
     "check:endpoints": "bun run scripts/check-endpoints.ts",
     "check:tools": "biome check . --no-errors-on-unmatched",
     "check:types": "bun run --workspaces --if-present check",
-    "test": "bun run check:hermes && bun run --workspaces --if-present test && bun test packages/acp packages/cli packages/core packages/daemon packages/hub packages/omp-extension packages/tunnel scripts"
+    "test": "bun run check:hermes && bun scripts/run-package-tests.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",

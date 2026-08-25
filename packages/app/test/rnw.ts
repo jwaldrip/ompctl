@@ -79,6 +79,18 @@ export function setWindowSize(width: number, height: number): void {
   windowSize = { ...windowSize, width, height };
 }
 
+/**
+ * The operator's text-size setting, as `useWindowDimensions` reports it.
+ *
+ * Its own seam rather than a fourth argument to `setWindowSize`, because size
+ * and text scale are independent: the clipping this exists to test happens on
+ * an iPad with six hundred spare points, so a test has to move one without
+ * moving the other.
+ */
+export function setFontScale(fontScale: number): void {
+  windowSize = { ...windowSize, fontScale };
+}
+
 /** Restore the phone-width default after a wide render. */
 export function resetWindowSize(): void {
   windowSize = { width: 390, height: 844, scale: 1, fontScale: 1 };

@@ -18,6 +18,7 @@ import {
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
+import { Divider } from "react-native-paper";
 import { OmpComposer } from "../assistant/OmpComposer.tsx";
 import { OmpThreadList, OmpThreadProvider } from "../assistant/OmpThread.tsx";
 import { webViewCapability } from "../browser";
@@ -31,9 +32,10 @@ import type { WebViewTarget } from "../console/webview.ts";
 import { routeWebViewAction } from "../console/webview.ts";
 import { elapsed, modelLabel, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { rhythm } from "../design/rhythm.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
-import { agentSignal, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { agentSignal, ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
 import { agentActivity, conversationActivity } from "../session/activity.ts";
@@ -287,7 +289,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           accessibilityRole="button"
           accessibilityLabel="Back to sessions"
           onPress={props.onBack}
-          style={({ pressed }) => [styles.back, pressed && { backgroundColor: ground.active }]}
+          style={({ pressed }) => [styles.headControl, pressed && { backgroundColor: ground.active }]}
         >
           <Glyph name="back" size={14} color={ink.plain} />
           <Label color={ink.plain} testID="session-back-label">
@@ -320,7 +322,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             onPress={() => {
               setBrowserOpen(open => !open);
             }}
-            style={({ pressed }) => [styles.headAction, pressed && { backgroundColor: ground.active }]}
+            style={({ pressed }) => [styles.headControl, pressed && { backgroundColor: ground.active }]}
           >
             <Glyph name="browser" size={14} color={browserOpen ? tone : ink.muted} />
             <Label color={browserOpen ? ink.plain : ink.muted}>Browser</Label>
@@ -345,7 +347,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           accessibilityState={{ checked: narration.enabled, disabled: !narration.available }}
           disabled={!narration.available}
           onPress={narration.toggle}
-          style={({ pressed }) => [styles.narrationToggle, pressed && { backgroundColor: ground.active }]}
+          style={({ pressed }) => [styles.headControl, pressed && { backgroundColor: ground.active }]}
         >
           <Glyph name="narration" size={14} color={narration.enabled ? signal.sage : ink.muted} />
           <Label color={narration.enabled ? ink.bright : ink.muted} testID="session-narration-status">
@@ -363,6 +365,14 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
               : "Read new agent prose aloud as it arrives.")}
         </Label>
       </View>
+      {/*
+        The seam between the chrome and the working area, drawn by Paper rather
+        than by a border on the band above it. `Divider` reads `outlineVariant`
+        off the theme, which IS `ground.line`, so this is the same hairline the
+        band used to carry -- one element that means "these two things are
+        divided" instead of a border rule repeated on every band in the app.
+      */}
+      <Divider bold />
 
       {/*
         The keyboard takes its space from the transcript, never from the
@@ -406,19 +416,11 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           ) : (
             <>
               {/*
-              Above the plan card and the transcript, inside the scroll-free
-              part of the column: collapsed it is one row, so the log keeps
-              every point it had, and it never becomes a rail the transcript
-              has to share its width with.
-            */}
+                Session identity stays fixed above the log. A pending plan is
+                transcript context, so it scrolls with the transcript instead
+                of consuming the composer's fixed working space.
+              */}
               <SessionContext {...props.context} agent={agent} now={props.now} session={session} />
-              <PlanCard
-                canApprove={props.canApprove}
-                onRespond={props.onDecidePlan}
-                plan={session.plan}
-                refusal={props.refusal}
-                review={session.planReview}
-              />
 
               <OmpThreadList
                 entries={session.entries}
@@ -426,6 +428,15 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
                 refusal={props.refusal}
                 onDecide={props.onDecide}
                 spoken={props.spoken}
+                header={
+                  <PlanCard
+                    canApprove={props.canApprove}
+                    onRespond={props.onDecidePlan}
+                    plan={session.plan}
+                    refusal={props.refusal}
+                    review={session.planReview}
+                  />
+                }
                 footer={
                   activity === null ? null : (
                     <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
@@ -465,6 +476,12 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           only a surface-coloured pad owner runs the composer's colour the
           last inset down to the screen edge instead of stopping short and
           showing the shell's base beneath the message box.
+
+          Nothing else: this band pays no gutter and no top pad. Whichever of
+          the four things below fills the slot brings its own `rhythm.gutter`,
+          so they share one left edge without nesting two gutters, and the
+          composer's own dock owns the vertical air above its surface. A top
+          pad here would be added to that one, not replace it.
         */}
           <View
             style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
@@ -531,59 +548,61 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
 const styles = StyleSheet.create({
   // Owns the space between the header and the bottom of the screen, so the
   // keyboard's inset lands here rather than on top of the composer.
-  body: { flex: 1 },
+  //
+  // It is also where this screen's vertical rhythm is set, once, for every
+  // instrument in it. `sectionGap` above, because the chrome bands and the
+  // working area are genuinely different sections and nothing separated them
+  // but a hairline. `rowGap` between, because the context strip, the plan
+  // card, the transcript, the readout and the dock are consecutive rows of
+  // the same kind: instruments. Before this they had no gap at all and each
+  // one made up its own margin, which is the vertical half of what the
+  // operator was reporting.
+  body: { flex: 1, minHeight: 0, paddingTop: rhythm.sectionGap, gap: rhythm.rowGap },
   // The band that owns the screen's bottom edge, composer to home
   // indicator. It paints the composer's surface because it is the view that
   // pays the inset below the composer: a parent's padding is outside every
   // child, so a transparent pad owner is how the shell's base colour ends up
   // showing between the message box and the screen edge.
+  //
+  // No gutter and no top pad here, on purpose. See the comment at the call
+  // site: the four things that can fill this slot each pay `gutter`, and the
+  // composer's own dock owns the air above its surface.
   composerSafe: { backgroundColor: ground.surface },
   head: {
     flexDirection: "row",
     alignItems: "center",
     gap: space.snug,
-    paddingHorizontal: space.step,
+    paddingHorizontal: rhythm.gutter,
     paddingVertical: space.snug,
     backgroundColor: ground.surface,
     borderBottomWidth: stroke.heavy,
   },
-  // Labeled on purpose. An icon alone under a thumb is how an operator ends up
-  // trapped in a session with no idea the bay is one tap away.
-  back: {
-    minHeight: TOUCH_TARGET,
-    minWidth: TOUCH_TARGET,
-    paddingHorizontal: space.snug,
+  // One block for every labelled control in the chrome: the back control, the
+  // browser toggle and the narration switch. They were three blocks saying
+  // almost the same thing -- 8 here, 8 there, a `minWidth` on one of them --
+  // which is how a header ends up with controls of three different widths.
+  //
+  // Labelled on purpose, all of them. An icon alone under a thumb is how an
+  // operator ends up trapped in a session with no idea the bay is one tap
+  // away, so `minTarget` is a floor on the height and the word sets the width.
+  headControl: {
+    minHeight: rhythm.minTarget,
+    paddingHorizontal: rhythm.controlPad,
     flexDirection: "row",
     alignItems: "center",
-    gap: space.tight,
-  },
-  headAction: {
-    minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.snug,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.tight,
+    gap: rhythm.glyphGap,
   },
   narration: {
-    minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.step,
+    minHeight: rhythm.minTarget,
+    paddingHorizontal: rhythm.gutter,
     flexDirection: "row",
     alignItems: "center",
     gap: space.snug,
     backgroundColor: ground.surface,
-    borderBottomWidth: stroke.hair,
-    borderBottomColor: ground.line,
-  },
-  narrationToggle: {
-    minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.snug,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.tight,
   },
   narrationReason: { flex: 1 },
-  ident: { flex: 1, gap: space.hair },
-  meta: { flexDirection: "row", alignItems: "center", gap: space.snug },
+  ident: { flex: 1, gap: rhythm.pairGap },
+  meta: { flexDirection: "row", alignItems: "center", gap: space.tight },
   origin: { flexShrink: 1 },
   browser: {
     height: 320,
@@ -591,20 +610,25 @@ const styles = StyleSheet.create({
     borderTopColor: ground.edge,
     backgroundColor: ground.surface,
   },
+  // The three bands that stand in for the composer. They pay the screen
+  // gutter themselves rather than taking one from the band around them, so
+  // whichever of the four fills the slot, its first character starts at the
+  // same x as the header's back control and the readout's link chip.
   resume: {
-    padding: space.step,
-    gap: space.snug,
+    paddingHorizontal: rhythm.gutter,
+    paddingVertical: rhythm.rowGap,
+    gap: rhythm.rowGapTight,
     backgroundColor: ground.surface,
     borderTopWidth: stroke.heavy,
     borderTopColor: ground.edge,
   },
   resumeButton: {
-    minHeight: TOUCH_TARGET,
+    minHeight: rhythm.minTarget,
     alignSelf: "flex-start",
-    paddingHorizontal: space.step,
+    paddingHorizontal: rhythm.controlPad,
     flexDirection: "row",
     alignItems: "center",
-    gap: space.tight,
+    gap: rhythm.glyphGap,
     borderWidth: stroke.hair,
     borderColor: ground.line,
   },

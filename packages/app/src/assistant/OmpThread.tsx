@@ -25,22 +25,51 @@
  * to read history is not dragged to the bottom when a turn starts. Measured with
  * the flags false, the library installs nothing on the list -- the only props it
  * adds are `data`, `keyExtractor`, `renderItem` and its own `ref` plumbing -- so
- * ours are the only scroll handlers in play.
+ * ours are the only scroll handlers in play. That is asserted rather than
+ * remembered: `test/transcript-pagination.test.tsx` reads the props reaching the
+ * real list and fails if a library `onLayout` ever arrives, which is the tell
+ * that one of the four flipped back to its default.
+ *
+ * Paper supplies this surface's pixels and nothing else. `style` and
+ * `contentContainerStyle` are the only props below that the design system
+ * touches; every scroll and anchor prop belongs to the machine above.
  */
 
 import { AssistantRuntimeProvider, ThreadPrimitive } from "@assistant-ui/react-native";
 import type { JSX, ReactElement, ReactNode } from "react";
 import { useMemo, useRef } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Button, Surface } from "react-native-paper";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
 import { Glyph } from "../design/icons.tsx";
+import { rhythm } from "../design/rhythm.ts";
 import { Code, Label } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
+import { radius, stroke } from "../design/tokens.ts";
+import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { Entry } from "../session/model.ts";
 import { entryOf, messageRowId, type OmpStoreInput, ompStore } from "./adapter.ts";
 import { OmpEntryRow } from "./renderers.tsx";
 import { useOmpRuntime } from "./runtime.ts";
+
+/**
+ * The history control's glyph, handed to Paper as a source rather than a name.
+ *
+ * Paper's `Icon` routes a STRING through `settings.icon`, which only exists
+ * under `OmpThemeProvider`; with no provider above it, the string form falls
+ * through to Paper's bundled Material renderer, which has no font here and
+ * draws a literal box. A FUNCTION source is called directly
+ * (`typeof s === "function"` in Paper's `Icon.tsx`), so the real glyph draws
+ * whether a provider is mounted or not.
+ *
+ * It also moves the failure earlier: a glyph this app has no drawing for is a
+ * `GlyphName` compile error here, where a string would have been a blank space
+ * at runtime. Hoisted to module scope so its identity is stable across renders,
+ * which is what Paper's `isEqualIcon` memo compares.
+ */
+function resumeGlyph({ size, color }: { size: number; color: string }): JSX.Element {
+  return <Glyph name="resume" size={size} color={color} />;
+}
 
 /**
  * The runtime, built once per meaningful state change.
@@ -99,6 +128,8 @@ export interface OmpThreadListProps {
    * surprise.
    */
   footer?: ReactElement | null;
+  /** A non-message card which belongs above the transcript and must scroll with it. */
+  header?: ReactElement | null;
   /**
    * The same three the shipped `Transcript` takes, so a screen swapping to this
    * surface changes one element and no props. The pagination machine lives in
@@ -132,6 +163,10 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
   // Opening a session lands on the newest entry, and a streaming turn keeps it
   // there, unless the operator has scrolled up to read.
   const follow = useFollowNewest();
+  // The ground the log sits on is the one runtime-varying value here: every
+  // measurement below is structural and lives in the StyleSheet as a rhythm
+  // job, but the base changes with the device's scheme.
+  const theme = useOmpTheme();
 
   /**
    * The head row's key, in the same key space the list uses. `MessagesFlatList`
@@ -155,26 +190,52 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
   const earlier =
     props.canLoadEarlier === true && props.onLoadEarlier !== undefined ? (
       <View style={styles.header}>
-        {props.loadingEarlier === true && <ActivityIndicator size="small" />}
-        <Pressable
+        <Button
           testID="history-load-earlier"
-          accessibilityRole="button"
-          accessibilityLabel="Load earlier transcript entries"
+          mode="text"
+          icon={resumeGlyph}
+          // No `loading`: Paper's spinner would replace the glyph, so the
+          // control's identity would flicker on every page. Greyed out and
+          // saying so is the whole in-progress signal, and it is the shape the
+          // terminal's control of the same name carries.
           disabled={props.loadingEarlier === true}
+          accessibilityLabel="Load earlier transcript entries"
           onPress={pagination.onPressLoadEarlier}
-          style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
+          // Paper's text mode paints itself `colors.primary`, which is signal
+          // sage. Sage means "this is the action that completes the turn" and
+          // the composer's send disc owns it; a way back through history is not
+          // that, and it was `ink.muted` before. Paper hands this to the label
+          // AND the icon, so the glyph follows.
+          textColor={theme.ink.muted}
+          // Paper computes `roundness * 5` for a v3 button and hands it to the
+          // touchable inline: measured at 40 points without this, which is a
+          // pill. The one pill in this app is the composer's send disc, for the
+          // same reason sage is: that shape means "completes the action".
+          style={styles.earlierShape}
+          contentStyle={styles.earlier}
+          labelStyle={styles.earlierLabel}
         >
-          <Glyph name="resume" size={11} color={ink.muted} />
-          <Label color={ink.muted}>{props.loadingEarlier === true ? "Loading earlier…" : "Load earlier"}</Label>
-        </Pressable>
+          {props.loadingEarlier === true ? "Loading earlier…" : "Load earlier"}
+        </Button>
       </View>
     ) : null;
+
+  const header =
+    props.header === null || props.header === undefined ? (
+      earlier
+    ) : (
+      <>
+        {props.header}
+        {earlier}
+      </>
+    );
 
   return (
     <ThreadPrimitive.Root style={styles.root} testID="aui-thread">
       <ThreadPrimitive.MessagesFlatList
         testID="aui-messages"
-        style={styles.list}
+        style={[styles.list, { backgroundColor: theme.ground.base }]}
+        contentContainerStyle={styles.listContent}
         // Ours, not theirs. See the note at the top of this file.
         autoScroll={false}
         scrollToBottomOnRunStart={false}
@@ -188,7 +249,7 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         automaticallyAdjustKeyboardInsets
-        ListHeaderComponent={earlier}
+        ListHeaderComponent={header}
         // In the order the conversation happened: what the daemon said about
         // the LAST settled turn, then the turn running NOW. So the activity row
         // is the newest thing on screen, which is what makes the follower treat
@@ -261,10 +322,11 @@ function OmpRow({
  * it -- the empty slot belongs to the list that knows it has no rows.
  */
 function Empty(): JSX.Element {
+  const theme = useOmpTheme();
   return (
     <View style={styles.empty} testID="transcript-empty">
-      <Glyph name="bay" size={22} color={ground.edge} />
-      <Label color={ink.muted}>Nothing on this strip yet.</Label>
+      <Glyph name="bay" size={22} color={theme.ground.edge} />
+      <Label color={theme.ink.muted}>Nothing on this strip yet.</Label>
     </View>
   );
 }
@@ -275,37 +337,75 @@ function Empty(): JSX.Element {
  * cutover must not silently drop a surface an operator already had.
  */
 function Spoken({ text }: { text: string }): JSX.Element {
+  const theme = useOmpTheme();
   return (
-    <View style={styles.spoken} testID="transcript-say">
-      <Glyph name="link" size={11} color={signal.violet} />
-      <Code color={ink.plain} style={styles.spokenText}>
+    <Surface
+      mode="flat"
+      elevation={0}
+      style={[styles.spoken, { backgroundColor: theme.ground.surface, borderLeftColor: theme.signal.violet }]}
+      testID="transcript-say"
+    >
+      <Glyph name="link" size={11} color={theme.signal.violet} />
+      <Code color={theme.ink.plain} style={styles.spokenText}>
         {text}
       </Code>
-    </View>
+    </Surface>
   );
 }
 
+/**
+ * The negative right margin Paper hangs on a text-mode button's icon.
+ *
+ * Paper expects the label's own 16 to cancel it, which lands the glyph 8 from
+ * its word. An icon and its label stop reading as one object past about four
+ * points, which is what `rhythm.glyphGap` names, so the label pays the overhang
+ * back and then the gap. Paper's own icon margins are not reachable from a
+ * call site; this is the half that is.
+ */
+const PAPER_ICON_OVERHANG = 8;
+
+/**
+ * Every measurement on this surface, each one a named rhythm job.
+ *
+ * Nothing here is a bare number and nothing here is a colour: the two colours
+ * that vary with the device's scheme are composed at the call site, and the
+ * geometry stays in the sheet so a source-scraping check can still read it.
+ */
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  root: { flex: 1, minHeight: 0 },
+  list: { flex: 1, minHeight: 0 },
+  /**
+   * The screen gutter and the row rhythm, paid once for the whole log.
+   *
+   * The header control, every turn, the spoken row and the empty state all
+   * render inside this container, so none of them pays a screen inset a second
+   * time -- which is what made the transcript read as padded out.
+   */
+  listContent: { paddingHorizontal: rhythm.gutter, gap: rhythm.rowGap },
+  // The control belongs to the history above it rather than standing as its own
+  // section, so it pays the tight step.
+  header: { alignItems: "center", paddingVertical: rhythm.rowGapTight },
+  // A control living inside a surface, which is the radius every other control
+  // in this app takes. Paper's own `roundness * 5` would make it a pill.
+  earlierShape: { borderRadius: radius.control },
+  // The control's own geometry: a finger target Paper's button is short of, and
+  // its own horizontal padding, which belongs to the button rather than to the
+  // log under it.
+  earlier: { minHeight: rhythm.minTarget, paddingHorizontal: rhythm.controlPad },
+  // Paper's MD3 label margins are 10 vertical and 16 horizontal, neither on the
+  // grid. The height is the content row's job now, and the horizontal is the
+  // glyph gap once the overhang is paid back.
+  earlierLabel: { marginVertical: 0, marginHorizontal: PAPER_ICON_OVERHANG + rhythm.glyphGap },
+  // A card inside the log, so a card's inner pad -- the gutter is already paid
+  // by the content container -- and a full section's air above it, because what
+  // the daemon said out loud is not another turn.
   spoken: {
     flexDirection: "row",
-    gap: space.snug,
-    padding: space.step,
-    marginTop: space.snug,
-    backgroundColor: ground.surface,
+    gap: rhythm.cardGap,
+    padding: rhythm.cardPad,
+    marginTop: rhythm.sectionGap,
     borderLeftWidth: stroke.heavy,
-    borderLeftColor: signal.violet,
   },
   spokenText: { flex: 1 },
-  list: { flex: 1, backgroundColor: ground.base },
-  empty: { alignItems: "center", gap: space.step, paddingVertical: space.gulf },
-  header: { flexDirection: "row", alignItems: "center", gap: space.step, paddingVertical: space.tight },
-  earlier: {
-    minHeight: 44,
-    alignSelf: "center",
-    paddingHorizontal: space.step,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.tight,
-  },
+  empty: { alignItems: "center", gap: rhythm.rowGap, paddingVertical: rhythm.sectionGap },
 });

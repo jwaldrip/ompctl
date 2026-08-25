@@ -7,18 +7,19 @@
  * react-native-web, which is the shipped web target rather than a test double:
  * one component tree, checked the same way it runs.
  *
- * `renderToStaticMarkup` gives markup and no event loop, so presses are proven
- * separately by calling the component and walking the element tree it returns.
- * That is enough: the question a press has to answer is whether the control is
- * wired to the callback, and a real click adds a browser rather than an answer.
+ * `renderToStaticMarkup` gives markup and no event loop, so nothing here proves
+ * a press. It used to claim it did, by calling a component as a plain function
+ * and walking the element tree it returned; that saw no hooks, no effects and no
+ * press responder, which is to say it never rendered the thing it was asserting
+ * about. Presses belong to a harness with a real render and a real click, and
+ * they live in `test/assistant-renderers.test.tsx`. What is proven here is what
+ * markup can prove: that the right screens draw the right content.
  */
 
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
-import type { Agent, ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
-import type { ReactElement, ReactNode } from "react";
-import { isValidElement } from "react";
+import type { Agent } from "@ompd/core/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 // Type-only, so it is erased before it can pull `react-native` in early.
 import type { ConsoleEvent, ConsoleState } from "../src/console/state.ts";
@@ -317,6 +318,23 @@ describe("the transcript renders from canned frames", () => {
 // The one control that changes something
 // ---------------------------------------------------------------------------
 
+/**
+ * Three tests used to live here, one per decision control. They called
+ * `ApprovalCard({...})` as a plain function and read `onPress` off the returned
+ * element tree, which meant they never exercised a render: no hooks, no
+ * effects, no provider, no press responder. They passed against a shape the app
+ * does not run, and they survived only because the card happened to have no
+ * hooks; the card reads the theme now, so a plain call has no dispatcher.
+ *
+ * The contract they claimed is asserted in
+ * `test/assistant-renderers.test.tsx`, under "a clearance is a decision, not a
+ * picture of one": one render through `createRoot`, three real DOM clicks, and
+ * the same three `[requestId, choice, scope]` triples in order. That version can
+ * see a broken decision path; this one could not.
+ *
+ * What stays here is the half a static render can genuinely prove: a settled
+ * card keeps its answer and offers no further decision.
+ */
 describe("the approval card is wired to a decision", () => {
   const entry = {
     kind: "approval" as const,
@@ -328,36 +346,6 @@ describe("the approval card is wired to a decision", () => {
     decision: null,
   };
 
-  function press(testID: string): [string, ApprovalChoice, ApprovalScope | undefined] | null {
-    let seen: [string, ApprovalChoice, ApprovalScope | undefined] | null = null;
-    const tree = ApprovalCard({
-      entry,
-      canApprove: true,
-      onDecide: (requestId, choice, scope) => {
-        seen = [requestId, choice, scope];
-      },
-    });
-    const target = find(tree, testID);
-    expect(target).not.toBeNull();
-    const onPress = target === null ? undefined : Reflect.get(target.props as object, "onPress");
-    if (typeof onPress !== "function") throw new Error(`${testID} has no onPress`);
-    onPress();
-    return seen;
-  }
-
-  test("allow sends a single-use allow", () => {
-    expect(press("approval-allow-req_42")).toEqual(["req_42", "allow", "once"]);
-  });
-
-  test("reject sends a single-use deny", () => {
-    expect(press("approval-deny-req_42")).toEqual(["req_42", "deny", "once"]);
-  });
-
-  test("always is a separate control, not a modifier riding on allow", () => {
-    // A standing grant taken by accident is the failure this shape prevents.
-    expect(press("approval-always-req_42")).toEqual(["req_42", "allow", "always"]);
-  });
-
   test("a settled card keeps its answer and offers no further decision", () => {
     const html = renderToStaticMarkup(
       <ApprovalCard entry={{ ...entry, decision: "deny" }} canApprove onDecide={() => {}} />,
@@ -366,18 +354,3 @@ describe("the approval card is wired to a decision", () => {
     expect(html).not.toContain("Allow");
   });
 });
-
-/** Depth-first search of a React element tree for a node carrying `testID`. */
-function find(node: ReactNode, testID: string): ReactElement | null {
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const hit = find(child, testID);
-      if (hit !== null) return hit;
-    }
-    return null;
-  }
-  if (!isValidElement(node)) return null;
-  const props = node.props as Record<string, unknown>;
-  if (props.testID === testID) return node;
-  return find(props.children as ReactNode, testID);
-}

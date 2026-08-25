@@ -23,6 +23,13 @@ import { apply, emptyConsole, tuiSessionFor } from "../src/console/state.ts";
 // import "react-native", which would resolve before `./rnw.ts`'s
 // `mock.module` call could substitute it.
 const { TerminalSessionScreen, HINT_WORDS } = await import("../src/screens/TerminalSessionScreen.tsx");
+const { SessionScreen } = await import("../src/screens/SessionScreen.tsx");
+const { EMPTY_SESSION } = await import("../src/session/model.ts");
+const { rhythm } = await import("../src/design/rhythm.ts");
+const { WithOmpTheme } = await import("./theme.tsx");
+// The scheme `WithOmpTheme` pins, so an assertion names the colour the surface
+// actually read rather than a token that happens to match in one theme.
+const { ompDarkTheme } = await import("../src/design/theme.ts");
 const { StyleSheet } = await import("react-native");
 
 declare global {
@@ -38,20 +45,28 @@ function drive(events: readonly ConsoleEvent[], from = emptyConsole([])): Consol
   return state;
 }
 
+/**
+ * Every harness in this file mounts under the design system, because the screen
+ * now draws Paper components: a `Button` rendered with no provider above it
+ * comes out in Material's palette with Material's icon renderer, which is not
+ * the control a person is handed.
+ */
 function renderScreen(state: ConsoleState, onLoadEarlier: () => void = () => {}): string {
   return renderToStaticMarkup(
-    <TerminalSessionScreen
-      title="session s-tui"
-      cwd="/Users/op/dev/src/github.com/op/alpha"
-      status="live-tui"
-      promptAccess="granted"
-      tui={tuiSessionFor(state, SESSION)}
-      load={{ phase: "ready", generation: 0, error: null }}
-      connection="connected"
-      onBack={() => {}}
-      onLoadEarlier={onLoadEarlier}
-      onSubmit={() => {}}
-    />,
+    <WithOmpTheme>
+      <TerminalSessionScreen
+        title="session s-tui"
+        cwd="/Users/op/dev/src/github.com/op/alpha"
+        status="live-tui"
+        promptAccess="granted"
+        tui={tuiSessionFor(state, SESSION)}
+        load={{ phase: "ready", generation: 0, error: null }}
+        connection="connected"
+        onBack={() => {}}
+        onLoadEarlier={onLoadEarlier}
+        onSubmit={() => {}}
+      />
+    </WithOmpTheme>,
   );
 }
 
@@ -79,18 +94,20 @@ function mountScreen(state: ConsoleState, onLoadEarlier: () => void = () => {}):
   const root = createRoot(host);
   act(() => {
     root.render(
-      <TerminalSessionScreen
-        title="session s-tui"
-        cwd="/alpha"
-        status="live-tui"
-        promptAccess="granted"
-        tui={tuiSessionFor(state, SESSION)}
-        load={{ phase: "ready", generation: 0, error: null }}
-        connection="connected"
-        onBack={() => {}}
-        onLoadEarlier={onLoadEarlier}
-        onSubmit={() => {}}
-      />,
+      <WithOmpTheme>
+        <TerminalSessionScreen
+          title="session s-tui"
+          cwd="/alpha"
+          status="live-tui"
+          promptAccess="granted"
+          tui={tuiSessionFor(state, SESSION)}
+          load={{ phase: "ready", generation: 0, error: null }}
+          connection="connected"
+          onBack={() => {}}
+          onLoadEarlier={onLoadEarlier}
+          onSubmit={() => {}}
+        />
+      </WithOmpTheme>,
     );
   });
   return { host, root };
@@ -117,6 +134,52 @@ function sheetRulesFor(classes: readonly string[]): string {
     .textContent.split("\n")
     .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
     .join("\n");
+}
+
+/**
+ * The declarations one element actually carries, read out of the sheet by the
+ * classes on its markup, plus anything react-native-web wrote inline. Static
+ * `StyleSheet` values compile to atomic classes and dynamic ones land on the
+ * element, so reading only one of the two places sees half the style. Same
+ * reader as `pair-connections-consistency.test.tsx`, which asks the same
+ * question of two other screens.
+ */
+function declarationsFor(el: Element): Map<string, string> {
+  const classes = el.className.split(/\s+/).filter(Boolean);
+  const out = new Map<string, string>();
+  const take = (text: string): void => {
+    for (const declaration of text.matchAll(/([a-z-]+):\s*([^;]+);?/gi)) {
+      const property = declaration[1];
+      const value = declaration[2];
+      if (property === undefined || value === undefined) continue;
+      out.set(property.toLowerCase(), value.trim());
+    }
+  };
+  for (const rule of rnwStyleSheet.getSheet().textContent.split("\n")) {
+    if (!classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule))) continue;
+    take(rule);
+  }
+  const inline = el.getAttribute("style");
+  if (inline !== null) take(inline);
+  return out;
+}
+
+function byTestID(host: HTMLElement, testID: string): HTMLElement {
+  const element = host.querySelector(`[data-testid="${testID}"]`);
+  if (!(element instanceof HTMLElement)) throw new Error(`no ${testID} rendered`);
+  return element;
+}
+
+/**
+ * The six-digit hex of a token as the rgba() react-native-web's compiler
+ * serialises it to, with no spaces. The atomic sheet writes it that way and the
+ * `style` attribute writes it with spaces after the commas, so `colourOf` reads
+ * in the same shape rather than the caller guessing which half a value came
+ * from.
+ */
+function rgb(hex: string): string {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${(value >> 16) & 255},${(value >> 8) & 255},${value & 255},1.00)`;
 }
 
 function typeInto(input: HTMLElement, value: string): void {
@@ -640,5 +703,251 @@ describe("live hints continue the conversation rather than detaching from it", (
     expect([...host.querySelectorAll('[aria-label="you: re-run the deploy checks"]')]).toHaveLength(1);
     expect(host.querySelector('[data-testid="terminal-sent"]')).toBeNull();
     unmountScreen(host, root);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One design: this surface and the agent log pay the same gutter
+// ---------------------------------------------------------------------------
+
+/**
+ * The agent log, mounted whole and under the same provider. The point of this
+ * section is a comparison, so both sides have to come from the real screens: a
+ * number this file declared for the agent side would be an assertion about a
+ * test rather than about the app.
+ */
+function mountAgentScreen(): { host: HTMLDivElement; root: Root } {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  act(() => {
+    root.render(
+      <WithOmpTheme>
+        <SessionScreen
+          agent={{
+            id: "agt_probe",
+            name: "probe",
+            state: "idle",
+            host: { kind: "local", id: "1", spec: { kind: "local" } },
+            cwd: "/alpha",
+            createdAt: new Date(0).toISOString(),
+            lastActiveAt: new Date(0).toISOString(),
+            labels: {},
+          }}
+          session={EMPTY_SESSION}
+          load={{ phase: "ready", generation: 0, error: null }}
+          context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
+          connection="connected"
+          attempt={0}
+          voice={{
+            access: "granted",
+            mic: { available: false, reason: "no microphone in this test" },
+            speech: { available: false, reason: "no playback in this test" },
+            dictation: null,
+            capturing: false,
+            busyElsewhere: false,
+            onToggle: () => {},
+          }}
+          spoken={null}
+          fleetClearances={0}
+          canApprove
+          onBack={() => {}}
+          onOpenConfig={() => {}}
+          onSubmit={() => {}}
+          onCancel={() => {}}
+          onDecide={() => {}}
+          onDecidePlan={() => {}}
+        />
+      </WithOmpTheme>,
+    );
+  });
+  return { host, root };
+}
+
+/**
+ * The left and right inset an element actually renders, in points.
+ *
+ * `paddingHorizontal` is not a CSS property: react-native-web compiles it to a
+ * pair, and which pair depends on the build, so both spellings are read and the
+ * two sides are required to agree. A screen whose left and right insets differ
+ * is already the defect this section exists to catch.
+ */
+function horizontalInset(el: Element): number {
+  const style = declarationsFor(el);
+  const side = (logical: string, physical: string): number => {
+    const written = style.get(logical) ?? style.get(physical) ?? style.get("padding");
+    if (written === undefined) throw new Error(`no ${physical} declared on the element`);
+    const points = Number.parseFloat(written);
+    if (Number.isNaN(points)) throw new Error(`${physical} is ${written}, which is not a length in points`);
+    return points;
+  };
+  const left = side("padding-inline-start", "padding-left");
+  const right = side("padding-inline-end", "padding-right");
+  if (left !== right) throw new Error(`the element insets its content ${left} on the left and ${right} on the right`);
+  return left;
+}
+
+describe("the terminal and the agent log pay one gutter", () => {
+  test("both headers inset their content by rhythm.gutter, and therefore by the same number", () => {
+    // The report was "spacing looks off", and this is the shape of it: two
+    // screens a person moves between in one gesture, each picking its own step
+    // off the grid, so the title's left edge jumps when the route changes.
+    // Asserting only that the terminal pays 16 would pass on the day the agent
+    // log moves to 20, which is exactly the drift being fixed.
+    const terminal = mountScreen(emptyConsole([]));
+    const agent = mountAgentScreen();
+    try {
+      const terminalGutter = horizontalInset(byTestID(terminal.host, "terminal-head"));
+      const agentGutter = horizontalInset(byTestID(agent.host, "session-head"));
+      expect(terminalGutter).toBe(rhythm.gutter);
+      expect(agentGutter).toBe(rhythm.gutter);
+      expect(terminalGutter).toBe(agentGutter);
+    } finally {
+      unmountScreen(agent.host, agent.root);
+      unmountScreen(terminal.host, terminal.root);
+    }
+  });
+
+  test("every band the terminal owns pays that one gutter, not three near-misses", () => {
+    // The class, not the one margin: the header, the log's content and the
+    // band of hints under it are the three places this screen insets from the
+    // screen edge, and they were 12 apiece against a 16 everywhere else.
+    const { host, root } = mountScreen(drive([served(false)]));
+    try {
+      const log = byTestID(host, "terminal-log");
+      // RNW's ScrollView renders exactly one content container child, and it
+      // is where `contentContainerStyle` lands.
+      const content = log.children[0];
+      if (!(content instanceof HTMLElement)) throw new Error("the terminal log has no content container");
+      expect(horizontalInset(byTestID(host, "terminal-head"))).toBe(rhythm.gutter);
+      expect(horizontalInset(content)).toBe(rhythm.gutter);
+      expect(horizontalInset(byTestID(host, "terminal-transcript-limit").parentElement!)).toBe(rhythm.gutter);
+    } finally {
+      unmountScreen(host, root);
+    }
+  });
+
+  test("the attribution column is rhythm.attribution, the same measure the transcript reads", () => {
+    // One measure for both logs, instead of the 76 this one used and the 68 the
+    // transcript used. Read off the rendered row, so moving it back to a local
+    // number fails here even on a day the number happens to match.
+    const { host, root } = mountScreen(drive([served(false)]));
+    try {
+      const row = byTestID(host, "terminal-turn-0");
+      const gutter = row.firstElementChild;
+      if (!(gutter instanceof HTMLElement)) throw new Error("the turn has no attribution gutter");
+      expect(gutter.textContent).toContain("you");
+      expect(declarationsFor(gutter).get("width")).toBe(`${rhythm.attribution}px`);
+    } finally {
+      unmountScreen(host, root);
+    }
+  });
+
+  test("Load earlier keeps its role and its label after becoming a Paper control", () => {
+    // The shape changed from a hand-rolled Pressable to Paper's Button, so what
+    // has to survive is what the id means: a button, named the same way to
+    // assistive technology, saying the same words.
+    const { host, root } = mountScreen(drive([served(true, 4096)]));
+    try {
+      const control = byTestID(host, "history-load-earlier");
+      expect(control.getAttribute("role")).toBe("button");
+      expect(control.getAttribute("aria-label")).toBe("Load earlier turns of this terminal session");
+      expect(control.textContent).toContain("Load earlier");
+    } finally {
+      unmountScreen(host, root);
+    }
+  });
+
+  test("Load earlier draws ompctl's own glyph with no provider above it", () => {
+    // Paper resolves a STRING icon name through `settings.icon`, which only
+    // exists under `OmpThemeProvider`: written that way this control draws
+    // nothing at all in every harness that mounts a screen bare, and warns
+    // rather than fails. Handing Paper the drawing instead is what makes the
+    // glyph unconditional, so the proof has to be taken without the provider --
+    // wrapped, a string icon would pass this and hide the whole defect.
+    const bare = renderToStaticMarkup(
+      <TerminalSessionScreen
+        title="session s-tui"
+        cwd="/alpha"
+        status="live-tui"
+        promptAccess="granted"
+        tui={tuiSessionFor(drive([served(true, 4096)]), SESSION)}
+        load={{ phase: "ready", generation: 0, error: null }}
+        connection="connected"
+        onBack={() => {}}
+        onLoadEarlier={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+    const control = bare.slice(bare.indexOf('data-testid="history-load-earlier"'));
+    // `icons.tsx` draws Font Awesome paths through react-native-svg, so a path
+    // element inside the control is the proof the app's own family drew it.
+    expect(control.slice(0, control.indexOf("</button>"))).toContain("<path");
+  });
+
+  test("Load earlier wears this app's colour and corner, not Paper's", () => {
+    // The two Material defaults Paper applies unless told otherwise, and both
+    // are the "no Material look" rule rather than taste. Text mode returns
+    // `colors.primary`, which is signal sage -- the "press this one" colour the
+    // composer's send owns, so a secondary way-back control taking it breaks
+    // the one-emphasis rule. And v3 computes `roundness * 5`, a 40 point pill,
+    // where nothing in this app is a pill except that same send disc.
+    //
+    // Rendered ENABLED on purpose: Paper drops a custom `textColor` while
+    // `disabled` (`customTextColor && !disabled`) and falls to
+    // `onSurfaceDisabled`, so a loading-state render would measure the greying
+    // rather than the choice.
+    const { host, root } = mountScreen(drive([served(true, 4096)]));
+    try {
+      const control = byTestID(host, "history-load-earlier");
+      // Paper's own id for the label it wraps our words in. Read rather than
+      // asserted as a name: it is where the colour lands. Spaces stripped
+      // because the `style` attribute writes `rgba(1, 2, 3, 1.00)` where the
+      // atomic sheet writes it closed up, and which half a value comes from is
+      // Paper's business rather than this assertion's.
+      //
+      // Exact equality, and deliberately WITHOUT a companion `not.toBe(sage)`:
+      // `toBe` already excludes every other colour, so that line could never
+      // fail on its own and would only look like a second check. Reverting
+      // `textColor` reports rgba(143,169,123,1.00), which is the sage this is
+      // here to keep out.
+      const words = declarationsFor(byTestID(host, "history-load-earlier-text")).get("color")?.replace(/\s+/g, "");
+      expect(words).toBe(rgb(ompDarkTheme.ink.muted));
+
+      // The label's colour alone does NOT cover the emphasis rule, and reading
+      // only it left a hole: `mode="contained"` with `textColor` kept renders
+      // this control filled sage and the assertion above still passes. Paper
+      // puts our testID on the inner touchable and the FILL on the Surface
+      // above it, so the node carrying the violation was outside what was being
+      // read. Verified: with `mode="contained"` this array is what fails, and
+      // the label check does not.
+      //
+      // Stated as "paints nothing" rather than "is not sage", so any filled
+      // mode fails rather than only the one colour thought of here.
+      const fills = [control, byTestID(host, "history-load-earlier-container")]
+        .map(el => declarationsFor(el).get("background-color")?.replace(/\s+/g, ""))
+        .filter(fill => fill !== undefined && fill !== "rgba(0,0,0,0.00)");
+      expect(fills).toEqual([]);
+
+      // Paper writes the radius inline as four longhands rather than into the
+      // atomic sheet, so a reader that only consults `StyleSheet.getSheet()`
+      // finds nothing here and passes a 40 point pill.
+      //
+      // Measured, both halves: with the override off, `corners` reads
+      // ["40px", "40px"] -- Paper draws the radius on the container AND on the
+      // touchable, and both flip together. So the positive is what discriminates
+      // here and `not.toContain("40px")` is a cheap guard rather than a proven
+      // second check; I did not observe a state where the two disagree. The
+      // length assertion is the one that stops the negative going vacuous: a
+      // reader that found no radius at all would otherwise "pass" on a pill.
+      const corners = [control, byTestID(host, "history-load-earlier-container")].flatMap(el =>
+        [...declarationsFor(el)].filter(([property]) => property.includes("radius")).map(([, value]) => value),
+      );
+      expect(corners.length).toBeGreaterThan(0);
+      expect(corners).toContain(`${ompDarkTheme.radius.control}px`);
+      expect(corners).not.toContain("40px");
+    } finally {
+      unmountScreen(host, root);
+    }
   });
 });

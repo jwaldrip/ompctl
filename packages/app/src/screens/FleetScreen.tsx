@@ -63,25 +63,6 @@ export interface FleetScreenProps {
 }
 
 /**
- * Whether this row's open lands on the agent transcript (SessionScreen,
- * composer and all) with certainty. Mirrors the ladder in
- * `console/state.ts`: `live-ompd` attaches to its agent and `dormant` rides
- * the resume claim, both of which end on SessionScreen. A `live-tui` row
- * asks for the collab guest first and lands on SessionScreen only when that
- * terminal's omp can host; when it cannot, the open falls back to
- * TerminalSessionScreen, a screen with no composer to drive. That
- * distinction matters here because the status sort puts live-tui rows FIRST
- * (`STATUS_SEVERITY` ranks it 0 and `DEFAULT_SORT` is status ascending), so
- * the naive first row is exactly the row the path scenario cannot use:
- * which surface it lands on depends on a build the phone cannot see from
- * the row. Archived rows are excluded too: they ride the same resume claim,
- * but the daemon's verifier refuses them, so their open never reaches a
- * transcript either.
- */
-function opensAgentTranscript(session: BrowserSession): boolean {
-  return session.status === "live-ompd" || session.status === "dormant";
-}
-/**
  * The first batch, and the ceiling on every batch after it.
  *
  * A 390x844 phone shows eight or nine of these rows, so twelve is a screenful
@@ -149,19 +130,11 @@ export function FleetScreen({
     [view.groups, browser.collapsedGroups],
   );
 
-  // The one row the committed path scenario opens by name, in the order the
-  // active list actually draws. Undefined when no visible row opens a
-  // transcript, and then no row carries the marker: the scenario failing to
-  // find it is the honest result, not a bug to paper over.
-  const rendered = browser.grouped ? sections.flatMap(section => section.data) : view.flatSessions;
-  const firstPathId = rendered.find(opensAgentTranscript)?.id;
-
   const renderGrouped = useCallback(
     ({ item }: { item: BrowserSession }) => (
       <SessionRow
         session={item}
         showCwd={false}
-        firstPathOpen={item.id === firstPathId}
         onOpen={onOpen}
         onArchive={onArchive}
         onUnarchive={onUnarchive}
@@ -170,7 +143,7 @@ export function FleetScreen({
         now={now}
       />
     ),
-    [firstPathId, onOpen, onArchive, onUnarchive, onDelete, deleteAccess, now],
+    [onOpen, onArchive, onUnarchive, onDelete, deleteAccess, now],
   );
 
   const renderFlat = useCallback(
@@ -178,7 +151,6 @@ export function FleetScreen({
       <SessionRow
         session={item}
         showCwd
-        firstPathOpen={item.id === firstPathId}
         onOpen={onOpen}
         onArchive={onArchive}
         onUnarchive={onUnarchive}
@@ -187,7 +159,7 @@ export function FleetScreen({
         now={now}
       />
     ),
-    [firstPathId, onOpen, onArchive, onUnarchive, onDelete, deleteAccess, now],
+    [onOpen, onArchive, onUnarchive, onDelete, deleteAccess, now],
   );
 
   const renderSectionHeader = useCallback(

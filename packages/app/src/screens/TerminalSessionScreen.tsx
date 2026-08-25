@@ -30,18 +30,27 @@
  * simply part of the history, and `logRows` stands a hint down when the tail
  * already ends with its words.
  *
- * The composer here is not `Composer`, on purpose. That control turns its
- * send button into an interrupt while a turn runs, because an agent's turn
- * can be cancelled from here. A terminal's cannot, and sending mid-turn is a
- * steer, the delivery the daemon itself defaults to, so the button stays
- * Send while the session is eligible, even when a turn is already running.
+ * The composer here IS `Composer`, with `onCancel` left off. That control
+ * turns its send button into an interrupt while a turn runs, because an
+ * agent's turn can be cancelled from here. A terminal's cannot, and sending
+ * mid-turn is a steer, the delivery the daemon itself defaults to, so with no
+ * cancel handed to it the button stays Send while the session is eligible,
+ * even when a turn is already running. Everything else about the surface is
+ * shared, because two arrangements of one composer is two conventions.
+ *
+ * Spacing is the shared one as well. Every inset, gap and column on this
+ * screen is a `rhythm` job rather than a step this file picked off the grid,
+ * which is what stops this log and the agent log drifting into two
+ * conventions again -- their attribution gutters were 76 and 68, and the 8
+ * points between them were an accident.
  */
 
 import type { PromptImage, SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback } from "react";
-import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, View } from "react-native";
+import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import { Button } from "react-native-paper";
 import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
@@ -50,10 +59,12 @@ import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../c
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { ground, radius, signal, space, stroke } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
+import { useOmpTheme } from "../design/useOmpTheme.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
 import { conversationActivity, tuiActivity } from "../session/activity.ts";
 import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
@@ -99,6 +110,23 @@ export interface TerminalSessionScreenProps {
  * narrowest column on the screen.
  */
 export const HINT_WORDS = { sent: "sent", reply: "reply" } as const;
+
+/**
+ * The Load earlier control's glyph, handed to Paper as a drawing rather than as
+ * a name.
+ *
+ * Paper resolves a string icon through `settings.icon`, which only exists under
+ * `OmpThemeProvider`; with no provider it falls back to its own
+ * `MaterialCommunityIcon`, warns that no icon font is installed, and draws
+ * nothing. A function source is called directly (`Icon.tsx`: `typeof s ===
+ * "function"`), so the real glyph renders wherever this screen is mounted, and
+ * an icon this app has no drawing for becomes a compile error on `GlyphName`
+ * instead of a blank space at runtime. Paper's own `size` and `color` are
+ * honoured, so the control still measures itself.
+ */
+function resumeGlyph({ size, color }: { size: number; color: string }): JSX.Element {
+  return <Glyph name="resume" size={size} color={color} />;
+}
 
 function notLiveGuidance(status: SessionLiveStatus | null): string {
   switch (status) {
@@ -161,7 +189,16 @@ function logRows(tui: TuiSessionState): LogRow[] {
 }
 
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
+  // The attribution column grows with the text rather than the text being
+  // capped to fit it: at the default size 72 leaves 66 points for a 61.974
+  // point "thinking", which is 1.065x of headroom, so any accessibility size
+  // at all broke the word while a default-size-only gate kept passing.
+  const { fontScale } = useWindowDimensions();
   const { tui, connection, status, promptAccess, load } = props;
+  // Colour and geometry that can change under the app: the light theme swaps
+  // `ground` and `ink` wholesale. Spacing is read from `rhythm` directly, at
+  // the `StyleSheet` where the measurement belongs.
+  const theme = useOmpTheme();
   // The latest index row, not the row that opened this route, decides whether
   // steering is still safe. A terminal can close while the screen remains.
   const liveTerminal = status === "live-tui";
@@ -169,7 +206,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   // refused adds no row here. "Not live" and a refusal already have bands of
   // their own below that say more than a word and can be acted on.
   const activity = conversationActivity(tuiActivity(tui, connection, load, liveTerminal));
-  const tone = status === null ? signal.oxide : signal[SESSION_STATUS_SIGNALS[status]];
+  const tone = status === null ? theme.signal.oxide : theme.signal[SESSION_STATUS_SIGNALS[status]];
   const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
   const ownedBottom = useOwnedBottomInset();
   // The same mechanism the agent log uses: KeyboardAvoidingView is inert on an
@@ -223,54 +260,65 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
     follow,
   });
 
-  const renderRow = useCallback(({ item, index }: ListRenderItemInfo<LogRow>): JSX.Element => {
-    const mine = item.kind === "turn" ? item.message.role === "user" : item.kind === "sent";
-    const words = item.kind === "turn" ? item.message.text : item.text;
-    // A live hint continues the conversation where a served turn shows its
-    // timestamp, so the gutter's second line names which one this row is.
-    const under =
-      item.kind === "turn" ? (
-        item.message.at === "" ? null : (
-          <Kicker color={ink.faint}>{elapsed(item.message.at)}</Kicker>
-        )
-      ) : (
-        <Kicker color={ink.faint}>{item.kind === "sent" ? HINT_WORDS.sent : HINT_WORDS.reply}</Kicker>
-      );
-    // Gutter attribution rather than alternating bubbles, the same call
-    // `Transcript` made: there are only ever two speakers and bubbles halve
-    // the usable width on a phone.
-    const row = (
-      <>
-        <View style={[styles.gutter, { borderLeftColor: mine ? ink.faint : signal.sage }]}>
-          <Kicker color={mine ? ink.muted : signal.sage}>{mine ? "you" : "agent"}</Kicker>
-          {under}
-        </View>
-        <Body color={ink.bright} style={styles.prose}>
-          {words}
-        </Body>
-      </>
-    );
-    return (
-      <View
-        style={styles.turn}
-        testID={`terminal-turn-${index}`}
-        // A nested Body is often invisible to an accessibility query even
-        // when it is on screen, so the row carries the words itself.
-        accessible
-        accessibilityLabel={`${mine ? "you" : "agent"}: ${words}`}
-      >
-        {item.kind === "turn" ? (
-          row
+  const renderRow = useCallback(
+    ({ item, index }: ListRenderItemInfo<LogRow>): JSX.Element => {
+      const mine = item.kind === "turn" ? item.message.role === "user" : item.kind === "sent";
+      const words = item.kind === "turn" ? item.message.text : item.text;
+      // A live hint continues the conversation where a served turn shows its
+      // timestamp, so the gutter's second line names which one this row is.
+      const under =
+        item.kind === "turn" ? (
+          item.message.at === "" ? null : (
+            <Kicker color={theme.ink.faint}>{elapsed(item.message.at)}</Kicker>
+          )
         ) : (
-          // The hint's own id sits one level in: the row is a row of this
-          // log like any other, and the hint identity is what queries read.
-          <View testID={item.kind === "sent" ? "terminal-sent" : "terminal-reply"} style={styles.hintSkin}>
-            {row}
+          <Kicker color={theme.ink.faint}>{item.kind === "sent" ? HINT_WORDS.sent : HINT_WORDS.reply}</Kicker>
+        );
+      // Gutter attribution rather than alternating bubbles, the same call
+      // `Transcript` made: there are only ever two speakers and bubbles halve
+      // the usable width on a phone.
+      const row = (
+        <>
+          <View
+            style={[
+              styles.gutter,
+              { width: attributionWidth(fontScale), borderLeftColor: mine ? theme.ink.faint : theme.signal.sage },
+            ]}
+          >
+            <Kicker color={mine ? theme.ink.muted : theme.signal.sage}>{mine ? "you" : "agent"}</Kicker>
+            {under}
           </View>
-        )}
-      </View>
-    );
-  }, []);
+          <Body color={theme.ink.bright} style={styles.prose}>
+            {words}
+          </Body>
+        </>
+      );
+      return (
+        <View
+          style={styles.turn}
+          testID={`terminal-turn-${index}`}
+          // A nested Body is often invisible to an accessibility query even
+          // when it is on screen, so the row carries the words itself.
+          accessible
+          accessibilityLabel={`${mine ? "you" : "agent"}: ${words}`}
+        >
+          {item.kind === "turn" ? (
+            row
+          ) : (
+            // The hint's own id sits one level in: the row is a row of this
+            // log like any other, and the hint identity is what queries read.
+            <View testID={item.kind === "sent" ? "terminal-sent" : "terminal-reply"} style={styles.hintSkin}>
+              {row}
+            </View>
+          )}
+        </View>
+      );
+    },
+    // `fontScale` as well as the theme: the attribution column's width is
+    // derived from it, so a row memoised without it keeps the old column when
+    // an operator changes their text size mid-session.
+    [theme, fontScale],
+  );
 
   /**
    * The way back through the conversation, in the same words and under the
@@ -278,21 +326,28 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
    * only while the daemon's last page named an older one, so reaching the
    * start of the file removes the control rather than leaving a press that
    * can never answer.
+   *
+   * No `loading`: Paper's spinner would replace the glyph, so the control's
+   * identity would flicker on every page. Greyed out and saying so is the whole
+   * in-progress signal, and it is the shape `OmpThread`'s control of the same
+   * name carries.
    */
   const earlier =
     tui.historyCursor === null ? null : (
-      <Pressable
+      <Button
         testID="history-load-earlier"
-        accessibilityRole="button"
+        mode="text"
+        icon={resumeGlyph}
         accessibilityLabel="Load earlier turns of this terminal session"
-        accessibilityState={{ disabled: tui.historyLoadingEarlier }}
         disabled={tui.historyLoadingEarlier}
         onPress={pagination.onPressLoadEarlier}
-        style={({ pressed }) => [styles.earlier, pressed && { backgroundColor: ground.active }]}
+        textColor={theme.ink.muted}
+        style={styles.earlier}
+        contentStyle={styles.earlierContent}
+        labelStyle={styles.earlierLabel}
       >
-        <Glyph name="resume" size={11} color={ink.muted} />
-        <Label color={ink.muted}>{tui.historyLoadingEarlier ? "Loading earlier…" : "Load earlier"}</Label>
-      </Pressable>
+        {tui.historyLoadingEarlier ? "Loading earlier…" : "Load earlier"}
+      </Button>
     );
 
   /**
@@ -317,10 +372,10 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           accessibilityRole="button"
           accessibilityLabel="Back to sessions"
           onPress={props.onBack}
-          style={({ pressed }) => [styles.back, pressed && { backgroundColor: ground.active }]}
+          style={({ pressed }) => [styles.back, pressed && { backgroundColor: theme.ground.active }]}
         >
-          <Glyph name="back" size={14} color={ink.plain} />
-          <Label color={ink.plain} testID="terminal-back-label">
+          <Glyph name="back" size={14} color={theme.ink.plain} />
+          <Label color={theme.ink.plain} testID="terminal-back-label">
             Sessions
           </Label>
         </Pressable>
@@ -330,8 +385,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {props.title || "Untitled session"}
           </Title>
           <View style={styles.meta}>
-            <Glyph name="folder" size={10} color={ink.faint} />
-            <Label color={ink.muted} numberOfLines={1} style={styles.origin}>
+            <Glyph name="folder" size={10} color={theme.ink.faint} />
+            <Label color={theme.ink.muted} numberOfLines={1} style={styles.origin}>
               {shortenPath(props.cwd, 3)}
             </Label>
           </View>
@@ -404,20 +459,20 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {liveTerminal ? null : (
               <View testID="terminal-not-live-tui" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={signal.oxide} />
-                  <Label color={signal.oxide}>Not a live terminal session</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
+                  <Label color={theme.signal.oxide}>Not a live terminal session</Label>
                 </View>
-                <Body color={ink.bright}>{notLiveGuidance(status)}</Body>
+                <Body color={theme.ink.bright}>{notLiveGuidance(status)}</Body>
               </View>
             )}
 
             {promptAccess === "missing" || tui.refusalKind === "scope" ? (
               <View testID="terminal-scope-refusal" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={signal.oxide} />
-                  <Label color={signal.oxide}>Prompt scope required</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
+                  <Label color={theme.signal.oxide}>Prompt scope required</Label>
                 </View>
-                <Body color={ink.bright}>
+                <Body color={theme.ink.bright}>
                   {tui.refusalKind === "scope" && tui.refusal !== null
                     ? tui.refusal
                     : "This device does not hold the prompt scope. Pair it again with prompt access before steering this terminal."}
@@ -428,20 +483,20 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {tui.refusalKind === "owner-gone" && tui.refusal !== null ? (
               <View testID="terminal-owner-gone" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={signal.oxide} />
-                  <Label color={signal.oxide}>Owning terminal is unreachable</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
+                  <Label color={theme.signal.oxide}>Owning terminal is unreachable</Label>
                 </View>
-                <Body color={ink.bright}>{tui.refusal}</Body>
+                <Body color={theme.ink.bright}>{tui.refusal}</Body>
               </View>
             ) : null}
 
             {tui.replyUnavailable ? (
               <View testID="terminal-reply-unavailable" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={signal.ochre} />
-                  <Label color={signal.ochre}>Reply stayed in the terminal</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.ochre} />
+                  <Label color={theme.signal.ochre}>Reply stayed in the terminal</Label>
                 </View>
-                <Body color={ink.bright}>
+                <Body color={theme.ink.bright}>
                   This turn ended without readable assistant text. Its full transcript and tool output remain in the
                   owning terminal.
                 </Body>
@@ -455,13 +510,13 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             tui.reply === null &&
             !tui.replyUnavailable &&
             !tui.busy ? (
-              <Body color={ink.muted} testID="terminal-explainer">
+              <Body color={theme.ink.muted} testID="terminal-explainer">
                 This session is live in a terminal on the machine. This phone steers it without taking ownership, and
                 live progress returns here.
               </Body>
             ) : null}
 
-            <Label color={ink.faint} testID="terminal-transcript-limit" style={styles.boundary}>
+            <Label color={theme.ink.faint} testID="terminal-transcript-limit" style={styles.boundary}>
               Only recent text and live assistant replies appear here. The full transcript and tool output stay in the
               terminal.
             </Label>
@@ -506,69 +561,96 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   );
 }
 
+/**
+ * What Paper's `Button` hangs its icon by, in text mode.
+ *
+ * `md3IconTextMode` sets the icon `marginRight: -8` and expects the label's own
+ * `marginHorizontal: 16` to swallow it, which lands the glyph 8 points from its
+ * word. Paying the overhang back and then adding `glyphGap` is what puts the
+ * glyph exactly 4 from its label, and it makes the control symmetric: Paper's
+ * icon `marginLeft: 12` on top of `controlPad` is 20 at the left end, and this
+ * 12 on top of `controlPad` is 20 at the right. Setting the label margin to
+ * `controlPad` instead closes the gap to zero, and to `glyphGap` it goes
+ * negative. Shared verbatim with `OmpThread`'s control, which does the same act.
+ */
+const PAPER_ICON_OVERHANG = 8;
+
 const styles = StyleSheet.create({
   // The band that owns the screen's bottom edge. It paints the composer's
   // surface because it is the view that pays the inset below the composer:
   // a parent's padding is outside every child, so a transparent pad owner is
   // how the shell's base colour ends up showing between the message box and
-  // the screen edge.
+  // the screen edge. The pad itself is `bottomInsetFor`, measured rather than
+  // chosen, and `rhythm.dockPad` is spent inside `Composer` where the surface
+  // it separates from this edge actually lives.
   composerSafe: { backgroundColor: ground.surface },
   head: {
     flexDirection: "row",
     alignItems: "center",
-    gap: space.step,
-    paddingHorizontal: space.step,
+    gap: rhythm.rowGap,
+    paddingHorizontal: rhythm.gutter,
+    // The band's own vertical pad. No `rhythm` job names it: the scale covers
+    // the air between things, and this is a header's height.
     paddingVertical: space.snug,
     borderBottomWidth: stroke.heavy,
   },
   back: {
     flexDirection: "row",
     alignItems: "center",
-    gap: space.tight,
-    minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.snug,
+    gap: rhythm.glyphGap,
+    minHeight: rhythm.minTarget,
+    paddingHorizontal: rhythm.controlPad,
   },
-  ident: { flex: 1, gap: space.tight },
-  meta: { flexDirection: "row", alignItems: "center", gap: space.tight },
+  // The title and the path under it are one thought, not two rows.
+  ident: { flex: 1, gap: rhythm.pairGap },
+  meta: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
   origin: { flexShrink: 1 },
   log: { flex: 1, backgroundColor: ground.base },
   // The content container grows to fill the pane and packs its rows at the
   // end, so a short conversation sits at the bottom against the composer
   // instead of leaving a void under the operator's last words. Once the tail
   // outgrows the pane both declarations are inert and the list just scrolls.
-  logContent: { padding: space.step, gap: space.step, flexGrow: 1, justifyContent: "flex-end" },
-  // The same control shape the agent log's transcript uses for the same act,
-  // so the two surfaces do not teach two different gestures for going back
-  // through a conversation.
-  earlier: {
-    minHeight: TOUCH_TARGET,
-    alignSelf: "center",
-    paddingHorizontal: space.step,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.tight,
-  },
+  logContent: { padding: rhythm.gutter, gap: rhythm.rowGap, flexGrow: 1, justifyContent: "flex-end" },
+  // Paper's `Button` in text mode, sized to this app rather than to Material:
+  // the target is `minTarget`, the ends are `controlPad`, and the label margin
+  // undoes Paper's icon overhang so the glyph sits `glyphGap` from its word.
+  // `minWidth: 64` is left alone because "Load earlier" is wider than it.
+  //
+  // The corner is `radius.control`, not Paper's `roundness * 5`, which renders
+  // a 40 point pill. Nothing in this app is a pill except the composer's send
+  // disc, and that shape is the one thing telling an operator which control
+  // completes the action; a pill here would compete with it.
+  earlier: { alignSelf: "center", borderRadius: radius.control },
+  earlierContent: { minHeight: rhythm.minTarget, paddingHorizontal: rhythm.controlPad },
+  earlierLabel: { marginVertical: 0, marginHorizontal: PAPER_ICON_OVERHANG + rhythm.glyphGap },
   // With no turns to head, the control stands where the log would be rather
   // than crowding the bands under it.
-  earlierAlone: { paddingTop: space.step, alignItems: "center" },
-  turn: { flexDirection: "row", gap: space.step },
+  earlierAlone: { paddingTop: rhythm.rowGap, alignItems: "center" },
+  // The gutter-to-prose gap: `rowGapTight`, not `rowGap`, which is the other
+  // half of the attribution saving. The column and its gap cost 80 together.
+  turn: { flexDirection: "row", gap: rhythm.rowGapTight },
   // A hint row wraps its gutter and prose once more so the hint's own
   // testID can sit inside the row that carries the turn's positional one.
-  hintSkin: { flex: 1, flexDirection: "row", gap: space.step },
+  hintSkin: { flex: 1, flexDirection: "row", gap: rhythm.rowGapTight },
   gutter: {
-    // 76 to match `Transcript`'s gutter exactly, which is the point: the
-    // module doc calls this the same gutter-and-prose language a served turn
-    // uses, and the two columns differing by 8 points was drift rather than a
-    // decision. The hairline and the padding leave 66 points for text, which
-    // fits every word this column holds: AGENT (43.96), REPLY (40.26), and
-    // the widest stamp `elapsed` can produce (365D 23H, 58.73, which the old
-    // 58 points cut in half). Measured with CoreText in the face `Kicker`
-    // renders; test/no-hidden-content.test.ts re-measures and fails if a word
-    // stops fitting.
-    width: 76,
+    // `rhythm.attribution`, the one answer for this column, so this log and the
+    // agent transcript cannot drift apart again: they were 76 and 68, and the 8
+    // points between them were an accident rather than a decision.
+    //
+    // The signal rule and the pad leave 72 - 4 - 2 = 66 points for text, and the
+    // widest run this column can be asked to hold is 23:59:59 at 53.57, so it
+    // clears by 12. AGENT is 43.96 and REPLY 40.26. The day stamp 365D 23H is
+    // wider whole but has a space to break at, so only 365D (31.39) has to fit.
+    // Measured with CoreText in the face `Kicker` renders;
+    // test/no-hidden-content.test.ts re-measures and fails if a word stops
+    // fitting.
+    width: rhythm.attribution,
     borderLeftWidth: stroke.heavy,
-    paddingLeft: space.snug,
-    gap: space.tight,
+    // The label's inset from its own rule, the same `glyphGap` the transcript's
+    // column pays and the same one the token's arithmetic is stated against.
+    paddingLeft: rhythm.glyphGap,
+    // The speaker and the stamp under it are one thought.
+    gap: rhythm.pairGap,
     alignItems: "flex-start",
   },
   prose: { flex: 1 },
@@ -577,9 +659,9 @@ const styles = StyleSheet.create({
   // rows at all there is nothing above them, and filling the pane is what
   // puts the explainer where the transcript would have been rather than
   // crushing it against the composer.
-  hints: { gap: space.step, padding: space.step },
+  hints: { gap: rhythm.rowGap, padding: rhythm.gutter },
   hintsFill: { flex: 1 },
-  refusal: { gap: space.snug, borderWidth: stroke.hair, borderColor: signal.oxide, padding: space.step },
-  refusalHead: { flexDirection: "row", alignItems: "center", gap: space.tight },
-  boundary: { marginTop: "auto", paddingTop: space.snug },
+  refusal: { gap: rhythm.cardGap, borderWidth: stroke.hair, borderColor: signal.oxide, padding: rhythm.cardPad },
+  refusalHead: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
+  boundary: { marginTop: "auto", paddingTop: rhythm.rowGapTight },
 });

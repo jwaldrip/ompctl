@@ -34,13 +34,15 @@
 
 import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, useWindowDimensions, View } from "react-native";
 import { ApprovalCard } from "../components/ApprovalCard.tsx";
 import { RichText } from "../components/rich/RichText.tsx";
 import { ToolCard } from "../components/ToolCard.tsx";
 import { Glyph } from "../design/icons.tsx";
+import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
+import { stroke } from "../design/tokens.ts";
+import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { Entry } from "../session/model.ts";
 
 export interface OmpEntryRowProps {
@@ -53,12 +55,25 @@ export interface OmpEntryRowProps {
 }
 
 export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRowProps): JSX.Element {
+  // The attribution column grows with the text rather than the text being
+  // capped to fit it: at the default size 72 leaves 66 points for a 61.974
+  // point "thinking", which is 1.065x of headroom, so any accessibility size
+  // at all broke the word while a default-size-only gate kept passing.
+  const { fontScale } = useWindowDimensions();
+  // Colour is the one thing here that genuinely varies at render time: the two
+  // ramps invert between the light and dark themes, and a row that read `ink`
+  // straight off `tokens.ts` would draw the dark ramp in daylight. Measurement
+  // does not vary, so it stays in the `StyleSheet` block below where a source
+  // scrape can still price the attribution column.
+  const { ground, ink, signal } = useOmpTheme();
   switch (entry.kind) {
     case "user":
       return (
         <View style={styles.row} testID="entry-user" accessible accessibilityLabel={`you: ${entry.text}`}>
-          <View style={[styles.gutter, { borderLeftColor: ink.faint }]}>
-            <Kicker color={ink.muted}>you</Kicker>
+          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: ink.faint }]}>
+            <Kicker color={ink.muted} numberOfLines={1}>
+              you
+            </Kicker>
           </View>
           <RichText text={entry.text} />
         </View>
@@ -72,8 +87,15 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
           accessible
           accessibilityLabel={`${entry.thought ? "thinking" : "agent"}: ${entry.text}`}
         >
-          <View style={[styles.gutter, { borderLeftColor: entry.thought ? signal.violet : signal.sage }]}>
-            <Kicker color={entry.thought ? signal.violet : signal.sage}>{entry.thought ? "thinking" : "agent"}</Kicker>
+          <View
+            style={[
+              styles.gutter,
+              { width: attributionWidth(fontScale), borderLeftColor: entry.thought ? signal.violet : signal.sage },
+            ]}
+          >
+            <Kicker color={entry.thought ? signal.violet : signal.sage} numberOfLines={1}>
+              {entry.thought ? "thinking" : "agent"}
+            </Kicker>
             {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
           </View>
           <RichText muted={entry.thought} text={entry.text} />
@@ -99,7 +121,7 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
       // is owed the truth that something happened, even unnamed.
       return (
         <View style={styles.row} testID={`entry-unknown-${entry.id}`}>
-          <View style={[styles.gutter, { borderLeftColor: ground.edge }]}>
+          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: ground.edge }]}>
             <Glyph name="unknown" size={11} color={ink.faint} />
           </View>
           <View style={styles.prose}>
@@ -111,14 +133,25 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row", gap: space.step },
+  // The prose sits a tight step off the attribution column rather than a full
+  // row gap: the column and the words are one turn, not two siblings, and the
+  // 4 points saved are 4 more per line of conversation.
+  row: { flexDirection: "row", gap: rhythm.rowGapTight },
+  // The attribution column. `width` and its two insets are what
+  // `no-hidden-content.test.ts` reads to prove "thinking" cannot be broken
+  // mid-word, so all three stay written as tokens a source scrape can resolve.
   gutter: {
-    width: 76,
+    width: rhythm.attribution,
     borderLeftWidth: stroke.heavy,
-    paddingLeft: space.snug,
-    gap: space.tight,
+    paddingLeft: rhythm.glyphGap,
+    // The live-turn dot is not a second line, it is the label's own indicator.
+    gap: rhythm.glyphGap,
     alignItems: "flex-start",
   },
   prose: { flex: 1 },
-  cardRow: { marginVertical: space.tight },
+  // A card asks for its own step of air on ONE side. The list's content
+  // container already pays `rowGap` between every row (`OmpThread.tsx`), so a
+  // symmetric margin here charged the separation twice and left a run of cards
+  // sitting further apart than the turns around them.
+  cardRow: { marginTop: rhythm.cardStack },
 });
