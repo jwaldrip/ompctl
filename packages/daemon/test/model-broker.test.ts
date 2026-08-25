@@ -8,23 +8,23 @@
  * quietly when it breaks.
  *
  * The allowlist is an allowlist. Two exact strings, POST only. A prefix test, a
- * passthrough, or a trailing slash slipping through would expose whatever
- * omp's gateway grows next, including `GET /v1/models`, which enumerates every
+ * passthrough, or a trailing slash slipping through would expose whatever omp's
+ * gateway grows next, including `GET /v1/models`, which enumerates every
  * provider this host holds a credential for. So the refusals are asserted as
  * hard 404s rather than as "not a 200".
  *
  * A malformed peer range must throw at mint time, not degrade into a skip. The
  * skip is reachable only from an explicit `null`, because `null` is a decision
- * somebody spelled out and a range that does not parse is an accident. The test
- * for that is the one place here where a passing assertion and an open door are
- * one edit apart, so it asserts the thrown message names the null escape hatch
- * rather than merely that something threw.
+ * somebody spelled out and a range that does not parse is an accident. That is
+ * the one place here where a passing assertion and an open door are a single
+ * edit apart, so the test asserts the thrown message names the null escape
+ * hatch rather than merely that something threw.
  *
  * Nothing this broker logs may contain a credential or a byte of a body. That
  * is asserted globally rather than per refusal: every path is exercised and
  * then every captured line is searched for every minted token, the upstream
- * bearer, and a canary planted in a request body. A new refusal that quotes the
- * wrong thing fails here without anyone remembering to add a case.
+ * bearer, and a canary planted in a request body. A refusal added later that
+ * quotes the wrong thing fails here without anyone remembering to add a case.
  *
  * The refusal drain is pinned over a raw TCP connection rather than through
  * `fetch`, and that is not ceremony. Measured on Bun 1.3.14, a handler that
@@ -37,43 +37,52 @@
  *
  * Nothing here sleeps on a duration hoping something happened. Every wait is on
  * a real signal -- a gate the fake gateway opens when a request reaches it, a
- * chunk arriving on a stream -- with a deadline attached so a regression fails
- * with the name of what never came rather than hanging the suite.
+ * chunk arriving on a stream -- and the only `setTimeout` in the file is the
+ * watchdog attached to those waits, which never fires on a passing run and
+ * exists so a regression fails with the name of what never came.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { Server } from "bun";
+import type { Server, Timer } from "bun";
 import { ModelBroker, type ModelGrant, type ModelGrantLimits } from "../src/model-broker/broker.ts";
 
 /** The one model every grant here allowlists, unless a test says otherwise. */
 const MODEL = "claude-broker-test-model";
 
-/** What the fake auth-gateway expects to be presented, and what no log may name. */
+/** What the fake auth-gateway is presented with, and what no log line may name. */
 const UPSTREAM_BEARER = "upstream-bearer-value";
 
 /**
- * Deadline for a signal that is already on its way. It never elapses on a
- * passing run and adds nothing to one; it exists so a missing chunk, response,
- * or connection fails with the name of what was expected.
+ * Watchdog budget for a signal that is already on its way. Under bun:test's own
+ * 5s per-test timeout on purpose, so a stalled wait fails naming what it was
+ * waiting for rather than as an anonymous test timeout.
  */
-const DEADLINE_MS = 10_000;
+const DEADLINE_MS = 3_000;
 
 const DEFAULT_LIMITS: ModelGrantLimits = { maxRequests: 16, maxTokens: 100_000, maxConcurrent: 4 };
 
 const DEFAULT_TTL_MS = 600_000;
 
-/** Retries kept short: loopback either binds now or the port is genuinely taken. */
+/** Bind retries kept short: loopback either binds now or the port is genuinely taken. */
 const LISTEN = { attempts: 4, delayMs: 25 } as const;
 
 /**
- * Comfortably past a single TCP segment and past any plausible socket buffer,
- * so the refusal is answered while bytes are still arriving. That is the shape
- * that desyncs the connection when the body is not drained.
+ * 33 MiB, which is the size the desync was originally measured at and not a
+ * round number picked for comfort. Deleting `await drainBody(req)` from `#deny`
+ * and re-running this file was measured on Bun 1.3.14 to still pass at 4 MiB
+ * and to hang at 33 MiB: below some threshold the server absorbs the whole body
+ * before the handler answers, and the connection stays in sync whether or not
+ * anything drained it. A drain test written at 4 MiB is a drain test that
+ * cannot fail, so the size is part of the assertion.
  */
-const LARGE_BODY_BYTES = 4 * 1024 * 1024;
+const LARGE_BODY_BYTES = 33 * 1024 * 1024;
 
-/** `MAX_REQUEST_BODY_BYTES` in the broker, which is not exported, plus a nudge. */
-const OVER_CAP_BODY_BYTES = 32 * 1024 * 1024 + 1024;
+/** The broker's `MAX_REQUEST_BODY_BYTES`, which is not exported, and a nudge past it. */
+const REQUEST_BODY_CAP = 32 * 1024 * 1024;
+const OVER_CAP_BODY_BYTES = REQUEST_BODY_CAP + 1024;
+
+/** Room for 33 MiB across loopback, which bun:test's 5s default does not leave. */
+const LARGE_BODY_TEST_TIMEOUT_MS = 30_000;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -89,6 +98,7 @@ interface UpstreamCall {
   body: string;
 }
 
+/** A one-shot signal, so a test can hold the fake gateway open and let it go. */
 interface Gate {
   readonly promise: Promise<void>;
   open(): void;
@@ -105,7 +115,7 @@ function gate(): Gate {
 }
 
 async function withDeadline<T>(work: Promise<T>, label: string, ms = DEADLINE_MS): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: Timer | undefined;
   try {
     return await Promise.race([
       work,
@@ -114,7 +124,7 @@ async function withDeadline<T>(work: Promise<T>, label: string, ms = DEADLINE_MS
       }),
     ]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    clearTimeout(timer);
   }
 }
 
@@ -138,7 +148,7 @@ function thrownMessage(work: () => unknown): string {
 async function freePorts(count: number): Promise<number[]> {
   const probes: Server<never>[] = [];
   for (let i = 0; i < count; i += 1) {
-    probes.push(Bun.serve<never, {}>({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) }));
+    probes.push(Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) }));
   }
   const ports = probes.map(probe => probe.port);
   await Promise.all(probes.map(probe => probe.stop(true)));
@@ -151,13 +161,31 @@ async function freePort(): Promise<number> {
   return port;
 }
 
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.byteLength + b.byteLength);
+  out.set(a, 0);
+  out.set(b, a.byteLength);
+  return out;
+}
+
+function joinAll(chunks: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const chunk of chunks) total += chunk.byteLength;
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // A raw HTTP/1.1 client, so "the same connection" is a fact and not a hope
 // ---------------------------------------------------------------------------
 
 interface RawResponse {
   status: number;
-  headers: Map<string, string>;
   body: string;
 }
 
@@ -173,12 +201,8 @@ interface ParsedResponse {
   consumed: number;
 }
 
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.byteLength + b.byteLength);
-  out.set(a, 0);
-  out.set(b, a.byteLength);
-  return out;
-}
+const CRLF = [0x0d, 0x0a];
+const CRLF_CRLF = [0x0d, 0x0a, 0x0d, 0x0a];
 
 function indexOfSequence(haystack: Uint8Array, needle: number[], from: number): number {
   const last = haystack.byteLength - needle.length;
@@ -195,17 +219,13 @@ function indexOfSequence(haystack: Uint8Array, needle: number[], from: number): 
   return -1;
 }
 
-const CRLF = [0x0d, 0x0a];
-const CRLF_CRLF = [0x0d, 0x0a, 0x0d, 0x0a];
-
 /**
  * One response off the front of `buf`, or null while it is still arriving.
  *
  * Handles exactly the two framings Bun emits: `content-length` for the fixed
  * bodies every refusal produces, and `chunked` for the streamed forward of a
- * gateway reply. Trailers are not parsed because Bun sends none, and a test
- * harness that pretended otherwise would be untested code guarding a boundary
- * nothing crosses.
+ * gateway reply. Trailers are not parsed because Bun sends none, and a harness
+ * that pretended otherwise would be untested code standing in for the guest.
  */
 function parseResponse(buf: Uint8Array): ParsedResponse | null {
   const headEnd = indexOfSequence(buf, CRLF_CRLF, 0);
@@ -225,12 +245,12 @@ function parseResponse(buf: Uint8Array): ParsedResponse | null {
     const length = Number(declared);
     if (buf.byteLength < bodyStart + length) return null;
     const body = decoder.decode(buf.subarray(bodyStart, bodyStart + length));
-    return { response: { status, headers, body }, consumed: bodyStart + length };
+    return { response: { status, body }, consumed: bodyStart + length };
   }
 
   if ((headers.get("transfer-encoding") ?? "").toLowerCase().includes("chunked")) {
+    const pieces: Uint8Array[] = [];
     let cursor = bodyStart;
-    let body = new Uint8Array(0);
     for (;;) {
       const eol = indexOfSequence(buf, CRLF, cursor);
       if (eol < 0) return null;
@@ -240,16 +260,16 @@ function parseResponse(buf: Uint8Array): ParsedResponse | null {
       if (size === 0) {
         const end = dataStart + CRLF.length;
         if (buf.byteLength < end) return null;
-        return { response: { status, headers, body: decoder.decode(body) }, consumed: end };
+        return { response: { status, body: decoder.decode(joinAll(pieces)) }, consumed: end };
       }
       const dataEnd = dataStart + size;
       if (buf.byteLength < dataEnd + CRLF.length) return null;
-      body = concat(body, buf.subarray(dataStart, dataEnd));
+      pieces.push(buf.slice(dataStart, dataEnd));
       cursor = dataEnd + CRLF.length;
     }
   }
 
-  return { response: { status, headers, body: "" }, consumed: bodyStart };
+  return { response: { status, body: "" }, consumed: bodyStart };
 }
 
 async function rawConnect(host: string, port: number): Promise<RawConnection> {
@@ -267,8 +287,8 @@ async function rawConnect(host: string, port: number): Promise<RawConnection> {
         inbox = concat(inbox, new Uint8Array(data));
         waiting?.();
       },
-      drain(open) {
-        pump(open);
+      drain() {
+        pump();
       },
       error(_socket, err) {
         failure = err instanceof Error ? err : new Error(String(err));
@@ -286,11 +306,11 @@ async function rawConnect(host: string, port: number): Promise<RawConnection> {
    * remainder waits for `drain` rather than spinning; a 33 MiB body over
    * loopback hits that on every run.
    */
-  function pump(open: { write(data: Uint8Array): number }): void {
+  function pump(): void {
     while (outbox.length > 0) {
       const head = outbox[0];
       if (head === undefined) break;
-      const wrote = open.write(head);
+      const wrote = socket.write(head);
       if (wrote >= head.byteLength) {
         outbox.shift();
         continue;
@@ -303,14 +323,14 @@ async function rawConnect(host: string, port: number): Promise<RawConnection> {
   return {
     send(payload) {
       outbox.push(typeof payload === "string" ? encoder.encode(payload) : payload);
-      pump(socket);
+      pump();
     },
     next(label, ms = DEADLINE_MS) {
       return new Promise<RawResponse>((resolve, reject) => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
+        let timer: Timer | undefined;
         const settle = () => {
           waiting = null;
-          if (timer !== undefined) clearTimeout(timer);
+          clearTimeout(timer);
         };
         const attempt = () => {
           if (failure !== null) {
@@ -368,7 +388,7 @@ let liveUpstreamBase: string;
 let upstreamSeen: UpstreamCall[];
 let upstreamReply: (req: Request, body: string) => Response | Promise<Response>;
 let broker: ModelBroker;
-let brokerHost: string;
+let brokerPort: number;
 let brokerBase: string;
 let minted: string[];
 
@@ -415,13 +435,8 @@ function request(path: string, opts: CallOptions = {}): Promise<Response> {
   const method = opts.method ?? "POST";
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (opts.token !== undefined) headers.authorization = `Bearer ${opts.token}`;
-  const raw = typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body ?? { model: MODEL });
-  return fetch(`${brokerBase}${path}`, {
-    method,
-    headers,
-    body: method === "GET" ? undefined : raw,
-    signal: AbortSignal.timeout(DEADLINE_MS),
-  });
+  const body = typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body ?? { model: MODEL });
+  return fetch(`${brokerBase}${path}`, { method, headers, body: method === "GET" ? undefined : body });
 }
 
 interface Answer {
@@ -435,10 +450,6 @@ async function post(path: string, opts: CallOptions = {}): Promise<Answer> {
   return { status: res.status, text: await res.text() };
 }
 
-function refusals(): string[] {
-  return logs.filter(line => line.includes("refused:"));
-}
-
 beforeEach(async () => {
   logs = [];
   minted = [];
@@ -446,18 +457,13 @@ beforeEach(async () => {
   nowMs = Date.UTC(2026, 7, 25, 12, 0, 0);
   upstreamReply = () => Response.json({ ok: true, usage: { input_tokens: 1, output_tokens: 1 } });
 
-  upstream = Bun.serve<never, {}>({
+  upstream = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     idleTimeout: 60,
     async fetch(req) {
       const body = await req.text();
-      upstreamSeen.push({
-        url: req.url,
-        method: req.method,
-        authorization: req.headers.get("authorization"),
-        body,
-      });
+      upstreamSeen.push({ url: req.url, method: req.method, authorization: req.headers.get("authorization"), body });
       return await upstreamReply(req, body);
     },
   });
@@ -465,11 +471,10 @@ beforeEach(async () => {
   liveUpstreamBase = `http://127.0.0.1:${upstream.port}`;
   upstreamBase = liveUpstreamBase;
 
-  brokerHost = "127.0.0.1";
   broker = makeBroker();
-  const port = await freePort();
-  await broker.listen({ host: brokerHost, port, ...LISTEN });
-  brokerBase = `http://${brokerHost}:${port}`;
+  brokerPort = await freePort();
+  await broker.listen({ host: "127.0.0.1", port: brokerPort, ...LISTEN });
+  brokerBase = `http://127.0.0.1:${brokerPort}`;
 });
 
 afterEach(async () => {
@@ -498,7 +503,10 @@ describe("route allowlist", () => {
     ]);
     // The guest's bearer stops at the broker. What reaches the gateway is the
     // gateway's own, which the guest has never held.
-    expect(upstreamSeen.every(call => call.authorization === `Bearer ${UPSTREAM_BEARER}`)).toBe(true);
+    expect(upstreamSeen.map(call => call.authorization)).toEqual([
+      `Bearer ${UPSTREAM_BEARER}`,
+      `Bearer ${UPSTREAM_BEARER}`,
+    ]);
 
     const refused: [string, CallOptions][] = [
       ["/v1/messages", { token: granted.token, method: "GET" }],
@@ -512,28 +520,28 @@ describe("route allowlist", () => {
       expect(JSON.parse(answer.text)).toEqual({ error: "not_found" });
     }
 
-    // Only two calls ever reached the gateway: a refusal is not a forward.
+    // Two forwards, and no more: a refusal is not a forward.
     expect(upstreamSeen).toHaveLength(2);
 
+    const captured = logs.join("\n");
     for (const named of [
       "GET /v1/messages is not an allowlisted route",
       "POST /v1/models is not an allowlisted route",
       "POST / is not an allowlisted route",
       "POST /v1/messages/ is not an allowlisted route",
     ]) {
-      expect(logs.some(line => line.includes(named))).toBe(true);
+      expect(captured).toContain(named);
     }
   });
 
   test("discards a query string rather than forwarding it to the gateway", async () => {
     const granted = issueGrant();
 
-    const answer = await post("/v1/messages?x=1&beta=true", { token: granted.token });
-    expect(answer.status).toBe(200);
+    expect((await post("/v1/messages?x=1&beta=true", { token: granted.token })).status).toBe(200);
 
     const seen = upstreamSeen.at(-1);
     expect(seen).toBeDefined();
-    const forwarded = new URL(seen?.url ?? "");
+    const forwarded = new URL(seen?.url ?? "http://invalid.invalid");
     expect(forwarded.pathname).toBe("/v1/messages");
     expect(forwarded.search).toBe("");
   });
@@ -549,7 +557,7 @@ describe("bearer authentication", () => {
     const answer = await post("/v1/messages");
     expect(answer.status).toBe(401);
     expect(JSON.parse(answer.text)).toEqual({ error: "unauthorized" });
-    expect(logs.some(line => line.includes("carried no bearer credential"))).toBe(true);
+    expect(logs.join("\n")).toContain("carried no bearer credential");
     expect(upstreamSeen).toHaveLength(0);
   });
 
@@ -557,7 +565,7 @@ describe("bearer authentication", () => {
     issueGrant();
     const answer = await post("/v1/messages", { token: "not-a-token-anyone-minted" });
     expect(answer.status).toBe(401);
-    expect(logs.some(line => line.includes("presented a credential no live grant matches"))).toBe(true);
+    expect(logs.join("\n")).toContain("presented a credential no live grant matches");
     expect(upstreamSeen).toHaveLength(0);
   });
 
@@ -570,7 +578,7 @@ describe("bearer authentication", () => {
 
     const answer = await post("/v1/messages", { token: granted.token });
     expect(answer.status).toBe(401);
-    expect(logs.some(line => line.includes("presented a credential no live grant matches"))).toBe(true);
+    expect(logs.join("\n")).toContain("presented a credential no live grant matches");
     expect(upstreamSeen).toHaveLength(1);
   });
 
@@ -583,8 +591,15 @@ describe("bearer authentication", () => {
 
     const answer = await post("/v1/messages", { token: doomed.token });
     expect(answer.status).toBe(401);
-    expect(logs.some(line => line.includes(`presented an expired grant for ${MODEL}`))).toBe(true);
-    // Dropped, not merely refused: the walk every request pays for is shorter.
+    expect(logs.join("\n")).toContain(`presented an expired grant for ${MODEL}`);
+    // Dropped by the request that presented it, and asserted through `revoke`
+    // rather than through `liveGrants`, because `liveGrants` prunes expired
+    // grants itself and would report 1 either way. `revoke` logs only when it
+    // found something, so silence here is the request having already removed
+    // it, and a line here is the delete in the handler having gone missing.
+    const beforeRevoke = logs.length;
+    broker.revoke(doomed.token);
+    expect(logs.slice(beforeRevoke)).toEqual([]);
     expect(broker.liveGrants()).toBe(1);
 
     expect((await post("/v1/messages", { token: enduring.token })).status).toBe(200);
@@ -607,7 +622,7 @@ describe("peer range", () => {
     const answer = await post("/v1/messages", { token: granted.token });
     expect(answer.status).toBe(403);
     expect(JSON.parse(answer.text)).toEqual({ error: "forbidden" });
-    expect(logs.some(line => line.includes("arrived from 127.0.0.1, outside the granted range 10.0.0.0/8"))).toBe(true);
+    expect(logs.join("\n")).toContain("arrived from 127.0.0.1, outside the granted range 10.0.0.0/8");
     expect(upstreamSeen).toHaveLength(0);
   });
 
@@ -616,7 +631,7 @@ describe("peer range", () => {
     expect((await post("/v1/messages", { token: granted.token })).status).toBe(200);
     // Turning the check off is a real widening, so it is named in the audit
     // rather than left to be inferred from an absent range.
-    expect(logs.some(line => line.includes("any peer, peer check off for this grant"))).toBe(true);
+    expect(logs.join("\n")).toContain("any peer, peer check off for this grant");
   });
 
   test("refuses to mint a grant whose range does not parse, rather than skipping the check", async () => {
@@ -649,9 +664,9 @@ describe("model allowlist", () => {
     const answer = await post("/v1/messages", { token: granted.token, body: { model: shadow } });
     expect(answer.status).toBe(403);
     expect(JSON.parse(answer.text)).toEqual({ error: "forbidden" });
-    expect(logs.some(line => line.includes(`asked for a model other than the granted ${MODEL}`))).toBe(true);
+    expect(logs.join("\n")).toContain(`asked for a model other than the granted ${MODEL}`);
     // The requested model is body content, and body content does not reach a log.
-    expect(logs.some(line => line.includes(shadow))).toBe(false);
+    expect(logs.join("\n")).not.toContain(shadow);
     expect(upstreamSeen).toHaveLength(0);
   });
 
@@ -660,7 +675,7 @@ describe("model allowlist", () => {
     const answer = await post("/v1/messages", { token: granted.token, body: "{not json at all" });
     expect(answer.status).toBe(400);
     expect(JSON.parse(answer.text)).toEqual({ error: "bad_request" });
-    expect(logs.some(line => line.includes("body is not JSON"))).toBe(true);
+    expect(logs.join("\n")).toContain("body is not JSON");
     expect(upstreamSeen).toHaveLength(0);
   });
 
@@ -670,7 +685,7 @@ describe("model allowlist", () => {
       const answer = await post("/v1/messages", { token: granted.token, body });
       expect({ body, status: answer.status }).toEqual({ body, status: 400 });
     }
-    expect(logs.some(line => line.includes("body names no model"))).toBe(true);
+    expect(logs.join("\n")).toContain("body names no model");
     expect(upstreamSeen).toHaveLength(0);
   });
 });
@@ -689,7 +704,7 @@ describe("ceilings", () => {
     const answer = await post("/v1/messages", { token: granted.token });
     expect(answer.status).toBe(402);
     expect(JSON.parse(answer.text)).toEqual({ error: "quota_exhausted" });
-    expect(logs.some(line => line.includes("exhausted the 2-request ceiling"))).toBe(true);
+    expect(logs.join("\n")).toContain("exhausted the 2-request ceiling");
     expect(upstreamSeen).toHaveLength(2);
   });
 
@@ -703,7 +718,7 @@ describe("ceilings", () => {
     expect(answer.status).toBe(402);
     // The counted figure is in the refusal, which is the only place this
     // accounting is observable, so it pins the arithmetic and not just the door.
-    expect(logs.some(line => line.includes("exhausted the 10-token ceiling (12 counted)"))).toBe(true);
+    expect(logs.join("\n")).toContain("exhausted the 10-token ceiling (12 counted)");
   });
 
   test("refuses past the concurrency ceiling and hands the slot back afterwards", async () => {
@@ -722,7 +737,7 @@ describe("ceilings", () => {
     const answer = await post("/v1/messages", { token: granted.token });
     expect(answer.status).toBe(429);
     expect(JSON.parse(answer.text)).toEqual({ error: "too_many_requests" });
-    expect(logs.some(line => line.includes("exceeds the 1-request concurrency ceiling"))).toBe(true);
+    expect(logs.join("\n")).toContain("exceeds the 1-request concurrency ceiling");
 
     release.open();
     const first = await withDeadline(held, "the held request to complete");
@@ -740,9 +755,9 @@ describe("ceilings", () => {
 // Metering, and the stream it must not hold up
 // ---------------------------------------------------------------------------
 
-const SSE_HEAD =
-  'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":4}}}\n\n';
-const SSE_TAIL = 'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":9}}\n\ndata: [DONE]\n\n';
+const SSE_HEAD = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":4}}}\n\n';
+const SSE_TAIL =
+  'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":9}}\n\n' + "data: [DONE]\n\n";
 
 describe("usage metering", () => {
   test("counts message_start and message_delta off an SSE body", async () => {
@@ -756,7 +771,7 @@ describe("usage metering", () => {
 
     const answer = await post("/v1/messages", { token: granted.token });
     expect(answer.status).toBe(402);
-    expect(logs.some(line => line.includes("exhausted the 10-token ceiling (13 counted)"))).toBe(true);
+    expect(logs.join("\n")).toContain("exhausted the 10-token ceiling (13 counted)");
   });
 
   test("streams SSE through unchanged and incrementally, not buffered to the end", async () => {
@@ -780,14 +795,14 @@ describe("usage metering", () => {
     expect(res.headers.get("content-type")).toBe("text/event-stream");
 
     const body = res.body;
-    expect(body).not.toBeNull();
-    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    if (body === null) throw new Error("the broker answered an SSE forward with no body");
+    const reader = body.getReader();
     const received: Uint8Array[] = [];
     let seen = 0;
 
     // The tail does not exist yet and cannot until this test releases it, so a
-    // broker that buffered the response to the end would deadlock here and fail
-    // as a named timeout rather than as a wrong assertion.
+    // broker that buffered the response to the end deadlocks here and fails as
+    // the named timeout rather than as a wrong assertion.
     while (seen < SSE_HEAD.length) {
       const step = await withDeadline(reader.read(), "the first SSE chunk to arrive before the stream ended");
       if (step.done) break;
@@ -795,7 +810,7 @@ describe("usage metering", () => {
       received.push(step.value);
       seen += step.value.byteLength;
     }
-    expect(decoder.decode(concat(new Uint8Array(0), joinAll(received)))).toBe(SSE_HEAD);
+    expect(decoder.decode(joinAll(received))).toBe(SSE_HEAD);
 
     release.open();
     for (;;) {
@@ -810,18 +825,6 @@ describe("usage metering", () => {
   });
 });
 
-function joinAll(chunks: Uint8Array[]): Uint8Array {
-  let total = 0;
-  for (const chunk of chunks) total += chunk.byteLength;
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 // The slot comes back on every exit
 // ---------------------------------------------------------------------------
@@ -835,7 +838,7 @@ describe("concurrency slot", () => {
     const failed = await post("/v1/messages", { token: granted.token });
     expect(failed.status).toBe(502);
     expect(JSON.parse(failed.text)).toEqual({ error: "bad_gateway" });
-    expect(logs.some(line => line.includes("forwarding /v1/messages to the auth gateway failed"))).toBe(true);
+    expect(logs.join("\n")).toContain("forwarding /v1/messages to the auth gateway failed");
 
     upstreamBase = liveUpstreamBase;
     // 429 here would mean the failed forward kept its slot for the life of the
@@ -848,7 +851,7 @@ describe("concurrency slot", () => {
     // never yields `response.body === null` for any status, including the
     // null-body statuses the Fetch standard names, so the handler's explicit
     // null-body branch is unreachable from a real upstream on this runtime. The
-    // observable it protects is reachable, and this is it.
+    // observable that branch protects is reachable, and this is it.
     upstreamReply = () => new Response(null, { status: 204 });
     const granted = issueGrant({ limits: { maxRequests: 5, maxTokens: 100_000, maxConcurrent: 1 } });
 
@@ -883,8 +886,8 @@ describe("listen and issue ordering", () => {
         `model broker refuses to bind the wildcard host ${JSON.stringify(host)}`,
       );
     }
-    // Refused before anything was recorded, so the broker never became bindable
-    // by a wildcard it already accepted.
+    // Refused before anything was recorded, so a wildcard cannot leave the
+    // broker committed to an address it never opened.
     expect(
       thrownMessage(() => refuser.issue({ model: MODEL, peerCidr: null, limits: DEFAULT_LIMITS, ttlMs: 1_000 })),
     ).toContain("model broker has no address");
@@ -899,9 +902,7 @@ describe("listen and issue ordering", () => {
     await expect(committed.listen({ host: "127.0.0.1", port: second, ...LISTEN })).rejects.toThrow(
       `model broker is already committed to 127.0.0.1:${first} and cannot also serve 127.0.0.1:${second}`,
     );
-    await expect(committed.listen({ host: "127.0.0.2", port: first, ...LISTEN })).rejects.toThrow(
-      "already committed",
-    );
+    await expect(committed.listen({ host: "127.0.0.2", port: first, ...LISTEN })).rejects.toThrow("already committed");
   });
 
   test("joins an in-flight bind for the same address instead of starting a second one", async () => {
@@ -919,7 +920,9 @@ describe("listen and issue ordering", () => {
     await second;
     await joiner.listen({ host: "127.0.0.1", port, ...LISTEN });
 
-    expect(sink.filter(line => line.includes("listening on"))).toEqual([`model broker: listening on 127.0.0.1:${port}`]);
+    expect(sink.filter(line => line.includes("listening on"))).toEqual([
+      `model broker: listening on 127.0.0.1:${port}`,
+    ]);
   });
 
   test("refuses to grant an endpoint on an ephemeral port the bind has not resolved", async () => {
@@ -939,16 +942,11 @@ describe("listen and issue ordering", () => {
       limits: DEFAULT_LIMITS,
       ttlMs: DEFAULT_TTL_MS,
     });
-    expect(new URL(granted.endpoint).port).not.toBe("0");
     expect(Number(new URL(granted.endpoint).port)).toBeGreaterThan(0);
   });
 
   test("names the attempts and the elapsed budget when the address never binds", async () => {
-    const occupied = Bun.serve<never, {}>({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: () => new Response(null, { status: 404 }),
-    });
+    const occupied = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) });
     servers.push(occupied);
     const blocked = makeBroker();
 
@@ -971,71 +969,78 @@ describe("listen and issue ordering", () => {
 // ---------------------------------------------------------------------------
 
 describe("refusal body drain", () => {
-  test("leaves the connection usable after refusing a request whose body it never wanted", async () => {
-    const granted = issueGrant();
-    const host = `127.0.0.1:${new URL(brokerBase).port}`;
-    const connection = await rawConnect("127.0.0.1", Number(new URL(brokerBase).port));
-    connections.push(connection);
+  test(
+    "leaves the connection usable after refusing a request whose body it never wanted",
+    async () => {
+      const granted = issueGrant();
+      const host = `127.0.0.1:${brokerPort}`;
+      const connection = await rawConnect("127.0.0.1", brokerPort);
+      connections.push(connection);
 
-    const large = new Uint8Array(LARGE_BODY_BYTES).fill(0x61);
+      const large = new Uint8Array(LARGE_BODY_BYTES).fill(0x61);
 
-    // Refused at the route, before the handler has any reason to read a body.
-    connection.send(
-      requestHead({ path: "/v1/models", host, contentLength: large.byteLength, token: granted.token }),
-    );
-    connection.send(large);
-    const notFound = await connection.next("the 404 refusal of an oversized POST /v1/models");
-    expect(notFound.status).toBe(404);
-    expect(JSON.parse(notFound.body)).toEqual({ error: "not_found" });
+      // Refused at the route, before the handler has any reason to read a body.
+      connection.send(requestHead({ path: "/v1/models", host, contentLength: large.byteLength, token: granted.token }));
+      connection.send(large);
+      const notFound = await connection.next("the 404 refusal of an oversized POST /v1/models");
+      expect(notFound.status).toBe(404);
+      expect(JSON.parse(notFound.body)).toEqual({ error: "not_found" });
 
-    // Refused at the credential, on the same connection, same shape.
-    connection.send(requestHead({ path: "/v1/messages", host, contentLength: large.byteLength }));
-    connection.send(large);
-    const unauthorized = await connection.next("the 401 refusal of an oversized unauthenticated POST");
-    expect(unauthorized.status).toBe(401);
-    expect(JSON.parse(unauthorized.body)).toEqual({ error: "unauthorized" });
+      // Refused at the credential, on the same connection, same shape.
+      connection.send(requestHead({ path: "/v1/messages", host, contentLength: large.byteLength }));
+      connection.send(large);
+      const unauthorized = await connection.next("the 401 refusal of an oversized unauthenticated POST");
+      expect(unauthorized.status).toBe(401);
+      expect(JSON.parse(unauthorized.body)).toEqual({ error: "unauthorized" });
 
-    // The whole point. Without the drain in `#deny` this request never
-    // completes and this file fails as the named timeout above rather than as a
-    // wrong status.
-    const valid = encoder.encode(JSON.stringify({ model: MODEL }));
-    connection.send(
-      requestHead({ path: "/v1/messages", host, contentLength: valid.byteLength, token: granted.token }),
-    );
-    connection.send(valid);
-    const ok = await connection.next("a valid request on the connection two refusals were answered on");
-    expect(ok.status).toBe(200);
-    expect(JSON.parse(ok.body)).toEqual({ ok: true, usage: { input_tokens: 1, output_tokens: 1 } });
-  });
+      // The whole point. Without the drain in `#deny` this request never
+      // completes, and this file fails as the named timeout below rather than
+      // as a wrong status.
+      const valid = encoder.encode(JSON.stringify({ model: MODEL }));
+      connection.send(
+        requestHead({ path: "/v1/messages", host, contentLength: valid.byteLength, token: granted.token }),
+      );
+      connection.send(valid);
+      const ok = await connection.next("a valid request on the connection two refusals were answered on");
+      expect(ok.status).toBe(200);
+      expect(JSON.parse(ok.body)).toEqual({ ok: true, usage: { input_tokens: 1, output_tokens: 1 } });
+      expect(upstreamSeen).toHaveLength(1);
+    },
+    LARGE_BODY_TEST_TIMEOUT_MS,
+  );
 
-  test("leaves the connection usable after refusing a body over the cap", async () => {
-    const granted = issueGrant();
-    const host = `127.0.0.1:${new URL(brokerBase).port}`;
-    const connection = await rawConnect("127.0.0.1", Number(new URL(brokerBase).port));
-    connections.push(connection);
+  test(
+    "leaves the connection usable after refusing a body over the cap",
+    async () => {
+      const granted = issueGrant();
+      const host = `127.0.0.1:${brokerPort}`;
+      const connection = await rawConnect("127.0.0.1", brokerPort);
+      connections.push(connection);
 
-    const overCap = new Uint8Array(OVER_CAP_BODY_BYTES).fill(0x61);
-    connection.send(
-      requestHead({ path: "/v1/messages", host, contentLength: overCap.byteLength, token: granted.token }),
-    );
-    connection.send(overCap);
-    const tooLarge = await connection.next("the 413 refusal of an over-cap body");
-    expect(tooLarge.status).toBe(413);
-    expect(JSON.parse(tooLarge.body)).toEqual({ error: "payload_too_large" });
-    expect(logs.some(line => line.includes(`body exceeds the ${32 * 1024 * 1024}-byte ceiling`))).toBe(true);
+      const overCap = new Uint8Array(OVER_CAP_BODY_BYTES).fill(0x61);
+      connection.send(
+        requestHead({ path: "/v1/messages", host, contentLength: overCap.byteLength, token: granted.token }),
+      );
+      connection.send(overCap);
+      const tooLarge = await connection.next("the 413 refusal of an over-cap body", 15_000);
+      expect(tooLarge.status).toBe(413);
+      expect(JSON.parse(tooLarge.body)).toEqual({ error: "payload_too_large" });
+      expect(logs.join("\n")).toContain(`body exceeds the ${REQUEST_BODY_CAP}-byte ceiling`);
 
-    const valid = encoder.encode(JSON.stringify({ model: MODEL }));
-    connection.send(
-      requestHead({ path: "/v1/messages", host, contentLength: valid.byteLength, token: granted.token }),
-    );
-    connection.send(valid);
-    const ok = await connection.next("a valid request on the connection an over-cap body was refused on");
-    expect(ok.status).toBe(200);
+      const valid = encoder.encode(JSON.stringify({ model: MODEL }));
+      connection.send(
+        requestHead({ path: "/v1/messages", host, contentLength: valid.byteLength, token: granted.token }),
+      );
+      connection.send(valid);
+      const ok = await connection.next("a valid request on the connection an over-cap body was refused on");
+      expect(ok.status).toBe(200);
 
-    // The over-cap body was read and dropped, never forwarded.
-    expect(upstreamSeen).toHaveLength(1);
-    expect(JSON.parse(upstreamSeen[0]?.body ?? "null")).toEqual({ model: MODEL });
-  });
+      // The over-cap body was read and dropped, never forwarded.
+      expect(upstreamSeen).toHaveLength(1);
+      expect(JSON.parse(upstreamSeen[0]?.body ?? "null")).toEqual({ model: MODEL });
+    },
+    LARGE_BODY_TEST_TIMEOUT_MS,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1057,7 +1062,7 @@ describe("logging", () => {
     const canaryBody = JSON.stringify({ model: MODEL, messages: [{ role: "user", content: canary }] });
     const shadowBody = JSON.stringify({ model: shadow, messages: [{ role: "user", content: canary }] });
 
-    // A success, then every refusal this handler can produce short of the ones
+    // A success, then every refusal this handler produces short of the ones
     // that need a wedged upstream.
     expect((await post("/v1/messages", { token: working.token, body: canaryBody })).status).toBe(200);
     expect((await post("/v1/models", { token: working.token, body: canaryBody })).status).toBe(404);
@@ -1076,11 +1081,10 @@ describe("logging", () => {
 
     // Every path above produced a line, so this is a search over the real
     // surface and not over an empty array.
-    expect(refusals().length).toBeGreaterThanOrEqual(8);
-    expect(logs.length).toBeGreaterThanOrEqual(12);
+    expect(logs.filter(line => line.includes("refused:")).length).toBeGreaterThanOrEqual(9);
+    expect(logs.length).toBeGreaterThanOrEqual(15);
 
-    const forbidden = [...minted, stranger, UPSTREAM_BEARER, canary, shadow];
-    for (const secret of forbidden) {
+    for (const secret of [...minted, stranger, UPSTREAM_BEARER, canary, shadow]) {
       const leaked = logs.filter(line => line.includes(secret));
       expect({ secret, leaked }).toEqual({ secret, leaked: [] });
     }
@@ -1100,11 +1104,11 @@ describe("lifecycle", () => {
     broker.revokeAll();
 
     expect(broker.liveGrants()).toBe(0);
-    expect(logs.some(line => line.includes("revoked 2 grants"))).toBe(true);
+    expect(logs.join("\n")).toContain("revoked 2 grants");
     expect((await post("/v1/messages", { token: first.token })).status).toBe(401);
     expect((await post("/v1/messages", { token: second.token })).status).toBe(401);
 
-    // Idempotent, and silent when there is nothing to say.
+    // Idempotent, and silent when there is nothing left to say.
     const before = logs.length;
     broker.revokeAll();
     expect(logs.length).toBe(before);
