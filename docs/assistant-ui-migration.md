@@ -358,7 +358,7 @@ Branch `feat/assistant-ui-proof`, off `1efcdd4`. **The owned session is cut over
 
 **Proven**
 
-- **896 app tests, 1584 root tests** (14 skipped), types clean, `biome check .` clean across 454 files, dependency gate clean.
+- **896 app tests, 1584 root tests** (14 skipped), types clean, `biome check .` clean across 456 files, dependency gate clean.
 - Every previously existing suite now drives the production path, not a dead component. `transcript-pagination.test.tsx` (the #129 proof, 21 tests) was retargeted from `Transcript` to `OmpThreadProvider` + `OmpThreadList` and still asserts request identity, the prepend anchor, list configuration and follow-newest composition. `rich-text`, `composer-submit` and `no-hidden-content` now target `OmpEntryRow`.
 - `assistant-cutover.test.tsx` asserts the screen mounts the provider, the primitive list and the primitive composer; that **no** `components/Transcript` import or `<Transcript>` element survives anywhere in `src`; that the owned screen does not render the terminal's composer; and that the terminal surface renders no assistant-ui thread. Each absence is paired with a presence in the same file.
 - The composition tests discriminate, re-measured at review. Swapping the primitives for plain `FlatList`/`View`/`TextInput`/`Pressable` with identical testIDs, every testID kept, fails **8** tests across the app suite: two in `assistant-adapter.test.tsx` (the runtime-driven gating of send and the interrupt, and a real dispatch round trip), five in `assistant-composer.test.tsx`, and one agent-hub case that opens a session. What a lookalike cannot fake is the runtime holding and dispatching through those controls, so the failures cluster there.
