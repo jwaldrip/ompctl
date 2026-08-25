@@ -27,6 +27,9 @@ const BOOLEAN_FLAGS: Record<string, true> = {
   version: true,
   "allow-source-path": true,
   container: true,
+  "dry-run": true,
+  force: true,
+  json: true,
 };
 
 export type Command =
@@ -76,6 +79,13 @@ export type Command =
   | { kind: "self-install"; prefix?: string }
   | { kind: "doctor" }
   | { kind: "install"; prefix?: string; allowSourcePath: boolean }
+  | { kind: "mcp-auth"; action: "status"; json: boolean }
+  | { kind: "mcp-auth"; action: "login"; resourceUrl: string; name?: string }
+  | { kind: "mcp-auth"; action: "import"; dryRun: boolean; force: boolean }
+  | { kind: "mcp-auth"; action: "apply" }
+  | { kind: "mcp-auth"; action: "unapply" }
+  | { kind: "mcp-auth"; action: "refresh"; grantId: string }
+  | { kind: "mcp-auth"; action: "logout"; grantId: string }
   | { kind: "uninstall" };
 
 export const USAGE = `ompd - control plane for OMP agents
@@ -139,6 +149,19 @@ mcp
 
 audit
   audit [--limit N]       recent privileged actions
+
+mcp auth
+  mcp-auth                print every brokered MCP grant and its state
+  mcp-auth login <mcp-url> [--name N]
+                          authorize a remote MCP server in a browser; the daemon keeps
+                          the refresh token and no session ever sees one
+  mcp-auth import [--dry-run] [--force]
+                          copy grants OMP already holds; never modifies OMP's own store,
+                          and refuses while an omp auth-broker is running
+  mcp-auth apply          point OMP's MCP config at the loopback broker
+  mcp-auth unapply        put OMP's MCP config back the way it was
+  mcp-auth refresh <id>   redeem the refresh token now, ignoring backoff
+  mcp-auth logout <id>    forget one grant and its refresh token
 
 scopes: ${KNOWN_SCOPES.join(", ")}
 
@@ -490,6 +513,52 @@ export function parseCommand(argv: string[]): Command {
       // and nobody should be able to agree to that by pressing return.
       const allowSourcePath = flags.get("allow-source-path") === true;
       return prefix === undefined ? { kind: "install", allowSourcePath } : { kind: "install", prefix, allowSourcePath };
+    }
+
+    // Sub-verbs rather than seven top-level commands, because they share one
+    // subject and reading `ompd mcp-auth` on its own should answer the only
+    // question most runs have: which grants are alive.
+    case "mcp-auth": {
+      const action = rest[0];
+      if (action === undefined) return { kind: "mcp-auth", action: "status", json: flags.get("json") === true };
+      const args = rest.slice(1);
+      switch (action) {
+        case "status":
+          rejectExtra(args, 0, "mcp-auth status");
+          return { kind: "mcp-auth", action: "status", json: flags.get("json") === true };
+        case "login": {
+          rejectExtra(args, 1, "mcp-auth login");
+          const name = stringFlag(flags, "name");
+          const resourceUrl = requirePositional(args, 0, "mcp-url");
+          return name === undefined
+            ? { kind: "mcp-auth", action: "login", resourceUrl }
+            : { kind: "mcp-auth", action: "login", resourceUrl, name };
+        }
+        case "import":
+          rejectExtra(args, 0, "mcp-auth import");
+          return {
+            kind: "mcp-auth",
+            action: "import",
+            dryRun: flags.get("dry-run") === true,
+            force: flags.get("force") === true,
+          };
+        case "apply":
+          rejectExtra(args, 0, "mcp-auth apply");
+          return { kind: "mcp-auth", action: "apply" };
+        case "unapply":
+          rejectExtra(args, 0, "mcp-auth unapply");
+          return { kind: "mcp-auth", action: "unapply" };
+        case "refresh":
+          rejectExtra(args, 1, "mcp-auth refresh");
+          return { kind: "mcp-auth", action: "refresh", grantId: requirePositional(args, 0, "grantId") };
+        case "logout":
+          rejectExtra(args, 1, "mcp-auth logout");
+          return { kind: "mcp-auth", action: "logout", grantId: requirePositional(args, 0, "grantId") };
+        default:
+          throw new UsageError(
+            `unknown mcp-auth action ${action}; use status, login, import, apply, unapply, refresh, or logout`,
+          );
+      }
     }
 
     case "uninstall":

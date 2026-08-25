@@ -104,6 +104,9 @@ describe("config", () => {
       // platform's own runtime, and ompd's pinned base plus mounted toolchain.
       containerRuntime: "",
       containerImage: "",
+      // Fixed rather than OS-assigned: this number ends up inside URLs written
+      // into OMP's own MCP config, which outlive the process that wrote them.
+      mcpAuthPort: 7778,
       // On, because a container agent with no model access reaches `idle` and
       // then fails every prompt. Off makes provisioning refuse rather than
       // producing that agent, so the default is the only one that delivers the

@@ -587,6 +587,17 @@ export const SCOPE_PROMPT = "prompt";
  */
 export const DEFAULT_DAEMON_PORT = 7777;
 
+/**
+ * Loopback port the MCP auth broker binds when config says nothing.
+ *
+ * Fixed rather than OS-assigned, for the one reason that matters: this port
+ * appears inside URLs written into OMP's own MCP config file, which is read by
+ * sessions this daemon never started and outlives every restart. A port that
+ * moved would leave those entries pointing at nothing, and the symptom would
+ * be a connector that stopped working for no visible reason.
+ */
+export const DEFAULT_MCP_AUTH_PORT = 7778;
+
 // ---------------------------------------------------------------------------
 // Agent-driveable WebView
 //
@@ -1595,6 +1606,21 @@ export type AuditAction =
   | "host.provision"
   | "host.destroy"
   /**
+   * A brokered MCP grant was authorized, imported, refreshed, forgotten, or
+   * wired into OMP's config.
+   *
+   * `detail` carries counts, grant ids, resource URLs and states, and nothing
+   * else. No token, no refresh material, no client secret, and no upstream
+   * error body -- providers put credential fragments in those. An audit record
+   * is the wrong place to learn what a token looked like, and it is written to
+   * a database the phone can read.
+   */
+  | "mcp_auth.login"
+  | "mcp_auth.import"
+  | "mcp_auth.apply"
+  | "mcp_auth.refresh"
+  | "mcp_auth.forget"
+  /**
    * A host the store still listed was reclaimed at daemon start, or could not
    * be. Distinct from `host.destroy` because nobody asked for it: it is the
    * daemon noticing that a previous process left something running, and the
@@ -1775,6 +1801,95 @@ export interface ConnectorSummary {
    * the wire.
    */
   error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// MCP auth
+// ---------------------------------------------------------------------------
+
+/**
+ * What the daemon can currently say about one remote MCP server's OAuth grant.
+ *
+ * Five states rather than a boolean because the difference between them is the
+ * whole point. "Down" is not one thing: a grant the provider will never renew
+ * needs a human at a browser, a grant that failed once needs nothing but time,
+ * and a provider that never issued a refresh token needs the operator to know
+ * that no daemon can fix it.
+ *
+ * - `healthy`      the daemon holds refresh material and the last exchange with
+ *                  the token endpoint succeeded.
+ * - `refreshing`   an exchange is in flight right now.
+ * - `degraded`     the last exchange failed transiently (network, 5xx, timeout).
+ *                  The grant is intact and the daemon is backing off, so this
+ *                  resolves itself.
+ * - `reauth_required` the provider refused the refresh token definitively
+ *                  (`invalid_grant`, revoked, reuse detected). Retrying cannot
+ *                  help; a person must authorize again.
+ * - `no_refresh_grant` the authorization server does not implement the refresh
+ *                  grant, or issued no refresh token. The access token will die
+ *                  and nothing here can renew it. Reported rather than papered
+ *                  over, because a keepalive that pretends otherwise is a lie
+ *                  with a schedule attached.
+ */
+export type McpAuthState = "healthy" | "refreshing" | "degraded" | "reauth_required" | "no_refresh_grant";
+
+/**
+ * One brokered MCP grant, as a client may see it.
+ *
+ * Deliberately carries no token, no refresh material, and no client secret.
+ * Everything here is either an identifier, a URL the provider publishes, or a
+ * timestamp: a screenshot of this type leaks nothing. `account` is the
+ * provider's own non-secret label for the authorized identity (an email, a
+ * workspace name) and is absent when the provider gave none.
+ */
+export interface McpAuthSummary {
+  /** Stable id. Also the last path segment of the loopback endpoint. */
+  id: string;
+  /** The name this server is mounted under in OMP's MCP config. */
+  serverName: string;
+  /** The upstream MCP endpoint the daemon proxies to. */
+  resourceUrl: string;
+  /** The authorization server that issued the grant. */
+  issuer: string;
+  state: McpAuthState;
+  /** Why, in one line, when the state is not `healthy`. Redacted before it is stored or sent. */
+  detail?: string;
+  /** Scopes the provider actually granted, space separated. */
+  scopes: string;
+  account?: string;
+  /** ISO timestamp of the last successful token exchange, absent if never. */
+  lastRefreshAt?: string;
+  /** ISO timestamp the in-memory access token expires, absent when none is held. */
+  accessExpiresAt?: string;
+  /** Consecutive transient failures. Zero whenever the last exchange succeeded. */
+  failures: number;
+  /** ISO timestamp the daemon will next attempt a refresh, when it is backing off. */
+  nextAttemptAt?: string;
+  /** Whether the authorization server advertises the refresh grant at all. */
+  supportsRefresh: boolean;
+  /** Whether an OMP session pointed at the loopback endpoint would reach this grant right now. */
+  wired: boolean;
+}
+
+/**
+ * The daemon's whole MCP auth surface: every grant plus where the broker is
+ * listening, so a client can tell "no grants" from "the broker is not running".
+ */
+export interface McpAuthStatus {
+  /** Loopback base URL sessions connect to, absent when the broker is not listening. */
+  endpoint?: string;
+  /**
+   * Why the listener is not up, when it should be.
+   *
+   * An absent `endpoint` has two very different causes: the operator turned the
+   * broker off, or the port it was told to use is already taken. The second one
+   * leaves every brokered config entry pointing at nothing, so it must not be
+   * reported as the same silence as the first.
+   */
+  listenError?: string;
+  /** Which at-rest protection the refresh tokens actually got. Named, never assumed. */
+  vault: "keychain" | "libsecret" | "file";
+  grants: McpAuthSummary[];
 }
 
 // ---------------------------------------------------------------------------
