@@ -124,8 +124,21 @@ export interface SupervisorOptions {
    * Applying it on both paths is load-bearing: resuming a session must restore
    * its tool surface, not silently produce an agent that remembers using a
    * browser but can no longer call it.
+   *
+   * It receives the HOST, and that is the whole reason this signature is not
+   * just `(agentId)`. Every descriptor here is an address, and an address is
+   * only meaningful from somewhere. The WebView MCP server binds
+   * `127.0.0.1` and `urlFor` hands out `http://127.0.0.1:<port>/...`, which
+   * resolves to the daemon's machine from a local host and to the CONTAINER
+   * from a provisioned one. Measured on 2026-08-25: a container handed that
+   * descriptor failed `session/new` outright with
+   * `ompd-webview: Unable to connect. Is the computer able to access the url?`,
+   * so every `kind: "container"` create returned HTTP 500 while the identical
+   * request with no `mcpServers` succeeded in 1.2s. The caller is the only
+   * layer that knows whether its own URLs are reachable from a given host, so
+   * it is the layer that has to decide.
    */
-  mcpServersFor?: (agentId: AgentId) => unknown[];
+  mcpServersFor?: (agentId: AgentId, host: HostRef) => unknown[];
   /**
    * The daemon's own state directory, so a requested mount can be refused for
    * naming it. Defaults to `~/.ompd`, the same expression `Ompd` and
@@ -437,6 +450,42 @@ export const AGENT_STATE_FROM_REGISTRY: Record<AcpAgentRegistrySnapshot["status"
  */
 const SEVERITY: Record<PolicyDecision["action"], number> = { allow: 0, prompt: 1, deny: 2 };
 
+/**
+ * The sentence an operator is allowed to see about a failure.
+ *
+ * Three jobs, and the third is why this exists rather than `String(err)`.
+ *
+ *  - Keep the useful part. `AcpError` now folds `data.details` into its
+ *    message, so a container that could not reach the daemon's loopback says
+ *    so here instead of saying "Internal error".
+ *  - Keep the cause chain, one level. A `ProvisionError` wrapping a runtime
+ *    failure is two sentences and both matter.
+ *  - Never carry a secret. An ACP host is spawned with a gate wrapper path and
+ *    a per-agent MCP token in a URL, and a runtime failure can quote argv, so
+ *    anything shaped like a token or a query string is dropped rather than
+ *    stored. Bounded in length too: this goes in a row an operator reads, not
+ *    a log sink.
+ */
+export function safeFailureReason(err: unknown): string {
+  const first = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : undefined;
+  const joined = cause !== undefined && !first.includes(cause) ? `${first}: ${cause}` : first;
+  return redactReason(joined);
+}
+
+/** Strip the shapes that carry credentials, then bound the length. */
+function redactReason(text: string): string {
+  const scrubbed = text
+    // A per-agent MCP url embeds its token in the path; keep the origin only.
+    .replace(/(https?:\/\/[^\s/]+)\/\S*/g, "$1/<path redacted>")
+    // Anything after a `?` is a query string, which is where tokens ride.
+    .replace(/\?\S+/g, "?<redacted>")
+    // Long opaque runs are the shape of a token or a digest tail.
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "<redacted>");
+  const oneLine = scrubbed.replace(/\s+/g, " ").trim();
+  return oneLine.length > 400 ? `${oneLine.slice(0, 397)}...` : oneLine;
+}
+
 export class Supervisor {
   #store: Store;
   #policy: Policy;
@@ -447,7 +496,7 @@ export class Supervisor {
   #onLog: ((line: string) => void) | undefined;
   #spawnHost: (opts: SpawnLocalHostOptions) => LocalHost;
   #provisioner: Provisioner | undefined;
-  #mcpServersFor: ((agentId: AgentId) => unknown[]) | undefined;
+  #mcpServersFor: ((agentId: AgentId, host: HostRef) => unknown[]) | undefined;
   /** The daemon's state directory, so a mount naming it can be refused. */
   #home: string;
 
@@ -473,6 +522,13 @@ export class Supervisor {
       opts.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
       this.#approvalTimeout * APPROVALS_PER_TURN_BUDGET,
     );
+    // Never assigned before this. `onLog` has been a declared option and a
+    // private field since the field existed, with nothing joining them, so
+    // every `this.#onLog?.(...)` in this file was a silent no-op: the declined
+    // elicitations, the failed destroy-after-close, and the ACP host it hands
+    // to `spawnLocalHost` for the host's own output. That is why a container
+    // create could fail and leave an empty log.
+    this.#onLog = opts.onLog;
     this.#ompPath = opts.ompPath;
     this.#spawnHost = opts.spawnHost ?? spawnLocalHost;
     this.#provisioner = opts.provisioner;
@@ -588,7 +644,7 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, {}, (sessionEntry, agentId) =>
-      sessionEntry.host.client.newSession(input.cwd, this.#mcpServersFor?.(agentId) ?? []),
+      sessionEntry.host.client.newSession(input.cwd, this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? []),
     );
   }
 
@@ -628,7 +684,11 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, { resumed: true }, async (sessionEntry, agentId) => {
-      await sessionEntry.host.client.loadSession(input.sessionId, input.cwd, this.#mcpServersFor?.(agentId) ?? []);
+      await sessionEntry.host.client.loadSession(
+        input.sessionId,
+        input.cwd,
+        this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
+      );
       return input.sessionId;
     });
   }
@@ -767,7 +827,20 @@ export class Supervisor {
       // points at is never reclaimed, and the agent row must not be left
       // claiming a host that is gone.
       if (entry.agents.size === 0) await this.#releaseHost(entry);
-      this.#setState(id, "failed");
+      // Say why, in all three places an operator might look. Before this the
+      // agent row held `failed` and nothing else, the log held nothing at all,
+      // and the gateway turned a real sentence into HTTP 500 "Internal error":
+      // a container-host defect was undiagnosable from the daemon's own output.
+      const reason = safeFailureReason(err);
+      this.#onLog?.(`agent ${id}: session could not be opened on ${spec.kind} host ${entry.ref.id}: ${reason}`);
+      this.#store.audit({
+        action: "agent.create",
+        agentId: id,
+        actorDeviceId: who.deviceId,
+        outcome: "error",
+        detail: { cwd: input.cwd, host: spec.kind, hostId: entry.ref.id, reason, ...auditDetail },
+      });
+      this.#setState(id, "failed", reason);
       throw err;
     }
     agent.acpSessionId = sessionId;
@@ -1304,6 +1377,18 @@ export class Supervisor {
       // A container that came up but whose ACP host never answered is held by
       // nobody. Release it here or it runs until the machine is rebooted.
       if (handle !== undefined) await this.#destroyHandle(handle);
+      // No agent row exists yet, so the log and the audit are the only places
+      // this can be recorded. Both, because an operator reads one or the other.
+      const reason = safeFailureReason(err);
+      this.#onLog?.(
+        `host ${handle?.ref.id ?? "local"}: the ACP host did not start on this ${spec.kind} host: ${reason}`,
+      );
+      this.#store.audit({
+        action: "host.start",
+        actorDeviceId: actor.deviceId,
+        outcome: "error",
+        detail: { kind: spec.kind, hostId: handle?.ref.id, reason },
+      });
       throw err;
     }
 
@@ -1322,8 +1407,13 @@ export class Supervisor {
     };
     this.#hosts.set(key, entry);
     for (const agents of pendingRegistrySnapshots) this.#onAgentRegistry(key, agents);
+    // `host.start`, not a second `host.provision`. The provisioner already
+    // audited the provision with the actor attached; this is the ACP host
+    // coming up inside it, which is a different event with a different failure
+    // mode. Two rows saying `host.provision` for one container is what made a
+    // single create look like two.
     this.#store.audit({
-      action: "host.provision",
+      action: "host.start",
       outcome: "ok",
       detail: { kind: spec.kind, pid: host.pid, hostId: ref.id },
     });
@@ -1445,8 +1535,16 @@ export class Supervisor {
     this.#events.onAgentsChanged?.(this.listAgents());
   }
 
-  #setState(agentId: AgentId, state: AgentState): void {
-    this.#store.setAgentState(agentId, state);
+  /**
+   * Move an agent's state, optionally recording why it failed.
+   *
+   * `reason` is only ever set alongside a terminal state, and it is stored
+   * rather than logged-and-forgotten because "failed" on its own sent an
+   * operator to a silent log. It is passed through `safeFailureReason`, so what
+   * lands in the store is a bounded sentence with no argv and no credential.
+   */
+  #setState(agentId: AgentId, state: AgentState, reason?: string): void {
+    this.#store.setAgentState(agentId, state, reason);
     this.#events.onAgentsChanged?.(this.listAgents());
   }
 
