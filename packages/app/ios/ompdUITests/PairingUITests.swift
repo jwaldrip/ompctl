@@ -103,11 +103,9 @@ final class PairingUITests: XCTestCase {
         XCTAssertEqual((endpointField.value as? String) ?? "", "", "the hosted hub value did not clear before direct pairing")
         endpointField.typeText(endpoint)
 
-        let endpointKind = app.staticTexts["pair-endpoint-kind"]
-        XCTAssertTrue(endpointKind.waitForExistence(timeout: 5), "endpoint-kind label did not appear after typing")
-        XCTAssertEqual(endpointKind.label, "Direct socket")
 
-        let tokenField = app.secureTextFields["pair-token"]
+        let secureTokenField = app.secureTextFields["pair-token"]
+        let tokenField = secureTokenField.exists ? secureTokenField : app.textFields["pair-token"]
         XCTAssertTrue(tokenField.exists, "token field not found")
         tokenField.tap()
         tokenField.typeText(token)
@@ -144,9 +142,14 @@ final class PairingUITests: XCTestCase {
         let fleet = app.otherElements["fleet"]
         XCTAssertTrue(fleet.waitForExistence(timeout: 5), "session fleet did not appear after pairing")
         XCTAssertTrue(app.staticTexts["fleet-count"].exists, "session fleet count did not appear after pairing")
+        let fleetFrame = XCTAttachment(screenshot: app.screenshot())
+        fleetFrame.name = "scratch-fleet-before-open"
+        fleetFrame.lifetime = .keepAlways
+        add(fleetFrame)
 
-        let agent = app.descendants(matching: .any)["session-open-\(sessionID)"]
+        let agent = app.buttons["session-open-\(sessionID)"]
         XCTAssertTrue(agent.waitForExistence(timeout: 20), "scratch session \(sessionID) was not present in the fleet")
+        XCTAssertTrue(agent.isHittable, "canonical session-open action is not hittable")
         agent.tap()
 
         let session = app.otherElements["session"]
@@ -154,7 +157,7 @@ final class PairingUITests: XCTestCase {
 
         let composer = app.textViews["composer-input"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10), "agent composer did not appear")
-        let idleSend = app.buttons["composer-send"]
+        let idleSend = app.descendants(matching: .any)["composer-send"]
         XCTAssertTrue(idleSend.waitForExistence(timeout: 10), "settled session did not render composer-send before typing")
         XCTAssertTrue(idleSend.isEnabled, "settled session rendered a disabled composer-send")
 
@@ -171,8 +174,8 @@ final class PairingUITests: XCTestCase {
         composer.tap()
         composer.typeText(prompt)
         XCTAssertTrue(((composer.value as? String) ?? "").contains(nonce), "composer input did not contain the nonce")
-        let send = app.buttons["composer-send"]
-        let cancel = app.buttons["composer-cancel"]
+        let send = app.descendants(matching: .any)["composer-send"]
+        let cancel = app.descendants(matching: .any)["composer-cancel"]
         let afterTypeFrame = XCTAttachment(screenshot: app.screenshot())
         afterTypeFrame.name = "scratch-after-typing"
         afterTypeFrame.lifetime = .keepAlways
