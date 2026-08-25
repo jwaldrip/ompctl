@@ -25,15 +25,15 @@ export const UNIT_TEST_EXCLUSIONS = ["e2e", "site"] as const;
  * root `bun test packages/<name>` contract where that package has no script.
  * Packages run sequentially because their suites create processes, sockets, and
  * temporary repositories. Daemon test files have isolated temp roots and ports,
- * so its bounded worker pool is safe and keeps each worker's module globals
- * fresh without exhausting Bun's IPC descriptors.
+ * so a four-worker pool keeps their module globals fresh without oversubscribing
+ * the two-core CI runner or exhausting Bun's IPC descriptors.
  */
 export const PACKAGE_TEST_SUITES: readonly PackageTestSuite[] = [
   { id: "acp", command: ["bun", "test", "packages/acp"] },
   { id: "app", command: ["bun", "--cwd", "packages/app", "test"] },
   { id: "cli", command: ["bun", "test", "packages/cli"] },
   { id: "core", command: ["bun", "test", "packages/core"] },
-  { id: "daemon", command: ["bun", "test", "--parallel=24", "packages/daemon"] },
+  { id: "daemon", command: ["bun", "test", "--parallel=4", "packages/daemon"] },
   { id: "hub", command: ["bun", "test", "packages/hub"] },
   { id: "omp-extension", command: ["bun", "test", "packages/omp-extension"] },
   { id: "tunnel", command: ["bun", "test", "packages/tunnel"] },
