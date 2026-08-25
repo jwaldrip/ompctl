@@ -26,6 +26,15 @@ import {
   rotateCommand,
 } from "./commands/devices.ts";
 import { doctorCommand } from "./commands/doctor.ts";
+import {
+  mcpAuthApplyCommand,
+  mcpAuthImportCommand,
+  mcpAuthLoginCommand,
+  mcpAuthLogoutCommand,
+  mcpAuthRefreshCommand,
+  mcpAuthStatusCommand,
+  mcpAuthUnapplyCommand,
+} from "./commands/mcp-auth.ts";
 import { openCommand } from "./commands/open.ts";
 import { routineDeleteCommand, routinesCommand, runCommand, webhookSecretCommand } from "./commands/routines.ts";
 import { selfInstallCommand } from "./commands/self-install.ts";
@@ -116,6 +125,27 @@ export async function run(argv: string[], ctx: CliContext = defaultContext()): P
         return await selfInstallCommand(ctx, command);
       case "doctor":
         return await doctorCommand(ctx);
+      case "mcp-auth":
+        switch (command.action) {
+          case "status":
+            return await mcpAuthStatusCommand(ctx, command);
+          case "login":
+            return await mcpAuthLoginCommand(ctx, command);
+          case "import":
+            return await mcpAuthImportCommand(ctx, command);
+          case "apply":
+            return await mcpAuthApplyCommand(ctx);
+          case "unapply":
+            return await mcpAuthUnapplyCommand(ctx);
+          case "refresh":
+            return await mcpAuthRefreshCommand(ctx, command);
+          case "logout":
+            return await mcpAuthLogoutCommand(ctx, command);
+          default: {
+            const exhaustive: never = command;
+            throw new Error(`unhandled mcp-auth action ${JSON.stringify(exhaustive)}`);
+          }
+        }
       case "install":
         return await installCommand(ctx, command);
       default:

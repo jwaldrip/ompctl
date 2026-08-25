@@ -31,6 +31,8 @@ import {
   type ConnectorSummary,
   type EndpointOffer,
   isRecord,
+  type McpAuthState,
+  type McpAuthStatus,
   type PersistCollabVoiceNoteInput,
   PROMPT_IMAGE_REFUSAL_REASONS,
   parsePromptImages,
@@ -451,6 +453,51 @@ export interface ConnectorCatalog {
 }
 
 /**
+ * The MCP auth broker, as the gateway is allowed to see it.
+ *
+ * Every method here returns identifiers, states and URLs. There is
+ * deliberately no method that returns a token, a refresh token or a client
+ * secret, so no route can be written that leaks one by accident: the type
+ * itself refuses. `authorizationUrl` is the one URL that crosses the wire and
+ * it is a public endpoint carrying a PKCE challenge, not a credential.
+ */
+export interface McpAuthCatalog {
+  status(): McpAuthStatus;
+  beginLogin(input: { resourceUrl: string; name?: string }): Promise<{ flowId: string; authorizationUrl: string }>;
+  loginProgress(
+    flowId: string,
+  ): { state: "pending" | "complete" | "failed"; grantId?: string; serverName?: string; detail?: string } | undefined;
+  refresh(
+    grantId: string,
+  ): Promise<{ outcome: "ok" | "definitive" | "transient"; state: McpAuthState; detail?: string }>;
+  forget(grantId: string): boolean;
+  importFromOmp(input: { dryRun: boolean; force: boolean }): Promise<McpAuthImportReport>;
+  apply(): Promise<McpAuthApplyReport>;
+  unapply(): Promise<{ removed: string[] }>;
+}
+
+export interface McpAuthImportReport {
+  refused?: "broker_running";
+  dryRun: boolean;
+  imported: Array<{ grantId: string; serverName: string; resourceUrl: string; recoveredTokenUrl: boolean }>;
+  skipped: Array<{ resourceUrl: string; reason: string }>;
+}
+
+export interface McpAuthApplyReport {
+  applied: Array<{ serverName: string; brokerName: string; url: string }>;
+  disabled: string[];
+  /**
+   * Grants deliberately left unwired, and why.
+   *
+   * `apply` also disables the original server's own definition, so wiring a
+   * grant that cannot serve would replace something that works today with a
+   * 503. These are reported rather than written, and the next `apply` picks
+   * them up once a person has authorized them.
+   */
+  skipped: Array<{ serverName: string; state: McpAuthState; detail: string }>;
+}
+
+/**
  * The two persisted settings that may move between daemons. Binding, hub,
  * binary and credential settings deliberately have no place in this surface.
  * Lives in the core contracts now that the socket frames carry it, so the
@@ -810,6 +857,13 @@ export interface GatewayOptions {
   /** The connector counterpart to `skills`. Absent, `GET /v1/connectors` reports the feature off the same way. */
   connectors?: ConnectorCatalog;
   /**
+   * The MCP auth broker. Absent, every `/v1/mcp-auth*` route reports the
+   * feature off, so an operator can tell "no grants yet" from "this daemon is
+   * not brokering MCP auth at all" -- a distinction that matters here more
+   * than most, because both look like a connector that stopped working.
+   */
+  mcpAuth?: McpAuthCatalog;
+  /**
    * Task lifecycle. Absent, every `/v1/tasks*` route reports the feature off
    * rather than 404ing, so a client can tell "no such task" from "this
    * daemon build has no task tracking".
@@ -986,6 +1040,7 @@ export class Gateway {
   #onTokenRotated: ((deviceId: string, token: string) => string | undefined) | undefined;
   #skills: SkillCatalog | undefined;
   #connectors: ConnectorCatalog | undefined;
+  #mcpAuth: McpAuthCatalog | undefined;
   #syncConfig: SyncConfig | undefined;
   #tasks: TaskCatalog | undefined;
   #sessionIndex: SessionIndex | undefined;
@@ -1085,6 +1140,7 @@ export class Gateway {
     this.#syncConfig = opts.syncConfig;
     this.#skills = opts.skills;
     this.#connectors = opts.connectors;
+    this.#mcpAuth = opts.mcpAuth;
     this.#tasks = opts.tasks;
     this.#sessionIndex = opts.sessionIndex;
     this.#endpoints = opts.endpoints;
@@ -2087,6 +2143,159 @@ export class Gateway {
       if (outcome.kind === "unknown-agent") return Response.json({ error: "not_found" }, { status: 404 });
       if (outcome.kind === "failed") return Response.json({ error: outcome.error }, { status: 502 });
       return Response.json({ connectors: outcome.value });
+    }
+
+    // MCP auth. Reading the state of a grant is `read`; everything that moves
+    // a credential is `manage`, including login, because beginning an
+    // authorization is how a new credential gets onto this machine.
+    if (path === "/v1/mcp-auth" && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      return Response.json(broker.status());
+    }
+
+    if (path === "/v1/mcp-auth/login" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      let body: { resourceUrl?: unknown; name?: unknown };
+      try {
+        body = (await req.json()) as { resourceUrl?: unknown; name?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const resourceUrl = typeof body.resourceUrl === "string" ? body.resourceUrl : "";
+      // https only, and not as a style preference: an authorization code and
+      // then a bearer token travel to whatever this names, so a plaintext
+      // destination is a credential handed to the network. Loopback is the one
+      // exception, because a test's fake authorization server lives there and
+      // nothing leaves the machine.
+      let parsed: URL;
+      try {
+        parsed = new URL(resourceUrl);
+      } catch {
+        return Response.json({ error: "resourceUrl must be an absolute URL" }, { status: 400 });
+      }
+      const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
+      if (parsed.protocol !== "https:" && !loopback) {
+        return Response.json({ error: "resourceUrl must be https, or loopback" }, { status: 400 });
+      }
+      const name = typeof body.name === "string" && body.name.length > 0 ? body.name : undefined;
+      try {
+        const begun = await broker.beginLogin({ resourceUrl, name });
+        this.#store.audit({
+          action: "mcp_auth.login",
+          actorDeviceId: actor.deviceId,
+          outcome: "ok",
+          detail: { resourceUrl },
+        });
+        return Response.json(begun, { status: 201 });
+      } catch (err) {
+        this.#store.audit({
+          action: "mcp_auth.login",
+          actorDeviceId: actor.deviceId,
+          outcome: "error",
+          detail: { resourceUrl },
+        });
+        return Response.json({ error: err instanceof Error ? err.message : "login failed" }, { status: 502 });
+      }
+    }
+
+    const mcpAuthLoginProgress = /^\/v1\/mcp-auth\/login\/([A-Za-z0-9_-]+)$/.exec(path);
+    if (mcpAuthLoginProgress && req.method === "GET") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      const progress = broker.loginProgress(mcpAuthLoginProgress[1] ?? "");
+      if (progress === undefined) return Response.json({ error: "not_found" }, { status: 404 });
+      return Response.json(progress);
+    }
+
+    if (path === "/v1/mcp-auth/import" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      let body: { dryRun?: unknown; force?: unknown };
+      try {
+        body = (await req.json()) as { dryRun?: unknown; force?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const report = await broker.importFromOmp({ dryRun: body.dryRun === true, force: body.force === true });
+      this.#store.audit({
+        action: "mcp_auth.import",
+        actorDeviceId: actor.deviceId,
+        outcome: report.refused === undefined ? "ok" : "denied",
+        // Counts and refusal reasons only. The URLs are already in the report
+        // the caller receives; the audit log does not need a second copy, and
+        // it certainly does not need anything from the credential rows.
+        detail: { imported: report.imported.length, skipped: report.skipped.length, dryRun: report.dryRun },
+      });
+      return Response.json(report);
+    }
+
+    if (path === "/v1/mcp-auth/apply" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      try {
+        const report = await broker.apply();
+        this.#store.audit({
+          action: "mcp_auth.apply",
+          actorDeviceId: actor.deviceId,
+          outcome: "ok",
+          detail: { applied: report.applied.length, disabled: report.disabled.length },
+        });
+        return Response.json(report);
+      } catch (err) {
+        return Response.json({ error: err instanceof Error ? err.message : "apply failed" }, { status: 409 });
+      }
+    }
+
+    if (path === "/v1/mcp-auth/unapply" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      const removed = await broker.unapply();
+      this.#store.audit({
+        action: "mcp_auth.apply",
+        actorDeviceId: actor.deviceId,
+        outcome: "ok",
+        detail: { removed: removed.removed.length },
+      });
+      return Response.json(removed);
+    }
+
+    const mcpAuthRefresh = /^\/v1\/mcp-auth\/([A-Za-z0-9_]+)\/refresh$/.exec(path);
+    if (mcpAuthRefresh && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      const result = await broker.refresh(mcpAuthRefresh[1] ?? "");
+      this.#store.audit({
+        action: "mcp_auth.refresh",
+        actorDeviceId: actor.deviceId,
+        outcome: result.outcome === "ok" ? "ok" : "error",
+        detail: { grantId: mcpAuthRefresh[1], state: result.state },
+      });
+      return Response.json(result);
+    }
+
+    const mcpAuthForget = /^\/v1\/mcp-auth\/([A-Za-z0-9_]+)$/.exec(path);
+    if (mcpAuthForget && req.method === "DELETE") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const broker = this.#mcpAuth;
+      if (!broker) return Response.json({ error: "mcp_auth_unavailable" }, { status: 503 });
+      const removed = broker.forget(mcpAuthForget[1] ?? "");
+      this.#store.audit({
+        action: "mcp_auth.forget",
+        actorDeviceId: actor.deviceId,
+        outcome: removed ? "ok" : "denied",
+        detail: { grantId: mcpAuthForget[1] },
+      });
+      if (!removed) return Response.json({ error: "not_found" }, { status: 404 });
+      return Response.json({ removed });
     }
 
     if (path === "/v1/tasks" && req.method === "GET") {

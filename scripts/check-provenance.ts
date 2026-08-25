@@ -109,6 +109,53 @@ function git(args: string[], cwd: string): { stdout: string; stderr: string; sta
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status ?? 1 };
 }
 
+/**
+ * The revisions this run is answerable for: the checked-out tree, plus the
+ * commits this branch adds on top of its base.
+ *
+ * It used to be `rev-list --all`, and that is a guard that fails the wrong
+ * person. `actions/checkout` fetches with `fetch-depth: 0`, so every remote ref
+ * the fetch brought down is reachable, and one contaminated branch turned every
+ * other PR's run red -- for content that branch's author could see and this
+ * one's author could not. A check that fails PR B because of branch A gets
+ * ignored, and an ignored guard is worth nothing.
+ *
+ * So the scope is what this PR actually put there. The base is
+ * `OMPCTL_PROVENANCE_BASE`, else the pull request's own base branch from
+ * `GITHUB_BASE_REF`, else `origin/main`, else `main`. HEAD is always included,
+ * because the tree being merged is the thing that matters most and a branch
+ * with no commits of its own must still be swept.
+ *
+ * Note what this does NOT do: it does not exclude a path, and it does not
+ * weaken a term. Everything this branch introduces is still swept, and main's
+ * own runs still sweep main. What is gone is one branch's history landing in
+ * another branch's result.
+ */
+function scopeRevs(repo: string): { revs: string[]; base: string | undefined } {
+  const candidates = [
+    process.env.OMPCTL_PROVENANCE_BASE,
+    process.env.GITHUB_BASE_REF === undefined ? undefined : `origin/${process.env.GITHUB_BASE_REF}`,
+    "origin/main",
+    "main",
+  ].filter((c): c is string => c !== undefined && c.length > 0);
+
+  for (const base of candidates) {
+    if (git(["rev-parse", "--verify", "--quiet", `${base}^{commit}`], repo).status !== 0) continue;
+    const r = git(["rev-list", "HEAD", "--not", base], repo);
+    if (r.status !== 0) continue;
+    const own = r.stdout.split("\n").filter(l => l.length > 0);
+    const head = git(["rev-parse", "HEAD"], repo).stdout.trim();
+    return { revs: own.includes(head) ? own : [head, ...own], base };
+  }
+
+  // No base to compare against: sweep this branch's own history rather than
+  // every ref. A clone with no `main` is a local checkout, not a pull request.
+  const r = git(["rev-list", "HEAD"], repo);
+  if (r.status !== 0) throw new Error(`rev-list failed in ${repo}: ${r.stderr.trim()}`);
+  return { revs: r.stdout.split("\n").filter(l => l.length > 0), base: undefined };
+}
+
+/** Every rev in the repository, used only for the shallow-checkout floor and the proof mirror. */
 function revs(repo: string): string[] {
   const r = git(["rev-list", "--all"], repo);
   if (r.status !== 0) throw new Error(`rev-list failed in ${repo}: ${r.stderr.trim()}`);
@@ -157,6 +204,9 @@ if (!patternMatchesSynthetic()) {
 }
 console.log("  ok   pattern matches every term it declares");
 
+// The floor stays measured against the whole repository, because what it
+// detects is a shallow checkout: a depth-1 fetch makes any sweep vacuous no
+// matter how it is scoped. The sweep itself runs on the scoped set.
 const all = revs(repo);
 if (all.length < MIN_REVS) {
   console.error(
@@ -166,9 +216,15 @@ if (all.length < MIN_REVS) {
   );
   process.exit(1);
 }
-console.log(`  ok   ${all.length} revs, swept in batches of ${BATCH}`);
 
-const { hits, failures } = sweep(repo, all);
+const scope = scopeRevs(repo);
+console.log(
+  scope.base === undefined
+    ? `  ok   ${all.length} revs reachable; sweeping this branch's own ${scope.revs.length}, no base ref to compare against`
+    : `  ok   ${all.length} revs reachable; sweeping the ${scope.revs.length} this branch adds over ${scope.base}`,
+);
+
+const { hits, failures } = sweep(repo, scope.revs);
 if (failures.length > 0) {
   console.error(`  FAIL ${failures.length} batch(es) did not run; this is NOT a clean result`);
   for (const f of failures.slice(0, 5)) console.error(`       ${f.reason}`);

@@ -36,6 +36,7 @@ import {
   type Actor,
   type AgentId,
   DEFAULT_DAEMON_PORT,
+  DEFAULT_MCP_AUTH_PORT,
   DefaultPolicy,
   type Device,
   type EndpointOffer,
@@ -60,6 +61,8 @@ import { Filesystem } from "./filesystem/index.ts";
 import { Gateway, GatewayEvents, type VoiceHandler } from "./gateway/index.ts";
 import { homeIdFor } from "./home-id.ts";
 import { HostRegistry } from "./hosts.ts";
+import { McpAuthSubsystem } from "./mcpauth/index.ts";
+import type { VaultBackend } from "./mcpauth/types.ts";
 import { DaemonModelAccess } from "./model-broker/index.ts";
 import { ContainerBackend, HostProvisioner, KNOWN_RUNTIMES, LocalBackend } from "./provisioner/index.ts";
 import { Scheduler } from "./routines/index.ts";
@@ -234,6 +237,17 @@ export interface OmpdConfig {
    */
   containerImage: string;
   /**
+   * Loopback port the MCP auth broker listens on, or 0 to leave it off.
+   *
+   * Fixed rather than OS-assigned, and that is the whole requirement. The URL
+   * is written into OMP's MCP config file, which is read by sessions this
+   * daemon did not start and will outlive; a port that moved on every restart
+   * would point every one of those entries at nothing. If the port is taken,
+   * the daemon says so and refuses rather than binding elsewhere, because
+   * binding elsewhere silently breaks every config entry already written.
+   */
+  mcpAuthPort: number;
+  /**
    * Provision container hosts with scoped access to one model, through the
    * daemon's own broker.
    *
@@ -305,6 +319,7 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   fsRoots: [],
   containerRuntime: "",
   containerImage: "",
+  mcpAuthPort: DEFAULT_MCP_AUTH_PORT,
   containerModelAccess: true,
   containerModel: "",
   containerModelBrokerPort: 7788,
@@ -333,6 +348,12 @@ export interface OmpdOptions {
   intentPeer?: IntentPeer;
   /** Delegate poll cadence for `intentPeer`; defaults to the drainer cadence. */
   intentPollIntervalMs?: number;
+  /**
+   * MCP auth vault backend seam, so a test never writes an item into the
+   * operator's real login keychain. The daemon probes for the strongest
+   * available backend when this is absent, which is what production does.
+   */
+  mcpAuthVault?: VaultBackend;
   /** Power-assertion seam, so a test never spawns a real `caffeinate`. */
   spawnAwake?: (command: string[]) => AwakeProcess;
   /** Skips speech-engine probing, which shells out. */
@@ -497,6 +518,15 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
     if (!image.ok) throw new Error(`${path}: containerImage is not usable: ${image.reason}`);
     merged.containerImage = image.ref;
   }
+  if (!Number.isInteger(merged.mcpAuthPort) || merged.mcpAuthPort < 0 || merged.mcpAuthPort > 65_535) {
+    throw new Error(`${path}: mcpAuthPort must be an integer between 0 and 65535`);
+  }
+  if (merged.mcpAuthPort !== 0 && merged.mcpAuthPort === merged.port) {
+    // Two listeners cannot share a port, and the failure would arrive as an
+    // EADDRINUSE during start with nothing naming which of the two settings
+    // caused it.
+    throw new Error(`${path}: mcpAuthPort must differ from port, both are ${merged.port}`);
+  }
   if (typeof merged.containerModelAccess !== "boolean") {
     throw new Error(`${path}: containerModelAccess must be true or false, got ${String(merged.containerModelAccess)}`);
   }
@@ -615,6 +645,7 @@ export class Ompd {
   #tunnel: TunnelDaemon | undefined;
   #webViewBridge: WebViewBridge;
   #webViewMcpServer: WebViewMcpServer | undefined;
+  #mcpAuth: McpAuthSubsystem;
 
   #stt: SttEngine | undefined;
   #tts: TtsEngine | undefined;
@@ -829,6 +860,18 @@ export class Ompd {
     this.#tasks = new TaskManager({ store: this.#store, supervisor: this.#supervisor });
     this.#sessionIndex = new SessionIndex({ store: this.#store });
 
+    // Constructed here rather than in `start`, because opening the vault is
+    // what proves the master key is reachable, and a daemon that cannot read
+    // its own refresh tokens should say so while someone is still watching the
+    // console rather than at the first 401 hours later.
+    this.#mcpAuth = new McpAuthSubsystem({
+      home: this.#home,
+      port: this.#config.mcpAuthPort,
+      cwd: opts.repoRoot ?? process.cwd(),
+      ...(opts.mcpAuthVault === undefined ? {} : { vaultBackend: opts.mcpAuthVault }),
+      onLog: this.#onLog,
+    });
+
     this.#gateway = new Gateway({
       supervisor: this.#supervisor,
       store: this.#store,
@@ -853,6 +896,7 @@ export class Ompd {
       staticRoot: opts.staticRoot ?? defaultStaticRoot(),
       skills: { list: listSkillCatalog },
       connectors: { list: listConnectorCatalog },
+      mcpAuth: this.#mcpAuth,
       tasks: this.#tasks,
       syncConfig: {
         read: () => {
@@ -1159,6 +1203,12 @@ export class Ompd {
 
     this.#webViewMcpServer ??= startWebViewMcpServer(this.#webViewBridge);
 
+    // Before the gateway, deliberately. A session that connects the moment the
+    // gateway is up may already hold a brokered MCP entry from a previous run,
+    // and a listener that is not yet accepting reads to that session as a
+    // connector that is down rather than as a daemon that is still starting.
+    this.#mcpAuth.start();
+
     const bootstrap = this.#bootstrapLocalOperator();
     const port = await this.#gateway.listen();
     this.#boundPort = port;
@@ -1250,6 +1300,11 @@ export class Ompd {
       await this.#provisioner.close();
       this.#webViewMcpServer?.close();
       this.#webViewMcpServer = undefined;
+      // After the gateway, so a request still in flight can still be handed a
+      // token, and after the hosts, so a session being torn down does not lose
+      // its connector mid-sentence. The access tokens die with the process,
+      // which is the intent: only the refresh material is durable.
+      this.#mcpAuth.stop();
 
       // Retracted after the gateway is closed, never before: a file saying
       // "here" while the port is still accepting would be the wrong lie in the
