@@ -57,6 +57,13 @@ final class PairingUITests: XCTestCase {
         }
     }
 
+    private func optionalInput(_ environmentKey: String, fileKey: String) -> String? {
+        let environment = ProcessInfo.processInfo.environment
+        if let direct = environment[environmentKey], !direct.isEmpty { return direct }
+        guard let path = environment[fileKey], !path.isEmpty else { return nil }
+        return try? String(contentsOfFile: path, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func testFreshInstallPairsAndReachesConsole() throws {
         guard let endpoint = requiredInput("OMPD_TEST_ENDPOINT", fileKey: "OMPD_TEST_ENDPOINT_FILE") else {
             return
@@ -68,7 +75,9 @@ final class PairingUITests: XCTestCase {
             return
         }
         let environment = ProcessInfo.processInfo.environment
-        guard let nonce = environment["OMPD_TEST_NONCE"], !nonce.isEmpty else {
+        let layoutOnly = ProcessInfo.processInfo.environment["OMPD_TEST_LAYOUT_ONLY"] == "YES"
+        let nonce = ProcessInfo.processInfo.environment["OMPD_TEST_NONCE"] ?? ""
+        if !layoutOnly && nonce.isEmpty {
             XCTFail("OMPD_TEST_NONCE is not set in the test runner environment")
             return
         }
@@ -143,6 +152,42 @@ final class PairingUITests: XCTestCase {
         XCTAssertTrue(fleet.waitForExistence(timeout: 5), "session fleet did not appear after pairing")
         XCTAssertTrue(app.staticTexts["fleet-count"].exists, "session fleet count did not appear after pairing")
         let fleetFrame = XCTAttachment(screenshot: app.screenshot())
+
+        if let routineID = optionalInput("OMPD_TEST_ROUTINE_ID", fileKey: "OMPD_TEST_ROUTINE_ID_FILE"),
+           let runID = optionalInput("OMPD_TEST_RUN_ID", fileKey: "OMPD_TEST_RUN_ID_FILE"),
+           let firstAction = optionalInput("OMPD_TEST_FIRST_ACTION_ID", fileKey: "OMPD_TEST_FIRST_ACTION_ID_FILE"),
+           let secondAction = optionalInput("OMPD_TEST_SECOND_ACTION_ID", fileKey: "OMPD_TEST_SECOND_ACTION_ID_FILE") {
+            let menu = app.buttons["open-menu"]
+            XCTAssertTrue(menu.waitForExistence(timeout: 10))
+            menu.tap()
+            let routines = app.buttons["menu-routines"]
+            XCTAssertTrue(routines.waitForExistence(timeout: 5))
+            routines.tap()
+            XCTAssertTrue(app.otherElements["routine-\(routineID)"].waitForExistence(timeout: 15))
+            let toggle = app.buttons["run-\(runID)-toggle"]
+            XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+            toggle.tap()
+            let count = app.staticTexts["run-\(runID)-sessions"]
+            XCTAssertTrue(count.waitForExistence(timeout: 5))
+            XCTAssertTrue(count.label.contains("2 linked sessions"))
+            for actionID in [firstAction, secondAction] {
+                let open = app.buttons["run-\(runID)-action-\(actionID)-open"]
+                XCTAssertTrue(open.waitForExistence(timeout: 10))
+                XCTAssertTrue(open.isHittable)
+                open.tap()
+                XCTAssertTrue(app.otherElements["session"].waitForExistence(timeout: 10))
+                let back = app.buttons["session-back"]
+                XCTAssertTrue(back.waitForExistence(timeout: 5))
+                back.tap()
+                XCTAssertTrue(app.otherElements["routines-screen"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.buttons["run-\(runID)-toggle"].exists)
+            }
+            let proofFrame = XCTAttachment(screenshot: app.screenshot())
+            proofFrame.name = "scratch-routine-run-history-after-session-links"
+            proofFrame.lifetime = .keepAlways
+            add(proofFrame)
+            return
+        }
         fleetFrame.name = "scratch-fleet-before-open"
         fleetFrame.lifetime = .keepAlways
         add(fleetFrame)
@@ -159,7 +204,6 @@ final class PairingUITests: XCTestCase {
         let idleSend = app.descendants(matching: .any)["composer-send"]
         XCTAssertTrue(idleSend.waitForExistence(timeout: 20), "settled session did not render composer-send before typing")
 
-        let layoutOnly = ProcessInfo.processInfo.environment["OMPD_TEST_LAYOUT_ONLY"] == "YES"
         let prompt = layoutOnly ? "Proof" : "Wait six seconds, then reply: \(nonce)"
         let userRows = app.otherElements.matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "entry-user")
