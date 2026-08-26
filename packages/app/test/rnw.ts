@@ -219,11 +219,16 @@ mock.module("react-native-vision-camera", () => ({
   useCodeScanner: (config: MockCodeScanner) => config,
 }));
 
-// Renders nothing and answers nothing: `WebViewDriver` owns every reply
-// through its own ref handle, so a stub that pretended to navigate would be
-// inventing behaviour no test is entitled to assert.
+// The native module cannot load under Bun. The stub exposes the requested
+// source so a regression test can hold the URL contract without pretending to
+// load a page.
 const webView: Record<string, unknown> = {};
-webView.WebView = ({ children }: SvgProps) => children ?? null;
+webView.WebView = ({ children, source }: SvgProps & { source?: { html?: string; uri?: string } }) =>
+  createElement(
+    "div",
+    { "data-testid": "mock-webview", "data-source-html": source?.html, "data-source-uri": source?.uri },
+    children,
+  );
 webView.default = webView.WebView;
 mock.module("react-native-webview", () => webView);
 
