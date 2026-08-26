@@ -205,7 +205,7 @@ export const WebViewDriver = forwardRef<WebViewDriverHandle, WebViewDriverProps>
     <View ref={containerRef} style={props.style ?? { flex: 1 }}>
       <WebView<object>
         ref={webViewRef}
-        source={{ uri: props.initialUrl ?? "about:blank" }}
+        source={props.initialUrl === undefined ? { html: "" } : { uri: props.initialUrl }}
         onMessage={onMessage}
         onNavigationStateChange={onNavigationStateChange}
         // A non-persistent data store, which is what makes the "fresh sandbox"
