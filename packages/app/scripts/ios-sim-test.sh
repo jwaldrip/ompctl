@@ -98,6 +98,21 @@ if ! xcrun simctl list devices | grep -F "$DEVICE_ID" | grep -q Booted; then
   xcrun simctl bootstatus "$DEVICE_ID" -b
 fi
 
+# A fresh simulator can offer to save the direct-pairing bearer as a password.
+# That iOS sheet sits above the app and makes every fleet or routine control
+# correctly non-hittable, which reads like a product layout failure unless the
+# harness owns it before the first launch. This is the real preference the
+# simulator reads; do not replace it with plausible Safari/Preferences domains.
+# `defaults write` returning 0 proves nothing, so read back and refuse to run
+# under a device whose state the proof did not actually control.
+xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.WebUI AutoFillPasswords -bool false
+AUTOFILL_PASSWORDS="$(xcrun simctl spawn "$DEVICE_ID" defaults read com.apple.WebUI AutoFillPasswords)"
+if [[ "$AUTOFILL_PASSWORDS" != "0" ]]; then
+  echo "AutoFillPasswords read back '$AUTOFILL_PASSWORDS', expected 0; refusing simulator proof" >&2
+  exit 1
+fi
+echo "AutoFillPasswords=$AUTOFILL_PASSWORDS"
+
 if [[ ! -d Pods ]]; then
   if command -v bundle >/dev/null 2>&1 && [[ -f ../Gemfile ]]; then
     (cd .. && bundle install --quiet && bundle exec pod install)
