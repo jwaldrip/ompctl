@@ -20,6 +20,14 @@
     <UseExperimentalNuget>true</UseExperimentalNuget>
 
     <WindowsAppSDKVerifyTransitiveDependencies>false</WindowsAppSDKVerifyTransitiveDependencies>
+    <!--
+      WindowsAppSDK 1.8 (pulled in transitively from the runner image's newer
+      WASDK) adds a C#/csproj-only version check whose Error fires against the
+      UWP-TargetFramework Microsoft.ReactNative.Managed.csproj that RNW 0.81
+      ships. RNW 0.81 never had this check, so disable it rather than retarget
+      the framework project.
+    -->
+    <WindowsAppSDKVerifyCsWinRtVersions>false</WindowsAppSDKVerifyCsWinRtVersions>
     <RunCodegenWindows>false</RunCodegenWindows>
     <ReactExperimentalFeaturesSet>true</ReactExperimentalFeaturesSet>
   </PropertyGroup>
