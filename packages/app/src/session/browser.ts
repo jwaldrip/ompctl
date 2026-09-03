@@ -201,6 +201,10 @@ export type BrowserAction =
 export function browserReduce(state: BrowserState, action: BrowserAction): BrowserState {
   switch (action.t) {
     case "load":
+      // The same rows by identity are not a change: a caller re-deriving an
+      // array that held still must not rebuild the list's world, which is how
+      // a frame that touched no session re-rendered a whole mounted window.
+      if (action.sessions === state.sessions) return state;
       return { ...state, sessions: action.sessions };
 
     case "sort": {

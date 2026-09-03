@@ -20,20 +20,39 @@
 
 import type {
   Agent,
+  AgentConfigOption,
   AgentId,
   ApprovalChoice,
   ApprovalScope,
   ClientFrame,
+  CloneId,
   CollabSignalFrame,
   CollabSignalInput,
   CollabVoiceFrame,
   CollabVoiceNoteFrame,
   CollabVoiceNoteInput,
   CollabVoiceParticipant,
+  ConnectorSummary,
+  FsListing,
   PlanReviewChoice,
+  PromptImage,
+  RemoteRoutine,
+  RoutineDeleteResult,
+  Run,
   ServerFrame,
+  SessionDeleteResult,
+  SessionHistoryEntry,
+  SessionQuery,
+  SessionSummary,
+  SkillSummary,
+  SyncSettings,
+  Task,
+  TranscriptTailMessage,
+  TuiActivityKind,
+  TuiSteerDelivery,
   WebViewAction,
   WebViewActionResult,
+  WireHostSpec,
 } from "./contracts.ts";
 
 // ---------------------------------------------------------------------------
@@ -129,6 +148,95 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   tui_register: false,
   tui_acp: false,
   tui_acp_ready: false,
+  // Same reasoning as `prompt`: a steered session prompt that never left is
+  // an instruction that silently did not happen.
+  session_prompt: true,
+  // Emitted by the terminal bridge, never by this client. Losing one here is
+  // not a user instruction.
+  tui_activity: false,
+  // Re-sent from the remembered query on the next `hello`, exactly like
+  // `attach`: the answer is a snapshot this client asked for, not an
+  // instruction that silently did not happen.
+  sessions: false,
+  // One-shot instructions, never replayed: a takeover or resume that never
+  // left is an operator action that silently did not happen, the same
+  // failure class as a lost `prompt`, and the operator must hear about it
+  // rather than watch a session that will never open.
+  session_takeover: true,
+  session_resume: true,
+  // The same one-shot class as `session_resume`: an open that never left
+  // leaves the operator watching a row that will never fill, and a leave
+  // that never left leaves the daemon co-driving a session they believe
+  // they walked away from.
+  collab_open: true,
+  collab_leave: true,
+  // Answers from the terminal bridge, never emitted by this app-facing
+  // client, exactly like `tui_activity`.
+  tui_collab_opened: false,
+  tui_collab_error: false,
+  tui_collab_closed: false,
+  // Irreversible and never replayed. A delete that never left is an
+  // operator action that silently did not happen, and the operator must
+  // hear that rather than believe a transcript is gone; re-sending it on a
+  // reconnect would be worse, because by then they may have decided not to.
+  session_delete: true,
+  // Same failure class as the one-shot session frames, with more at stake:
+  // an invite that never left is a credential the operator believes they
+  // handed over and did not, and the new device's user is left scanning a
+  // code that was never minted.
+  device_invite: true,
+  // Gestures, every one of them, and none is replayed: a tap on a directory
+  // that silently went nowhere leaves an operator watching a spinner, and a
+  // start or a clone that never left is an action they will believe happened.
+  fs_list: true,
+  session_create: true,
+  repo_clone: true,
+  // One-shot too, but a lost tail is not an instruction that silently did
+  // not happen: nothing on the machine changes, and the surface that asked
+  // asks again the next time it opens. Reporting it would put an error in
+  // front of an operator whose only remedy is the reconnect already running.
+  session_tail: false,
+  session_history: false,
+  // A snapshot ask, same class as `session_tail`: nothing on the machine
+  // changes, and the surface that asked asks again the next time it opens.
+  settings_read: false,
+  agent_config_read: false,
+  // A lost write is an instruction that silently did not happen: the
+  // operator believes the machine now runs under a different policy and it
+  // does not, which is the same failure class as a lost `decide`.
+  settings_write: true,
+  // A lost write is an instruction that silently did not happen: the
+  // operator believes the agent now runs under a different mode and it does
+  // not, so the next turn runs with permissions they think they changed.
+  // Same failure class as a lost `decide`.
+  agent_config_write: true,
+  // A snapshot ask, same class as `settings_read`; the three that follow are
+  // instructions that silently did not happen. A lost write leaves an
+  // operator believing a routine is armed, a lost run leaves them waiting on
+  // work that never started, and a lost rotate leaves a secret they think
+  // they replaced still live at the webhook.
+  routine_write: true,
+  routine_run: true,
+  routine_secret_rotate: true,
+  routines_read: false,
+  // Irreversible and never replayed, exactly `session_delete`'s class: a
+  // delete that never left leaves an operator believing a routine is gone
+  // while its schedule still fires; re-sending after they may have changed
+  // their mind would be worse.
+  routine_delete: true,
+  // Snapshot asks, same class as `settings_read`: nothing on the machine
+  // changes, and the Cowork surface polls on an interval and re-asks on every
+  // reconnect, so reporting the loss would only echo the reconnect.
+  skills_read: false,
+  connectors_read: false,
+  tasks_read: false,
+  // Instructions that silently did not happen: a lost task start or cancel
+  // leaves an operator watching a roster that never moves, and a lost agent
+  // create leaves them waiting on a container that was never asked for.
+  // Same failure class as a lost `prompt`.
+  task_create: true,
+  task_cancel: true,
+  agent_create: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -138,9 +246,8 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
 export interface BackoffOptions {
   /** Delay before the first retry. */
   baseMs: number;
-  /** Ceiling. Growth stops here however long the outage runs. */
   maxMs: number;
-  /** Multiplier applied per consecutive failure. */
+
   factor: number;
   /**
    * Fraction of the delay given over to randomness, in `[0, 1]`. A delay lands
@@ -196,6 +303,13 @@ export interface AgentsEvent {
   agents: Agent[];
   /** Present only on the initial `hello` of a connection. */
   deviceId?: string;
+  /**
+   * The scopes the daemon says this device holds, carried the same way as
+   * `deviceId`: present only on the initial `hello`, and only when the
+   * daemon reports them. Undefined is an older daemon, never an empty
+   * grant, so a reader must treat it as unknown rather than none.
+   */
+  scopes?: string[];
 }
 
 export interface UpdateEvent {
@@ -224,6 +338,10 @@ export interface ClientErrorEvent {
   message: string;
   code?: string;
   agentId?: AgentId;
+  /** Correlates a failure with the session row it came from, for frames that name a session rather than an agent. */
+  sessionId?: string;
+  /** The machine key inside `code` when one exists (a `CollabRefusal` for collab frames), for wording from the refusal record. */
+  reason?: string;
 }
 
 /**
@@ -296,6 +414,210 @@ export interface CollabVoiceHistoryEvent {
   notes: CollabVoiceNoteFrame[];
 }
 
+/**
+ * The session index, answering `listSessions` or the replay of it after a
+ * reconnect. A snapshot, not a stream: each delivery replaces whatever the
+ * previous one showed, because the daemon rebuilds the index from disk on
+ * every request and nothing about an old row survives a new answer.
+ */
+export interface SessionsEvent {
+  sessions: SessionSummary[];
+}
+
+/**
+ * The daemon opened a session this client asked to open -- by takeover or
+ * by resume, including the idempotent answer for one already held. Carries
+ * no agent record on purpose: the `agents` event (or `hello`) delivers the
+ * roster, and a second copy here would be a second thing to keep in sync.
+ */
+export interface SessionOpenedEvent {
+  sessionId: string;
+  agentId: AgentId;
+}
+/**
+ * A `collab_open` answered: the daemon joined the room the session's host
+ * shares and now presents it as `agentId`. From here the session is an
+ * ordinary agent -- attach for the transcript, prompt to steer. `readOnly`
+ * says the daemon's link is view-strength, so steering will be refused no
+ * matter what scope this device holds.
+ */
+export interface CollabOpenedEvent {
+  sessionId: string;
+  agentId: AgentId;
+  readOnly: boolean;
+}
+
+/**
+ * What a `deleteSessions` did, one result per id asked for. Delivered to the
+ * socket that asked and nowhere else; the fleet's own refresh arrives
+ * separately as a `sessions` snapshot the daemon's watcher pushes when the
+ * files go away, so a surface listening only to this event learns the
+ * outcome, and one listening only to the index learns the new world.
+ */
+export interface SessionsDeletedEvent {
+  results: SessionDeleteResult[];
+}
+
+/**
+ * A credential minted by this device's own `inviteDevice`, answering exactly
+ * the socket that asked. The token is the one-time view: nothing downstream
+ * of this event retains it unless the operator chooses to show or spend it.
+ */
+export interface DeviceInvitedEvent {
+  token: string;
+  name: string;
+  scopes: string[];
+}
+
+/**
+ * Turn progress from a live terminal session, forwarded by the daemon because
+ * this client asked for the session index. Not resumable and not sequenced:
+ * a `turn_start` missed during a drop is superseded by whatever the index and
+ * the next activity frame say when the socket comes back, so the client treats
+ * these as hints about a row it is watching, never as a transcript.
+ */
+export interface TuiActivityEvent {
+  sessionId: string;
+  kind: TuiActivityKind;
+  text?: string;
+}
+
+/**
+ * One directory, as the daemon reads it right now.
+ *
+ * A snapshot answering a gesture, never state this client maintains: the
+ * operator tapped a folder and this is what was in it. `bounded` says the
+ * daemon returned a page rather than the whole directory, and a view that
+ * dropped that would be showing a truncated listing as a complete one.
+ */
+export interface FsListingEvent extends FsListing {}
+
+/** One line of a clone's progress, correlated by `cloneId`. */
+export interface CloneProgressEvent {
+  cloneId: CloneId;
+  line: string;
+}
+
+/** A clone finished and `path` now exists. Failures arrive as `error`, like every other refusal. */
+export interface CloneDoneEvent {
+  cloneId: CloneId;
+  path: string;
+}
+
+/**
+ * One page of a session's transcript, answering `sessionTail`. Oldest first,
+ * so a view appends live `tui_activity` below it without reordering.
+ * `truncated` says the page is not the whole transcript, which is a
+ * rendering hint and nothing more.
+ *
+ * `nextCursor` is the offset to ask from for the next older page, or null at
+ * the start of the file. An empty page with a non-null cursor is a real
+ * answer, not an end: a long run of tool traffic says nothing, so a view
+ * asks on rather than stopping. `cursor` is the offset this page was read
+ * from, absent when the ask carried none, which is how a view tells a first
+ * page from an older one and drops a page answering an ask it has replaced.
+ */
+export interface SessionTailEvent {
+  sessionId: string;
+  messages: TranscriptTailMessage[];
+  truncated: boolean;
+  nextCursor: number | null;
+  cursor?: number;
+}
+
+/** One structured page of durable session history. */
+export interface SessionHistoryEvent {
+  agentId: AgentId;
+  sessionId: string;
+  entries: SessionHistoryEntry[];
+  nextBefore: number | null;
+}
+
+/**
+ * The daemon's settings as it holds them now, answering `readSettings` or
+ * `writeSettings`. Confirmation rather than echo: after a write it carries
+ * what the daemon read back from the store that persists.
+ */
+export interface SettingsEvent {
+  settings: SyncSettings;
+}
+
+/**
+ * Every routine the daemon holds plus the runs recorded against them,
+ * answering `readRoutines`. A snapshot ask, so a surface renders the schedule
+ * and its history together rather than stitching two frames.
+ */
+export interface RoutinesEvent {
+  routines: RemoteRoutine[];
+  runs: Run[];
+}
+
+/** One routine run recorded, carrying every action's outcome. */
+export interface RoutineRanEvent {
+  run: Run;
+}
+
+/**
+ * A routine's webhook secret, freshly minted by `rotateRoutineSecret`. Shown
+ * once: the daemon keeps only what it needs to verify a caller.
+ */
+export interface RoutineSecretEvent {
+  routineId: string;
+  secret: string;
+}
+
+/**
+ * What a `deleteRoutines` did, one result per id asked for. Delivered to the
+ * socket that asked; the refreshed catalogue arrives separately as a
+ * `routines` snapshot, so a surface listening only to this event learns the
+ * refusal without waiting on a refresh it may never get.
+ */
+export interface RoutinesDeletedEvent {
+  results: RoutineDeleteResult[];
+}
+
+/**
+ * One agent's session config as the daemon holds it now, answering
+ * `readAgentConfig` or `writeAgentConfig`. Confirmation rather than echo:
+ * after a write it carries what the daemon read back from the session, so a
+ * surface renders the mode the agent actually runs under.
+ */
+export interface AgentConfigEvent {
+  agentId: AgentId;
+  configOptions: AgentConfigOption[];
+}
+
+/**
+ * The skills or connectors catalogue answering `readSkills`/`readConnectors`,
+ * delivered only to the client that asked. Wire-safe by construction: the
+ * daemon reshapes before sending, so a connector's raw config never rides in.
+ */
+export interface SkillsEvent {
+  skills: SkillSummary[];
+}
+
+export interface ConnectorsEvent {
+  connectors: ConnectorSummary[];
+}
+
+/** The task roster answering `readTasks`. A snapshot, not a push: it says what a poll saw. */
+export interface TasksEvent {
+  tasks: Task[];
+}
+
+/**
+ * One task as the daemon holds it now, answering `createTask` or
+ * `cancelTask`. Confirmation rather than echo: it carries what the daemon
+ * created or cancelled, not what this client asked for.
+ */
+export interface TaskEvent {
+  task: Task;
+}
+
+/** The agent a `createAgent` made, delivered only to the client that asked. */
+export interface AgentCreatedEvent {
+  agent: Agent;
+}
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -310,8 +632,30 @@ export interface ClientEventMap {
   webview_action: WebViewActionEvent;
   room_participants: RoomParticipantsEvent;
   room_signal: RoomSignalEvent;
+  tui_activity: TuiActivityEvent;
   collab_voice: CollabVoiceEvent;
   collab_voice_history: CollabVoiceHistoryEvent;
+  sessions: SessionsEvent;
+  session_opened: SessionOpenedEvent;
+  collab_opened: CollabOpenedEvent;
+  sessions_deleted: SessionsDeletedEvent;
+  device_invited: DeviceInvitedEvent;
+  skills: SkillsEvent;
+  connectors: ConnectorsEvent;
+  tasks: TasksEvent;
+  task: TaskEvent;
+  agent_created: AgentCreatedEvent;
+  fs_listing: FsListingEvent;
+  clone_progress: CloneProgressEvent;
+  clone_done: CloneDoneEvent;
+  settings: SettingsEvent;
+  routines: RoutinesEvent;
+  routine_ran: RoutineRanEvent;
+  routines_deleted: RoutinesDeletedEvent;
+  routine_secret: RoutineSecretEvent;
+  session_tail: SessionTailEvent;
+  session_history: SessionHistoryEvent;
+  agent_config: AgentConfigEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -381,6 +725,15 @@ export class OmpdClient {
   private readonly webviews = new Set<AgentId>();
   /** Rooms this client must rejoin after a socket reconnect. */
   private readonly rooms = new Set<string>();
+  /**
+   * The last session query asked for, replayed after a reconnect exactly like
+   * an attachment: a phone that listed sessions, dropped, and came back must
+   * hold a current index without knowing it reconnected. `askedSessions`
+   * distinguishes "never asked" from a real `listSessions()` with no query,
+   * which must still be replayed.
+   */
+  private askedSessions = false;
+  private sessionQuery: SessionQuery | undefined;
 
   private socket: SocketLike | null = null;
   /** Invalidates handlers belonging to a socket we have already abandoned. */
@@ -517,7 +870,13 @@ export class OmpdClient {
     this.send({ t: "webview_result", agentId, requestId, result });
   }
 
-  prompt(agentId: AgentId, text: string, images?: string[]): void {
+  /**
+   * Send a prompt, optionally with images. The wire budgets in
+   * `parsePromptImages` are enforced again by the daemon, so this method
+   * trusting its caller is not the boundary; it is a convenience that keeps
+   * the empty-images case byte-identical to the frame every older peer sends.
+   */
+  prompt(agentId: AgentId, text: string, images?: PromptImage[]): void {
     const frame: ClientFrame =
       images && images.length > 0 ? { t: "prompt", agentId, text, images } : { t: "prompt", agentId, text };
     this.send(frame);
@@ -525,6 +884,31 @@ export class OmpdClient {
 
   cancel(agentId: AgentId): void {
     this.send({ t: "cancel", agentId });
+  }
+
+  /**
+   * Stream one chunk of the operator's speech: base64 16kHz mono PCM16, the
+   * wire format the daemon's voice bridge decodes. One utterance is many
+   * chunks followed by one `endAudio`, and the daemon answers the end with
+   * a `transcript` frame, never a return value.
+   *
+   * Not remembered across a reconnect and not a visible loss when the socket
+   * is down: an utterance is live audio rather than an instruction, and the
+   * daemon drops its buffers with the socket they arrived on. The caller
+   * that owns the microphone hears the disconnect and ends the utterance
+   * itself.
+   */
+  sendAudio(agentId: AgentId, pcm: string): void {
+    this.send({ t: "audio", agentId, pcm });
+  }
+
+  /**
+   * Finish one utterance. The daemon transcribes what it buffered and sends
+   * the text back as a `transcript` frame; the prompt it becomes is the
+   * daemon's own authorization decision, not this method's.
+   */
+  endAudio(agentId: AgentId): void {
+    this.send({ t: "audio_end", agentId });
   }
 
   decide(agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope): void {
@@ -560,6 +944,372 @@ export class OmpdClient {
     this.send({ t: "plan_decide", agentId, requestId, choice });
   }
 
+  /**
+   * Ask for the session index. The answer arrives as the `sessions` event,
+   * never a return value: on a phone behind a hub relay the request and the
+   * answer both ride the sealed socket, because the hub tunnels exactly one
+   * request shape today, a webhook fire, and no tunnel is wired for a
+   * `GET /v1/sessions` to fall back on. Re-issued automatically
+   * after a reconnect, like an attachment.
+   */
+  listSessions(query?: SessionQuery): void {
+    this.askedSessions = true;
+    this.sessionQuery = query;
+    this.sendSessionsQuery();
+  }
+
+  /**
+   * Ask the daemon to take a `live-tui` session over. `cwd` and `pid` must
+   * be the row's own values as the index delivered them, because the daemon
+   * verifies the echo and refuses a mismatch. The answer arrives as the
+   * `session_opened` event, or an `error` naming the cause.
+   *
+   * One-shot, unlike `listSessions`: never re-issued after a reconnect, and
+   * deliberately so. A takeover or resume that raced a drop either took (the
+   * daemon answers on the next socket once the index shows it held, which
+   * the idempotent answer covers) or did not (the operator retaps, which is
+   * the only honest retry for an action with side effects this large).
+   * Replaying it blind would take over a session the operator may have
+   * decided, watching a spinner, not to hand over.
+   */
+  takeOverSession(sessionId: string, cwd: string, pid: number): void {
+    this.send({ t: "session_takeover", sessionId, cwd, pid });
+  }
+
+  /**
+   * Mint a credential for one new device over this socket -- the sealed road
+   * a hub-relayed phone must take, because the hub carries no tunnel for the
+   * two HTTP pairing routes, and wiring one would mean handing it this
+   * device's bearer token to forward. The answer arrives
+   * as the `device_invited` event, or an `error` naming the refusal.
+   *
+   * One-shot, like `takeOverSession`, for a reason that admits no replay at
+   * all: a credential minted twice is two credentials. Resending after a
+   * reconnect would mint a second token nobody has been shown, which is not
+   * recovery, it is the leak one-shot semantics exist to prevent. If the
+   * first attempt never landed, the operator presses Generate again.
+   */
+  inviteDevice(name: string, scopes: string[]): void {
+    this.send({ t: "device_invite", name, scopes: [...scopes] });
+  }
+
+  /**
+   * Ask the daemon to resume a dormant session. The same one-shot contract
+   * as `takeOverSession`, and the same echo-and-verify rule for `cwd`.
+   */
+  resumeSession(sessionId: string, cwd: string): void {
+    this.send({ t: "session_resume", sessionId, cwd });
+  }
+  /**
+   * Co-drive a live terminal session: ask the daemon to join the collab
+   * room its host shares and present it as an ordinary agent. The answer
+   * arrives as `collab_opened`, or as an `error` whose code is
+   * `collab_refused` (with a `CollabRefusal` in `reason`) or
+   * `collab_unavailable` when the join failed on the wire. One-shot like
+   * `resumeSession`: the daemon-side guest outlives this socket, and
+   * re-asking after a reconnect answers with the same agentId.
+   */
+  openCollab(sessionId: string): void {
+    this.send({ t: "collab_open", sessionId });
+  }
+
+  /**
+   * Stop co-driving a session. The guest leaves the room and its agent row
+   * goes terminal. One-shot for the same reason `openCollab` is: a leave
+   * that never left means the daemon is still co-driving.
+   */
+  leaveCollab(sessionId: string): void {
+    this.send({ t: "collab_leave", sessionId });
+  }
+
+  /**
+   * Delete sessions: their transcripts, and everything the daemon persists
+   * about them. Irreversible, and requires manage scope. The answer arrives
+   * as the `sessions_deleted` event, one result per id, which is where a
+   * refusal (a live session, an unknown id) is reported.
+   *
+   * Takes a list because the daemon's frame does, and a caller with one
+   * session passes one id. One-shot with a visible loss, like every other
+   * instruction here, and never replayed: see `LOSS_IS_VISIBLE`.
+   *
+   * Copied rather than forwarded, matching `inviteDevice`: the caller's array
+   * must not be able to change what this client is about to put on the wire.
+   */
+  deleteSessions(sessionIds: readonly string[]): void {
+    this.send({ t: "session_delete", sessionIds: [...sessionIds] });
+  }
+
+  /**
+   * Ask for one page of a session's transcript: the newest turns, or the
+   * page older than `cursor` when an earlier answer handed one over. The
+   * answer arrives as the `session_tail` event, or an `error` naming the
+   * cause: `unknown_session` for an id this machine holds no file for.
+   *
+   * One-shot, deliberately unlike `listSessions`: a transcript page is a
+   * snapshot of a screen the operator is looking at, so the surface that
+   * wants one asks when it opens, and asks again when the operator reaches
+   * for older turns. Replaying it on every reconnect would re-read a file
+   * for a screen nobody may still be on, and the daemon's `tui_activity`
+   * stream already carries what changed since.
+   */
+  sessionTail(sessionId: string, limit?: number, cursor?: number): void {
+    const frame: ClientFrame = {
+      t: "session_tail",
+      sessionId,
+      ...(limit === undefined ? {} : { limit }),
+      ...(cursor === undefined ? {} : { cursor }),
+    };
+    this.send(frame);
+  }
+
+  /** Read one structured page of a root or subagent's durable transcript. */
+  sessionHistory(agentId: AgentId, sessionId: string, before?: number, limit?: number): void {
+    this.send({
+      t: "session_history",
+      agentId,
+      sessionId,
+      ...(before === undefined ? {} : { before }),
+      ...(limit === undefined ? {} : { limit }),
+    });
+  }
+
+  /**
+   * Ask what the daemon's two persisted settings hold. The answer arrives as
+   * the `settings` event, or an `error` naming the refusal.
+   *
+   * One-shot, like `sessionTail` and for the same reason: a snapshot of a
+   * screen the operator is looking at, asked when that screen opens, never
+   * replayed onto a screen nobody may still be on.
+   */
+  readSettings(): void {
+    this.send({ t: "settings_read" });
+  }
+
+  /**
+   * Change both persisted settings. The answer arrives as the `settings`
+   * event carrying what the daemon read back after applying, so a surface
+   * renders the confirmed state rather than its own request; a scope or
+   * validation refusal arrives as an `error` naming it.
+   *
+   * One-shot, like the other instructions: not replayed after a reconnect,
+   * because an operator who retaps is informed and one who waits on a
+   * replayed policy change is not.
+   */
+  writeSettings(settings: SyncSettings): void {
+    this.send({ t: "settings_write", policyMode: settings.policyMode, keepAwake: settings.keepAwake });
+  }
+
+  /** Read routines and their recent per-action outcomes over the sealed socket. */
+  readRoutines(): void {
+    this.send({ t: "routines_read" });
+  }
+
+  /** Replace one routine definition. The daemon supplies local execution hosts. */
+  writeRoutine(routine: RemoteRoutine): void {
+    this.send({ t: "routine_write", routine });
+  }
+
+  /** Run one routine now. The completed per-action outcomes arrive as `routine_ran`. */
+  runRoutine(routineId: string): void {
+    this.send({ t: "routine_run", routineId });
+  }
+
+  /** Rotate a webhook secret. The plaintext arrives once as `routine_secret`. */
+  rotateRoutineSecret(routineId: string): void {
+    this.send({ t: "routine_secret_rotate", routineId });
+  }
+
+  /**
+   * Delete routines for good. Per-id outcomes arrive as `routines_deleted`;
+   * a refusal names itself, so a surface can say what to do next rather than
+   * that it simply cannot.
+   */
+  deleteRoutines(routineIds: readonly string[]): void {
+    this.send({ t: "routine_delete", routineIds: [...routineIds] });
+  }
+
+  /**
+   * Ask for the skills catalogue scoped to `cwd`, or to the agent's cwd when
+   * `agentId` is given instead (`cwd` wins when both are). The answer arrives
+   * as the `skills` event, or an `error` naming the refusal.
+   *
+   * A snapshot ask, same class as `readSettings`: the Cowork surface re-asks
+   * on its poll and after every reconnect, so it is never replayed.
+   */
+  readSkills(cwd?: string, agentId?: string): void {
+    this.send({
+      t: "skills_read",
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(agentId === undefined ? {} : { agentId }),
+    });
+  }
+
+  /** The connectors catalogue, scoped exactly like `readSkills`. */
+  readConnectors(cwd?: string, agentId?: string): void {
+    this.send({
+      t: "connectors_read",
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(agentId === undefined ? {} : { agentId }),
+    });
+  }
+
+  /** The task roster, optionally narrowed to one agent's tasks. */
+  readTasks(agentId?: string): void {
+    this.send({ t: "tasks_read", ...(agentId === undefined ? {} : { agentId }) });
+  }
+
+  /**
+   * Start one task: a named prompt against a session that already exists.
+   * The created task arrives as the `task` event; a scope or validation
+   * refusal arrives as an `error` naming it. One-shot like the other
+   * instructions: a replayed start would run the prompt twice.
+   */
+  createTask(input: {
+    title: string;
+    prompt: string;
+    agentId: AgentId;
+    skillName?: string;
+    labels?: Record<string, string>;
+  }): void {
+    this.send({
+      t: "task_create",
+      title: input.title,
+      prompt: input.prompt,
+      agentId: input.agentId,
+      ...(input.skillName === undefined ? {} : { skillName: input.skillName }),
+      ...(input.labels === undefined ? {} : { labels: input.labels }),
+    });
+  }
+
+  /**
+   * Cancel one task. The task as the daemon now holds it arrives as the
+   * `task` event; a refusal arrives as an `error` naming it.
+   */
+  cancelTask(taskId: string): void {
+    this.send({ t: "task_cancel", taskId });
+  }
+
+  /**
+   * Create an agent, host and all: the manage-scoped act a Cowork container
+   * start rides. The agent arrives as the `agent_created` event, so a caller
+   * renders confirmed state rather than its own request; a refusal arrives as
+   * an `error` naming it. One-shot, for the reason `createSession` is.
+   *
+   * `host` is a `WireHostSpec`: no `image`. A client naming one is refused by
+   * the daemon at both doors, so this is the type refusing it at compile time
+   * rather than letting a caller ship a frame that can only be a 400. Which
+   * image a container host runs is the daemon's own `containerImage` config.
+   */
+  createAgent(request: {
+    name: string;
+    cwd: string;
+    host?: WireHostSpec;
+    routineId?: string;
+    labels?: Record<string, string>;
+  }): void {
+    this.send({
+      t: "agent_create",
+      name: request.name,
+      cwd: request.cwd,
+      ...(request.host === undefined ? {} : { host: request.host }),
+      ...(request.routineId === undefined ? {} : { routineId: request.routineId }),
+      ...(request.labels === undefined ? {} : { labels: request.labels }),
+    });
+  }
+
+  /**
+   * Ask what config options one agent's session holds, the mode among them.
+   * The answer arrives as the `agent_config` event, or an `error` naming the
+   * refusal: `unknown_agent` for an id this daemon holds no row for,
+   * `no_session` for an agent with no live session behind it.
+   *
+   * One-shot, like `sessionTail` and for the same reason: a snapshot of a
+   * screen the operator is looking at, asked when that screen opens, never
+   * replayed onto a screen nobody may still be on.
+   */
+  readAgentConfig(agentId: AgentId): void {
+    this.send({ t: "agent_config_read", agentId });
+  }
+
+  /**
+   * Move one agent's session onto `modeId`. The answer arrives as the
+   * `agent_config` event carrying what the daemon read back from the session,
+   * so a surface renders the confirmed mode rather than its own request; a
+   * scope, shape, or unknown-mode refusal arrives as an `error` naming it.
+   *
+   * One-shot, like the other instructions: not replayed after a reconnect,
+   * because an operator who retaps is informed and one whose mode change is
+   * silently replayed later is not.
+   */
+  writeAgentConfig(agentId: AgentId, modeId: string): void {
+    this.send({ t: "agent_config_write", agentId, modeId });
+  }
+
+  /**
+   * Prompt a session a registered live TUI owns. The daemon answers with a
+   * `tui_unreachable` error when no connected TUI holds that session, so a
+   * dormant row in the index is an explicit refusal, never a silent drop.
+   * Images ride the steer as the same content blocks the agent prompt uses.
+   */
+  sessionPrompt(sessionId: string, text: string, deliverAs?: TuiSteerDelivery, images?: PromptImage[]): void {
+    const frame: ClientFrame =
+      deliverAs === undefined && (images === undefined || images.length === 0)
+        ? { t: "session_prompt", sessionId, text }
+        : {
+            t: "session_prompt",
+            sessionId,
+            text,
+            ...(deliverAs === undefined ? {} : { deliverAs }),
+            ...(images !== undefined && images.length > 0 ? { images } : {}),
+          };
+    this.send(frame);
+  }
+
+  /**
+   * Ask what is in one directory on the daemon's machine, or -- with no path
+   * -- for the roots it will answer about at all. The answer arrives as the
+   * `fs_listing` event.
+   *
+   * Never replayed after a reconnect, unlike `listSessions`. A listing is the
+   * answer to a tap, not state this client holds: the directory on screen
+   * does not go stale the way a live session index does, and a view that
+   * wants a fresh one after a drop asks for it, which is the only honest way
+   * to refresh something an operator may meanwhile have navigated away from.
+   */
+  listDirectory(path?: string): void {
+    const frame: ClientFrame = path === undefined ? { t: "fs_list" } : { t: "fs_list", path };
+    this.send(frame);
+  }
+
+  /**
+   * Start a new session at `cwd`. The answer is the same `session_opened`
+   * event a takeover or resume produces, so nothing downstream needs a second
+   * case to open what this created.
+   *
+   * One-shot, for the reason `takeOverSession` is: replaying it after a
+   * reconnect would start a second session at that directory, and the
+   * operator would have asked for one.
+   */
+  createSession(cwd: string, name?: string): void {
+    const frame: ClientFrame = name === undefined ? { t: "session_create", cwd } : { t: "session_create", cwd, name };
+    this.send(frame);
+  }
+
+  /**
+   * Clone `url` into a new directory under `parent`. Progress arrives as
+   * `clone_progress` events and completion as `clone_done`; a refusal, a bad
+   * url, or a failing git arrives as `error`.
+   *
+   * One-shot for the strongest version of the usual reason: a replayed clone
+   * would meet its own half-finished directory and be refused, and the
+   * operator would be reading a failure for work that actually succeeded.
+   */
+  cloneRepo(url: string, parent: string, name?: string): void {
+    const frame: ClientFrame =
+      name === undefined ? { t: "repo_clone", url, parent } : { t: "repo_clone", url, parent, name };
+    this.send(frame);
+  }
+
   // -- connection lifecycle -------------------------------------------------
 
   private openSocket(reason: string): void {
@@ -589,11 +1339,15 @@ export class OmpdClient {
       if (generation !== this.generation) return;
       this.handleRaw(message.data);
     };
-    socket.onerror = () => {
+    socket.onerror = info => {
       if (generation !== this.generation) return;
-      // A socket error is always followed by a close; let close drive recovery
-      // so the two paths cannot both schedule a reconnect.
-      this.emit("error", { message: "websocket error", code: "socket" });
+      // The report and the recovery are split on purpose: this says the link
+      // is failing right now, and the close that follows drives the reconnect
+      // so the two paths cannot both schedule one. Downstream, the notice this
+      // becomes carries the tunnel's own reason when it has one, and it is
+      // retired only by a later status of `connected`: a link that heals
+      // leaves no stale error behind, and one that does not stays on screen.
+      this.emit("error", { message: errorReason(info), code: "socket" });
     };
     socket.onclose = info => {
       if (generation !== this.generation) return;
@@ -768,6 +1522,11 @@ export class OmpdClient {
     this.send(frame);
   }
 
+  private sendSessionsQuery(): void {
+    const query = this.sessionQuery;
+    this.send(query === undefined ? { t: "sessions" } : { t: "sessions", query });
+  }
+
   private handleRaw(data: unknown): void {
     if (typeof data !== "string") {
       this.emit("error", { message: "binary frame ignored", code: "bad_frame" });
@@ -797,18 +1556,122 @@ export class OmpdClient {
         this.attempt = 0;
         this.authenticated = true;
         this.setStatus("connected", { reason: "hello" });
-        this.emit("agents", { agents: frame.agents, deviceId: frame.deviceId });
         // The whole point of the watermark. Every agent this client cares about
         // is reattached from exactly where its stream stopped.
+        this.emit("agents", { agents: frame.agents, deviceId: frame.deviceId, scopes: frame.scopes });
         for (const agentId of this.attached) this.sendAttach(agentId);
         // After the attachments, never before: the daemon refuses a
         // registration for an agent this socket has not attached to yet.
         for (const agentId of this.webviews) this.send({ t: "webview_register", agentId });
         for (const roomId of this.rooms) this.send({ t: "room_join", roomId });
+        // Last, like the rooms: the index is a snapshot asked for, not state
+        // the daemon holds about this socket, so there is no ordering
+        // constraint with the replays above -- only that a client which
+        // asked before the drop is not left holding a stale list after it.
+        if (this.askedSessions) this.sendSessionsQuery();
         return;
       }
       case "agents":
         this.emit("agents", { agents: frame.agents });
+        return;
+      case "sessions":
+        this.emit("sessions", { sessions: frame.sessions });
+        return;
+      case "session_opened":
+        this.emit("session_opened", { sessionId: frame.sessionId, agentId: frame.agentId });
+        return;
+      case "collab_opened":
+        this.emit("collab_opened", {
+          sessionId: frame.sessionId,
+          agentId: frame.agentId,
+          readOnly: frame.readOnly,
+        });
+        return;
+      case "sessions_deleted":
+        this.emit("sessions_deleted", { results: frame.results });
+        return;
+      case "device_invited":
+        this.emit("device_invited", { token: frame.token, name: frame.name, scopes: frame.scopes });
+        return;
+      case "fs_listing":
+        this.emit("fs_listing", {
+          path: frame.path,
+          parent: frame.parent,
+          roots: frame.roots,
+          entries: frame.entries,
+          bounded: frame.bounded,
+        });
+        return;
+      case "clone_progress":
+        this.emit("clone_progress", { cloneId: frame.cloneId, line: frame.line });
+        return;
+      case "clone_done":
+        this.emit("clone_done", { cloneId: frame.cloneId, path: frame.path });
+        return;
+      case "session_tail":
+        this.emit("session_tail", {
+          sessionId: frame.sessionId,
+          messages: frame.messages,
+          truncated: frame.truncated,
+          // An older daemon sends neither cursor field. Absent `nextCursor`
+          // has to read as "no older page reachable" rather than as zero,
+          // which would be an offset a client could ask from.
+          nextCursor: frame.nextCursor ?? null,
+          ...(frame.cursor === undefined ? {} : { cursor: frame.cursor }),
+        });
+        return;
+      case "session_history":
+        this.emit("session_history", {
+          agentId: frame.agentId,
+          sessionId: frame.sessionId,
+          entries: frame.entries,
+          nextBefore: frame.nextBefore,
+        });
+        return;
+      case "skills":
+        this.emit("skills", { skills: frame.skills });
+        return;
+      case "connectors":
+        this.emit("connectors", { connectors: frame.connectors });
+        return;
+      case "tasks":
+        this.emit("tasks", { tasks: frame.tasks });
+        return;
+      case "task":
+        this.emit("task", { task: frame.task });
+        return;
+      case "agent_created":
+        this.emit("agent_created", { agent: frame.agent });
+        return;
+      case "settings":
+        this.emit("settings", {
+          settings: { policyMode: frame.policyMode, keepAwake: frame.keepAwake },
+        });
+        return;
+      case "routines":
+        this.emit("routines", { routines: frame.routines, runs: frame.runs });
+        return;
+      case "routine_ran":
+        this.emit("routine_ran", { run: frame.run });
+        return;
+      case "routine_secret":
+        this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });
+        return;
+      case "routines_deleted":
+        this.emit("routines_deleted", { results: frame.results });
+        return;
+      case "agent_config":
+        this.emit("agent_config", {
+          agentId: frame.agentId,
+          configOptions: frame.configOptions,
+        });
+        return;
+      case "tui_activity":
+        this.emit("tui_activity", {
+          sessionId: frame.sessionId,
+          kind: frame.kind,
+          text: frame.text,
+        });
         return;
       case "update":
         this.handleUpdate(frame.agentId, frame.seq, frame.update);
@@ -849,7 +1712,13 @@ export class OmpdClient {
         // An error frame is a message about a request, not a transport
         // failure. Tearing down the socket here would turn "that prompt was
         // rejected" into "you are disconnected".
-        this.emit("error", { message: frame.message, code: frame.code, agentId: frame.agentId });
+        this.emit("error", {
+          message: frame.message,
+          code: frame.code,
+          agentId: frame.agentId,
+          sessionId: frame.sessionId,
+          reason: frame.reason,
+        });
         // Except when the daemon has stopped recognising us at all, which
         // wears the same code as a scope refusal. Asking settles which it is
         // without guessing from the message text.
@@ -1030,6 +1899,21 @@ export function agentsEndpoint(socketUrl: string): string | null {
   if (scheme === undefined || authority === undefined || authority.length === 0) return null;
   const secure = scheme === "wss" || scheme === "https";
   return `${secure ? "https" : "http"}://${authority}/v1/agents`;
+}
+
+/**
+ * What an `onerror` actually carries. The tunnel reports its failures as
+ * `{ message }` with a reason worth reading (a relay sequence gap, a refused
+ * handshake); a bare platform websocket reports an `Event` with nothing on
+ * it. Both must fit one notice, so the reason is the tunnel's message when
+ * there is one and the transport's name otherwise.
+ */
+function errorReason(info: unknown): string {
+  if (typeof info === "object" && info !== null && "message" in info) {
+    const message = (info as { message?: unknown }).message;
+    if (typeof message === "string" && message.length > 0) return message;
+  }
+  return "websocket error";
 }
 
 function describe(cause: unknown): string {

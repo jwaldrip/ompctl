@@ -44,8 +44,6 @@ function adb(): string {
  */
 async function internals(): Promise<{
   init(options: { argv: Record<string, unknown> }): Promise<void>;
-  installWorker(): Promise<void>;
-  uninstallWorker(): Promise<void>;
   cleanup(): Promise<void>;
   onTestStart(t: { title: string; fullName: string; status: string }): Promise<void>;
   onTestDone(t: { title: string; fullName: string; status: string }): Promise<void>;
@@ -98,6 +96,63 @@ function setupAdbReverse(serial: string): void {
   }
 }
 
+/**
+ * Stop iOS offering to save the pairing token as a password.
+ *
+ * The token field is `secureTextEntry`, and iOS AutoFill treats a masked field
+ * as a credential worth keeping: on submit it puts a system "Save Password?"
+ * sheet over the app. Detox cannot dismiss it, because system alerts live
+ * outside the app's element tree, so the run stalls on a screen the suite
+ * cannot see. The field is not the trigger and there is no app-side opt-out:
+ * `autoComplete`, `textContentType` (including `oneTimeCode`), and
+ * `passwordRules` were each measured against this flow and the sheet still
+ * appeared.
+ *
+ * What governs it is the device's own AutoFill switch, which
+ * Settings > General > AutoFill & Passwords writes as `AutoFillPasswords` in
+ * the `com.apple.WebUI` domain. That domain came off a preference diff taken
+ * either side of toggling the real switch, not from a guess: the plausible
+ * looking domains (`com.apple.Preferences`, `com.apple.Safari`) do not own the
+ * key, and writing them changes nothing.
+ *
+ * A physical iPhone or iPad needs the same switch turned off by hand once,
+ * since Detox cannot drive physical iOS and so never reaches this code.
+ */
+function disablePasswordAutoFill(): void {
+  const name = process.env.DETOX_SIM_TYPE ?? "iPad (A16)";
+  let udid = "";
+  try {
+    // Detox has booted the device by this point, so the booted list is what
+    // names the simulator this run is actually driving.
+    const listed = JSON.parse(execSync("xcrun simctl list devices booted -j", { encoding: "utf8" })) as {
+      devices: Record<string, { udid: string; name: string }[]>;
+    };
+    udid = Object.values(listed.devices).flat().find((device) => device.name === name)?.udid ?? "";
+  } catch (e) {
+    console.log(`  could not list booted simulators: ${(e as Error).message}`);
+    return;
+  }
+  if (udid === "") {
+    console.log(`  no booted simulator named ${name}: leaving AutoFill alone`);
+    return;
+  }
+  try {
+    execSync(`xcrun simctl spawn ${udid} defaults write com.apple.WebUI AutoFillPasswords -bool false`, {
+      encoding: "utf8",
+    });
+    // Read back rather than trust the write: `defaults` exits 0 on a domain it
+    // never persisted, which would leave the sheet armed while the log claimed
+    // it was handled.
+    const observed = execSync(`xcrun simctl spawn ${udid} defaults read com.apple.WebUI AutoFillPasswords`, {
+      encoding: "utf8",
+    }).trim();
+    if (observed === "0") console.log(`  password AutoFill off on ${name}`);
+    else console.log(`  password AutoFill still reads ${observed} on ${name}: the save sheet may interrupt this run`);
+  } catch (e) {
+    console.log(`  could not disable password AutoFill on ${name}: ${(e as Error).message}`);
+  }
+}
+
 BeforeAll({ timeout: 600_000 }, async () => {
   if (!NATIVE) return;
   const detox = await internals();
@@ -107,8 +162,13 @@ BeforeAll({ timeout: 600_000 }, async () => {
   // Before init, so the app finds the server the moment it first launches.
   const serial = process.env.DETOX_ADB_NAME;
   if (process.env.E2E_CLIENT === "android" && serial !== undefined) setupAdbReverse(serial);
+  // init installs a worker unless workerId is null. Installing another worker
+  // creates a second tester for the same session even though Detox stores only
+  // one, which breaks ownership of the app launch and ready handshake.
   await detox.init({ argv: { configuration: configuration(), loglevel: process.env.DETOX_LOGLEVEL ?? "warn" } });
-  await detox.installWorker();
+  // After init, because the write needs a booted device, and before the first
+  // scenario launches the app, which is where the sheet would appear.
+  if (process.env.E2E_CLIENT === "ios") disablePasswordAutoFill();
 });
 
 // Detox needs the test boundaries to attribute artifacts and to reset per-test
@@ -137,6 +197,6 @@ After(async function (message: ITestCaseHookParameter) {
 AfterAll({ timeout: 120_000 }, async () => {
   if (!NATIVE) return;
   const detox = await internals();
-  await detox.uninstallWorker();
+  // cleanup uninstalls the worker before closing the session server.
   await detox.cleanup();
 });

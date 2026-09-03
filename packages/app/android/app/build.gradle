@@ -43,10 +43,10 @@ react {
     cliFile = new File(resolvePackage("react-native"), "cli.js")
 
     /* Variants */
-    //   The list of variants to that are debuggable. For those we're going to
-    //   skip the bundling of the JS bundle and the assets. By default is just 'debug'.
-    //   If you add flavors like lite, prod, etc. you'll have to list your debuggableVariants.
-    // debuggableVariants = ["liteDebug", "prodDebug"]
+    // The debug APK is the real-device PATH artifact, so it must carry its JS
+    // bundle and launch without Metro. React Native omits bundle tasks for every
+    // name in this list, therefore no build variant is exempt from bundling.
+    debuggableVariants = []
 
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
@@ -133,7 +133,7 @@ android {
         }
         release {
             // Upload-key signing for Play Internal Testing. Values come from
-            // CI secrets / gradle.properties — never commit the keystore.
+            // CI secrets / gradle.properties, never commit the keystore.
             // Configuration is optional so debug/unit/instrumentation tasks
             // still configure without credentials; release tasks validate below.
             def storePath = System.getenv("OMPD_ANDROID_KEYSTORE_PATH") ?: project.findProperty("OMPD_ANDROID_KEYSTORE_PATH")

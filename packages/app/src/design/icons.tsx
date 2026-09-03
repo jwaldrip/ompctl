@@ -20,27 +20,35 @@
 
 import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import {
+  faAnglesRight,
   faArrowRightToBracket,
+  faBars,
   faBoxArchive,
   faBrain,
   faBuilding,
   faCheck,
   faChevronDown,
   faChevronLeft,
+  faChevronUp,
   faCircleNodes,
   faCircleQuestion,
   faCircleStop,
   faClockRotateLeft,
+  faCodeBranch,
   faCoins,
-  faDiagramProject,
+  faCopy,
+  faEllipsis,
   faFileLines,
   faFolder,
   faGaugeHigh,
   faGlobe,
   faHand,
   faLayerGroup,
+  faLink,
   faListCheck,
   faMagnifyingGlass,
+  faMicrophone,
+  faPaperclip,
   faPaperPlane,
   faPen,
   faPlay,
@@ -49,12 +57,15 @@ import {
   faPlus,
   faPuzzlePiece,
   faQrcode,
+  faRightLeft,
+  faRoute,
   faSignal,
-  faSlash,
+  faSliders,
   faStore,
   faTerminal,
   faTrashCan,
   faTriangleExclamation,
+  faVolumeHigh,
   faWandMagicSparkles,
   faWindowMaximize,
   faXmark,
@@ -85,7 +96,9 @@ export type GlyphName =
   | "cost"
   | "activity"
   | "commands"
+  | "config"
   | "chevron"
+  | "menu"
   | "link"
   | "bay"
   | "archive"
@@ -102,8 +115,23 @@ export type GlyphName =
   | "marketplace"
   | "warning"
   | "qrcode"
+  /** A symlink in a directory listing: an entry that is a pointer, not a place. */
+  | "symlink"
+  /** A directory that is the top of a git working tree. */
+  | "repo"
+  /** Walk up to the containing directory. */
+  | "up"
   | "browser"
-  | "unknown";
+  | "narration"
+  | "mic"
+  /**
+   * Something riding a prompt as an attachment, drawn as the paperclip every
+   * composer already teaches for the gesture. `attach` is this device joining
+   * a live session, which is a different verb entirely.
+   */
+  | "attachment"
+  | "unknown"
+  | "copy";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
@@ -115,7 +143,10 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // Pro's `fa-pen-line` is a pen over its rule. Free is the pen alone.
   edit: faPen,
   fetch: faGlobe,
-  move: faDiagramProject,
+  // A file that changed place, or changed name in place. Two arrows passing
+  // is the one shape here that means relocation and nothing else; a file with
+  // an arrow would share `read`'s outline in the same tool-call column.
+  move: faRightLeft,
   delete: faTrashCan,
   other: faCircleNodes,
   // Pro's `fa-paper-plane-top` is the upright send; free's is the classic tilt.
@@ -127,14 +158,33 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   back: faChevronLeft,
   unpair: faPlugCircleXmark,
   clearance: faHand,
-  plan: faListCheck,
+  // A plan is the route agreed before the work: ordered steps with a way
+  // through them. A checklist is what `tasks` means, items with a state, so
+  // the two never draw the same thing.
+  plan: faRoute,
   load: faGaugeHigh,
   cost: faCoins,
-  activity: faDiagramProject,
-  // Pro's `fa-slash-forward` is the literal command prefix; free's slash reads
-  // the same at this size.
-  commands: faSlash,
+  // Something is still arriving. Three dots is what every interface uses for
+  // that, and it is the only candidate that survives the nine points the
+  // streaming marker actually renders at.
+  activity: faEllipsis,
+  // A slash command, invoked by typing it at a prompt. Pro's
+  // `fa-slash-forward` is the literal prefix character; free's `fa-slash` is
+  // the negation stroke meant to be overlaid on another glyph, which alone
+  // reads as a stray diagonal rule. The prompt caret says the same thing the
+  // prefix does, and being a pair it is not one of the navigation chevrons
+  // turned on its side.
+  commands: faAnglesRight,
+  // The controls for one session: its mode and its model, each sitting at a
+  // chosen position. A gear is the whole-app settings convention, so it stays
+  // unspent and daemon settings keep somewhere distinct to go. At fourteen
+  // points the knobs read against `menu`'s plain rules, and the control it
+  // sits in carries the word Config beside it either way.
+  config: faSliders,
   chevron: faChevronDown,
+  // The shell's own control, not a screen's: three rules is what every
+  // platform's overflow affordance draws, so it needs no label to be read.
+  menu: faBars,
   // Pro's `fa-signal-bars` is the link strength meter; free's signal is it.
   link: faSignal,
   bay: faLayerGroup,
@@ -146,8 +196,9 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // stepping into something already running, distinct from starting it.
   attach: faArrowRightToBracket,
   folder: faFolder,
-  // A checklist doubles for "the fleet's work plan" and "the task sidebar":
-  // both are a list of items with a state, and share the glyph on purpose.
+  // Items with a state, which is what a task list is. The fleet's work plan
+  // used to share this drawing; it has its own now, because a plan and a list
+  // of tasks are not the same object to an operator scanning a row.
   tasks: faListCheck,
   newTask: faPlus,
   // Pro's `fa-wand-sparkles` variant differs only in spacing; free's is the
@@ -163,10 +214,35 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // A QR code is the one glyph in this set that names itself: the shape it
   // draws IS the thing it means, for the two screens that show or read one.
   qrcode: faQrcode,
+  // A symlink is a pointer rather than a place, and the chain link says so
+  // without borrowing the signal-strength glyph `link` already spends.
+  symlink: faLink,
+  // A git working tree, marked with the shape git itself uses for a branch:
+  // it is the one thing an operator is scanning a directory listing for.
+  repo: faCodeBranch,
+  // Walking up a directory is the same gesture as going back, drawn upward
+  // because it moves through a hierarchy rather than through history.
+  up: faChevronUp,
   // The agent's own sandboxed WebView, which is a window it drives rather
   // than the globe `fetch` uses for an HTTP call with no page behind it.
   browser: faWindowMaximize,
+  // Narration is sound leaving this device, not microphone input from the operator.
+  narration: faVolumeHigh,
+  // Speech into this device, the microphone itself; narration is sound
+  // leaving it, so the two never share a glyph.
+  mic: faMicrophone,
+  // The paperclip, because placement is what an operator reads first and the
+  // paperclip in a composer's lower-left corner is the one shape every
+  // messaging surface already spends on this gesture. This drew `fa-image`
+  // until 2026-08-24 on the argument that what the control adds is a picture
+  // rather than a file; the argument was about the payload, and the icon is
+  // about the act. What the picker actually accepts is still stated in words
+  // by the control's own accessibility label, which says images.
+  attachment: faPaperclip,
   unknown: faCircleQuestion,
+  // Two sheets of paper, one lifted off the other: the one shape every
+  // platform's users already read as "duplicate this exactly".
+  copy: faCopy,
 };
 
 export interface GlyphProps {

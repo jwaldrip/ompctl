@@ -8,6 +8,12 @@
  * `evaluate()` is pure and total. It performs no I/O and must never throw --
  * the caller treats a throw as a denial, but relying on that would make the
  * failure mode silent, so every branch returns a decision explicitly.
+ *
+ * Nothing here touches the filesystem, and that is load-bearing rather than
+ * tidy: the mobile app imports this module for `undriveableUrlReason`, and Metro
+ * cannot resolve `node:fs` or `node:path`, so one Node builtin here makes the
+ * app unbundlable on every native platform at once. Filesystem policy lives in
+ * `mount-policy.ts`, and `test/policy.test.ts` asserts this file stays clean.
  */
 
 import {
@@ -74,38 +80,18 @@ const SECRET_PATH_PATTERNS: RegExp[] = [
   /(^|\/)\.ompd(\/|$)/,
 ];
 
-/**
- * Roots a container mount must never name, layered on top of
- * `SECRET_PATH_PATTERNS` rather than restating any of it.
- *
- * A mount is a much bigger door than a single gated tool call: everything
- * under it is visible to every tool at once, for as long as the container
- * runs, unfiltered by any decision `DefaultPolicy` makes afterward. So beyond
- * the credential files a read/write is denied from touching, a mount also
- * refuses filesystem and home-directory roots outright, and the whole `.omp`
- * state tree rather than only the credential DB inside it -- `agent.db` is
- * enough to gate one read, but not enough to hand the directory over whole.
- */
-const DANGEROUS_MOUNT_ROOT_PATTERNS: RegExp[] = [
-  /^\/$/,
-  /^\/root\/?$/,
-  /^\/(Users|home)\/[^/]+\/?$/,
-  /(^|\/)\.omp(\/|$)/,
-];
+/** Path segments, case-folded, with separators and empty segments dropped. */
+export function foldedSegments(path: string): string[] {
+  return path
+    .split("/")
+    .filter(segment => segment.length > 0)
+    .map(segment => segment.toLowerCase());
+}
 
-/**
- * Why `hostPath` must never be mounted whole into a container, or null when
- * it may be. `hostPath` is expected already resolved to absolute; a relative
- * path is the caller's bug, not something this function normalizes.
- */
-export function dangerousMountReason(hostPath: string): string | null {
-  const norm = hostPath.replace(/\\/g, "/").replace(/(.)\/+$/, "$1");
-  for (const pattern of DANGEROUS_MOUNT_ROOT_PATTERNS) {
-    if (pattern.test(norm)) return `matches protected root ${pattern.source}`;
-  }
-  const secret = matchSecret(norm);
-  if (secret !== null) return `matches secret path pattern ${secret}`;
-  return null;
+/** Whether `prefix` is a segment-wise prefix of `of`, equal lengths included. */
+export function isSegmentPrefix(prefix: string[], of: string[]): boolean {
+  if (prefix.length > of.length) return false;
+  return prefix.every((segment, i) => of[i] === segment);
 }
 
 /**
@@ -314,7 +300,7 @@ export class DefaultPolicy implements Policy {
   }
 }
 
-function matchSecret(path: string): string | null {
+export function matchSecret(path: string): string | null {
   const norm = path.replace(/\\/g, "/");
   for (const p of SECRET_PATH_PATTERNS) {
     if (p.test(norm)) return p.source.slice(0, 32);

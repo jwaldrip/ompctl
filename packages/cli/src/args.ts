@@ -27,6 +27,9 @@ const BOOLEAN_FLAGS: Record<string, true> = {
   version: true,
   "allow-source-path": true,
   container: true,
+  "dry-run": true,
+  force: true,
+  json: true,
 };
 
 export type Command =
@@ -44,12 +47,21 @@ export type Command =
   | { kind: "revoke"; deviceId: string }
   | { kind: "rotate"; deviceId?: string }
   | { kind: "agents" }
+  /**
+   * `new` deliberately has no `image` field.
+   *
+   * `ompd new` is a client, not the daemon. It authenticates over the same
+   * HTTP surface with the same kind of token and runs through the same
+   * validator as any paired phone, so "it is the local CLI" is not a
+   * statement about where an image came from. What makes an image trusted is
+   * an operator editing the daemon's own config, which is a different act on
+   * a different surface: `containerImage` in `<home>/config.json`.
+   */
   | {
       kind: "new";
       cwd: string;
       name?: string;
       container: boolean;
-      image?: string;
       mounts?: HostMount[];
     }
   | { kind: "stop-agent"; agentId: string }
@@ -58,12 +70,22 @@ export type Command =
   | { kind: "routines" }
   | { kind: "run"; routineId: string }
   | { kind: "webhook-secret"; routineId: string }
+  | { kind: "routine-delete"; routineId: string }
   | { kind: "sync-config"; targetUrl: string; token: string }
+  | { kind: "mcp" }
+  | { kind: "mcp-install" }
   | { kind: "audit"; limit: number }
   | { kind: "open" }
   | { kind: "self-install"; prefix?: string }
   | { kind: "doctor" }
   | { kind: "install"; prefix?: string; allowSourcePath: boolean }
+  | { kind: "mcp-auth"; action: "status"; json: boolean }
+  | { kind: "mcp-auth"; action: "login"; resourceUrl: string; name?: string }
+  | { kind: "mcp-auth"; action: "import"; dryRun: boolean; force: boolean }
+  | { kind: "mcp-auth"; action: "apply" }
+  | { kind: "mcp-auth"; action: "unapply" }
+  | { kind: "mcp-auth"; action: "refresh"; grantId: string }
+  | { kind: "mcp-auth"; action: "logout"; grantId: string }
   | { kind: "uninstall" };
 
 export const USAGE = `ompd - control plane for OMP agents
@@ -103,8 +125,9 @@ devices
 
 agents
   agents                  list agents
-  new <cwd> [--name N] [--container [--image I] [--mounts P[:ro|rw],...]]
-                          create an agent; --mounts only with --container
+  new <cwd> [--name N] [--container [--mounts P[:ro|rw],...]]
+                          create an agent; --mounts only with --container.
+                          The image is the daemon's containerImage config, not a flag
   stop-agent <id>         stop an agent
   prompt <id> <text>      send a prompt and wait for the turn to settle
   tui [--host H] [--port N] [--token T]
@@ -115,11 +138,30 @@ routines
   run <routineId>         run a routine now
   routines webhook-secret <routineId>
                           replace a webhook secret and print the new value once
+  routines delete <routineId>
+                          delete a routine, its runs, and its webhook secret
   sync-config <target-url> --token <target-token>
                           import non-secret configuration from another daemon
 
+mcp
+  mcp                     serve the routines MCP server on stdio; OMP spawns this
+  mcp install             register this binary as an MCP server for every OMP session
+
 audit
   audit [--limit N]       recent privileged actions
+
+mcp auth
+  mcp-auth                print every brokered MCP grant and its state
+  mcp-auth login <mcp-url> [--name N]
+                          authorize a remote MCP server in a browser; the daemon keeps
+                          the refresh token and no session ever sees one
+  mcp-auth import [--dry-run] [--force]
+                          copy grants OMP already holds; never modifies OMP's own store,
+                          and refuses while an omp auth-broker is running
+  mcp-auth apply          point OMP's MCP config at the loopback broker
+  mcp-auth unapply        put OMP's MCP config back the way it was
+  mcp-auth refresh <id>   redeem the refresh token now, ignoring backoff
+  mcp-auth logout <id>    forget one grant and its refresh token
 
 scopes: ${KNOWN_SCOPES.join(", ")}
 
@@ -356,16 +398,25 @@ export function parseCommand(argv: string[]): Command {
     case "new": {
       rejectExtra(rest, 1, "new");
       const container = flags.get("container") === true;
-      const image = stringFlag(flags, "image");
       const mountsRaw = stringFlag(flags, "mounts");
-      if (!container && image !== undefined) throw new UsageError("--image needs --container");
+      // Named rather than swept up by the unknown-flag path, because someone
+      // typing `--image` had a working flag yesterday and deserves the reason
+      // and the replacement, not "unknown flag". `ompd new` is a client: it
+      // goes through the same gateway validator as any paired device, and
+      // being local is not a statement about where an image came from.
+      if (stringFlag(flags, "image") !== undefined) {
+        throw new UsageError(
+          "--image is gone. Naming a container image is daemon-local supply-chain approval and an API client " +
+            'is not that, so the daemon refuses host.image on the wire. Set "containerImage" in the daemon\'s ' +
+            "config.json, on the machine that will run it, and check it with `ompd doctor`.",
+        );
+      }
       if (!container && mountsRaw !== undefined) throw new UsageError("--mounts needs --container");
       return {
         kind: "new",
         cwd: requirePositional(rest, 0, "cwd"),
         name: stringFlag(flags, "name"),
         container,
-        image,
         mounts: mountsRaw === undefined ? undefined : parseMounts(mountsRaw),
       };
     }
@@ -400,12 +451,16 @@ export function parseCommand(argv: string[]): Command {
     case "routines": {
       const action = rest[0];
       if (action === undefined) return { kind: "routines" };
-      if (action !== "webhook-secret") {
-        throw new UsageError(`unknown routines action ${action}; use routines or routines webhook-secret <routineId>`);
+      if (action !== "webhook-secret" && action !== "delete") {
+        throw new UsageError(
+          `unknown routines action ${action}; use routines, routines webhook-secret <routineId>, or routines delete <routineId>`,
+        );
       }
       const args = rest.slice(1);
-      rejectExtra(args, 1, "routines webhook-secret");
-      return { kind: "webhook-secret", routineId: requirePositional(args, 0, "routineId") };
+      rejectExtra(args, 1, `routines ${action}`);
+      return action === "delete"
+        ? { kind: "routine-delete", routineId: requirePositional(args, 0, "routineId") }
+        : { kind: "webhook-secret", routineId: requirePositional(args, 0, "routineId") };
     }
 
     case "run":
@@ -417,6 +472,16 @@ export function parseCommand(argv: string[]): Command {
       const token = stringFlag(flags, "token");
       if (token === undefined) throw new UsageError("sync-config needs --token");
       return { kind: "sync-config", targetUrl: requirePositional(rest, 0, "target-url"), token };
+    }
+
+    case "mcp": {
+      const action = rest[0];
+      if (action === undefined) return { kind: "mcp" };
+      if (action !== "install") {
+        throw new UsageError(`unknown mcp action ${action}; use mcp or mcp install`);
+      }
+      rejectExtra(rest.slice(1), 0, "mcp install");
+      return { kind: "mcp-install" };
     }
 
     case "audit": {
@@ -448,6 +513,52 @@ export function parseCommand(argv: string[]): Command {
       // and nobody should be able to agree to that by pressing return.
       const allowSourcePath = flags.get("allow-source-path") === true;
       return prefix === undefined ? { kind: "install", allowSourcePath } : { kind: "install", prefix, allowSourcePath };
+    }
+
+    // Sub-verbs rather than seven top-level commands, because they share one
+    // subject and reading `ompd mcp-auth` on its own should answer the only
+    // question most runs have: which grants are alive.
+    case "mcp-auth": {
+      const action = rest[0];
+      if (action === undefined) return { kind: "mcp-auth", action: "status", json: flags.get("json") === true };
+      const args = rest.slice(1);
+      switch (action) {
+        case "status":
+          rejectExtra(args, 0, "mcp-auth status");
+          return { kind: "mcp-auth", action: "status", json: flags.get("json") === true };
+        case "login": {
+          rejectExtra(args, 1, "mcp-auth login");
+          const name = stringFlag(flags, "name");
+          const resourceUrl = requirePositional(args, 0, "mcp-url");
+          return name === undefined
+            ? { kind: "mcp-auth", action: "login", resourceUrl }
+            : { kind: "mcp-auth", action: "login", resourceUrl, name };
+        }
+        case "import":
+          rejectExtra(args, 0, "mcp-auth import");
+          return {
+            kind: "mcp-auth",
+            action: "import",
+            dryRun: flags.get("dry-run") === true,
+            force: flags.get("force") === true,
+          };
+        case "apply":
+          rejectExtra(args, 0, "mcp-auth apply");
+          return { kind: "mcp-auth", action: "apply" };
+        case "unapply":
+          rejectExtra(args, 0, "mcp-auth unapply");
+          return { kind: "mcp-auth", action: "unapply" };
+        case "refresh":
+          rejectExtra(args, 1, "mcp-auth refresh");
+          return { kind: "mcp-auth", action: "refresh", grantId: requirePositional(args, 0, "grantId") };
+        case "logout":
+          rejectExtra(args, 1, "mcp-auth logout");
+          return { kind: "mcp-auth", action: "logout", grantId: requirePositional(args, 0, "grantId") };
+        default:
+          throw new UsageError(
+            `unknown mcp-auth action ${action}; use status, login, import, apply, unapply, refresh, or logout`,
+          );
+      }
     }
 
     case "uninstall":

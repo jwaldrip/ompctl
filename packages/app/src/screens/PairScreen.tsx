@@ -15,32 +15,37 @@
 import { DEFAULT_HUB_HOST, parseDeviceCredential, parsePairTarget } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useState } from "react";
-import { Pressable, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { useFormMaxWidth } from "../design/layout.ts";
+import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
-// Deliberately extensionless, unlike this file's other imports: that is what
-// lets `ScanScreen.web.tsx` win in the browser via `resolve.extensions`, the
-// same mechanism `platform/secrets` already relies on. Naming `./ScanScreen.tsx`
-// here would pin every platform to the native screen, whose vision-camera
-// import fails the web build outright.
-import { ScanScreen } from "./ScanScreen";
+// Extensionless on purpose: Metro picks `e2e-plaintext.ios.ts` for iOS and the
+// plain module everywhere else. Naming the extension would defeat that and
+// hand every platform the same answer.
+import { E2E_PLAINTEXT_TOKEN } from "../platform/e2e-plaintext";
 
 export function PairScreen({
   notice,
   onCancel,
   onPair,
+  onScan,
 }: {
   notice?: string;
   onCancel?: () => void;
   onPair: (connection: Connection) => void;
+  /**
+   * Opens the camera. A route rather than a boolean here: the scan surface has
+   * a back gesture, a place in the navigation state, and a way to be reached
+   * from anywhere, none of which a flag inside this form could give it.
+   */
+  onScan: () => void;
 }): JSX.Element {
   const [raw, setRaw] = useState(DEFAULT_HUB_HOST);
   const [token, setToken] = useState("");
-  const [scanning, setScanning] = useState(false);
   const { width } = useWindowDimensions();
   const formMaxWidth = useFormMaxWidth();
   const target = parsePairTarget(raw);
@@ -49,106 +54,90 @@ export function PairScreen({
   const credential = parseDeviceCredential(token);
   const ready = target !== null && (target.transport === "direct" ? token.trim().length > 0 : credential !== null);
 
-  // A scanned bundle already carries a token and an endpoint together; it
-  // saves through the same `onPair` the manual form uses below, so a scan
-  // and a paste are indistinguishable to everything downstream of this screen.
-  if (scanning) {
-    return (
-      <ScanScreen
-        onCancel={() => setScanning(false)}
-        onScanned={connection => {
-          setScanning(false);
-          onPair(connection);
-        }}
-      />
-    );
-  }
-
   return (
     <SafeScreen style={styles.screen} testID="pair">
-      <View style={width > formMaxWidth ? [styles.form, { maxWidth: formMaxWidth }] : styles.form} testID="pair-form">
-        <Kicker color={ink.muted}>ompctl</Kicker>
-        <Display heading>Take the position</Display>
+      <ScrollView
+        automaticallyAdjustKeyboardInsets
+        contentContainerStyle={styles.scrollContent}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        style={styles.scroll}
+      >
+        <View style={width > formMaxWidth ? [styles.form, { maxWidth: formMaxWidth }] : styles.form} testID="pair-form">
+          <Kicker color={ink.muted}>ompctl</Kicker>
+          <Display heading>Take the position</Display>
 
-        {notice === undefined ? null : (
-          <View style={styles.notice} accessibilityLiveRegion="assertive" testID="pair-notice">
-            <Glyph name="unpair" size={12} color={signal.ochre} />
-            <Label color={signal.ochre} style={styles.noticeText}>
-              {notice}
-            </Label>
-          </View>
-        )}
+          {notice === undefined ? null : (
+            <View style={styles.notice} accessibilityLiveRegion="assertive" testID="pair-notice">
+              <Glyph name="unpair" size={12} color={signal.ochre} />
+              <Label color={signal.ochre} style={styles.noticeText}>
+                {notice}
+              </Label>
+            </View>
+          )}
 
-        <Body color={ink.plain}>
-          On the machine running the daemon: ompd invite for a token. Paste it below. The hub is already filled in;
-          change it only if you run your own.
-        </Body>
+          <Body color={ink.plain}>
+            On the machine running the daemon: ompd invite for a token. Paste it below. The hub is already filled in;
+            change it only if you run your own.
+          </Body>
 
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => setScanning(true)}
-          style={styles.scanEntry}
-          testID="pair-scan-entry"
-        >
-          <Glyph color={ink.plain} name="qrcode" size={14} />
-          <Label color={ink.plain}>Scan a QR code instead</Label>
-        </Pressable>
-
-        <Field label="Hub" value={raw} onChange={setRaw} testID="pair-endpoint" />
-        {raw.trim().length === 0 ? null : (
-          <Label color={target === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
-            {target === null
-              ? "Not a hub address"
-              : // A hub base and a daemon's own socket read alike, so the
-                // transport is named back: one reaches a daemon behind NAT, the
-                // other only works on this network.
-                target.transport === "direct"
-                ? "Direct socket"
-                : target.hubUrl}
-          </Label>
-        )}
-        <Field label="Token" value={token} onChange={setToken} secure testID="pair-token" />
-        {token.trim().length === 0 || target?.transport === "direct" ? null : (
-          <Label color={credential === null ? signal.ochre : ink.muted} testID="pair-token-kind">
-            {credential === null ? "Not a device token" : `Daemon ${credential.daemonId.slice(0, 11)}...`}
-          </Label>
-        )}
-
-        <Pressable
-          testID="pair-submit"
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !ready }}
-          disabled={!ready}
-          onPress={() => {
-            if (target === null) return;
-            const trimmedToken = token.trim();
-            if (target.transport === "direct") {
-              onPair({ transport: "direct", url: target.url, token: trimmedToken, scopes: [] });
-              return;
-            }
-            if (credential === null) return;
-            onPair({
-              transport: "hub",
-              hubUrl: target.hubUrl,
-              daemonId: credential.daemonId,
-              token: credential.token,
-              scopes: [],
-            });
-          }}
-          style={({ pressed }) => [
-            styles.submit,
-            { borderColor: ready ? signal.sage : ground.edge },
-            pressed && { backgroundColor: ground.active },
-          ]}
-        >
-          <Label color={ready ? signal.sage : ink.faint}>Connect</Label>
-        </Pressable>
-        {onCancel === undefined ? null : (
-          <Pressable accessibilityRole="button" onPress={onCancel} style={styles.cancel} testID="pair-cancel">
-            <Label color={ink.plain}>Back to connections</Label>
+          <Pressable accessibilityRole="button" onPress={onScan} style={styles.scanEntry} testID="pair-scan-entry">
+            <Glyph color={ink.plain} name="qrcode" size={14} />
+            <Label color={ink.plain}>Scan a QR code instead</Label>
           </Pressable>
-        )}
-      </View>
+
+          <Field label="Hub" value={raw} onChange={setRaw} testID="pair-endpoint" />
+          {raw.trim().length === 0 ? null : (
+            <Label color={target === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
+              {target === null
+                ? "Not a hub address"
+                : // A hub base and a daemon's own socket read alike, so the
+                  // transport is named back: one reaches a daemon behind NAT, the
+                  // other only works on this network.
+                  target.transport === "direct"
+                  ? "Direct socket"
+                  : target.hubUrl}
+            </Label>
+          )}
+          {/* Masked for every human launch. The simulator harness unmasks it so
+            iOS does not raise its own save-password sheet, which Detox cannot
+            reach and which would stop an unattended run. */}
+          <Field label="Token" value={token} onChange={setToken} secure={!E2E_PLAINTEXT_TOKEN} testID="pair-token" />
+          {token.trim().length === 0 || target?.transport === "direct" ? null : (
+            <Label color={credential === null ? signal.ochre : ink.muted} testID="pair-token-kind">
+              {credential === null ? "Not a device token" : `Daemon ${credential.daemonId.slice(0, 11)}...`}
+            </Label>
+          )}
+
+          <PrimaryButton
+            testID="pair-submit"
+            disabled={!ready}
+            label="Connect"
+            onPress={() => {
+              if (target === null) return;
+              const trimmedToken = token.trim();
+              if (target.transport === "direct") {
+                onPair({ transport: "direct", url: target.url, token: trimmedToken, scopes: [] });
+                return;
+              }
+              if (credential === null) return;
+              onPair({
+                transport: "hub",
+                hubUrl: target.hubUrl,
+                daemonId: credential.daemonId,
+                token: credential.token,
+                scopes: [],
+              });
+            }}
+            style={styles.submit}
+          />
+          {onCancel === undefined ? null : (
+            <Pressable accessibilityRole="button" onPress={onCancel} style={styles.cancel} testID="pair-cancel">
+              <Label color={ink.plain}>Back to connections</Label>
+            </Pressable>
+          )}
+        </View>
+      </ScrollView>
     </SafeScreen>
   );
 }
@@ -185,7 +174,11 @@ function Field({
 }
 
 const styles = StyleSheet.create({
-  screen: { justifyContent: "center", padding: space.loose },
+  // The shell keeps the same screen gutter as connections. The inner scroll
+  // gives large Dynamic Type a route above the keyboard.
+  screen: { padding: space.loose },
+  scroll: { flex: 1 },
+  scrollContent: { flexGrow: 1, justifyContent: "center" },
   form: { gap: space.step, width: "100%", alignSelf: "center" },
   notice: {
     flexDirection: "row",
@@ -205,13 +198,10 @@ const styles = StyleSheet.create({
     borderWidth: stroke.hair,
     borderColor: ground.line,
   },
-  submit: {
-    minHeight: TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: stroke.hair,
-    marginTop: space.snug,
-  },
+  // Placement only: the fill, the label face, and the parked state all live
+  // in PrimaryButton, so "what Connect looks like" cannot drift from "what
+  // Add connection looks like" again.
+  submit: { marginTop: space.snug },
   cancel: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET },
   scanEntry: { alignItems: "center", flexDirection: "row", gap: space.snug, minHeight: TOUCH_TARGET },
 });

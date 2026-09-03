@@ -13,15 +13,34 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Agent, AgentId, ClientFrame, ServerFrame, WebViewAction, WebViewActionResult } from "../src/contracts.ts";
+import type {
+  Agent,
+  AgentId,
+  ClientFrame,
+  PromptImage,
+  ServerFrame,
+  SessionDeleteResult,
+  SessionSummary,
+  TranscriptTailMessage,
+  WebViewAction,
+  WebViewActionResult,
+} from "../src/contracts.ts";
 import {
+  type AgentsEvent,
   agentsEndpoint,
   type BackoffOptions,
   type ClientErrorEvent,
+  type CloneDoneEvent,
+  type CloneProgressEvent,
   type CredentialVerdict,
   computeBackoffDelay,
+  type DeviceInvitedEvent,
+  type FsListingEvent,
   OmpdClient,
   type Scheduler,
+  type SessionOpenedEvent,
+  type SessionsEvent,
+  type SessionTailEvent,
   type SocketCloseInfo,
   type SocketLike,
   type StatusEvent,
@@ -685,6 +704,39 @@ describe("frame handling", () => {
     expect(socket.closedWith).toBeNull();
   });
 
+  test("hello's scopes reach the agents event, and only hello speaks for them", () => {
+    const h = harness();
+    const seen: AgentsEvent[] = [];
+    h.client.on("agents", event => seen.push(event));
+    h.client.start();
+
+    h.latest().accept();
+    h.latest().deliver({ t: "hello", deviceId: "dev_test", agents: [], scopes: ["read", "approve"] });
+
+    expect(seen).toEqual([{ agents: [], deviceId: "dev_test", scopes: ["read", "approve"] }]);
+
+    // A roster refresh carries no scopes: reading the grant off anything
+    // but hello would let a refresh erase what the daemon just answered.
+    h.latest().deliver({ t: "agents", agents: [AGENT_RECORD] });
+    expect(seen.at(-1)).toEqual({ agents: [AGENT_RECORD] });
+  });
+
+  test("a hello without scopes leaves the field undefined, never empty", () => {
+    const h = harness();
+    const seen: AgentsEvent[] = [];
+    h.client.on("agents", event => seen.push(event));
+    h.client.start();
+
+    h.latest().accept();
+    // An older daemon, which does not report scopes. The reader must see
+    // "unknown", not "no scopes", or every gated control would hide against
+    // a working daemon.
+    h.latest().deliver({ t: "hello", deviceId: "dev_test", agents: [] });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.scopes).toBeUndefined();
+  });
+
   test("a listener that throws cannot take the connection down", () => {
     const h = harness();
     h.client.on("update", () => {
@@ -710,15 +762,20 @@ describe("outbound frames", () => {
     h.client.start();
     const socket = bringUp(h);
 
+    const png: PromptImage = { data: "iVBORw0KGgo=", mimeType: "image/png" };
     h.client.prompt(AGENT, "ship it");
-    h.client.prompt(AGENT, "look at this", ["data:image/png;base64,AAAA"]);
+    h.client.prompt(AGENT, "look at this", [png]);
+    h.client.sessionPrompt("s-tui", "steer this");
+    h.client.sessionPrompt("s-tui", "with a picture", "followUp", [png]);
     h.client.cancel(AGENT);
     h.client.decide(AGENT, "req_1", "allow", "always");
     h.client.decide(AGENT, "req_2", "deny");
 
     expect(socket.sent).toEqual([
       { t: "prompt", agentId: AGENT, text: "ship it" },
-      { t: "prompt", agentId: AGENT, text: "look at this", images: ["data:image/png;base64,AAAA"] },
+      { t: "prompt", agentId: AGENT, text: "look at this", images: [png] },
+      { t: "session_prompt", sessionId: "s-tui", text: "steer this" },
+      { t: "session_prompt", sessionId: "s-tui", text: "with a picture", deliverAs: "followUp", images: [png] },
       { t: "cancel", agentId: AGENT },
       { t: "decide", agentId: AGENT, requestId: "req_1", choice: "allow", scope: "always" },
       { t: "decide", agentId: AGENT, requestId: "req_2", choice: "deny" },
@@ -1075,5 +1132,523 @@ describe("webView surface", () => {
     second.deliver({ t: "hello", deviceId: "dev_test", agents: [AGENT_RECORD] });
 
     expect(second.framesOfType("webview_register")).toEqual([{ t: "webview_register", agentId: AGENT }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Sessions Surface
+// ---------------------------------------------------------------------------
+
+describe("sessions surface", () => {
+  test("listSessions sends the sessions frame, carrying the query only when one was given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.listSessions();
+    h.client.listSessions({ status: ["live-tui", "dormant"], sort: "age" });
+
+    const frames = socket.framesOfType("sessions");
+    expect(frames).toEqual([
+      { t: "sessions" },
+      { t: "sessions", query: { status: ["live-tui", "dormant"], sort: "age" } },
+    ]);
+  });
+
+  test("a sessions server frame dispatches the typed event with the daemon's rows", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionsEvent[] = [];
+    h.client.on("sessions", event => received.push(event));
+
+    const rows: SessionSummary[] = [
+      {
+        id: "019fee60-2c7a-7000-9fd5-7439c7bf3dd2",
+        cwd: null,
+        cwdScope: "unknown",
+        cwdDecodeReason: "no_match",
+        flattenedDir: "-a",
+        title: "fixture",
+        createdAt: "2026-08-10T00:00:00.000Z",
+        lastActivityAt: "2026-08-13T00:00:00.000Z",
+        messageCount: 1,
+        byteSize: 96,
+        status: "dormant",
+        archived: false,
+      },
+    ];
+    socket.deliver({ t: "sessions", sessions: rows });
+
+    expect(received).toEqual([{ sessions: rows }]);
+  });
+
+  test("a reconnect re-issues the last query exactly once, on the new socket", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.listSessions({ status: ["live-tui"] });
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    expect(second.framesOfType("sessions")).toEqual([{ t: "sessions", query: { status: ["live-tui"] } }]);
+
+    // And the replay is remembered, not consumed: a second drop and return
+    // asks again, because a phone that comes back twice must not be shown the
+    // index from before the first drop either.
+    second.drop();
+    h.clock.runNext();
+    const third = bringUp(h);
+    expect(third.framesOfType("sessions")).toEqual([{ t: "sessions", query: { status: ["live-tui"] } }]);
+  });
+
+  test("a bare listSessions with no query is still replayed after a reconnect", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.listSessions();
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    expect(second.framesOfType("sessions")).toEqual([{ t: "sessions" }]);
+  });
+
+  test("a client that never asked for sessions sends nothing about them after a reconnect", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.attach(AGENT);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    expect(second.framesOfType("sessions")).toEqual([]);
+  });
+
+  test("losing a sessions frame to a closed socket raises no error, unlike a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.listSessions();
+    expect(errors).toEqual([]);
+
+    h.client.prompt(AGENT, "hello");
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("prompt");
+  });
+});
+
+describe("session delete surface", () => {
+  const SESSION = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
+
+  test("deleteSessions sends the ids as given, and a later mutation of the caller's array cannot change them", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    const ids = [SESSION];
+    h.client.deleteSessions(ids);
+    ids.push("019feebf-6449-7000-9474-a2ae1f871930");
+
+    expect(socket.framesOfType("session_delete")).toEqual([{ t: "session_delete", sessionIds: [SESSION] }]);
+  });
+
+  test("a sessions_deleted frame dispatches the per-id results the daemon sent", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionDeleteResult[][] = [];
+    h.client.on("sessions_deleted", event => received.push(event.results));
+
+    socket.deliver({
+      t: "sessions_deleted",
+      results: [
+        { sessionId: SESSION, deleted: false, refusal: "live" },
+        { sessionId: "019feebf-6449-7000-9474-a2ae1f871930", deleted: true },
+      ],
+    });
+
+    expect(received).toEqual([
+      [
+        { sessionId: SESSION, deleted: false, refusal: "live" },
+        { sessionId: "019feebf-6449-7000-9474-a2ae1f871930", deleted: true },
+      ],
+    ]);
+  });
+
+  test("losing a delete to a closed socket is reported, unlike losing a sessions ask", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // The state a reconnecting phone spends its whole backoff in.
+    expect(h.latest().readyState).not.toBe(1);
+
+    h.client.deleteSessions([SESSION]);
+
+    // An instruction that silently did not happen is the failure this
+    // reports: an operator who confirmed a deletion must not be left
+    // believing a transcript is gone when the frame never left.
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("session_delete");
+  });
+
+  test("a delete is never replayed after a reconnect", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.deleteSessions([SESSION]);
+    expect(first.framesOfType("session_delete")).toHaveLength(1);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // Re-sending would delete a session the operator may have decided,
+    // watching a spinner, not to delete after all.
+    expect(second.framesOfType("session_delete")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Session Open Surface
+// ---------------------------------------------------------------------------
+
+describe("session open surface", () => {
+  test("takeOverSession and resumeSession each send their frame with the row's own values", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.takeOverSession("019fee60-2c7a-7000-9fd5-7439c7bf3dd2", "/work/ompd", 4242);
+    h.client.resumeSession("019feebf-6449-7000-9474-a2ae1f871930", "/work/other");
+
+    expect(socket.framesOfType("session_takeover")).toEqual([
+      { t: "session_takeover", sessionId: "019fee60-2c7a-7000-9fd5-7439c7bf3dd2", cwd: "/work/ompd", pid: 4242 },
+    ]);
+    expect(socket.framesOfType("session_resume")).toEqual([
+      { t: "session_resume", sessionId: "019feebf-6449-7000-9474-a2ae1f871930", cwd: "/work/other" },
+    ]);
+  });
+
+  test("a session_opened server frame dispatches the typed event with the daemon's agent id", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionOpenedEvent[] = [];
+    h.client.on("session_opened", event => received.push(event));
+
+    socket.deliver({ t: "session_opened", sessionId: "019fee60-2c7a-7000-9fd5-7439c7bf3dd2", agentId: AGENT });
+
+    expect(received).toEqual([{ sessionId: "019fee60-2c7a-7000-9fd5-7439c7bf3dd2", agentId: AGENT }]);
+  });
+
+  test("a reconnect re-issues neither request: the new socket carries nothing but hello", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.takeOverSession("019fee60-2c7a-7000-9fd5-7439c7bf3dd2", "/work/ompd", 4242);
+    h.client.resumeSession("019feebf-6449-7000-9474-a2ae1f871930", "/work/other");
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just the two types: a replay implemented as
+    // remembered state would show up here as any frame after the hello this
+    // socket did not ask for.
+    expect(second.sent).toEqual([]);
+    expect(second.framesOfType("session_takeover")).toEqual([]);
+    expect(second.framesOfType("session_resume")).toEqual([]);
+  });
+
+  test("losing either request to a closed socket raises a visible error, like a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.takeOverSession("019fee60-2c7a-7000-9fd5-7439c7bf3dd2", "/work/ompd", 4242);
+    h.client.resumeSession("019feebf-6449-7000-9474-a2ae1f871930", "/work/other");
+
+    expect(errors.length).toBe(2);
+    expect(errors[0]).toContain("session_takeover");
+    expect(errors[1]).toContain("session_resume");
+  });
+});
+
+describe("device invite surface", () => {
+  test("inviteDevice sends the frame with the name and the scopes as given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.inviteDevice("Kitchen iPad", ["read", "approve"]);
+
+    expect(socket.framesOfType("device_invite")).toEqual([
+      { t: "device_invite", name: "Kitchen iPad", scopes: ["read", "approve"] },
+    ]);
+  });
+
+  test("a device_invited frame dispatches the typed event with the minted token", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: DeviceInvitedEvent[] = [];
+    h.client.on("device_invited", event => received.push(event));
+
+    socket.deliver({ t: "device_invited", token: "tok_new", name: "Kitchen iPad", scopes: ["read"] });
+
+    expect(received).toEqual([{ token: "tok_new", name: "Kitchen iPad", scopes: ["read"] }]);
+  });
+
+  test("a reconnect does not re-issue the invite: the new socket carries nothing but hello", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.inviteDevice("Kitchen iPad", ["read"]);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just the one type: a replay implemented as
+    // remembered state would show up here as any frame after the hello this
+    // socket did not ask for -- and a resent invite is a second credential
+    // minted by nobody, which is the exact leak one-shot semantics prevent.
+    expect(second.sent).toEqual([]);
+    expect(second.framesOfType("device_invite")).toEqual([]);
+  });
+
+  test("losing an invite to a closed socket raises a visible error, like a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.inviteDevice("Kitchen iPad", ["read"]);
+
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("device_invite");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Browse, Start, and Clone
+// ---------------------------------------------------------------------------
+
+describe("browse, start and clone surface", () => {
+  test("each request goes out as its own frame, carrying an optional field only when given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.listDirectory();
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.createSession("/Users/op/dev/beta", "deploy checks");
+    h.client.cloneRepo("git@github.com:jwaldrip/ompctl.git", "/Users/op/dev");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev", "second-copy");
+
+    expect(socket.framesOfType("fs_list")).toEqual([{ t: "fs_list" }, { t: "fs_list", path: "/Users/op/dev" }]);
+    expect(socket.framesOfType("session_create")).toEqual([
+      { t: "session_create", cwd: "/Users/op/dev/alpha" },
+      { t: "session_create", cwd: "/Users/op/dev/beta", name: "deploy checks" },
+    ]);
+    expect(socket.framesOfType("repo_clone")).toEqual([
+      { t: "repo_clone", url: "git@github.com:jwaldrip/ompctl.git", parent: "/Users/op/dev" },
+      { t: "repo_clone", url: "https://github.com/jwaldrip/ompctl.git", parent: "/Users/op/dev", name: "second-copy" },
+    ]);
+  });
+
+  test("an fs_listing frame dispatches the typed event with the daemon's page", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: FsListingEvent[] = [];
+    h.client.on("fs_listing", event => received.push(event));
+
+    const listing = {
+      path: "/Users/op/dev",
+      parent: "/Users/op",
+      roots: ["/Users/op"],
+      entries: [
+        { name: "ompctl", kind: "dir" as const, gitRepo: true },
+        { name: "notes.md", kind: "file" as const },
+      ],
+      bounded: true,
+    };
+    socket.deliver({ t: "fs_listing", ...listing });
+
+    expect(received).toEqual([listing]);
+  });
+
+  test("clone progress and completion each dispatch their own event, correlated by clone id", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const progress: CloneProgressEvent[] = [];
+    const done: CloneDoneEvent[] = [];
+    h.client.on("clone_progress", event => progress.push(event));
+    h.client.on("clone_done", event => done.push(event));
+
+    socket.deliver({ t: "clone_progress", cloneId: "cln_0123456789abcdef", line: "Receiving objects:  47%" });
+    socket.deliver({ t: "clone_progress", cloneId: "cln_0123456789abcdef", line: "Resolving deltas: 100%" });
+    socket.deliver({ t: "clone_done", cloneId: "cln_0123456789abcdef", path: "/Users/op/dev/ompctl" });
+
+    expect(progress).toEqual([
+      { cloneId: "cln_0123456789abcdef", line: "Receiving objects:  47%" },
+      { cloneId: "cln_0123456789abcdef", line: "Resolving deltas: 100%" },
+    ]);
+    expect(done).toEqual([{ cloneId: "cln_0123456789abcdef", path: "/Users/op/dev/ompctl" }]);
+  });
+
+  test("a reconnect replays none of the three: the new socket carries nothing but hello", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev");
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just the three types: a replay implemented as
+    // remembered state would show up here as any frame this socket did not
+    // ask for. A replayed `session_create` would start a second session the
+    // operator never asked for, and a replayed clone would meet its own
+    // half-finished directory.
+    expect(second.sent).toEqual([]);
+  });
+
+  test("losing any of the three to a closed socket raises a visible error, like a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in.
+    expect(h.latest().readyState).not.toBe(1);
+
+    h.client.listDirectory("/Users/op/dev");
+    h.client.createSession("/Users/op/dev/alpha");
+    h.client.cloneRepo("https://github.com/jwaldrip/ompctl.git", "/Users/op/dev");
+
+    expect(errors.length).toBe(3);
+    expect(errors[0]).toContain("fs_list");
+    expect(errors[1]).toContain("session_create");
+    expect(errors[2]).toContain("repo_clone");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Session Tail Surface
+// ---------------------------------------------------------------------------
+
+describe("session tail surface", () => {
+  const SESSION = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
+
+  test("sessionTail sends the frame, carrying a limit and a cursor only when given", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+
+    h.client.sessionTail(SESSION);
+    h.client.sessionTail(SESSION, 5);
+    // The paging ask: an offset an earlier answer handed back, with the
+    // limit left to the daemon's default.
+    h.client.sessionTail(SESSION, undefined, 4096);
+
+    expect(socket.framesOfType("session_tail")).toEqual([
+      { t: "session_tail", sessionId: SESSION },
+      { t: "session_tail", sessionId: SESSION, limit: 5 },
+      { t: "session_tail", sessionId: SESSION, cursor: 4096 },
+    ]);
+  });
+
+  test("a session_tail server frame dispatches the typed event with the daemon's turns and cursors", () => {
+    const h = harness();
+    h.client.start();
+    const socket = bringUp(h);
+    const received: SessionTailEvent[] = [];
+    h.client.on("session_tail", event => received.push(event));
+
+    const messages: TranscriptTailMessage[] = [
+      { role: "user", text: "status of the deploy?", at: "2026-08-13T00:00:01.000Z" },
+      { role: "assistant", text: "all green", at: "2026-08-13T00:00:02.000Z" },
+    ];
+    socket.deliver({ t: "session_tail", sessionId: SESSION, messages, truncated: true, nextCursor: 8192 });
+    // An older page: the echoed cursor is what tells a view this answers a
+    // paging ask rather than a first open.
+    socket.deliver({
+      t: "session_tail",
+      sessionId: SESSION,
+      messages: [],
+      truncated: true,
+      nextCursor: 4096,
+      cursor: 8192,
+    });
+
+    expect(received).toEqual([
+      { sessionId: SESSION, messages, truncated: true, nextCursor: 8192 },
+      { sessionId: SESSION, messages: [], truncated: true, nextCursor: 4096, cursor: 8192 },
+    ]);
+  });
+
+  test("a reconnect does not re-issue the request: a tail belongs to a screen, not to the socket", () => {
+    const h = harness();
+    h.client.start();
+    const first = bringUp(h);
+    h.client.sessionTail(SESSION);
+
+    first.drop();
+    h.clock.runNext();
+    const second = bringUp(h);
+
+    // The whole sent log, not just this type: a replay implemented as
+    // remembered state would show up here as any frame after the hello this
+    // socket never asked for.
+    expect(second.sent).toEqual([]);
+    expect(second.framesOfType("session_tail")).toEqual([]);
+  });
+
+  test("losing a tail request to a closed socket raises no error, unlike a prompt", () => {
+    const h = harness();
+    const errors: string[] = [];
+    h.client.on("error", event => errors.push(event.message));
+    h.client.start();
+    // Never accepted: the socket exists but is not open, which is the state a
+    // reconnecting phone spends its whole backoff in. Nothing on the machine
+    // changes because a tail was lost, and the surface asks again when it
+    // opens, so an error here would name a failure with no remedy.
+    const socket = h.latest();
+    expect(socket.readyState).not.toBe(1);
+
+    h.client.sessionTail(SESSION);
+    expect(errors).toEqual([]);
+
+    h.client.prompt(AGENT, "hello");
+    expect(errors.length).toBe(1);
   });
 });

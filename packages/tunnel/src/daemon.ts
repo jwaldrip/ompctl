@@ -159,10 +159,34 @@ export interface TunnelDaemonOptions {
   onWebhook?: (request: WebhookRequest) => Promise<WebhookResponse>;
   schedule?: (fn: () => void, ms: number) => { cancel(): void };
   random?: () => number;
+  /**
+   * Epoch milliseconds, for the timestamp the reconnect log lines carry.
+   * Injectable because a storm is diagnosed by the spacing between those
+   * lines, and a test that asserts on them must not depend on the wall clock.
+   */
+  now?: () => number;
+  /**
+   * How long a registered leg must survive before its next failure is treated
+   * as a fresh problem rather than a continuing one. Below this, the backoff
+   * keeps escalating.
+   */
+  stableAfterMs?: number;
 }
 
 const DEFAULT_MIN_BACKOFF_MS = 500;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
+/**
+ * The window a leg must outlive to count as healthy.
+ *
+ * A registration is not evidence of a working link. The hub accepts a daemon,
+ * then drops the leg a second later when a relayed burst trips its per-leg
+ * rate limit, and a daemon that treated the accept as success retried from
+ * the floor and walked straight back into it. Thirty seconds is far longer
+ * than that cycle (the observed flap ran at roughly 1.3s) and far shorter
+ * than the ordinary drops it must not penalise, which on this daemon arrive
+ * about an hour apart.
+ */
+const DEFAULT_STABLE_AFTER_MS = 30_000;
 
 interface Session {
   sessionId: string;
@@ -186,13 +210,34 @@ export class TunnelDaemon {
   readonly #onWebhook: ((request: WebhookRequest) => Promise<WebhookResponse>) | undefined;
   readonly #schedule: (fn: () => void, ms: number) => { cancel(): void };
   readonly #random: () => number;
+  readonly #now: () => number;
+  readonly #stableAfterMs: number;
 
   readonly #sessions = new Map<string, Session>();
   #socket: DialSocket | null = null;
   #registered = false;
   #attempt = 0;
+  /**
+   * When the current leg's registration was accepted, or null if it has not
+   * been. Read at close to tell a leg that worked from one that only got as
+   * far as being admitted.
+   */
+  #registeredAtMs: number | null = null;
   #stopped = true;
   #retry: { cancel(): void } | null = null;
+  /**
+   * Which dial the shared state below belongs to.
+   *
+   * A socket's handlers are bound once, at dial, and outlive the socket: the
+   * hub closes a superseded leg with 4409 well after its replacement is up,
+   * and a 1006 can surface later still. Without an owner, that late event ran
+   * against whatever leg was current -- nulling a live socket so every send
+   * including `ack` became a silent no-op, tearing the live leg's sessions,
+   * and dialing again, which the hub answered by 4409-ing the leg that had
+   * just registered. Each handler captures the generation it was bound at and
+   * only the current one may touch anything here.
+   */
+  #generation = 0;
 
   constructor(opts: TunnelDaemonOptions) {
     this.#hubUrl = opts.hubUrl.replace(/\/+$/, "");
@@ -207,6 +252,8 @@ export class TunnelDaemon {
     this.#onSession = opts.onSession;
     this.#onWebhook = opts.onWebhook;
     this.#random = opts.random ?? Math.random;
+    this.#now = opts.now ?? Date.now;
+    this.#stableAfterMs = opts.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
     this.#schedule =
       opts.schedule ??
       ((fn, ms) => {
@@ -240,35 +287,83 @@ export class TunnelDaemon {
     this.#retry?.cancel();
     this.#retry = null;
     this.#tearDownAll();
+    // Retires the current leg's ownership before closing it, so the close
+    // this provokes arrives as somebody else's and cannot reconnect.
+    this.#generation++;
     this.#socket?.close(1000, "shutting down");
     this.#socket = null;
     this.#registered = false;
+    this.#registeredAtMs = null;
   }
 
   #connect(): void {
     if (this.#stopped) return;
+    const generation = ++this.#generation;
     const socket = this.#transport(`${this.#hubUrl}/v1/daemon`);
     this.#socket = socket;
-    socket.onmessage = data => void this.#onFrame(data);
-    socket.onerror = info => this.#onLog(`tunnel error: ${info.message}`);
-    socket.onclose = info => this.#onClose(info);
+    // Every handler is stamped with the dial it belongs to. A superseded leg
+    // still delivers events -- a late 4409, a 1006, a frame in flight -- and
+    // none of them speak for the leg that replaced it.
+    socket.onmessage = data => {
+      if (generation !== this.#generation) return;
+      void this.#onFrame(data);
+    };
+    socket.onerror = info => {
+      if (generation !== this.#generation) return;
+      this.#onLog(`tunnel error: ${info.message}`);
+    };
+    socket.onclose = info => this.#onClose(generation, info);
     socket.onopen = null;
   }
 
-  #onClose(info: { code: number; reason: string }): void {
+  #onClose(generation: number, info: { code: number; reason: string }): void {
+    const at = new Date(this.#now()).toISOString();
+    const reason = JSON.stringify(info.reason);
+    if (generation !== this.#generation) {
+      // The ordinary shape of a reconnect: this daemon dialed again, the hub
+      // replaced the old leg and closed it 4409, and that close is landing
+      // now. Acting on it would unseat the live leg and dial a third, which
+      // the hub would answer by closing the second. Recorded, not obeyed.
+      this.#onLog(
+        `tunnel closed at=${at} gen=${generation} live=${this.#generation} code=${info.code} reason=${reason} decision=ignored_superseded`,
+      );
+      return;
+    }
+
+    const registeredAt = this.#registeredAtMs;
+    this.#registeredAtMs = null;
     this.#registered = false;
     this.#socket = null;
     // Every session died with the connection. Their clients hear it from the
     // hub and resume against the update log.
     this.#tearDownAll();
-    if (this.#stopped) return;
+    if (this.#stopped) {
+      this.#onLog(
+        `tunnel closed at=${at} gen=${generation} live=${this.#generation} code=${info.code} reason=${reason} decision=stopped`,
+      );
+      return;
+    }
+
+    // A registration is not evidence of a working link, and treating it as
+    // one is what kept this daemon in the hub's rate limiter. The hub tears
+    // the phone's leg the moment this one drops; the phone reconnects and
+    // replays its attach set; that burst is relayed onto the fresh leg and
+    // trips the hub's per-leg budget, which closes it 4429. Clearing the
+    // escalation on the accept meant the next dial went out from the floor,
+    // straight back into a bucket that had not refilled. Only a leg that
+    // outlived the stability window clears it.
+    const lived = registeredAt === null ? null : this.#now() - registeredAt;
+    if (lived !== null && lived >= this.#stableAfterMs) this.#attempt = 0;
 
     const ceiling = Math.min(this.#maxBackoffMs, this.#minBackoffMs * 2 ** this.#attempt);
     // Full jitter. A fleet reconnecting in lockstep after a hub redeploy is a
     // thundering herd against the thing that just came back.
     this.#attempt++;
-    this.#onLog(`tunnel closed (${info.code} ${info.reason}); reconnecting`);
-    this.#retry = this.#schedule(() => this.#connect(), Math.round(ceiling * this.#random()));
+    const delay = Math.round(ceiling * this.#random());
+    this.#onLog(
+      `tunnel closed at=${at} gen=${generation} live=${this.#generation} code=${info.code} reason=${reason} lived=${lived === null ? "unregistered" : `${lived}ms`} decision=reconnect attempt=${this.#attempt} delay=${delay}ms`,
+    );
+    this.#retry = this.#schedule(() => this.#connect(), delay);
   }
 
   async #onFrame(raw: string): Promise<void> {
@@ -281,7 +376,10 @@ export class TunnelDaemon {
         return;
       case "registered":
         this.#registered = true;
-        this.#attempt = 0;
+        // Deliberately does NOT clear `#attempt`. Being admitted proves the
+        // hub answered, not that the link holds; `#onClose` clears it once a
+        // leg has actually outlived the stability window.
+        this.#registeredAtMs = this.#now();
         this.#onRegistered?.(frame.instanceId);
         return;
       case "refused":
@@ -464,6 +562,12 @@ export class TunnelDaemon {
     await this.#sealTo(session, JSON.stringify({ t: "ready", deviceId: admitted.deviceId } satisfies SessionReady));
     sessionReady = true;
     for (const raw of pending) await this.#sealTo(session, raw);
+    // The handshake frames count as taken in the moment the session is
+    // admitted, not only when a session frame arrives to ack on: a client
+    // that opens a session and then goes quiet leaves nothing later to carry
+    // the acknowledgement, and the hub would read two relayed, none
+    // acknowledged, and tear the session at its deadline for being idle.
+    this.#ack(session);
   }
 
   async #onSessionFrame(session: Session, payload: string): Promise<void> {
@@ -477,7 +581,7 @@ export class TunnelDaemon {
       this.#refuse(session, "relay_broken", "a relayed frame did not authenticate");
       return;
     }
-    this.#send({ t: "ack", sessionId: session.sessionId, received: channel.received });
+    this.#ack(session);
     // Straight through to whatever serves this session, which runs every check
     // it runs for a local connection. Nothing is inspected on the way.
     admitted.deliver(plaintext);
@@ -491,6 +595,24 @@ export class TunnelDaemon {
     } catch {
       this.#refuse(session, "relay_broken", "could not seal a frame");
     }
+  }
+
+  /**
+   * Report how many relay frames this side has actually taken in.
+   *
+   * The count is the session's relay sequence, not the sealed channel's
+   * receipt count. The hub bills this leg for every `data` frame it relays,
+   * and the first of those is the client's unsealed `hello`: relayed like any
+   * other frame, but never opened by the channel, because it is the frame
+   * that makes the key. Acking `channel.received` therefore reported one
+   * less than the hub had sent, for the whole life of every session, and the
+   * hub read that as a leg that had stopped acknowledging and tore the
+   * session at its ack deadline on a steady cycle. The relay counter is the
+   * number the hub actually counts, so an admitted session that never sees
+   * another frame acks current with no keepalive traffic of its own.
+   */
+  #ack(session: Session): void {
+    this.#send({ t: "ack", sessionId: session.sessionId, received: session.expected });
   }
 
   #relay(session: Session, payload: string): void {

@@ -1,10 +1,12 @@
 /**
  * A transient message.
  *
- * Not a modal: an operator mid-turn must never have to dismiss something before
- * they can read their own log. It sits above the composer, takes a tap to
- * clear, and announces itself politely rather than interrupting whatever a
- * screen reader was already saying.
+ * Not a modal, and deliberately not a floating layer either: an operator
+ * mid-turn must never have to dismiss something before they can read their own
+ * log, and a notice that paints over the transcript hides the very thing it is
+ * reporting on. It occupies a band of the column above the composer, takes a
+ * tap to clear, and announces itself politely rather than interrupting
+ * whatever a screen reader was already saying.
  */
 
 import type { JSX } from "react";
@@ -12,10 +14,19 @@ import { Pressable, StyleSheet } from "react-native";
 import { Label } from "../design/text.tsx";
 import { ground, ink, space } from "../design/tokens.ts";
 
-export function Toast({ message, onDismiss }: { message: string; onDismiss: () => void }): JSX.Element {
+export function Toast({
+  message,
+  onDismiss,
+  testID = "toast",
+}: {
+  message: string;
+  onDismiss: () => void;
+  /** A notice about the link reports as `toast-link` so a check can tell it from an action notice. */
+  testID?: string;
+}): JSX.Element {
   return (
     <Pressable
-      testID="toast"
+      testID={testID}
       accessibilityRole="button"
       accessibilityLabel={`${message}. Dismiss.`}
       accessibilityLiveRegion="polite"
@@ -29,10 +40,8 @@ export function Toast({ message, onDismiss }: { message: string; onDismiss: () =
 
 const styles = StyleSheet.create({
   toast: {
-    position: "absolute",
-    left: space.wide,
-    right: space.wide,
-    bottom: space.gulf * 2.5,
+    marginHorizontal: space.wide,
+    marginBottom: space.wide,
     padding: space.step,
     backgroundColor: ground.active,
     borderLeftWidth: 2,

@@ -35,6 +35,8 @@ export interface FakeHostController {
   elicit(sessionId: string, message: string, enumValues: string[]): Promise<string>;
   /** Push a `session/update` notification. */
   emitUpdate(sessionId: string, update: unknown): void;
+  /** Notifications the fake emits synchronously while `session/load` is in flight. */
+  replayOnLoad(updates: unknown[]): void;
   /** Push OMP's live AgentRegistry extension notification. */
   emitAgentRegistry(agents: AcpAgentRegistrySnapshot[]): void;
   /** Session ids handed out by `session/new`, in order. */
@@ -51,8 +53,12 @@ export interface FakeHostController {
   loads: string[];
   /** Full `session/load` params, used to prove restored tool mounts. */
   loadRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }>;
-  /** Every `session/prompt` the supervisor sent. */
-  prompts: Array<{ sessionId: string; text: string }>;
+  /**
+   * Every `session/prompt` the supervisor sent. `blocks` is the content-block
+   * array verbatim, so a test can prove an image reached the wire rather than
+   * infer it from a text field that happens to be non-empty.
+   */
+  prompts: Array<{ sessionId: string; text: string; blocks: unknown[] }>;
   /** Session ids the peer was told to cancel, in order. */
   cancels: string[];
   /** Current mode per session, as `session/set_mode` left it. */
@@ -81,7 +87,8 @@ export function createFakeHost(): FakeHostController {
   const newRequests: Array<{ cwd: string; mcpServers: unknown[] }> = [];
   const loads: string[] = [];
   const loadRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }> = [];
-  const prompts: Array<{ sessionId: string; text: string }> = [];
+  const prompts: Array<{ sessionId: string; text: string; blocks: unknown[] }> = [];
+  let loadReplay: unknown[] = [];
   const waiters = new Map<number | string, (result: unknown) => void>();
   /** Which host serves each session, so a frame reaches the right transport. */
   const sessionClients = new Map<string, AcpClient>();
@@ -201,6 +208,13 @@ export function createFakeHost(): FakeHostController {
       });
       sessionClients.set(sessionId, client);
       if (!modes.has(sessionId)) modes.set(sessionId, "default");
+      for (const update of loadReplay) {
+        toClient(client, {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: { sessionId, update },
+        });
+      }
       toClient(client, {
         jsonrpc: "2.0",
         id: msg.id,
@@ -233,9 +247,12 @@ export function createFakeHost(): FakeHostController {
 
     if (msg.method === "session/prompt") {
       const sessionId = String(msg.params?.sessionId);
-      const blocks = msg.params?.prompt as Array<{ text?: string }> | undefined;
-      const text = blocks?.[0]?.text ?? "";
-      prompts.push({ sessionId, text });
+      const blocks = (msg.params?.prompt as Array<{ text?: string }> | undefined) ?? [];
+      // A text block may sit anywhere in the array now that image blocks ride
+      // beside it; the first one is the prompt's words, as every earlier
+      // caller of this recorder already assumed.
+      const text = blocks.find(block => typeof block.text === "string")?.text ?? "";
+      prompts.push({ sessionId, text, blocks });
 
       // Raced against cancellation rather than simply awaited, because that is
       // the property under test: a cancel has to settle a turn that is still
@@ -305,6 +322,9 @@ export function createFakeHost(): FakeHostController {
         method: "session/update",
         params: { sessionId, update },
       });
+    },
+    replayOnLoad: updates => {
+      loadReplay = [...updates];
     },
     emitAgentRegistry: agents => {
       toClient(latest, {

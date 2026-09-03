@@ -17,7 +17,7 @@
  * is owed the truth that something happened, even when we cannot name it.
  */
 
-import type { ApprovalChoice, PlanReviewChoice } from "@ompd/core/contracts";
+import type { ApprovalChoice, PlanReviewChoice, SessionHistoryEntry } from "@ompd/core/contracts";
 
 // ---------------------------------------------------------------------------
 // State
@@ -28,12 +28,34 @@ export type ToolKind = "think" | "read" | "execute" | "search" | "edit" | "fetch
 
 export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
 
-export type PlanStatus = "pending" | "in_progress" | "completed";
+/**
+ * A todo's state, in omp's own vocabulary rather than ACP's.
+ *
+ * omp keeps five: `blocked` names work that cannot proceed and carries the
+ * reason with it, and `abandoned` names work dropped on purpose, which is not
+ * the same claim as work finished. Its own ACP emitter collapses both before
+ * they leave the host (`blocked` to `pending`, `abandoned` to `completed`), so
+ * an owned session can only ever deliver the first three. A co-driven session
+ * carries the todo tool's raw result across the room instead, and the daemon's
+ * guest mapper keeps all five. Two fidelities of one feed, never two feeds.
+ */
+export type PlanStatus = "pending" | "in_progress" | "completed" | "blocked" | "abandoned";
 
+/**
+ * One todo. `phase` and `blocker` are present exactly when the producer sent
+ * them, which today means a co-driven session: omp's ACP plan update flattens
+ * its phases away and has no field for a blocker at all. Absent, never
+ * guessed -- a phase heading invented for an owned session would be a claim
+ * about how the operator organised their work that nothing on the wire made.
+ */
 export interface PlanEntry {
   content: string;
   priority: string;
   status: PlanStatus;
+  /** The phase heading this todo sits under, when the producer grouped them. */
+  phase?: string;
+  /** Why a `blocked` todo cannot proceed, in the operator's own words. */
+  blocker?: string;
 }
 
 export interface PlanReview {
@@ -75,6 +97,14 @@ export interface SessionInfo {
   title: string | null;
   model: string | null;
   cwd: string | null;
+  /**
+   * How hard the model is being asked to think, as omp names it. Only a
+   * co-driven session reports one: it rides the collab host's `state` frame,
+   * which the guest mapper forwards on `session_info_update`. An owned ACP
+   * session's mode lives behind the config surface instead, so this stays
+   * null there rather than borrowing the mode and calling it a thinking level.
+   */
+  thinkingLevel: string | null;
 }
 
 /** Counts the board shows. Maintained here so no view has to walk the timeline. */
@@ -82,6 +112,21 @@ export interface Activity {
   tools: number;
   running: number;
   failed: number;
+  /**
+   * How many running calls there are of each kind, for a header that wants to
+   * name the work rather than count it.
+   *
+   * Maintained here with the counts above, for the reason they are: the
+   * alternative is walking the transcript on every render, and the transcript
+   * is thousands of entries long while a turn streams tokens into it.
+   *
+   * Kinds, never titles. `ToolEntry.title` is whatever ACP sent, and omp
+   * builds that from the tool's own arguments -- a command line, a path -- so
+   * putting it in a header would publish argument text to anything reading the
+   * screen or listening to VoiceOver. `ToolKind` is a closed set this reducer
+   * maps ACP's `kind` onto, and it carries no operand.
+   */
+  runningByKind: Readonly<Partial<Record<ToolKind, number>>>;
 }
 
 export interface UserEntry {
@@ -92,7 +137,25 @@ export interface UserEntry {
 
 export interface AssistantEntry {
   kind: "assistant";
+  /**
+   * The wire's current message id. It CHANGES mid-reply: omp's chunks carry
+   * ids that rotate mid-sentence, and `findChunkTarget` adopts the newest one
+   * so a later chunk naming it can resume a settled row after a tool call.
+   */
   id: string;
+  /**
+   * The row's identity, assigned once and never reassigned.
+   *
+   * Separate from `id` because `id` follows the wire and any consumer keying
+   * on it sees one reply as several messages. assistant-ui does exactly that:
+   * it keys on the converted message's id, so five chunk-id rotations made it
+   * mount five assistant messages and strand four as permanent sibling
+   * branches, each holding its own snapshot -- an unbounded leak on a long
+   * reply, and invisible to a test that only counts our own entries. Measured
+   * before this field existed: the reducer held 2 entries while
+   * `thread.export()` returned 6.
+   */
+  rowId: string;
   text: string;
   streaming: boolean;
   /** Reasoning rather than reply. Rendered quieter, and never spoken aloud. */
@@ -131,6 +194,54 @@ export interface UnknownEntry {
 
 export type Entry = UserEntry | AssistantEntry | ToolEntry | ApprovalEntry | UnknownEntry;
 
+/**
+ * List identity for one transcript row.
+ *
+ * `entry.id` is the ACP message id. Thinking and reply of one turn often share
+ * that id (observed on a real iPad: `.$assistant=26509f48d-…` twice). The
+ * FlatList keyed on `kind:id`, so both children were `assistant:<same>`, and
+ * React painted the yellow banner over the log. The array index would be
+ * unique and would remount every row as the stream grows, which is the
+ * recycler failure the RN docs warn about.
+ *
+ * Channel (thought vs message) is the field that actually distinguishes those
+ * two rows. Other kinds already have unique ids of their own.
+ */
+export function transcriptRowKey(entry: Entry): string {
+  if (entry.kind === "assistant") return `assistant:${entry.thought ? "thought" : "message"}:${entry.id}`;
+  return `${entry.kind}:${entry.id}`;
+}
+
+/** Prepend one durable history page without duplicating live/replayed rows. */
+export function mergeSessionHistory(state: SessionState, history: readonly SessionHistoryEntry[]): SessionState {
+  if (history.length === 0) return state;
+  const existing = new Set(state.entries.map(transcriptRowKey));
+  const prepend: Entry[] = [];
+  for (const item of history) {
+    const entry: Entry =
+      item.kind === "user"
+        ? { kind: "user", id: item.id, text: item.text }
+        : item.kind === "assistant"
+          ? { kind: "assistant", id: item.id, rowId: item.id, text: item.text, thought: item.thought, streaming: false }
+          : {
+              kind: "tool",
+              id: item.id,
+              toolKind: item.toolKind,
+              title: item.title,
+              status: item.status,
+              input: item.input,
+              output: item.output,
+              locations: item.locations,
+            };
+    const key = transcriptRowKey(entry);
+    if (existing.has(key)) continue;
+    existing.add(key);
+    prepend.push(entry);
+  }
+  if (prepend.length === 0) return state;
+  return { ...state, entries: [...prepend, ...state.entries] };
+}
+
 export interface SessionState {
   readonly entries: readonly Entry[];
   readonly plan: readonly PlanEntry[];
@@ -148,8 +259,8 @@ export interface SessionState {
   readonly ordinal: number;
 }
 
-const EMPTY_INFO: SessionInfo = { updatedAt: null, title: null, model: null, cwd: null };
-const EMPTY_ACTIVITY: Activity = { tools: 0, running: 0, failed: 0 };
+const EMPTY_INFO: SessionInfo = { updatedAt: null, title: null, model: null, cwd: null, thinkingLevel: null };
+const EMPTY_ACTIVITY: Activity = { tools: 0, running: 0, failed: 0, runningByKind: {} };
 
 export const EMPTY_SESSION: SessionState = {
   entries: [],
@@ -190,6 +301,8 @@ const PLAN_STATUSES: Record<string, PlanStatus> = {
   pending: "pending",
   in_progress: "in_progress",
   completed: "completed",
+  blocked: "blocked",
+  abandoned: "abandoned",
 };
 
 /** Chunk payloads, mapped to the entry they extend. */
@@ -259,7 +372,13 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
     const extended: Entry =
       current.kind === "user"
         ? { ...current, text: current.text + text }
-        : { ...(current as AssistantEntry), text: (current as AssistantEntry).text + text };
+        : {
+            ...(current as AssistantEntry),
+            // A chunk that names its message adopts the row it is continuing,
+            // so the next chunk carrying that id finds it by id.
+            id: messageId ?? current.id,
+            text: (current as AssistantEntry).text + text,
+          };
     return { ...state, entries: replaceAt(state.entries, index, extended) };
   }
 
@@ -267,7 +386,12 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
   const settled = channel === "user" ? state.entries : closeStreams(state.entries);
   const id = messageId ?? `${channel}-${state.ordinal}`;
   const entry: Entry =
-    channel === "user" ? { kind: "user", id, text } : { kind: "assistant", id, text, streaming: true, thought };
+    channel === "user"
+      ? { kind: "user", id, text }
+      : // `rowId` is the id this row was born with and keeps. `id` goes on
+        // following the wire so `findChunkTarget` can still resume a settled
+        // row by the id a later chunk names.
+        { kind: "assistant", id, rowId: id, text, streaming: true, thought };
   return {
     ...state,
     entries: [...settled, entry],
@@ -298,10 +422,18 @@ function findChunkTarget(
     }
     if (entry.kind !== "assistant") continue;
     if (entry.thought !== (channel === "thought")) continue;
-    if (messageId !== null) {
-      if (entry.id === messageId) return index;
-      continue;
-    }
+    // An id locates a message that has already settled, which is how an agent
+    // resumes one after a tool call.
+    if (messageId !== null && entry.id === messageId) return index;
+    // Otherwise the open row of this channel owns the chunk, whatever id the
+    // chunk carries. Captured from this daemon for one reply: chunk ids were
+    // `c7be8049` then `febf0117` then `febf0117`, for the single text
+    // "probe-2fb0f8743329". Keying rows on that id split one reply into
+    // "prob" and "e-2fb0f8743329", so no row held the whole reply, and a
+    // token echoed back whole read as two half tokens on a real device. A row
+    // ends at a tool call, an approval, or the end of a turn, each of which
+    // closes the stream deliberately, never at an id the wire changed
+    // mid-sentence.
     if (entry.streaming) return index;
   }
   return -1;
@@ -343,14 +475,14 @@ function reduceToolCall(state: SessionState, payload: unknown): SessionState {
     return {
       ...state,
       entries: replaceAt(state.entries, existing, entry),
-      activity: countActivity(state.activity, before.status, entry.status, false),
+      activity: countActivity(state.activity, before.status, entry.status, false, before.toolKind, entry.toolKind),
     };
   }
 
   return {
     ...state,
     entries: [...closeStreams(state.entries), entry],
-    activity: countActivity(state.activity, null, entry.status, true),
+    activity: countActivity(state.activity, null, entry.status, true, null, entry.toolKind),
   };
 }
 
@@ -391,7 +523,7 @@ function reduceToolCallUpdate(state: SessionState, payload: unknown): SessionSta
   return {
     ...state,
     entries: replaceAt(state.entries, index, entry),
-    activity: countActivity(state.activity, before.status, entry.status, false),
+    activity: countActivity(state.activity, before.status, entry.status, false, before.toolKind, entry.toolKind),
   };
 }
 
@@ -403,16 +535,40 @@ function indexOfTool(entries: readonly Entry[], toolCallId: string): number {
   return -1;
 }
 
-function countActivity(activity: Activity, before: ToolStatus | null, after: ToolStatus, added: boolean): Activity {
+/**
+ * Folds one tool call's transition into the counts.
+ *
+ * `beforeKind` and `afterKind` are separate because an amendment may restate a
+ * call's kind: the running tally has to leave the kind it was counted under
+ * and join the one it is now, or a call that changed kind mid-flight would be
+ * counted twice and never released.
+ */
+function countActivity(
+  activity: Activity,
+  before: ToolStatus | null,
+  after: ToolStatus,
+  added: boolean,
+  beforeKind: ToolKind | null,
+  afterKind: ToolKind,
+): Activity {
   const wasRunning = before === "pending" || before === "in_progress";
   const isRunning = after === "pending" || after === "in_progress";
   const wasFailed = before === "failed";
   const isFailed = after === "failed";
-  if (!added && wasRunning === isRunning && wasFailed === isFailed) return activity;
+  const kindMoved = wasRunning && isRunning && beforeKind !== afterKind;
+  if (!added && wasRunning === isRunning && wasFailed === isFailed && !kindMoved) return activity;
+  const runningByKind: Partial<Record<ToolKind, number>> = { ...activity.runningByKind };
+  if (wasRunning && beforeKind !== null) {
+    const left = (runningByKind[beforeKind] ?? 0) - 1;
+    if (left > 0) runningByKind[beforeKind] = left;
+    else delete runningByKind[beforeKind];
+  }
+  if (isRunning) runningByKind[afterKind] = (runningByKind[afterKind] ?? 0) + 1;
   return {
     tools: activity.tools + (added ? 1 : 0),
     running: activity.running + (isRunning ? 1 : 0) - (wasRunning ? 1 : 0),
     failed: activity.failed + (isFailed ? 1 : 0) - (wasFailed ? 1 : 0),
+    runningByKind,
   };
 }
 
@@ -425,10 +581,17 @@ function reducePlan(state: SessionState, payload: unknown): SessionState {
   for (const item of raw) {
     const content = readString(item, "content");
     if (content === null) continue;
+    const phase = readString(item, "phase");
+    const blocker = readString(item, "blocker");
     plan.push({
       content,
       priority: readString(item, "priority") ?? "medium",
       status: PLAN_STATUSES[readString(item, "status") ?? ""] ?? "pending",
+      // Spread rather than assigned null: absent is the honest shape for a
+      // producer that never sent one, and an explicit null would make every
+      // consumer test for two flavours of nothing.
+      ...(phase === null ? {} : { phase }),
+      ...(blocker === null ? {} : { blocker }),
     });
   }
   return { ...state, plan };
@@ -475,6 +638,7 @@ function reduceInfo(state: SessionState, payload: unknown): SessionState {
     title: readString(payload, "title") ?? state.info.title,
     model: readString(payload, "model") ?? readString(payload, "modelName") ?? state.info.model,
     cwd: readString(payload, "cwd") ?? state.info.cwd,
+    thinkingLevel: readString(payload, "thinkingLevel") ?? state.info.thinkingLevel,
   };
   return { ...state, info };
 }
@@ -495,14 +659,28 @@ function appendUnknown(state: SessionState, label: string, payload: unknown): Se
 // ---------------------------------------------------------------------------
 
 /**
+ * The local echo of what a prompt carried. The words are shown as typed; the
+ * images are named rather than inlined, because this echo exists so a send
+ * leaves a visible trace, not so the transcript re-renders base64 the daemon
+ * never echoed back. An image-only prompt still shows as a trace rather than
+ * an apparent no-op.
+ */
+export function echoText(text: string, imageCount: number): string {
+  const trimmed = text.trim();
+  if (imageCount <= 0) return trimmed;
+  const images = `${imageCount} image${imageCount === 1 ? "" : "s"}`;
+  return trimmed.length === 0 ? `[${images} attached]` : `${trimmed} [${images} attached]`;
+}
+
+/**
  * Echoes what the operator just sent. The daemon does not replay a prompt back
  * as an update, and a prompt that leaves no trace on screen reads as a dropped
  * one.
  */
-export function appendPrompt(state: SessionState, text: string): SessionState {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return state;
-  const entry: UserEntry = { kind: "user", id: `prompt-${state.ordinal}`, text: trimmed };
+export function appendPrompt(state: SessionState, text: string, imageCount = 0): SessionState {
+  const echoed = echoText(text, imageCount);
+  if (echoed.length === 0) return state;
+  const entry: UserEntry = { kind: "user", id: `prompt-${state.ordinal}`, text: echoed };
   return {
     ...state,
     entries: [...closeStreams(state.entries), entry],

@@ -143,6 +143,11 @@ reads of secret paths.
 `keepAwake` holds a macOS idle-sleep assertion while any agent is working, so
 the machine does not sleep through a turn. See "The Mac has to be awake".
 
+Container hosts add five keys of their own, `containerRuntime`,
+`containerImage`, `containerModelAccess`, `containerModel` and
+`containerModelBrokerPort`. They are documented where they matter rather than
+here, under "Run an agent in a container".
+
 Speech needs no configuration. The daemon calls OMP's own speech libraries in
 process: Parakeet TDT v3 through sherpa-onnx for recognition, Kokoro-82M for
 synthesis, both on device and both the same models the TUI uses. There is no
@@ -492,47 +497,374 @@ gives you the first one only.
 
 ## Run an agent in a container
 
-An agent is created on a container host by naming one in the spec:
+An agent is created on a container host by asking for the kind. Which image it
+runs is not part of the request: that is the daemon's own `containerImage`
+config, for the reason in [The image, and why a paired device cannot name
+one](#the-image-and-why-a-paired-device-cannot-name-one) below. `host.image` on
+the wire is refused, and `ompd new --image` is gone.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:7777/v1/agents \
   -H "authorization: Bearer $(cat ~/.ompd/token)" \
   -H 'content-type: application/json' \
-  -d '{"name":"sandboxed","cwd":"'"$PWD"'","host":{"kind":"container","image":"your/omp:tag"}}'
+  -d '{"name":"sandboxed","cwd":"'"$PWD"'","host":{"kind":"container"}}'
 ```
 
 or from the CLI, which can also name further directories the container gets
 to see:
 
 ```bash
-ompd new ~/dev/some-repo --container --image your/omp:tag \
+ompd new ~/dev/some-repo --container \
   --mounts ~/dev/shared-lib:ro,~/dev/scratch:rw
 ```
 
-The daemon probes `docker`, `podman`, and `container` (Apple's) in that order
-unless a runtime is pinned, starts a detached container from the named image,
-mounts the workspace at the same absolute path it has here so a cwd means the
-same thing on both sides, and speaks ACP over `<runtime> exec -i <id> omp acp`.
-Stopping the last agent on a host removes the container and the network it was
-given.
+**The browser tool is a local-host capability.** An agent on a container host
+gets no `ompd-webview` MCP server, and the daemon logs one line saying so when
+it omits it. The reason is an address, not a policy: that server binds
+`127.0.0.1`, which is the daemon's machine from a local host and the container
+from a provisioned one. Handing it to a container did not merely disable the
+tool, it failed the whole session -- omp refused `session/new` with
+`ompd-webview: Unable to connect. Is the computer able to access the url?`, so
+every container create answered HTTP 500. Making it reachable would mean binding
+a surface that drives the operator's own browser somewhere other than loopback,
+which is a decision on its own merits rather than a side effect of fixing that
+500. Everything else about a container session is unaffected. The model broker
+described below does bind an address a container can reach, for exactly the
+reachability reason this paragraph is about, and the difference is what sits
+behind it: two model routes, not a surface that drives your browser.
 
-A runtime outside that list is refused rather than assumed to behave like
-docker, because a runtime nobody has held a `run --help` against cannot be
-trusted to have accepted the confinement it was asked for. `orbctl` was on this
-list and should not have been: OrbStack's container surface is `docker`, while
-`orbctl` manages OrbStack Linux machines and its `run` means "run a command on
-Linux", taking none of `--volume`, `--cap-drop`, or `--network`.
+**There is no fallback order.** On macOS the only runtime ompd will pick for
+itself is Apple's `container`. On Linux it is `podman`. Nothing else is ever
+chosen implicitly, and if the one native runtime is absent, or its service is
+down, or its `run --help` cannot be read, provisioning fails with a message
+naming that runtime and the command that fixes it.
 
-ompd does not build or publish the image; `scripts/container-host.Dockerfile`
-is the minimal one the end-to-end check builds, and it is a reference rather
-than a product. Whatever image you point at needs `omp` on its `PATH` and a
-root certificate store.
+That is stricter than it first was, and the reason is a defect a security
+review found in the first attempt. An ordered list with docker at the end still
+reached docker: whenever Apple's `container` answered `--version` but its
+apiserver was stopped, an unpinned selection walked past it and landed on
+Docker or OrbStack. Silently running on the thing this work exists to remove is
+worse than refusing, and the same reasoning that makes a pinned-but-absent
+runtime an error applies to a native runtime whose service is merely stopped.
 
-`bun run scripts/check-container-host.ts` proves the whole path against a real
-container, including that a denied bash call does not run, that an allowed one
-does, and that each of the escapes below fails. It cleans up everything it
-makes. It runs against `docker`; the run command itself is exercised per
-runtime by the unit tests in `packages/daemon/test/provisioner.test.ts`.
+Docker and podman are still supported, deliberately rather than implicitly, and
+the way you ask for one is the daemon's own config file rather than an
+environment variable. In `~/.ompd/config.json`:
+
+```json
+{ "containerRuntime": "podman" }
+```
+
+Empty or absent means the platform default above. A name ompd does not know is
+refused when the config loads, naming the valid set, rather than at the first
+provision. A configured runtime that is missing is an error, never a fall back
+to whatever else happens to be installed.
+
+It is config rather than `OMPD_CONTAINER_RUNTIME` for a reason worth stating: a
+launchd-started daemon does not inherit your shell, so an environment variable
+set in a terminal was silently absent in the one place it had to work, while
+`ompd doctor` read it and reported a runtime the daemon would never pick. The
+config file is one value that the daemon and the CLI both read.
+
+ompd then starts a detached container, mounts the workspace at the same
+absolute path it has here so a cwd means the same thing on both sides, and
+speaks ACP over `<runtime> exec -i <id> <omp>`. Stopping the last agent on a
+host removes the container and the network it was given, and a daemon restart
+no longer orphans either: the runtime, the network and the resolved image are
+recorded on the host's own record, so a fresh daemon reclaims them at startup
+from the store rather than from memory it no longer has.
+
+**Confinement is read off the runtime, not off its name.** Every flag ompd
+sends is one it saw in that binary's own `run --help`. That is not pedantry:
+Apple `container` 0.4.1 rejects `--cap-drop`, `--read-only`, `--pids-limit` and
+`--security-opt` outright (exit 64, `Unknown option`), while 1.3.0 accepts
+`--cap-drop`, `--read-only` and `--ulimit`. One table keyed on the name
+`container` cannot be right for both, and the failure mode of getting it wrong
+is silently withholding a real security control from a runtime that has it. A
+CLI whose help cannot be parsed is refused rather than guessed at, and so is
+one whose `run --help` exits non-zero while still printing an option list.
+`ompd doctor` prints which runtime would be selected, honouring any pin, and
+which flags it is actually being asked for.
+
+Two capabilities are recorded knowledge rather than parsed, because a flag that
+parses and is then ignored is invisible to help text. Apple accepts a
+docker-style `--tmpfs <path>:<options>` suffix and mounts nothing, so it gets a
+bare path. And its `--user` takes a name: a numeric one does not fail to parse,
+it kills the container, so ompd never sends a numeric identity flag to that
+runtime whatever its help says. That last one stays false even for 1.3.0, whose
+documentation says `--user` accepts `name|uid[:gid]`, until somebody runs it
+against a real 1.3.0 binary and records the result.
+
+### The image, and why a paired device cannot name one
+
+ompd does not build or publish an image.
+
+**A remote caller cannot name one either.** `image` on a `POST /v1/agents` host
+spec is refused, and that is a deliberate narrowing after a security review.
+Everything below about pinned digests and verified checksums is bypassed by
+naming an image, and an image's `ENTRYPOINT` runs before the approval gate
+exists, so the gate cannot mitigate what is inside it. A device holding
+`SCOPE_MANAGE` is authorised to ask for work; that is not the same act as
+deciding which supply chain the operator trusts.
+
+Naming an image is therefore daemon-local configuration, in the same file:
+
+```json
+{ "containerImage": "registry.example/your-omp@sha256:..." }
+```
+
+That image is **trusted**. Be clear-eyed about what that means: the approval
+gate does not confine its contents and cannot, because a generic OCI image runs
+its own entrypoint before any code ompd controls. Configuring one is a
+statement that you trust its publisher the way you trust a package you install,
+and it needs `omp` on its `PATH` and a root certificate store. Nothing is
+mounted over it and no digest of it is checked, because it is yours.
+
+Empty or absent means the pinned default below, which is the path a remote
+Cowork request always takes. `ompd doctor` says which of the two is in force.
+
+Name nothing and there is no build and no private registry in the path. The
+default is a public base image (`debian:bookworm-slim`) with the toolchain
+delivered as a read-only bind mount at `/opt/ompd`, cached under
+`~/.ompd/toolchain/omp-<version>-<arch>-<digest>/`:
+
+- `omp` itself, downloaded from the public `oh-my-pi` GitHub release for the
+  container's architecture. A Linux ELF bind-mounted from macOS runs in the
+  guest, which is what makes this work at all.
+- `omp-shim`, the same `scripts/omp-home-shim.sh` that picks up an OMP home
+  seeded on the workspace mount.
+- `ca-certificates.crt`, extracted once from `alpine:3.20`, because neither
+  `debian:bookworm-slim` nor `debian:bookworm` ships one and omp needs a trust
+  store the moment it makes an HTTPS request. `SSL_CERT_FILE` points at it.
+  Model traffic is no longer what needs it: that leaves the guest as plain HTTP
+  to the broker on the container network, and the TLS to the provider happens
+  on the host.
+
+The directory name carries the binary's digest, so a changed input is a
+different directory and a stale toolchain cannot be silently reused. The
+download lands in a sibling directory and is renamed into place, so a killed
+process cannot leave a half-written binary that a later run treats as a cache
+hit, and the digest is re-verified after it lands. The shim is compared on every
+cache hit and refreshed if it has changed, because the shim is what decides
+whether a workspace-seeded OMP home is honoured or refused, and that behaviour
+going stale would be a security regression rather than a cosmetic one.
+
+This is what fixes the failure that prompted the work: the old default was
+`ghcr.io/jwaldrip/omp:latest`, a private image, so every container provision
+died with `error from registry: denied` (docker exit 125) and surfaced as
+"Unable to start container". Nothing on the default path now needs a
+credential, so there is nothing to deny.
+
+Base-image choice is not free: `omp` is a glibc build, so a musl base does not
+run it (`sh: /opt/ompd/omp: not found` on Alpine). debian-slim also already
+carries the coreutils the gate wrapper's far side needs.
+
+`bun run scripts/check-native-container.ts` proves the confinement boundary
+against a real container on the native runtime, including a negative control:
+it runs the same hostile probe unconfined first and fails if that does *not*
+leak, because a containment check that cannot fail proves nothing. It cleans up
+everything it makes. `bun run scripts/check-container-host.ts` proves the
+approval gate end to end against docker. The run command itself is exercised
+per capability by the unit tests in `packages/daemon/test/provisioner.test.ts`,
+and the capability parse against recorded `run --help` output from docker
+29.4.0, podman 4.8.2 and Apple 0.4.1 in `container-runtime.test.ts`.
+
+### How a container agent reaches a model
+
+A container agent can answer a prompt. That is worth stating plainly, because
+until this landed it could not: it reached `idle`, accepted a session, and then
+failed every turn with `No model selected`, which is a sandbox that cannot do
+the one thing it was created for.
+
+Why it could not is also why the fix looks the way it does. omp in the guest
+needs a provider credential, and the guest is the last place on this machine to
+put one. Egress out of it is not filtered, and on Apple's runtime it is
+measured wide open: TCP to `1.1.1.1:443`, `example.com:80` and
+`api.anthropic.com:443` all connect from inside, and DNS resolves public names
+through the bridge. That runtime also rejects `--cap-drop` and
+`--security-opt`, so the guest holds the full capability set. Anything reusable
+that reaches it can leave, and there is no second control to fall back on. So
+nothing reusable goes in. A request goes out instead.
+
+The path, guest to provider. Each hop names what it binds, because the addresses
+are the boundary:
+
+```
+guest omp                    on its own container network, full internet egress
+  -> ompd's model broker     bound to THAT network's own gateway address only,
+                             never a wildcard; two POST routes behind a bearer
+  -> omp auth-gateway serve  127.0.0.1
+  -> omp auth-broker serve   127.0.0.1, over the existing ~/.omp/agent/agent.db
+  -> the provider
+```
+
+Docker Desktop is the one exception to the first hop, and it is the whole reason
+the `host-alias` shape exists: there the broker binds `127.0.0.1` and the guest
+dials `host.docker.internal`. The matrix below says which runtime gets which.
+
+The two loopback services are omp's own, not something this repo invented.
+`omp auth-broker serve` is a credential vault over the `agent.db` you already
+have, `omp auth-gateway serve` is a proxy that speaks the provider APIs in
+front of it, and omp documents the pair in `omp://auth-broker-gateway.md`,
+naming containerised omp as an intended client and stating that clients "never
+see the access token". ompd starts both on loopback ports the OS hands back, on
+the first container provision, and stops them with the daemon. Your credential
+store is read where it already lives, by those two loopback children and by
+nothing else. **No part of `~/.omp` is mounted into a guest or copied anywhere
+near one**: not `agent.db`, not `history.db`, not memories, not MCP server
+secrets, not your omp config. The one directory a container does get is created
+fresh per container and holds three generated files, nothing else.
+
+What the guest holds is one bearer: 32 random bytes, minted for that container,
+valid for exactly one model, written to a single file with mode `0600` inside a
+`0700` directory the daemon seeds and mounts. The broker keeps only its SHA-256
+digest, and the plaintext never enters an argv, an environment variable, a log
+line, an audit row, or the store. It expires a day after it is minted, releasing
+the host revokes it, and it dies with the daemon. It is not a provider
+credential and not an OAuth grant: presented to a provider directly it is
+nothing, and off this machine there is nothing left for it to talk to.
+
+The broker is not a proxy you could use for anything else, and that is the
+design rather than an accident of it. It accepts exactly two routes,
+`POST /v1/messages` and `POST /v1/messages/count_tokens`, and answers `404` to
+every other path and method. It requires the bearer, requires the model named
+in the body to be the model the grant allows, checks the peer address wherever
+that check is available at all, and bounds requests in flight, requests in
+total, tokens in total, and the size of one body. A guest that has gone wrong
+can spend its own ceiling on its own model. It cannot reach a second model, a
+second provider, or an unrelated URL through this.
+
+**Which host address the guest dials depends on the runtime, and there are
+three answers rather than one.** The runtime layer settles that before anything
+is seeded, because no `run --help` text says whether a runtime's bridge lives
+inside a virtual machine: Docker Desktop on macOS and docker on Linux are the
+same CLI with the same flags and the same `network inspect` output, and only
+one of them puts the gateway on a host interface.
+
+| Runtime and platform | Shape | Broker binds | Guest dials | Peer check | Provisions |
+| --- | --- | --- | --- | --- | --- |
+| Apple `container` on darwin | `host-bridge` | that network's gateway | the same address | on | yes |
+| docker on Linux | `host-bridge` | that network's gateway | the same address | on | yes |
+| rootful podman on Linux | `host-bridge` | that network's gateway | the same address | on | yes |
+| Docker Desktop, macOS or Windows | `host-alias` | `127.0.0.1` | `host.docker.internal` | off, risk named below | yes |
+| rootless podman | `unsupported` | nothing | nothing | n/a | no, fails closed |
+| podman off Linux (`podman machine`) | `unsupported` | nothing | nothing | n/a | no, fails closed |
+| a `"none"` network policy | `unsupported` | nothing | nothing | n/a | no, fails closed |
+| `network inspect` output not recognised | `unsupported` | nothing | nothing | n/a | no, fails closed |
+
+"Fails closed" is literal: those four refuse the provision rather than handing
+back a container that has no model access.
+
+`host-bridge` is the strong shape and the default here: Apple `container` on
+darwin, docker on Linux, rootful podman on Linux. The gateway address the
+network reports is a real address on this host, so the broker binds it and the
+guest dials the same string. Peers arrive un-NAT'd, so the peer-address check
+means something and it is enforced: a request from outside that network's own
+subnet is refused. This is the shape every measurement here was taken on. A
+container on the network connects, a container on a different network times
+out, an attempt at the host's LAN address times out, a listener on `127.0.0.1`
+is unreachable from the guest at every address tried, and no magic hostname
+resolves to route around it (`host.containers.internal`,
+`host.docker.internal` and `gateway.containers.internal` all fail). Apple
+`container` 0.4.1 with omp 18.0.4.
+
+`host-alias` is Docker Desktop on macOS or Windows, which is what pinning
+`"containerRuntime": "docker"` gets you there. Desktop runs its bridge inside a
+Linux VM, so the gateway is not an address this host can bind at all. The
+broker binds loopback instead and the guest dials `host.docker.internal`, which
+Desktop forwards to it. The two addresses differ on purpose: seeding the bind
+address into the guest config would produce a container that cannot reach its
+own broker.
+
+**That shape costs a real check, which is worth naming rather than leaving to
+be inferred.** Desktop's forward is a NAT, so every request reaches the broker
+from the host's own loopback and it cannot tell one caller from another. The
+peer-address check is therefore unavailable on that path, and it is turned off
+by passing an explicit null rather than a permissive `0.0.0.0/0`, because a
+permissive range would be indistinguishable inside the broker from a subnet
+misread out of a foreign `network inspect`, and a confinement property should
+never be lost by accident. What that leaves is a broker reachable by every
+process and every local user on the machine, where the bridge shape was
+reachable only from containers on one network. What still holds the line is the
+bearer, the single allowlisted model, the two-route allowlist, and the
+ceilings. So the honest exposure is this: a local process that can already read
+another user's `0600` file can spend some of this host's model quota until that
+container goes away. Materially weaker than the bridge shape, and materially
+stronger than injecting a provider credential, which is the only other way
+Desktop works at all.
+
+`unsupported` is the third answer, and it fails the provision rather than
+degrading it. Podman anywhere but Linux is `podman machine`, a VM for the same
+reason Desktop is, and no host alias has been established for it. Rootless
+podman reports a gateway that lives inside a user namespace and cannot be bound
+from this host. A `"none"` network policy created no bridge to reach anything
+over. And a `network inspect` that reports neither Apple's `status.gateway` /
+`status.address` nor the OCI `IPAM.Config[0]` `Gateway` / `Subnet` is not
+something to guess at. Each of those comes back carrying the runtime layer's
+own reason, and provisioning refuses with that text verbatim, because the layer
+that asked the runtime is the only one that knows what it ran and what came
+back. There is no branch anywhere that provisions a container without model
+access once model access is configured. Reaching `idle` unable to answer is the
+failure this removes, not a state to fall back into.
+
+**No shape binds a wildcard.** `0.0.0.0` was measured reachable from every
+container network on this machine and from the host's LAN, so it is refused
+twice over, by the layer that chose the address and again by the broker, along
+with `::`, `::0`, `[::]`, `0:0:0:0:0:0:0:0`, an empty host, `*` and
+`::ffff:0.0.0.0`, each with a message naming what was asked for. On the
+`host-alias` shape the bind must further be a loopback literal, `localhost`
+included, because `/etc/hosts` is editable by anything holding the permissions
+to edit it and that bind is the only thing narrowing reach on that path.
+
+On the bridge shape the gateway address exists only while a container is
+running on the network, which explains an ordering an operator may notice as a
+brief pause on the first container of a host. `network inspect` reports the
+gateway as soon as the network is created, but binding it fails with
+`EADDRNOTAVAIL` until something is attached to it. So the daemon creates the
+network, reads the gateway, seeds the guest home with its 0600 token file and
+two config files, starts the container, and only then binds the broker, retrying
+for a short while as the bridge comes up. The alias shape binds loopback, which
+is always available, and still goes through that same step, because a caller
+that skips it for one shape and not the other is a caller that will eventually
+skip the one that matters. Subnets are handed out in creation order rather than
+by network name, so the address differs per host and nothing anywhere may
+hardcode it.
+
+Three keys control this, in `~/.ompd/config.json` like the others:
+
+```json
+{
+  "containerModelAccess": true,
+  "containerModel": "anthropic/claude-haiku-4-5",
+  "containerModelBrokerPort": 7788
+}
+```
+
+`containerModelAccess` defaults to true. Turning it off does not produce a
+container agent that answers prompts some other way: it makes container
+provisioning refuse, naming the key. That is the only honest reading of "off",
+because the alternative is a mute agent sitting at `idle` with nothing saying
+why.
+
+`containerModel` names the one model a grant allows, provider-qualified, which
+is the form the gateway's own catalogue and `modelRoles.default` both use. A
+bare model name is not a valid value. Absent, the daemon reads your own
+`modelRoles.default` from `~/.omp/agent/config.yml`, dropping a trailing
+thinking level if there is one. If neither resolves there is no invented default
+and no local fallback: provisioning fails with a message naming both keys.
+Handing back an agent that cannot answer is the failure this subsection exists
+to remove, so the daemon will not do it quietly.
+
+`containerModelBrokerPort` defaults to `7788`. One fixed port serves every
+container network at once, which looks like a collision waiting to happen and is
+not: the broker binds the per-network gateway address, and each network gets its
+own subnet, so two listeners never share an address. It may not be `0`. Every
+other port in that file may be, meaning "whatever the OS hands back", and this
+one cannot, because the guest's `models.yml` carries the endpoint and is written
+before the container starts while the address the broker binds does not exist
+until the container is already running. The number is needed before the bind can
+happen, so it is chosen rather than discovered. Anything that is not an integer
+from 1 to 65535 is refused when the config is loaded.
 
 ### Extra mounts
 
@@ -554,30 +886,70 @@ silent no-op.
 ### How it is confined
 
 None of the flags below are configurable, because a sandbox with a switch on
-it is a sandbox someone turns off. Which flags exist to turn on, though,
-genuinely differs by runtime -- Apple's `container` CLI (verified against
-0.4.1) has no `--cap-drop`, `--security-opt`, `--read-only`, or `--pids-limit`,
-and exits on an unknown flag rather than ignoring it, so provisioning against
-it never sends a flag it does not accept:
+it is a sandbox someone turns off. Which flags exist to turn on genuinely
+differs by runtime, and by runtime *version*: every row below was produced by
+running the command, and the Apple column is `container` 0.4.1 specifically.
 
-| Guarantee | docker / podman | Apple `container` |
+| Guarantee | docker / podman | Apple `container` 0.4.1 |
 | --- | --- | --- |
-| Runs as your uid/gid, never root | yes -- `--user` | yes -- `--user` |
-| No Linux capability is granted | yes -- `--cap-drop ALL` | not expressible, and arguably not needed: each container gets its own lightweight VM, so there is no shared kernel for a capability to escape into |
-| A setuid binary cannot regain privilege | yes -- `--security-opt no-new-privileges` | same as above -- the VM boundary, not this flag, is what would stop it |
-| **Image is read-only** | yes -- `--read-only` | **no.** This flag does not exist on this CLI. The image is writable from inside the container, which is a real loss of confinement, not a reframed one |
-| A fork bomb stays inside the sandbox | yes -- `--pids-limit 1024` | not expressible; the VM's own resource limits are the boundary instead of a pid cap enforced by a shared kernel |
-| Scratch is tmpfs and dies with the container | yes -- `--tmpfs` | yes -- `--tmpfs` |
-| A bridge network per host | yes | yes |
+| Runs as your uid/gid, never root | yes -- `--user` | **no.** Its `--user` takes a name, and a numeric one does not fail to parse, it kills the container (`XPC connection error: Connection interrupted`). Every guest is root inside its own VM. What the flag existed to prevent does not happen anyway: virtiofs squashes ownership, so a file the container creates in a mount lands owned by you whether it ran as root or as `nobody` |
+| No Linux capability is granted | yes -- `--cap-drop ALL` | not expressible (exit 64, `Unknown option`), and arguably not needed: each container gets its own lightweight VM, so there is no shared kernel for a capability to escape into. 1.3.0 does have `--cap-drop`, and would be sent it |
+| A setuid binary cannot regain privilege | yes -- `--security-opt no-new-privileges` | not expressible; the VM boundary, not this flag, is what would stop it. Still absent in 1.3.0 |
+| **Image is read-only** | yes -- `--read-only` | **no.** The flag does not exist here, and the root filesystem is writable from inside, which is a real loss of confinement rather than a reframed one. 1.3.0 does have `--read-only`, and would be sent it |
+| A fork bomb stays inside the sandbox | yes -- `--pids-limit 1024` | no pid cap. `--memory` and `--cpus` are the only ceiling, and they are sent: verified biting rather than ignored, with `--memory 512M --cpus 2` giving a guest that reports 2 cpus and 490 MB |
+| Scratch is tmpfs and dies with the container | yes -- `--tmpfs <path>:rw,exec,...` | yes, but **bare path only**. The docker-style option suffix parses, exits 0, and then mounts nothing at all, so the spelling is chosen per runtime and the check script asserts the mount exists from inside rather than trusting the flag |
+| A network per host, isolated from other hosts | yes | yes, `mode: nat`, and networks are isolated from one another |
+| Network egress can be denied | not attempted: ompd does not filter egress, so a guest reaches the internet | **not expressible at all.** There is no `--network none` (`notFound: "network none not found"`), and `--no-dns` only deletes `/etc/resolv.conf` while leaving IP egress open. Measured open rather than assumed: TCP to `1.1.1.1:443`, `example.com:80` and `api.anthropic.com:443` all connect from inside, and DNS resolves public names through the bridge. That is why a provider credential never goes into a guest; see "How a container agent reaches a model" |
+| Host environment is withheld | yes: no `-e` is passed | yes, verified: a canary exported on the host is absent inside |
+| Host filesystem beyond the mounts | not visible | not visible, verified |
+| Extra mounts default to read-only | yes | yes, and enforced: a write reports `Read-only file system` |
 
-The three flags Apple's CLI lacks that are folded into "a different trade, not
-a hole" -- `--cap-drop`, `--security-opt no-new-privileges`, `--pids-limit` --
+The flags Apple's CLI lacks that are folded into "a different trade, not a
+hole" -- `--cap-drop`, `--security-opt no-new-privileges`, `--pids-limit` --
 all mitigate a shared-kernel escape. A VM-per-container runtime has no shared
 kernel for any of them to escape into, so their absence there is not the same
-claim as their absence on docker. `--read-only` is not that: it is whether the
-image can be rewritten from inside, and that is lost outright on Apple
-`container` today, which is why it gets its own row instead of being grouped
-with the rest.
+claim as their absence on docker. Two rows are not that, and are reported as
+losses: `--read-only`, which is whether the image can be rewritten from inside,
+and running as root, which is what it says. Upgrading to `container` 1.3.0
+recovers `--read-only` and `--cap-drop` with no change to ompd, because
+capability is probed rather than tabled.
+
+### Linux
+
+A bundled runtime that needs nothing from the host is not achievable there, and
+shipping `runc` would not change that. What blocks it is not binaries:
+`newuidmap` and `newgidmap` have to be setuid, which is filesystem metadata a
+tarball cannot carry and only root can apply; `/etc/subuid` and `/etc/subgid`
+entries need root; unprivileged user namespaces are a kernel build option; and
+cgroups v2 delegation needs host systemd and a user D-Bus session. Podman
+documents exactly these prerequisites rather than pretending to remove them,
+and podman is itself daemonless, so on Linux it is the one runtime ompd selects
+for itself.
+
+When podman is installed and cannot run rootless, ompd says which prerequisite
+is missing rather than guessing. It checks four things, each with its own
+remedy:
+
+| Prerequisite | Checked by |
+| --- | --- |
+| unprivileged user namespaces | `/proc/sys/kernel/unprivileged_userns_clone` non-zero where that Debian/Ubuntu sysctl exists, and `/proc/sys/user/max_user_namespaces` above zero. A kernel exposing neither is reported as unknown rather than as a pass or a failure. |
+| a subordinate id range | a line in `/etc/subuid` and `/etc/subgid` for this user or uid with a non-zero count |
+| `newuidmap` / `newgidmap` **privileged** | both on `PATH`, and each actually setuid-root or carrying `cap_setuid`/`cap_setgid`. Presence is not the prerequisite: the kernel restricts multi-entry `/proc/self/uid_map` writes to privileged code, so the bit is what matters. |
+| cgroups v2 with delegation | `/sys/fs/cgroup/cgroup.controllers` present, and the user's own slice delegating at least `memory` and `pids` |
+
+Known-failing hosts: `kernel.unprivileged_userns_clone=0`, RHEL 7-era kernels,
+`user.max_user_namespaces=0`, non-systemd distros, and nested containers whose
+subuid range is exhausted. Docker remains available on Linux by explicit pin,
+not as a fallback.
+
+One interaction is worth knowing before you rely on it: rootless podman is the
+shape ompd selects for itself on Linux, and it is the one shape that cannot
+carry model access. The gateway it reports for a network lives inside a user
+namespace, so nothing on this host can bind it, and container provisioning
+refuses with that reason rather than handing back an agent that cannot answer.
+Rootful podman on Linux, and docker on Linux by explicit pin, both put the
+gateway on a host interface and both work. See "How a container agent reaches a
+model" above.
 
 ### The threat model, which is the part worth reading
 
@@ -586,11 +958,27 @@ read, a model doing something stupid, a hostile dependency it just installed.
 
 **What it cannot reach.** The rest of your filesystem, unless you name it as
 an extra mount, and even then not the paths listed under "Extra mounts" above:
-`~/.ssh`, `~/.omp`, `~/.ompd`, a home directory root, and `/` are refused
-outright, not merely left off by default. Nothing outside the workspace and
-whatever you explicitly named is mounted, so `~/.aws` and your other
-repositories are not merely unreadable, they are not there. It cannot write
-the image, gain a capability, become root, or reach your other containers.
+`~/.ssh`, `~/.omp`, `~/.ompd`, a home directory root, `/`, the kernel and OS
+trees, and `/opt` are refused outright, not merely left off by default, and the
+refusal is applied to the canonicalized path so `/etc`, `/Users/you/.` and a
+symlink pointing at any of them are refused too. Nothing outside the workspace
+and whatever you explicitly named is mounted, so `~/.aws` and your other
+repositories are not merely unreadable, they are not there. It cannot reach
+your other containers: each host gets its own network.
+
+**Root and capabilities depend on the runtime, and the difference is real.**
+On docker or podman the container runs as your uid with `--cap-drop ALL` and
+`no-new-privileges`, so it cannot become root or gain a capability. On Apple
+`container` 0.4.1 it **is** root inside its own VM and holds the full
+capability set, because that CLI rejects `--cap-drop` and `--security-opt` and
+crashes on any numeric identity flag. What that buys an attacker is bounded by
+the VM rather than by a capability mask: there is no shared kernel to escape
+into, and files it creates in a mount land owned by you because virtiofs
+squashes ownership. What it does mean is that an in-guest root process can
+`mount --bind` over a read-only mount, which is measured and is why a
+gate-protected container serves exactly one ACP session rather than being
+reused. Do not read "it cannot become root" as true on Apple's runtime; it is
+not.
 
 **What it can reach, which is the honest part.**
 
@@ -600,32 +988,60 @@ the image, gain a capability, become root, or reach your other containers.
   a container host at a directory you would be willing to hand over whole. An
   extra mount is different: it defaults to read-only, and a subpath is exactly
   what naming one directory instead of another already is.
-- **One live model credential.** omp inside the container needs one, and the
-  backend injects only the image, the workspace, any mounts an operator
-  explicitly named, and `OMPD_REPO` / `OMPD_REF`. The check script narrows
-  that to a single provider's OAuth row copied out of
-  `~/.omp/agent/agent.db` into a snapshot it deletes afterwards, with every
-  other credential and the usage and cache tables emptied out of the copy, and
-  the image's shim copies that seed to a container-local path so a refresh is
-  discarded with the container rather than written back over yours. It is still
-  a credential that can spend your money and read your model history for as
-  long as the container runs.
-- **The internet.** Egress is not filtered. The agent has to reach a model
-  endpoint, and Docker cannot express "that host and nothing else" without a
-  proxy in the path, so anything it can reach, it can reach. That includes
-  posting your workspace somewhere.
-- **The daemon's port.** "The daemon binds `127.0.0.1` so only this machine can
-  reach it" is not true from inside a container. On Docker for Mac
-  `host.docker.internal` resolves to an address that reaches services bound to
-  the host's loopback, which was measured rather than assumed. It cannot be
-  closed without also closing the model endpoint. What stops it being useful is
+- **Model access, scoped to one model.** It no longer holds a provider
+  credential at all. It holds a per-container bearer for the single model its
+  grant allows, presented to the broker at the one host address its runtime
+  allows, as described in "How a container agent reaches a model" above. That
+  still spends your money: within the grant's request and token ceilings, on
+  that one model, for as long as the host lives. What it does not carry is
+  anything reusable, so a leak out of the guest is worth nothing off this
+  machine and nothing after the host is released. On the `host-alias` shape,
+  which is Docker Desktop only, the broker is loopback-bound and reachable by
+  any local process, so there the `0600` token file is the only thing between
+  another local user and some of this host's model quota; that trade is named
+  in full above. The daemon injects the image, the workspace, any mounts an
+  operator explicitly named, `OMPD_REPO` / `OMPD_REF`, and the seeded home
+  holding that token file and two omp config files. Your `~/.omp` is not
+  mounted, not copied, and not readable from inside.
+  `scripts/check-container-host.ts`, which proves the approval gate against
+  docker, is a separate arrangement: it seeds a narrowed snapshot of one
+  provider's OAuth row and deletes it afterwards. That is a check script, not
+  the path a provisioned agent takes.
+- **The internet.** Egress is not filtered, and on Apple's runtime it is
+  measured wide open: TCP to `1.1.1.1:443`, `example.com:80` and
+  `api.anthropic.com:443` all connect from inside, and DNS resolves public
+  names through the bridge. That includes posting your workspace somewhere.
+  Neither runtime can express "that host and nothing else" without a proxy in
+  the path, and the model broker is not that proxy: it fronts one API, it is
+  not a chokepoint for the guest's traffic. This is the property that decides
+  the shape of everything above. With egress open and no capability
+  confinement to fall back on, a credential placed inside the guest is a
+  credential that can leave, which is why the model path forwards a request
+  instead of handing over a secret.
+- **One host address, decided by the runtime.** "The daemon binds `127.0.0.1`,
+  so only this machine can reach it" needs care from inside a container, and so
+  does the opposite reading that a container cannot reach the host at all.
+  Neither is right as stated. On Apple's runtime, `host.docker.internal`,
+  `host.containers.internal` and `gateway.containers.internal` all fail to
+  resolve and a listener on the host's `127.0.0.1` was unreachable from the
+  guest at every address tried; what a guest can reach there is its own
+  network's gateway address, which is deliberately the address the model broker
+  binds. On Docker Desktop, `host.docker.internal` resolves to an address that
+  reaches services bound to the host's loopback, measured rather than assumed,
+  and that is the whole mechanism the `host-alias` shape rests on. Either way
+  the only thing listening for the guest is two model routes behind a bearer, a
+  model check, a peer check where the shape allows one, and a set of ceilings.
+  Where the daemon's own port is reachable, what stops it being useful is
   authentication: every route except `/v1/health` answers `401` without a
   token, and the token lives in `~/.ompd`, which is not mounted. **A container
   escape into the daemon is bounded by authentication, not by the network.**
 
 So a container host is a filesystem boundary and a privilege boundary. It is
-not a network boundary and not an account boundary. It bounds the blast radius
-rather than eliminating it, and on a `local` host there is no boundary at all.
+not a network boundary, and it is not an account boundary either, though the
+model path narrows that one: the guest spends your provider account through a
+single API, under a ceiling, holding nothing it could reuse. It bounds the
+blast radius rather than eliminating it, and on a `local` host there is no
+boundary at all.
 
 ## Day to day
 

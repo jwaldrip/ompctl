@@ -30,38 +30,47 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { joinAssistantText, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 import {
   type Actor,
   type AgentId,
   DEFAULT_DAEMON_PORT,
+  DEFAULT_MCP_AUTH_PORT,
   DefaultPolicy,
   type Device,
   type EndpointOffer,
+  normalizeImageRef,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   SCOPE_READ,
   type ServerFrame,
   Store,
+  TERMINAL_AGENT_STATES,
 } from "@ompd/core";
 import type { TunnelDaemon } from "@ompd/tunnel";
 import { type AwakeProcess, SleepGuard } from "./awake.ts";
 import { NO_TARGET, type WebViewApprovalGate, WebViewBridge, type WebViewDispatch } from "./browser/bridge.ts";
-import { mcpServerDescriptor, startWebViewMcpServer, type WebViewMcpServer } from "./browser/mcp-server.ts";
+import { startWebViewMcpServer, type WebViewMcpServer, webViewMcpServersFor } from "./browser/mcp-server.ts";
+import { endpointPath } from "./endpoint.ts";
 import { reachableEndpoints } from "./endpoints.ts";
 import { EvolutionEngine, ProposalStore } from "./evolution/index.ts";
 import { HttpIntentPeer, type IntentPeer, QueuedIntentDrainer } from "./federation/queued-intents.ts";
+import { Filesystem } from "./filesystem/index.ts";
 import { Gateway, GatewayEvents, type VoiceHandler } from "./gateway/index.ts";
 import { homeIdFor } from "./home-id.ts";
 import { HostRegistry } from "./hosts.ts";
-import { ContainerBackend, HostProvisioner, LocalBackend } from "./provisioner/index.ts";
+import { McpAuthSubsystem } from "./mcpauth/index.ts";
+import type { VaultBackend } from "./mcpauth/types.ts";
+import { DaemonModelAccess } from "./model-broker/index.ts";
+import { ContainerBackend, HostProvisioner, KNOWN_RUNTIMES, LocalBackend } from "./provisioner/index.ts";
 import { Scheduler } from "./routines/index.ts";
 import { SessionIndex } from "./sessions/session-index.ts";
 import { Supervisor } from "./supervisor.ts";
 import { createTunnelDialer } from "./tunnel/dial.ts";
 import { identityPath, loadIdentity } from "./tunnel/identity.ts";
+import { assertSoleDaemon } from "./tunnel/sole-daemon.ts";
 import {
   type SttEngine,
   selectSttEngine,
@@ -173,6 +182,126 @@ export interface OmpdConfig {
    * Delegate poll cadence in milliseconds. 0 means the drainer default.
    */
   intentPollIntervalMs: number;
+  /**
+   * Directories a paired device may browse, start a session in, and clone
+   * into.
+   *
+   * Empty means the operator's home directory, which is the honest default:
+   * this exists so someone standing up with a phone can pick where the next
+   * piece of work happens, and everything they would pick lives under home.
+   * Narrow it to the directories that actually hold work, or widen it
+   * deliberately -- but note what widening means, because a device that can
+   * name a directory can start a session in it, and a session runs code.
+   *
+   * A path outside every entry here is refused rather than listed, and
+   * resolution happens before that check, so `..` and a symlink pointing out
+   * are the same refusal. See `filesystem/roots.ts`.
+   */
+  fsRoots: string[];
+  /**
+   * Container runtime this daemon uses, or empty for the platform default.
+   *
+   * Durable config rather than an environment variable, and that is the whole
+   * point of it: a launchd-started daemon does not inherit anyone's shell, so
+   * an env-only pin was reliably present while a developer tested it by hand
+   * and reliably absent in the one place it decides anything. It also has to
+   * be readable by `ompd doctor`, which is a different process and would
+   * otherwise be reporting its own environment rather than the daemon's.
+   *
+   * An unknown name is refused rather than ignored: falling back to the
+   * platform default when an operator asked for docker would run every agent
+   * somewhere they did not choose, with nothing saying so.
+   */
+  containerRuntime: string;
+  /**
+   * Container image every container host runs, or empty for ompd's pinned
+   * default base plus its mounted toolchain.
+   *
+   * Setting this is an act of **trust by the operator who sets it**, and the
+   * trust is not backed by anything ompd does. Nothing is mounted over a named
+   * image, no digest is pinned for it, and the approval gate cannot confine
+   * what is inside it: the image's ENTRYPOINT is the first thing the runtime
+   * executes, before ompd has a process to gate, so everything ompd controls
+   * is downstream of code that has already run. There is no pre-entrypoint
+   * hook to put a gate in; making this safe would need a different mechanism,
+   * such as accepting only signed images whose digest the operator approved
+   * out of band, and ompd has no such mechanism today.
+   *
+   * That is also exactly why it lives here and not on the wire. This is a
+   * decision made on the machine that will run it, by whoever has its disk. A
+   * paired device holding `manage` scope is authenticated, not trusted with
+   * supply chain, so `host.image` is refused at the gateway.
+   *
+   * Normalized and checked by `normalizeImageRef`, the same function the
+   * gateway uses, so the two doors cannot drift apart.
+   */
+  containerImage: string;
+  /**
+   * Loopback port the MCP auth broker listens on, or 0 to leave it off.
+   *
+   * Fixed rather than OS-assigned, and that is the whole requirement. The URL
+   * is written into OMP's MCP config file, which is read by sessions this
+   * daemon did not start and will outlive; a port that moved on every restart
+   * would point every one of those entries at nothing. If the port is taken,
+   * the daemon says so and refuses rather than binding elsewhere, because
+   * binding elsewhere silently breaks every config entry already written.
+   */
+  mcpAuthPort: number;
+  /**
+   * Provision container hosts with scoped access to one model, through the
+   * daemon's own broker.
+   *
+   * On by default, and the default is the honest one: a container agent holds
+   * no provider credential of its own, so without this it comes up, reaches
+   * `idle`, and then fails every prompt with `No model selected`. That is the
+   * exact shape of a capability that looks delivered and is not.
+   *
+   * Turning it off does **not** produce a container agent that answers
+   * prompts. It makes container provisioning refuse, naming this key, and that
+   * is the only defensible reading of "off": the alternative is a mute agent
+   * sitting at `idle` with nothing saying why. There is no fallback to a local
+   * model and no invented default either, because both would answer a prompt
+   * from somewhere the operator never chose.
+   */
+  containerModelAccess: boolean;
+  /**
+   * The single model id a container host is granted, or empty to resolve the
+   * host's own `modelRoles.default` from the omp config.
+   *
+   * Empty means "resolve", the same convention `containerImage: ""` already
+   * carries for "ompd's pinned default": a real answer rather than a missing
+   * one. What it must never mean is a model this file picked. The grant is
+   * spent against the operator's own credential, so which provider it reaches
+   * and what it costs are theirs to decide; if neither this nor
+   * `modelRoles.default` resolves, container provisioning fails naming both
+   * rather than reaching for whatever happens to be installed.
+   *
+   * One model, not a set. The broker allowlists exactly this id and refuses a
+   * request whose body names anything else, so a guest holding the grant
+   * cannot widen it into the operator's whole provider catalogue.
+   *
+   * Provider-qualified, like `anthropic/claude-haiku-4-5`, because that is the
+   * form the gateway's own catalogue and `modelRoles.default` both use. A bare
+   * model name is not a valid value here.
+   */
+  containerModel: string;
+  /**
+   * Port the model broker binds on each container network's gateway address.
+   *
+   * One fixed port serves every network at once, which is worth stating
+   * because it looks like a collision waiting to happen and is not: the broker
+   * binds the *per-network gateway address*, and each container network gets
+   * its own subnet, so two listeners on two networks never share an address.
+   * Two daemons on one machine would collide, and that is already refused.
+   *
+   * It cannot be `0` for an OS-assigned port, and that is the whole reason it
+   * is a setting rather than a detail. The guest's `models.yml` carries the
+   * endpoint and has to be seeded before the container starts, while the
+   * gateway address does not exist to bind until a container is already
+   * running on that network. The number is therefore needed before the bind
+   * can happen, so it has to be chosen rather than discovered.
+   */
+  containerModelBrokerPort: number;
 }
 
 export const DEFAULT_CONFIG: OmpdConfig = {
@@ -187,6 +316,13 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   intentPeerUrl: "",
   intentPeerToken: "",
   intentPollIntervalMs: 0,
+  fsRoots: [],
+  containerRuntime: "",
+  containerImage: "",
+  mcpAuthPort: DEFAULT_MCP_AUTH_PORT,
+  containerModelAccess: true,
+  containerModel: "",
+  containerModelBrokerPort: 7788,
 };
 
 export interface OmpdOptions {
@@ -212,6 +348,12 @@ export interface OmpdOptions {
   intentPeer?: IntentPeer;
   /** Delegate poll cadence for `intentPeer`; defaults to the drainer cadence. */
   intentPollIntervalMs?: number;
+  /**
+   * MCP auth vault backend seam, so a test never writes an item into the
+   * operator's real login keychain. The daemon probes for the strongest
+   * available backend when this is absent, which is what production does.
+   */
+  mcpAuthVault?: VaultBackend;
   /** Power-assertion seam, so a test never spawns a real `caffeinate`. */
   spawnAwake?: (command: string[]) => AwakeProcess;
   /** Skips speech-engine probing, which shells out. */
@@ -344,8 +486,101 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
       `${path}: intentPollIntervalMs must be a non-negative integer, got ${String(merged.intentPollIntervalMs)}`,
     );
   }
+  if (!Array.isArray(merged.fsRoots) || merged.fsRoots.some(root => typeof root !== "string")) {
+    throw new Error(`${path}: fsRoots must be an array of absolute paths`);
+  }
+  for (const root of merged.fsRoots) {
+    if (!isAbsolute(root)) throw new Error(`${path}: fsRoots entries must be absolute paths, got ${root}`);
+  }
+  // Resolved here rather than at the browse boundary, so `ompd config` and the
+  // logs show the operator which directories are actually exposed instead of
+  // an empty list that silently means something.
+  if (merged.fsRoots.length === 0) merged.fsRoots = [homedir()];
+
+  if (typeof merged.containerRuntime !== "string") {
+    throw new Error(`${path}: containerRuntime must be a string, got ${String(merged.containerRuntime)}`);
+  }
+  if (merged.containerRuntime !== "" && !KNOWN_RUNTIMES.includes(merged.containerRuntime)) {
+    throw new Error(
+      `${path}: containerRuntime must be empty for the platform default or one of ` +
+        `${KNOWN_RUNTIMES.join(", ")}, got ${merged.containerRuntime}`,
+    );
+  }
+  if (typeof merged.containerImage !== "string") {
+    throw new Error(`${path}: containerImage must be a string, got ${String(merged.containerImage)}`);
+  }
+  if (merged.containerImage !== "") {
+    // The same normalizer the gateway runs, so a value one door refuses cannot
+    // be a value the other accepts. The normalized form is written back, so
+    // everything downstream uses the string that was checked rather than the
+    // one that was typed.
+    const image = normalizeImageRef(merged.containerImage);
+    if (!image.ok) throw new Error(`${path}: containerImage is not usable: ${image.reason}`);
+    merged.containerImage = image.ref;
+  }
+  if (!Number.isInteger(merged.mcpAuthPort) || merged.mcpAuthPort < 0 || merged.mcpAuthPort > 65_535) {
+    throw new Error(`${path}: mcpAuthPort must be an integer between 0 and 65535`);
+  }
+  if (merged.mcpAuthPort !== 0 && merged.mcpAuthPort === merged.port) {
+    // Two listeners cannot share a port, and the failure would arrive as an
+    // EADDRINUSE during start with nothing naming which of the two settings
+    // caused it.
+    throw new Error(`${path}: mcpAuthPort must differ from port, both are ${merged.port}`);
+  }
+  if (typeof merged.containerModelAccess !== "boolean") {
+    throw new Error(`${path}: containerModelAccess must be true or false, got ${String(merged.containerModelAccess)}`);
+  }
+  if (typeof merged.containerModel !== "string") {
+    throw new Error(`${path}: containerModel must be a string, got ${String(merged.containerModel)}`);
+  }
+  // Not `0`. Every other port in this file may be zero and mean "whatever the
+  // OS hands back", and this one cannot: the guest's config carries the
+  // endpoint and is written before the container starts, while the address the
+  // broker binds does not exist until it is already running. A zero here would
+  // seed a guest with a port nothing ever listens on.
+  if (
+    !Number.isInteger(merged.containerModelBrokerPort) ||
+    merged.containerModelBrokerPort < 1 ||
+    merged.containerModelBrokerPort > 65_535
+  ) {
+    throw new Error(
+      `${path}: containerModelBrokerPort must be an integer between 1 and 65535, got ` +
+        `${String(merged.containerModelBrokerPort)}`,
+    );
+  }
 
   return merged;
+}
+
+/**
+ * How this daemon's config resolves into the container backend's settings.
+ *
+ * Named rather than inlined at the construction site, because the
+ * empty-string convention is a rule and not formatting. `""` means "not
+ * configured", and `ContainerBackend` reads an absent `runtime` as "probe in
+ * platform order" and an absent `image` as "the pinned base plus the mounted
+ * toolchain". Passing the empty string straight through would turn both of
+ * those into a pin on a runtime named `""` and an image named `""`, which is
+ * the shape of bug that produces a runtime error a long way from its cause.
+ *
+ * These used to be `process.env.OMPD_CONTAINER_RUNTIME` and
+ * `OMPD_CONTAINER_IMAGE`, read here and again in `HostProvisioner`'s own
+ * defaults. Both reads are gone. A launchd-started daemon inherits launchd's
+ * environment rather than any shell, so an env-only setting was reliably
+ * present while a developer tested it by hand and reliably absent in the one
+ * place it decided anything; and `ompd doctor`, a different process, could
+ * only ever report on its own environment. There is no env override left on
+ * the product path, deliberately: an override that a second process cannot
+ * see is a setting that cannot be reported honestly.
+ *
+ * A configured image is trusted by whoever configured it and is confined by
+ * nothing ompd does. See `OmpdConfig.containerImage`.
+ */
+export function containerBackendSettings(config: OmpdConfig): { runtime?: string; image?: string } {
+  return {
+    ...(config.containerRuntime === "" ? {} : { runtime: config.containerRuntime }),
+    ...(config.containerImage === "" ? {} : { image: config.containerImage }),
+  };
 }
 
 /**
@@ -364,17 +599,9 @@ export function ensureHome(home: string): string {
   return home;
 }
 
-/**
- * Where the daemon records the address it is actually serving.
- *
- * Runtime state, not configuration: written at `listen` and removed at `stop`,
- * the way a pid file is. It exists because a daemon started with `--port 0`,
- * or with a `--port` that never reached the config file, is otherwise
- * unfindable by the next command someone types.
- */
-export function endpointPath(home: string): string {
-  return join(home, "endpoint");
-}
+// In `endpoint.ts` and re-exported, so the tunnel's pre-start guard can read
+// the published address without importing the composition root.
+export { endpointPath };
 
 export class Ompd {
   #home: string;
@@ -388,6 +615,16 @@ export class Ompd {
   #hosts: HostRegistry;
   #supervisor: Supervisor;
   #provisioner: HostProvisioner;
+  /**
+   * The one thing that makes a container agent able to answer a prompt.
+   *
+   * Built unconditionally rather than lazily on the first container provision,
+   * because it owns nothing until asked: no port is bound and no `omp` child
+   * is spawned until a container actually needs a grant. What construction here
+   * does buy is that `#stop` has something to close on every path, including a
+   * daemon that failed part-way through `start`.
+   */
+  #modelAccess: DaemonModelAccess;
   #scheduler: Scheduler;
   #tasks: TaskManager;
   #sessionIndex: SessionIndex;
@@ -408,6 +645,7 @@ export class Ompd {
   #tunnel: TunnelDaemon | undefined;
   #webViewBridge: WebViewBridge;
   #webViewMcpServer: WebViewMcpServer | undefined;
+  #mcpAuth: McpAuthSubsystem;
 
   #stt: SttEngine | undefined;
   #tts: TtsEngine | undefined;
@@ -472,6 +710,38 @@ export class Ompd {
     // the daemon's own machine is the whole point of that refusal.
     this.#hosts = new HostRegistry({ spawn: opts.spawnHost });
 
+    // Two directories one letter apart, and confusing them is the bug this
+    // comment exists to prevent. `#home` is ompd's OWN state directory,
+    // normally `~/.ompd`: the pairing token, the store, the audit trail, and
+    // the one directory a container may never mount. `configDir` below is
+    // omp's config directory, normally `~/.omp`: where `agent.db` holds the
+    // host's provider credentials and where the two loopback auth children
+    // write their bearer files. Model access reads the second and must never
+    // be pointed at the first.
+    //
+    // Read-only to this daemon, and only ever by the `omp` children it spawns.
+    // Nothing here copies `~/.omp` anywhere, least of all into a guest.
+    this.#modelAccess = new DaemonModelAccess({
+      ompPath: this.#config.ompPath,
+      configDir: join(homedir(), ".omp"),
+      brokerPort: this.#config.containerModelBrokerPort,
+      model: this.#config.containerModel,
+      enabled: this.#config.containerModelAccess,
+      onLog: this.#onLog,
+      // A grant is the daemon's own act, so no `actorDeviceId`: the device that
+      // asked for the agent is already on the `host.provision` row, and
+      // attributing the credential decision to it would be a claim about
+      // authority nobody made. `detail` carries the model id and the container
+      // network; the bearer the guest was issued is never in it, which is the
+      // whole reason this callback takes a row rather than the grant.
+      // A straight pass-through with no cast and no runtime check, because
+      // `ModelAccessAuditRow.action` is the same closed union `Store.audit`
+      // takes. Worth saying, since the two types are declared in different
+      // packages: if one ever grows a member the other lacks, the compiler is
+      // what stops it here rather than a guard nobody remembers to keep.
+      onAudit: row => this.#store.audit({ action: row.action, outcome: row.outcome, detail: row.detail }),
+    });
+
     // The backends are named here rather than left to the provisioner's
     // defaults for one reason: they have to spawn through the registry above,
     // or a container agent's session would be the only kind the gateway could
@@ -481,10 +751,16 @@ export class Ompd {
       workspace: opts.repoRoot ?? process.cwd(),
       backends: {
         local: new LocalBackend({ ompPath: this.#config.ompPath, spawn: this.#hosts.spawn }),
+        // Runtime and image come from the validated config on disk, not from
+        // the environment. See `containerBackendSettings`.
         container: new ContainerBackend({
           workspace: opts.repoRoot ?? process.cwd(),
           home: this.#home,
           spawn: this.#hosts.spawn,
+          // Not optional in the daemon, only in the type: every container this
+          // process provisions goes through the broker, or fails saying why.
+          modelAccess: this.#modelAccess,
+          ...containerBackendSettings(this.#config),
         }),
       },
       onLog: this.#onLog,
@@ -513,11 +789,38 @@ export class Ompd {
       ompPath: this.#config.ompPath,
       spawnHost: this.#hosts.spawn,
       provisioner: this.#provisioner,
+      // The daemon's real state directory, not the `~/.ompd` the supervisor
+      // would otherwise assume. A daemon started with `OMPD_HOME` elsewhere
+      // has to refuse mounts of *that* directory, and a default cannot know it.
+      home: this.#home,
       onLog: this.#onLog,
-      mcpServersFor: agentId => {
+      mcpServersFor: (agentId, host) => {
         const server = this.#webViewMcpServer;
         if (server === undefined) throw new Error("webview MCP server is not started");
-        return [mcpServerDescriptor(server, agentId)];
+        // Offered only to a host that can actually reach it. The server binds
+        // `127.0.0.1` and `urlFor` hands out `http://127.0.0.1:<port>/...`,
+        // which means the daemon's machine from a local host and the CONTAINER
+        // from a provisioned one. Handing it to a container did not degrade the
+        // browser tool, it failed the whole session: omp answers `session/new`
+        // with `ompd-webview: Unable to connect. Is the computer able to access
+        // the url?`, so every container create returned HTTP 500 while the same
+        // request with no `mcpServers` succeeded.
+        //
+        // Omitted rather than rewritten to a container-reachable address on
+        // purpose. Making it reachable means binding this surface off loopback,
+        // and that is a security decision about a tool that drives the
+        // operator's own browser -- not something to slip in as the fix for a
+        // 500. So the absence is stated here and in the log rather than being
+        // quietly papered over, and `docs/running.md` says the browser tool is
+        // a local-host capability.
+        if (host.kind !== "local") {
+          this.#onLog?.(
+            `agent ${agentId}: no browser tool on this ${host.kind} host. The WebView MCP server is bound to ` +
+              `the daemon's loopback, which a provisioned host cannot reach; everything else about the session ` +
+              `is unaffected.`,
+          );
+        }
+        return webViewMcpServersFor(server, agentId, host);
       },
     });
     const intentPeer =
@@ -557,6 +860,18 @@ export class Ompd {
     this.#tasks = new TaskManager({ store: this.#store, supervisor: this.#supervisor });
     this.#sessionIndex = new SessionIndex({ store: this.#store });
 
+    // Constructed here rather than in `start`, because opening the vault is
+    // what proves the master key is reachable, and a daemon that cannot read
+    // its own refresh tokens should say so while someone is still watching the
+    // console rather than at the first 401 hours later.
+    this.#mcpAuth = new McpAuthSubsystem({
+      home: this.#home,
+      port: this.#config.mcpAuthPort,
+      cwd: opts.repoRoot ?? process.cwd(),
+      ...(opts.mcpAuthVault === undefined ? {} : { vaultBackend: opts.mcpAuthVault }),
+      onLog: this.#onLog,
+    });
+
     this.#gateway = new Gateway({
       supervisor: this.#supervisor,
       store: this.#store,
@@ -572,11 +887,16 @@ export class Ompd {
       sessions: this.#hosts,
       sessionIndex: this.#sessionIndex,
       endpoints: () => this.#reachableEndpoints(),
+      // Read from the config the daemon booted with, so widening or narrowing
+      // what a phone may browse is a config edit and a restart, never
+      // something a device can talk this daemon into at runtime.
+      filesystem: new Filesystem({ roots: this.#config.fsRoots }),
       onWebViewResult: (agentId, requestId, result) => this.#webViewBridge.resolveResult(agentId, requestId, result),
       onWebViewUnavailable: agentId => this.#webViewBridge.cancelAgent(agentId, NO_TARGET),
       staticRoot: opts.staticRoot ?? defaultStaticRoot(),
       skills: { list: listSkillCatalog },
       connectors: { list: listConnectorCatalog },
+      mcpAuth: this.#mcpAuth,
       tasks: this.#tasks,
       syncConfig: {
         read: () => {
@@ -820,6 +1140,54 @@ export class Ompd {
   }
 
   async #start(): Promise<OmpdStartInfo> {
+    // Before anything binds or dials: refuse to be a second daemon on a home
+    // that already has one. Two processes on one identity evict each other at
+    // the hub forever, which is how a paired phone came to see no sessions,
+    // and `--foreground` (how launchd runs it, and how a hand start bypasses
+    // the CLI's own checks) otherwise reaches this method with no guard at
+    // all. Throws before any state is opened or written.
+    await assertSoleDaemon({ home: this.#home, host: this.#config.host, port: this.#config.port });
+    // No ACP host survives a daemon process. Durable `idle`/`busy` rows from
+    // the previous process are therefore not live agents, even if shutdown
+    // never ran (power loss, SIGKILL, old versions that failed to settle
+    // them). Advertising one as live sends a phone to a host pid that does not
+    // exist. A replica keeps mirrored remote rows by design; only the owning
+    // daemon can make this local-host assertion.
+    if (!this.#config.replica) {
+      let interruptedAgents = 0;
+      for (const agent of this.#store.listAgents()) {
+        if (TERMINAL_AGENT_STATES.includes(agent.state)) continue;
+        this.#store.setAgentState(agent.id, "stopped");
+        interruptedAgents += 1;
+      }
+      if (interruptedAgents > 0) {
+        this.#onLog?.(`settled ${interruptedAgents} agent(s) whose ACP hosts belonged to a previous daemon`);
+      }
+
+      // Settling the agent rows is not the same as reclaiming what they were
+      // running on. A container host outlives the daemon that made it: its
+      // command is `tail -f /dev/null`, so `--rm` never fires, and before
+      // `HostRef.resolved` existed there was nothing recorded to address it
+      // with. Reclaim them here, from the store, while the rows are still
+      // readable. Failures are logged and audited rather than fatal: a daemon
+      // that will not start because a stale container cannot be removed is
+      // worse than one that starts and says so.
+      const stale = this.#store.listAgents().map(agent => agent.host);
+      const { reclaimed, unreclaimable } = await this.#provisioner.reconcile(stale).catch((err: unknown) => {
+        this.#onLog?.(`host reconciliation failed: ${String(err)}`);
+        return { reclaimed: [] as string[], unreclaimable: [] as string[] };
+      });
+      if (reclaimed.length > 0) {
+        this.#onLog?.(`reclaimed ${reclaimed.length} host(s) left by a previous daemon`);
+      }
+      if (unreclaimable.length > 0) {
+        this.#onLog?.(
+          `${unreclaimable.length} host(s) could not be reclaimed automatically and may still be running: ` +
+            unreclaimable.join(", "),
+        );
+      }
+    }
+
     if (this.#voiceEnabled && (this.#stt === undefined || this.#tts === undefined)) {
       // Probed once here rather than per socket: selection shells out to find
       // the speech binaries, and doing that on every connection would put a
@@ -834,6 +1202,12 @@ export class Ompd {
     }
 
     this.#webViewMcpServer ??= startWebViewMcpServer(this.#webViewBridge);
+
+    // Before the gateway, deliberately. A session that connects the moment the
+    // gateway is up may already hold a brokered MCP entry from a previous run,
+    // and a listener that is not yet accepting reads to that session as a
+    // connector that is down rather than as a daemon that is still starting.
+    this.#mcpAuth.start();
 
     const bootstrap = this.#bootstrapLocalOperator();
     const port = await this.#gateway.listen();
@@ -919,9 +1293,18 @@ export class Ompd {
       // 4. Only now tear down what is running. Any earlier and a request could
       //    still arrive for a host that had already been killed.
       await this.#supervisor.shutdown();
+      // Every container destroyed here releases its grant against a broker
+      // that is still listening, which is why model access is closed in the
+      // `finally` below rather than on this line: a release against a closed
+      // broker is a revocation that never happened.
       await this.#provisioner.close();
       this.#webViewMcpServer?.close();
       this.#webViewMcpServer = undefined;
+      // After the gateway, so a request still in flight can still be handed a
+      // token, and after the hosts, so a session being torn down does not lose
+      // its connector mid-sentence. The access tokens die with the process,
+      // which is the intent: only the refresh material is durable.
+      this.#mcpAuth.stop();
 
       // Retracted after the gateway is closed, never before: a file saying
       // "here" while the port is still accepting would be the wrong lie in the
@@ -931,10 +1314,23 @@ export class Ompd {
       this.#proposals.close();
       this.#store.close();
     } finally {
-      // Unconditional. A teardown that threw part-way through must not leave
-      // the machine unable to sleep, and this is the one step whose effect is
-      // on the operating system rather than on this process.
+      // Unconditional, both of them, and for the same reason: these are the
+      // steps whose effect is on the operating system rather than on this
+      // process, so a teardown that threw part-way through must not skip them.
+      // Everything above leaks at worst a file handle this process was about
+      // to lose anyway.
+      //
+      // The sleep guard first because it is synchronous and cannot fail: a
+      // machine left unable to sleep is not something to risk on the outcome
+      // of an await.
       this.#sleepGuard.release();
+      // Then model access, which is two spawned `omp` children and a listener
+      // bound on a container network's gateway address. Orphaning those is the
+      // worst outcome in this method: the children front the operator's own
+      // credential vault, and the listener would go on honouring live grants
+      // with no daemon left to revoke them. Last, so it runs after every
+      // container destroy above has had its release land on a live broker.
+      await this.#modelAccess.close();
     }
   }
 

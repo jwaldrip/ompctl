@@ -32,14 +32,7 @@
  * acknowledgement instead.
  */
 
-export type EnvelopeKind =
-  | "open"
-  | "to_daemon"
-  | "to_client"
-  | "close"
-  | "ack"
-  | "webhook_request"
-  | "webhook_response";
+export type EnvelopeKind = "open" | "to_daemon" | "to_client" | "close" | "webhook_request" | "webhook_response";
 
 /**
  * One hop between hub instances.
@@ -59,8 +52,6 @@ export interface RelayEnvelope {
   readonly payload?: string;
   readonly code?: string;
   readonly message?: string;
-  /** Cumulative count the sender has actually taken in, for `ack`. */
-  readonly received?: number;
   readonly requestId?: string;
   readonly routineId?: string;
   readonly secret?: string;

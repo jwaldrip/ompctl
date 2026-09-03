@@ -10,16 +10,21 @@
  * markup. `render()` below concatenates both, so a width or height audit of
  * "the rendered tree" covers what a real page would actually ship.
  *
- * The corpus is 42 sessions across 12 directories: big enough that a bug only
- * visible past a few dozen rows (a group whose header count is wrong once
- * it has 5 members, a collapse that drops the wrong section) cannot hide
- * behind a three-row fixture.
+ * Two corpora, because the list is windowed. 42 sessions across 12 directories
+ * for everything the header and the toolbar report, which is computed from the
+ * whole corpus whether or not a row is mounted; and 6 sessions across 3
+ * directories for the assertions about a specific row or group, which have to
+ * be inside the mounted window to be assertable at all. `fleet-scale.test.tsx`
+ * owns the window's own bound. A test that needs a particular row on screen
+ * and asks for it out of 42 is not testing the row, it is testing where the
+ * virtualizer happened to stop.
  */
 
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ScopeAccess } from "../src/console/state.ts";
 import type { BrowserSession, BrowserState } from "../src/session/browser.ts";
 import { EMPTY_BROWSER } from "../src/session/browser.ts";
 import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
@@ -33,8 +38,18 @@ const { StyleSheet } = await import("react-native");
 const NOW = Date.parse("2026-03-01T00:00:00.000Z");
 const CORPUS = makeSessionCorpus(12);
 
+/**
+ * Small enough that every row and every group header is inside the first
+ * window: 3 directories, 6 sessions, one of them archived.
+ */
+const WINDOWED = makeSessionCorpus(3);
+
 function browserState(overrides: Partial<BrowserState> = {}): BrowserState {
   return { ...EMPTY_BROWSER, sessions: CORPUS, ...overrides };
+}
+
+function windowedState(overrides: Partial<BrowserState> = {}): BrowserState {
+  return { ...EMPTY_BROWSER, sessions: WINDOWED, ...overrides };
 }
 
 const NOOP_SESSION = (_session: BrowserSession) => {};
@@ -77,7 +92,7 @@ function stylesForMarkup(markup: string): string {
 }
 
 /** Markup plus only the atomic CSS used by that rendered page. */
-function render(browser: BrowserState): string {
+function render(browser: BrowserState, deleteAccess: ScopeAccess = "granted"): string {
   const markup = renderToStaticMarkup(
     <FleetScreen
       browser={browser}
@@ -85,9 +100,11 @@ function render(browser: BrowserState): string {
       onToggleGroup={NOOP_CWD}
       onToggleGrouped={NOOP}
       onToggleArchived={NOOP}
-      onTakeover={NOOP_SESSION}
+      onOpen={NOOP_SESSION}
       onArchive={NOOP_SESSION}
       onUnarchive={NOOP_SESSION}
+      onDelete={NOOP_SESSION}
+      deleteAccess={deleteAccess}
       now={NOW}
     />,
   );
@@ -104,9 +121,11 @@ describe("RNW style rule scoping", () => {
 describe("the session browser renders a realistic corpus", () => {
   const html = render(browserState());
 
-  test("every group's directory name and count are on screen", () => {
-    for (let d = 0; d < 12; d++) {
-      expect(html).toContain(`repo-${d}`);
+  test("every group in the mounted window carries its directory name and count", () => {
+    const windowed = render(windowedState());
+    for (let d = 0; d < 3; d++) {
+      expect(windowed).toContain(`repo-${d}`);
+      expect(windowed).toContain(`data-testid="group-count-/Users/op/dev/src/github.com/op/repo-${d}"`);
     }
   });
 
@@ -140,28 +159,27 @@ describe("the session browser renders a realistic corpus", () => {
   });
 });
 
-describe("takeover and archive are visually distinct actions", () => {
-  const live = CORPUS.find(s => s.status === "live-tui") as BrowserSession;
-  const dormant = CORPUS.find(s => s.status === "dormant") as BrowserSession;
-  const html = render(browserState());
+describe("open and archive are visually distinct actions", () => {
+  const live = WINDOWED.find(s => s.status === "live-tui") as BrowserSession;
+  const dormant = WINDOWED.find(s => s.status === "dormant") as BrowserSession;
+  const html = render(windowedState());
 
-  test("a dormant row's takeover action reads Resume, not Archive or Delete", () => {
-    expect(html).toContain(`data-testid="session-takeover-${dormant.id}"`);
+  test("a dormant row's canonical open action reads Resume, not Archive or Delete", () => {
+    expect(html).toContain(`data-testid="session-open-${dormant.id}"`);
     expect(html).toContain(`Resume ${dormant.title}`);
   });
 
-  test("a live-tui row's takeover action reads Attach, distinct from a dormant Resume", () => {
-    expect(html).toContain(`data-testid="session-takeover-${live.id}"`);
-    expect(html).toContain(`Attach ${live.title}`);
+  test("a live-tui row's canonical open action reads Prompt, distinct from a dormant Resume", () => {
+    expect(html).toContain(`data-testid="session-open-${live.id}"`);
+    expect(html).toContain(`Prompt ${live.title}`);
   });
 
-  test("archive is a separate control from takeover, with its own testID and label", () => {
+  test("archive is a separate control from open, with its own testID and label", () => {
     expect(html).toContain(`data-testid="session-archive-${dormant.id}"`);
     expect(html).toContain(`Archive ${dormant.title}`);
-    // The two actions are not the same pressable: distinct testIDs prove it.
-    expect(html).not.toContain(
-      `data-testid="session-archive-${dormant.id}"data-testid="session-takeover-${dormant.id}"`,
-    );
+    // The open and archive actions are separate pressables with distinct
+    // canonical identities.
+    expect(html).not.toContain(`data-testid="session-archive-${dormant.id}"data-testid="session-open-${dormant.id}"`);
   });
 
   test("archive's label never says delete, remove, or destroy", () => {
@@ -174,9 +192,9 @@ describe("takeover and archive are visually distinct actions", () => {
   });
 
   test("an archived row's primary action reads Restore, not Resume or Attach", () => {
-    const archived = CORPUS.find(s => s.status === "archived") as BrowserSession;
+    const archived = WINDOWED.find(s => s.status === "archived") as BrowserSession;
     // Archived is hidden by default; show it to reach the row at all.
-    const withArchived = render({ ...browserState(), showArchived: true });
+    const withArchived = render(windowedState({ showArchived: true }));
     expect(withArchived).toContain(`data-testid="session-unarchive-${archived.id}"`);
     expect(withArchived).toContain(`Restore ${archived.title}`);
   });
@@ -185,10 +203,7 @@ describe("takeover and archive are visually distinct actions", () => {
 describe("collapsed group status precedence, rendered", () => {
   test("a collapsed group still shows its count and worst-status colour", () => {
     const dir = "/Users/op/dev/src/github.com/op/repo-0"; // 1 session, live-tui (d=0,i=0 -> statuses[0])
-    const collapsed: BrowserState = {
-      ...browserState(),
-      collapsedGroups: new Set([dir]),
-    };
+    const collapsed: BrowserState = windowedState({ collapsedGroups: new Set([dir]) });
     const html = render(collapsed);
     expect(html).toContain(`data-testid="group-header-${dir}"`);
     expect(html).toContain(`data-testid="group-count-${dir}"`);
@@ -199,13 +214,14 @@ describe("collapsed group status precedence, rendered", () => {
   });
 
   test("collapsing a group removes its rows from the list but not its header", () => {
-    const dir = "/Users/op/dev/src/github.com/op/repo-3"; // 4 sessions
+    const dir = "/Users/op/dev/src/github.com/op/repo-2"; // 3 sessions
     // Show archived too, so every session in the group is accounted for
     // regardless of status; the point here is collapse, not visibility.
-    const group = CORPUS.filter(s => s.cwd === dir);
-    const expanded = render({ ...browserState(), showArchived: true });
-    const collapsed = render({ ...browserState(), showArchived: true, collapsedGroups: new Set([dir]) });
+    const group = WINDOWED.filter(s => s.cwd === dir);
+    const expanded = render(windowedState({ showArchived: true }));
+    const collapsed = render(windowedState({ showArchived: true, collapsedGroups: new Set([dir]) }));
 
+    expect(group.length).toBeGreaterThan(1);
     for (const session of group) {
       expect(expanded).toContain(`data-testid="session-row-${session.id}"`);
       expect(collapsed).not.toContain(`data-testid="session-row-${session.id}"`);
@@ -217,11 +233,10 @@ describe("collapsed group status precedence, rendered", () => {
 
 describe("grouping toggle", () => {
   test("turning grouping off renders a flat list with cwd shown per row", () => {
-    const html = render({ ...browserState(), grouped: false });
+    const html = render(windowedState({ grouped: false }));
     expect(html).not.toContain('data-testid="group-header-');
-    // A sample of ids from different directories should all be present.
-    const sample = [CORPUS[0], CORPUS[CORPUS.length - 1]] as BrowserSession[];
-    for (const session of sample) {
+    // Every row of the small corpus, from three different directories.
+    for (const session of WINDOWED.filter(s => s.status !== "archived")) {
       expect(html).toContain(`data-testid="session-row-${session.id}"`);
     }
   });
@@ -267,5 +282,119 @@ describe("renders at a 390px phone width without a fixed width past it", () => {
     // than its flex container.
     expect(html).toMatch(/overflow-x:hidden/);
     expect(html).toContain("text-overflow:ellipsis");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The header's controls belong at the screen's trailing content edge
+// ---------------------------------------------------------------------------
+
+/**
+ * `render()` concatenates markup and the atomic CSS it uses, so a test can
+ * read a specific element's classes out of the markup and then check what
+ * those classes declare, the same discipline the 390px suite above applies to
+ * widths. Returns the full opening tag so attribute order never matters.
+ */
+function openingTagAt(markup: string, index: number): string {
+  const start = markup.lastIndexOf("<div", index);
+  return start === -1 ? "" : markup.slice(start, markup.indexOf(">", start) + 1);
+}
+
+/**
+ * RNW writes an element's atomic classes as one space-separated attribute;
+ * this is the extraction the two tests below share, kept as a named step
+ * because the empty-class fallback is easy to get wrong inline.
+ */
+function classListOf(tag: string): string[] {
+  return (tag.match(/class="([^"]*)"/)?.[1] ?? "").split(/\s+/).filter(name => name.length > 0);
+}
+
+/**
+ * The subset of the sheet whose selector addresses one of these classes,
+ * joined for regex matching. Scopes every assertion to the element under
+ * test, so a margin or flex elsewhere in the tree cannot satisfy it.
+ */
+function rulesDeclaring(css: string, classes: readonly string[]): string {
+  return css
+    .split("\n")
+    .filter(rule => classes.some(name => hasClassSelector(rule, name)))
+    .join("\n");
+}
+
+describe("the header's controls sit at the trailing content edge", () => {
+  const page = render(browserState());
+  const sheetStart = page.indexOf("\n<style>");
+  const markup = page.slice(0, sheetStart);
+  const css = page.slice(sheetStart);
+  /**
+   * The level this harness can honestly observe. happy-dom computes no real
+   * layout, so a rendered rectangle for the head strip and one for a row
+   * would both read zero and any geometric assertion would be vacuous. What
+   * the harness does have is the atomic CSS each element's style compiles
+   * to, and the defect's whole mechanism lives there: `head` carried
+   * `paddingHorizontal: space.wide`, a 16px `padding-right` that parked the
+   * toggles inboard of the rows' flush action column, seen by eye on the
+   * iPad. These tests read that sheet, so restoring the old padding fails
+   * them outright rather than by approximation.
+   */
+  const headTag = markup.match(/<[^>]*data-testid="fleet-head"[^>]*>/)?.[0] ?? "";
+  const headClasses = classListOf(headTag);
+  const headRules = rulesDeclaring(css, headClasses);
+
+  test("the strip takes no trailing inset: the toggles reach the rows' trailing edge", () => {
+    // `fleet-head` anchors the strip; without it the tag lookup finds
+    // nothing and this test fails rather than passing on an empty ruleset.
+    expect(headClasses.length).toBeGreaterThan(0);
+    const trailingInsets = [...headRules.matchAll(/padding-right:\s*(\d+(?:\.\d+)?)px/g)].map(m => Number(m[1]));
+    expect(Math.max(0, ...trailingInsets)).toBe(0);
+  });
+
+  test("the strip keeps its leading inset: the title still leads on the shared content edge", () => {
+    // SortBar's chips and the group headers both lead on `space.wide`
+    // (16px); a fix that dropped the strip's padding altogether would put
+    // the title outboard of every strip beneath it, the same defect on the
+    // other edge.
+    expect(headClasses.length).toBeGreaterThan(0);
+    expect(headRules).toMatch(/padding-left:\s*16px/);
+  });
+
+  test("the rows' trailing action column is the flush edge the toggles align to", () => {
+    // The other half of the contract. Every row's trailing-most control is
+    // its delete action, a bare 44px target with no padding or margin of
+    // its own, so the column it forms is the screen's trailing edge itself.
+    // If the rows ever gain a trailing inset, this fails instead of letting
+    // the two edges drift apart in opposite directions.
+    const deleteTag = markup.match(/<[^>]*data-testid="session-delete-[^"]*"[^>]*>/)?.[0] ?? "";
+    const deleteRules = rulesDeclaring(css, classListOf(deleteTag));
+    expect(deleteTag).not.toBe("");
+    expect(deleteRules).not.toMatch(/padding-right/);
+    expect(deleteRules).not.toMatch(/margin-right/);
+  });
+
+  test("the title group flexes to absorb the slack, not a spacer's worth of it", () => {
+    // The wrapper View around the title is the last div opened before the
+    // title's own tag; it must be the element carrying flex, or the toggles
+    // after it drift back toward the count the way the phone screenshot
+    // showed.
+    const leadTag = openingTagAt(markup, markup.indexOf('data-testid="fleet-title"'));
+    const leadClasses = classListOf(leadTag);
+    expect(leadClasses.length).toBeGreaterThan(0);
+    // RNW compiles `flex: 1` differently across versions: the grow/shrink/
+    // basis shorthand, atomized longhand, or the bare `flex:1` this repo's
+    // RNW actually emits. The pin is the contract, this group takes the
+    // remaining width, not one compiler's spelling of it.
+    expect(rulesDeclaring(css, leadClasses)).toMatch(/flex:\s*1\s+1\s+0%|flex-grow:\s*1|flex:\s*1\s*;/);
+  });
+
+  test("the toggles add no margin of their own; the head's gap spaces the strip", () => {
+    // Both toggles share `styles.toggle`, so whichever rule set each carries,
+    // none of it may declare a margin: a leftover marginLeft here would fight
+    // the right alignment the title group's flex just bought.
+    for (const id of ["grouped-toggle", "archived-toggle"]) {
+      const tag = markup.match(new RegExp(`<[^>]*data-testid="${id}"[^>]*>`))?.[0] ?? "";
+      const classes = classListOf(tag);
+      expect(classes.length).toBeGreaterThan(0);
+      expect(rulesDeclaring(css, classes)).not.toMatch(/margin-left/);
+    }
   });
 });

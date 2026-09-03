@@ -26,15 +26,36 @@ import {
   rotateCommand,
 } from "./commands/devices.ts";
 import { doctorCommand } from "./commands/doctor.ts";
+import { mcpCommand, mcpInstallCommand } from "./commands/mcp.ts";
+import {
+  mcpAuthApplyCommand,
+  mcpAuthImportCommand,
+  mcpAuthLoginCommand,
+  mcpAuthLogoutCommand,
+  mcpAuthRefreshCommand,
+  mcpAuthStatusCommand,
+  mcpAuthUnapplyCommand,
+} from "./commands/mcp-auth.ts";
 import { openCommand } from "./commands/open.ts";
-import { routinesCommand, runCommand, webhookSecretCommand } from "./commands/routines.ts";
+import { routineDeleteCommand, routinesCommand, runCommand, webhookSecretCommand } from "./commands/routines.ts";
 import { selfInstallCommand } from "./commands/self-install.ts";
 import { installCommand, uninstallCommand } from "./commands/service.ts";
 import { syncConfigCommand } from "./commands/sync.ts";
 import { tuiCommand } from "./commands/tui.ts";
+import { isHostedWorkerSelector, runHostedWorker } from "./worker-host.ts";
 
 export async function run(argv: string[], ctx: CliContext = defaultContext()): Promise<number> {
   try {
+    // A hidden __omp_worker_* selector means OMP's speech clients inside a
+    // compiled daemon re-executed this binary to host a speech worker out of
+    // process. Checked before parsing because these selectors are not
+    // commands. The speech runtimes themselves stay out of every normal
+    // invocation: worker-host.ts imports them dynamically, only on this path.
+    // See worker-host.ts for which selectors are hosted and why the rest are
+    // not.
+    if (isHostedWorkerSelector(argv[0])) {
+      return await runHostedWorker(argv[0]);
+    }
     const command = parseCommand(argv);
 
     switch (command.kind) {
@@ -93,8 +114,23 @@ export async function run(argv: string[], ctx: CliContext = defaultContext()): P
         return await runCommand(ctx, command);
       case "webhook-secret":
         return await webhookSecretCommand(ctx, command);
+      case "routine-delete":
+        return await routineDeleteCommand(ctx, command);
       case "sync-config":
         return await syncConfigCommand(ctx, command);
+      case "mcp":
+        // stdout in this process is omp's JSON-RPC stream, and one stray
+        // human-readable byte on it corrupts the framing: the client stops
+        // seeing responses and reports a dead server, with nothing anywhere to
+        // say why. So the serve path runs with `out` pointing at stderr.
+        // `serveRoutinesMcp` redirects again on its own side, and both stay:
+        // this is where the human-facing context is chosen, that is where the
+        // transport is owned, and a stdout write from either is unrecoverable,
+        // so neither layer should have to trust the other. `report` below
+        // writes only to `err`, so a thrown error cannot reach stdout either.
+        return await mcpCommand({ ...ctx, out: ctx.err });
+      case "mcp-install":
+        return await mcpInstallCommand(ctx);
       case "audit":
         return await auditCommand(ctx, command);
       case "open":
@@ -103,6 +139,27 @@ export async function run(argv: string[], ctx: CliContext = defaultContext()): P
         return await selfInstallCommand(ctx, command);
       case "doctor":
         return await doctorCommand(ctx);
+      case "mcp-auth":
+        switch (command.action) {
+          case "status":
+            return await mcpAuthStatusCommand(ctx, command);
+          case "login":
+            return await mcpAuthLoginCommand(ctx, command);
+          case "import":
+            return await mcpAuthImportCommand(ctx, command);
+          case "apply":
+            return await mcpAuthApplyCommand(ctx);
+          case "unapply":
+            return await mcpAuthUnapplyCommand(ctx);
+          case "refresh":
+            return await mcpAuthRefreshCommand(ctx, command);
+          case "logout":
+            return await mcpAuthLogoutCommand(ctx, command);
+          default: {
+            const exhaustive: never = command;
+            throw new Error(`unhandled mcp-auth action ${JSON.stringify(exhaustive)}`);
+          }
+        }
       case "install":
         return await installCommand(ctx, command);
       default:

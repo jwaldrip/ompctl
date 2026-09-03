@@ -15,7 +15,7 @@ Feature: Pairing a device with a daemon
   Scenario: An endpoint that is not a daemon is named as such
     When I fill in "pair-endpoint" with "https://example.com/not-a-daemon"
     And I dismiss the keyboard
-    Then I can read "Not a daemon endpoint" in "pair-endpoint-kind"
+    Then I can read "Not a hub address" in "pair-endpoint-kind"
     And I capture "02-pair-rejects-bad-endpoint"
 
   Scenario: A socket endpoint is recognised before any token is given

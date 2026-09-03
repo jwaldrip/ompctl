@@ -1,5 +1,5 @@
 /**
- * Prove no private identifier is reachable from any ref in this repository.
+ * Prove no private identifier is introduced by the checked-out branch.
  *
  * This exists because the obvious one-liner is unsafe at scale:
  *
@@ -109,6 +109,53 @@ function git(args: string[], cwd: string): { stdout: string; stderr: string; sta
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status ?? 1 };
 }
 
+/**
+ * The revisions this run is answerable for: the checked-out tree, plus the
+ * commits this branch adds on top of its base.
+ *
+ * It used to be `rev-list --all`, and that is a guard that fails the wrong
+ * person. `actions/checkout` fetches with `fetch-depth: 0`, so every remote ref
+ * the fetch brought down is reachable, and one contaminated branch turned every
+ * other PR's run red -- for content that branch's author could see and this
+ * one's author could not. A check that fails PR B because of branch A gets
+ * ignored, and an ignored guard is worth nothing.
+ *
+ * So the scope is what this PR actually put there. The base is
+ * `OMPCTL_PROVENANCE_BASE`, else the pull request's own base branch from
+ * `GITHUB_BASE_REF`, else `origin/main`, else `main`. HEAD is always included,
+ * because the tree being merged is the thing that matters most and a branch
+ * with no commits of its own must still be swept.
+ *
+ * Note what this does NOT do: it does not exclude a path, and it does not
+ * weaken a term. Everything this branch introduces is still swept, and main's
+ * own runs still sweep main. What is gone is one branch's history landing in
+ * another branch's result.
+ */
+function scopeRevs(repo: string): { revs: string[]; base: string | undefined } {
+  const candidates = [
+    process.env.OMPCTL_PROVENANCE_BASE,
+    process.env.GITHUB_BASE_REF === undefined ? undefined : `origin/${process.env.GITHUB_BASE_REF}`,
+    "origin/main",
+    "main",
+  ].filter((c): c is string => c !== undefined && c.length > 0);
+
+  for (const base of candidates) {
+    if (git(["rev-parse", "--verify", "--quiet", `${base}^{commit}`], repo).status !== 0) continue;
+    const r = git(["rev-list", "HEAD", "--not", base], repo);
+    if (r.status !== 0) continue;
+    const own = r.stdout.split("\n").filter(l => l.length > 0);
+    const head = git(["rev-parse", "HEAD"], repo).stdout.trim();
+    return { revs: own.includes(head) ? own : [head, ...own], base };
+  }
+
+  // No base to compare against: sweep this branch's own history rather than
+  // every ref. A clone with no `main` is a local checkout, not a pull request.
+  const r = git(["rev-list", "HEAD"], repo);
+  if (r.status !== 0) throw new Error(`rev-list failed in ${repo}: ${r.stderr.trim()}`);
+  return { revs: r.stdout.split("\n").filter(l => l.length > 0), base: undefined };
+}
+
+/** Every rev in the repository, used only for the shallow-checkout floor and the proof mirror. */
 function revs(repo: string): string[] {
   const r = git(["rev-list", "--all"], repo);
   if (r.status !== 0) throw new Error(`rev-list failed in ${repo}: ${r.stderr.trim()}`);
@@ -157,6 +204,9 @@ if (!patternMatchesSynthetic()) {
 }
 console.log("  ok   pattern matches every term it declares");
 
+// The floor stays measured against the whole repository, because what it
+// detects is a shallow checkout: a depth-1 fetch makes any sweep vacuous no
+// matter how it is scoped. The sweep itself runs on the scoped set.
 const all = revs(repo);
 if (all.length < MIN_REVS) {
   console.error(
@@ -166,9 +216,15 @@ if (all.length < MIN_REVS) {
   );
   process.exit(1);
 }
-console.log(`  ok   ${all.length} revs, swept in batches of ${BATCH}`);
 
-const { hits, failures } = sweep(repo, all);
+const scope = scopeRevs(repo);
+console.log(
+  scope.base === undefined
+    ? `  ok   ${all.length} revs reachable; sweeping this branch's own ${scope.revs.length}, no base ref to compare against`
+    : `  ok   ${all.length} revs reachable; sweeping the ${scope.revs.length} this branch adds over ${scope.base}`,
+);
+
+const { hits, failures } = sweep(repo, scope.revs);
 if (failures.length > 0) {
   console.error(`  FAIL ${failures.length} batch(es) did not run; this is NOT a clean result`);
   for (const f of failures.slice(0, 5)) console.error(`       ${f.reason}`);
@@ -211,14 +267,74 @@ function loadBaseline(): Set<string> {
 }
 
 const baseline = loadBaseline();
-const unexpected = hits.filter(h => !baseline.has(h));
-const stale = [...baseline].filter(b => !hits.includes(b));
+/**
+ * Hits this branch is not answerable for.
+ *
+ * Sweeping the checked-out tree means the tree includes everything the base
+ * already had, so contamination sitting in `main` would fail every open pull
+ * request -- the same wrong-person failure as sweeping every ref, arriving from
+ * a different direction. A hit is inherited when its path also hits at the base
+ * *and* this branch did not touch that path. Touch it and you own it, which is
+ * what stops this from hiding a new hit added to an already-dirty file.
+ *
+ * Inherited hits are reported, never dropped silently, and the base's own run
+ * still fails on them. Nothing is excluded by path and no term is weakened.
+ */
+function inheritedPaths(base: string | undefined): Set<string> {
+  if (base === undefined) return new Set();
+  const baseHits = sweep(repo, [base]);
+  if (baseHits.failures.length > 0) return new Set();
+  const touched = new Set(
+    git(["diff", "--name-only", base, "HEAD"], repo)
+      .stdout.split("\n")
+      .filter(l => l.length > 0),
+  );
+  const paths = new Set<string>();
+  for (const hit of baseHits.hits) {
+    const path = hit.slice(hit.indexOf(":") + 1);
+    if (!touched.has(path)) paths.add(path);
+  }
+  return paths;
+}
+
+const inherited = inheritedPaths(scope.base);
+const ownHits = hits.filter(h => !inherited.has(h.slice(h.indexOf(":") + 1)));
+const inheritedCount = hits.length - ownHits.length;
+if (inheritedCount > 0) {
+  const names = [...new Set(hits.map(h => h.slice(h.indexOf(":") + 1)).filter(p => inherited.has(p)))];
+  console.log(
+    `  note ${inheritedCount} hit(s) are in files this branch never touched and already hit at ${scope.base}; ` +
+      "they belong to that branch's own run",
+  );
+  for (const name of names.slice(0, 10)) console.log(`       ${name}`);
+}
+const unexpected = ownHits.filter(h => !baseline.has(h));
+
+/**
+ * Staleness is only decidable for what this run actually swept.
+ *
+ * The rule that a baseline entry which no longer hits must be removed is what
+ * stops the file outliving the exposure it describes, and it depends on the
+ * sweep having looked. Once the sweep is scoped to one branch's commits, an
+ * entry for a commit outside that range was never examined: calling it stale
+ * would fail every pull request for acknowledgements about history it did not
+ * touch, which is the same wrong-person failure the scoping fixed. So the rule
+ * applies to entries inside the scope, and the rest are reported as untested
+ * rather than silently counted as either.
+ */
+const swept = new Set(scope.revs);
+const inScope = [...baseline].filter(b => swept.has(b.slice(0, b.indexOf(":"))));
+const outOfScope = baseline.size - inScope.length;
+const stale = inScope.filter(b => !hits.includes(b));
 
 if (baseline.size > 0) {
   console.log(
     `\n  NOTE ${baseline.size} acknowledged hit(s) in already-published history; ` +
       "removing them needs a history rewrite and a force-push",
   );
+  if (outOfScope > 0) {
+    console.log(`       ${outOfScope} of them sit outside this run's scope and were not re-checked here`);
+  }
 }
 
 if (stale.length > 0) {
@@ -243,6 +359,6 @@ if (unexpected.length > 0) {
 
 console.log(
   baseline.size > 0
-    ? "\nProvenance holds: no NEW private identifier is reachable; only the acknowledged history remains."
-    : "\nProvenance clean: no private identifier is reachable from any ref.",
+    ? "\nProvenance holds: no new private identifier was found in this branch; acknowledged history is unchanged."
+    : "\nProvenance clean: no private identifier was found in this branch.",
 );

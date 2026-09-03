@@ -20,12 +20,29 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "@ompd/core";
 import { NO_TARGET } from "../src/browser/bridge.ts";
-import { endpointPath, LOCAL_OPERATOR_DEVICE_ID, loadConfig, Ompd, type OmpdOptions } from "../src/daemon.ts";
+import {
+  containerBackendSettings,
+  endpointPath,
+  LOCAL_OPERATOR_DEVICE_ID,
+  loadConfig,
+  Ompd,
+  type OmpdOptions,
+} from "../src/daemon.ts";
+import { type CommandRunner, ContainerBackend, KNOWN_RUNTIMES, runtimeOrder } from "../src/provisioner/index.ts";
 import { base64ToPcm, type PcmAudio, pcmToBase64, type SttEngine, type TtsEngine } from "../src/voice/index.ts";
 import { createFakeHost } from "./fake-host.ts";
 
@@ -64,7 +81,7 @@ afterEach(async () => {
 });
 
 describe("config", () => {
-  test("defaults to loopback, 7777, standard policy, awake while working, no hub", () => {
+  test("defaults to loopback, 7777, standard policy, awake while working, no hub, home browsable", () => {
     expect(loadConfig(tempDir("ompd-cfg-"))).toEqual({
       host: "127.0.0.1",
       port: 7777,
@@ -79,6 +96,30 @@ describe("config", () => {
       intentPeerUrl: "",
       intentPeerToken: "",
       intentPollIntervalMs: 0,
+      // Resolved from empty to the operator's home directory by `loadConfig`
+      // itself, so what a phone may browse is visible in the loaded config
+      // rather than being an empty list that silently means something else.
+      fsRoots: [homedir()],
+      // Both empty, and empty is a real answer rather than a missing one: the
+      // platform's own runtime, and ompd's pinned base plus mounted toolchain.
+      containerRuntime: "",
+      containerImage: "",
+      // Fixed rather than OS-assigned: this number ends up inside URLs written
+      // into OMP's own MCP config, which outlive the process that wrote them.
+      mcpAuthPort: 7778,
+      // On, because a container agent with no model access reaches `idle` and
+      // then fails every prompt. Off makes provisioning refuse rather than
+      // producing that agent, so the default is the only one that delivers the
+      // capability the flag names.
+      containerModelAccess: true,
+      // Empty is the same kind of real answer as the two above: resolve the
+      // host's own `modelRoles.default` rather than pin a model this daemon
+      // chose, because the grant is spent against the operator's credential.
+      containerModel: "",
+      // A number rather than 0, and that is load bearing: the guest's config
+      // carries this endpoint and is written before the container starts, so
+      // an OS-assigned port would not be known in time to seed it.
+      containerModelBrokerPort: 7788,
     });
   });
 
@@ -139,6 +180,171 @@ describe("config", () => {
       intentPeerToken: "peer-secret",
       intentPollIntervalMs: 2500,
     });
+  });
+
+  test("containerRuntime round-trips, and an unknown one names the valid set", () => {
+    const home = tempDir("ompd-cfg-");
+
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerRuntime: "docker" }));
+    expect(loadConfig(home).containerRuntime).toBe("docker");
+
+    // The failure that matters: a typo must not quietly become "the platform
+    // default", which would run every agent on a runtime nobody chose while
+    // the config file says otherwise.
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerRuntime: "dokcer" }));
+    expect(() => loadConfig(home)).toThrow(/containerRuntime must be empty for the platform default or one of/);
+    expect(() => loadConfig(home)).toThrow(new RegExp(KNOWN_RUNTIMES.join(", ")));
+
+    // A non-string is refused before the membership test, so the message is
+    // about the type rather than about a stringified object not being docker.
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerRuntime: 7 }));
+    expect(() => loadConfig(home)).toThrow(/containerRuntime must be a string/);
+
+    // Empty stays empty rather than being resolved to a name here: which
+    // runtime the platform default picks is the provisioner's decision, made
+    // when it probes, and freezing an answer at config-load time would report
+    // a runtime that was installed when the daemon started.
+    writeFileSync(join(home, "config.json"), JSON.stringify({}));
+    expect(loadConfig(home).containerRuntime).toBe("");
+  });
+
+  test("containerImage round-trips and is normalized on the way in", () => {
+    const home = tempDir("ompd-cfg-");
+
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: "ghcr.io/example/omp:1" }));
+    expect(loadConfig(home).containerImage).toBe("ghcr.io/example/omp:1");
+
+    // Normalized, not merely checked. What comes back is the trimmed string,
+    // because that is the one that reaches a runtime's argv; a loader that
+    // validated the trimmed form and returned the raw one would be checking a
+    // value nothing ever uses.
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: "\tghcr.io/example/omp:2 \n" }));
+    expect(loadConfig(home).containerImage).toBe("ghcr.io/example/omp:2");
+
+    // The full hostile table, and the proof that the wire door refuses the
+    // same strings, lives in gateway.test.ts: both doors are driven from one
+    // list there so the two cannot drift.
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: "--privileged" }));
+    expect(() => loadConfig(home)).toThrow(/containerImage is not usable: .*cannot begin with a dash/);
+
+    writeFileSync(join(home, "config.json"), JSON.stringify({ containerImage: 7 }));
+    expect(() => loadConfig(home)).toThrow(/containerImage must be a string/);
+  });
+
+  test("the model access keys round-trip, and each refusal names the file and the value", () => {
+    const home = tempDir("ompd-cfg-");
+    const path = join(home, "config.json");
+
+    // Positive controls first, and they are not decoration: three refusals
+    // prove nothing if the loader throws on every value these keys can hold.
+    writeFileSync(
+      path,
+      JSON.stringify({
+        containerModelAccess: false,
+        containerModel: "anthropic/claude-haiku-4-5",
+        containerModelBrokerPort: 19_000,
+      }),
+    );
+    const loaded = loadConfig(home);
+    expect(loaded.containerModelAccess).toBe(false);
+    expect(loaded.containerModel).toBe("anthropic/claude-haiku-4-5");
+    expect(loaded.containerModelBrokerPort).toBe(19_000);
+
+    // `"yes"` rather than a shape nothing would ever write. A truthy string is
+    // exactly what an operator types when they mean `true`, and coercing it
+    // would turn a typo into a silently different daemon.
+    writeFileSync(path, JSON.stringify({ containerModelAccess: "yes" }));
+    expect(() => loadConfig(home)).toThrow(/containerModelAccess must be true or false, got yes/);
+    expect(() => loadConfig(home)).toThrow(path);
+
+    writeFileSync(path, JSON.stringify({ containerModel: 7 }));
+    expect(() => loadConfig(home)).toThrow(/containerModel must be a string, got 7/);
+
+    // `0` specifically. Every other port in this config may be zero and mean
+    // "whatever the OS hands back", and this one may not: the guest's config
+    // carries the endpoint and is seeded before the container starts, so a port
+    // discovered at bind time would be seeded as a port nothing listens on.
+    for (const bad of [0, -1, 65_536, 7788.5, "7788"]) {
+      writeFileSync(path, JSON.stringify({ containerModelBrokerPort: bad }));
+      expect(() => loadConfig(home), String(bad)).toThrow(
+        /containerModelBrokerPort must be an integer between 1 and 65535/,
+      );
+    }
+
+    // Overrides travel the same checks, which is what the CLI and the container
+    // check script rely on: a flag must not be a way past the loader.
+    expect(() => loadConfig(home, { containerModelBrokerPort: 0 })).toThrow(/containerModelBrokerPort must be/);
+  });
+
+  test("the container backend is built from the persisted config, and probes what it names", async () => {
+    // The assertion that matters is which runtime the backend actually reaches
+    // for, because that is the whole chain: config.json, `loadConfig`,
+    // `containerBackendSettings`, `ContainerBackend`, `selectRuntime`. A
+    // `daemon.config` assertion would stop at the first link.
+    //
+    // Driven through `containerBackendSettings` with an injected runner rather
+    // than through `daemon.provisioner`, because the real backend spawns real
+    // binaries: on a developer's Mac with docker installed a pin on docker
+    // succeeds and goes on to pull an image, and `Bun.spawn` resolves against
+    // the process's own starting PATH, so blanking `process.env.PATH` does not
+    // make that deterministic.
+    const attempts: string[][] = [];
+    const run: CommandRunner = async argv => {
+      attempts.push(argv);
+      return { code: 127, stdout: "", stderr: "command not found" };
+    };
+
+    const pinned = tempDir("ompd-cfg-");
+    writeFileSync(join(pinned, "config.json"), JSON.stringify({ containerRuntime: "docker" }));
+    const settings = containerBackendSettings(loadConfig(pinned));
+    expect(settings).toEqual({ runtime: "docker" });
+
+    const withPin = new ContainerBackend({ ...settings, run });
+    await expect(withPin.provision({ kind: "container" })).rejects.toThrow(
+      /pinned container runtime docker is unusable/,
+    );
+    expect(attempts[0]).toEqual(["docker", "--version"]);
+
+    // The control that makes the line above mean something: with no pin the
+    // same code reaches for the platform's own runtime, so `docker` came from
+    // the config file rather than from a constant. Derived from
+    // `runtimeOrder`, not hardcoded, because the answer differs per platform
+    // and a hardcoded `container` would fail on a Linux runner.
+    const unpinned = tempDir("ompd-cfg-");
+    const bare = containerBackendSettings(loadConfig(unpinned));
+    // Absent keys, not empty strings: `ContainerBackend` reads absence as
+    // "probe in platform order" and would read `""` as a pin on nothing.
+    expect(bare).toEqual({});
+    expect("runtime" in bare).toBe(false);
+    expect("image" in bare).toBe(false);
+
+    attempts.length = 0;
+    const withoutPin = new ContainerBackend({ ...bare, run });
+    await expect(withoutPin.provision({ kind: "container" })).rejects.toThrow(/container runtime/);
+    expect(attempts[0]?.[0]).toBe(runtimeOrder(process.platform)[0]);
+    expect(attempts[0]?.[0]).not.toBe("docker");
+  });
+
+  test("a configured image reaches the backend, and an unset one leaves the default alone", () => {
+    const configured = tempDir("ompd-cfg-");
+    writeFileSync(
+      join(configured, "config.json"),
+      JSON.stringify({ containerImage: " ghcr.io/example/omp:1 ", containerRuntime: "podman" }),
+    );
+    // Trimmed on the way through, and both fields travel together.
+    expect(containerBackendSettings(loadConfig(configured))).toEqual({
+      runtime: "podman",
+      image: "ghcr.io/example/omp:1",
+    });
+
+    const unset = tempDir("ompd-cfg-");
+    writeFileSync(join(unset, "config.json"), JSON.stringify({ containerRuntime: "podman" }));
+    const settings = containerBackendSettings(loadConfig(unset));
+    expect(settings).toEqual({ runtime: "podman" });
+    // The property the empty-string convention exists for: an unset image must
+    // not arrive as `image: ""`, which the backend would treat as an operator
+    // naming an image and stop mounting the toolchain over.
+    expect("image" in settings).toBe(false);
   });
 });
 
@@ -264,6 +470,15 @@ describe("lifecycle", () => {
       routineId: "rtn_nightly",
       state: "running",
       startedAt: "2026-01-01T00:00:00.000Z",
+      actions: [
+        {
+          actionId: "act_nightly",
+          actionName: "Nightly",
+          index: 0,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
     });
     expect(daemon.store.hasActiveRun("rtn_nightly")).toBe(true);
 
@@ -294,6 +509,41 @@ describe("lifecycle", () => {
 
     await daemon.stop();
     await expect(fetch(`${info.url}/v1/agents`)).rejects.toThrow();
+  });
+
+  test("restart demotes persisted agents whose ACP hosts died with the previous daemon", async () => {
+    // The real failure: a two-day-old row stayed `idle` after its host pid was
+    // gone. Mobile rendered LIVE (AGENT), sent a prompt, and got
+    // `agent ... has no live host`. A new daemon owns no hosts from the old
+    // process, so every non-terminal local row is dormant before it advertises
+    // its first roster.
+    const home = tempDir("ompd-daemon-");
+    const first = build(home);
+    const info = await first.start();
+    const created = await fetch(`${info.url}/v1/agents`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${await tokenOf(home)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "stale", cwd: home }),
+    });
+    expect(created.status).toBe(201);
+    const id = first.supervisor.listAgents()[0]?.id;
+    expect(id).toBeDefined();
+    expect(first.store.getAgent(id ?? "")?.state).toBe("idle");
+
+    await first.stop();
+    const afterShutdown = new Store(join(home, "ompd.db"));
+    expect(afterShutdown.getAgent(id ?? "")?.state).toBe("stopped");
+    // Simulate a killed old daemon that never ran shutdown: its last durable
+    // write still says idle. Startup owns this second boundary.
+    afterShutdown.setAgentState(id ?? "", "idle");
+    afterShutdown.close();
+
+    const second = build(home);
+    await second.start();
+    expect(second.store.getAgent(id ?? "")?.state).toBe("stopped");
   });
 });
 
@@ -1559,5 +1809,34 @@ describe("voice wiring", () => {
     // Null, not an empty string: the caller has to tell "nothing to say" from
     // "say nothing", or a phone announces an empty utterance.
     expect(daemon.spokenReply(agent.id, 0)).toBeNull();
+  });
+});
+
+describe("filesystem composition", () => {
+  test("browses exactly the configured roots, and refuses a path outside them", async () => {
+    const home = tempDir("ompd-fs-");
+    const root = realpathSync(tempDir("ompd-fs-root-"));
+    const outside = realpathSync(tempDir("ompd-fs-outside-"));
+    mkdirSync(join(root, "alpha"));
+    // The composition is the point of this test: a `Filesystem` built from
+    // `fsRoots` and handed to the gateway. Constructing a gateway by hand, as
+    // the frame suites do, cannot tell a wired daemon from an unwired one.
+    const daemon = build(home, { overrides: { port: 0, fsRoots: [root] } });
+    const info = await daemon.start();
+    const socket = await socketFor(info.port, await tokenOf(home));
+
+    socket.send({ t: "fs_list" });
+    const roots = await socket.next(frame => frame.t === "fs_listing");
+    expect(roots).toMatchObject({ path: "", roots: [root] });
+
+    socket.send({ t: "fs_list", path: root });
+    const listing = await socket.next(frame => frame.t === "fs_listing" && frame.path === root);
+    expect(listing).toMatchObject({ entries: [{ name: "alpha", kind: "dir" }] });
+
+    socket.send({ t: "fs_list", path: outside });
+    const refusal = await socket.next(frame => frame.t === "error");
+    expect(refusal).toMatchObject({ code: "out_of_roots" });
+
+    socket.close();
   });
 });

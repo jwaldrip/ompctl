@@ -10,12 +10,36 @@
  * thing cached across calls is the expensive part -- message counts, keyed
  * by mtime+size in the store -- which invalidates itself the instant a file
  * actually changes.
+ *
+ * The build never blocks the event loop for long and never blocks first
+ * paint on a count:
+ * - `build()` is async and cooperative: it yields while scanning, and the
+ *   background warm pass streams transcript bytes off the event-loop thread
+ *   and yields between files, so HTTP routes, websocket pings, and relay acks
+ *   keep being served mid-build. A hub client's reconnect replay used to restart
+ *   a multi-minute synchronous scan and starve even `/v1/health`; that
+ *   failure mode is the reason this file is async at all.
+ * - First paint serves every row immediately, with counts from the durable
+ *   cache where they exist and `null` where they do not -- never a
+ *   fabricated 0. Missing counts are warmed in the background, and
+ *   `queryWithWarm` hands the caller a promise of upgraded rows for the one
+ *   upgraded frame a socket client expects once they land.
+ * - Single-flight: concurrent index requests (several clients, or one
+ *   client's reconnect replay firing `listSessions` again) share one
+ *   in-flight build and one in-flight warm pass. A reconnect loop cannot
+ *   multiply the work it is reconnecting because of.
  */
 
-import type { Store } from "@ompd/core";
+import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, relative, resolve } from "node:path";
+import { getSessionsDir } from "@oh-my-pi/pi-utils";
+import type { SessionScanCacheEntry, Store } from "@ompd/core";
 import type {
   AgentId,
   SessionCwdScope,
+  SessionDeleteResult,
   SessionGroup,
   SessionLiveStatus,
   SessionQuery,
@@ -24,9 +48,16 @@ import type {
   SessionSummary,
 } from "@ompd/core/contracts";
 import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
-import { type DecodedCwd, decodeSessionDirName } from "./cwd-codec.ts";
 import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
-import { countMessages, MESSAGE_COUNT_SIZE_CEILING_BYTES, type RawSessionFile, scanSessionFiles } from "./scanner.ts";
+import {
+  countMessagesAsync,
+  findSessionFileIter,
+  MESSAGE_COUNT_SIZE_CEILING_BYTES,
+  type RawSessionFile,
+  scanSessionFilesIter,
+} from "./scanner.ts";
+import type { SessionWatch, SessionWatchOptions } from "./watcher.ts";
+import { watchSessionFiles } from "./watcher.ts";
 
 export interface SessionIndexOptions {
   store: Store;
@@ -34,6 +65,88 @@ export interface SessionIndexOptions {
   runDaemonsRoot?: string;
   homeDir?: string;
   tmpDir?: string;
+  /**
+   * Test seam over the filesystem scan, so a test can count scans (the
+   * single-flight contract) and hold one open long enough for a second
+   * request to join it, instead of racing real mtimes.
+   */
+  scan?: (sessionsRoot?: string) => AsyncIterable<RawSessionFile> | Iterable<RawSessionFile>;
+}
+
+/** `queryWithWarm`'s answer: first paint now, upgraded rows when they exist. */
+export interface SessionQueryResult {
+  /**
+   * Every row immediately: counts from the durable cache where they exist,
+   * `null` where not yet counted (or over the size ceiling, where never).
+   */
+  sessions: SessionSummary[];
+  /**
+   * Resolves with the same query re-run once the warm pass has filled in
+   * every count first paint reported as unknown, or null when nothing
+   * needed warming. It is a fresh query, not a patched-up copy of the first
+   * frame: statuses, ordering, and any session files that appeared meanwhile
+   * reflect the moment the warm pass finished.
+   */
+  warmed: Promise<SessionSummary[]> | null;
+}
+
+/** One build's outcome: first-paint rows plus the background warm pass they started, if any. */
+interface BuildOutcome {
+  rows: SessionSummary[];
+  warm: Promise<void> | null;
+  /**
+   * Every session a process holds right now, by id, as this build resolved
+   * it: one of ompd's own non-terminal agents, or a verified live client
+   * presence, or the single-candidate inference for a bare `omp` whose
+   * presence record predates carrying a session id.
+   *
+   * Separate from `status` because `status` cannot answer this: an archive
+   * mark deliberately outranks liveness there, so an archived row a busy
+   * agent still holds reports `archived`. Deletion has to know the
+   * difference, and reading it off the row would let an archived-then-resumed
+   * session be deleted out from under its own writer.
+   */
+  held: Set<string>;
+}
+
+/**
+ * Yield scan cadence, in files. Measured here: a scan-shaped pass (readdir
+ * + stat + bounded title read) over 1200 files cost 16ms warm, 0.013ms per
+ * file; the real-tree figure in scanner.ts's header is ~0.25ms per file
+ * cold. Eight files is therefore a 0.1ms slice warm and a ~2ms slice cold
+ * -- small enough that a health route or a websocket ping never waits on
+ * the scan, at a `setImmediate` cost measured in well under a microsecond.
+ */
+const SCAN_YIELD_EVERY_FILES = 8;
+
+/**
+ * Cache-write batch size, in files. One transaction per batch instead of
+ * one per row: an unbatched row was its own implicit transaction -- one WAL
+ * commit and one fsync at SQLite's default synchronous=FULL -- and a cold
+ * pass over an operator-scale tree (~1900 files observed in the field) paid
+ * that once per file, interleaved with the reads, presenting as an
+ * I/O-bound wedge at 0% CPU. 128 keeps the in-flight batch tiny and bounds
+ * a crash's lost work to files whose counts are a recomputable cache
+ * anyway.
+ */
+const WARM_CACHE_BATCH_ROWS = 128;
+
+/**
+ * Deliberately absent: a bounded yield frequency for the targeted lookup.
+ *
+ * Yielding every N directories instead of every one was measured as free on
+ * an idle loop (214 bare `setImmediate`s cost 0.08ms) and looked attractive
+ * under contention, but nothing measured what it does to fairness while the
+ * warm pass is running, and `scanner.test.ts` pins one step per directory as
+ * the cooperative contract. The cache below removes the walk for anything the
+ * index has seen, which is the entire 67ms, so batching the yields on the
+ * remaining cold path would buy little and cost a fairness property no
+ * measurement here defends. Left alone on purpose.
+ */
+
+/** Hand the event loop to whatever else is waiting: I/O callbacks, timers, sockets. Microtasks do not qualify -- they run before the loop moves on. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>(resolve => setImmediate(resolve));
 }
 
 const STATUS_RANK: Record<SessionLiveStatus, number> = {
@@ -43,14 +156,64 @@ const STATUS_RANK: Record<SessionLiveStatus, number> = {
   archived: 3,
 };
 
+function cwdScopeFor(cwd: string, homeDir: string, tempDir: string): SessionCwdScope {
+  const resolved = resolve(cwd);
+  const within = (root: string): boolean => {
+    const rel = relative(resolve(root), resolved);
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  if (within(homeDir)) return "home";
+  if (within(tempDir)) return "tmp";
+  return "abs";
+}
+
+function cacheMatches(cached: SessionScanCacheEntry | null, file: RawSessionFile): cached is SessionScanCacheEntry {
+  return cached !== null && Math.abs(cached.mtimeMs - file.mtimeMs) < 0.001 && cached.sizeBytes === file.sizeBytes;
+}
+
 export class SessionIndex {
   #store: Store;
   #sessionsRoot: string | undefined;
   #runDaemonsRoot: string | undefined;
   #homeDir: string | undefined;
   #tmpDir: string | undefined;
-  /** Decoded cwd, keyed by flattened dir name: many sessions share one directory, so this decodes each name once per build instead of once per session. */
-  #cwdCache = new Map<string, DecodedCwd>();
+  #scan: NonNullable<SessionIndexOptions["scan"]>;
+  /**
+   * The in-flight build. Concurrent requests share it rather than each
+   * paying their own scan -- one phone's refresh racing another's reconnect
+   * replay must not produce two full filesystem walks.
+   */
+  #buildInFlight: Promise<BuildOutcome> | null = null;
+
+  /**
+   * Session id to the file that holds it, for lookups that would otherwise
+   * walk every group directory.
+   *
+   * Seeded by the index build, which already has every path in hand: by the
+   * time an operator can tap a row, that row's path is known, so even the
+   * first tap skips the walk. Validated with one `existsSync` on the way out,
+   * so a file that has since moved or been deleted falls back to the walk
+   * rather than answering with a path that is no longer there.
+   *
+   * A session file does not move in practice -- its name encodes the session
+   * id and its directory encodes the cwd -- which is what makes an entry worth
+   * keeping rather than re-deriving. Bounded by the number of sessions on the
+   * machine, the same order as the catalog this class already assembles.
+   *
+   * Replaced wholesale at the end of a build rather than accumulated into.
+   * Two things follow from that, and both are the point: a build that is
+   * still walking never exposes a half-filled map to a `pathFor` running
+   * beside it, and a session whose file has gone drops out instead of sitting
+   * in here forever being re-validated. Assignment is the swap, so no reader
+   * can observe the intermediate.
+   */
+  #pathBySession: Map<string, string> = new Map();
+  /**
+   * The in-flight background warm pass. One at a time, shared by every
+   * build that observed the same cold counts; a pass that would duplicate
+   * it returns the existing promise instead.
+   */
+  #warmInFlight: Promise<void> | null = null;
 
   constructor(opts: SessionIndexOptions) {
     this.#store = opts.store;
@@ -58,42 +221,74 @@ export class SessionIndex {
     this.#runDaemonsRoot = opts.runDaemonsRoot;
     this.#homeDir = opts.homeDir;
     this.#tmpDir = opts.tmpDir;
+    this.#scan = opts.scan ?? scanSessionFilesIter;
   }
 
-  #decodeCwd(flattenedDir: string): DecodedCwd {
-    const cached = this.#cwdCache.get(flattenedDir);
-    if (cached) return cached;
-    const decoded = decodeSessionDirName(flattenedDir, this.#homeDir, this.#tmpDir);
-    this.#cwdCache.set(flattenedDir, decoded);
-    return decoded;
-  }
-
-  /** The message count for one file: a cache hit when mtime+size still match, a fresh count (cached for next time) when they do not, or null without ever reading the file when it exceeds the size ceiling. */
-  #messageCountFor(file: RawSessionFile): number | null {
+  /**
+   * First-paint message count for one file: the durable cache's number when
+   * mtime+size still match, and null otherwise -- over the size ceiling
+   * forever, under it until the warm pass fills the row in. Never a fresh
+   * read here: the request path must not pay for a count, and never a
+   * fabricated 0 for an unknown one.
+   */
+  #firstPaintCountFor(file: RawSessionFile, misses: RawSessionFile[]): number | null {
     if (file.sizeBytes > MESSAGE_COUNT_SIZE_CEILING_BYTES) return null;
     const cached = this.#store.getSessionScanCache(file.id);
-    if (cached && cached.mtimeMs === file.mtimeMs && cached.sizeBytes === file.sizeBytes) {
+    if (cacheMatches(cached, file)) {
       return cached.messageCount;
     }
-    const count = countMessages(file.path);
-    this.#store.setSessionScanCache(file.id, {
-      mtimeMs: file.mtimeMs,
-      sizeBytes: file.sizeBytes,
-      messageCount: count,
-    });
-    return count;
+    misses.push(file);
+    return null;
+  }
+
+  /**
+   * The one shared build entry point. An in-flight build is returned to
+   * every concurrent caller; only the first caller's scan runs.
+   */
+  #buildShared(): Promise<BuildOutcome> {
+    if (this.#buildInFlight) return this.#buildInFlight;
+    const outcome = this.#buildNow();
+    this.#buildInFlight = outcome;
+    void outcome
+      .catch(() => {})
+      .then(() => {
+        if (this.#buildInFlight === outcome) this.#buildInFlight = null;
+      });
+    return outcome;
   }
 
   /**
    * Build the full catalog fresh from disk, the client presence registry,
    * and ompd's own agent roster. Callers query/group/sort the returned array;
-   * nothing about the assembled view itself is cached.
+   * nothing about the assembled view itself is cached. Counts are first
+   * paint (cache hit or null); the background warm pass for the misses is
+   * started here and handed back so callers that can push an upgraded frame
+   * can await it.
    */
-  build(): SessionSummary[] {
-    this.#cwdCache.clear();
-    const files = scanSessionFiles(this.#sessionsRoot);
+  async #buildNow(): Promise<BuildOutcome> {
+    const files: RawSessionFile[] = [];
+    // Built beside the live one, never into it. The swap below is what makes
+    // this visible, all at once, to anything that asks after the build.
+    const discovered = new Map<string, string>();
+    let sinceYield = 0;
+    for await (const file of this.#scan(this.#sessionsRoot)) {
+      files.push(file);
+      // Free: the scan already knows where every file is, and this is the
+      // whole reason a later tap does not have to go looking for one.
+      discovered.set(file.id, file.path);
+      if (++sinceYield >= SCAN_YIELD_EVERY_FILES) {
+        sinceYield = 0;
+        await yieldToEventLoop();
+      }
+    }
+    // Everything the scan just proved, and nothing it did not: an id whose
+    // file was deleted or renamed between builds is gone from the map rather
+    // than lingering as a path that only fails validation.
+    this.#pathBySession = discovered;
+    const misses: RawSessionFile[] = [];
+    const held = new Set<string>();
     const archived = this.#store.listArchivedSessionIds();
-    const liveClients = listLiveClientPresences(this.#runDaemonsRoot ?? runDaemonsRoot());
+    const liveClients = await listLiveClientPresences(this.#runDaemonsRoot ?? runDaemonsRoot());
     const liveClientBySessionId = new Map<string, (typeof liveClients)[number]>();
     for (const client of liveClients) {
       if (client.sessionId) liveClientBySessionId.set(client.sessionId, client);
@@ -120,8 +315,7 @@ export class SessionIndex {
         const candidates = files.filter(file => {
           if (liveAgentBySessionId.has(file.id)) return false;
           if (liveClientBySessionId.has(file.id)) return false;
-          const decoded = this.#decodeCwd(file.flattenedDir);
-          if (decoded.status !== "ok" || decoded.cwd !== client.projectDir) return false;
+          if (file.cwd === null || resolve(file.cwd) !== resolve(client.projectDir)) return false;
           return file.mtimeMs >= client.registeredAtMs;
         });
         if (candidates.length === 1) {
@@ -133,11 +327,15 @@ export class SessionIndex {
 
     const summaries: SessionSummary[] = [];
     for (const file of files) {
-      const decoded = this.#decodeCwd(file.flattenedDir);
+      const cwdScope: SessionCwdScope =
+        file.cwd === null ? "unknown" : cwdScopeFor(file.cwd, this.#homeDir ?? homedir(), this.#tmpDir ?? tmpdir());
       const isArchived = archived.has(file.id);
       const agentId = liveAgentBySessionId.get(file.id);
       const liveClient = liveClientBySessionId.get(file.id);
       const inferredClient = inferredClientByFileId.get(file.id);
+
+      const heldByProcess = agentId !== undefined || liveClient !== undefined || inferredClient !== undefined;
+      if (heldByProcess) held.add(file.id);
 
       let status: SessionLiveStatus;
       let pid: number | undefined;
@@ -162,17 +360,16 @@ export class SessionIndex {
         status = "dormant";
       }
 
-      const cwdScope: SessionCwdScope = decoded.status === "ok" ? decoded.scope : "unknown";
       summaries.push({
         id: file.id,
-        cwd: decoded.status === "ok" ? decoded.cwd : null,
+        cwd: file.cwd,
         cwdScope,
-        ...(decoded.status === "unknown" ? { cwdDecodeReason: decoded.reason } : {}),
+        ...(file.cwd === null ? { cwdDecodeReason: "no_match" as const } : {}),
         flattenedDir: file.flattenedDir,
         title: file.title,
         createdAt: file.createdAt,
         lastActivityAt: new Date(file.mtimeMs).toISOString(),
-        messageCount: this.#messageCountFor(file),
+        messageCount: this.#firstPaintCountFor(file, misses),
         byteSize: file.sizeBytes,
         status,
         archived: isArchived,
@@ -180,22 +377,142 @@ export class SessionIndex {
         ...(status === "live-ompd" && agentId !== undefined ? { agentId } : {}),
       });
     }
-    return summaries;
+    const warm = misses.length > 0 ? this.#startWarm(misses) : null;
+    return { rows: summaries, warm, held };
+  }
+
+  /**
+   * Start (or join) the single background warm pass counting what first
+   * paint could not. Detached by design: callers that want the upgraded
+   * rows hold the returned promise; the daemon keeps serving everything
+   * else while it runs.
+   */
+  #startWarm(files: RawSessionFile[]): Promise<void> {
+    if (this.#warmInFlight) return this.#warmInFlight;
+    const pass = this.#runWarm(files)
+      .catch(() => {
+        // Detached work: an unexpected failure here must not become an
+        // unhandled rejection. Per-file failures already degrade to a count
+        // of 0 inside the counter; reaching this handler means a bug, and
+        // the next build's warm pass retries whatever was left cold.
+      })
+      .finally(() => {
+        if (this.#warmInFlight === pass) this.#warmInFlight = null;
+      });
+    this.#warmInFlight = pass;
+    return pass;
+  }
+
+  /**
+   * Count the cold files and cache the results in batched transactions.
+   *
+   * Resumability: a row enters the batch only after its file was counted
+   * end to end, and the batch commits all-or-nothing, so a partially
+   * written chunk can never leave a row claiming a count for content it
+   * did not read. A daemon restart mid-pass therefore loses at most the
+   * current batch -- every flushed batch is durable -- and the next pass
+   * picks up exactly where the cache leaves off, because the per-file
+   * re-check below skips every row already written.
+   */
+  async #runWarm(files: RawSessionFile[]): Promise<void> {
+    const batch: Array<{ sessionId: string } & SessionScanCacheEntry> = [];
+    for (const file of files) {
+      // Re-check the cache per file: a prior pass (or a build racing one)
+      // may have counted this exact file between the snapshot and now, and
+      // re-reading it would be the duplicated work the single-flight exists
+      // to prevent.
+      const cached = this.#store.getSessionScanCache(file.id);
+      if (cacheMatches(cached, file)) {
+        continue;
+      }
+      const count = await countMessagesAsync(file.path);
+      batch.push({ sessionId: file.id, mtimeMs: file.mtimeMs, sizeBytes: file.sizeBytes, messageCount: count });
+      await yieldToEventLoop(); // Between files, so a corpus of tiny files cannot chain into one long sync run either.
+      if (batch.length >= WARM_CACHE_BATCH_ROWS) {
+        this.#store.setSessionScanCacheBatch(batch);
+        batch.length = 0;
+        await yieldToEventLoop(); // After a commit too: the flush is real I/O.
+      }
+    }
+    if (batch.length > 0) this.#store.setSessionScanCacheBatch(batch);
+  }
+
+  /** The first-paint rows of one shared build, without a query applied. */
+  async build(): Promise<SessionSummary[]> {
+    return (await this.#buildShared()).rows;
+  }
+
+  /**
+   * Query, filter, and sort the catalog, plus the handle a socket caller
+   * needs to push one upgraded frame once cold counts land. The HTTP route
+   * uses plain `query()`; this is the socket's path because only a socket
+   * can answer one request with a second frame.
+   */
+  async queryWithWarm(q: SessionQuery = {}): Promise<SessionQueryResult> {
+    const { rows, warm } = await this.#buildShared();
+    return {
+      sessions: applyQuery(rows, q),
+      warmed: warm === null ? null : warm.then(() => this.query(q)),
+    };
+  }
+
+  /**
+   * One row by session id, or undefined. Sees archived rows too: a caller
+   * verifying a session-open request against the index needs the row's true
+   * status, and "archived" and "not in the catalog" are different answers.
+   *
+   * Shares the in-flight build like every other reader, so verifying a claim
+   * cannot start a second scan, and reads first-paint rows deliberately: a
+   * claim is decided by status, cwd, and pid, none of which the warm pass
+   * changes. Waiting for counts here would make opening a session pay for
+   * arithmetic it does not consult.
+   */
+  async get(sessionId: string): Promise<SessionSummary | undefined> {
+    const { rows } = await this.#buildShared();
+    return rows.find(row => row.id === sessionId);
+  }
+
+  /**
+   * The session file's own path, or undefined when this machine holds no such
+   * session.
+   *
+   * Deliberately not an index build. Everything a build produces beyond the
+   * path -- decoded cwds, verified liveness, message counts, sort order -- is
+   * work a transcript read never consults, and on this machine's real tree
+   * that work costs 2.9s against the 4 to 6ms this lookup takes. A phone
+   * tapping a session and waiting three seconds for its first line of history
+   * is the difference, so the walk is targeted and cooperative: one step per
+   * group directory, with the event loop handed on between steps.
+   *
+   * Also deliberately not on `SessionSummary`: that is a wire type, and a
+   * client has no business being handed absolute paths on this machine.
+   */
+  async pathFor(sessionId: string): Promise<string | undefined> {
+    // One stat against 214 readdirs and as many event-loop turns. A remembered
+    // path that no longer exists is not an answer, so it is dropped and the
+    // walk runs: that keeps a deleted or moved file honest without making the
+    // common case pay for the rare one.
+    const remembered = this.#pathBySession.get(sessionId);
+    if (remembered !== undefined) {
+      if (existsSync(remembered)) return remembered;
+      this.#pathBySession.delete(sessionId);
+    }
+    const steps = findSessionFileIter(sessionId, this.#sessionsRoot);
+    let step = steps.next();
+    while (!step.done) {
+      await yieldToEventLoop();
+      step = steps.next();
+    }
+    // A walk that found it is worth remembering, so a second tap on a session
+    // the index never listed still pays the walk only once.
+    if (step.value !== undefined) this.#pathBySession.set(sessionId, step.value);
+    return step.value;
   }
 
   /** Query, filter, and sort the catalog. Archived sessions are excluded unless `includeArchived` is set. */
-  query(q: SessionQuery = {}): SessionSummary[] {
-    let rows = this.build();
-    if (!q.includeArchived) rows = rows.filter(r => !r.archived);
-    if (q.status && q.status.length > 0) {
-      const wanted = q.status;
-      rows = rows.filter(r => wanted.includes(r.status));
-    }
-    if (q.cwd !== undefined) {
-      const wantedCwd = q.cwd;
-      rows = rows.filter(r => r.cwd === wantedCwd || r.flattenedDir === wantedCwd);
-    }
-    return sortSessions(rows, q.sort ?? "lastActivity", q.sortDir ?? "desc");
+  async query(q: SessionQuery = {}): Promise<SessionSummary[]> {
+    const { rows } = await this.#buildShared();
+    return applyQuery(rows, q);
   }
 
   /**
@@ -204,8 +521,8 @@ export class SessionIndex {
    * caller asked for, so the busiest project surfaces first even when
    * sessions inside each group are sorted by, say, size.
    */
-  grouped(q: SessionQuery = {}): SessionGroup[] {
-    const rows = this.query(q);
+  async grouped(q: SessionQuery = {}): Promise<SessionGroup[]> {
+    const rows = await this.query(q);
     const groups = new Map<string, SessionGroup>();
     for (const row of rows) {
       const key = row.cwd ?? row.flattenedDir;
@@ -232,6 +549,114 @@ export class SessionIndex {
   unarchive(sessionId: string): void {
     this.#store.unarchiveSession(sessionId);
   }
+
+  /**
+   * Delete sessions for good: the transcript file, the per-session artifact
+   * directory OMP writes beside it (same name, `.jsonl` dropped, holding
+   * subagent transcripts), and this store's two rows about the session.
+   *
+   * The one irreversible operation on this catalog, so its refusals are
+   * deliberate rather than incidental:
+   *
+   * - A session a process currently holds is refused. `live-ompd` means one
+   *   of this daemon's own agents is writing it, `live-tui` means a terminal
+   *   somewhere is. Unlinking a file out from under an open writer does not
+   *   stop the writer: on both platforms this runs on it keeps appending to
+   *   an inode nothing can reach any more, so the operator loses the rest of
+   *   a session that appeared to survive. Stopping or taking over the
+   *   session first is the honest order, and the refusal says so.
+   * - An id this machine has no file for is refused, not silently reported
+   *   as deleted. A caller naming an id that is not here has a stale row or
+   *   a typo, and both deserve to be told.
+   *
+   * Per-id results, in the order asked: one refusal must not abandon the
+   * rest of a batch, because the batch exists precisely for the case where
+   * hundreds of dead sessions are being cleared and one of them is live.
+   *
+   * Ordering inside one deletion is the file first, the store second. A
+   * removal that fails leaves the store's rows describing a transcript that
+   * is still there, which is a consistent state; dropping the rows first and
+   * then failing to unlink would leave a real session with its archive mark
+   * silently cleared.
+   *
+   * Liveness comes from one shared build for the whole batch, and from that
+   * build's `held` set rather than from a row's `status`: an archive mark
+   * outranks liveness in `status`, so an archived session a busy agent still
+   * holds reports `archived` there and would otherwise be deletable out from
+   * under its own writer. Asking per id would also rescan the tree once per
+   * id, which a batch of hundreds cannot afford.
+   */
+  async delete(sessionIds: readonly string[]): Promise<SessionDeleteResult[]> {
+    if (sessionIds.length === 0) return [];
+    const { held } = await this.#buildShared();
+    const results: SessionDeleteResult[] = [];
+
+    for (const sessionId of sessionIds) {
+      if (held.has(sessionId)) {
+        results.push({ sessionId, deleted: false, refusal: "live" });
+        continue;
+      }
+      // Resolved through the targeted walk rather than taken from the build:
+      // a row is a wire type and carries no path, and this walk only ever
+      // returns a file under the configured root whose name matches the
+      // session naming scheme, so an id arriving from a client cannot steer
+      // the unlink anywhere else.
+      const path = await this.pathFor(sessionId);
+      if (path === undefined) {
+        results.push({ sessionId, deleted: false, refusal: "not_found" });
+        continue;
+      }
+      try {
+        await rm(path);
+        // `force` on the directory, not on the file: the transcript's absence
+        // would mean this deleted nothing, while an artifact directory is
+        // optional and most sessions have none.
+        await rm(path.slice(0, -".jsonl".length), { recursive: true, force: true });
+      } catch {
+        results.push({ sessionId, deleted: false, refusal: "failed" });
+        continue;
+      }
+      // This process just unlinked the file, so it knows the mapping is dead
+      // without waiting for a build to notice or a later lookup to fail its
+      // `existsSync`.
+      this.#pathBySession.delete(sessionId);
+      this.#store.deleteSessionRecords(sessionId);
+      results.push({ sessionId, deleted: true });
+    }
+
+    return results;
+  }
+
+  /**
+   * Watch the sessions root for the filesystem events that change this
+   * catalog: a session file appearing, changing, or going away, folded into
+   * debounced single notifications. The gateway uses this to push refreshed
+   * `sessions` frames at sockets that already asked for the index, so a
+   * session created by any local `omp` run reaches the phone without a
+   * manual refresh.
+   *
+   * Returns null when the root does not exist yet; see `watchSessionFiles`
+   * for why that is a retry rather than a standing error. The root resolved
+   * here is the same one the scan walks, so a watcher can never report on a
+   * tree the catalog does not read.
+   */
+  watch(onChange: () => void, opts?: SessionWatchOptions): SessionWatch | null {
+    return watchSessionFiles(this.#sessionsRoot ?? getSessionsDir(), onChange, opts);
+  }
+}
+
+function applyQuery(rows: SessionSummary[], q: SessionQuery): SessionSummary[] {
+  let out = rows;
+  if (!q.includeArchived) out = out.filter(r => !r.archived);
+  if (q.status && q.status.length > 0) {
+    const wanted = q.status;
+    out = out.filter(r => wanted.includes(r.status));
+  }
+  if (q.cwd !== undefined) {
+    const wantedCwd = q.cwd;
+    out = out.filter(r => r.cwd === wantedCwd || r.flattenedDir === wantedCwd);
+  }
+  return sortSessions(out, q.sort ?? "lastActivity", q.sortDir ?? "desc");
 }
 
 function latestActivity(sessions: SessionSummary[]): string {

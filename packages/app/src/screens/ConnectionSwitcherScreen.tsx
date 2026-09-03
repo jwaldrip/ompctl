@@ -1,38 +1,49 @@
 /** Choose the daemon this device's Console is currently attached to. */
 
-import { SCOPE_APPROVE } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { ConnectionList, SavedConnection } from "../platform/connection.ts";
-import { InviteScreen } from "./InviteScreen.tsx";
 
 export function ConnectionSwitcherScreen({
+  canInvite,
   connections,
   onAdd,
   onBack,
+  onInvite,
   onSelect,
+  onSettings,
 }: {
+  /**
+   * Whether the active pairing may mint a credential, decided by the
+   * console from the daemon's hello rather than read here off the stored
+   * connection: the store holds a hint minted at pairing time, and a
+   * rotated or narrowed grant makes it stale while the daemon's answer
+   * never is. Same rule as the menu entry: absent rather than
+   * visible-but-refused when this device does not hold approve.
+   */
+  canInvite: boolean;
   connections: ConnectionList;
   onAdd: () => void;
   onBack: () => void;
+  /**
+   * Opens the invite surface. A route rather than a screen this one swaps
+   * itself out for: the same destination is in the shell's menu, and one
+   * destination reached two different ways is two navigation models.
+   */
+  onInvite: () => void;
   onSelect: (id: string) => void;
+  /**
+   * Opens the daemon's own settings. Offered for every pairing, not just
+   * manage-holding ones: the settings screen renders what governs the
+   * machine read-only when the scope to change it is missing, and hiding the
+   * row would hide the reading too.
+   */
+  onSettings: () => void;
 }): JSX.Element {
-  const [inviting, setInviting] = useState(false);
-  const active = connections.connections.find(entry => entry.id === connections.activeId);
-  // Inviting spends this device's own `approve` scope, so the entry point
-  // stays gone rather than visible-but-refused when the active pairing
-  // doesn't hold it -- the daemon would refuse the mint anyway, and a
-  // control that always fails is worse than no control.
-  const canInvite = active?.connection.scopes.includes(SCOPE_APPROVE);
-
-  if (inviting && active !== undefined) {
-    return <InviteScreen connection={active.connection} onDone={() => setInviting(false)} />;
-  }
-
   return (
     <SafeScreen style={styles.screen} testID="connection-switcher">
       <View style={styles.heading}>
@@ -40,12 +51,7 @@ export function ConnectionSwitcherScreen({
         <Display>Connections</Display>
         <Body>Choose where this device opens its console. Each pairing keeps its own credential.</Body>
         {!canInvite ? null : (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => setInviting(true)}
-            style={styles.invite}
-            testID="invite-device"
-          >
+          <Pressable accessibilityRole="button" onPress={onInvite} style={styles.invite} testID="invite-device">
             <Text style={styles.inviteText}>+ Invite device</Text>
           </Pressable>
         )}
@@ -55,9 +61,20 @@ export function ConnectionSwitcherScreen({
           <ConnectionRow active={entry.id === connections.activeId} entry={entry} key={entry.id} onSelect={onSelect} />
         ))}
       </View>
-      <Pressable accessibilityRole="button" onPress={onAdd} style={styles.add} testID="add-connection">
-        <Text style={styles.addText}>Add connection</Text>
+      <Pressable
+        accessibilityRole="button"
+        onPress={onSettings}
+        style={styles.settingsRow}
+        testID="open-daemon-settings"
+      >
+        <View style={styles.settingsCopy}>
+          <Label>Daemon settings</Label>
+          <Text numberOfLines={1} style={styles.settingsHint}>
+            Policy and keep-awake for the active pairing
+          </Text>
+        </View>
       </Pressable>
+      <PrimaryButton label="Add connection" onPress={onAdd} testID="add-connection" />
       <Pressable accessibilityRole="button" onPress={onBack} style={styles.back} testID="close-connection-switcher">
         <Text style={styles.backText}>Back to console</Text>
       </Pressable>
@@ -97,7 +114,12 @@ function ConnectionRow({
 }
 
 const styles = StyleSheet.create({
-  screen: { backgroundColor: ground.base, gap: space.loose, padding: space.wide },
+  // The gutter is `space.loose`, the same value the pair screen pads by: these
+  // two screens are one flow (pair hands back to this chooser, "Add
+  // connection" hands forward to pair), and two gutters across one flow read
+  // as two apps. The wider value is the one that keeps a row's status word
+  // off the screen's edge.
+  screen: { backgroundColor: ground.base, gap: space.loose, padding: space.loose },
   heading: { gap: space.snug },
   entries: { borderColor: ground.edge, borderTopWidth: stroke.hair },
   entry: {
@@ -115,14 +137,17 @@ const styles = StyleSheet.create({
   status: { ...type.label },
   statusActive: { color: signal.sage },
   statusIdle: { color: ink.muted },
-  add: {
+  settingsRow: {
     alignItems: "center",
-    backgroundColor: signal.sage,
-    justifyContent: "center",
+    backgroundColor: ground.surface,
+    borderColor: ground.edge,
+    borderWidth: stroke.hair,
+    flexDirection: "row",
     minHeight: TOUCH_TARGET,
-    paddingHorizontal: space.wide,
+    padding: space.step,
   },
-  addText: { ...type.title, color: ink.inverse },
+  settingsCopy: { flex: 1, gap: space.tight },
+  settingsHint: { ...type.body, color: ink.muted },
   back: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET },
   backText: { ...type.label, color: ink.plain },
   invite: { alignItems: "flex-start", justifyContent: "center", minHeight: TOUCH_TARGET },

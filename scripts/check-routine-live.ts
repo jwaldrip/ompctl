@@ -124,16 +124,32 @@ function echo(prefix: string, text: string): void {
   for (const line of text.split("\n")) console.log(`${prefix}${line}`);
 }
 
-type RoutineSeed = Partial<Routine> & Pick<Routine, "id" | "name" | "trigger" | "prompt" | "cwd">;
+type RoutineSeed = Partial<Omit<Routine, "actions">> &
+  Pick<Routine, "id" | "name" | "trigger"> & {
+    prompt: string;
+    cwd: string;
+    timeoutSeconds?: number;
+  };
 
 function seedRoutine(input: RoutineSeed): Routine {
+  const { prompt, cwd, timeoutSeconds, ...routine } = input;
   return {
     enabled: true,
-    host: { kind: "local" },
+    actions: [
+      {
+        id: `act_${input.id}`,
+        name: input.name,
+        prompt,
+        cwd,
+        host: { kind: "local" },
+        timeoutSeconds,
+        labels: {},
+      },
+    ],
     singleton: true,
     labels: {},
     createdAt: new Date().toISOString(),
-    ...input,
+    ...routine,
   };
 }
 

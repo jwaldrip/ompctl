@@ -11,6 +11,8 @@
  * carrying the approve scope.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type AcpAgentRegistrySnapshot,
   AcpClient,
@@ -30,12 +32,15 @@ import {
   type AgentId,
   type AgentState,
   DefaultPolicy,
+  type HostMount,
   type HostRef,
   type HostSpec,
   type PlanReviewChoice,
   type PlanReviewRequest,
   type Policy,
   type PolicyDecision,
+  type PromptImage,
+  resolveMountPath,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
@@ -43,7 +48,7 @@ import {
   TERMINAL_AGENT_STATES,
   toAcpOption,
 } from "@ompd/core";
-import type { HostHandle, Provisioner } from "./provisioner/types.ts";
+import { type HostHandle, ProvisionError, type Provisioner } from "./provisioner/types.ts";
 
 /** Thrown when an actor lacks the scope for an operation, or its device is revoked. */
 export class UnauthorizedError extends Error {
@@ -119,8 +124,36 @@ export interface SupervisorOptions {
    * Applying it on both paths is load-bearing: resuming a session must restore
    * its tool surface, not silently produce an agent that remembers using a
    * browser but can no longer call it.
+   *
+   * It receives the HOST, and that is the whole reason this signature is not
+   * just `(agentId)`. Every descriptor here is an address, and an address is
+   * only meaningful from somewhere. The WebView MCP server binds
+   * `127.0.0.1` and `urlFor` hands out `http://127.0.0.1:<port>/...`, which
+   * resolves to the daemon's machine from a local host and to the CONTAINER
+   * from a provisioned one. Measured on 2026-08-25: a container handed that
+   * descriptor failed `session/new` outright with
+   * `ompd-webview: Unable to connect. Is the computer able to access the url?`,
+   * so every `kind: "container"` create returned HTTP 500 while the identical
+   * request with no `mcpServers` succeeded in 1.2s. The caller is the only
+   * layer that knows whether its own URLs are reachable from a given host, so
+   * it is the layer that has to decide.
    */
-  mcpServersFor?: (agentId: AgentId) => unknown[];
+  mcpServersFor?: (agentId: AgentId, host: HostRef) => unknown[];
+  /**
+   * The daemon's own state directory, so a requested mount can be refused for
+   * naming it. Defaults to `~/.ompd`, the same expression `Ompd` and
+   * `ContainerBackend` compute when nothing overrides it.
+   *
+   * The default is a convenience for tests and is a hazard everywhere else,
+   * which is worth saying plainly: `OMPD_HOME` moves the real directory, so a
+   * supervisor left on the default while the daemon runs elsewhere would
+   * happily hand an agent the token store it is supposed to refuse. Nothing
+   * about that fails to typecheck, and it is wrong only for the operators who
+   * moved their home. `host-reuse.test.ts` pins it from the other side: it
+   * proves the supervisor refuses a mount inside the home it was GIVEN, which
+   * fails if this stops being threaded through to `resolveMountPath`.
+   */
+  home?: string;
 }
 
 export interface CreateAgentInput {
@@ -178,6 +211,166 @@ export function createAgentId(): AgentId {
   return `agt_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
 
+/**
+ * A `HostSpec` with every field that decides what a host *is* reduced to one
+ * spelling, so two specs meaning the same thing compare equal and two that do
+ * not, do not.
+ *
+ * Two fields need it. `network` is optional in the contract with `"isolated"`
+ * as its documented default, so an omitted policy and an explicit
+ * `"isolated"` are one request written two ways. `mounts` carry an operator's
+ * literal string and an optional mode, and `/tmp/x`, `/tmp/x/`, `/tmp/./x`
+ * and a symlink to it are one directory, listable in any order.
+ */
+export interface NormalizedHostSpec extends HostSpec {
+  /** Never absent, so an omitted policy and an explicit "isolated" are one spec. */
+  network: "isolated" | "none";
+  /**
+   * Canonical host paths with the mode decided, ordered by path then mode.
+   *
+   * Duplicates are kept rather than merged. One directory named twice with
+   * two modes is the caller's own doing, and inventing a rule for which wins
+   * would silently change what gets mounted; this comparison has to be total,
+   * not opinionated.
+   */
+  mounts: Required<HostMount>[];
+}
+
+/**
+ * Every field of `HostSpec`, and therefore every field the reuse comparison
+ * must have an answer for.
+ *
+ * The `Record<keyof HostSpec, true>` annotation is the guard, and it is here
+ * because the omission it prevents already shipped. The merged comparison
+ * named `image`, `repo`, `ref` and `ttlSeconds` and silently left out
+ * `network` and `mounts`, which is two live bypasses rather than an
+ * inefficiency: a request for a container with no network was served by a NAT
+ * one without the provider's refusal ever being reached, and a request naming
+ * a new mount was served by a host that did not have it, with the mount never
+ * canonicalized and never policy-checked. Neither caller saw an error.
+ *
+ * A field added to `HostSpec` and not added here no longer compiles, and one
+ * added here without a case in `reuseValue` throws the first time any host is
+ * asked for. Both are loud on purpose: "this field does not affect reuse" has
+ * to be a decision somebody wrote down, not the default that falls out of
+ * forgetting.
+ */
+const HOST_SPEC_REUSE_FIELDS: Record<keyof HostSpec, true> = {
+  image: true,
+  kind: true,
+  mounts: true,
+  network: true,
+  ref: true,
+  repo: true,
+  ttlSeconds: true,
+};
+
+/**
+ * The field names above, in a fixed order.
+ *
+ * Exported so `host-reuse.test.ts` can pin them against a literal list: the
+ * compiler forces a new field to be LISTED, and that test forces it to be
+ * DECIDED, which are two different mistakes.
+ */
+export const HOST_SPEC_REUSE_KEYS: readonly string[] = Object.keys(HOST_SPEC_REUSE_FIELDS).sort();
+
+/**
+ * Resolve a caller's spec into the single form the reuse lookup, the
+ * provisioner and the stored `HostRef` all see.
+ *
+ * Running before the reuse lookup is the correction, not an implementation
+ * detail. `ContainerBackend.provision` does its own `resolveMountPath`, and
+ * that is precisely why the check was reachable only on the miss path: a
+ * reused host means no provision call, so a newly named mount was never
+ * canonicalized, never policy-checked and never actually mounted, and the
+ * agent got a host silently lacking the directory it asked for. Resolving
+ * here means a mount is refused identically whether or not a host already
+ * exists, which is the property that was missing.
+ *
+ * The backend keeps its own copy. It is reached by callers that never pass
+ * through the supervisor (the TTL sweep, reconciliation after a restart), and
+ * re-resolving an already-canonical path is idempotent, so the duplication
+ * costs a `realpath` and buys a boundary that holds from both directions.
+ *
+ * Applied to every kind, including `local`. A local host ignores mounts and
+ * network entirely, so refusing `/etc` here refuses something that would
+ * previously have been ignored -- which is the point: accepting a request you
+ * will not honour is the shape this whole slice exists to remove. What it
+ * does NOT fix, and nothing here claims to, is that `LocalBackend` also
+ * ignores `network: "none"` rather than refusing it. That gap is real and
+ * lives in the backend, not in this comparison.
+ *
+ * Throws `ProvisionError` with the message shape `ContainerBackend` uses, so
+ * a refused mount reads the same to a caller on both paths.
+ */
+export function normalizeHostSpec(spec: HostSpec, home: string): NormalizedHostSpec {
+  const mounts: Required<HostMount>[] = (spec.mounts ?? []).map(mount => {
+    const resolution = resolveMountPath(mount.hostPath, { home, mustExist: true });
+    if (!resolution.ok) {
+      throw new ProvisionError(`refusing to mount ${mount.hostPath}: ${resolution.reason}`, spec.kind);
+    }
+    return { hostPath: resolution.path, mode: mount.mode ?? "ro" };
+  });
+  // Ordered by path, then by mode so the order stays total when one directory
+  // is named twice. Without it `[a, b]` and `[b, a]` are two specs, and the
+  // same request made twice provisions a second container for nothing.
+  // Compared by code unit rather than by `localeCompare`, so the order does
+  // not move with the machine's collation.
+  mounts.sort((a, b) => {
+    if (a.hostPath !== b.hostPath) return a.hostPath < b.hostPath ? -1 : 1;
+    if (a.mode === b.mode) return 0;
+    return a.mode < b.mode ? -1 : 1;
+  });
+  return { ...spec, network: spec.network ?? "isolated", mounts };
+}
+
+/**
+ * A string two normalized specs are equal on exactly when one host may serve
+ * both.
+ *
+ * A token rather than a field-by-field comparison because `mounts` is an
+ * array, where `!==` compares identities and would answer "different" for two
+ * specs naming the same directories -- the same class of bug as the one being
+ * fixed, pointing the other way. Every field is encoded as JSON, so no value
+ * has two spellings and no separator can occur inside one.
+ */
+export function hostReuseKey(spec: NormalizedHostSpec): string {
+  return HOST_SPEC_REUSE_KEYS.map(key => `${key}=${reuseValue(spec, key)}`).join("\n");
+}
+
+/**
+ * One field's contribution to the token.
+ *
+ * The `default` throw is not defensive noise. `HOST_SPEC_REUSE_FIELDS` does
+ * not compile without a new field, so the only way to reach it is to list a
+ * field and then not decide what it means here, and failing loudly on the
+ * next `createAgent` beats a host quietly shared across a difference nobody
+ * considered.
+ */
+function reuseValue(spec: NormalizedHostSpec, key: string): string {
+  switch (key) {
+    case "kind":
+      return JSON.stringify(spec.kind);
+    case "image":
+      return JSON.stringify(spec.image ?? null);
+    case "repo":
+      return JSON.stringify(spec.repo ?? null);
+    case "ref":
+      return JSON.stringify(spec.ref ?? null);
+    case "ttlSeconds":
+      return JSON.stringify(spec.ttlSeconds ?? null);
+    case "network":
+      return JSON.stringify(spec.network);
+    case "mounts":
+      return JSON.stringify(spec.mounts.map(mount => [mount.hostPath, mount.mode]));
+    default:
+      throw new Error(
+        `HostSpec field ${JSON.stringify(key)} has no host-reuse rule: decide whether two specs ` +
+          "differing in it may share one host, and add a case to reuseValue",
+      );
+  }
+}
+
 interface HostEntry {
   /**
    * Key into `#hosts`. A pid for a local host, and `<kind>:<id>` for a
@@ -187,7 +380,19 @@ interface HostEntry {
    */
   key: string;
   host: LocalHost;
-  spec: HostSpec;
+  /**
+   * Normalized, never the caller's spec. The next comparison is therefore
+   * normalized against normalized: a host provisioned for an omitted network
+   * policy must match a later explicit `"isolated"`, and a host provisioned
+   * for `/tmp/x` must match a later request naming a symlink to it.
+   */
+  spec: NormalizedHostSpec;
+  /**
+   * `hostReuseKey(spec)`, computed once. `spec` is never mutated after the
+   * entry is built, so the two cannot drift, and every `createAgent` would
+   * otherwise re-encode every live host's spec to answer one question.
+   */
+  reuseKey: string;
   /** What the agent records. Carries the container or machine id, not the pid. */
   ref: HostRef;
   /** Present only for provisioned hosts; `destroy` releases the container. */
@@ -227,7 +432,12 @@ const PLAN_APPROVAL_PREFIX = "Approve plan ";
 const CHOICE_SEP = "\u0000";
 const TOOL_APPROVAL_KEY = TOOL_APPROVAL_CHOICES.join(CHOICE_SEP);
 const PLAN_APPROVAL_KEY = PLAN_APPROVAL_CHOICES.join(CHOICE_SEP);
-const AGENT_STATE_FROM_REGISTRY: Record<AcpAgentRegistrySnapshot["status"], AgentState> = {
+/**
+ * omp's registry statuses onto agent row states. Exported for the collab
+ * guest leg, whose rooms report the same upstream enum: one translation, or
+ * the two registry mirrors would drift.
+ */
+export const AGENT_STATE_FROM_REGISTRY: Record<AcpAgentRegistrySnapshot["status"], AgentState> = {
   running: "busy",
   idle: "idle",
   parked: "stopped",
@@ -240,6 +450,42 @@ const AGENT_STATE_FROM_REGISTRY: Record<AcpAgentRegistrySnapshot["status"], Agen
  */
 const SEVERITY: Record<PolicyDecision["action"], number> = { allow: 0, prompt: 1, deny: 2 };
 
+/**
+ * The sentence an operator is allowed to see about a failure.
+ *
+ * Three jobs, and the third is why this exists rather than `String(err)`.
+ *
+ *  - Keep the useful part. `AcpError` now folds `data.details` into its
+ *    message, so a container that could not reach the daemon's loopback says
+ *    so here instead of saying "Internal error".
+ *  - Keep the cause chain, one level. A `ProvisionError` wrapping a runtime
+ *    failure is two sentences and both matter.
+ *  - Never carry a secret. An ACP host is spawned with a gate wrapper path and
+ *    a per-agent MCP token in a URL, and a runtime failure can quote argv, so
+ *    anything shaped like a token or a query string is dropped rather than
+ *    stored. Bounded in length too: this goes in a row an operator reads, not
+ *    a log sink.
+ */
+export function safeFailureReason(err: unknown): string {
+  const first = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : undefined;
+  const joined = cause !== undefined && !first.includes(cause) ? `${first}: ${cause}` : first;
+  return redactReason(joined);
+}
+
+/** Strip the shapes that carry credentials, then bound the length. */
+function redactReason(text: string): string {
+  const scrubbed = text
+    // A per-agent MCP url embeds its token in the path; keep the origin only.
+    .replace(/(https?:\/\/[^\s/]+)\/\S*/g, "$1/<path redacted>")
+    // Anything after a `?` is a query string, which is where tokens ride.
+    .replace(/\?\S+/g, "?<redacted>")
+    // Long opaque runs are the shape of a token or a digest tail.
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "<redacted>");
+  const oneLine = scrubbed.replace(/\s+/g, " ").trim();
+  return oneLine.length > 400 ? `${oneLine.slice(0, 397)}...` : oneLine;
+}
+
 export class Supervisor {
   #store: Store;
   #policy: Policy;
@@ -250,7 +496,9 @@ export class Supervisor {
   #onLog: ((line: string) => void) | undefined;
   #spawnHost: (opts: SpawnLocalHostOptions) => LocalHost;
   #provisioner: Provisioner | undefined;
-  #mcpServersFor: ((agentId: AgentId) => unknown[]) | undefined;
+  #mcpServersFor: ((agentId: AgentId, host: HostRef) => unknown[]) | undefined;
+  /** The daemon's state directory, so a mount naming it can be refused. */
+  #home: string;
 
   /** Keyed by `HostEntry.key`. One `omp acp` process serves many agents. */
   #hosts = new Map<string, HostEntry>();
@@ -274,10 +522,18 @@ export class Supervisor {
       opts.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
       this.#approvalTimeout * APPROVALS_PER_TURN_BUDGET,
     );
+    // Never assigned before this. `onLog` has been a declared option and a
+    // private field since the field existed, with nothing joining them, so
+    // every `this.#onLog?.(...)` in this file was a silent no-op: the declined
+    // elicitations, the failed destroy-after-close, and the ACP host it hands
+    // to `spawnLocalHost` for the host's own output. That is why a container
+    // create could fail and leave an empty log.
+    this.#onLog = opts.onLog;
     this.#ompPath = opts.ompPath;
     this.#spawnHost = opts.spawnHost ?? spawnLocalHost;
     this.#provisioner = opts.provisioner;
     this.#mcpServersFor = opts.mcpServersFor;
+    this.#home = opts.home ?? join(homedir(), ".ompd");
   }
 
   listAgents(): Agent[] {
@@ -388,7 +644,7 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, {}, (sessionEntry, agentId) =>
-      sessionEntry.host.client.newSession(input.cwd, this.#mcpServersFor?.(agentId) ?? []),
+      sessionEntry.host.client.newSession(input.cwd, this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? []),
     );
   }
 
@@ -412,7 +668,13 @@ export class Supervisor {
    * shape `/collab` has for taking over a session live in a terminal.
    */
   async resumeAgent(input: ResumeAgentInput, actor: Actor): Promise<Agent> {
-    const who = this.#authorize(actor, SCOPE_MANAGE, "agent.resume");
+    // Resume is the missing first half of prompt for a durable session: load
+    // the exact indexed session, then speak to it. Creating a new session or
+    // taking over a live TUI still requires manage. Without this, a device
+    // granted prompt can interact only until its agent process exits, after
+    // which the same conversation becomes a permanent permission error.
+    const who = this.#authorize(actor, SCOPE_PROMPT, "agent.resume");
+
     const heldBy = this.#sessionAgent.get(input.sessionId);
     if (heldBy) {
       throw new Error(`session ${input.sessionId} is already held by agent ${heldBy}`);
@@ -423,7 +685,11 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, { resumed: true }, async (sessionEntry, agentId) => {
-      await sessionEntry.host.client.loadSession(input.sessionId, input.cwd, this.#mcpServersFor?.(agentId) ?? []);
+      await sessionEntry.host.client.loadSession(
+        input.sessionId,
+        input.cwd,
+        this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
+      );
       return input.sessionId;
     });
   }
@@ -466,12 +732,17 @@ export class Supervisor {
       resolveExited(0);
     });
 
-    const spec: HostSpec = { kind: "local" };
+    // Written normalized rather than run through `normalizeHostSpec`: a TUI
+    // the daemon adopted has no caller spec to resolve, and it must still
+    // compare equal to a plain local request so `#hostFor` can reuse it the
+    // way it always has.
+    const spec: NormalizedHostSpec = { kind: "local", network: "isolated", mounts: [] };
     const host: LocalHost = { client, pid: input.pid, kill: () => transport.close(), exited };
     const entry: HostEntry = {
       key,
       host,
       spec,
+      reuseKey: hostReuseKey(spec),
       ref: { kind: "local", id: key, spec },
       handle: undefined,
       agents: new Set(),
@@ -538,19 +809,45 @@ export class Supervisor {
     };
     this.#store.upsertAgent(agent);
 
+    // `session/load` replays history BEFORE its response. A resume already
+    // knows the session id, so route that replay to the new agent before
+    // awaiting the response. Waiting until after it returns drops every
+    // historical thought/tool/message notification and opens an empty log.
+    const expectedSessionId = "sessionId" in input ? input.sessionId : undefined;
+    if (expectedSessionId !== undefined) this.#sessionAgent.set(expectedSessionId, id);
+
     let sessionId: string;
     try {
       sessionId = await openSession(entry, id);
     } catch (err) {
+      if (expectedSessionId !== undefined && this.#sessionAgent.get(expectedSessionId) === id) {
+        this.#sessionAgent.delete(expectedSessionId);
+      }
       // The host answered `initialize` but cannot serve this session. Release
       // it if it serves nobody else: a provisioned container that no handle
       // points at is never reclaimed, and the agent row must not be left
       // claiming a host that is gone.
       if (entry.agents.size === 0) await this.#releaseHost(entry);
-      this.#setState(id, "failed");
+      // Say why, in all three places an operator might look. Before this the
+      // agent row held `failed` and nothing else, the log held nothing at all,
+      // and the gateway turned a real sentence into HTTP 500 "Internal error":
+      // a container-host defect was undiagnosable from the daemon's own output.
+      const reason = safeFailureReason(err);
+      this.#onLog?.(`agent ${id}: session could not be opened on ${spec.kind} host ${entry.ref.id}: ${reason}`);
+      this.#store.audit({
+        action: "agent.create",
+        agentId: id,
+        actorDeviceId: who.deviceId,
+        outcome: "error",
+        detail: { cwd: input.cwd, host: spec.kind, hostId: entry.ref.id, reason, ...auditDetail },
+      });
+      this.#setState(id, "failed", reason);
       throw err;
     }
     agent.acpSessionId = sessionId;
+    if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
+      this.#sessionAgent.delete(expectedSessionId);
+    }
     agent.state = "idle";
     this.#store.upsertAgent(agent);
 
@@ -571,9 +868,14 @@ export class Supervisor {
 
   /**
    * Send a prompt. Resolves when the turn settles, but the agent keeps running
-   * regardless of whether the caller is still listening.
+   * regardless of whether the caller is still listening. Images ride the same
+   * turn as ACP image blocks; the caller (the gateway for sockets, the queued
+   * intent replay for federation) has already validated them against the wire
+   * budgets, and the audit records their count rather than their bytes: an
+   * audit log is not a transcript, which is why the prompt's text is likewise
+   * only ever counted, never copied.
    */
-  async prompt(agentId: AgentId, text: string, actor: Actor): Promise<{ stopReason: string }> {
+  async prompt(agentId: AgentId, text: string, actor: Actor, images?: PromptImage[]): Promise<{ stopReason: string }> {
     const who = this.#authorize(actor, SCOPE_PROMPT, "agent.prompt", agentId);
     const { agent, entry } = this.#resolve(agentId);
     if (!agent.acpSessionId) throw new Error(`agent ${agentId} has no session`);
@@ -584,10 +886,10 @@ export class Supervisor {
       agentId,
       actorDeviceId: who.deviceId,
       outcome: "ok",
-      detail: { chars: text.length },
+      detail: { chars: text.length, ...(images?.length ? { images: images.length } : {}) },
     });
     try {
-      return await entry.host.client.prompt(agent.acpSessionId, text);
+      return await entry.host.client.prompt(agent.acpSessionId, text, images);
     } finally {
       // Only return to idle if the agent is still live. A turn can be
       // abandoned by stopAgent or by its host dying, and both write a terminal
@@ -610,7 +912,14 @@ export class Supervisor {
   async stopAgent(agentId: AgentId, actor: Actor): Promise<void> {
     this.#authorize(actor, SCOPE_MANAGE, "agent.stop", agentId);
     const { agent, entry } = this.#resolve(agentId);
-    if (agent.acpSessionId) await entry.host.client.closeSession(agent.acpSessionId);
+    if (agent.acpSessionId) {
+      await entry.host.client.closeSession(agent.acpSessionId);
+      // A stopped agent no longer owns this durable session. Leaving its id in
+      // the in-process lock turns a later ordinary resume into "already held"
+      // even though the row is terminal and the host just closed it, which is
+      // exactly the state routine actions leave behind.
+      if (this.#sessionAgent.get(agent.acpSessionId) === agentId) this.#sessionAgent.delete(agent.acpSessionId);
+    }
     entry.agents.delete(agentId);
     this.#setState(agentId, "stopped");
     this.#store.audit({ action: "agent.stop", agentId, outcome: "ok" });
@@ -622,6 +931,19 @@ export class Supervisor {
 
   async shutdown(): Promise<void> {
     const entries = [...this.#hosts.values()];
+    // A host belongs to this process. Settle its rows BEFORE removing it from
+    // the map: `kill()` closes the ACP transport synchronously in tests, and
+    // #onHostClosed deliberately ignores a key another teardown already
+    // removed. Clearing first therefore left every idle row live-looking in
+    // SQLite even though its process was gone.
+    for (const entry of entries) {
+      for (const agentId of entry.agents) {
+        const agent = this.#store.getAgent(agentId);
+        if (agent !== null && !TERMINAL_AGENT_STATES.includes(agent.state)) {
+          this.#store.setAgentState(agentId, "stopped");
+        }
+      }
+    }
     this.#hosts.clear();
     for (const entry of entries) entry.host.kill();
     // Killing the local end of `docker exec` stops the remote `omp acp`, but
@@ -978,24 +1300,42 @@ export class Supervisor {
 
   // -- internals -----------------------------------------------------------
 
-  async #hostFor(spec: HostSpec, cwd: string, actor: Actor): Promise<HostEntry> {
-    // One host per cwd keeps a crash blast-radius to the agents sharing a repo,
-    // which is also the natural boundary for OMP's own project config.
+  async #hostFor(requested: HostSpec, cwd: string, actor: Actor): Promise<HostEntry> {
+    // Normalized and validated BEFORE the lookup, which is the ordering the
+    // whole method turns on. Doing it after, or leaving it to the provisioner,
+    // makes every check on this spec reachable only when no host happens to
+    // exist -- and "no host happens to exist" is not a security property, it
+    // is a race with whatever else the operator started.
+    //
+    // Concretely, that ordering produced two live bypasses. A `network:
+    // "none"` request was answered by an existing NAT host, so the provider's
+    // refusal for a runtime that cannot express no-network was never reached
+    // and the caller got open egress with no error. And a request naming a new
+    // mount was answered by a host without it, so `resolveMountPath` never ran
+    // on that path at all: not canonicalized, not policy-checked, not mounted.
+    //
+    // A refused mount now throws here, identically whether or not a host
+    // exists, which is the only version of that check worth having.
+    const spec = normalizeHostSpec(requested, this.#home);
+    const wanted = hostReuseKey(spec);
+
+    // Not "one host per cwd", which this comment used to claim and which the
+    // loop below has never implemented: the map is keyed by host, the entries
+    // are filtered by reuse key rather than by directory, and `cwd` is not part
+    // of the comparison at all. What actually bounds a crash is the reuse key
+    // plus the 16-agent cap, so two specs differing in any field share nothing
+    // even in the same directory, and two identical specs in different
+    // directories can share a host. Said accurately because the old sentence
+    // read as an isolation guarantee that was never being made.
     for (const entry of this.#hosts.values()) {
-      if (entry.spec.kind !== spec.kind) continue;
       if (!entry.host.client.agentInfo || entry.agents.size >= 16) continue;
-      // A provisioned host is reused only for an identical spec. Two container
-      // specs naming different images are two different sandboxes, and two
-      // different TTLs are two different leases.
-      if (
-        spec.kind !== "local" &&
-        (entry.spec.image !== spec.image ||
-          entry.spec.repo !== spec.repo ||
-          entry.spec.ref !== spec.ref ||
-          entry.spec.ttlSeconds !== spec.ttlSeconds)
-      ) {
-        continue;
-      }
+      // Reused only for a spec that is equal on every field of `HostSpec`,
+      // `kind` included -- see `HOST_SPEC_REUSE_FIELDS` for why the list is a
+      // typed record rather than a hand-written conjunction. Two container
+      // specs naming different images are two different sandboxes, two TTLs
+      // are two leases, two network policies are two confinement claims, and
+      // two mount sets are two different views of the operator's disk.
+      if (entry.reuseKey !== wanted) continue;
       return entry;
     }
 
@@ -1008,6 +1348,9 @@ export class Supervisor {
       if (provisioner === undefined) {
         throw new Error(`host kind ${spec.kind} requires the provisioner`);
       }
+      // The normalized spec, never the caller's. The canonical mount paths are
+      // what must reach argv, and the `HostRef` the backend builds from this
+      // is what an operator reads back when they ask what was mounted.
       handle = await provisioner.provision(spec, actor);
     }
 
@@ -1042,6 +1385,18 @@ export class Supervisor {
       // A container that came up but whose ACP host never answered is held by
       // nobody. Release it here or it runs until the machine is rebooted.
       if (handle !== undefined) await this.#destroyHandle(handle);
+      // No agent row exists yet, so the log and the audit are the only places
+      // this can be recorded. Both, because an operator reads one or the other.
+      const reason = safeFailureReason(err);
+      this.#onLog?.(
+        `host ${handle?.ref.id ?? "local"}: the ACP host did not start on this ${spec.kind} host: ${reason}`,
+      );
+      this.#store.audit({
+        action: "host.start",
+        actorDeviceId: actor.deviceId,
+        outcome: "error",
+        detail: { kind: spec.kind, hostId: handle?.ref.id, reason },
+      });
       throw err;
     }
 
@@ -1052,6 +1407,7 @@ export class Supervisor {
       key,
       host,
       spec,
+      reuseKey: wanted,
       ref,
       handle,
       agents: new Set(),
@@ -1059,8 +1415,13 @@ export class Supervisor {
     };
     this.#hosts.set(key, entry);
     for (const agents of pendingRegistrySnapshots) this.#onAgentRegistry(key, agents);
+    // `host.start`, not a second `host.provision`. The provisioner already
+    // audited the provision with the actor attached; this is the ACP host
+    // coming up inside it, which is a different event with a different failure
+    // mode. Two rows saying `host.provision` for one container is what made a
+    // single create look like two.
     this.#store.audit({
-      action: "host.provision",
+      action: "host.start",
       outcome: "ok",
       detail: { kind: spec.kind, pid: host.pid, hostId: ref.id },
     });
@@ -1182,8 +1543,16 @@ export class Supervisor {
     this.#events.onAgentsChanged?.(this.listAgents());
   }
 
-  #setState(agentId: AgentId, state: AgentState): void {
-    this.#store.setAgentState(agentId, state);
+  /**
+   * Move an agent's state, optionally recording why it failed.
+   *
+   * `reason` is only ever set alongside a terminal state, and it is stored
+   * rather than logged-and-forgotten because "failed" on its own sent an
+   * operator to a silent log. It is passed through `safeFailureReason`, so what
+   * lands in the store is a bounded sentence with no argv and no credential.
+   */
+  #setState(agentId: AgentId, state: AgentState, reason?: string): void {
+    this.#store.setAgentState(agentId, state, reason);
     this.#events.onAgentsChanged?.(this.listAgents());
   }
 

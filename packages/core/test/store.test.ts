@@ -7,7 +7,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Agent, Device } from "../src/index.ts";
+import type { Agent, Device, Routine, Run } from "../src/index.ts";
 import { REDACTED, redact, Store } from "../src/index.ts";
 
 const stores: Store[] = [];
@@ -321,17 +321,33 @@ describe("interrupted runs", () => {
     // `hasActiveRun` stays true, and a singleton routine never fires again.
     const s = fresh();
     const at = "2026-01-01T00:00:00.000Z";
-    s.upsertRun({ id: "run_q", routineId: "rtn_a", state: "queued", startedAt: at });
-    s.upsertRun({ id: "run_r", routineId: "rtn_a", state: "running", startedAt: at });
+    const actions = (state: Run["actions"][number]["state"], summary?: string): Run["actions"] => [
+      {
+        actionId: "act_a",
+        actionName: "A",
+        index: 0,
+        state,
+        startedAt: at,
+        ...(summary === undefined ? {} : { summary }),
+      },
+    ];
+    s.upsertRun({ id: "run_q", routineId: "rtn_a", state: "queued", startedAt: at, actions: actions("queued") });
+    s.upsertRun({ id: "run_r", routineId: "rtn_a", state: "running", startedAt: at, actions: actions("running") });
     s.upsertRun({
       id: "run_ok",
       routineId: "rtn_a",
       state: "succeeded",
       startedAt: at,
       finishedAt: at,
-      summary: "nothing broke",
+      actions: actions("succeeded", "nothing broke"),
     });
-    s.upsertRun({ id: "run_other", routineId: "rtn_b", state: "running", startedAt: at });
+    s.upsertRun({
+      id: "run_other",
+      routineId: "rtn_b",
+      state: "running",
+      startedAt: at,
+      actions: actions("running"),
+    });
 
     expect(s.failInterruptedRuns("the daemon exited")).toBe(3);
 
@@ -344,7 +360,7 @@ describe("interrupted runs", () => {
     // survive untouched.
     expect(settled.get("run_ok")?.state).toBe("succeeded");
     expect(settled.get("run_ok")?.error).toBeUndefined();
-    expect(settled.get("run_ok")?.summary).toBe("nothing broke");
+    expect(settled.get("run_ok")?.actions[0]?.summary).toBe("nothing broke");
 
     expect(s.hasActiveRun("rtn_a")).toBe(false);
     expect(s.hasActiveRun("rtn_b")).toBe(false);
@@ -419,5 +435,72 @@ describe("queued intents", () => {
 
     // Re-delivering already delivered row returns 0
     expect(s.markQueuedIntentsDelivered(["qi_claim_me"])).toBe(0);
+  });
+});
+
+describe("routine deletion cascade", () => {
+  test("a deleted routine takes its run history and its webhook secret with it", () => {
+    const s = fresh();
+    const at = "2026-08-22T00:00:00.000Z";
+    const routine: Routine = {
+      id: "rtn_gone",
+      name: "nightly",
+      enabled: true,
+      trigger: { kind: "webhook", secretRef: "whsec_gone" },
+      actions: [
+        { id: "act_primary", name: "Primary", prompt: "summarise", cwd: "/work", host: { kind: "local" }, labels: {} },
+      ],
+      singleton: false,
+      labels: {},
+      createdAt: at,
+    };
+    s.upsertRoutine(routine);
+    s.upsertWebhookSecret("whsec_gone", "hash-of-the-secret");
+    s.upsertRun({
+      id: "run_gone",
+      routineId: routine.id,
+      state: "succeeded",
+      startedAt: at,
+      finishedAt: at,
+      actions: [
+        { actionId: "act_primary", actionName: "Primary", index: 0, state: "succeeded", startedAt: at, finishedAt: at },
+      ],
+    });
+    // A sibling routine sharing nothing but the table, so the delete provably
+    // scopes to one id rather than sweeping the rows it can see.
+    s.upsertRoutine({ ...routine, id: "rtn_kept", trigger: { kind: "webhook", secretRef: "whsec_kept" } });
+    s.upsertWebhookSecret("whsec_kept", "hash-of-the-kept-secret");
+
+    expect(s.deleteRoutine("rtn_gone")).toBe(true);
+
+    expect(s.listRoutines().map(r => r.id)).toEqual(["rtn_kept"]);
+    expect(s.listRuns("rtn_gone")).toEqual([]);
+    // The credential IS the capability a webhook-routine delete withdraws; a
+    // surviving hash row would keep a live secret the catalog no longer names.
+    expect(s.getWebhookSecret("whsec_gone")).toBeNull();
+    expect(s.getWebhookSecret("whsec_kept")?.secretHash).toBe("hash-of-the-kept-secret");
+  });
+
+  test("an unknown id answers false rather than reporting a deletion that deleted nothing", () => {
+    const s = fresh();
+    expect(s.deleteRoutine("rtn_never_was")).toBe(false);
+  });
+
+  test("withdrawing a webhook credential leaves the routine and its siblings alone", () => {
+    const s = fresh();
+    s.upsertWebhookSecret("whsec_withdrawn", "hash-of-the-withdrawn-secret");
+    s.upsertWebhookSecret("whsec_survivor", "hash-of-the-surviving-secret");
+
+    // The edit this serves keeps the routine and drops only the capability, so
+    // the row must go while everything else stays exactly where it was.
+    expect(s.deleteWebhookSecret("whsec_withdrawn")).toBe(true);
+    expect(s.getWebhookSecret("whsec_withdrawn")).toBeNull();
+    expect(s.getWebhookSecret("whsec_survivor")?.secretHash).toBe("hash-of-the-surviving-secret");
+
+    // False, not true: a caller has to be able to tell a withdrawal from a ref
+    // that never had a credential behind it, and a second call on a ref that
+    // is already gone is the same question.
+    expect(s.deleteWebhookSecret("whsec_withdrawn")).toBe(false);
+    expect(s.deleteWebhookSecret("whsec_never_minted")).toBe(false);
   });
 });

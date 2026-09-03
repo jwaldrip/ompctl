@@ -8,8 +8,6 @@
  * URL-safe alphabet wrong anyway.
  */
 
-import { bytesToUtf8 } from "@noble/ciphers/utils.js";
-
 /**
  * The alphabet, indexed with `charAt` rather than `[]` throughout.
  *
@@ -95,15 +93,88 @@ export function utf8(text: string): Uint8Array {
 }
 
 /**
- * Decode UTF-8 without `TextDecoder`.
+ * Decode UTF-8 without `TextDecoder`, for real this time.
  *
- * React Native ships `TextEncoder` but not `TextDecoder`, so every sealed frame
- * a phone opened threw on the way out of the channel. `@noble/ciphers` already
- * carries a portable implementation and is already a dependency here, so this
- * is one import rather than a second polyfill to keep correct.
+ * Hermes ships `TextEncoder` and no `TextDecoder`, so every sealed frame a
+ * phone opened threw on the way out of the channel. The previous fix imported
+ * `bytesToUtf8` from `@noble/ciphers`, believing it portable. It is not: that
+ * function is exactly `new TextDecoder().decode(bytes)`, so the dependency
+ * moved inside a library instead of going away, every test kept passing under
+ * Bun, and the app kept dying at the handshake with `Property 'TextDecoder'
+ * doesn't exist`. A dependency you cannot see is still a dependency, which is
+ * why the tests beside this run with both globals deleted.
+ *
+ * Malformed input yields U+FFFD rather than throwing: a frame that failed to
+ * authenticate is already handled a layer up, and a decoder that throws would
+ * turn a corrupt byte into a dead session.
  */
 export function fromUtf8(bytes: Uint8Array): string {
-  return bytesToUtf8(bytes);
+  let out = "";
+  const units: number[] = [];
+  for (let i = 0; i < bytes.length; ) {
+    const lead = bytes[i] ?? 0;
+    let cp: number;
+    let width: number;
+    if (lead < 0x80) {
+      cp = lead;
+      width = 1;
+    } else if ((lead & 0xe0) === 0xc0) {
+      cp = lead & 0x1f;
+      width = 2;
+    } else if ((lead & 0xf0) === 0xe0) {
+      cp = lead & 0x0f;
+      width = 3;
+    } else if ((lead & 0xf8) === 0xf0) {
+      cp = lead & 0x07;
+      width = 4;
+    } else {
+      // A continuation byte or an invalid lead: one replacement, one byte.
+      cp = 0xfffd;
+      width = 1;
+    }
+    if (width > 1) {
+      if (i + width > bytes.length) {
+        cp = 0xfffd;
+        width = bytes.length - i;
+      } else {
+        let valid = true;
+        let acc = cp;
+        for (let k = 1; k < width; k += 1) {
+          const cont = bytes[i + k] ?? 0;
+          if ((cont & 0xc0) !== 0x80) {
+            valid = false;
+            break;
+          }
+          acc = (acc << 6) | (cont & 0x3f);
+        }
+        if (valid) {
+          // Overlongs, UTF-16 surrogates encoded as UTF-8, and anything above
+          // the Unicode range are all ill-formed, and a decoder that passed
+          // them through would let two different byte strings claim one text.
+          const overlong =
+            (width === 2 && acc < 0x80) || (width === 3 && acc < 0x800) || (width === 4 && acc < 0x10000);
+          cp = overlong || (acc >= 0xd800 && acc <= 0xdfff) || acc > 0x10ffff ? 0xfffd : acc;
+        } else {
+          cp = 0xfffd;
+          width = 1;
+        }
+      }
+    }
+    i += width;
+    if (cp > 0xffff) {
+      const astral = cp - 0x10000;
+      units.push(0xd800 + (astral >> 10), 0xdc00 + (astral & 0x3ff));
+    } else {
+      units.push(cp);
+    }
+    // Batched so a large frame is not quadratic in string concatenation, and
+    // small enough that the spread never approaches an argument limit.
+    if (units.length >= 4096) {
+      out += String.fromCharCode(...units);
+      units.length = 0;
+    }
+  }
+  return units.length > 0 ? out + String.fromCharCode(...units) : out;
 }
 
 /**

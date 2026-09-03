@@ -19,17 +19,22 @@
     }
   },
   "scripts": {
-    "build:cli": "bun build --compile --external omp-legacy-pi-modules --outfile dist/ompd packages/cli/src/main.ts",
+    "build:cli": "bun run gen:omp-bridge && bun build --compile --external omp-legacy-pi-modules --outfile dist/ompd packages/cli/src/main.ts && bun run scripts/stage-native-addon.ts",
     "gen:web-assets": "bun scripts/gen-web-assets.ts",
+    "gen:omp-bridge": "bun scripts/gen-omp-bridge.ts",
     "check": "bun run check:tools && bun run check:types",
     "check:evolution": "bun run scripts/check-evolution-lifecycle.ts",
+    "check:container-model": "bun run scripts/check-container-model-turn.ts",
     "check:lan": "bun run scripts/check-lan-roundtrip.ts",
     "check:hub": "bun run scripts/check-hub-roundtrip.ts",
+    "check:path": "bun run scripts/check-path.ts",
+    "check:hermes": "bun run scripts/check-hermes-surface.ts",
+    "check:mcp": "bun run scripts/check-mcp-roundtrip.ts",
     "check:provenance": "bun run scripts/check-provenance.ts",
     "check:endpoints": "bun run scripts/check-endpoints.ts",
     "check:tools": "biome check . --no-errors-on-unmatched",
     "check:types": "bun run --workspaces --if-present check",
-    "test": "bun run --workspaces --if-present test && bun test packages/acp packages/cli packages/core packages/daemon packages/hub packages/tunnel scripts"
+    "test": "bun run check:hermes && bun scripts/run-package-tests.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",

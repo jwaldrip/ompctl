@@ -25,7 +25,20 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/** A JSON-RPC correlation id, which the spec allows to be either shape. */
 export type JsonRpcId = number | string;
+
+/**
+ * An image riding a prompt, structurally identical to `@ompd/core`'s
+ * `PromptImage`. This package is deliberately dependency-free -- it must spawn
+ * against a bare `omp acp` with nothing else resolved -- so the shape is
+ * restated here rather than imported, and structural typing is the contract.
+ */
+export interface AcpPromptImage {
+  /** Base64-encoded image bytes, without a data: URL wrapper. */
+  data: string;
+  mimeType: string;
+}
 
 export type AcpOptionId = "allow_once" | "allow_always" | "reject_once" | "reject_always";
 
@@ -219,14 +232,40 @@ export interface AcpClientOptions {
   maxLineBytes?: number;
 }
 
+/**
+ * A JSON-RPC error from the ACP peer.
+ *
+ * The message folds in `data.details` when the peer supplied one, and that is
+ * load-bearing rather than cosmetic. omp answers a failed `session/new` with
+ * the JSON-RPC spec's own generic text -- `code: -32603, message: "Internal
+ * error"` -- and puts the only useful sentence in `data.details`. Every layer
+ * above this reads `err.message`, so a daemon that surfaced the message alone
+ * turned `ompd-webview: Unable to connect. Is the computer able to access the
+ * url?` into `Internal error` at the gateway and logged nothing anywhere. That
+ * cost a container-host defect its entire diagnosis: the operator saw HTTP 500
+ * "Internal error" and the log was silent.
+ *
+ * `data` is still carried whole for anything that wants to inspect it. Only
+ * `details` is folded into the message, and only when it is a string, because
+ * a peer is free to put anything in `data` and a message is not the place to
+ * dump an arbitrary object.
+ */
 export class AcpError extends Error {
   constructor(
     message: string,
     readonly code?: number,
     readonly data?: unknown,
   ) {
-    super(message);
+    super(AcpError.#describe(message, data));
     this.name = "AcpError";
+  }
+
+  static #describe(message: string, data: unknown): string {
+    if (data === null || typeof data !== "object") return message;
+    const details = (data as { details?: unknown }).details;
+    if (typeof details !== "string" || details.length === 0) return message;
+    // Already said it: some peers put the same sentence in both.
+    return message.includes(details) ? message : `${message}: ${details}`;
   }
 }
 
@@ -489,12 +528,18 @@ export class AcpClient {
     await this.request("session/load", { sessionId, cwd, mcpServers });
   }
 
-  async prompt(sessionId: string, text: string): Promise<PromptResult> {
-    return await this.request<PromptResult>(
-      "session/prompt",
-      { sessionId, prompt: [{ type: "text", text }] },
-      this.#promptTimeout,
-    );
+  /**
+   * Prompt the agent. ACP prompts are content-block arrays, and the agent
+   * advertises `promptCapabilities.image`, so images travel as image blocks
+   * next to the text block rather than through any side channel. An image-only
+   * prompt sends image blocks alone; ACP requires a non-empty array, not a
+   * text block with empty words.
+   */
+  async prompt(sessionId: string, text: string, images?: AcpPromptImage[]): Promise<PromptResult> {
+    const blocks: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+    if (text.length > 0) blocks.push({ type: "text", text });
+    for (const image of images ?? []) blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
+    return await this.request<PromptResult>("session/prompt", { sessionId, prompt: blocks }, this.#promptTimeout);
   }
 
   async cancel(sessionId: string): Promise<void> {

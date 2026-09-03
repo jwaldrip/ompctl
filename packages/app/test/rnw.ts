@@ -28,7 +28,7 @@
 import { mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { ReactNode } from "react";
-import { createElement } from "react";
+import { createContext, createElement } from "react";
 
 // One registration for the whole suite. Individual tests used to register and
 // unregister themselves, which is how a second file in the same process died
@@ -77,6 +77,18 @@ export function setWindowWidth(width: number): void {
  */
 export function setWindowSize(width: number, height: number): void {
   windowSize = { ...windowSize, width, height };
+}
+
+/**
+ * The operator's text-size setting, as `useWindowDimensions` reports it.
+ *
+ * Its own seam rather than a fourth argument to `setWindowSize`, because size
+ * and text scale are independent: the clipping this exists to test happens on
+ * an iPad with six hundred spare points, so a test has to move one without
+ * moving the other.
+ */
+export function setFontScale(fontScale: number): void {
+  windowSize = { ...windowSize, fontScale };
 }
 
 /** Restore the phone-width default after a wide render. */
@@ -207,23 +219,89 @@ mock.module("react-native-vision-camera", () => ({
   useCodeScanner: (config: MockCodeScanner) => config,
 }));
 
-// Renders nothing and answers nothing: `WebViewDriver` owns every reply
-// through its own ref handle, so a stub that pretended to navigate would be
-// inventing behaviour no test is entitled to assert.
+// The native module cannot load under Bun. The stub exposes the requested
+// source so a regression test can hold the URL contract without pretending to
+// load a page.
 const webView: Record<string, unknown> = {};
-webView.WebView = ({ children }: SvgProps) => children ?? null;
+webView.WebView = ({ children, source }: SvgProps & { source?: { html?: string; uri?: string } }) =>
+  createElement(
+    "div",
+    { "data-testid": "mock-webview", "data-source-html": source?.html, "data-source-uri": source?.uri },
+    children,
+  );
 webView.default = webView.WebView;
 mock.module("react-native-webview", () => webView);
+
+// `react-native-image-picker` resolves its native module table at import
+// time, which under bun is a ReferenceError that poisons every module loaded
+// after it. The stub keeps the import inert; availability is decided by the
+// attachments seam's own probe, never by this import, and a test that wants
+// to drive picking injects a fake picker through the seam instead.
+mock.module("react-native-image-picker", () => ({
+  launchImageLibrary: () => Promise.reject(new Error("no photo picker under bun test")),
+}));
 
 mock.module("react-native-view-shot", () => ({
   captureRef: () => Promise.reject(new Error("captureRef is unavailable under bun test")),
 }));
 
-// Zero insets under bun test: there is no system chrome in happy-dom, and the
-// real package reaches into native modules bun cannot load. Screens still
-// mount their SafeScreen shell so a missing provider would fail the same way
-// it would on device.
+/** The insets a test says this device has. Zero is a device with no system chrome. */
+export interface CannedInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * Canned insets, zero by default.
+ *
+ * happy-dom has no system chrome and the real package reaches into native
+ * modules bun cannot load, so a test that cares about the notch or the home
+ * indicator sets them with `setSafeAreaInsets` before it renders. Screens still
+ * mount their real `SafeScreen` shell, so a missing provider fails here the
+ * same way it would on device.
+ *
+ * One object, mutated in place, because a React context's default value is
+ * fixed when the context is created: handing out a new object would leave every
+ * consumer reading the first one. `SafeAreaInsetsContext` carries the same
+ * object because React Navigation asks through the context rather than the
+ * hook, and a null context there makes it wrap each navigator in a second
+ * provider, which is not the shape the app ships (`App.tsx` provides once, at
+ * the root).
+ */
+const insets: CannedInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+const frame = { x: 0, y: 0, width: 390, height: 844 };
+
+/** Report a notch and a home indicator for the next render. */
+export function setSafeAreaInsets(next: CannedInsets): void {
+  Object.assign(insets, next);
+}
+
+/** Back to a device with no system chrome, which is what every other test assumes. */
+export function resetSafeAreaInsets(): void {
+  Object.assign(insets, { top: 0, right: 0, bottom: 0, left: 0 });
+}
+
 mock.module("react-native-safe-area-context", () => ({
   SafeAreaProvider: ({ children }: { children?: ReactNode }) => children ?? null,
-  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+  SafeAreaView: ({ children }: { children?: ReactNode }) => children ?? null,
+  SafeAreaInsetsContext: createContext(insets),
+  SafeAreaFrameContext: createContext(frame),
+  initialWindowMetrics: { frame, insets },
+  useSafeAreaInsets: () => insets,
+  useSafeAreaFrame: () => frame,
+}));
+
+// `react-native-screens` is the native half of the native stack: its default
+// build reaches for codegen'd native components bun cannot instantiate. React
+// Navigation's own web build of the stack view does not import it at all, which
+// is what runs here, so the stub exists only for the few modules that reach for
+// a name at import time.
+mock.module("react-native-screens", () => ({
+  enableScreens: () => {},
+  enableFreeze: () => {},
+  screensEnabled: () => false,
+  isSearchBarAvailableForCurrentPlatform: false,
+  compatibilityFlags: {},
 }));

@@ -13,7 +13,7 @@
  */
 
 import type { LocalHost, SpawnLocalHostOptions } from "@ompd/acp";
-import type { Actor, HostKind, HostSpec, Store } from "@ompd/core";
+import type { Actor, HostKind, HostRef, HostSpec, Store } from "@ompd/core";
 import { CloudBackend, type CloudDriver } from "./cloud.ts";
 import { ContainerBackend } from "./container.ts";
 import { LocalBackend } from "./local.ts";
@@ -76,6 +76,16 @@ export class HostProvisioner implements Provisioner {
     const supplied = opts.backends;
     if (supplied === undefined) {
       this.#backends.set("local", new LocalBackend());
+      // No runtime pin and no image here. Both are the daemon's durable
+      // config now (`containerRuntime` and `containerImage` in
+      // `<home>/config.json`), and the daemon always names its backends
+      // explicitly, so this branch only serves an embedder or a test. Reading
+      // `OMPD_CONTAINER_RUNTIME` and `OMPD_CONTAINER_IMAGE` here would put a
+      // second, environment-shaped source of the same two decisions in a
+      // second place, disagreeing with what `ompd doctor` reports and absent
+      // under launchd, which inherits no shell. An embedder that wants
+      // something other than the platform default and the pinned toolchain
+      // constructs `ContainerBackend` itself and says so.
       this.#backends.set("container", new ContainerBackend({ workspace: opts.workspace, home: opts.home }));
       if (opts.cloudDriver !== undefined) {
         this.#backends.set("cloud", new CloudBackend({ driver: opts.cloudDriver }));
@@ -154,7 +164,16 @@ export class HostProvisioner implements Provisioner {
       detail: {
         kind: spec.kind,
         hostId: inner.ref.id,
-        image: spec.image,
+        // The RESOLVED image, not `spec.image`. The review found this row
+        // recording `image: undefined` on the default path, which made the
+        // audit trail unable to answer the one question it exists for: what
+        // was this container actually given. `spec.image` is the caller's
+        // value and is absent unless they named one.
+        image: inner.ref.resolved?.image ?? spec.image,
+        runtime: inner.ref.resolved?.runtime,
+        network: inner.ref.resolved?.network,
+        ompSha256: inner.ref.resolved?.ompSha256,
+        caSha256: inner.ref.resolved?.caSha256,
         ttlSeconds: spec.ttlSeconds,
       },
     });
@@ -182,6 +201,80 @@ export class HostProvisioner implements Provisioner {
   touch(id: string): void {
     const tracked = this.#hosts.get(id);
     if (tracked !== undefined) tracked.lastUsedAt = this.#now();
+  }
+
+  /**
+   * Reclaim hosts the store still lists but this process never provisioned.
+   *
+   * Called once at daemon start. Before `HostRef.resolved` existed there was
+   * nothing to reclaim them with: the runtime and the network lived only in the
+   * backend's process map, so a restart left a running container and an
+   * `ompd-*` network for a human to find by hand. The container's command is
+   * `tail -f /dev/null`, so `--rm` never fires on its own and the leak is
+   * permanent until someone notices.
+   *
+   * Only hosts whose `resolved` state names a runtime can be reclaimed, and a
+   * host that predates that field is reported rather than silently skipped: an
+   * operator who has one needs to know it exists. Local hosts are not touched.
+   * A pid from a previous boot is not this daemon's to kill, and the supervisor
+   * already reconciles agent rows.
+   *
+   * `destroy` is idempotent and treats "no such container" as success, so
+   * reclaiming a host the operator already removed by hand is not an error and
+   * does not stop the rest of the list being cleared.
+   */
+  async reconcile(refs: readonly HostRef[]): Promise<{ reclaimed: string[]; unreclaimable: string[] }> {
+    const reclaimed: string[] = [];
+    const unreclaimable: string[] = [];
+
+    for (const ref of refs) {
+      if (ref.kind === "local") continue;
+      // Already ours: this process provisioned it, so the TTL sweep and
+      // `close` own it and reconciliation must not race them.
+      if (this.#hosts.has(ref.id)) continue;
+
+      const backend = this.#backends.get(ref.kind);
+      if (backend === undefined) {
+        unreclaimable.push(ref.id);
+        this.#onLog?.(`host ${ref.id}: no ${ref.kind} backend, cannot reclaim it`);
+        continue;
+      }
+      if (ref.resolved === undefined) {
+        unreclaimable.push(ref.id);
+        this.#onLog?.(
+          `host ${ref.id}: provisioned before resolved state was recorded, so it cannot be reclaimed ` +
+            `automatically and may still be running`,
+        );
+        continue;
+      }
+
+      try {
+        await backend.destroy({
+          ref,
+          spawn: () => {
+            throw new ProvisionError(`host ${ref.id} is being reclaimed`, ref.kind);
+          },
+        });
+        reclaimed.push(ref.id);
+        this.#store.audit({
+          action: "host.reconcile",
+          actorDeviceId: null,
+          outcome: "ok",
+          detail: { kind: ref.kind, hostId: ref.id, runtime: ref.resolved.runtime, network: ref.resolved.network },
+        });
+      } catch (err) {
+        unreclaimable.push(ref.id);
+        const reason = err instanceof Error ? err.message : String(err);
+        this.#onLog?.(`host ${ref.id}: reclaiming it failed: ${reason}`);
+        this.#store.audit({
+          action: "host.reconcile",
+          actorDeviceId: null,
+          outcome: "error",
+          detail: { kind: ref.kind, hostId: ref.id, reason },
+        });
+      }
+    }
+    return { reclaimed, unreclaimable };
   }
 
   /**

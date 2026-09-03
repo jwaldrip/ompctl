@@ -16,7 +16,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Connection } from "../src/platform/connection.ts";
-import { resetWindowSize, setWindowSize, setWindowWidth } from "./rnw.ts";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
 // Dynamic on purpose, the same way `smoke.test.tsx` and `session-webview.test.tsx`
 // load their screens: bun evaluates a file's whole static import graph before
@@ -28,6 +28,46 @@ const { StyleSheet } = await import("react-native");
 
 /** RNW exposes this stylesheet API at runtime but not in its TypeScript surface. */
 const rnwStyleSheet = StyleSheet as unknown as { getSheet: () => { textContent: string } };
+
+/**
+ * The sheet rules addressing any of these classes, and nothing else.
+ *
+ * Same shape `safe-screen.test.tsx` and `terminal-session.test.tsx` carry, for
+ * a reason this file learned the hard way: `getSheet()` is process-global and
+ * append-only, so it holds every class any module in the bun process ever
+ * registered, whether or not this screen wears one. Filtering by the element's
+ * own class names is what makes a reading a statement about that element.
+ */
+function sheetRulesFor(classes: readonly string[]): string {
+  if (classes.length === 0) return "";
+  return rnwStyleSheet
+    .getSheet()
+    .textContent.split("\n")
+    .filter(rule => classes.some(name => new RegExp(`\\.${name}(?=$|[\\s.#\\[:{])`).test(rule)))
+    .join("\n");
+}
+
+/**
+ * Every `max-width` that actually reaches `root` or something inside it, from
+ * both places react-native-web puts a declaration: the style attribute for a
+ * value computed at render, an atomic class for one registered up front.
+ *
+ * Scoped to those elements rather than read off the whole sheet, and that is
+ * the whole point of this helper. Importing `react-native-paper` anywhere in
+ * the process registers `.r-maxWidth-1ge9hsw{max-width:960px;}` for `Banner`'s
+ * wrapper -- a class nothing in this screen wears -- so a scan of the sheet
+ * reported a 960pt cap on a 390pt phone and failed this file the moment any
+ * other test file imported Paper. Which is what it did: alone this passed, in
+ * the suite it did not, and the form was correct in both.
+ */
+function appliedMaxWidths(root: Element): number[] {
+  const found: number[] = [];
+  for (const element of [root, ...root.querySelectorAll("*")]) {
+    const declarations = `${element.getAttribute("style") ?? ""}\n${sheetRulesFor([...element.classList])}`;
+    for (const match of declarations.matchAll(/max-width:\s*(\d+(?:\.\d+)?)px/gi)) found.push(Number(match[1]));
+  }
+  return found;
+}
 
 // React 19 reads this to decide whether act() is legal outside a test
 // renderer. It is React's own contract with a test host and no shipped type
@@ -100,7 +140,7 @@ function mountPairScreen(): Harness {
   const paired: Connection[] = [];
 
   act(() => {
-    root.render(<PairScreen onPair={connection => paired.push(connection)} />);
+    root.render(<PairScreen onPair={connection => paired.push(connection)} onScan={() => {}} />);
   });
 
   const endpointInput = host.querySelector('[data-testid="pair-endpoint"]');
@@ -128,14 +168,21 @@ function mountPairScreen(): Harness {
 }
 
 describe("PairScreen: Connect is gated on a parseable endpoint and a token", () => {
-  test("form width honors the 390px phone viewport", () => {
-    setWindowWidth(390);
-    const h = mountPairScreen();
-    const maxWidths = [...rnwStyleSheet.getSheet().textContent.matchAll(/max-width:\s*(\d+(?:\.\d+)?)px/gi)].map(m =>
-      Number(m[1]),
-    );
+  // A 390pt phone, both axes: screen class comes from the shortest side, so a
+  // width on its own would leave this test reading whatever height the file
+  // before it happened to set.
+  const PHONE = { width: 390, height: 844 } as const;
 
-    expect(maxWidths.every(maxWidth => maxWidth <= 390)).toBe(true);
+  test("form width honors the 390px phone viewport", () => {
+    setWindowSize(PHONE.width, PHONE.height);
+    const h = mountPairScreen();
+
+    // Nothing the form or its contents carry may cap wider than the phone it
+    // is drawn on: a 390pt viewport under a 640pt cap is a form running off
+    // the screen. Offenders rather than a boolean so a failure says which cap.
+    expect(appliedMaxWidths(h.form).filter(cap => cap > PHONE.width)).toEqual([]);
+    // And below the phone cap the form takes no cap at all, which is what
+    // makes a cap that moved -- 320 instead of 480, say -- fail here.
     expect(h.form.style.maxWidth).toBe("");
 
     h.unmount();

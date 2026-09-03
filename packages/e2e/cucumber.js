@@ -20,5 +20,10 @@ module.exports = {
     // A scenario that fails for a flaky reason should say so loudly rather than
     // being retried into a false green, so retries stay off by default.
     retry: 0,
+    // A tag filter from the environment rather than a parallel profile: the
+    // path check runs exactly the @path scenario against a real device, and a
+    // second profile would drift from this one the first time only one of
+    // them learned a new default.
+    ...(process.env.E2E_TAGS ? { tags: process.env.E2E_TAGS } : {}),
   },
 };

@@ -16,7 +16,15 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CONTAINER_RUNTIMES, loadConfig, OMPD_VERSION } from "@ompd/daemon";
+import {
+  KNOWN_RUNTIMES,
+  loadConfig,
+  OMPD_VERSION,
+  probeRuntime,
+  type RuntimeCapability,
+  type RuntimeUnavailable,
+  runtimeOrder,
+} from "@ompd/daemon";
 import { type CliContext, resolveBaseUrl, resolveToken } from "../client.ts";
 import { BINARY_NAME, findOnPath } from "../install.ts";
 import { PLIST_MARKER, plistPath, plistProgram } from "./service.ts";
@@ -293,6 +301,23 @@ function loginAgentCheck(ctx: CliContext): Check {
       advice: ["run: ompd install (rewrites it)"],
     };
   }
+  // An install from before the scheduling class was corrected still carries
+  // Background, and the symptom is not subtle: IOPOL_THROTTLE makes every
+  // request that touches disk wait behind the rest of the machine, so the
+  // daemon reads as hung rather than slow while sitting at 0 percent CPU.
+  // Nothing rewrites a plist on its own, so this has to be said out loud.
+  if (contents.includes("<string>Background</string>")) {
+    return {
+      label: "login agent",
+      severity: "warn",
+      detail: `${path} runs the daemon as a throttled Background job`,
+      advice: [
+        "disk reads are deprioritised, so listing sessions can look like a hang",
+        "run: ompd install (rewrites it as Interactive)",
+      ],
+    };
+  }
+
   if (!existsSync(program)) {
     return {
       label: "login agent",
@@ -341,36 +366,138 @@ function stateCheck(ctx: CliContext): Check {
 }
 
 /**
- * Which container runtimes the provisioner would find.
+ * Which container runtime the provisioner would actually select, what
+ * confinement it can express, and which image it would run.
  *
- * Every one of them, not the first, because "docker is installed but you also
- * have podman" is a thing worth seeing here. Absent entirely is a warn: local
- * hosts still work, container hosts do not.
+ * Every candidate is reported rather than just the winner, because "docker is
+ * installed but you also have Apple's runtime" is exactly the thing an
+ * operator needs to see: selection is platform-ordered now, so on a Mac the
+ * native runtime wins and the answer to "why is my agent not in the sandbox I
+ * thought" is on this line.
+ *
+ * A runtime that is installed but whose service is down reads differently from
+ * one that is absent, and says which command fixes it. That distinction is the
+ * reason this is not just a `--version` loop: Apple's runtime answers
+ * `--version` perfectly well with its apiserver stopped, and then fails every
+ * provision.
+ *
+ * The pin is read from the daemon's own `config.json`, not from this process's
+ * environment. It used to be `ctx.env.OMPD_CONTAINER_RUNTIME`, which is the
+ * doctor reporting on its own shell: a launchd-started daemon inherits no
+ * shell, so the value this command saw and the value the daemon used were two
+ * different things, and this is the one line whose entire job is answering
+ * "which runtime is my agent actually on".
+ *
+ * A pin that cannot be satisfied is a `fail`, not a `warn`, and that is a
+ * deliberate split from the unpinned case. No runtime installed is a
+ * capability that is absent; a pin naming a runtime that is not usable is
+ * broken now, because every container provision will throw rather than fall
+ * back, which is the behaviour that was chosen on purpose.
  */
 async function runtimeCheck(ctx: CliContext): Promise<Check> {
-  const probes = await Promise.all(
-    CONTAINER_RUNTIMES.map(async runtime => {
-      try {
-        const result = await ctx.exec([runtime, "--version"]);
-        return result.code === 0 ? runtime : null;
-      } catch {
-        // Bun throws for a missing binary rather than exiting non-zero, so
-        // this is the ordinary "not installed" path, not an error.
-        return null;
-      }
-    }),
-  );
+  const configPath = join(ctx.home, "config.json");
+  let pinned: string;
+  let image: string;
+  try {
+    const config = loadConfig(ctx.home);
+    pinned = config.containerRuntime;
+    image = config.containerImage;
+  } catch (err) {
+    // `loadConfig` already refuses an unknown runtime naming the valid set and
+    // an unusable image saying why, so repeating either check here would be a
+    // second copy that can disagree with the daemon's.
+    return {
+      label: "containers",
+      severity: "fail",
+      detail: `${configPath} is not loadable: ${err instanceof Error ? err.message : err}`,
+      advice: ["fix or delete that file; the daemon refuses to start on it too"],
+    };
+  }
 
-  const found = probes.filter((runtime): runtime is string => runtime !== null);
-  if (found.length === 0) {
+  const candidates = pinned === "" ? runtimeOrder(process.platform) : [pinned];
+  if (candidates.length === 0) {
     return {
       label: "containers",
       severity: "warn",
-      detail: `none of ${CONTAINER_RUNTIMES.join(", ")} answered --version`,
-      advice: ["local hosts still work; container hosts need one of those installed"],
+      detail: `no container runtime is supported on ${process.platform}`,
+      advice: ["local hosts still work; container hosts need macOS or Linux"],
     };
   }
-  return { label: "containers", severity: "ok", detail: found.join(", ") };
+
+  const probes = await Promise.all(candidates.map(runtime => probeRuntime(runtime, ctx.exec, process.platform)));
+  const usable = probes.find((probe): probe is RuntimeCapability => !("reason" in probe));
+  const unusable = probes.filter((probe): probe is RuntimeUnavailable => "reason" in probe);
+  if (usable === undefined) {
+    const reasons = unusable.map(probe => `${probe.runtime}: ${probe.reason}`).join(", ");
+    if (pinned !== "") {
+      return {
+        label: "containers",
+        severity: "fail",
+        detail: `containerRuntime is pinned to ${pinned} and ${reasons}; every container host will fail to provision`,
+        advice: [
+          ...unusable.map(probe => `${probe.runtime}: ${probe.hint}`),
+          `or remove "containerRuntime" from ${configPath} for the platform default, ` +
+            `or set it to one of ${KNOWN_RUNTIMES.join(", ")} that is installed`,
+        ],
+      };
+    }
+    return {
+      label: "containers",
+      severity: "warn",
+      detail: reasons,
+      advice: [
+        "local hosts still work; container hosts need one of these",
+        ...unusable.map(probe => `${probe.runtime}: ${probe.hint}`),
+      ],
+    };
+  }
+
+  // Named so the line is auditable: an operator can tell at a glance which of
+  // the four confinement flags their runtime is actually being asked for, and
+  // `docs/running.md` explains why the missing ones differ per runtime rather
+  // than all being holes.
+  const confinement = [
+    usable.capDrop ? "cap-drop" : null,
+    usable.securityOpt ? "no-new-privileges" : null,
+    usable.readOnly ? "read-only" : null,
+    usable.pidsLimit ? "pids-limit" : null,
+  ].filter((flag): flag is string => flag !== null);
+  const others = probes
+    .filter(probe => probe.runtime !== usable.runtime)
+    .map(probe => ("reason" in probe ? `${probe.runtime} ${probe.reason}` : probe.runtime));
+  const also = others.length > 0 ? ` (also present: ${others.join(", ")})` : "";
+  const how = pinned === "" ? "platform default" : "pinned in config.json";
+  return {
+    label: "containers",
+    severity: "ok",
+    detail:
+      `${usable.runtime} ${usable.version} (${how}), confines with ` +
+      `${confinement.length > 0 ? confinement.join(" ") : "its own VM per container"}${also}, ` +
+      `${imageLine(image)}`,
+    // Advice on an ok line, because a trusted image is not a problem to fix,
+    // it is a claim the operator made that they should be able to read back.
+    ...(image === ""
+      ? {}
+      : {
+          advice: [
+            "ompd mounts nothing over that image and pins no digest for it, and its ENTRYPOINT runs " +
+              "before ompd has a process to gate, so the approval gate cannot confine what is inside it",
+          ],
+        }),
+  };
+}
+
+/**
+ * How the image half of the containers line reads.
+ *
+ * Split out so the two cases are visibly different sentences rather than one
+ * sentence with a value substituted into it: "the pinned default" and "an
+ * image an operator vouched for" are different security claims, and a reader
+ * skimming this line has to be able to tell which one they are looking at.
+ */
+function imageLine(image: string): string {
+  if (image === "") return "image: ompd's pinned default base plus its mounted toolchain";
+  return `image: ${image}, trusted by whoever configured it and checked by nothing ompd does`;
 }
 
 /**

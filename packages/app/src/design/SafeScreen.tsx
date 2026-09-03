@@ -11,12 +11,58 @@
  * two never fight over the same `padding*` keys, so a pairing form that wants
  * `space.loose` still gets it on a phone with a notch, and a web build with
  * zero insets still keeps its design padding.
+ *
+ * ## Why it asks the navigator about the top edge
+ *
+ * A stack header already sits inside the top inset: it is drawn below the
+ * status bar and its own height includes that inset. A screen under one that
+ * also pads by `insets.top` pushes its content down by the inset twice, which
+ * on the operator's phone is 47pt of dead band under the header. So the top
+ * edge is conditional on whether a header is actually above this screen, which
+ * the navigator answers through `HeaderHeightContext`: undefined outside a
+ * navigator, zero on a route whose header is hidden, and the drawn height when
+ * there is one. Asking that question here rather than passing `edges` per route
+ * is deliberate: a screen this shell has never heard of, including one another
+ * author adds later, gets the right answer without knowing the rule exists.
+ *
+ * ## Why the bottom inset survives being nested
+ *
+ * The same session screen is pushed on a phone, where its shell is the
+ * outermost thing on screen, and nested in a tablet's detail pane, where a
+ * shell above has already padded the window. The raw insets read the same in
+ * both positions, so a nested shell or composer that pays again counts the
+ * home indicator twice and the composer floats an inset above the list
+ * beside it. A shell that pays the bottom inset records that in a context:
+ * a nested shell declines the bottom edge an ancestor already paid, and a
+ * screen's composer asks `useOwnedBottomInset`, which answers zero in the
+ * same position. Nesting can no longer double count.
+ *
+ * What nesting cannot do is paint a child's colour into a parent's padding,
+ * so a composer whose surface should reach the screen edge needs a shell
+ * above it that passes `bottom: false` and panes that own their own bottom:
+ * the split console does exactly that for the bay and the detail pane.
  */
 
-import type { JSX, ReactNode } from "react";
+import { HeaderHeightContext } from "@react-navigation/elements";
+import { createContext, type JSX, type ReactNode, useContext } from "react";
 import { type StyleProp, StyleSheet, View, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ground } from "./tokens.ts";
+
+/**
+ * Whether a `SafeScreen` above this point has already paid this screen's
+ * bottom inset. False at the root, where the first shell owns every edge it
+ * claims.
+ *
+ * The same screen renders both pushed on a phone, where its own shell is the
+ * outermost thing on screen, and nested in a tablet's detail pane, where a
+ * shell above has already padded the window. The raw insets read the same in
+ * both positions, which is the trap: a nested shell or a nested composer that
+ * pays again double counts, and the composer ends up floating an inset above
+ * the list beside it. So the fact is carried by context rather than
+ * recomputed per screen, and every bottom-edge owner below reads it.
+ */
+const BottomInsetPaidContext = createContext(false);
 
 export function SafeScreen({
   children,
@@ -35,22 +81,42 @@ export function SafeScreen({
   edges?: { top?: boolean; bottom?: boolean; left?: boolean; right?: boolean };
 }): JSX.Element {
   const insets = useSafeAreaInsets();
+  const headerHeight = useContext(HeaderHeightContext);
+  const headerOwnsTop = headerHeight !== undefined && headerHeight > 0;
+  const ancestorPaidBottom = useContext(BottomInsetPaidContext);
+  const paysBottom = edges.bottom !== false && !ancestorPaidBottom;
   return (
-    <View
-      testID={testID}
-      style={[
-        styles.shell,
-        {
-          paddingTop: edges.top === false ? 0 : insets.top,
-          paddingBottom: edges.bottom === false ? 0 : insets.bottom,
-          paddingLeft: edges.left === false ? 0 : insets.left,
-          paddingRight: edges.right === false ? 0 : insets.right,
-        },
-      ]}
-    >
-      <View style={[styles.content, style]}>{children}</View>
-    </View>
+    <BottomInsetPaidContext.Provider value={ancestorPaidBottom || paysBottom}>
+      <View
+        testID={testID}
+        style={[
+          styles.shell,
+          {
+            paddingTop: edges.top === false || headerOwnsTop ? 0 : insets.top,
+            paddingBottom: paysBottom ? insets.bottom : 0,
+            paddingLeft: edges.left === false ? 0 : insets.left,
+            paddingRight: edges.right === false ? 0 : insets.right,
+          },
+        ]}
+      >
+        <View style={[styles.content, style]}>{children}</View>
+      </View>
+    </BottomInsetPaidContext.Provider>
   );
+}
+
+/**
+ * The bottom inset a screen's own bottom-anchored control must pay itself.
+ *
+ * The full inset when no shell above has consumed it, zero when one has,
+ * because the control's usable area already stops above the home indicator
+ * there. This is how a composer nested in an already-padded shell stays in
+ * line with the list beside it instead of floating an inset above it.
+ */
+export function useOwnedBottomInset(): number {
+  const paidAbove = useContext(BottomInsetPaidContext);
+  const insets = useSafeAreaInsets();
+  return paidAbove ? 0 : insets.bottom;
 }
 
 const styles = StyleSheet.create({

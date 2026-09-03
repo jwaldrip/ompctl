@@ -21,6 +21,23 @@ jobs:
     name: Typecheck + tests
     runs-on: ubuntu-22.04
     timeout-minutes: 25
+    # The hub's redis-backed backplane is the part that can only work or fail
+    # for real against a real redis, so its tests are skipped rather than run
+    # against the memory implementation when none is named. `hub-deploy.yml`
+    # provides one, but that workflow is `workflow_dispatch` only, so nothing
+    # automatic has ever run them: a relay that stopped routing while still
+    # answering `linked` was invisible to every check in this repository. It is
+    # here, on every pull request, for the same reason the rest of this workflow
+    # is deliberately unfiltered.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       # Full history: the provenance sweep walks every ref, and the default
       # depth-1 checkout would leave it auditing a single commit.
@@ -37,6 +54,8 @@ jobs:
       - name: Typecheck and lint every workspace
         run: bun run check
       - name: Unit and integration tests
+        env:
+          OMPD_TEST_REDIS_URL: redis://127.0.0.1:6379
         run: bun run test
       # Guards the scrubbed history. Runs on every PR because a single careless
       # paste into any file would reintroduce what a history rewrite removed, and
@@ -55,3 +74,40 @@ jobs:
         env:
           OMPCTL_PROVENANCE_TERMS: ${{ secrets.OMPCTL_PROVENANCE_TERMS }}
         run: bun run check:provenance
+
+  # Separate job, and on macOS on purpose. The compiled `ompd` cannot start a
+  # daemon on the ubuntu runner at all: `bun build --compile` cannot carry a
+  # native `.node` addon into its single-file executable, and the binary dies on
+  # startup with "Failed to load pi_natives native addon for linux-x64
+  # (modern)". The job above never noticed because everything it runs executes
+  # from source under `bun`, where the addon resolves out of `node_modules`
+  # normally.
+  #
+  # macOS is also where this artifact is actually installed: the launchd plist,
+  # `ompd self-install`, and the TestFlight path are all darwin. So this runs
+  # the binary on the platform a user has, rather than proving nothing on the
+  # platform that is merely cheaper.
+  #
+  # That the compiled binary is unusable on Linux is a real gap and not this
+  # job's to close. It is not covered anywhere and nothing in the repository
+  # claims otherwise.
+  compiled-mcp:
+    name: MCP round trip against the compiled binary
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      # The canary refuses to run without `dist/ompd` rather than falling back
+      # to the source entry, so this build is load bearing and not a
+      # convenience. It is the only check in the repository that drives a
+      # compiled artifact: `--compile` dropping a dependency, the seven-tool MCP
+      # surface changing, and a stray stdout write corrupting the stdio framing
+      # are all invisible to a suite that runs from source.
+      - name: Build the CLI and drive its MCP surface over raw stdio
+        run: |
+          bun run build:cli
+          bun run check:mcp

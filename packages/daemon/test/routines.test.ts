@@ -290,19 +290,31 @@ function harness(opts: HarnessOptions = {}): Harness {
   };
 }
 
-function defineRoutine(store: Store, over: Partial<Routine> = {}): Routine {
+function defineRoutine(
+  store: Store,
+  over: Partial<Routine> & { prompt?: string; timeoutSeconds?: number } = {},
+): Routine {
+  const { prompt = "summarise yesterday", timeoutSeconds, ...routineOver } = over;
   const routine: Routine = {
     id: `rtn_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
     name: "nightly",
     enabled: true,
     trigger: { kind: "interval", seconds: 60 },
-    prompt: "summarise yesterday",
-    cwd: "/work",
-    host: { kind: "local" },
+    actions: [
+      {
+        id: "act_primary",
+        name: "Primary",
+        prompt,
+        cwd: "/work",
+        host: { kind: "local" },
+        timeoutSeconds,
+        labels: {},
+      },
+    ],
     singleton: true,
     labels: {},
     createdAt: "2026-01-01T00:00:00.000Z",
-    ...over,
+    ...routineOver,
   };
   store.upsertRoutine(routine);
   return routine;
@@ -367,12 +379,12 @@ describe("Scheduler execution", () => {
     const run = await h.scheduler.runNow(routine.id, h.actor);
 
     expect(run.state).toBe("succeeded");
-    expect(run.summary).toBe("nothing broke overnight");
+    expect(run.actions[0]?.summary).toBe("nothing broke overnight");
     expect(run.finishedAt).toBeDefined();
     expect(h.fake.prompts[0]?.text).toBe("summarise yesterday");
 
     // The agent was created for the routine and then retired.
-    const agent = h.store.getAgent(run.agentId ?? "");
+    const agent = h.store.getAgent(run.actions[0]?.agentId ?? "");
     expect(agent?.routineId).toBe(routine.id);
     expect(agent?.state).toBe("stopped");
   });
@@ -398,10 +410,10 @@ describe("Scheduler execution", () => {
     if (!result.accepted) throw new Error("correct secret was refused");
     expect(result.run.state).toBe("succeeded");
     expect(result.run.finishedAt).toBeDefined();
-    for (const field of ["id", "routineId", "agentId", "state", "startedAt", "finishedAt"]) {
+    for (const field of ["id", "routineId", "actions", "state", "startedAt", "finishedAt"]) {
       expect(field in result.run).toBe(field in (cronRun ?? {}));
     }
-    expect(h.store.getAgent(result.run.agentId ?? "")?.state).toBe("stopped");
+    expect(h.store.getAgent(result.run.actions[0]?.agentId ?? "")?.state).toBe("stopped");
   });
 
   test("a wrong webhook secret produces no run", async () => {
@@ -458,7 +470,7 @@ describe("Scheduler execution", () => {
 
     const second = await h.scheduler.runNow(routine.id, h.actor);
     expect(second.state).toBe("skipped");
-    expect(second.agentId).toBeUndefined();
+    expect(second.actions.every(action => action.agentId === undefined)).toBe(true);
     // The skip must not have stood up a second agent.
     expect(h.store.listAgents()).toHaveLength(1);
 
@@ -501,7 +513,7 @@ describe("Scheduler execution", () => {
     expect(run.finishedAt).toBeDefined();
 
     // Stopped, not merely abandoned: the timeout path must tear the agent down.
-    const agent = h.store.getAgent(run.agentId ?? "");
+    const agent = h.store.getAgent(run.actions[0]?.agentId ?? "");
     expect(agent?.state).toBe("stopped");
     expect(h.store.hasActiveRun(routine.id)).toBe(false);
   });
@@ -545,7 +557,7 @@ describe("Scheduler execution", () => {
 
     expect(run.state).toBe("failed");
     expect(run.error).toContain("timeout");
-    expect(h.store.getAgent(run.agentId ?? "")?.state).toBe("stopped");
+    expect(h.store.getAgent(run.actions[0]?.agentId ?? "")?.state).toBe("stopped");
     expect(h.store.hasActiveRun(routine.id)).toBe(false);
   });
 
@@ -567,11 +579,13 @@ describe("Scheduler execution", () => {
     expect(run.state).toBe("succeeded");
 
     const entries = h.store.listAudit().filter(e => e.action === "routine.run");
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.actorDeviceId).toBe("phone");
-    expect(entries[0]?.detail.routineId).toBe(routine.id);
-    expect(entries[0]?.detail.runId).toBe(run.id);
-    expect(entries[0]?.detail.state).toBe("succeeded");
+    expect(entries).toHaveLength(2);
+    expect(entries.every(entry => entry.actorDeviceId === "phone")).toBe(true);
+    expect(entries.every(entry => entry.detail.routineId === routine.id)).toBe(true);
+    expect(entries.every(entry => entry.detail.runId === run.id)).toBe(true);
+    expect(entries.some(entry => entry.detail.actionId === "act_primary" && entry.detail.state === "succeeded")).toBe(
+      true,
+    );
   });
 
   test("runNow refuses a caller without manage scope and writes no run", async () => {
@@ -597,6 +611,97 @@ describe("Scheduler execution", () => {
   test("runNow refuses an unknown routine", async () => {
     const h = harness();
     await expect(h.scheduler.runNow("rtn_nope", h.actor)).rejects.toThrow(/unknown routine/);
+  });
+});
+
+describe("Scheduler deleteRoutines", () => {
+  test("a run in flight is refused by name, and the routine survives it", async () => {
+    const h = harness();
+    const held = holdTurns(h.fake);
+    const routine = defineRoutine(h.store);
+    const firing = h.scheduler.runNow(routine.id, h.actor);
+    // Wait on arrival, not on a delay: the refusal is only honest once the
+    // run is genuinely inside the agent turn.
+    await held.reached(1);
+
+    const refused = await h.scheduler.deleteRoutines([routine.id]);
+    expect(refused).toEqual([{ routineId: routine.id, deleted: false, refusal: "running" }]);
+    expect(h.store.listRoutines().map(r => r.id)).toEqual([routine.id]);
+
+    held.release();
+    const settled = await firing;
+    expect(settled.state).toBe("succeeded");
+
+    // The refusal is a state, not a sentence: once nothing is in flight the
+    // same id deletes.
+    const deleted = await h.scheduler.deleteRoutines([routine.id]);
+    expect(deleted).toEqual([{ routineId: routine.id, deleted: true }]);
+    expect(h.store.listRoutines()).toEqual([]);
+  });
+
+  test("a run row a killed process left behind refuses the delete too", async () => {
+    // The inflight map dies with the scheduler; only the store's row survives
+    // a kill -9. That row is the whole difference between this test and the
+    // one above, which is why it seeds the row directly and never fires.
+    const h = harness();
+    const routine = defineRoutine(h.store);
+    h.store.upsertRun({
+      id: "run_orphan",
+      routineId: routine.id,
+      state: "running",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      actions: [
+        {
+          actionId: "act_primary",
+          actionName: "Primary",
+          index: 0,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const refused = await h.scheduler.deleteRoutines([routine.id]);
+    expect(refused).toEqual([{ routineId: routine.id, deleted: false, refusal: "running" }]);
+    expect(h.store.listRoutines().map(r => r.id)).toEqual([routine.id]);
+  });
+
+  test("an id this daemon does not hold is reported, not answered with success", async () => {
+    const h = harness();
+    const results = await h.scheduler.deleteRoutines(["rtn_nope"]);
+    expect(results).toEqual([{ routineId: "rtn_nope", deleted: false, refusal: "not_found" }]);
+  });
+
+  test("a store that throws mid-delete is reported as failed and the routine survives", async () => {
+    const h = harness();
+    const routine = defineRoutine(h.store);
+    // The seam under test is "the store threw", whatever the machine-level
+    // cause; overriding the method is the one way to produce it determinately.
+    // It throws before touching the rows so the survival assertion below is
+    // about the scheduler's refusal, not about a half-deleted fixture.
+    h.store.deleteRoutine = () => {
+      throw new Error("simulated store failure");
+    };
+
+    const results = await h.scheduler.deleteRoutines([routine.id]);
+    expect(results).toEqual([{ routineId: routine.id, deleted: false, refusal: "failed" }]);
+    expect(h.store.listRoutines().map(r => r.id)).toEqual([routine.id]);
+  });
+
+  test("a mixed batch answers each id for itself", async () => {
+    const h = harness();
+    h.fake.onPrompt(() => ({ stopReason: "end_turn" }));
+    const first = defineRoutine(h.store);
+    const second = defineRoutine(h.store);
+    expect(first.id).not.toBe(second.id);
+
+    const results = await h.scheduler.deleteRoutines([first.id, "rtn_nope", second.id]);
+    expect(results).toEqual([
+      { routineId: first.id, deleted: true },
+      { routineId: "rtn_nope", deleted: false, refusal: "not_found" },
+      { routineId: second.id, deleted: true },
+    ]);
+    expect(h.store.listRoutines()).toEqual([]);
   });
 });
 

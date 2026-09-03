@@ -230,6 +230,49 @@ export class DeviceAuth {
   }
 
   /**
+   * Operator action over a sealed socket: write the device row and mint its
+   * one token in a single authenticated request.
+   *
+   * `approvePairing` is the same act reached through the two-step HTTP flow,
+   * where the pairing code exists to carry the request across the
+   * unauthenticated gap between `POST /v1/pair` and its approval. A socket
+   * frame has no such gap -- the asking device is already authenticated and
+   * scope-checked -- so there is no intent to record and no code to quote,
+   * and routing this through `beginPairing` would let an unauthenticated
+   * backlog (`MAX_PENDING_PAIRINGS`) refuse an authenticated operator. The
+   * device row, the mint, and the audit line are the approved pairing's,
+   * exactly.
+   */
+  inviteDevice(actorDeviceId: string, name: string, scopes: string[]): ApprovalResult {
+    const device: Device = {
+      id: `dev_${randomBytes(8).toString("hex")}`,
+      name,
+      // A provenance string, not a key: the inviting device has no key
+      // material for a device it has not met yet, the same convention the
+      // throwaway strings `POST /v1/pair` clients send follow.
+      publicKey: `invite:${randomBytes(8).toString("hex")}`,
+      scopes: [...scopes],
+      createdAt: new Date().toISOString(),
+    };
+    this.#store.addDevice(device);
+
+    const token = this.#mint(device.id, name).token;
+
+    // The same line the approved pairing writes, with the origin that tells
+    // the flows apart the way `rotation` and `local_bootstrap` already do.
+    // The actor is the device whose approve scope paid for this, not the
+    // device that did not exist a moment ago. No token, no token id; see
+    // `approvePairing` for why even an id is deliberately absent.
+    this.#store.audit({
+      action: "device.pair",
+      actorDeviceId,
+      outcome: "ok",
+      detail: { name: device.name, scopes: device.scopes, origin: "device_invite" },
+    });
+    return { token, name: device.name };
+  }
+
+  /**
    * Mint a token for a device row that already exists.
    *
    * Used for the local operator device, whose authority comes from filesystem

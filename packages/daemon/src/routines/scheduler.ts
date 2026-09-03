@@ -1,9 +1,9 @@
 /**
  * Scheduled and triggered agent runs.
  *
- * A routine is a prompt plus a trigger. Firing one means standing up a fresh
- * agent, prompting it, and tearing it down again, recording the whole thing as
- * `Run`. Four properties are load bearing:
+ * A routine is an ordered list of agent actions plus a trigger. Firing one
+ * stands up a fresh agent for each action, prompts it, and tears it down,
+ * recording one event with every action's outcome. Four properties are load bearing:
  *
  * - **A run never leaks an agent.** Teardown is in a `finally`, and if the
  *   supervisor cannot stop the agent the record is forced terminal anyway.
@@ -20,9 +20,13 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { joinAssistantText, type PromptResult } from "@ompd/acp";
 import {
+  type ActionRun,
   type Actor,
   type AgentId,
+  nextFireTime,
   type Routine,
+  type RoutineAction,
+  type RoutineDeleteResult,
   type Run,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
@@ -30,7 +34,6 @@ import {
   TERMINAL_AGENT_STATES,
 } from "@ompd/core";
 import { type Supervisor, UnauthorizedError } from "../supervisor.ts";
-import { nextFireTime } from "./cron.ts";
 
 const DEFAULT_TICK_MS = 15_000;
 const SUMMARY_MAX_CHARS = 2_000;
@@ -200,10 +203,11 @@ export class Scheduler {
     // notification, so this waits only on the writes, and one host refusing its
     // write must not delay the next run's cancellation.
     await Promise.allSettled(
-      [...this.#inflight.values()].map(entry => {
+      [...this.#inflight.values()].flatMap(entry => {
         entry.interrupted = true;
-        if (entry.run.agentId === undefined) return Promise.resolve();
-        return this.#supervisor.cancel(entry.run.agentId, this.#actor);
+        return entry.run.actions
+          .filter(action => action.state === "running" && action.agentId !== undefined)
+          .map(action => this.#supervisor.cancel(action.agentId as AgentId, this.#actor));
       }),
     );
 
@@ -222,10 +226,23 @@ export class Scheduler {
     for (const entry of this.#inflight.values()) {
       const { run } = entry;
       if (run.state === "queued" || run.state === "running") {
-        // A mid-flight run carries no error of its own yet: every path that
-        // sets one has already reached a terminal state.
-        run.state = "failed";
-        run.error = INTERRUPTED;
+        const unfinished = run.actions.some(action => action.state === "queued" || action.state === "running");
+        if (unfinished) {
+          run.state = "failed";
+          run.error = INTERRUPTED;
+          for (const action of run.actions) {
+            if (action.state !== "queued" && action.state !== "running") continue;
+            action.state = "failed";
+            action.error = INTERRUPTED;
+            action.finishedAt = at;
+          }
+        } else if (run.actions.every(action => action.state === "succeeded")) {
+          run.state = "succeeded";
+        } else {
+          run.state = "failed";
+          const failed = run.actions.find(action => action.state !== "succeeded");
+          run.error = failed?.refusal?.reason ?? failed?.error;
+        }
       }
       // Anything else here decided its outcome and then hung on the way to
       // recording it, so the row still says `running` while the record in hand
@@ -359,6 +376,56 @@ export class Scheduler {
     return { accepted: true, run: await this.#execute(routine, this.#actor) };
   }
 
+  /**
+   * Delete routines for good, on the runner rather than a bare store call,
+   * because the scheduler is the only party that knows whether a run is in
+   * flight: `#inflight` catches a run whose row is not written yet, and the
+   * store's `hasActiveRun` catches a row a previous process left behind.
+   *
+   * Refusals are per id and named, never boolean, so a surface can tell the
+   * operator what to do rather than that it simply cannot. Disarmament is
+   * eager (`#dueAt`, `#broken`) rather than left to the next tick's
+   * reconciliation. No fire can start mid-delete anyway: this method runs to
+   * completion without an await, so a scheduled fire either began before the
+   * inflight check (and refused the delete) or begins after the row is gone
+   * (and finds no routine). No re-check inside `#execute` is needed, and one
+   * would be dead code.
+   */
+  async deleteRoutines(routineIds: readonly string[]): Promise<RoutineDeleteResult[]> {
+    const results: RoutineDeleteResult[] = [];
+    const known = new Set(this.#store.listRoutines().map(routine => routine.id));
+
+    for (const routineId of routineIds) {
+      if (!known.has(routineId)) {
+        results.push({ routineId, deleted: false, refusal: "not_found" });
+        continue;
+      }
+      const inFlight = [...this.#inflight.values()].some(
+        entry => entry.run.routineId === routineId && (entry.run.state === "queued" || entry.run.state === "running"),
+      );
+      if (inFlight || this.#store.hasActiveRun(routineId)) {
+        results.push({ routineId, deleted: false, refusal: "running" });
+        continue;
+      }
+      try {
+        if (!this.#store.deleteRoutine(routineId)) {
+          // Vanished between the listing above and the delete; the honest
+          // answer is the same as never having been there.
+          results.push({ routineId, deleted: false, refusal: "not_found" });
+          continue;
+        }
+      } catch {
+        results.push({ routineId, deleted: false, refusal: "failed" });
+        continue;
+      }
+      this.#dueAt.delete(routineId);
+      this.#broken.delete(routineId);
+      results.push({ routineId, deleted: true });
+    }
+
+    return results;
+  }
+
   /** Epoch ms of the next fire, or null for triggers the clock does not drive. */
   #nextDue(routine: Routine, fromMs: number): number | null {
     const trigger = routine.trigger;
@@ -387,11 +454,19 @@ export class Scheduler {
     // serving as it closed, would write a row nothing is left to settle.
     if (this.#draining) throw new Error("the scheduler is shutting down");
 
+    const startedAt = this.#now().toISOString();
     const run: Run = {
       id: `run_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`,
       routineId: routine.id,
       state: "queued",
-      startedAt: this.#now().toISOString(),
+      startedAt,
+      actions: routine.actions.map((action, index) => ({
+        actionId: action.id,
+        actionName: action.name,
+        index,
+        state: "queued",
+        startedAt,
+      })),
     };
 
     const finished = this.#executeRun(run, routine, actor);
@@ -406,94 +481,197 @@ export class Scheduler {
   async #executeRun(run: Run, routine: Routine, actor: Actor): Promise<Run> {
     if (routine.singleton && this.#store.hasActiveRun(routine.id)) {
       run.state = "skipped";
+      run.error = "previous run still active";
       run.finishedAt = run.startedAt;
+      for (const action of run.actions) {
+        action.state = "skipped";
+        action.error = run.error;
+        action.finishedAt = run.finishedAt;
+      }
       this.#recordRun(run);
       this.#audit({
         actor,
         routineId: routine.id,
         runId: run.id,
         outcome: "ok",
-        detail: { state: "skipped", reason: "previous run still active" },
+        detail: { state: "skipped", reason: run.error },
       });
       return run;
     }
 
-    // Written before the agent exists so a concurrent tick sees an active run
-    // and skips, rather than racing a second agent into the same workspace.
+    // Written before the first agent exists so a concurrent tick sees the
+    // event as active and skips, rather than racing another event into it.
     this.#recordRun(run);
+
+    for (const outcome of run.actions) {
+      if (this.#inflight.get(run.id)?.interrupted === true || this.#draining) break;
+      const action = routine.actions[outcome.index];
+      if (action === undefined) {
+        outcome.state = "refused";
+        outcome.finishedAt = this.#now().toISOString();
+        outcome.refusal = { code: "invalid_action", reason: "action is missing" };
+        this.#recordRun(run);
+        continue;
+      }
+      await this.#executeAction(run, routine, action, outcome, actor);
+    }
+
+    if (this.#inflight.get(run.id)?.interrupted === true || this.#draining) {
+      run.state = "failed";
+      run.error = INTERRUPTED;
+      const finishedAt = this.#now().toISOString();
+      for (const action of run.actions) {
+        if (action.state !== "queued" && action.state !== "running") continue;
+        action.state = "failed";
+        action.error = INTERRUPTED;
+        action.finishedAt = finishedAt;
+      }
+    } else if (run.actions.length === 0) {
+      run.state = "failed";
+      run.error = "routine has no actions";
+    } else if (run.actions.every(action => action.state === "succeeded")) {
+      run.state = "succeeded";
+    } else if (run.actions.every(action => action.state === "timed_out")) {
+      run.state = "timed_out";
+      run.error = run.actions[0]?.error;
+    } else {
+      run.state = "failed";
+      const failed = run.actions.find(action => action.state !== "succeeded");
+      run.error = failed?.refusal?.reason ?? failed?.error;
+    }
+
+    run.finishedAt = this.#now().toISOString();
+    this.#recordRun(run);
+    this.#audit({
+      actor,
+      routineId: routine.id,
+      runId: run.id,
+      outcome: run.state === "succeeded" ? "ok" : "error",
+      detail: {
+        state: run.state,
+        error: run.error,
+        actions: run.actions.map(action => ({
+          actionId: action.actionId,
+          state: action.state,
+          refusal: action.refusal?.code,
+        })),
+      },
+    });
+    return run;
+  }
+
+  async #executeAction(
+    run: Run,
+    routine: Routine,
+    action: RoutineAction,
+    outcome: ActionRun,
+    actor: Actor,
+  ): Promise<void> {
+    if (action.prompt.trim().length === 0) {
+      outcome.state = "refused";
+      outcome.finishedAt = this.#now().toISOString();
+      outcome.refusal = { code: "invalid_action", reason: "prompt is empty" };
+      this.#recordRun(run);
+      this.#audit({
+        actor,
+        routineId: routine.id,
+        runId: run.id,
+        outcome: "denied",
+        detail: { actionId: action.id, index: outcome.index, refusal: outcome.refusal },
+      });
+      return;
+    }
 
     let agentId: AgentId | undefined;
     let settling: Promise<void> | undefined;
+    outcome.startedAt = this.#now().toISOString();
     try {
       const agent = await this.#supervisor.createAgent(
         {
-          name: routine.name,
-          cwd: routine.cwd,
-          host: routine.host,
+          name: action.name,
+          cwd: action.cwd,
+          host: action.host,
           routineId: routine.id,
-          labels: routine.labels,
+          labels: { ...routine.labels, ...action.labels },
         },
         actor,
       );
       agentId = agent.id;
-      run.agentId = agent.id;
+      outcome.agentId = agent.id;
+      // Read from the store rather than from the returned object, because the
+      // row is what the session surface itself answers from, and it is bound
+      // by the time `createAgent` resolves: the supervisor writes
+      // `acpSessionId` and upserts the agent before returning it. Capturing
+      // here rather than during teardown is what puts the id on the `running`
+      // record too, so a run in flight is openable while it is still worth
+      // watching, and it covers every later exit alike: a turn that times
+      // out, fails, or is cancelled opened its session before any of that.
+      // Retirement would not lose it either, since `setAgentState` leaves
+      // `acp_session_id` alone, but a record that only names the session once
+      // the run is over is a record nobody can act on.
+      //
+      // An action whose agent never came up throws above and leaves this
+      // absent, which is the honest answer: there is no session to name.
+      const sessionId = this.#store.getAgent(agent.id)?.acpSessionId;
+      // Guarded rather than assigned blind: an empty id would read as a link
+      // to a client, and lead it somewhere that does not exist.
+      if (sessionId !== undefined && sessionId.length > 0) outcome.sessionId = sessionId;
+      outcome.state = "running";
       run.state = "running";
       this.#recordRun(run);
 
-      // The drain can finish while `createAgent` is still in flight: a run with
-      // no agent yet has nothing to cancel, so it is marked interrupted and
-      // settled without waiting. Prompting now would start a turn after the
-      // daemon decided it was drained, against a supervisor and store that are
-      // being torn down. Returning here leaves the `finally` to retire the agent
-      // that was created, which is the only cleanup it needs.
       if (this.#draining || this.#inflight.get(run.id)?.interrupted === true) {
-        run.state = "failed";
-        run.error = INTERRUPTED;
-        return run;
+        outcome.state = "failed";
+        outcome.error = INTERRUPTED;
+        return;
       }
 
-      const turn = await this.#promptWithDeadline(agent.id, routine, actor);
+      const turn = await this.#promptWithDeadline(agent.id, action, actor);
       settling = turn.settling;
       if (turn.result === "timed_out") {
-        run.state = "timed_out";
-        run.error = `exceeded timeout of ${routine.timeoutSeconds}s`;
+        outcome.state = "timed_out";
+        outcome.error = `exceeded timeout of ${action.timeoutSeconds}s`;
       } else if (this.#inflight.get(run.id)?.interrupted === true) {
-        // The turn ended because the drain cancelled it, so its stop reason
-        // describes the shutdown rather than the work the routine asked for.
-        run.state = "failed";
-        run.error = INTERRUPTED;
+        outcome.state = "failed";
+        outcome.error = INTERRUPTED;
       } else {
-        run.state = "succeeded";
-        run.summary = this.#summarize(agent.id, turn.result.stopReason);
+        outcome.state = "succeeded";
+        outcome.summary = this.#summarize(agent.id, turn.result.stopReason);
       }
     } catch (err) {
-      run.state = "failed";
-      run.error = errorText(err);
+      if (err instanceof UnauthorizedError) {
+        outcome.state = "refused";
+        outcome.refusal = { code: "unauthorized", reason: errorText(err) };
+      } else {
+        outcome.state = "failed";
+        outcome.error = errorText(err);
+      }
     } finally {
-      if (agentId) {
+      if (agentId !== undefined) {
         try {
           await this.#retireAgent(agentId, actor, settling);
         } catch (err) {
-          // Teardown is allowed to fail; losing the run record is not. The
-          // record is the only durable evidence the run happened, and a run
-          // stranded in `running` would keep `hasActiveRun` true and wedge a
-          // singleton routine permanently.
-          if (!run.error) run.error = errorText(err);
+          if (outcome.state === "succeeded") outcome.state = "failed";
+          outcome.error ??= errorText(err);
         }
       }
-      run.finishedAt = this.#now().toISOString();
+      outcome.finishedAt = this.#now().toISOString();
       this.#recordRun(run);
       this.#audit({
         actor,
         routineId: routine.id,
         runId: run.id,
         agentId,
-        outcome: run.state === "succeeded" ? "ok" : "error",
-        detail: { state: run.state, error: run.error },
+        outcome: outcome.state === "succeeded" ? "ok" : outcome.state === "refused" ? "denied" : "error",
+        detail: {
+          actionId: action.id,
+          index: outcome.index,
+          state: outcome.state,
+          error: outcome.error,
+          refusal: outcome.refusal,
+        },
       });
     }
-
-    return run;
   }
 
   /**
@@ -508,9 +686,9 @@ export class Scheduler {
     this.#store.upsertRun(run);
   }
 
-  async #promptWithDeadline(agentId: AgentId, routine: Routine, actor: Actor): Promise<TurnOutcome> {
-    const turn = this.#supervisor.prompt(agentId, routine.prompt, actor);
-    const seconds = routine.timeoutSeconds;
+  async #promptWithDeadline(agentId: AgentId, action: RoutineAction, actor: Actor): Promise<TurnOutcome> {
+    const turn = this.#supervisor.prompt(agentId, action.prompt, actor);
+    const seconds = action.timeoutSeconds;
     if (seconds === undefined || !(seconds > 0)) return { result: await turn };
 
     const deadline = Promise.withResolvers<"timed_out">();

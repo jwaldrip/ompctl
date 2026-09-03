@@ -69,7 +69,18 @@ function mountScreen(pendingWebViewAction?: PendingWebViewAction): Harness {
         <SessionScreen
           agent={agent}
           session={EMPTY_SESSION}
+          load={{ phase: "ready", generation: 0, error: null }}
+          context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
           connection="connected"
+          voice={{
+            access: "unknown",
+            mic: { available: false, reason: "no microphone in this test" },
+            speech: { available: false, reason: "no playback in this test" },
+            dictation: null,
+            capturing: false,
+            busyElsewhere: false,
+            onToggle: () => {},
+          }}
           attempt={0}
           canApprove
           spoken={null}

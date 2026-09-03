@@ -28,7 +28,29 @@ module.exports = {
       build:
         "cd ../app/ios && xcodebuild -workspace ompd.xcworkspace -scheme ompd -configuration Debug -sdk iphonesimulator -derivedDataPath ./build",
     },
+    "ios.device.debug": {
+      type: "ios.app",
+      // Debug-iphoneos, not Debug-iphonesimulator: hardware needs the device
+      // slice, which the simulator entry below never produces. Shares that
+      // entry's derived-data path so the two products sit side by side rather
+      // than evicting each other on every alternate build.
+      binaryPath: "../app/ios/build/Build/Products/Debug-iphoneos/ompd.app",
+      // A generic destination, not a UDID: the app product is device-agnostic
+      // exactly like the Android APKs, and pinning one phone here would fail
+      // the build whenever that phone is unplugged.
+      build:
+        "cd ../app/ios && xcodebuild -workspace ompd.xcworkspace -scheme ompd -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath ./build",
+    },
   },
+  /**
+   * Real hardware is mandatory for the PATH run. The claim is that a phone
+   * off the daemon's LAN can still drive it through the hub, and a simulator
+   * cannot prove that: it shares the host's network stack, so its traffic
+   * reaches the hub exactly as the daemon's own does. The real-hardware
+   * configurations are `android.attached.debug` and `ios.device.debug`;
+   * `android.emu.debug` and `ios.sim.debug` are for local iteration only and
+   * can never satisfy the PATH check.
+   */
   devices: {
     /**
      * An already-running emulator or a plugged-in phone, pinned by its adb
@@ -53,6 +75,23 @@ module.exports = {
       type: "ios.simulator",
       device: { type: process.env.DETOX_SIM_TYPE ?? "iPad (A16)" },
     },
+    /**
+     * A physical iPhone, selected by name. The `{ name }` selector form is
+     * used rather than `{ id }` because `DETOX_IOS_DEVICE` and the default
+     * carry a device name, and a name survives a wiped or replaced phone
+     * where a UDID is burned into one physical unit.
+     *
+     * The installed Detox (20.51.4) has no built-in driver for this type; it
+     * treats an unknown device type as an external driver module path and
+     * tries to require it, so this entry goes live only once such a driver
+     * exists. Failing loudly at init is a detector: rerouting to
+     * `ios.simulator` would put a simulator behind a configuration whose
+     * whole job is to be real hardware.
+     */
+    iosDevice: {
+      type: "ios.device",
+      device: { name: process.env.DETOX_IOS_DEVICE ?? "BushidoPhone" },
+    },
   },
   configurations: {
     // Runs against whatever is already attached; `DETOX_ADB_NAME` selects it.
@@ -67,6 +106,11 @@ module.exports = {
     "ios.sim.debug": {
       device: "simulator",
       app: "ios.debug",
+    },
+    // Real hardware: the plugged-in iPhone named by `DETOX_IOS_DEVICE`.
+    "ios.device.debug": {
+      device: "iosDevice",
+      app: "ios.device.debug",
     },
   },
   behavior: {

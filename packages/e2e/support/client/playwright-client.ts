@@ -92,6 +92,26 @@ export class PlaywrightClient implements E2EClient {
     return (await this.locator(testId).innerText()).trim();
   }
 
+  async scrollToEnd(testId: string): Promise<void> {
+    const list = this.locator(testId);
+    await list.waitFor({ state: "attached", timeout: DEFAULT_TIMEOUT_MS });
+    await list.evaluate(node => {
+      node.scrollTop = node.scrollHeight;
+    });
+    // react-native-web mounts virtualized rows a frame after the offset
+    // moves, so reading immediately would describe the pre-scroll window.
+    await this.active().waitForTimeout(150);
+  }
+
+  async labelsOf(testId: string): Promise<string[]> {
+    // aria-label rather than text content: the app marks each transcript row
+    // accessible with a speaker-prefixed label, which is the one string both
+    // this driver and the native one can read back.
+    return this.active()
+      .locator(`[data-testid="${testId}"]`)
+      .evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-label") ?? node.textContent ?? ""));
+  }
+
   /** A browser has no on-screen keyboard, so this is honestly a no-op. */
   async dismissKeyboard(): Promise<void> {}
 

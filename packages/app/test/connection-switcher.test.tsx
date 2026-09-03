@@ -55,12 +55,15 @@ describe("ConnectionSwitcherScreen", () => {
     act(() => {
       root.render(
         <ConnectionSwitcherScreen
+          canInvite={false}
           connections={connections}
           onAdd={() => {
             adding = true;
           }}
           onBack={() => {}}
+          onInvite={() => {}}
           onSelect={id => selected.push(id)}
+          onSettings={() => {}}
         />,
       );
     });
@@ -78,6 +81,7 @@ describe("ConnectionSwitcherScreen", () => {
             cancelled = true;
           }}
           onPair={() => {}}
+          onScan={() => {}}
         />,
       );
     });
@@ -92,14 +96,22 @@ describe("ConnectionSwitcherScreen", () => {
     host.remove();
   });
 
-  test("the invite entry point is absent when the active connection's scopes exclude approve", () => {
+  test("the invite entry point is absent when the console says this device cannot mint a credential", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
 
     act(() => {
       root.render(
-        <ConnectionSwitcherScreen connections={connections} onAdd={() => {}} onBack={() => {}} onSelect={() => {}} />,
+        <ConnectionSwitcherScreen
+          canInvite={false}
+          connections={connections}
+          onAdd={() => {}}
+          onBack={() => {}}
+          onInvite={() => {}}
+          onSelect={() => {}}
+          onSettings={() => {}}
+        />,
       );
     });
     expect(host.querySelector('[data-testid="invite-device"]')).toBeNull();
@@ -110,7 +122,7 @@ describe("ConnectionSwitcherScreen", () => {
     host.remove();
   });
 
-  test("holding approve on the active connection surfaces an invite entry point that opens InviteScreen", async () => {
+  test("a console that says this device can invite surfaces an entry point that asks for the invite route", () => {
     const approving: ConnectionList = {
       activeId: "local",
       connections: [
@@ -129,35 +141,35 @@ describe("ConnectionSwitcherScreen", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
-
-    // InviteScreen mints on mount; this test is only about the switcher's
-    // gating and screen swap, so the mint itself is stubbed out rather than
-    // reaching a real daemon.
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
-      throw new Error("network unavailable in test");
-    }) as unknown as typeof fetch;
+    let invited = 0;
 
     act(() => {
       root.render(
-        <ConnectionSwitcherScreen connections={approving} onAdd={() => {}} onBack={() => {}} onSelect={() => {}} />,
+        <ConnectionSwitcherScreen
+          canInvite
+          connections={approving}
+          onAdd={() => {}}
+          onBack={() => {}}
+          onInvite={() => {
+            invited += 1;
+          }}
+          onSelect={() => {}}
+          onSettings={() => {}}
+        />,
       );
     });
     expect(button(host, "invite-device")).not.toBeNull();
 
+    // The entry point asks for a route rather than swapping this screen for the
+    // invite screen itself: the shell's menu reaches the same destination, and
+    // one destination with two ways of being presented is two navigation
+    // models. `nav-shell.test.tsx` proves the route it asks for renders.
     act(() => {
       button(host, "invite-device").click();
     });
-    expect(host.querySelector('[data-testid="invite"]')).not.toBeNull();
+    expect(invited).toBe(1);
+    expect(host.querySelector('[data-testid="invite"]')).toBeNull();
 
-    // Let InviteScreen's stubbed mint reject and settle before tearing down,
-    // so no promise is still in flight against an unmounted tree.
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    globalThis.fetch = originalFetch;
     act(() => {
       root.unmount();
     });

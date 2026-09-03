@@ -23,14 +23,23 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 /** The slice of Detox's globals this driver uses, named so the client stays typed. */
 interface DetoxGlobals {
   device: {
-    launchApp(options: { newInstance: boolean; permissions?: Record<string, string> }): Promise<void>;
+    clearKeychain(): Promise<void>;
+    launchApp(options: {
+      newInstance: boolean;
+      delete?: boolean;
+      permissions?: Record<string, string>;
+      launchArgs?: Record<string, string>;
+    }): Promise<void>;
     takeScreenshot(name: string): Promise<string>;
   };
   element(matcher: unknown): {
-    tap(): Promise<void>;
+    tap(point?: { x: number; y: number }): Promise<void>;
     clearText(): Promise<void>;
+    replaceText(text: string): Promise<void>;
     typeText(text: string): Promise<void>;
     getAttributes(): Promise<{ text?: string; label?: string }>;
+    scroll(pixels: number, direction: "up" | "down" | "left" | "right"): Promise<void>;
+    atIndex(index: number): { getAttributes(): Promise<{ text?: string; label?: string }> };
   };
   by: { id(id: string): unknown };
   waitFor(element: unknown): { toExist(): { withTimeout(ms: number): Promise<void> } };
@@ -94,7 +103,21 @@ export class DetoxClient implements E2EClient {
 
   async launch(): Promise<void> {
     this.resetPersistedState();
-    await globals().device.launchApp({ newInstance: true, permissions: { camera: "NO" } });
+    // A pairing lives in both AsyncStorage and the keychain. Android's pm clear
+    // drops both; an iOS Simulator uninstall does not clear the keychain, so
+    // Detox must clear it explicitly before reinstalling the app. Without both
+    // halves, a prior pairing bypasses the form and the next run measures old
+    // state instead of the scenario.
+    if (this.kind === "ios") await globals().device.clearKeychain();
+    await globals().device.launchApp({
+      newInstance: true,
+      delete: this.kind === "ios",
+      permissions: { camera: "NO" },
+      // Only the iOS simulator needs this. The password-manager sheet lives
+      // outside the app and Detox cannot reach it on iOS 26; the launch flag
+      // prevents creating that sheet without weakening human launches.
+      launchArgs: this.kind === "ios" ? { OMPCTL_E2E_PLAINTEXT_TOKEN: "YES" } : undefined,
+    });
   }
 
   /**
@@ -122,16 +145,37 @@ export class DetoxClient implements E2EClient {
   async tap(testId: string): Promise<void> {
     await this.waitFor(testId);
     const g = globals();
-    await g.element(g.by.id(testId)).tap();
+    try {
+      await g.element(g.by.id(testId)).tap();
+    } catch (cause) {
+      // Dismissing the keyboard moves the composer while it animates, and a
+      // tap landing mid-animation fails Detox's visibility probe on a control
+      // a person could plainly press. One settle and one retry: a control that
+      // is genuinely unreachable still fails, with its original reason.
+      if (this.kind !== "ios") throw cause;
+      await new Promise(resolve => setTimeout(resolve, 750));
+      await g.element(g.by.id(testId)).tap();
+    }
   }
 
   async fill(testId: string, value: string): Promise<void> {
     await this.waitFor(testId);
     const g = globals();
     const field = g.element(g.by.id(testId));
-    await field.tap();
-    await field.clearText();
-    await field.typeText(value);
+    if (this.kind === "ios") {
+      // Detox's default activation point sits at the field's top-left corner
+      // and fails the visibility probe against a hairline border, so an
+      // explicit interior point is the same gesture without the corner.
+      await field.tap({ x: 40, y: 20 });
+      await field.replaceText(value);
+      return;
+    }
+    // A tap focuses the field and opens Gboard. On the Pixel that IME's
+    // suggestion chip then sits over the next field, so the next tap hits
+    // the letter "t" (observed: hub became "twss://hub.ompctl.ai") or the
+    // settings gear (Espresso then reports no activity in RESUMED).
+    // replaceText sets the native text without driving the IME.
+    await field.replaceText(value);
   }
 
   async textOf(testId: string): Promise<string> {
@@ -141,12 +185,87 @@ export class DetoxClient implements E2EClient {
     return (attrs.text ?? attrs.label ?? "").trim();
   }
 
+  async scrollToEnd(testId: string): Promise<void> {
+    await this.waitFor(testId);
+    const g = globals();
+    // One deliberately oversized distance rather than a measured one: both
+    // platforms clamp a scroll at the content edge, so this is how a driver
+    // says "the end" without learning the content height, which neither
+    // platform exposes portably.
+    //
+    // A list whose content is shorter than its viewport cannot scroll at all,
+    // and iOS reports that refusal as an error. Being already at the end is
+    // exactly what this method wanted, so it is not a failure: a young session
+    // with three entries is the normal case, not a broken one.
+    try {
+      await g.element(g.by.id(testId)).scroll(100_000, "down");
+    } catch (cause) {
+      if (!/Unable to scroll/i.test(cause instanceof Error ? cause.message : String(cause))) throw cause;
+    }
+  }
+
+  async labelsOf(testId: string): Promise<string[]> {
+    const g = globals();
+    const labels: string[] = [];
+    // Detox has no way to enumerate or count matches. Probing successive
+    // indexes is the honest equivalent: the first index that fails to resolve
+    // is the end of the matches, and only mounted rows resolve at all, which
+    // is why a caller hunting the end of a long list scrolls there first.
+    for (let index = 0; index < 1000; index += 1) {
+      try {
+        const attrs = await g.element(g.by.id(testId)).atIndex(index).getAttributes();
+        labels.push(attrs.text ?? attrs.label ?? "");
+      } catch {
+        return labels;
+      }
+    }
+    return labels;
+  }
+
   /**
-   * Typing a newline is what the platform treats as "done editing"; Detox has no
-   * keyboard-dismiss primitive. The app's fields commit on change rather than on
-   * blur, so nothing here needs to happen for a value to be read back.
+   * Put the keyboard away so it stops covering the next target.
+   *
+   * iOS: tap the screen's scroll surface, which is what a person does.
+   * Android: KEYCODE_BACK, but only when the IME is actually showing. Back
+   * otherwise leaves the pair form, which is how an earlier run lost the
+   * activity entirely. A tap-to-dismiss is not used on Android because a
+   * Pixel run showed Gboard's suggestion chip eating that tap and turning
+   * `wss://hub.ompctl.ai` into `twss://hub.ompctl.ai`.
    */
-  async dismissKeyboard(): Promise<void> {}
+  async dismissKeyboard(): Promise<void> {
+    if (this.kind === "android") {
+      const serial = process.env.DETOX_ADB_NAME;
+      if (serial === undefined) return;
+      const adb = `${process.env.ANDROID_SDK_ROOT ?? process.env.ANDROID_HOME ?? ""}/platform-tools/adb`;
+      // dumpsys input_method is megabytes; reading it whole throws ENOBUFS
+      // and dies before the suite can even fill the token. Filter on device.
+      // grep's exit 1 when the flag is absent is "IME hidden", not a failure.
+      let dump = "";
+      try {
+        dump = execSync(`${adb} -s ${serial} shell dumpsys input_method | grep mInputShown`, {
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+      } catch {
+        return;
+      }
+      if (!dump.includes("mInputShown=true")) return;
+      execSync(`${adb} -s ${serial} shell input keyevent KEYCODE_BACK`, {
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+      return;
+    }
+    const g = globals();
+    for (const surface of ["transcript", "fleet-list", "fleet"]) {
+      try {
+        await g.element(g.by.id(surface)).tap({ x: 20, y: 20 });
+        return;
+      } catch {
+        // Try the next surface: which one exists depends on the screen.
+      }
+    }
+  }
 
   async screenshot(name: string): Promise<string> {
     mkdirSync(this.artifacts, { recursive: true });

@@ -13,8 +13,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 
 const { Composer } = await import("../src/components/Composer.tsx");
-const { Transcript } = await import("../src/components/Transcript.tsx");
+const { OmpEntryRow } = await import("../src/assistant/renderers.tsx");
 const { EMPTY_SESSION, appendPrompt } = await import("../src/session/model.ts");
+const { imageAttachmentPicker } = await import("../src/platform/attachments.ts");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -49,10 +50,16 @@ describe("composer submit", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => {
-      root.render(<Transcript entries={session.entries} canApprove onDecide={() => {}} spoken={null} />);
+      root.render(
+        <>
+          {session.entries.map(entry => (
+            <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+          ))}
+        </>,
+      );
     });
 
-    const row = host.querySelector('[data-testid="entry-user-prompt-0"]');
+    const row = host.querySelector('[data-testid="entry-user"]');
     expect(row).not.toBeNull();
     const label = row?.getAttribute("aria-label") ?? row?.getAttribute("accessibilityLabel") ?? row?.textContent ?? "";
     expect(label).toContain("pineapple-nonce-xyz");
@@ -72,7 +79,11 @@ describe("composer submit", () => {
     act(() => {
       root.render(
         <Composer
+          prefix="composer"
+          picker={imageAttachmentPicker}
           enabled
+          placeholder="Say something to this agent"
+          sendLabel="Send"
           busy={false}
           onSubmit={text => {
             submitted.push(text);

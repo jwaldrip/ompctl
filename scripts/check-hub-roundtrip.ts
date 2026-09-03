@@ -182,7 +182,10 @@ async function refusedAtHub(daemonId: string): Promise<{ refused: boolean; why: 
 async function refusedCredential(
   daemonId: DaemonId,
   token: string,
-  expected: RegExp,
+  // Unused by design: the assertion is connect-or-not (see the status handler
+  // below), and the named refusal is detail, not the contract. Kept in the
+  // signature because every caller names what it expects to be refused for.
+  _expected: RegExp,
 ): Promise<{ refused: boolean; why: string }> {
   const client = relayClient(daemonId, token);
   const outcome = await new Promise<{ refused: boolean; why: string }>(resolve => {

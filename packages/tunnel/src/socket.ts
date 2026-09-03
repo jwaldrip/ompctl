@@ -305,7 +305,7 @@ class TunnelSocket implements TunnelSocketLike {
       return;
     }
 
-    this.#ack(channel);
+    this.#ack();
     this.#phase = "open";
     this.readyState = OPEN;
     this.onopen?.();
@@ -324,21 +324,40 @@ class TunnelSocket implements TunnelSocketLike {
       this.#fail(`a relayed frame did not authenticate: ${describe(cause)}`);
       return;
     }
-    this.#ack(channel);
+    this.#ack();
     this.onmessage?.(plaintext);
   }
 
   /**
-   * Report how much this side has actually taken in.
+   * Report how many relay frames this side has actually taken in.
    *
-   * The relay uses it to notice a frame that went missing with nothing behind
-   * it, which a sequence gap alone can never reveal.
+   * The count is `#expected`, the relay sequence -- every `data` frame the
+   * hub handed this leg -- and deliberately not the sealed channel's receipt
+   * count. The hub bills a leg for each frame it relays, and the first of
+   * those is the daemon's unsealed `auth`: relayed like any other frame, but
+   * never opened by the channel, because it is the frame that establishes the
+   * key. `channel.received` therefore sits one below the relay's count for
+   * the whole life of every session; the hub read that as a leg that had
+   * stopped acknowledging and tore the session at its ack deadline on a
+   * steady cycle of connect, deliver, tear, repeat. `#expected` counts
+   * exactly what the hub counts, so acking it keeps an idle session current
+   * with no keepalive traffic, and only a leg that genuinely stops taking
+   * frames in stays behind.
+   *
+   * The relay uses the number to notice a frame that went missing with
+   * nothing behind it, which a sequence gap alone can never reveal.
    */
-  #ack(channel: SealedChannel): void {
-    this.#wire.send(JSON.stringify({ t: "ack", received: channel.received } satisfies ClientToHub));
+  #ack(): void {
+    this.#wire.send(JSON.stringify({ t: "ack", received: this.#expected } satisfies ClientToHub));
   }
 
   #fail(message: string, code = 4500): void {
+    // Inbound handling is serialized, so frames already queued behind the one
+    // that failed still route here after the tunnel has closed, and each would
+    // re-fire `onerror` on a socket the client is already recovering. The first
+    // failure reported the problem and started the close; a later one has
+    // nothing new to say.
+    if (this.#phase === "closed") return;
     this.onerror?.({ message });
     this.#finish(code, message);
     this.#wire.close(code, "tunnel failed");
