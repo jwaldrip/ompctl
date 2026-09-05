@@ -574,6 +574,16 @@ export function useConsole(
           });
           return;
         }
+        if (stateRef.current.connection !== "connected") {
+          dispatch({
+            t: "error",
+            event: {
+              message: "Not connected; the message was not sent",
+              code: "offline",
+            },
+          });
+          return;
+        }
         client.prompt(agentId, text, images);
         dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
       },
