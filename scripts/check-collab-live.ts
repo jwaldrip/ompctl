@@ -186,19 +186,21 @@ async function main() {
     const steerPromptText = `Reply with exactly: ${nonce1}`;
     clientWs.send(JSON.stringify({ t: "session_prompt", sessionId, text: steerPromptText }));
 
-    // Wait for tui_activity frame with nonce1 or PTY output with nonce1
-    let activityFound = false;
+    // The steer is proven only by the terminal's model answering: an
+    // `assistant_text` activity carrying the nonce. The PTY echoes the prompt
+    // itself as the user turn, so "the nonce appeared on screen" would pass
+    // before any model ran; that is not evidence of a reply.
     await waitUntil(() => {
-      const act = incomingFrames.find(f => f.t === "tui_activity" && f.sessionId === sessionId && typeof f.text === "string" && f.text.includes(nonce1));
-      if (act) {
-        activityFound = true;
-        return true;
-      }
-      if (ptyOutput.includes(nonce1)) {
-        return true;
-      }
-      return undefined;
-    }, "steer activity frame or PTY output", 45_000);
+      const act = incomingFrames.find(
+        f =>
+          f.t === "tui_activity" &&
+          f.sessionId === sessionId &&
+          f.kind === "assistant_text" &&
+          typeof f.text === "string" &&
+          f.text.includes(nonce1),
+      );
+      return act ? true : undefined;
+    }, "assistant_text activity carrying the steer nonce", 90_000);
 
     console.log(`PHASE: STEER PROVEN nonce=${nonce1}`);
 
@@ -225,7 +227,8 @@ async function main() {
       return undefined;
     }, "collab link to appear in PTY output", 30_000);
 
-    console.log(`PHASE: COLLAB LINK CAPTURED link=${collabLink}`);
+    // The link is a credential: print the room, never the key after the dot.
+    console.log(`PHASE: COLLAB LINK CAPTURED room=${collabLink.replace(/^.*\/r\//, "").replace(/\..*$/, "")}`);
 
     // Send collab_open
     clientWs.send(JSON.stringify({ t: "collab_open", sessionId, link: collabLink }));
@@ -241,10 +244,17 @@ async function main() {
     // Attach to guest leg with sinceSeq: 0
     clientWs.send(JSON.stringify({ t: "attach", agentId, sinceSeq: 0 }));
 
-    // Assert back-transcript arrives as updates including earlier nonce1
+    // The back-transcript must carry the steered turn as the operator's own
+    // user entry, which is what a guest joining late is owed.
     await waitUntil(() => {
-      return incomingFrames.find(f => f.t === "update" && f.agentId === agentId && JSON.stringify(f.update).includes(nonce1));
-    }, "back-transcript containing nonce1", 20_000);
+      return incomingFrames.find(
+        f =>
+          f.t === "update" &&
+          f.agentId === agentId &&
+          f.update?.sessionUpdate === "user_message_chunk" &&
+          JSON.stringify(f.update).includes(nonce1),
+      );
+    }, "back-transcript user entry containing nonce1", 20_000);
 
     console.log(`PHASE: BACK-TRANSCRIPT VERIFIED`);
 
@@ -252,10 +262,17 @@ async function main() {
     const nonce2 = `collab_${Date.now().toString(36)}`;
     clientWs.send(JSON.stringify({ t: "prompt", agentId, text: `Reply with exactly: ${nonce2}` }));
 
-    // Assert update with the reply arrives
+    // Only the model's answer counts. The guest leg also maps the prompt's
+    // own echo to a user entry carrying nonce2, which is not a reply.
     await waitUntil(() => {
-      return incomingFrames.find(f => f.t === "update" && f.agentId === agentId && JSON.stringify(f.update).includes(nonce2));
-    }, "update frame containing nonce2", 45_000);
+      return incomingFrames.find(
+        f =>
+          f.t === "update" &&
+          f.agentId === agentId &&
+          f.update?.sessionUpdate === "agent_message_chunk" &&
+          JSON.stringify(f.update.content ?? f.update).includes(nonce2),
+      );
+    }, "assistant reply chunk containing nonce2", 90_000);
 
     console.log(`PHASE: COLLAB PROMPT PROVEN nonce=${nonce2}`);
 
