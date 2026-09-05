@@ -196,7 +196,9 @@ It needs a real server: the suite skips unless `OMPD_TEST_REDIS_URL` is set, so 
 
 Two hypotheses were tested and both are wrong. The narrowing helper was not rejecting the error: the code matches, and widening it past its `instanceof Error` gate left the failure at 1 of 10 runs. The rejection is also not reaching `close()`'s `catch` at all, which is what "between tests" means. So the abort is a floating promise the awaited one does not represent, and neither the existing process-level handler nor the 10ms drain after it catches it.
 
-Not fixed, and deliberately not guessed at further. It costs a re-run per affected PR.
+Not fixed on 2026-08-23, and deliberately not guessed at further then. It cost a re-run per affected PR.
+
+**Fixed 2026-09-05.** The floating promise was found by making it worse: closing the backplane before the server raised the rate from 3 of 6 runs to 7 of 10, which said the in-flight commands belonged to the socket close handlers, not to `close()` itself. `Bun.serve` calls `message`/`close` synchronously and discards what they return; the hub registered them as `void this.#close(ws)`, so a daemon leg closing during teardown issued its lease release and "close" envelopes through the backplane, `stop()` closed the redis clients a tick later, and every command still in flight rejected on a promise nothing awaited. `Hub#detached` now owns those handlers' rejections (dropped once `stop()` has begun, logged before), the subscriber no longer auto-reconnects (a reconnected socket carries no subscription, and a client caught mid-reconnect rejects the same way), and the process-level `unhandledRejection` swallow in `RedisBackplane.close()` is gone because Bun's runner reports a floating rejection before any listener sees it, which is why it never caught one. Against `redis:7` on a spare port: 3 of 6 runs red before, 18 of 18 green after.
 
 ## Queue
 

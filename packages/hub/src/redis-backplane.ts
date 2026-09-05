@@ -67,6 +67,19 @@ const PROBE_INTERVAL_MS = 5_000;
  */
 const PROBE_DEADLINE_MS = 12_000;
 
+/**
+ * The subscriber never reconnects on its own. A reconnected socket carries no
+ * subscription (nothing re-issues `SUBSCRIBE`), so Bun's automatic reconnect
+ * buys this connection nothing: the probe above is what notices the loss and
+ * `#checkReceivePath` replaces the whole client. Worse, a client caught
+ * mid-reconnect when it is closed rejects that reconnect on a promise nobody
+ * holds, which surfaced as `RedisError: Connection closed` between tests in
+ * roughly one run in three while every test passed. With no reconnect there
+ * is no such promise: a killed subscriber socket closes, `onclose` reports it,
+ * and the replacement is the only path back.
+ */
+const SUBSCRIBER_OPTIONS = { autoReconnect: false } as const;
+
 export interface RedisBackplaneOptions {
   url: string;
   instanceId: string;
@@ -122,7 +135,7 @@ export class RedisBackplane implements Backplane {
 
   static async connect(opts: RedisBackplaneOptions): Promise<RedisBackplane> {
     const commands = new RedisClient(opts.url);
-    const subscriber = new RedisClient(opts.url);
+    const subscriber = new RedisClient(opts.url, SUBSCRIBER_OPTIONS);
     await commands.connect();
     await subscriber.connect();
     const backplane = new RedisBackplane(opts, commands, subscriber);
@@ -199,7 +212,7 @@ export class RedisBackplane implements Backplane {
     this.#healing = true;
     const stale = this.#subscriber;
     try {
-      const replacement = new RedisClient(this.#url);
+      const replacement = new RedisClient(this.#url, SUBSCRIBER_OPTIONS);
       await replacement.connect();
       await this.#listen(replacement);
       this.#subscriber = replacement;
@@ -298,39 +311,24 @@ export class RedisBackplane implements Backplane {
       // Already gone, which is the state this was trying to reach.
     }
 
-    // Closing a client can still abort something in flight underneath it
-    // (the socket teardown itself, or a command whose response was already
-    // in transit), and that abort is the same kind of unhandled rejection
-    // as the subscription's above -- surfacing after this function's own
-    // try/catch has nothing left to run, not inside it. A narrow, temporary
-    // process-level handler is the only place that is observable at all.
-    // Scoped to teardown and to this one documented error so a genuinely
-    // unrelated failure during close is still reported, not hidden.
-    const swallowTeardownAbort = (err: unknown): void => {
-      if (isRedisConnectionClosedError(err)) return;
-      console.error("unexpected error while closing the redis backplane:", err);
-    };
-    process.on("unhandledRejection", swallowTeardownAbort);
-    try {
-      for (const client of [this.#subscriber, this.#commands]) {
-        try {
-          // Bun's type surface has described this as void in some releases,
-          // while Redis 7 teardown returns a promise that rejects when the
-          // test deliberately killed the subscription connection. `await`
-          // handles both shapes and keeps that rejection inside this catch
-          // instead of surfacing between tests.
-          await client.close();
-        } catch (err) {
-          if (!isRedisConnectionClosedError(err)) throw err;
-          // Already closed. Nothing to release and nothing to report.
-        }
+    // Closing a client rejects every command still in flight on it with the
+    // "connection closed" error. Those commands belong to their callers: the
+    // hub's socket and envelope handlers, which `Hub#detached` keeps out of
+    // the unhandled-rejection path once `stop()` has begun. A process-level
+    // `unhandledRejection` listener used to sit here for the same purpose; it
+    // never caught one, because Bun's test runner reports a floating
+    // rejection before any listener sees it, which is how a green suite kept
+    // exiting 1. The owner-side catch is the fix; nothing here can be.
+    for (const client of [this.#subscriber, this.#commands]) {
+      try {
+        // Bun's type surface has described this as void in some releases,
+        // while Redis 7 teardown returns a promise that rejects when the
+        // connection was already lost. `await` handles both shapes.
+        await client.close();
+      } catch (err) {
+        if (!isRedisConnectionClosedError(err)) throw err;
+        // Already closed. Nothing to release and nothing to report.
       }
-      // A closed socket's in-flight abort rejects on a later tick than the
-      // synchronous `close()` call above, so the handler must still be
-      // installed when that tick runs rather than being torn down with it.
-      await new Promise(resolve => setTimeout(resolve, 10));
-    } finally {
-      process.off("unhandledRejection", swallowTeardownAbort);
     }
   }
 }
