@@ -34,7 +34,6 @@ type Boot =
   | { phase: "pair"; notice?: string; connections?: ConnectionList }
   | { phase: "console"; connections: ConnectionList };
 
-
 export function App(): JSX.Element {
   const [boot, setBoot] = useState<Boot>({ phase: "loading" });
   const [collabRoomId, setCollabRoomId] = useState<string | null>(null);
@@ -73,7 +72,6 @@ export function App(): JSX.Element {
     },
     [reloadConnections],
   );
-
 
   // A pairing link is durable before it is visible: the credential is written
   // to the store, then the Console opens, so a link that arrives during a cold

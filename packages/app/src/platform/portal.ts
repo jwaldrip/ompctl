@@ -91,10 +91,7 @@ export function stripQueryFromHistory(): void {
  * Arbitrary non-app origins with a token query or fragment are rejected without
  * prior proof that the origin is a verified ompd daemon.
  */
-export function connectionFromPairUrl(
-  rawUrl: string,
-  opts: { isDaemon?: boolean } = {},
-): Connection | null {
+export function connectionFromPairUrl(rawUrl: string, opts: { isDaemon?: boolean } = {}): Connection | null {
   const hubLink = parsePairDeepLink(rawUrl);
   if (hubLink !== null) {
     stripQueryFromHistory();

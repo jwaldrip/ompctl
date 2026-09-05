@@ -1174,9 +1174,7 @@ describe("CollabStreamMapper", () => {
     });
 
     const allUpdates = [...f1.updates, ...f2.updates];
-    const userChunks = allUpdates.filter(
-      u => (u as { sessionUpdate?: string }).sessionUpdate === "user_message_chunk",
-    );
+    const userChunks = allUpdates.filter(u => (u as { sessionUpdate?: string }).sessionUpdate === "user_message_chunk");
     expect(userChunks).toHaveLength(1);
     expect((userChunks[0] as { content: { text: string } }).content.text).toBe("[alice] status");
   });

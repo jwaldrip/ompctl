@@ -75,10 +75,7 @@ async function main() {
       if (!proc) return;
       try {
         proc.kill("SIGTERM");
-        const exited = await Promise.race([
-          proc.exited,
-          Bun.sleep(3000).then(() => false),
-        ]);
+        const exited = await Promise.race([proc.exited, Bun.sleep(3000).then(() => false)]);
         if (exited === false) {
           proc.kill("SIGKILL");
           await Promise.race([proc.exited, Bun.sleep(2000)]);
@@ -333,9 +330,13 @@ async function main() {
 
     // P3: Delete the scratch session through the scratch daemon's session_delete
     clientWs.send(JSON.stringify({ t: "session_delete", sessionIds: [sessionId] }));
-    await waitUntil(() => {
-      return incomingFrames.find(f => f.t === "sessions_deleted");
-    }, "session_delete confirmation", 10_000);
+    await waitUntil(
+      () => {
+        return incomingFrames.find(f => f.t === "sessions_deleted");
+      },
+      "session_delete confirmation",
+      10_000,
+    );
 
     // Assert it is gone from index
     const checkRes = await fetch(`http://127.0.0.1:${port}/v1/sessions`, {

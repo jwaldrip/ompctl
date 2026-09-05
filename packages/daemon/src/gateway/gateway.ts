@@ -128,9 +128,7 @@ function embeddedResponse(base64: string, key: string): Response {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
   const clean = key.replace(/^\/+/, "");
-  const cacheControl = clean.startsWith("assets/")
-    ? "public, max-age=31536000, immutable"
-    : "no-cache";
+  const cacheControl = clean.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-cache";
 
   return new Response(bytes, {
     headers: {

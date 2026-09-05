@@ -45,9 +45,7 @@ function restoreStub(): void {
 const args = process.argv.slice(2);
 const outfileIdx = args.indexOf("--outfile");
 const outfile =
-  outfileIdx >= 0 && args[outfileIdx + 1]
-    ? resolve(args[outfileIdx + 1])
-    : join(repoRoot, "dist", "ompd");
+  outfileIdx >= 0 && args[outfileIdx + 1] ? resolve(args[outfileIdx + 1]) : join(repoRoot, "dist", "ompd");
 
 mkdirSync(dirname(outfile), { recursive: true });
 
@@ -77,10 +75,7 @@ try {
   );
 
   // 5. Stage native addon beside binary
-  runStep(
-    [process.execPath, join(repoRoot, "scripts", "stage-native-addon.ts"), outfile],
-    "staging native addon",
-  );
+  runStep([process.execPath, join(repoRoot, "scripts", "stage-native-addon.ts"), outfile], "staging native addon");
 
   console.log(`[build-cli] successfully built ${outfile}`);
 } finally {

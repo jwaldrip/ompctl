@@ -339,11 +339,10 @@ export class CollabStreamMapper {
           const thinkingMatches =
             this.#inProgressStreamedThinking !== null &&
             this.#inProgressStreamedThinking.length > 0 &&
-            (fullThinking.startsWith(this.#inProgressStreamedThinking) || this.#inProgressStreamedThinking.startsWith(fullThinking));
+            (fullThinking.startsWith(this.#inProgressStreamedThinking) ||
+              this.#inProgressStreamedThinking.startsWith(fullThinking));
           const matchesInProgress =
-            (this.#inProgressEntryId !== null && id === this.#inProgressEntryId) ||
-            textMatches ||
-            thinkingMatches;
+            (this.#inProgressEntryId !== null && id === this.#inProgressEntryId) || textMatches || thinkingMatches;
 
           if (matchesInProgress) {
             const messageId = this.#inProgressMessageId ?? this.#inProgressEntryId ?? id;

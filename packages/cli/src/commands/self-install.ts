@@ -185,12 +185,7 @@ async function build(ctx: CliContext, staging: string): Promise<string[] | null>
   // Calls scripts/build-cli.ts to orchestrate web asset generation, bridge
   // generation, native addon staging, and binary compilation.
   const buildScript = resolve(import.meta.dir, "../../../../scripts/build-cli.ts");
-  const result = await ctx.exec([
-    process.execPath,
-    buildScript,
-    "--outfile",
-    staging,
-  ]);
+  const result = await ctx.exec([process.execPath, buildScript, "--outfile", staging]);
   if (result.code === 0 && existsSync(staging)) return null;
 
   return [

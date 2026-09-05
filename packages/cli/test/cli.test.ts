@@ -898,7 +898,11 @@ describe("invite", () => {
     // The link carries the granted scopes beside the hub host in the query,
     // and the token credential in the fragment so it is never sent in HTTP request lines.
     expect(out).toContain(`https://app.ompctl.ai/pair?hub=hub.example.com&scopes=read%2Cprompt#token=${credential}`);
-    const linkLine = out.split("\n").find(line => line.includes("https://app.ompctl.ai/pair"))?.trim() ?? "";
+    const linkLine =
+      out
+        .split("\n")
+        .find(line => line.includes("https://app.ompctl.ai/pair"))
+        ?.trim() ?? "";
     const parsedUrl = new URL(linkLine);
     expect(parsedUrl.searchParams.has("token")).toBe(false);
     expect(parsedUrl.hash).toBe(`#token=${credential}`);

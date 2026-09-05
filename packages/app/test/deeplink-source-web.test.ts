@@ -6,10 +6,7 @@ if (!(globalThis as { __ompdHappyDom?: boolean }).__ompdHappyDom) {
   (globalThis as { __ompdHappyDom?: boolean }).__ompdHappyDom = true;
 }
 
-import {
-  nativeDeepLinks,
-  resetInitialUrlReadForTesting,
-} from "../src/platform/deeplink-source.web.ts";
+import { nativeDeepLinks, resetInitialUrlReadForTesting } from "../src/platform/deeplink-source.web.ts";
 
 describe("deeplink-source.web", () => {
   beforeEach(() => {

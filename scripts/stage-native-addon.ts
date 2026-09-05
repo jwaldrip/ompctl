@@ -38,7 +38,9 @@ const require_ = createRequire(import.meta.url);
 /** Where `build:cli` puts the binary. Both live in the same directory or neither works. */
 const targetArg = process.argv[2];
 const outDir = targetArg
-  ? (existsSync(targetArg) && statSync(targetArg).isDirectory() ? resolve(targetArg) : dirname(resolve(targetArg)))
+  ? existsSync(targetArg) && statSync(targetArg).isDirectory()
+    ? resolve(targetArg)
+    : dirname(resolve(targetArg))
   : join(import.meta.dir, "..", "dist");
 
 /**

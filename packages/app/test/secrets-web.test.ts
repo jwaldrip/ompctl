@@ -6,12 +6,7 @@ if (!(globalThis as { __ompdHappyDom?: boolean }).__ompdHappyDom) {
   (globalThis as { __ompdHappyDom?: boolean }).__ompdHappyDom = true;
 }
 
-import {
-  deleteSecret,
-  readSecret,
-  SECRETS_PERSIST_ACROSS_LAUNCHES,
-  writeSecret,
-} from "../src/platform/secrets.web.ts";
+import { deleteSecret, readSecret, SECRETS_PERSIST_ACROSS_LAUNCHES, writeSecret } from "../src/platform/secrets.web.ts";
 
 describe("secrets.web", () => {
   const originalStorage = globalThis.localStorage;

@@ -87,9 +87,7 @@ export function isLoopbackHost(hostOrAuthority: string): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.startsWith("127.");
 }
 
-export type PairTargetOutcome =
-  | { kind: "ok"; target: PairTarget }
-  | { kind: "refused"; reason: string };
+export type PairTargetOutcome = { kind: "ok"; target: PairTarget } | { kind: "refused"; reason: string };
 
 export function parsePairTargetOutcome(raw: string): PairTargetOutcome {
   const trimmed = raw.trim();

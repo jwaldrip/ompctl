@@ -82,56 +82,68 @@ describeOmp("live omp acp", () => {
     await sup.stopAgent(resumed.id, operator);
   }, 30_000);
 
-  testPrompt("cancelling an in-flight prompt on real omp settles the turn promptly", async () => {
-    const agent = await sup.createAgent({ name: "live-cancel", cwd: workdir }, operator);
-    const turn = sup.prompt(
-      agent.id,
-      "Write an exhaustive 5000-word essay about the history of computing.",
-      operator,
-    );
-    await Bun.sleep(100);
-    await sup.cancel(agent.id, operator);
-    const result = await turn;
-    expect(result.stopReason).toBeDefined();
-    await sup.stopAgent(agent.id, operator);
-  }, 60_000);
+  testPrompt(
+    "cancelling an in-flight prompt on real omp settles the turn promptly",
+    async () => {
+      const agent = await sup.createAgent({ name: "live-cancel", cwd: workdir }, operator);
+      const turn = sup.prompt(
+        agent.id,
+        "Write an exhaustive 5000-word essay about the history of computing.",
+        operator,
+      );
+      await Bun.sleep(100);
+      await sup.cancel(agent.id, operator);
+      const result = await turn;
+      expect(result.stopReason).toBeDefined();
+      await sup.stopAgent(agent.id, operator);
+    },
+    60_000,
+  );
 
-  testPrompt("a real agent cannot touch the filesystem when the gate is not answered", async () => {
-    approvals = [];
-    const marker = join(workdir, "denied.txt");
-    const agent = await sup.createAgent({ name: "live-deny", cwd: workdir }, operator);
+  testPrompt(
+    "a real agent cannot touch the filesystem when the gate is not answered",
+    async () => {
+      approvals = [];
+      const marker = join(workdir, "denied.txt");
+      const agent = await sup.createAgent({ name: "live-deny", cwd: workdir }, operator);
 
-    await sup.prompt(
-      agent.id,
-      `Use your bash tool to run exactly: touch ${marker}\nThat is the entire task.`,
-      operator,
-    );
+      await sup.prompt(
+        agent.id,
+        `Use your bash tool to run exactly: touch ${marker}\nThat is the entire task.`,
+        operator,
+      );
 
-    expect(approvals.length).toBeGreaterThan(0);
-    expect(existsSync(marker)).toBe(false);
-  }, 180_000);
+      expect(approvals.length).toBeGreaterThan(0);
+      expect(existsSync(marker)).toBe(false);
+    },
+    180_000,
+  );
 
-  testPrompt("the same agent does touch the filesystem once an operator approves", async () => {
-    approvals = [];
-    const marker = join(workdir, "allowed.txt");
-    const agent = await sup.createAgent({ name: "live-allow", cwd: workdir }, operator);
+  testPrompt(
+    "the same agent does touch the filesystem once an operator approves",
+    async () => {
+      approvals = [];
+      const marker = join(workdir, "allowed.txt");
+      const agent = await sup.createAgent({ name: "live-allow", cwd: workdir }, operator);
 
-    const turn = sup.prompt(
-      agent.id,
-      `Use your bash tool to run exactly: touch ${marker}\nThat is the entire task.`,
-      operator,
-    );
+      const turn = sup.prompt(
+        agent.id,
+        `Use your bash tool to run exactly: touch ${marker}\nThat is the entire task.`,
+        operator,
+      );
 
-    const deadline = Date.now() + 60_000;
-    let approved = false;
-    while (Date.now() < deadline && !approved) {
-      const p = approvals[0];
-      if (p) approved = sup.decide(p.requestId, "allow", "once", operator);
-      if (!approved) await Bun.sleep(150);
-    }
+      const deadline = Date.now() + 60_000;
+      let approved = false;
+      while (Date.now() < deadline && !approved) {
+        const p = approvals[0];
+        if (p) approved = sup.decide(p.requestId, "allow", "once", operator);
+        if (!approved) await Bun.sleep(150);
+      }
 
-    expect(approved).toBe(true);
-    await turn;
-    expect(existsSync(marker)).toBe(true);
-  }, 180_000);
+      expect(approved).toBe(true);
+      await turn;
+      expect(existsSync(marker)).toBe(true);
+    },
+    180_000,
+  );
 });

@@ -89,7 +89,9 @@ export interface PairDeepLink {
 export type OpenPairing = (link: PairDeepLink) => void;
 
 /** Scheme, authority, path, query, and fragment, read from the string. */
-function partsOf(raw: string): { scheme: string; authority: string; path: string; query: string; fragment: string } | null {
+function partsOf(
+  raw: string,
+): { scheme: string; authority: string; path: string; query: string; fragment: string } | null {
   const trimmed = raw.trim();
   const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(trimmed);
   if (match === null) return null;

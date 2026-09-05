@@ -19,7 +19,7 @@ describe("embedded web assets generator and gateway serving", () => {
   mkdirSync(fixtureAssetsDir, { recursive: true });
   writeFileSync(
     join(fixtureDist, "index.html"),
-    "<!doctype html><html><head><title>Fixture App</title><script type=\"module\" src=\"/assets/fixture.js\"></script></head><body><h1>Loaded</h1></body></html>",
+    '<!doctype html><html><head><title>Fixture App</title><script type="module" src="/assets/fixture.js"></script></head><body><h1>Loaded</h1></body></html>',
   );
   writeFileSync(join(fixtureAssetsDir, "fixture-font.ttf"), "TTF_FIXTURE_BINARY_DATA");
 
@@ -86,7 +86,7 @@ describe("embedded web assets generator and gateway serving", () => {
     expect(res.headers.get("cache-control")).toBe("no-cache");
     const text = await res.text();
     expect(text).toContain("<title>Fixture App</title>");
-    expect(text).toContain("script type=\"module\"");
+    expect(text).toContain('script type="module"');
   });
 
   test("gateway serves fixture ttf font with font/ttf content type", async () => {

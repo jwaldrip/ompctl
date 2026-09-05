@@ -28,9 +28,7 @@ function requireStorage(): Storage {
       return globalThis.localStorage;
     }
   } catch (cause) {
-    throw new Error(
-      `localStorage is not accessible: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
+    throw new Error(`localStorage is not accessible: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
   throw new Error("localStorage is not available in this environment");
 }
