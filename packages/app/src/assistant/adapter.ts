@@ -29,6 +29,9 @@
  */
 
 import {
+  bindExternalStoreMessage,
+  type ExportedMessageRepository,
+  fromThreadMessageLike,
   MessageNotSentError,
   type RespondToToolApprovalOptions,
   type ThreadMessageLike,
@@ -365,10 +368,24 @@ export function ompStore(input: OmpStoreInput) {
   const streaming = session.entries.some(entry => entry.kind === "assistant" && entry.streaming);
   const clearances = session.pendingApprovals.length + (session.planReview === null ? 0 : 1);
 
+  const repoMessages = session.entries.map((entry, idx) => {
+    const like = convertEntry(entry);
+    const msg = fromThreadMessageLike(like, messageRowId(entry), { type: "complete", reason: "unknown" });
+    bindExternalStoreMessage(msg, entry);
+    return {
+      parentId: idx > 0 ? messageRowId(session.entries[idx - 1]!) : null,
+      message: msg,
+    };
+  });
+  const messageRepository: ExportedMessageRepository = {
+    headId: repoMessages.length > 0 ? repoMessages[repoMessages.length - 1]?.message.id ?? null : null,
+    messages: repoMessages,
+  };
+
   return {
+    messageRepository,
     messages: session.entries,
     convertMessage: convertEntry,
-
     /**
      * `isRunning` is the thread's own claim that work is in flight, and it is
      * derived from the same facts `agentActivity` uses rather than from a
