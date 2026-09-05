@@ -134,7 +134,7 @@ owning delegate drains on its own schedule.
 ## Desktop and web parity
 
 `react-native-macos`/`react-native-windows` are declared dependencies with
-no generated native project. Web (`packages/web`) already has session
+no generated native project. Web (`packages/app` web target) already has session
 rendering and voice playback, but no Cowork surface (task sidebar,
 skills/connectors catalogue). Both are additive UI work over contracts
 that already exist server-side; neither needs a new daemon route.

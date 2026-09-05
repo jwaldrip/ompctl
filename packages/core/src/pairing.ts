@@ -74,23 +74,55 @@ export const DEFAULT_HUB_URL = `wss://${DEFAULT_HUB_HOST}`;
  */
 export type PairTarget = { transport: "hub"; hubUrl: string } | { transport: "direct"; url: string };
 
-export function parsePairTarget(raw: string): PairTarget | null {
+/**
+ * Checks whether a host (optionally with port) names the local loopback interface.
+ */
+export function isLoopbackHost(hostOrAuthority: string): boolean {
+  let host = hostOrAuthority.trim().toLowerCase();
+  if (host.startsWith("[") && host.includes("]")) {
+    host = host.slice(1, host.indexOf("]"));
+  } else {
+    host = host.split(":", 1)[0] ?? "";
+  }
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.startsWith("127.");
+}
+
+export type PairTargetOutcome = { kind: "ok"; target: PairTarget } | { kind: "refused"; reason: string };
+
+export function parsePairTargetOutcome(raw: string): PairTargetOutcome {
   const trimmed = raw.trim();
-  if (trimmed.length === 0) return { transport: "hub", hubUrl: DEFAULT_HUB_URL };
+  if (trimmed.length === 0) return { kind: "ok", target: { transport: "hub", hubUrl: DEFAULT_HUB_URL } };
 
   if (schemeOf(trimmed).length === 0) {
     // A host, optionally with a port. Anything else typed without a scheme is
     // not an address and is refused rather than guessed at.
-    if (!/^[a-zA-Z0-9.-]+(?::\d+)?$/.test(trimmed)) return null;
-    return { transport: "hub", hubUrl: `wss://${trimmed}` };
+    if (!/^[a-zA-Z0-9.-]+(?::\d+)?$/.test(trimmed)) {
+      return { kind: "refused", reason: "Not an address" };
+    }
+    return { kind: "ok", target: { transport: "hub", hubUrl: `wss://${trimmed}` } };
   }
 
-  if (!isHubUrl(trimmed)) return null;
+  if (!isHubUrl(trimmed)) {
+    return { kind: "refused", reason: "Not a websocket address" };
+  }
+
   const authority = authorityOf(trimmed);
+
+  // Cleartext ws:// sends bearer tokens across the network without encryption.
+  // Refuse ws:// for any host that is not loopback.
+  if (schemeOf(trimmed).toLowerCase() === "ws:" && !isLoopbackHost(authority)) {
+    return { kind: "refused", reason: "use wss:// for a host that is not this machine" };
+  }
+
   const rest = trimmed.slice(trimmed.indexOf(authority) + authority.length);
   const path = rest.split(/[?#]/, 1)[0] ?? "";
-  if (path.length > 1) return { transport: "direct", url: trimmed };
-  return { transport: "hub", hubUrl: normalizeHubUrl(trimmed) };
+  if (path.length > 1) return { kind: "ok", target: { transport: "direct", url: trimmed } };
+  return { kind: "ok", target: { transport: "hub", hubUrl: normalizeHubUrl(trimmed) } };
+}
+
+export function parsePairTarget(raw: string): PairTarget | null {
+  const outcome = parsePairTargetOutcome(raw);
+  return outcome.kind === "ok" ? outcome.target : null;
 }
 
 /**

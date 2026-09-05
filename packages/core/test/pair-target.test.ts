@@ -7,7 +7,13 @@
  * characters long and unusable by hand.
  */
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_HUB_URL, formatDeviceCredential, parseDeviceCredential, parsePairTarget } from "../src/pairing.ts";
+import {
+  DEFAULT_HUB_URL,
+  formatDeviceCredential,
+  parseDeviceCredential,
+  parsePairTarget,
+  parsePairTargetOutcome,
+} from "../src/pairing.ts";
 
 const BODY = "a".repeat(64);
 const DAEMON = `dmn_${BODY}`;
@@ -29,10 +35,34 @@ describe("parsePairTarget", () => {
     expect(parsePairTarget("ws://127.0.0.1:8787")).toEqual({ transport: "hub", hubUrl: "ws://127.0.0.1:8787" });
   });
 
-  test("a websocket url with a path is a daemon's own socket, not a hub base", () => {
-    expect(parsePairTarget("ws://10.4.1.221:7777/v1/socket")).toEqual({
+  test("a websocket url with a path on loopback is allowed for direct socket", () => {
+    expect(parsePairTarget("ws://127.0.0.1:7777/v1/socket")).toEqual({
       transport: "direct",
-      url: "ws://10.4.1.221:7777/v1/socket",
+      url: "ws://127.0.0.1:7777/v1/socket",
+    });
+    expect(parsePairTarget("ws://localhost:7777/v1/socket")).toEqual({
+      transport: "direct",
+      url: "ws://localhost:7777/v1/socket",
+    });
+    expect(parsePairTarget("ws://[::1]:7777/v1/socket")).toEqual({
+      transport: "direct",
+      url: "ws://[::1]:7777/v1/socket",
+    });
+  });
+
+  test("a websocket url on a non-loopback host requires wss to protect bearer tokens", () => {
+    expect(parsePairTarget("wss://10.4.1.221:7777/v1/socket")).toEqual({
+      transport: "direct",
+      url: "wss://10.4.1.221:7777/v1/socket",
+    });
+    expect(parsePairTarget("ws://10.4.1.221:7777/v1/socket")).toBeNull();
+    expect(parsePairTargetOutcome("ws://10.4.1.221:7777/v1/socket")).toEqual({
+      kind: "refused",
+      reason: "use wss:// for a host that is not this machine",
+    });
+    expect(parsePairTargetOutcome("ws://daemon.remote.internal:7777/v1/socket")).toEqual({
+      kind: "refused",
+      reason: "use wss:// for a host that is not this machine",
     });
   });
 

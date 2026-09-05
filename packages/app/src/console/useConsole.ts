@@ -41,7 +41,7 @@ export type { WebViewTarget } from "./webview.ts";
 export interface ConsoleActions {
   select: (agentId: AgentId) => void;
   back: () => void;
-  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => void;
+  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => boolean;
   cancel: (agentId: AgentId) => void;
   decide: (agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   decidePlan: (agentId: AgentId, requestId: string, choice: PlanReviewChoice) => void;
@@ -59,13 +59,17 @@ export interface ConsoleActions {
    * terminal that owns the session; progress arrives as `tui_activity`, and a
    * terminal with no bridge answers `tui_unreachable` instead.
    */
-  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => void;
+  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => boolean;
   /**
    * Ask a live terminal session for the page of turns older than the one on
    * screen. Ignored when the file's start is already reached or a page is
    * already in flight, so a double tap cannot ask twice.
    */
   loadEarlierTui: (sessionId: string) => void;
+  /**
+   * Re-arm a failed terminal session load and repeat the initial open.
+   */
+  retryTui: (sessionId: string) => void;
   /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
@@ -175,14 +179,35 @@ export function useConsole(
     },
     [client],
   );
+  const loadDeadlines = useRef(new Map<string, Parameters<typeof clearTimeout>[0]>());
+
+  const armLoadDeadline = useCallback((subject: string): void => {
+    const existing = loadDeadlines.current.get(subject);
+    clearTimeout(existing);
+    const timer = setTimeout(() => {
+      loadDeadlines.current.delete(subject);
+      const held = stateRef.current.loads.get(subject);
+      if (held?.phase === "loading") {
+        dispatch({ t: "open_failed", subject, message: "History did not arrive." });
+      }
+    }, 30_000);
+    loadDeadlines.current.set(subject, timer);
+  }, []);
+
+  const clearLoadDeadline = useCallback((subject: string): void => {
+    const timer = loadDeadlines.current.get(subject);
+    clearTimeout(timer);
+    loadDeadlines.current.delete(subject);
+  }, []);
 
   const requestHistory = useCallback(
     (agentId: AgentId, sessionId: string, before?: number): void => {
       if (stateRef.current.historyLoading.has(agentId)) return;
+      armLoadDeadline(agentId);
       dispatch({ t: "history_request", agentId });
       client.sessionHistory(agentId, sessionId, before);
     },
-    [client],
+    [armLoadDeadline, client],
   );
   /**
    * Tell the daemon to leave the room when the operator walks away from a
@@ -228,9 +253,17 @@ export function useConsole(
    * only the replies that arrive after it.
    */
   const selectAgent = useCallback(
-    (agentId: AgentId): void => {
+    (agentId: AgentId | null): void => {
       const current = stateRef.current;
-      leaveCollab(current.selected, agentId);
+      if (current.selected !== null && current.selected !== agentId) {
+        client.detach?.(current.selected);
+      }
+      leaveCollab(current.selected, agentId ?? undefined);
+      client.selectTerminalSession?.(null);
+      if (agentId === null) {
+        dispatch({ t: "select", agentId: null });
+        return;
+      }
       const agent = current.agents.find(candidate => candidate.id === agentId);
       // What this open actually asks the daemon for, decided before the
       // dispatch because the reducer cannot know it.
@@ -343,6 +376,11 @@ export function useConsole(
         // Always awaiting: the history page below is asked for unconditionally
         // here, so there is always an answer coming, and a resume means this
         // device holds nothing of the session yet by definition.
+        const current = stateRef.current;
+        if (current.selected !== null && current.selected !== event.agentId) {
+          client.detach?.(current.selected);
+        }
+        client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: event.agentId, awaiting: true });
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
@@ -356,10 +394,11 @@ export function useConsole(
         // watermark rather than replaying, and the history guard keeps the
         // first page from being asked for twice.
         const current = stateRef.current;
+        if (current.selected !== null && current.selected !== event.agentId) {
+          client.detach?.(current.selected);
+        }
         leaveCollab(current.selected, event.agentId);
-        // The same rule the ordinary open follows: wait only when this device
-        // holds nothing of the joined session yet and a page that always
-        // answers was asked for.
+        client.selectTerminalSession?.(null);
         const fetchingHistory = !current.historyBefore.has(event.agentId);
         const replaying = !current.watermarks.has(event.agentId);
         dispatch({ t: "collab_opened", event, awaiting: replaying && fetchingHistory });
@@ -380,6 +419,7 @@ export function useConsole(
         dispatch({ t: "error", event: { message: notice } });
       }),
       client.on("session_history", event => {
+        clearLoadDeadline(event.agentId);
         dispatch({ t: "session_history", event });
       }),
       client.on("update", event => {
@@ -425,8 +465,24 @@ export function useConsole(
         // session's log is not an answer about the row they pressed. The
         // notice still goes out, because a refusal about a pane nobody is
         // watching must still reach the operator.
-        const subject = event.sessionId ?? event.agentId;
-        if (subject !== undefined) dispatch({ t: "open_failed", subject, message: event.message });
+        const subject = event.agentId ?? event.sessionId;
+        if (subject !== undefined) {
+          clearLoadDeadline(subject);
+          if (event.code !== "agent_busy") {
+            dispatch({ t: "open_failed", subject, message: event.message });
+            if (event.sessionId !== undefined && event.agentId !== undefined) {
+              clearLoadDeadline(event.sessionId);
+              dispatch({ t: "open_failed", subject: event.sessionId, message: event.message });
+            } else if (event.sessionId !== undefined) {
+              const current = stateRef.current;
+              const matchedAgent = current.agents.find(a => a.acpSessionId === event.sessionId);
+              if (matchedAgent !== undefined && matchedAgent.id !== subject) {
+                clearLoadDeadline(matchedAgent.id);
+                dispatch({ t: "open_failed", subject: matchedAgent.id, message: event.message });
+              }
+            }
+          }
+        }
         dispatch({ t: "error", event });
       }),
       client.on("say", event => {
@@ -486,9 +542,11 @@ export function useConsole(
     return () => {
       releaseMic();
       for (const off of offs) off();
+      for (const timer of loadDeadlines.current.values()) clearTimeout(timer);
+      loadDeadlines.current.clear();
       client.close();
     };
-  }, [askOlderTui, client, leaveCollab, reopenStalled, requestHistory, settleWebViewAction, voice]);
+  }, [askOlderTui, clearLoadDeadline, client, leaveCollab, reopenStalled, requestHistory, settleWebViewAction, voice]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -508,7 +566,12 @@ export function useConsole(
         selectAgent(agentId);
       },
       back() {
-        leaveCollab(stateRef.current.selected);
+        const current = stateRef.current;
+        if (current.selected !== null) {
+          client.detach?.(current.selected);
+        }
+        leaveCollab(current.selected);
+        client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: null });
       },
       prompt(agentId, text, images) {
@@ -526,10 +589,21 @@ export function useConsole(
                 "This device does not hold the prompt scope. Pair it again with prompt access to steer this session.",
             },
           });
-          return;
+          return false;
+        }
+        if (stateRef.current.connection !== "connected") {
+          dispatch({
+            t: "error",
+            event: {
+              message: "Not connected; the message was not sent",
+              code: "offline",
+            },
+          });
+          return false;
         }
         client.prompt(agentId, text, images);
         dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
+        return true;
       },
       cancel(agentId) {
         client.cancel(agentId);
@@ -544,11 +618,20 @@ export function useConsole(
       },
       loadEarlier(agentId) {
         const current = stateRef.current;
-        const before = current.historyBefore.get(agentId);
-        if (before === undefined || before === null) return;
         const agent = current.agents.find(candidate => candidate.id === agentId);
-        if (agent?.acpSessionId === undefined) return;
-        requestHistory(agentId, agent.acpSessionId, before);
+        const acpSessionId =
+          agent?.acpSessionId ?? current.sessionIndex.find(s => s.agentId === agentId || s.id === agentId)?.id;
+        if (acpSessionId === undefined) {
+          return;
+        }
+        const before = current.historyBefore.get(agentId) ?? undefined;
+        if (current.loads.get(agentId)?.phase === "failed") {
+          dispatch({ t: "load_rearm", subject: agentId });
+          armLoadDeadline(agentId);
+          client.sessionHistory(agentId, acpSessionId, before);
+          return;
+        }
+        requestHistory(agentId, acpSessionId, before);
       },
       dismiss() {
         dispatch({ t: "dismiss" });
@@ -575,7 +658,11 @@ export function useConsole(
             selectAgent(target.agentId);
             return;
           case "live-tui": {
-            // A live terminal is joined, never taken over: nothing here
+            const current = stateRef.current;
+            if (current.selected !== null) {
+              client.detach?.(current.selected);
+            }
+            client.selectTerminalSession?.(target.sessionId);
             // claims the renderer, and the transcript arrives through the
             // same frames an owned agent uses.
             //
@@ -626,6 +713,7 @@ export function useConsole(
       promptTui(sessionId, text, images) {
         client.sessionPrompt(sessionId, text, undefined, images);
         dispatch({ t: "tui_prompt", sessionId, text, imageCount: images?.length ?? 0 });
+        return true;
       },
       loadEarlierTui(sessionId) {
         const tui = tuiSessionFor(stateRef.current, sessionId);
@@ -634,6 +722,15 @@ export function useConsole(
         // request on the wire for the same page.
         if (tui.historyCursor === null || tui.historyLoadingEarlier) return;
         askOlderTui(sessionId, tui.historyCursor);
+      },
+      retryTui(sessionId) {
+        dispatch({ t: "load_rearm", subject: sessionId });
+        const tui = tuiSessionFor(stateRef.current, sessionId);
+        if (tui.refusalKind !== null) {
+          client.sessionTail(sessionId);
+        } else {
+          client.openCollab(sessionId);
+        }
       },
       deleteSession(sessionId) {
         // The row renders the missing scope and offers no confirmation, but
@@ -717,7 +814,17 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [askOlderTui, client, connection.scopes, leaveCollab, requestHistory, settleWebViewAction, selectAgent, voice],
+    [
+      armLoadDeadline,
+      askOlderTui,
+      client,
+      connection.scopes,
+      leaveCollab,
+      requestHistory,
+      settleWebViewAction,
+      selectAgent,
+      voice,
+    ],
   );
 
   return [state, actions];

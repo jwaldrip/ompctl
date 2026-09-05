@@ -211,13 +211,27 @@ export function transcriptRowKey(entry: Entry): string {
   if (entry.kind === "assistant") return `assistant:${entry.thought ? "thought" : "message"}:${entry.id}`;
   return `${entry.kind}:${entry.id}`;
 }
+export const MAX_SESSION_ENTRIES = 2000;
+
+function trimEntries(entries: readonly Entry[]): { entries: readonly Entry[]; trimmed: boolean } {
+  if (entries.length <= MAX_SESSION_ENTRIES) {
+    return { entries, trimmed: false };
+  }
+  return {
+    entries: entries.slice(entries.length - MAX_SESSION_ENTRIES),
+    trimmed: true,
+  };
+}
 
 /** Prepend one durable history page without duplicating live/replayed rows. */
 export function mergeSessionHistory(state: SessionState, history: readonly SessionHistoryEntry[]): SessionState {
   if (history.length === 0) return state;
   const existing = new Set(state.entries.map(transcriptRowKey));
+  const remaining = state.entries.slice();
   const prepend: Entry[] = [];
-  for (const item of history) {
+  for (let i = 0; i < history.length; i++) {
+    const item = history[i];
+    if (item === undefined) continue;
     const entry: Entry =
       item.kind === "user"
         ? { kind: "user", id: item.id, text: item.text }
@@ -235,15 +249,29 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
             };
     const key = transcriptRowKey(entry);
     if (existing.has(key)) continue;
+
+    // An incoming durable user row can only replace an echo if it lands at the turn
+    // immediately adjacent to the echo at the boundary (e.g. initial history landing on an echoed prompt).
+    // It must never search globally across the transcript to remove live echoes at the tail.
+    if (entry.kind === "user" && i === history.length - 1) {
+      if (remaining[0]?.kind === "user" && remaining[0].id.startsWith("prompt-") && remaining[0].text === entry.text) {
+        remaining.shift();
+      }
+    }
+
     existing.add(key);
     prepend.push(entry);
   }
-  if (prepend.length === 0) return state;
-  return { ...state, entries: [...prepend, ...state.entries] };
+  const entries = prepend.length === 0 ? remaining : [...prepend, ...remaining];
+  if (entries.length === state.entries.length && entries.every((e, i) => e === state.entries[i])) {
+    return state;
+  }
+  return { ...state, entries, trimmed: state.trimmed };
 }
 
 export interface SessionState {
   readonly entries: readonly Entry[];
+  readonly trimmed?: boolean;
   readonly plan: readonly PlanEntry[];
   /** Present while ACP waits for the operator to review the current plan. */
   readonly planReview: PlanReview | null;
@@ -364,14 +392,26 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
 
   const messageId = readString(payload, "messageId");
   const thought = channel === "thought";
-  const index = findChunkTarget(state.entries, channel, messageId);
+  const index = findChunkTarget(state.entries, channel, messageId, text);
 
   if (index >= 0) {
     const current = state.entries[index];
     if (current === undefined) return state;
+    if (current.kind === "assistant" && (current as AssistantEntry).streaming) {
+      const extended: AssistantEntry = {
+        ...(current as AssistantEntry),
+        ...(messageId !== undefined && messageId !== null ? { id: messageId } : {}),
+        text: (current as AssistantEntry).text + text,
+      };
+      return { ...state, entries: replaceAt(state.entries, index, extended) };
+    }
     const extended: Entry =
       current.kind === "user"
-        ? { ...current, text: current.text + text }
+        ? {
+            kind: "user",
+            id: messageId ?? current.id,
+            text: current.id.startsWith("prompt-") ? text : current.text + text,
+          }
         : {
             ...(current as AssistantEntry),
             // A chunk that names its message adopts the row it is continuing,
@@ -392,13 +432,15 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
         // following the wire so `findChunkTarget` can still resume a settled
         // row by the id a later chunk names.
         { kind: "assistant", id, rowId: id, text, streaming: true, thought };
+  const rawEntries = [...settled, entry];
+  const { entries, trimmed } = trimEntries(rawEntries);
   return {
     ...state,
-    entries: [...settled, entry],
+    entries,
+    trimmed: state.trimmed || trimmed,
     ordinal: state.ordinal + 1,
   };
 }
-
 /**
  * Where a chunk belongs. An id matches wherever it sits, because an agent may
  * resume a message after a tool call; without one, only a still-open block of
@@ -408,18 +450,38 @@ function findChunkTarget(
   entries: readonly Entry[],
   channel: "user" | "message" | "thought",
   messageId: string | null,
+  text: string,
 ): number {
+  if (channel === "user") {
+    if (messageId !== null) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index];
+        if (entry?.kind === "user" && entry.id === messageId) return index;
+      }
+    }
+    // When a user chunk arrives and the newest user entry is a local echo
+    // (`prompt-*` id) with the same text, adopt that echo in place.
+    // A user chunk whose text differs appends (another device's prompt).
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry?.kind === "user") {
+        if (entry.id.startsWith("prompt-") && entry.text === text) {
+          return index;
+        }
+        break;
+      }
+    }
+    if (messageId === null) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        if (entries[index]?.kind === "user") return index;
+      }
+    }
+    return -1;
+  }
+
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry === undefined) continue;
-    if (channel === "user") {
-      if (entry.kind !== "user") continue;
-      if (messageId !== null) {
-        if (entry.id === messageId) return index;
-        continue;
-      }
-      return index;
-    }
     if (entry.kind !== "assistant") continue;
     if (entry.thought !== (channel === "thought")) continue;
     // An id locates a message that has already settled, which is how an agent
@@ -681,9 +743,12 @@ export function appendPrompt(state: SessionState, text: string, imageCount = 0):
   const echoed = echoText(text, imageCount);
   if (echoed.length === 0) return state;
   const entry: UserEntry = { kind: "user", id: `prompt-${state.ordinal}`, text: echoed };
+  const rawEntries = [...closeStreams(state.entries), entry];
+  const { entries, trimmed } = trimEntries(rawEntries);
   return {
     ...state,
-    entries: [...closeStreams(state.entries), entry],
+    entries,
+    trimmed: state.trimmed || trimmed,
     ordinal: state.ordinal + 1,
   };
 }
@@ -701,9 +766,12 @@ export function appendApproval(state: SessionState, approval: Approval): Session
     input: approval.input,
     decision: null,
   };
+  const rawEntries = [...closeStreams(state.entries), entry];
+  const { entries, trimmed } = trimEntries(rawEntries);
   return {
     ...state,
-    entries: [...closeStreams(state.entries), entry],
+    entries,
+    trimmed: state.trimmed || trimmed,
     pendingApprovals: [...state.pendingApprovals, approval],
     ordinal: state.ordinal + 1,
   };

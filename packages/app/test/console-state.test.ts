@@ -442,6 +442,26 @@ describe("the roster is the authority", () => {
     expect(agentFor(state, "a1")?.name).toBe("agent a1");
   });
 
+  test("defect 1: an opened session not yet in roster and without history renders stand-in agent, not null", () => {
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1")] } },
+      { t: "select", agentId: "a2", awaiting: true },
+    ]);
+
+    expect(state.selected).toBe("a2");
+    expect(state.loads.get("a2")?.phase).toBe("loading");
+    const resolved = agentFor(state, "a2");
+    expect(resolved).not.toBeNull();
+    expect(resolved?.id).toBe("a2");
+
+    const failedState = drive([
+      { t: "agents", event: { agents: [agent("a1")] } },
+      { t: "select", agentId: "a2", awaiting: true },
+      { t: "open_failed", subject: "a2", message: "That session closed." },
+    ]);
+    expect(agentFor(failedState, "a2")).toBeNull();
+  });
+
   test("a turn that stopped leaves nothing streaming", () => {
     const state = drive([
       { t: "agents", event: { agents: [agent("a1", { state: "busy" })] } },

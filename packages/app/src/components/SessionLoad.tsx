@@ -17,11 +17,11 @@
 
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { Body, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, stroke } from "../design/tokens.ts";
+import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 
 export interface SessionLoadingProps {
   /** The session being waited for, named so the pane is visibly its own. */
@@ -62,12 +62,14 @@ export interface SessionLoadFailedProps {
   title: string;
   /** The daemon's own words. Never paraphrased: the operator acts on them. */
   message: string;
+  onRetry?: () => void;
   testID?: string;
 }
 
 export function SessionLoadFailed({
   title,
   message,
+  onRetry,
   testID = "session-load-failed",
 }: SessionLoadFailedProps): JSX.Element {
   return (
@@ -85,6 +87,18 @@ export function SessionLoadFailed({
       <Label color={ink.plain} testID={`${testID}-message`}>
         {message}
       </Label>
+      {onRetry === undefined ? null : (
+        <Pressable
+          accessibilityLabel="Retry loading history"
+          accessibilityRole="button"
+          onPress={onRetry}
+          style={({ pressed }) => [styles.retryButton, pressed && { backgroundColor: ground.active }]}
+          testID={`${testID}-retry`}
+        >
+          <Glyph color={signal.amber} name="resume" size={13} />
+          <Label color={ink.bright}>Retry</Label>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -155,4 +169,15 @@ const styles = StyleSheet.create({
   barWide: { width: "100%" },
   barMid: { width: "78%" },
   barNarrow: { width: "46%" },
+  retryButton: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.step,
+    paddingVertical: space.snug,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+    marginTop: space.snug,
+  },
 });

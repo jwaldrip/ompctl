@@ -89,11 +89,21 @@ describe("resumeAgent", () => {
     expect(h.fake.sessions).toEqual([]);
   });
 
-  test("captures history notifications emitted during session/load under the resumed agent id", async () => {
+  test("captures state notifications emitted during session/load while suppressing transcript replay chunks", async () => {
     const h = harness();
     const prompter = h.pair("prompter", [SCOPE_READ, SCOPE_PROMPT]);
     const sessionId = "durable-session";
-    const replay = [
+    const stateUpdates = [
+      {
+        sessionUpdate: "session_info_update",
+        title: "Replayed Title",
+      },
+      {
+        sessionUpdate: "available_commands_update",
+        commands: [],
+      },
+    ];
+    const transcriptUpdates = [
       {
         sessionUpdate: "agent_thought_chunk",
         messageId: "m1",
@@ -105,15 +115,15 @@ describe("resumeAgent", () => {
         content: { type: "text", text: "Finding." },
       },
     ];
-    // Real omp acp emits these before session/load returns. This is the race
-    // the old post-resume emit test could never detect.
-    h.fake.replayOnLoad(replay);
+    // State updates must be preserved; transcript chunks are suppressed
+    // during session/load replay to avoid duplicating what session_history serves.
+    h.fake.replayOnLoad([...stateUpdates, ...transcriptUpdates]);
 
     const resumed = await h.sup.resumeAgent({ name: "resumed", cwd: "/work", sessionId }, prompter);
     expect(h.updates.map(update => ({ agentId: update.agentId, update: update.update }))).toEqual(
-      replay.map(update => ({ agentId: resumed.id, update })),
+      stateUpdates.map(update => ({ agentId: resumed.id, update })),
     );
-    expect(h.store.updatesSince(resumed.id, 0).map(record => record.payload)).toEqual(replay);
+    expect(h.store.updatesSince(resumed.id, 0).map(record => record.payload)).toEqual(stateUpdates);
   });
 
   test("restores the daemon MCP mounts when loading an existing session", async () => {

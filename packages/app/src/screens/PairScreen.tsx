@@ -12,9 +12,9 @@
  * than guessing at it.
  */
 
-import { DEFAULT_HUB_HOST, parseDeviceCredential, parsePairTarget } from "@ompd/core/pairing";
+import { DEFAULT_HUB_HOST, parseDeviceCredential, parsePairTargetOutcome } from "@ompd/core/pairing";
 import type { JSX } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { useFormMaxWidth } from "../design/layout.ts";
@@ -27,14 +27,17 @@ import type { Connection } from "../platform/connection.ts";
 // plain module everywhere else. Naming the extension would defeat that and
 // hand every platform the same answer.
 import { E2E_PLAINTEXT_TOKEN } from "../platform/e2e-plaintext";
+import { directSocketUrlForOrigin, isDaemonOrigin } from "../platform/portal.ts";
 
 export function PairScreen({
   notice,
+  defaultTarget,
   onCancel,
   onPair,
   onScan,
 }: {
   notice?: string;
+  defaultTarget?: string;
   onCancel?: () => void;
   onPair: (connection: Connection) => void;
   /**
@@ -44,11 +47,28 @@ export function PairScreen({
    */
   onScan: () => void;
 }): JSX.Element {
-  const [raw, setRaw] = useState(DEFAULT_HUB_HOST);
+  const [raw, setRaw] = useState(defaultTarget ?? DEFAULT_HUB_HOST);
+
+  useEffect(() => {
+    if (defaultTarget !== undefined) {
+      setRaw(defaultTarget);
+      return;
+    }
+    if (typeof window !== "undefined" && window.location?.origin) {
+      const origin = window.location.origin;
+      void isDaemonOrigin(origin).then(isDaemon => {
+        if (isDaemon) {
+          setRaw(directSocketUrlForOrigin(origin));
+        }
+      });
+    }
+  }, [defaultTarget]);
   const [token, setToken] = useState("");
   const { width } = useWindowDimensions();
   const formMaxWidth = useFormMaxWidth();
-  const target = parsePairTarget(raw);
+  const targetOutcome = parsePairTargetOutcome(raw);
+  const target = targetOutcome.kind === "ok" ? targetOutcome.target : null;
+  const targetRefusal = targetOutcome.kind === "refused" ? targetOutcome.reason : undefined;
   // The daemon travels inside the credential, so the token field is what
   // decides whether this form can produce a hub connection at all.
   const credential = parseDeviceCredential(token);
@@ -90,7 +110,7 @@ export function PairScreen({
           {raw.trim().length === 0 ? null : (
             <Label color={target === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
               {target === null
-                ? "Not a hub address"
+                ? (targetRefusal ?? "Not a hub address")
                 : // A hub base and a daemon's own socket read alike, so the
                   // transport is named back: one reaches a daemon behind NAT, the
                   // other only works on this network.

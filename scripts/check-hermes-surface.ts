@@ -702,9 +702,17 @@ async function main(): Promise<void> {
           "hub url",
         );
         requireEquals(
-          pairing.parsePairTarget("ws://10.0.0.5:7777/v1/socket"),
-          { transport: "direct", url: "ws://10.0.0.5:7777/v1/socket" },
+          pairing.parsePairTarget("wss://10.0.0.5:7777/v1/socket"),
+          { transport: "direct", url: "wss://10.0.0.5:7777/v1/socket" },
           "direct socket url",
+        );
+        // A bearer over cleartext to another machine is refused; the same
+        // scheme on loopback is the daemon-served console's own address.
+        requireEquals(pairing.parsePairTarget("ws://10.0.0.5:7777/v1/socket"), null, "refuse cleartext off-box");
+        requireEquals(
+          pairing.parsePairTarget("ws://127.0.0.1:7777/v1/socket"),
+          { transport: "direct", url: "ws://127.0.0.1:7777/v1/socket" },
+          "loopback cleartext socket url",
         );
         requireEquals(pairing.parsePairTarget("not an address"), null, "refuse garbage");
 

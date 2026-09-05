@@ -102,7 +102,7 @@ by a client connection.** A phone losing signal must not kill a build.
 | `@ompd/core`   | Contracts, SQLite store, policy engine, audit. No network I/O                 |
 | `@ompd/daemon` | Supervisor, registry, gateway, routines, provisioner, voice, evolution        |
 | `@ompd/cli`    | `ompd` command: daemon control, agents, routines, device pairing              |
-| `@ompd/web`    | Installable PWA: agent list, transcript, approvals, voice                     |
+| `@ompd/app`    | Multiplatform client (iOS, Android, macOS, Windows, Web portal)             |
 
 ## Contracts
 

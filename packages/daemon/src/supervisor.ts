@@ -35,6 +35,7 @@ import {
   type HostMount,
   type HostRef,
   type HostSpec,
+  MAX_PROMPT_IMAGE_BASE64_CHARS,
   type PlanReviewChoice,
   type PlanReviewRequest,
   type Policy,
@@ -56,6 +57,31 @@ export class UnauthorizedError extends Error {
     super(message);
     this.name = "UnauthorizedError";
   }
+}
+
+/** Thrown when a prompt is attempted on an agent that already has a turn in flight. */
+export class AgentBusyError extends Error {
+  readonly agentId: AgentId;
+  readonly code = "agent_busy" as const;
+  constructor(agentId: AgentId, message = `agent ${agentId} is busy`) {
+    super(message);
+    this.name = "AgentBusyError";
+    this.agentId = agentId;
+  }
+}
+
+const TRANSCRIPT_UPDATE_KINDS: ReadonlySet<string> = new Set([
+  "user_message_chunk",
+  "agent_message_chunk",
+  "agent_thought_chunk",
+  "tool_call",
+  "tool_call_update",
+]);
+
+function isTranscriptUpdate(update: unknown): boolean {
+  if (typeof update !== "object" || update === null) return false;
+  const kind = (update as { sessionUpdate?: unknown }).sessionUpdate;
+  return typeof kind === "string" && TRANSCRIPT_UPDATE_KINDS.has(kind);
 }
 
 export interface PendingApproval {
@@ -508,6 +534,8 @@ export class Supervisor {
   #sessionAgent = new Map<string, AgentId>();
   #pending = new Map<string, PendingApproval>();
   #pendingPlanReviews = new Map<string, PendingPlanReview>();
+  #inFlightTurns = new Map<AgentId, number>();
+  #loadingSessions = new Set<string>();
 
   constructor(opts: SupervisorOptions) {
     this.#store = opts.store;
@@ -685,11 +713,16 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, { resumed: true }, async (sessionEntry, agentId) => {
-      await sessionEntry.host.client.loadSession(
-        input.sessionId,
-        input.cwd,
-        this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
-      );
+      this.#loadingSessions.add(input.sessionId);
+      try {
+        await sessionEntry.host.client.loadSession(
+          input.sessionId,
+          input.cwd,
+          this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
+        );
+      } finally {
+        this.#loadingSessions.delete(input.sessionId);
+      }
       return input.sessionId;
     });
   }
@@ -770,7 +803,12 @@ export class Supervisor {
       who,
       { takeover: "live-tui" },
       async sessionEntry => {
-        await sessionEntry.host.client.loadSession(input.sessionId, input.cwd);
+        this.#loadingSessions.add(input.sessionId);
+        try {
+          await sessionEntry.host.client.loadSession(input.sessionId, input.cwd);
+        } finally {
+          this.#loadingSessions.delete(input.sessionId);
+        }
         return input.sessionId;
       },
     );
@@ -880,25 +918,57 @@ export class Supervisor {
     const { agent, entry } = this.#resolve(agentId);
     if (!agent.acpSessionId) throw new Error(`agent ${agentId} has no session`);
 
-    this.#setState(agentId, "busy");
-    this.#store.audit({
-      action: "agent.prompt",
-      agentId,
-      actorDeviceId: who.deviceId,
-      outcome: "ok",
-      detail: { chars: text.length, ...(images?.length ? { images: images.length } : {}) },
-    });
+    const inFlight = this.#inFlightTurns.get(agentId) ?? 0;
+    if (inFlight > 0) {
+      throw new AgentBusyError(agentId, `agent ${agentId} has a turn in flight`);
+    }
+
+    this.#inFlightTurns.set(agentId, inFlight + 1);
     try {
+      this.#setState(agentId, "busy");
+      this.#store.audit({
+        action: "agent.prompt",
+        agentId,
+        actorDeviceId: who.deviceId,
+        outcome: "ok",
+        detail: { chars: text.length, ...(images?.length ? { images: images.length } : {}) },
+      });
+
+      const messageId = `user_${crypto.randomUUID()}`;
+      let content: unknown = { type: "text", text };
+      if (images && images.length > 0) {
+        const blocks: unknown[] = [{ type: "text", text }];
+        for (const img of images) {
+          if (img.data.length <= MAX_PROMPT_IMAGE_BASE64_CHARS) {
+            blocks.push({ type: "image", mimeType: img.mimeType, data: img.data });
+          } else {
+            blocks.push({ type: "text", text: "[image]" });
+          }
+        }
+        content = blocks;
+      }
+      const userUpdate = {
+        sessionUpdate: "user_message_chunk",
+        content,
+        messageId,
+      };
+      const seq = this.#store.appendUpdate(agentId, userUpdate);
+      this.#events.onUpdate?.(agentId, seq, userUpdate);
+
       return await entry.host.client.prompt(agent.acpSessionId, text, images);
     } finally {
-      // Only return to idle if the agent is still live. A turn can be
-      // abandoned by stopAgent or by its host dying, and both write a terminal
-      // state while this call is still unwinding. Writing idle unconditionally
-      // would resurrect a dead agent into something a client renders as ready
-      // to accept work.
-      const current = this.#store.getAgent(agentId);
-      if (current && !TERMINAL_AGENT_STATES.includes(current.state)) {
-        this.#setState(agentId, "idle");
+      // Only return to idle if the in-flight count reaches zero and the agent
+      // is still live. A turn can be abandoned by stopAgent or by its host dying,
+      // and both write a terminal state while this call is still unwinding.
+      const remaining = (this.#inFlightTurns.get(agentId) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.#inFlightTurns.delete(agentId);
+        const current = this.#store.getAgent(agentId);
+        if (current && !TERMINAL_AGENT_STATES.includes(current.state)) {
+          this.#setState(agentId, "idle");
+        }
+      } else {
+        this.#inFlightTurns.set(agentId, remaining);
       }
     }
   }
@@ -920,6 +990,7 @@ export class Supervisor {
       // exactly the state routine actions leave behind.
       if (this.#sessionAgent.get(agent.acpSessionId) === agentId) this.#sessionAgent.delete(agent.acpSessionId);
     }
+    this.#inFlightTurns.delete(agentId);
     entry.agents.delete(agentId);
     this.#setState(agentId, "stopped");
     this.#store.audit({ action: "agent.stop", agentId, outcome: "ok" });
@@ -944,6 +1015,7 @@ export class Supervisor {
         }
       }
     }
+    this.#inFlightTurns.clear();
     this.#hosts.clear();
     for (const entry of entries) entry.host.kill();
     // Killing the local end of `docker exec` stops the remote `omp acp`, but
@@ -1452,6 +1524,14 @@ export class Supervisor {
   #onUpdate(sessionId: string, update: unknown): void {
     const agentId = this.#sessionAgent.get(sessionId);
     if (!agentId) return;
+
+    if (this.#loadingSessions.has(sessionId) && isTranscriptUpdate(update)) {
+      // Transcript notifications during session/load replay are served by
+      // session_history from JSONL; suppressing them here prevents duplicate
+      // transcript rows on resume.
+      return;
+    }
+
     const seq = this.#store.appendUpdate(agentId, update);
     this.#events.onUpdate?.(agentId, seq, update);
   }

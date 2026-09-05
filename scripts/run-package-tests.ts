@@ -37,7 +37,6 @@ export const PACKAGE_TEST_SUITES: readonly PackageTestSuite[] = [
   { id: "hub", command: ["bun", "test", "packages/hub"] },
   { id: "omp-extension", command: ["bun", "test", "packages/omp-extension"] },
   { id: "tunnel", command: ["bun", "test", "packages/tunnel"] },
-  { id: "web", command: ["bun", "--cwd", "packages/web", "test"] },
   { id: "scripts", command: ["bun", "test", "scripts"] },
 ];
 

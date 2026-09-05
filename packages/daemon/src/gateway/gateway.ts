@@ -63,6 +63,7 @@ import {
   type Store,
   type SyncSettings,
   type Task,
+  TERMINAL_AGENT_STATES,
   type TriggerDraft,
   type TuiActivityKind,
   type TuiSteerDelivery,
@@ -72,6 +73,7 @@ import {
   type WireHostSpec,
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
+import { LOCAL_HOSTNAMES, parseCollabLink } from "../collab/guest-link.ts";
 import { CollabGuests } from "../collab/guests.ts";
 import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData } from "../collab/relay.ts";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
@@ -82,6 +84,7 @@ import type { SessionIndex } from "../sessions/session-index.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
 import {
+  AgentBusyError,
   createAgentId,
   type PendingApproval,
   type PendingPlanReview,
@@ -109,19 +112,30 @@ const CONTENT_TYPES: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
   ".json": "application/json",
   ".map": "application/json",
+  ".ttf": "font/ttf",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
 };
 
 function contentTypeFor(key: string): string {
   return CONTENT_TYPES[extname(key)] ?? "application/octet-stream";
 }
 
-/** Decode one embedded asset into a response with an explicit content type. */
+/** Decode one embedded asset into a response with an explicit content type and cache-control. */
 function embeddedResponse(base64: string, key: string): Response {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-  return new Response(bytes, { headers: { "content-type": contentTypeFor(key) } });
+  const clean = key.replace(/^\/+/, "");
+  const cacheControl = clean.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-cache";
+
+  return new Response(bytes, {
+    headers: {
+      "content-type": contentTypeFor(key),
+      "cache-control": cacheControl,
+    },
+  });
 }
 /** Narrow an untrusted client payload before it reaches the MCP result path. */
 function isWebViewActionResult(value: unknown): value is WebViewActionResult {
@@ -1058,7 +1072,14 @@ export interface SyncDocument extends SyncSettings {
   connectors: ConnectorSummary[];
 }
 
+export const DEFAULT_MAX_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024; // 8 MiB
+
 export interface GatewayOptions {
+  /**
+   * Maximum bytes permitted in a socket outbound buffer before closing with 1013 backpressure.
+   * Defaults to 8 MiB.
+   */
+  maxSocketBufferBytes?: number;
   supervisor: Supervisor;
   store: Store;
   /**
@@ -1080,10 +1101,22 @@ export interface GatewayOptions {
    * no business reading.
    */
   onError?: (err: Error) => void;
+  onLog?: (message: string) => void;
   host?: string;
   /** 0 asks the OS for a free port; read the real one back from `listen()`. */
   port?: number;
   version?: string;
+  /**
+   * Whether the collab relay at /r/<roomId> can be upgraded by non-loopback
+   * peers. Off by default: the relay is unauthenticated by design, so exposing
+   * it beyond loopback must be an explicit choice.
+   */
+  exposeCollabRelay?: boolean;
+  /**
+   * Peer address resolver for the relay upgrade guard. Injectable so tests can
+   * supply a fake remote address without spinning up a separate network.
+   */
+  requestAddress?: (req: Request, server: Server<any>) => string | null;
   /**
    * Opaque identity of the state directory this daemon serves.
    *
@@ -1196,6 +1229,8 @@ export interface GatewayOptions {
    * filesystem".
    */
   filesystem?: FilesystemSurface;
+  /** Embedded web assets map, for testing or overriding the compiled-in WEB_ASSETS. */
+  embeddedAssets?: { assets: Record<string, string>; built: boolean };
 }
 
 interface LiveTuiSocket {
@@ -1220,6 +1255,7 @@ interface SocketState {
   scopes: Set<string>;
   /** Agents this socket asked for. Nothing is pushed for anything else. */
   attached: Set<AgentId>;
+  notifiedGoneSessions: Set<string>;
   /**
    * Highest seq already delivered, per agent. Replay and the live stream both
    * go through this, which is what guarantees a reattach has no duplicates.
@@ -1304,6 +1340,15 @@ export interface GatewaySocket {
   data: SocketState;
   send(data: string): unknown;
   close(code?: number, reason?: string): void;
+  /**
+   * Number of bytes currently buffered in the transport awaiting flush.
+   *
+   * Bun ServerWebSocket implements this natively. For tunnel connections
+   * tunneled through TunnelDaemon, frames are relayed immediately over the
+   * shared hub WebSocket without per-session buffer measurement; where
+   * unmeasurable, this returns undefined and the direct path enforces the cap.
+   */
+  getBufferedAmount?(): number;
 }
 
 /**
@@ -1331,6 +1376,8 @@ export class Gateway {
   #events: GatewayEvents | undefined;
   #host: string;
   #port: number;
+  #maxSocketBufferBytes: number;
+  #hasClosedSockets = false;
   #version: string;
   #homeId: string | undefined;
   #voice: VoiceHandlerFactory | undefined;
@@ -1367,6 +1414,7 @@ export class Gateway {
   #onWebViewUnavailable: GatewayOptions["onWebViewUnavailable"];
   #staticRoot: string | undefined;
   #onError: GatewayOptions["onError"];
+  #onLog: GatewayOptions["onLog"];
   #collab: CollabRooms;
   /**
    * Guest legs into omp collab rooms. A different thing from `#collab`
@@ -1376,6 +1424,8 @@ export class Gateway {
    */
   #collabGuests: CollabGuests;
   #collabRelay = new CollabRelay();
+  #exposeCollabRelay: boolean;
+  #requestAddress: (req: Request, server: Server<any>) => string | null;
 
   /** Set by `listen`, so uptime measures serving rather than construction. */
   #startedAtMs: number | undefined;
@@ -1389,9 +1439,13 @@ export class Gateway {
   #unsubscribeSay: (() => void) | undefined;
   #unsubscribeRevoked: (() => void) | undefined;
   #unsubscribe: (() => void) | undefined;
+  #embeddedAssets?: { assets: Record<string, string>; built: boolean };
 
   constructor(opts: GatewayOptions) {
     this.#sup = opts.supervisor;
+    this.#embeddedAssets = opts.embeddedAssets;
+    this.#exposeCollabRelay = opts.exposeCollabRelay ?? false;
+    this.#requestAddress = opts.requestAddress ?? ((req, server) => server.requestIP(req)?.address ?? null);
     this.#store = opts.store;
     this.#collab = new CollabRooms(this.#store);
     this.#collabGuests = new CollabGuests({
@@ -1430,6 +1484,7 @@ export class Gateway {
     this.#events = opts.events;
     this.#host = opts.host ?? DEFAULT_HOST;
     this.#port = opts.port ?? 0;
+    this.#maxSocketBufferBytes = opts.maxSocketBufferBytes ?? DEFAULT_MAX_SOCKET_BUFFER_BYTES;
     this.#version = opts.version ?? DEFAULT_VERSION;
     this.#homeId = opts.homeId;
     this.#voice = opts.voice;
@@ -1450,6 +1505,7 @@ export class Gateway {
     // Resolved once so the traversal check below compares two absolute paths.
     this.#staticRoot = opts.staticRoot === undefined ? undefined : resolve(opts.staticRoot);
     this.#onError = opts.onError;
+    this.#onLog = opts.onLog;
 
     this.#unsubscribe = this.#events?.add({
       onUpdate: (agentId, seq, update) => {
@@ -1601,7 +1657,7 @@ export class Gateway {
     // either way, so skipping the await costs nothing the shutdown order
     // relies on.
     const stopping = this.#server?.stop(true);
-    if (!this.#collabRelay.hasClosedLegs) await stopping;
+    if (!this.#collabRelay.hasClosedLegs && !this.#hasClosedSockets) await stopping;
     this.#server = undefined;
     this.#startedAtMs = undefined;
   }
@@ -1633,7 +1689,12 @@ export class Gateway {
    * closed so the daemon can audit it, and an exception collapses that back to
    * one outcome.
    */
-  acceptTunnelSession(token: string, send: (raw: string) => void): TunnelSessionResult {
+  acceptTunnelSession(
+    token: string,
+    send: (raw: string) => void,
+    getBufferedAmount?: () => number,
+    onClose?: (code?: number, reason?: string) => void,
+  ): TunnelSessionResult {
     const verdict = this.#auth.authenticate(token);
     if (!verdict.ok) {
       switch (verdict.reason) {
@@ -1653,9 +1714,13 @@ export class Gateway {
     const ws: GatewaySocket = {
       data: this.#socketStateFor(verdict.actor),
       send,
-      close: () => {
+      close: (code?: number, reason?: string) => {
+        try {
+          onClose?.(code, reason);
+        } catch {}
         this.#close(ws);
       },
+      getBufferedAmount,
     };
     this.#open(ws);
     return {
@@ -1665,6 +1730,9 @@ export class Gateway {
         this.#message(ws, raw);
       },
       close: () => {
+        try {
+          onClose?.();
+        } catch {}
         this.#close(ws);
       },
     };
@@ -1681,6 +1749,7 @@ export class Gateway {
       deviceId: actor.deviceId,
       scopes: new Set(actor.scopes),
       attached: new Set(),
+      notifiedGoneSessions: new Set(),
       watchingSessions: false,
       sessionQuery: {},
       delivered: new Map(),
@@ -1903,6 +1972,12 @@ export class Gateway {
     const relayUpgrade = this.#collabRelay.upgradeData(url);
     if (relayUpgrade !== null) {
       if (relayUpgrade instanceof Response) return relayUpgrade;
+      if (!this.#exposeCollabRelay) {
+        const address = this.#requestAddress(req, server);
+        if (!isLoopbackPeer(address)) {
+          return new Response("collab relay is restricted to loopback peers", { status: 403 });
+        }
+      }
       if (server.upgrade(req, { data: relayUpgrade })) return undefined;
       return new Response("expected a websocket upgrade", { status: 426 });
     }
@@ -2090,6 +2165,9 @@ export class Gateway {
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
+        }
+        if (err instanceof AgentBusyError) {
+          return Response.json({ error: "agent_busy", message: err.message }, { status: 409 });
         }
         return Response.json({ error: err instanceof Error ? err.message : "prompt failed" }, { status: 404 });
       }
@@ -3316,7 +3394,9 @@ export class Gateway {
    * names a key that was embedded or it does not exist.
    */
   #serveEmbedded(pathname: string): Response | null {
-    if (!WEB_ASSETS_BUILT) return null;
+    const assetsBuilt = this.#embeddedAssets !== undefined ? this.#embeddedAssets.built : WEB_ASSETS_BUILT;
+    const assetMap = this.#embeddedAssets !== undefined ? this.#embeddedAssets.assets : WEB_ASSETS;
+    if (!assetsBuilt) return null;
 
     let key = "";
     try {
@@ -3330,14 +3410,14 @@ export class Gateway {
     if (!key.startsWith("/")) key = `/${key}`;
     if (key === "/") key = "/index.html";
 
-    const embedded = WEB_ASSETS[key];
+    const embedded = assetMap[key];
     if (embedded !== undefined) return embeddedResponse(embedded, key);
 
     // Same rule as the on-disk path: an extensionless path is a client route
     // and gets the shell, while a missing asset stays a 404 so a broken build
     // fails where it broke rather than as a parse error somewhere unrelated.
     if (extname(key) !== "") return null;
-    const shell = WEB_ASSETS["/index.html"];
+    const shell = assetMap["/index.html"];
     if (shell === undefined) return null;
     return embeddedResponse(shell, "/index.html");
   }
@@ -3442,6 +3522,7 @@ export class Gateway {
     if (!index) {
       this.#send(ws, {
         t: "error",
+        sessionId: frame.sessionId,
         code: "sessions_unavailable",
         message: "no session index is wired into this daemon",
       });
@@ -3449,40 +3530,50 @@ export class Gateway {
     }
     const takeover = frame.t === "session_takeover";
     const claimed = { cwd: frame.cwd, ...(takeover ? { pid: frame.pid } : {}) };
-    const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
-    if (claim.verdict === "refuse") {
-      this.#send(ws, { t: "error", code: claim.code, message: claim.message });
-      return;
-    }
-    if (claim.verdict === "held") {
-      this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: claim.agentId });
-      return;
-    }
     try {
-      const agent = takeover
-        ? await this.#takeOverLiveTui(frame.sessionId, actor)
-        : await this.#sup.resumeAgent(
-            {
-              name: claim.row.title !== "" ? claim.row.title : `Session ${frame.sessionId}`,
-              cwd: frame.cwd,
-              sessionId: frame.sessionId,
-            },
-            actor,
-          );
-      this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: agent.id });
-    } catch (err) {
-      // The claim is re-verified rather than trusting the throw: a refusal
-      // naming "already held" from a path that lost a race means another
-      // caller's identical request finished in between, and that outcome is
-      // the idempotent answer, not a failure.
-      const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
-      if (settled.verdict === "held") {
-        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
+      const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+      if (claim.verdict === "refuse") {
+        this.#send(ws, { t: "error", sessionId: frame.sessionId, code: claim.code, message: claim.message });
         return;
       }
+      if (claim.verdict === "held") {
+        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: claim.agentId });
+        return;
+      }
+      try {
+        const agent = takeover
+          ? await this.#takeOverLiveTui(frame.sessionId, actor)
+          : await this.#sup.resumeAgent(
+              {
+                name: claim.row.title !== "" ? claim.row.title : `Session ${frame.sessionId}`,
+                cwd: frame.cwd,
+                sessionId: frame.sessionId,
+              },
+              actor,
+            );
+        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: agent.id });
+      } catch (err) {
+        // The claim is re-verified rather than trusting the throw: a refusal
+        // naming "already held" from a path that lost a race means another
+        // caller's identical request finished in between, and that outcome is
+        // the idempotent answer, not a failure.
+        const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+        if (settled.verdict === "held") {
+          this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
+          return;
+        }
+        this.#send(ws, {
+          t: "error",
+          sessionId: frame.sessionId,
+          code: err instanceof TakeoverRefusal ? err.code : takeover ? "takeover_failed" : "resume_failed",
+          message: err instanceof Error ? err.message : "session open failed",
+        });
+      }
+    } catch (err) {
       this.#send(ws, {
         t: "error",
-        code: err instanceof TakeoverRefusal ? err.code : takeover ? "takeover_failed" : "resume_failed",
+        sessionId: frame.sessionId,
+        code: takeover ? "takeover_failed" : "resume_failed",
         message: err instanceof Error ? err.message : "session open failed",
       });
     }
@@ -3768,6 +3859,7 @@ export class Gateway {
       this.#collab.leaveAll(ws.data.collab);
       ws.data.collab = null;
     }
+    this.#collabGuests.onClientDisconnected(ws);
     this.#unregisterWebViews(ws);
     this.#cancelClones(ws);
     for (const [sessionId, pending] of this.#tuiTakeovers) {
@@ -3847,8 +3939,23 @@ export class Gateway {
       this.#send(ws, { t: "error", code: "frame_too_large", message: "ACP frame exceeds 32 MiB" });
       return;
     }
+    const parsedAgentId =
+      typeof parsed === "object" && parsed !== null && "agentId" in parsed && typeof parsed.agentId === "string"
+        ? (parsed.agentId as AgentId)
+        : undefined;
+    const parsedSessionId =
+      typeof parsed === "object" && parsed !== null && "sessionId" in parsed && typeof parsed.sessionId === "string"
+        ? (parsed.sessionId as string)
+        : undefined;
+
     if (!registeredTuiAcp && !ws.data.bucket.take()) {
-      this.#send(ws, { t: "error", code: "rate_limited", message: "too many frames" });
+      this.#send(ws, {
+        t: "error",
+        agentId: parsedAgentId,
+        sessionId: parsedSessionId,
+        code: "rate_limited",
+        message: "too many frames",
+      });
       return;
     }
 
@@ -3864,6 +3971,8 @@ export class Gateway {
       // hostile or merely malformed frame must cost one error frame, no more.
       this.#send(ws, {
         t: "error",
+        agentId: parsedAgentId,
+        sessionId: parsedSessionId,
         code:
           err instanceof CollabRoomError
             ? err.code
@@ -3954,6 +4063,7 @@ export class Gateway {
           audit("denied", { reason: "unauthorized", sessionId: frame.sessionId });
           this.#send(ws, {
             t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
             code: "unauthorized",
             message: "session prompt requires prompt scope",
           });
@@ -3972,7 +4082,12 @@ export class Gateway {
           // `nextTurn` lands here: `pi.sendUserMessage` has no such mode, and
           // refusing it is the honest answer, not downgrading it to a steer.
           audit("denied", { reason: "bad_frame" });
-          this.#send(ws, { t: "error", code: "bad_frame", message: "invalid session prompt" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "bad_frame",
+            message: "invalid session prompt",
+          });
           return;
         }
         if (!images.ok) {
@@ -3983,6 +4098,7 @@ export class Gateway {
           audit("denied", { reason: `attachment_${images.refusal}`, sessionId: frame.sessionId });
           this.#send(ws, {
             t: "error",
+            sessionId: frame.sessionId,
             code: `attachment_${images.refusal}`,
             message: PROMPT_IMAGE_REFUSAL_REASONS[images.refusal],
           });
@@ -3999,6 +4115,7 @@ export class Gateway {
           audit("denied", { reason: "tui_unreachable", sessionId: frame.sessionId, deliverAs });
           this.#send(ws, {
             t: "error",
+            sessionId: frame.sessionId,
             code: "tui_unreachable",
             message: `no connected TUI owns session ${frame.sessionId}`,
           });
@@ -4070,6 +4187,29 @@ export class Gateway {
         // and arrive out of order, and `#deliverUpdate` drops anything at or
         // below the high-water mark so nothing arrives twice either.
         ws.data.attached.add(frame.agentId);
+        this.#armSessionWatcher();
+        const attachedAgent = this.#store.getAgent(frame.agentId);
+        if (attachedAgent?.acpSessionId && !TERMINAL_AGENT_STATES.includes(attachedAgent.state) && this.#sessionIndex) {
+          const sid = attachedAgent.acpSessionId;
+          const key = `${attachedAgent.id}:${sid}`;
+          const index = this.#sessionIndex;
+          void (async () => {
+            const p1 = await index.pathFor(sid);
+            if (p1 !== undefined) return;
+            const p2 = await index.pathFor(sid);
+            if (p2 !== undefined) return;
+            if (!ws.data.attached.has(attachedAgent.id) || ws.data.revoked) return;
+            if (ws.data.notifiedGoneSessions.has(key)) return;
+            ws.data.notifiedGoneSessions.add(key);
+            this.#send(ws, {
+              t: "error",
+              code: "session_gone",
+              sessionId: sid,
+              agentId: attachedAgent.id,
+              message: `session ${sid} has been removed from disk`,
+            });
+          })();
+        }
         if (frame.sinceSeq !== undefined) {
           for (const record of this.#store.updatesSince(frame.agentId, frame.sinceSeq)) {
             this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload);
@@ -4096,6 +4236,7 @@ export class Gateway {
 
       case "detach":
         ws.data.attached.delete(frame.agentId);
+        if (!this.#hasSessionWatchers()) this.#disarmSessionWatcher();
         // Forget the high-water mark too, so a later attach may replay again.
         ws.data.delivered.delete(frame.agentId);
         // Same for approvals, so a reattach is shown a still-pending ask.
@@ -4220,7 +4361,12 @@ export class Gateway {
         // session changes, so there is no manage gate to pass and nothing to
         // audit that `sessions` does not already leave unaudited.
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "session tail requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "session tail requires read scope",
+          });
           return;
         }
         if (
@@ -4231,6 +4377,7 @@ export class Gateway {
         ) {
           this.#send(ws, {
             t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
             code: "bad_frame",
             message:
               "session tail needs a sessionId, a positive integer limit when given, and a non-negative integer cursor when given",
@@ -4241,6 +4388,7 @@ export class Gateway {
         if (!tailIndex) {
           this.#send(ws, {
             t: "error",
+            sessionId: frame.sessionId,
             code: "sessions_unavailable",
             message: "no session index is wired into this daemon",
           });
@@ -4255,7 +4403,13 @@ export class Gateway {
 
       case "session_history": {
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "session history requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            agentId: typeof frame.agentId === "string" ? frame.agentId : undefined,
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "session history requires read scope",
+          });
           return;
         }
         if (
@@ -4266,7 +4420,13 @@ export class Gateway {
           (frame.before !== undefined && (!Number.isSafeInteger(frame.before) || frame.before < 0)) ||
           (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0))
         ) {
-          this.#send(ws, { t: "error", code: "bad_frame", message: "session history frame is malformed" });
+          this.#send(ws, {
+            t: "error",
+            agentId: typeof frame.agentId === "string" ? frame.agentId : undefined,
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "bad_frame",
+            message: "session history frame is malformed",
+          });
           return;
         }
         const agent = this.#store.getAgent(frame.agentId);
@@ -4274,6 +4434,7 @@ export class Gateway {
           this.#send(ws, {
             t: "error",
             agentId: frame.agentId,
+            sessionId: frame.sessionId,
             code: "unknown_session",
             message: "agent does not own the requested session",
           });
@@ -4281,7 +4442,13 @@ export class Gateway {
         }
         const historyIndex = this.#sessionIndex;
         if (!historyIndex) {
-          this.#send(ws, { t: "error", code: "sessions_unavailable", message: "no session index is wired" });
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            sessionId: frame.sessionId,
+            code: "sessions_unavailable",
+            message: "no session index is wired",
+          });
           return;
         }
         void this.#serveSessionHistoryFrame(
@@ -4755,6 +4922,7 @@ export class Gateway {
         if (!ws.data.scopes.has(scope)) {
           this.#send(ws, {
             t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
             code: "unauthorized",
             message: `${frame.t} requires ${scopeName} scope`,
           });
@@ -4771,6 +4939,7 @@ export class Gateway {
         ) {
           this.#send(ws, {
             t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
             code: "bad_frame",
             message: `${frame.t} needs a sessionId, a non-empty cwd, and a positive pid when taking over`,
           });
@@ -4786,18 +4955,65 @@ export class Gateway {
         // registry re-resolves the device row itself, the same defense the
         // supervisor runs.
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "collab open requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "collab open requires read scope",
+          });
           return;
         }
         if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
           this.#send(ws, { t: "error", code: "bad_frame", message: "collab_open needs a sessionId" });
           return;
         }
+        const link = "link" in frame && typeof frame.link === "string" ? frame.link : undefined;
+        if ("link" in frame && frame.link !== undefined && typeof frame.link !== "string") {
+          this.#send(ws, {
+            t: "error",
+            sessionId: frame.sessionId,
+            code: "bad_frame",
+            message: "collab_open link must be a string",
+          });
+          return;
+        }
+        if (link !== undefined) {
+          const parsed = parseCollabLink(link);
+          if ("error" in parsed) {
+            this.#send(ws, {
+              t: "error",
+              sessionId: frame.sessionId,
+              code: "collab_refused",
+              reason: "invalid_link",
+              message: COLLAB_REFUSAL_REASONS.invalid_link,
+            });
+            return;
+          }
+          const relayUrlObj = new URL(parsed.wsUrl);
+          const isLoopback = LOCAL_HOSTNAMES[relayUrlObj.hostname] === true;
+          let isOwnRelay = false;
+          try {
+            const ownOrigin = new URL(this.collabRelayUrl).origin;
+            isOwnRelay = relayUrlObj.origin === ownOrigin;
+          } catch {
+            // not listening
+          }
+          if (!isLoopback && !isOwnRelay) {
+            this.#send(ws, {
+              t: "error",
+              sessionId: frame.sessionId,
+              code: "collab_refused",
+              reason: "untrusted_relay",
+              message: COLLAB_REFUSAL_REASONS.untrusted_relay,
+            });
+            return;
+          }
+        }
         // Deliberately not awaited: the join walks a bridge round trip and a
         // relay handshake, and the socket must stay responsive to `collab_leave`
         // while it runs.
         void this.#collabGuests
-          .openCollab(frame.sessionId, this.#actorOf(ws))
+          .openCollab(frame.sessionId, this.#actorOf(ws), link, ws)
           .then(outcome => this.#answerCollabOpen(ws, frame.sessionId, outcome))
           .catch((err: unknown) => {
             this.#send(ws, {
@@ -4812,7 +5028,12 @@ export class Gateway {
 
       case "collab_leave": {
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "collab leave requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "collab leave requires read scope",
+          });
           return;
         }
         if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
@@ -4822,7 +5043,7 @@ export class Gateway {
         // Success needs no ack frame: the agent row goes terminal and every
         // attached socket is told through the ordinary `agents` push, which
         // is the same shape a stopped owned agent produces.
-        const outcome = this.#collabGuests.leaveCollab(frame.sessionId, this.#actorOf(ws));
+        const outcome = this.#collabGuests.leaveCollab(frame.sessionId, this.#actorOf(ws), ws);
         if ("refused" in outcome) {
           this.#send(ws, {
             t: "error",
@@ -4993,7 +5214,7 @@ export class Gateway {
         if (!ws.data.scopes.has(SCOPE_PROMPT)) {
           this.#send(ws, {
             t: "error",
-            agentId: frame.agentId,
+            agentId: typeof frame.agentId === "string" ? frame.agentId : undefined,
             code: "unauthorized",
             message: "prompt requires prompt scope",
           });
@@ -5064,7 +5285,12 @@ export class Gateway {
             this.#send(ws, {
               t: "error",
               agentId: frame.agentId,
-              code: err instanceof UnauthorizedError ? "unauthorized" : "prompt_failed",
+              code:
+                err instanceof AgentBusyError
+                  ? "agent_busy"
+                  : err instanceof UnauthorizedError
+                    ? "unauthorized"
+                    : "prompt_failed",
               message: err instanceof Error ? err.message : "prompt failed",
             });
           });
@@ -5075,7 +5301,7 @@ export class Gateway {
         if (!ws.data.scopes.has(SCOPE_PROMPT)) {
           this.#send(ws, {
             t: "error",
-            agentId: frame.agentId,
+            agentId: typeof frame.agentId === "string" ? frame.agentId : undefined,
             code: "unauthorized",
             message: "cancel requires prompt scope",
           });
@@ -5406,7 +5632,7 @@ export class Gateway {
 
   #hasSessionWatchers(): boolean {
     for (const other of this.#sockets) {
-      if (other.data.watchingSessions && !other.data.revoked) return true;
+      if ((other.data.watchingSessions || other.data.attached.size > 0) && !other.data.revoked) return true;
     }
     return false;
   }
@@ -5459,13 +5685,55 @@ export class Gateway {
     if (!index) return;
     let watchers = 0;
     for (const ws of this.#sockets) {
-      if (!ws.data.watchingSessions) continue;
-      if (!ws.data.scopes.has(SCOPE_READ)) continue;
       if (ws.data.revoked) continue;
-      watchers += 1;
-      void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery);
+      if (ws.data.watchingSessions && ws.data.scopes.has(SCOPE_READ)) {
+        watchers += 1;
+        void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery);
+      } else if (ws.data.attached.size > 0) {
+        watchers += 1;
+      }
     }
     if (watchers === 0) this.#disarmSessionWatcher();
+    void this.#checkGoneSessions();
+  }
+
+  async #checkGoneSessions(): Promise<void> {
+    const index = this.#sessionIndex;
+    if (!index) return;
+    for (const agent of this.#sup.listAgents()) {
+      if (!agent.acpSessionId || TERMINAL_AGENT_STATES.includes(agent.state)) continue;
+      const key = `${agent.id}:${agent.acpSessionId}`;
+
+      const path1 = await index.pathFor(agent.acpSessionId);
+      if (path1 !== undefined) {
+        for (const ws of this.#sockets) {
+          ws.data.notifiedGoneSessions.delete(key);
+        }
+        continue;
+      }
+
+      // D3: Confirm absence with a fresh second lookup after the first miss before emitting
+      const path2 = await index.pathFor(agent.acpSessionId);
+      if (path2 !== undefined) {
+        for (const ws of this.#sockets) {
+          ws.data.notifiedGoneSessions.delete(key);
+        }
+        continue;
+      }
+
+      for (const ws of this.#sockets) {
+        if (!ws.data.attached.has(agent.id) || ws.data.revoked) continue;
+        if (ws.data.notifiedGoneSessions.has(key)) continue;
+        ws.data.notifiedGoneSessions.add(key);
+        this.#send(ws, {
+          t: "error",
+          code: "session_gone",
+          sessionId: agent.acpSessionId,
+          agentId: agent.id,
+          message: `session ${agent.acpSessionId} has been removed from disk`,
+        });
+      }
+    }
   }
 
   /**
@@ -5712,6 +5980,7 @@ export class Gateway {
       if (path === undefined) {
         this.#send(ws, {
           t: "error",
+          sessionId,
           code: "unknown_session",
           message: `no session ${sessionId} on this machine`,
         });
@@ -5738,6 +6007,7 @@ export class Gateway {
       // the asking socket exactly one error frame, never a dropped one.
       this.#send(ws, {
         t: "error",
+        sessionId,
         code: "session_tail_failed",
         message: err instanceof Error ? err.message : "session tail failed",
       });
@@ -5756,24 +6026,48 @@ export class Gateway {
     try {
       const path = await index.pathFor(sessionId);
       if (path === undefined) {
-        this.#send(ws, { t: "error", agentId, code: "unknown_session", message: `no session ${sessionId}` });
+        this.#send(ws, { t: "error", agentId, sessionId, code: "unknown_session", message: `no session ${sessionId}` });
         return;
       }
       const history = await readSessionHistory(path, {
         ...(before === undefined ? {} : { before }),
         ...(limit === undefined ? {} : { limit: Math.min(limit, HISTORY_MAX_TURNS) }),
       });
+
+      // Filter entries to only return turns older than this agent's own update log:
+      // entries whose `at` is before the agent's `createdAt`, or before the timestamp
+      // of its first stored update, whichever is earlier/more precise.
+      // This guarantees that history is "what happened before this agent" and replay
+      // is "what happened under it", with zero duplicate overlap.
+      const agent = this.#store.getAgent(agentId);
+      let cutoffMs = agent ? new Date(agent.createdAt).getTime() : Infinity;
+      const firstUpdate = this.#store.updatesSince(agentId, 0, 1)[0];
+      if (firstUpdate) {
+        const updateMs = new Date(firstUpdate.ts).getTime();
+        if (!Number.isNaN(updateMs)) {
+          cutoffMs = Math.min(cutoffMs, updateMs);
+        }
+      }
+
+      const entries = Number.isFinite(cutoffMs)
+        ? history.entries.filter(entry => {
+            const entryMs = new Date(entry.at).getTime();
+            return Number.isNaN(entryMs) || entryMs < cutoffMs;
+          })
+        : history.entries;
+
       this.#send(ws, {
         t: "session_history",
         agentId,
         sessionId,
-        entries: history.entries,
+        entries,
         nextBefore: history.nextBefore,
       });
     } catch (err) {
       this.#send(ws, {
         t: "error",
         agentId,
+        sessionId,
         code: "session_history_failed",
         message: err instanceof Error ? err.message : "session history failed",
       });
@@ -5879,6 +6173,26 @@ export class Gateway {
   }
 
   #send(ws: GatewaySocket, frame: ServerFrame): void {
+    const buffered = ws.getBufferedAmount?.() ?? 0;
+    if (buffered > this.#maxSocketBufferBytes) {
+      this.#store.audit({
+        action: "socket.backpressure",
+        actorDeviceId: ws.data.deviceId,
+        outcome: "error",
+        detail: { buffered, limit: this.#maxSocketBufferBytes, code: 1013, reason: "backpressure" },
+      });
+      this.#onLog?.(
+        `[gateway] closing socket for ${ws.data.deviceId} due to backpressure: ${buffered} bytes buffered (limit ${this.#maxSocketBufferBytes})`,
+      );
+      this.#hasClosedSockets = true;
+      try {
+        ws.close(1013, "backpressure");
+      } catch {
+        // Socket closed or closing
+      }
+      this.#close(ws);
+      return;
+    }
     try {
       ws.send(JSON.stringify(frame));
     } catch {
@@ -5886,4 +6200,12 @@ export class Gateway {
       // removes it from the registry; there is nothing to report to.
     }
   }
+}
+
+function isLoopbackPeer(address: string | null): boolean {
+  if (address === null) return false;
+  const trimmed = address.trim().toLowerCase();
+  if (LOCAL_HOSTNAMES[trimmed] === true) return true;
+  const ipv4 = trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
+  return ipv4.startsWith("127.");
 }

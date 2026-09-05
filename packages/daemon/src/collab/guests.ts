@@ -44,7 +44,7 @@ import {
 import { AGENT_STATE_FROM_REGISTRY, createAgentId } from "../supervisor.ts";
 import { importRoomKey } from "./guest-codec.ts";
 import type { CollabAgentSnapshot, CollabHostFrame } from "./guest-frames.ts";
-import { parseCollabLink } from "./guest-link.ts";
+import { LOCAL_HOSTNAMES, type ParsedCollabLink, parseCollabLink } from "./guest-link.ts";
 import type { CollabFrameMapping } from "./guest-mapper.ts";
 import { CollabStreamMapper } from "./guest-mapper.ts";
 import { CollabGuestSocket } from "./guest-socket.ts";
@@ -80,6 +80,7 @@ export interface CollabGuestsOptions {
   bridgeTimeoutMs?: number;
   welcomeTimeoutMs?: number;
   snapshotTimeoutMs?: number;
+  leaseTimeoutMs?: number;
   onLog?: (line: string) => void;
 }
 
@@ -107,6 +108,15 @@ interface GuestLeg {
   /** omp registry id to daemon agent id, for every sub this leg has mirrored. */
   registryAgents: Map<string, AgentId>;
   terminal: boolean;
+  clients: Set<unknown>;
+  leaseTimer: Timer | null;
+}
+
+interface InFlightOpen {
+  promise: Promise<CollabOpenOutcome>;
+  clients: Set<unknown>;
+  cancelled: boolean;
+  bridgeRequestId?: string;
 }
 
 /** A `collab_open` in flight against the bridge. */
@@ -133,7 +143,8 @@ export class CollabGuests {
   readonly #bySession = new Map<string, GuestLeg>();
   readonly #byAgent = new Map<AgentId, GuestLeg>();
   readonly #pendingOpens = new Map<string, PendingOpen>();
-
+  readonly #inFlightOpens = new Map<string, InFlightOpen>();
+  readonly #leaseTimeoutMs: number;
   constructor(opts: CollabGuestsOptions) {
     this.#store = opts.store;
     this.#authorize = opts.authorize;
@@ -145,6 +156,7 @@ export class CollabGuests {
     this.#bridgeTimeoutMs = opts.bridgeTimeoutMs ?? BRIDGE_TIMEOUT_MS;
     this.#welcomeTimeoutMs = opts.welcomeTimeoutMs ?? WELCOME_TIMEOUT_MS;
     this.#snapshotTimeoutMs = opts.snapshotTimeoutMs ?? SNAPSHOT_PROGRESS_TIMEOUT_MS;
+    this.#leaseTimeoutMs = opts.leaseTimeoutMs ?? 60_000;
     this.#log = opts.onLog ?? (() => {});
   }
 
@@ -164,11 +176,32 @@ export class CollabGuests {
    * daemon already co-drives answers with the same agent, so a reconnected
    * phone recovers its row without a second guest leg in the room.
    */
-  async openCollab(sessionId: string, actor: Actor): Promise<CollabOpenOutcome> {
+  async openCollab(
+    sessionId: string,
+    actor: Actor,
+    link?: string | ParsedCollabLink,
+    client?: unknown,
+  ): Promise<CollabOpenOutcome> {
     const existing = this.#bySession.get(sessionId);
     if (existing !== undefined) {
+      if (existing.leaseTimer !== null) {
+        clearTimeout(existing.leaseTimer);
+        existing.leaseTimer = null;
+      }
+      if (client !== undefined) {
+        existing.clients.add(client);
+      }
       return { opened: true, agentId: existing.agentId, readOnly: existing.readOnly };
     }
+
+    const inFlight = this.#inFlightOpens.get(sessionId);
+    if (inFlight !== undefined) {
+      if (client !== undefined) {
+        inFlight.clients.add(client);
+      }
+      return await inFlight.promise;
+    }
+
     // Read is the floor: watching is what opening buys, and steering is
     // gated again per write. Re-resolved from the device row rather than
     // trusting the caller's claim, the same rule the supervisor enforces.
@@ -178,46 +211,167 @@ export class CollabGuests {
       this.#audit(actor, sessionId, "denied", { reason: "unauthorized" });
       throw err;
     }
-    const relayUrl = this.#relayUrl();
-    if (relayUrl === null) {
-      this.#audit(actor, sessionId, "denied", { reason: "no_relay" });
-      return { unavailable: "this daemon's collab relay is not running" };
-    }
-    const answer = await this.#askBridgeForLink(sessionId, relayUrl);
-    if (answer === "not_hosted" || answer === "unknown_session") {
-      this.#audit(actor, sessionId, "denied", { reason: answer });
-      return { refused: answer };
-    }
-    if ("bridge_error" in answer) {
-      this.#audit(actor, sessionId, "denied", { reason: `bridge_${answer.bridge_error.reason}` });
-      if (answer.bridge_error.reason === "refused") {
-        // Occupied: the session is already in a room this daemon did not
-        // open, and a phone cannot fix that from here.
-        return { refused: "occupied" };
+
+    const inFlightRecord: InFlightOpen = {
+      promise: Promise.resolve().then(async () => {
+        try {
+          return await this.#performOpen(sessionId, actor, link, inFlightRecord);
+        } finally {
+          this.#inFlightOpens.delete(sessionId);
+        }
+      }),
+      clients: new Set(client !== undefined ? [client] : []),
+      cancelled: false,
+    };
+    this.#inFlightOpens.set(sessionId, inFlightRecord);
+    return await inFlightRecord.promise;
+  }
+
+  async #performOpen(
+    sessionId: string,
+    actor: Actor,
+    link: string | ParsedCollabLink | undefined,
+    inFlightRecord: InFlightOpen,
+  ): Promise<CollabOpenOutcome> {
+    let parsed: ParsedCollabLink;
+    let writable: boolean;
+    let bridgeRequestId = "";
+
+    if (link !== undefined) {
+      if (typeof link === "string") {
+        const res = parseCollabLink(link);
+        if ("error" in res) {
+          this.#audit(actor, sessionId, "denied", { reason: "invalid_link" });
+          return { refused: "invalid_link" };
+        }
+        parsed = res;
+      } else {
+        parsed = link;
       }
-      return { unavailable: answer.bridge_error.detail ?? "the terminal could not start sharing" };
+      const relayUrl = new URL(parsed.wsUrl);
+      const isLoopback = LOCAL_HOSTNAMES[relayUrl.hostname] === true;
+      const myRelay = this.#relayUrl();
+      let isOwnRelay = false;
+      if (myRelay !== null) {
+        try {
+          isOwnRelay = relayUrl.origin === new URL(myRelay).origin;
+        } catch {
+          // invalid relay url
+        }
+      }
+      if (!isLoopback && !isOwnRelay) {
+        this.#audit(actor, sessionId, "denied", { reason: "untrusted_relay" });
+        return { refused: "untrusted_relay" };
+      }
+      writable = parsed.writeToken !== undefined;
+    } else {
+      const relayUrl = this.#relayUrl();
+      if (relayUrl === null) {
+        this.#audit(actor, sessionId, "denied", { reason: "no_relay" });
+        return { unavailable: "this daemon's collab relay is not running" };
+      }
+      const answer = await this.#askBridgeForLink(sessionId, relayUrl);
+      if (answer === "not_hosted" || answer === "unknown_session") {
+        this.#audit(actor, sessionId, "denied", { reason: answer });
+        return { refused: answer };
+      }
+      if ("bridge_error" in answer) {
+        this.#audit(actor, sessionId, "denied", { reason: `bridge_${answer.bridge_error.reason}` });
+        if (answer.bridge_error.reason === "refused") {
+          // Occupied: the session is already in a room this daemon did not
+          // open, and a phone cannot fix that from here.
+          return { refused: "occupied" };
+        }
+        return { unavailable: answer.bridge_error.detail ?? "the terminal could not start sharing" };
+      }
+      inFlightRecord.bridgeRequestId = answer.requestId;
+      if (inFlightRecord.cancelled || inFlightRecord.clients.size === 0) {
+        this.#sendToHostingTui(sessionId, { t: "tui_collab_close", sessionId, requestId: answer.requestId });
+        return { unavailable: "client disconnected before join completed" };
+      }
+      const res = parseCollabLink(answer.link);
+      if ("error" in res) {
+        this.#log(`collab guest ${sessionId}: bridge returned an unparseable link`);
+        return { unavailable: "the terminal returned an unusable sharing link" };
+      }
+      parsed = res;
+      writable = answer.writable && parsed.writeToken !== undefined;
+      bridgeRequestId = answer.requestId;
     }
-    const parsed = parseCollabLink(answer.link);
-    if ("error" in parsed) {
-      this.#log(`collab guest ${sessionId}: bridge returned an unparseable link`);
-      return { unavailable: "the terminal returned an unusable sharing link" };
+
+    if (inFlightRecord.cancelled || inFlightRecord.clients.size === 0) {
+      if (bridgeRequestId) {
+        this.#sendToHostingTui(sessionId, { t: "tui_collab_close", sessionId, requestId: bridgeRequestId });
+      }
+      return { unavailable: "client disconnected before join completed" };
     }
-    const writable = answer.writable && parsed.writeToken !== undefined;
-    return await this.#join(sessionId, parsed, writable, answer.requestId, actor);
+
+    return await this.#join(sessionId, parsed, writable, bridgeRequestId, actor, inFlightRecord.clients);
   }
 
   /** Stop co-driving `sessionId`: leave the room, settle the agent row, release the room if this daemon caused it. */
-  leaveCollab(sessionId: string, actor: Actor): CollabLeaveOutcome {
+  leaveCollab(sessionId: string, actor: Actor, client?: unknown): CollabLeaveOutcome {
     this.#authorize(actor, SCOPE_READ, "collab.leave");
+    const inFlight = this.#inFlightOpens.get(sessionId);
+    if (inFlight !== undefined && client !== undefined) {
+      inFlight.clients.delete(client);
+      if (inFlight.clients.size === 0) {
+        inFlight.cancelled = true;
+      }
+    }
     const leg = this.#bySession.get(sessionId);
     if (leg === undefined) {
       this.#audit(actor, sessionId, "denied", { reason: "not_joined" });
       return { refused: "not_joined" };
     }
+    if (client !== undefined) {
+      leg.clients.delete(client);
+      if (leg.clients.size > 0) {
+        this.#audit(actor, sessionId, "ok", {
+          agentId: leg.agentId,
+          reason: "left",
+          remainingClients: leg.clients.size,
+        });
+        return { left: true, agentId: leg.agentId };
+      }
+    }
+    if (leg.leaseTimer !== null) {
+      clearTimeout(leg.leaseTimer);
+      leg.leaseTimer = null;
+    }
     this.#endLeg(leg, "stopped", "left");
-    this.#sendToHostingTui(sessionId, { t: "tui_collab_close", sessionId, requestId: leg.bridgeRequestId });
+    if (leg.bridgeRequestId) {
+      this.#sendToHostingTui(sessionId, { t: "tui_collab_close", sessionId, requestId: leg.bridgeRequestId });
+    }
     this.#audit(actor, sessionId, "ok", { agentId: leg.agentId, reason: "left" });
     return { left: true, agentId: leg.agentId };
+  }
+
+  /** A client socket disconnected: drop its interest from any co-driven session. */
+  onClientDisconnected(client: unknown): void {
+    for (const inFlight of this.#inFlightOpens.values()) {
+      inFlight.clients.delete(client);
+      if (inFlight.clients.size === 0) {
+        inFlight.cancelled = true;
+      }
+    }
+    for (const leg of [...this.#bySession.values()]) {
+      if (leg.clients.delete(client) && leg.clients.size === 0) {
+        if (leg.leaseTimer === null) {
+          leg.leaseTimer = setTimeout(() => {
+            leg.leaseTimer = null;
+            this.#endLeg(leg, "stopped", "lease expired");
+            if (leg.bridgeRequestId) {
+              this.#sendToHostingTui(leg.sessionId, {
+                t: "tui_collab_close",
+                sessionId: leg.sessionId,
+                requestId: leg.bridgeRequestId,
+              });
+            }
+          }, this.#leaseTimeoutMs);
+        }
+      }
+    }
   }
 
   /**
@@ -302,7 +456,14 @@ export class CollabGuests {
 
   /** Daemon shutdown: every leg leaves and every row settles. */
   close(): void {
-    for (const leg of this.#bySession.values()) this.#endLeg(leg, "stopped", "daemon stopping");
+    for (const inFlight of this.#inFlightOpens.values()) {
+      inFlight.cancelled = true;
+    }
+    this.#inFlightOpens.clear();
+    for (const leg of this.#bySession.values()) {
+      if (leg.leaseTimer !== null) clearTimeout(leg.leaseTimer);
+      this.#endLeg(leg, "stopped", "daemon stopping");
+    }
   }
 
   // -- join ------------------------------------------------------------------
@@ -338,10 +499,11 @@ export class CollabGuests {
 
   async #join(
     sessionId: string,
-    parsed: { wsUrl: string; roomId: string; key: Uint8Array; writeToken?: Uint8Array },
+    parsed: ParsedCollabLink,
     writable: boolean,
     bridgeRequestId: string,
     actor: Actor,
+    client?: unknown,
   ): Promise<CollabOpenOutcome> {
     const agentId = createAgentId();
     const mapper = new CollabStreamMapper({ ownName: this.#displayName });
@@ -363,6 +525,8 @@ export class CollabGuests {
       bridgeRequestId,
       registryAgents: new Map(),
       terminal: false,
+      clients: client instanceof Set ? new Set(client) : new Set(client !== undefined ? [client] : []),
+      leaseTimer: null,
     };
 
     let welcomed = false;
@@ -407,9 +571,11 @@ export class CollabGuests {
       if (mapping === null || settled) return;
       if (mapping.header !== undefined) {
         welcomed = true;
-        // The host's verdict outranks the link's strength: a host that
-        // marks this peer read-only is the authority on what it will
-        // accept, whatever token the link carried.
+        // G4: bind the link's welcome session id to the requested sessionId
+        if (mapping.header.id && mapping.header.id !== sessionId) {
+          fail("session_mismatch");
+          return;
+        }
         if (mapping.readOnly === true) leg.readOnly = true;
       }
       if (welcomed && !snapshotDone) {
@@ -443,6 +609,9 @@ export class CollabGuests {
     if (raced !== "joined") {
       this.#endLeg(leg, "failed", raced);
       this.#audit(actor, sessionId, "denied", { reason: "join_failed", detail: raced });
+      if (raced === "session_mismatch") {
+        return { refused: "session_mismatch" };
+      }
       return { unavailable: `could not co-drive session ${sessionId}: ${raced}` };
     }
     return { opened: true, agentId, readOnly: leg.readOnly };
@@ -588,6 +757,10 @@ export class CollabGuests {
   /** Terminal close of a leg: leave the room, settle the row, and drop the key by dropping every reference to it. */
   #endLeg(leg: GuestLeg, state: AgentState, reason: string): void {
     if (leg.terminal) return;
+    if (leg.leaseTimer !== null) {
+      clearTimeout(leg.leaseTimer);
+      leg.leaseTimer = null;
+    }
     leg.terminal = true;
     this.#bySession.delete(leg.sessionId);
     this.#byAgent.delete(leg.agentId);

@@ -15,6 +15,7 @@ import {
   appendPrompt,
   EMPTY_SESSION,
   endTurn,
+  mergeSessionHistory,
   reduce,
   reduceAll,
   resolveApproval,
@@ -136,6 +137,20 @@ describe("locally originated state", () => {
     const state = appendPrompt(EMPTY_SESSION, "  run the build  ");
     expect(state.entries.length).toBe(1);
     expect(state.entries[0]).toMatchObject({ kind: "user", text: "run the build" });
+  });
+
+  test("defect 5: echo then session_history containing the same prompt yields exactly one user entry", () => {
+    const echoed = appendPrompt(EMPTY_SESSION, "hello world");
+    expect(echoed.entries.length).toBe(1);
+    expect(echoed.entries[0]).toMatchObject({ kind: "user", text: "hello world" });
+
+    // session_history arrives containing the same prompt
+    const merged = mergeSessionHistory(echoed, [
+      { kind: "user", id: "msg_user_1", text: "hello world", at: "2026-09-05T00:00:00.000Z" },
+    ]);
+    const userEntries = merged.entries.filter(e => e.kind === "user");
+    expect(userEntries).toHaveLength(1);
+    expect(userEntries[0]?.id).toBe("msg_user_1");
   });
 
   test("an empty prompt is not an entry", () => {

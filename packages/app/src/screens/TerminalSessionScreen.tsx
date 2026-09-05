@@ -62,7 +62,7 @@ import { Glyph } from "../design/icons.tsx";
 import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
-import { ground, radius, signal, space, stroke } from "../design/tokens.ts";
+import { ground, ink, radius, signal, space, stroke } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
@@ -95,6 +95,7 @@ export interface TerminalSessionScreenProps {
    */
   onLoadEarlier: () => void;
   onSubmit: (text: string, images?: PromptImage[]) => void;
+  onRetry?: () => void;
 }
 
 /**
@@ -405,13 +406,14 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         <SessionLoadFailed
           message={load.error ?? "The daemon refused this session."}
           title={props.title || "Untitled session"}
+          onRetry={props.onRetry ?? props.onLoadEarlier}
         />
       ) : rows.length === 0 ? (
-        // No turns yet, and a cursor still naming older file: a session whose
-        // recent screenfuls are pure tool traffic opens with nothing to show
-        // and everything still to read, so the control has to be reachable
-        // without a log to head.
-        earlier === null ? null : (
+        earlier === null ? (
+          <View style={styles.earlierAlone}>
+            <Label color={ink.muted}>Nothing on this strip yet.</Label>
+          </View>
+        ) : (
           <View style={styles.earlierAlone}>{earlier}</View>
         )
       ) : (

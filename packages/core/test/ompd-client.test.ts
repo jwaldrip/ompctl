@@ -1616,7 +1616,7 @@ describe("session tail surface", () => {
     ]);
   });
 
-  test("a reconnect does not re-issue the request: a tail belongs to a screen, not to the socket", () => {
+  test("defect 9: hello after a drop emits session_tail for the selected terminal session", () => {
     const h = harness();
     h.client.start();
     const first = bringUp(h);
@@ -1626,11 +1626,8 @@ describe("session tail surface", () => {
     h.clock.runNext();
     const second = bringUp(h);
 
-    // The whole sent log, not just this type: a replay implemented as
-    // remembered state would show up here as any frame after the hello this
-    // socket never asked for.
-    expect(second.sent).toEqual([]);
-    expect(second.framesOfType("session_tail")).toEqual([]);
+    // On hello after drop, the client re-requests the tail for the selected terminal session
+    expect(second.framesOfType("session_tail")).toEqual([{ t: "session_tail", sessionId: SESSION }]);
   });
 
   test("losing a tail request to a closed socket raises no error, unlike a prompt", () => {
@@ -1650,5 +1647,82 @@ describe("session tail surface", () => {
 
     h.client.prompt(AGENT, "hello");
     expect(errors.length).toBe(1);
+  });
+
+  test("close code 1013 (backpressure) is transient, reconnects with backoff and re-attaches with sinceSeq", async () => {
+    const h = harness({ verdict: "rejected" });
+    h.client.start();
+
+    // 1. If 1013 occurs before hello, it must not probe or suspect credentials
+    const firstSocket = h.latest();
+    firstSocket.close(1013, "backpressure");
+    expect(h.probes()).toBe(0);
+    expect(h.unauthorized).toEqual([]);
+    expect(h.statuses.at(-1)?.state).toBe("reconnecting");
+
+    // 2. Advance clock to reconnect
+    h.clock.runNext();
+    const secondSocket = bringUp(h);
+    expect(secondSocket).not.toBe(firstSocket);
+
+    // Attach agent and stream updates
+    h.client.attach(AGENT);
+    secondSocket.deliver({ t: "update", agentId: AGENT, seq: 1, update: "u1" });
+    secondSocket.deliver({ t: "update", agentId: AGENT, seq: 2, update: "u2" });
+    expect(h.client.watermark(AGENT)).toBe(2);
+
+    // 3. Mid-stream 1013 closes socket
+    secondSocket.close(1013, "backpressure");
+    expect(h.statuses.at(-1)?.state).toBe("reconnecting");
+    expect(h.statuses.at(-1)?.reason).toBe("backpressure");
+
+    // 4. Reconnect with hello, verify attach replays watermark (sinceSeq: 2)
+    h.clock.runNext();
+    const thirdSocket = bringUp(h);
+    const attaches = thirdSocket.framesOfType("attach");
+    expect(attaches).toEqual([{ t: "attach", agentId: AGENT, sinceSeq: 2 }]);
+  });
+
+  test("D5: repeated 1013 closes grow backoff delay even across hello resets until durable progress", async () => {
+    const h = harness({
+      backoff: { baseMs: 500, maxMs: 30_000, factor: 2, jitter: 0 },
+    });
+    h.client.start();
+
+    // 1. First connection gets hello then 1013 backpressure
+    const s1 = bringUp(h);
+    s1.close(1013, "backpressure");
+
+    const delay1 = h.clock.pendingDelays().at(-1);
+    expect(delay1).toBe(500);
+
+    // 2. Second connection connects, gets hello, but is immediately 1013 backpressured again
+    h.clock.runNext();
+    const s2 = bringUp(h);
+    s2.close(1013, "backpressure");
+
+    // Pre-fix: hello reset attempt to 0, so delay2 was 500ms again!
+    // Post-fix: 1013 streak preserves exponential backoff, so delay2 is 1000ms!
+    const delay2 = h.clock.pendingDelays().at(-1);
+    expect(delay2).toBe(1000);
+
+    // 3. Third connection gets hello then 1013
+    h.clock.runNext();
+    const s3 = bringUp(h);
+    s3.close(1013, "backpressure");
+
+    const delay3 = h.clock.pendingDelays().at(-1);
+    expect(delay3).toBe(2000);
+
+    // 4. Fourth connection receives an update that advances watermark (durable progress)
+    h.clock.runNext();
+    const s4 = bringUp(h);
+    h.client.attach(AGENT);
+    s4.deliver({ t: "update", agentId: AGENT, seq: 1, update: "progress" });
+
+    // After durable progress, a subsequent 1013 drops back to base delay
+    s4.close(1013, "backpressure");
+    const delay4 = h.clock.pendingDelays().at(-1);
+    expect(delay4).toBe(500);
   });
 });

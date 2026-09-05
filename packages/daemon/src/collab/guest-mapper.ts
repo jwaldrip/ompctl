@@ -224,10 +224,13 @@ export class CollabStreamMapper {
   readonly #announcedTools = new Set<string>();
   #stream: StreamState | null = null;
   #messageSeq = 0;
-  #lastLiveUserText: string | null = null;
   #usedTokens = 0;
   #costTotal = 0;
-
+  #inProgressEntryId: string | null = null;
+  #inProgressStreamedText: string | null = null;
+  #inProgressStreamedThinking: string | null = null;
+  #inProgressMessageId: string | null = null;
+  #inProgressMessageFinished = false;
   constructor(opts: CollabStreamMapperOptions) {
     this.#ownName = opts.ownName;
   }
@@ -326,14 +329,89 @@ export class CollabStreamMapper {
       const message = (entry as { message?: unknown }).message as WireMessage | undefined;
       if (message == null) return;
       if (opts.backfill) {
+        if (message.role === "assistant") {
+          const fullText = this.#flattenText(message.content);
+          const fullThinking = this.#flattenThinking(message.content);
+          const textMatches =
+            this.#inProgressStreamedText !== null &&
+            this.#inProgressStreamedText.length > 0 &&
+            (fullText.startsWith(this.#inProgressStreamedText) || this.#inProgressStreamedText.startsWith(fullText));
+          const thinkingMatches =
+            this.#inProgressStreamedThinking !== null &&
+            this.#inProgressStreamedThinking.length > 0 &&
+            (fullThinking.startsWith(this.#inProgressStreamedThinking) ||
+              this.#inProgressStreamedThinking.startsWith(fullThinking));
+          const matchesInProgress =
+            (this.#inProgressEntryId !== null && id === this.#inProgressEntryId) || textMatches || thinkingMatches;
+
+          if (matchesInProgress) {
+            const messageId = this.#inProgressMessageId ?? this.#inProgressEntryId ?? id;
+            let remainingTextToSkip = this.#inProgressStreamedText?.length ?? 0;
+            let remainingThinkingToSkip = this.#inProgressStreamedThinking?.length ?? 0;
+
+            for (const block of message.content ?? []) {
+              if (block.type === "text") {
+                const text = block.text;
+                if (remainingTextToSkip >= text.length) {
+                  remainingTextToSkip -= text.length;
+                } else {
+                  const unstreamed = block.text.slice(remainingTextToSkip);
+                  remainingTextToSkip = 0;
+                  if (unstreamed.length > 0) {
+                    updates.push({
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: unstreamed },
+                      messageId,
+                    });
+                  }
+                }
+              } else if (block.type === "thinking") {
+                const thinking = block.thinking;
+                if (remainingThinkingToSkip >= thinking.length) {
+                  remainingThinkingToSkip -= thinking.length;
+                } else {
+                  const unstreamed = block.thinking.slice(remainingThinkingToSkip);
+                  remainingThinkingToSkip = 0;
+                  if (unstreamed.length > 0) {
+                    updates.push({
+                      sessionUpdate: "agent_thought_chunk",
+                      content: { type: "text", text: unstreamed },
+                      messageId,
+                    });
+                  }
+                }
+              } else if (block.type === "toolCall") {
+                if (!this.#announcedTools.has(block.id)) {
+                  this.#announceTool(updates, block.id, block.name, block.arguments, "pending", messageId);
+                }
+              }
+            }
+
+            this.#accumulateUsage(message);
+            this.#stream = null;
+            this.#inProgressEntryId = null;
+            this.#inProgressStreamedText = null;
+            this.#inProgressStreamedThinking = null;
+            this.#inProgressMessageId = null;
+            this.#inProgressMessageFinished = false;
+            return;
+          }
+        }
         this.#mapMessageEntry(message, updates, id);
       } else if (message.role === "user") {
-        // Live user entries have no event counterpart; without this the
-        // operator's own terminal prompts would never reach the phone.
-        this.#pushUserChunk(updates, this.#flattenText(message.content), id);
+        const text = this.#flattenText(message.content);
+        this.#pushUserChunk(updates, text, id);
       }
       // Live assistant and toolResult entries already streamed as events;
       // rendering them again would duplicate the transcript.
+      if (!opts.backfill && message.role === "assistant") {
+        this.#inProgressEntryId = null;
+        this.#inProgressStreamedText = null;
+        this.#inProgressStreamedThinking = null;
+        this.#inProgressMessageId = null;
+        this.#inProgressMessageFinished = false;
+        this.#stream = null;
+      }
       return;
     }
     const custom = entry as {
@@ -347,12 +425,9 @@ export class CollabStreamMapper {
       if (custom.display !== true) return;
       if (custom.customType === COLLAB_PROMPT_MESSAGE_TYPE) {
         const from = (custom.details as { from?: string } | undefined)?.from;
-        // This leg's own prompt: the asking phone echoed it locally already,
-        // the same rule an owned agent follows. Rendered for every other
-        // participant, with the sender named.
-        if (from === this.#ownName) return;
         const text = this.#flattenText(custom.content);
-        this.#pushUserChunk(updates, from === undefined ? text : `[${from}] ${text}`, id);
+        const prefix = from === undefined || from === this.#ownName ? "" : `[${from}] `;
+        this.#pushUserChunk(updates, `${prefix}${text}`, id);
         return;
       }
       this.#pushUserChunk(updates, this.#flattenText(custom.content), id);
@@ -395,20 +470,66 @@ export class CollabStreamMapper {
         const message = event.message as WireMessage | undefined;
         if (message == null) return;
         if (message.role === "assistant") {
-          // `message_start` announces a NEW message: drop the in-flight
-          // stream so the next chunks open their own row instead of reading
-          // as growth of the message that just ended.
-          if (event.type === "message_start") this.#stream = null;
+          const eventMsgId =
+            (event as { id?: string; messageId?: string; entryId?: string }).id ??
+            (event as { id?: string; messageId?: string; entryId?: string }).messageId ??
+            (event as { id?: string; messageId?: string; entryId?: string }).entryId ??
+            (message as { id?: string }).id ??
+            null;
+
+          if (this.#inProgressMessageFinished) {
+            this.#stream = null;
+            this.#inProgressStreamedText = null;
+            this.#inProgressMessageId = null;
+            this.#inProgressEntryId = eventMsgId;
+            this.#inProgressMessageFinished = false;
+          }
+
+          const currentText = this.#flattenText(message.content);
+          const hasActiveInFlight = this.#stream !== null;
+
+          let isSameMessage = false;
+          if (hasActiveInFlight) {
+            if (eventMsgId !== null && this.#inProgressEntryId !== null) {
+              isSameMessage = eventMsgId === this.#inProgressEntryId;
+            } else if (this.#inProgressStreamedText !== null && this.#inProgressStreamedText.length > 0) {
+              isSameMessage =
+                currentText.length === 0 ||
+                currentText.startsWith(this.#inProgressStreamedText) ||
+                this.#inProgressStreamedText.startsWith(currentText);
+            } else {
+              isSameMessage = true;
+            }
+          }
+
+          if (event.type === "message_start") {
+            if (!isSameMessage) {
+              this.#stream = null;
+              this.#inProgressStreamedText = null;
+              this.#inProgressStreamedThinking = null;
+              this.#inProgressMessageId = null;
+              this.#inProgressEntryId = eventMsgId;
+              this.#inProgressMessageFinished = false;
+            } else if (eventMsgId !== null && this.#inProgressEntryId === null) {
+            }
+          }
           this.#diffAssistant(message, updates);
-          if (event.type === "message_end") this.#accumulateUsage(message);
+          if (event.type === "message_end") {
+            this.#accumulateUsage(message);
+            this.#inProgressMessageFinished = true;
+          }
           return;
         }
-        // Non-assistant messages normally arrive as entries; a host that
-        // streams one live gets it whole, once per distinct text.
-        const text = this.#flattenText(message.content);
-        if (text.length === 0 || text === this.#lastLiveUserText) return;
-        this.#lastLiveUserText = text;
-        this.#pushUserChunk(updates, text, `collab-u${this.#messageSeq++}`);
+        if (message.role === "toolResult") {
+          updates.push({
+            sessionUpdate: "tool_call_update",
+            toolCallId: message.toolCallId,
+            status: message.isError ? "failed" : "completed",
+            rawOutput: { content: message.content ?? [] },
+          });
+          return;
+        }
+        if (message.role === "user") return;
         return;
       }
       case "tool_execution_start":
@@ -468,10 +589,14 @@ export class CollabStreamMapper {
     const stream = this.#stream;
     if (stream === null || content.length < stream.blocks || !this.#compatibleTip(content, stream)) {
       this.#stream = { blocks: 0, last: null };
-      this.#messageSeq++;
+      if (this.#inProgressMessageId === null) {
+        this.#messageSeq++;
+        this.#inProgressMessageId = this.#inProgressEntryId ?? `collab-m${this.#messageSeq}`;
+      }
     }
     const live = this.#stream!;
-    const messageId = `collab-m${this.#messageSeq}`;
+    const messageId = this.#inProgressMessageId ?? this.#inProgressEntryId ?? `collab-m${this.#messageSeq}`;
+    this.#inProgressMessageId = messageId;
     // The walk restarts at the last walked block, not after it: that block
     // may still be growing, and re-walking it is idempotent (nothing is
     // emitted when its text has not grown).
@@ -480,21 +605,25 @@ export class CollabStreamMapper {
       if (block.type === "text") {
         const base = live.last !== null && live.last.kind === "text" ? live.last.emitted : 0;
         if (block.text.length > base) {
+          const delta = block.text.slice(base);
           updates.push({
             sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: block.text.slice(base) },
+            content: { type: "text", text: delta },
             messageId,
           });
+          this.#inProgressStreamedText = (this.#inProgressStreamedText ?? "") + delta;
         }
         live.last = { kind: "text", emitted: block.text.length };
       } else if (block.type === "thinking") {
         const base = live.last !== null && live.last.kind === "thinking" ? live.last.emitted : 0;
         if (block.thinking.length > base) {
+          const delta = block.thinking.slice(base);
           updates.push({
             sessionUpdate: "agent_thought_chunk",
-            content: { type: "text", text: block.thinking.slice(base) },
+            content: { type: "text", text: delta },
             messageId,
           });
+          this.#inProgressStreamedThinking = (this.#inProgressStreamedThinking ?? "") + delta;
         }
         live.last = { kind: "thinking", emitted: block.thinking.length };
       } else if (block.type === "toolCall") {
@@ -594,6 +723,18 @@ export class CollabStreamMapper {
       }
       // Image blocks carry base64 the phone transcript does not inline; the
       // prompt's local echo already names image counts.
+    }
+    return joined;
+  }
+
+  #flattenThinking(content: unknown): string {
+    if (!Array.isArray(content)) return "";
+    let joined = "";
+    for (const block of content) {
+      if (block !== null && typeof block === "object" && (block as { type?: unknown }).type === "thinking") {
+        const text = (block as { thinking?: unknown }).thinking;
+        if (typeof text === "string") joined += text;
+      }
     }
     return joined;
   }

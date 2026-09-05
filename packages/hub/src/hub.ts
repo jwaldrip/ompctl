@@ -141,6 +141,8 @@ export class Hub {
 
   #server: Server<LegState> | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
+  /** Set at the start of `stop()`; a handler failing after this is teardown noise. */
+  #stopping = false;
 
   /** Daemon legs this instance holds, by daemon id. */
   readonly #daemons = new Map<string, ServerWebSocket<LegState>>();
@@ -182,11 +184,11 @@ export class Hub {
       websocket: {
         maxPayloadLength: MAX_FRAME_BYTES,
         open: ws => this.#open(ws),
-        message: (ws, message) => void this.#message(ws, message),
-        close: ws => void this.#close(ws),
+        message: (ws, message) => this.#detached(this.#message(ws, message)),
+        close: ws => this.#detached(this.#close(ws)),
       },
     });
-    this.#timer ??= setInterval(() => void this.#tick(), ACK_INTERVAL_MS);
+    this.#timer ??= setInterval(() => this.#detached(this.#tick()), ACK_INTERVAL_MS);
     // Bun reports no port for a unix-socket server. This one always binds TCP,
     // so an absent port means the listen did not do what was asked, and the
     // same check guards `Gateway#listen` for the same reason.
@@ -196,12 +198,34 @@ export class Hub {
   }
 
   async stop(): Promise<void> {
+    this.#stopping = true;
     clearInterval(this.#timer);
     this.#timer = undefined;
     for (const daemonId of this.#daemons.keys()) await this.#backplane.releaseDaemon(daemonId);
     this.#server?.stop(true);
     this.#server = undefined;
     await this.#backplane.close();
+  }
+
+  /**
+   * Run a socket or envelope handler without letting its failure become an
+   * unhandled rejection.
+   *
+   * Bun.serve calls these handlers synchronously and discards what they
+   * return, so an `async` handler's rejection has no owner. The one that
+   * actually happened: a daemon leg closing during teardown issues its lease
+   * release and "close" envelopes through the backplane, `stop()` then closes
+   * the redis clients, and every command still in flight rejects with
+   * `Connection closed` on a promise nothing awaits. Bun's test runner
+   * reported that as an error between tests about one run in three while all
+   * 35 tests passed. Once `stop()` has begun those rejections are the expected
+   * shape of teardown; before it they are worth reading.
+   */
+  #detached(work: Promise<void>): void {
+    work.catch(cause => {
+      if (this.#stopping) return;
+      console.error("hub handler failed:", cause);
+    });
   }
 
   // -- http ------------------------------------------------------------------
@@ -696,7 +720,7 @@ export class Hub {
   // -- cross-instance --------------------------------------------------------
 
   #onEnvelope(envelope: RelayEnvelope): void {
-    void this.#handleEnvelope(envelope);
+    this.#detached(this.#handleEnvelope(envelope));
   }
 
   async #handleEnvelope(envelope: RelayEnvelope): Promise<void> {

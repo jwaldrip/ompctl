@@ -16,7 +16,7 @@
 
 import type { JSX } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Linking, StyleSheet } from "react-native";
+import { ActivityIndicator, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Console } from "./console/Console.tsx";
 import { OmpThemeProvider } from "./design/OmpTheme.tsx";
@@ -25,18 +25,14 @@ import { ink } from "./design/tokens.ts";
 import { PairNavigator } from "./nav/PairNavigator.tsx";
 import type { Connection, ConnectionList, SavedConnection } from "./platform/connection.ts";
 import { clearConnection, loadConnections, saveConnection, setActiveConnection } from "./platform/connection.ts";
-import { type DeepLinkSource, listenForDeepLinks } from "./platform/deeplink.ts";
+import { listenForDeepLinks } from "./platform/deeplink.ts";
+import { nativeDeepLinks } from "./platform/deeplink-source";
 import { CollabSessionScreen } from "./screens/CollabSessionScreen.tsx";
 
 type Boot =
   | { phase: "loading" }
   | { phase: "pair"; notice?: string; connections?: ConnectionList }
   | { phase: "console"; connections: ConnectionList };
-
-const nativeDeepLinks: DeepLinkSource = {
-  getInitialURL: () => Linking.getInitialURL(),
-  addEventListener: (event, listener) => Linking.addEventListener(event, listener),
-};
 
 export function App(): JSX.Element {
   const [boot, setBoot] = useState<Boot>({ phase: "loading" });

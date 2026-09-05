@@ -302,6 +302,8 @@ export interface OmpdConfig {
    * can happen, so it has to be chosen rather than discovered.
    */
   containerModelBrokerPort: number;
+  /** Whether the collab relay at /r/<roomId> accepts non-loopback connections. */
+  exposeCollabRelay: boolean;
 }
 
 export const DEFAULT_CONFIG: OmpdConfig = {
@@ -323,6 +325,7 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   containerModelAccess: true,
   containerModel: "",
   containerModelBrokerPort: 7788,
+  exposeCollabRelay: false,
 };
 
 export interface OmpdOptions {
@@ -332,7 +335,7 @@ export interface OmpdOptions {
   overrides?: Partial<OmpdConfig>;
   /**
    * Built web client served from `/`. Defaults to the workspace's
-   * `packages/web/dist` when it has been built, and to API-only when it has not.
+   * `packages/app/dist` when it has been built, and to API-only when it has not.
    */
   staticRoot?: string;
   /** Repository the evolution engine proposes against. Defaults to the cwd. */
@@ -485,6 +488,9 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
     throw new Error(
       `${path}: intentPollIntervalMs must be a non-negative integer, got ${String(merged.intentPollIntervalMs)}`,
     );
+  }
+  if (typeof merged.exposeCollabRelay !== "boolean") {
+    throw new Error(`${path}: exposeCollabRelay must be true or false, got ${String(merged.exposeCollabRelay)}`);
   }
   if (!Array.isArray(merged.fsRoots) || merged.fsRoots.some(root => typeof root !== "string")) {
     throw new Error(`${path}: fsRoots must be an array of absolute paths`);
@@ -880,6 +886,7 @@ export class Ompd {
       host: this.#config.host,
       port: this.#config.port,
       version: OMPD_VERSION,
+      exposeCollabRelay: this.#config.exposeCollabRelay,
       // Lets `ompd start` tell "that is me already running" from "something
       // else owns this port", instead of adopting any healthy listener.
       homeId: homeIdFor(this.#home),
@@ -1462,10 +1469,10 @@ export class Ompd {
  * Resolved from this file rather than the cwd, so the daemon serves the UI
  * shipped alongside it no matter where it was started from. Inside a compiled
  * binary this resolves into the bundle and finds nothing, which is correct:
- * `packages/web/dist` is a local build artifact that no clone starts with, so
+ * `packages/app/dist` is a local build artifact that no clone starts with, so
  * the console is served when it has been built and the API is served always.
  */
 function defaultStaticRoot(): string | undefined {
-  const dist = resolve(import.meta.dir, "../../web/dist");
+  const dist = resolve(import.meta.dir, "../../app/dist");
   return existsSync(join(dist, "index.html")) ? dist : undefined;
 }

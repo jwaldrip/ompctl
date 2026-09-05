@@ -13,7 +13,7 @@ describe("the package test process boundary", () => {
   test("accounts for every workspace exactly once", () => {
     assertCompletePackagePlan(resolve(import.meta.dir, ".."));
     const ids = PACKAGE_TEST_SUITES.map(suite => suite.id);
-    expect(ids).toEqual(["acp", "app", "cli", "core", "daemon", "hub", "omp-extension", "tunnel", "web", "scripts"]);
+    expect(ids).toEqual(["acp", "app", "cli", "core", "daemon", "hub", "omp-extension", "tunnel", "scripts"]);
     expect(UNIT_TEST_EXCLUSIONS).toEqual(["e2e", "site"]);
   });
 
@@ -52,19 +52,7 @@ describe("the package test process boundary", () => {
   test("a newly-testable excluded package makes the plan fail instead of silently skipping it", () => {
     const root = mkdtempSync(join(tmpdir(), "package-test-plan-"));
     try {
-      for (const name of [
-        "acp",
-        "app",
-        "cli",
-        "core",
-        "daemon",
-        "e2e",
-        "hub",
-        "omp-extension",
-        "site",
-        "tunnel",
-        "web",
-      ]) {
+      for (const name of ["acp", "app", "cli", "core", "daemon", "e2e", "hub", "omp-extension", "site", "tunnel"]) {
         const dir = join(root, "packages", name);
         mkdirSync(dir, { recursive: true });
         writeFileSync(

@@ -860,8 +860,15 @@ export type CollabServerFrame =
  * - `not_joined`: a write or leave named a session this daemon is not
  *   co-driving, because it never joined or the room already ended.
  */
-export type CollabRefusal = "unknown_session" | "not_hosted" | "occupied" | "view_only" | "not_joined";
-
+export type CollabRefusal =
+  | "unknown_session"
+  | "not_hosted"
+  | "occupied"
+  | "view_only"
+  | "not_joined"
+  | "invalid_link"
+  | "untrusted_relay"
+  | "session_mismatch";
 /**
  * The wording for each refusal, shared by every surface that has to say why:
  * the daemon's audit detail and the app's own notice. One copy, because two
@@ -874,6 +881,9 @@ export const COLLAB_REFUSAL_REASONS: Record<CollabRefusal, string> = {
   occupied: "that session is already in a shared room this daemon did not open",
   view_only: "this session is shared view-only, so a guest may watch but not steer",
   not_joined: "this daemon is not co-driving that session",
+  invalid_link: "the supplied collab link is invalid",
+  untrusted_relay: "the collab link relay host is not this daemon or loopback",
+  session_mismatch: "the collab link belongs to a different session than requested",
 };
 
 /**
@@ -1204,7 +1214,7 @@ export type ClientFrame =
    * daemon already co-drives answers `collab_opened` with the same agentId,
    * so a reconnected phone can recover its row without a second guest.
    */
-  | { t: "collab_open"; sessionId: string }
+  | { t: "collab_open"; sessionId: string; link?: string }
   /**
    * Stop co-driving a session. The guest leaves the room and its agent row
    * goes terminal, exactly as a stopped owned agent does. One-shot like the
@@ -1699,7 +1709,9 @@ export type AuditAction =
    * carries the url and the destination; a url carrying a credential is
    * refused before this record is written, so one can never be logged.
    */
-  | "repo.clone";
+  | "repo.clone"
+  /** A direct socket exceeded the outbound backpressure ceiling and was closed with 1013. */
+  | "socket.backpressure";
 
 export interface AuditEntry {
   id: number;
