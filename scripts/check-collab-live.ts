@@ -71,16 +71,22 @@ async function main() {
         clientWs.close();
       }
     } catch {}
-    try {
-      if (ompProc) {
-        ompProc.kill("SIGTERM");
-      }
-    } catch {}
-    try {
-      if (daemonProc) {
-        daemonProc.kill("SIGTERM");
-      }
-    } catch {}
+    const awaitExit = async (proc: Subprocess | null) => {
+      if (!proc) return;
+      try {
+        proc.kill("SIGTERM");
+        const exited = await Promise.race([
+          proc.exited,
+          Bun.sleep(3000).then(() => false),
+        ]);
+        if (exited === false) {
+          proc.kill("SIGKILL");
+          await Promise.race([proc.exited, Bun.sleep(2000)]);
+        }
+      } catch {}
+    };
+    await awaitExit(ompProc);
+    await awaitExit(daemonProc);
     try {
       rmSync(scratchHome, { recursive: true, force: true });
     } catch {}
@@ -325,6 +331,22 @@ async function main() {
     ompProc?.terminal?.write("/collab stop\r");
     await Bun.sleep(1000);
 
+    // P3: Delete the scratch session through the scratch daemon's session_delete
+    clientWs.send(JSON.stringify({ t: "session_delete", sessionIds: [sessionId] }));
+    await waitUntil(() => {
+      return incomingFrames.find(f => f.t === "sessions_deleted");
+    }, "session_delete confirmation", 10_000);
+
+    // Assert it is gone from index
+    const checkRes = await fetch(`http://127.0.0.1:${port}/v1/sessions`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (checkRes.status === 200) {
+      const body = (await checkRes.json()) as { sessions?: Array<{ id: string }> };
+      if (body.sessions?.some(s => s.id === sessionId)) {
+        throw new Error(`session ${sessionId} was not deleted by session_delete`);
+      }
+    }
     console.log("PHASE: TEARDOWN");
     await cleanup();
     console.log("COLLAB LIVE GREEN");
@@ -342,7 +364,10 @@ async function main() {
     } catch {}
     if (ptyOutput.length > 0) {
       console.error("PTY OUTPUT (last 1000 chars):");
-      console.error(stripAnsi(ptyOutput).slice(-1000));
+      const cleanPty = stripAnsi(ptyOutput)
+        .replace(/ws:\/\/[^\s/]+\/r\/([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)/g, "ws://HOST/r/$1.[REDACTED]")
+        .replace(/([A-Za-z0-9_-]{10,64})\.([A-Za-z0-9_-]{43,})/g, "$1.[REDACTED]");
+      console.error(cleanPty.slice(-1000));
     }
     await cleanup();
     process.exit(1);

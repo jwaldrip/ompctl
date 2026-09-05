@@ -867,8 +867,8 @@ export type CollabRefusal =
   | "view_only"
   | "not_joined"
   | "invalid_link"
-  | "untrusted_relay";
-
+  | "untrusted_relay"
+  | "session_mismatch";
 /**
  * The wording for each refusal, shared by every surface that has to say why:
  * the daemon's audit detail and the app's own notice. One copy, because two
@@ -883,6 +883,7 @@ export const COLLAB_REFUSAL_REASONS: Record<CollabRefusal, string> = {
   not_joined: "this daemon is not co-driving that session",
   invalid_link: "the supplied collab link is invalid",
   untrusted_relay: "the collab link relay host is not this daemon or loopback",
+  session_mismatch: "the collab link belongs to a different session than requested",
 };
 
 /**

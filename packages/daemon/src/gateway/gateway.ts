@@ -4957,7 +4957,12 @@ export class Gateway {
         // registry re-resolves the device row itself, the same defense the
         // supervisor runs.
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "collab open requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "collab open requires read scope",
+          });
           return;
         }
         if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
@@ -4966,7 +4971,12 @@ export class Gateway {
         }
         const link = "link" in frame && typeof frame.link === "string" ? frame.link : undefined;
         if ("link" in frame && frame.link !== undefined && typeof frame.link !== "string") {
-          this.#send(ws, { t: "error", code: "bad_frame", message: "collab_open link must be a string" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: frame.sessionId,
+            code: "bad_frame",
+            message: "collab_open link must be a string",
+          });
           return;
         }
         if (link !== undefined) {
@@ -5020,7 +5030,12 @@ export class Gateway {
 
       case "collab_leave": {
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "collab leave requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "collab leave requires read scope",
+          });
           return;
         }
         if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {

@@ -80,6 +80,7 @@ export interface CollabGuestsOptions {
   bridgeTimeoutMs?: number;
   welcomeTimeoutMs?: number;
   snapshotTimeoutMs?: number;
+  leaseTimeoutMs?: number;
   onLog?: (line: string) => void;
 }
 
@@ -108,6 +109,14 @@ interface GuestLeg {
   registryAgents: Map<string, AgentId>;
   terminal: boolean;
   clients: Set<unknown>;
+  leaseTimer: Timer | null;
+}
+
+interface InFlightOpen {
+  promise: Promise<CollabOpenOutcome>;
+  clients: Set<unknown>;
+  cancelled: boolean;
+  bridgeRequestId?: string;
 }
 
 /** A `collab_open` in flight against the bridge. */
@@ -134,7 +143,8 @@ export class CollabGuests {
   readonly #bySession = new Map<string, GuestLeg>();
   readonly #byAgent = new Map<AgentId, GuestLeg>();
   readonly #pendingOpens = new Map<string, PendingOpen>();
-
+  readonly #inFlightOpens = new Map<string, InFlightOpen>();
+  readonly #leaseTimeoutMs: number;
   constructor(opts: CollabGuestsOptions) {
     this.#store = opts.store;
     this.#authorize = opts.authorize;
@@ -146,6 +156,7 @@ export class CollabGuests {
     this.#bridgeTimeoutMs = opts.bridgeTimeoutMs ?? BRIDGE_TIMEOUT_MS;
     this.#welcomeTimeoutMs = opts.welcomeTimeoutMs ?? WELCOME_TIMEOUT_MS;
     this.#snapshotTimeoutMs = opts.snapshotTimeoutMs ?? SNAPSHOT_PROGRESS_TIMEOUT_MS;
+    this.#leaseTimeoutMs = opts.leaseTimeoutMs ?? 60_000;
     this.#log = opts.onLog ?? (() => {});
   }
 
@@ -173,11 +184,24 @@ export class CollabGuests {
   ): Promise<CollabOpenOutcome> {
     const existing = this.#bySession.get(sessionId);
     if (existing !== undefined) {
+      if (existing.leaseTimer !== null) {
+        clearTimeout(existing.leaseTimer);
+        existing.leaseTimer = null;
+      }
       if (client !== undefined) {
         existing.clients.add(client);
       }
       return { opened: true, agentId: existing.agentId, readOnly: existing.readOnly };
     }
+
+    const inFlight = this.#inFlightOpens.get(sessionId);
+    if (inFlight !== undefined) {
+      if (client !== undefined) {
+        inFlight.clients.add(client);
+      }
+      return await inFlight.promise;
+    }
+
     // Read is the floor: watching is what opening buys, and steering is
     // gated again per write. Re-resolved from the device row rather than
     // trusting the caller's claim, the same rule the supervisor enforces.
@@ -188,6 +212,27 @@ export class CollabGuests {
       throw err;
     }
 
+    const inFlightRecord: InFlightOpen = {
+      promise: Promise.resolve().then(async () => {
+        try {
+          return await this.#performOpen(sessionId, actor, link, inFlightRecord);
+        } finally {
+          this.#inFlightOpens.delete(sessionId);
+        }
+      }),
+      clients: new Set(client !== undefined ? [client] : []),
+      cancelled: false,
+    };
+    this.#inFlightOpens.set(sessionId, inFlightRecord);
+    return await inFlightRecord.promise;
+  }
+
+  async #performOpen(
+    sessionId: string,
+    actor: Actor,
+    link: string | ParsedCollabLink | undefined,
+    inFlightRecord: InFlightOpen,
+  ): Promise<CollabOpenOutcome> {
     let parsed: ParsedCollabLink;
     let writable: boolean;
     let bridgeRequestId = "";
@@ -239,6 +284,11 @@ export class CollabGuests {
         }
         return { unavailable: answer.bridge_error.detail ?? "the terminal could not start sharing" };
       }
+      inFlightRecord.bridgeRequestId = answer.requestId;
+      if (inFlightRecord.cancelled || inFlightRecord.clients.size === 0) {
+        this.#sendToHostingTui(sessionId, { t: "tui_collab_close", sessionId, requestId: answer.requestId });
+        return { unavailable: "client disconnected before join completed" };
+      }
       const res = parseCollabLink(answer.link);
       if ("error" in res) {
         this.#log(`collab guest ${sessionId}: bridge returned an unparseable link`);
@@ -249,12 +299,26 @@ export class CollabGuests {
       bridgeRequestId = answer.requestId;
     }
 
-    return await this.#join(sessionId, parsed, writable, bridgeRequestId, actor, client);
+    if (inFlightRecord.cancelled || inFlightRecord.clients.size === 0) {
+      if (bridgeRequestId) {
+        this.#sendToHostingTui(sessionId, { t: "tui_collab_close", sessionId, requestId: bridgeRequestId });
+      }
+      return { unavailable: "client disconnected before join completed" };
+    }
+
+    return await this.#join(sessionId, parsed, writable, bridgeRequestId, actor, inFlightRecord.clients);
   }
 
   /** Stop co-driving `sessionId`: leave the room, settle the agent row, release the room if this daemon caused it. */
   leaveCollab(sessionId: string, actor: Actor, client?: unknown): CollabLeaveOutcome {
     this.#authorize(actor, SCOPE_READ, "collab.leave");
+    const inFlight = this.#inFlightOpens.get(sessionId);
+    if (inFlight !== undefined && client !== undefined) {
+      inFlight.clients.delete(client);
+      if (inFlight.clients.size === 0) {
+        inFlight.cancelled = true;
+      }
+    }
     const leg = this.#bySession.get(sessionId);
     if (leg === undefined) {
       this.#audit(actor, sessionId, "denied", { reason: "not_joined" });
@@ -271,6 +335,10 @@ export class CollabGuests {
         return { left: true, agentId: leg.agentId };
       }
     }
+    if (leg.leaseTimer !== null) {
+      clearTimeout(leg.leaseTimer);
+      leg.leaseTimer = null;
+    }
     this.#endLeg(leg, "stopped", "left");
     if (leg.bridgeRequestId) {
       this.#sendToHostingTui(sessionId, { t: "tui_collab_close", sessionId, requestId: leg.bridgeRequestId });
@@ -281,15 +349,26 @@ export class CollabGuests {
 
   /** A client socket disconnected: drop its interest from any co-driven session. */
   onClientDisconnected(client: unknown): void {
+    for (const inFlight of this.#inFlightOpens.values()) {
+      inFlight.clients.delete(client);
+      if (inFlight.clients.size === 0) {
+        inFlight.cancelled = true;
+      }
+    }
     for (const leg of [...this.#bySession.values()]) {
       if (leg.clients.delete(client) && leg.clients.size === 0) {
-        this.#endLeg(leg, "stopped", "client disconnected");
-        if (leg.bridgeRequestId) {
-          this.#sendToHostingTui(leg.sessionId, {
-            t: "tui_collab_close",
-            sessionId: leg.sessionId,
-            requestId: leg.bridgeRequestId,
-          });
+        if (leg.leaseTimer === null) {
+          leg.leaseTimer = setTimeout(() => {
+            leg.leaseTimer = null;
+            this.#endLeg(leg, "stopped", "lease expired");
+            if (leg.bridgeRequestId) {
+              this.#sendToHostingTui(leg.sessionId, {
+                t: "tui_collab_close",
+                sessionId: leg.sessionId,
+                requestId: leg.bridgeRequestId,
+              });
+            }
+          }, this.#leaseTimeoutMs);
         }
       }
     }
@@ -377,7 +456,14 @@ export class CollabGuests {
 
   /** Daemon shutdown: every leg leaves and every row settles. */
   close(): void {
-    for (const leg of this.#bySession.values()) this.#endLeg(leg, "stopped", "daemon stopping");
+    for (const inFlight of this.#inFlightOpens.values()) {
+      inFlight.cancelled = true;
+    }
+    this.#inFlightOpens.clear();
+    for (const leg of this.#bySession.values()) {
+      if (leg.leaseTimer !== null) clearTimeout(leg.leaseTimer);
+      this.#endLeg(leg, "stopped", "daemon stopping");
+    }
   }
 
   // -- join ------------------------------------------------------------------
@@ -439,7 +525,8 @@ export class CollabGuests {
       bridgeRequestId,
       registryAgents: new Map(),
       terminal: false,
-      clients: new Set(client !== undefined ? [client] : []),
+      clients: client instanceof Set ? new Set(client) : new Set(client !== undefined ? [client] : []),
+      leaseTimer: null,
     };
 
     let welcomed = false;
@@ -484,9 +571,11 @@ export class CollabGuests {
       if (mapping === null || settled) return;
       if (mapping.header !== undefined) {
         welcomed = true;
-        // The host's verdict outranks the link's strength: a host that
-        // marks this peer read-only is the authority on what it will
-        // accept, whatever token the link carried.
+        // G4: bind the link's welcome session id to the requested sessionId
+        if (mapping.header.id && mapping.header.id !== sessionId) {
+          fail("session_mismatch");
+          return;
+        }
         if (mapping.readOnly === true) leg.readOnly = true;
       }
       if (welcomed && !snapshotDone) {
@@ -520,6 +609,9 @@ export class CollabGuests {
     if (raced !== "joined") {
       this.#endLeg(leg, "failed", raced);
       this.#audit(actor, sessionId, "denied", { reason: "join_failed", detail: raced });
+      if (raced === "session_mismatch") {
+        return { refused: "session_mismatch" };
+      }
       return { unavailable: `could not co-drive session ${sessionId}: ${raced}` };
     }
     return { opened: true, agentId, readOnly: leg.readOnly };
@@ -665,6 +757,10 @@ export class CollabGuests {
   /** Terminal close of a leg: leave the room, settle the row, and drop the key by dropping every reference to it. */
   #endLeg(leg: GuestLeg, state: AgentState, reason: string): void {
     if (leg.terminal) return;
+    if (leg.leaseTimer !== null) {
+      clearTimeout(leg.leaseTimer);
+      leg.leaseTimer = null;
+    }
     leg.terminal = true;
     this.#bySession.delete(leg.sessionId);
     this.#byAgent.delete(leg.agentId);

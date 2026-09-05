@@ -802,11 +802,7 @@ describe("CollabStreamMapper", () => {
         },
       },
     });
-    expect(eventResult.updates).toHaveLength(1);
-    expect(eventResult.updates[0]).toMatchObject({
-      sessionUpdate: "user_message_chunk",
-      content: { type: "text", text: "Reply with exactly: collab_x" },
-    });
+    expect(eventResult.updates).toHaveLength(0);
 
     const entryResult = mapper.mapFrame({
       t: "entry",
@@ -821,7 +817,11 @@ describe("CollabStreamMapper", () => {
         details: { from: "ompd" },
       },
     });
-    expect(entryResult.updates).toHaveLength(0);
+    expect(entryResult.updates).toHaveLength(1);
+    expect(entryResult.updates[0]).toMatchObject({
+      sessionUpdate: "user_message_chunk",
+      content: { type: "text", text: "Reply with exactly: collab_x" },
+    });
   });
 
   test("defect A: message_start arriving after initial message_update does not re-emit chunks under a fresh messageId", () => {
@@ -897,6 +897,288 @@ describe("CollabStreamMapper", () => {
     expect(res.updates).toHaveLength(1);
     expect((res.updates[0] as { sessionUpdate: string }).sessionUpdate).toBe("tool_call_update");
     expect((res.updates[0] as { toolCallId: string }).toolCallId).toBe("todo-call-1");
+  });
+
+  test("M1: text block after tool call emits correctly, not suppressed by whole-message inProgressStreamedText", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    // 1. Assistant emits text "first"
+    const f1 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: {
+          ...assistantMessage("first"),
+          content: [{ type: "text", text: "first" }],
+        },
+      },
+    });
+    expect(f1.updates).toHaveLength(1);
+    expect((f1.updates[0] as { content: { text: string } }).content.text).toBe("first");
+
+    // 2. Assistant emits tool call
+    mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: {
+          ...assistantMessage("first"),
+          content: [
+            { type: "text", text: "first" },
+            { type: "toolCall", id: "tc1", name: "bash", arguments: { command: "ls" } },
+          ],
+        },
+      },
+    });
+
+    // 3. Assistant emits text "later" in a subsequent block
+    const f3 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: {
+          ...assistantMessage("first later"),
+          content: [
+            { type: "text", text: "first" },
+            { type: "toolCall", id: "tc1", name: "bash", arguments: { command: "ls" } },
+            { type: "text", text: "later" },
+          ],
+        },
+      },
+    });
+    const textUpdates = f3.updates.filter(
+      u => (u as { sessionUpdate?: string }).sessionUpdate === "agent_message_chunk",
+    );
+    expect(textUpdates).toHaveLength(1);
+    expect((textUpdates[0] as { content: { text: string } }).content.text).toBe("later");
+  });
+
+  test("M2: assistant message_update arriving after message_end without preceding message_start starts fresh messageId", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    // Turn 1 ends
+    mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("turn one"), content: [{ type: "text", text: "turn one" }] },
+      },
+    });
+    mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_end",
+        message: { ...assistantMessage("turn one"), content: [{ type: "text", text: "turn one" }] },
+      },
+    });
+
+    // Turn 2: omp 18.1.11 sends message_update directly without message_start
+    const f2 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("HEL"), content: [{ type: "text", text: "HEL" }] },
+      },
+    });
+
+    expect(f2.updates).toHaveLength(1);
+    const mid2 = (f2.updates[0] as { messageId: string }).messageId;
+    expect(mid2).not.toBe("collab-m1");
+    expect((f2.updates[0] as { content: { text: string } }).content.text).toBe("HEL");
+
+    // Later in turn 2, message_start arrives with HELLO
+    const f3 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_start",
+        message: { ...assistantMessage("HELLO"), content: [{ type: "text", text: "HELLO" }] },
+      },
+    });
+    const textUpdates = f3.updates.filter(
+      u => (u as { sessionUpdate?: string }).sessionUpdate === "agent_message_chunk",
+    );
+    if (textUpdates.length > 0) {
+      expect((textUpdates[0] as { messageId: string }).messageId).toBe(mid2);
+    }
+  });
+
+  test("M3: backfill matching an in-progress assistant entry reconciles thinking and tool calls, not just remaining text", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("hello"), content: [{ type: "text", text: "hello" }] },
+      },
+    });
+
+    const replayed = mapper.mapFrame({
+      t: "snapshot-chunk",
+      final: true,
+      entries: [
+        {
+          ...assistantEntry("a1", "hello world"),
+          message: {
+            ...assistantMessage("hello world"),
+            content: [
+              { type: "text", text: "hello world" },
+              { type: "toolCall", id: "tc_bash_1", name: "bash", arguments: { command: "pwd" } },
+            ],
+          },
+        },
+      ],
+    });
+
+    const kinds = replayed.updates.map(u => (u as { sessionUpdate?: string }).sessionUpdate);
+    expect(kinds).toContain("agent_message_chunk");
+    expect(kinds).toContain("tool_call");
+    const toolUpdate = replayed.updates.find(u => (u as { sessionUpdate?: string }).sessionUpdate === "tool_call");
+    expect((toolUpdate as { toolCallId: string }).toolCallId).toBe("tc_bash_1");
+  });
+
+  test("M4: matched-backfill branch clears all stream state so subsequent turn emits cleanly without offsets", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("hello"), content: [{ type: "text", text: "hello" }] },
+      },
+    });
+    mapper.mapFrame({
+      t: "snapshot-chunk",
+      final: true,
+      entries: [assistantEntry("a1", "hello")],
+    });
+
+    const nextTurn = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("Different answer"), content: [{ type: "text", text: "Different answer" }] },
+      },
+    });
+
+    expect(nextTurn.updates).toHaveLength(1);
+    expect((nextTurn.updates[0] as { content: { text: string } }).content.text).toBe("Different answer");
+    expect((nextTurn.updates[0] as { messageId: string }).messageId).not.toBe("collab-m1");
+  });
+
+  test("M5: thought-only in-progress messages match snapshot entry without duplicating thought", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    const f1 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: {
+          ...assistantMessage(""),
+          content: [{ type: "thinking", thinking: "thinking hard" }],
+        },
+      },
+    });
+    expect(f1.updates).toHaveLength(1);
+    expect((f1.updates[0] as { sessionUpdate: string }).sessionUpdate).toBe("agent_thought_chunk");
+
+    const replayed = mapper.mapFrame({
+      t: "snapshot-chunk",
+      final: true,
+      entries: [
+        {
+          ...assistantEntry("a1", ""),
+          message: {
+            ...assistantMessage(""),
+            content: [{ type: "thinking", thinking: "thinking hard and long" }],
+          },
+        },
+      ],
+    });
+
+    expect(replayed.updates).toHaveLength(1);
+    expect((replayed.updates[0] as { content: { text: string } }).content.text).toBe(" and long");
+  });
+
+  test("M6: user message_start for status followed by collab-prompt entry from alice yields one chunk with [alice] prefix", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    const f1 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_start",
+        message: { role: "user", content: [{ type: "text", text: "status" }], timestamp: Date.now() },
+      },
+    });
+
+    const f2 = mapper.mapFrame({
+      t: "entry",
+      entry: {
+        type: "custom_message",
+        customType: COLLAB_PROMPT_MESSAGE_TYPE,
+        id: "c-alice-1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        content: "status",
+        display: true,
+        details: { from: "alice" },
+      },
+    });
+
+    const allUpdates = [...f1.updates, ...f2.updates];
+    const userChunks = allUpdates.filter(
+      u => (u as { sessionUpdate?: string }).sessionUpdate === "user_message_chunk",
+    );
+    expect(userChunks).toHaveLength(1);
+    expect((userChunks[0] as { content: { text: string } }).content.text).toBe("[alice] status");
   });
 });
 
@@ -1779,6 +2061,140 @@ describe("collab guest legs over the gateway socket", () => {
       "phone2 receives echo",
     );
     expect(p2Echo.t).toBe("update");
+
+    room.close();
+  });
+
+  test("G1: client disconnecting while bridge open is in flight cancels the join and closes the room", async () => {
+    const h = await harness();
+    const bridge = await h.registerBridge();
+    const phone = await h.connect(await h.pair([SCOPE_READ]));
+
+    phone.send({ t: "collab_open", sessionId: SESSION_LIVE });
+    const openAsk = await waitForBridgeFrame(bridge, frame => frame.t === "tui_collab_open");
+
+    // Phone disconnects before bridge answers
+    phone.close();
+    await Bun.sleep(50);
+
+    // Bridge answers late
+    const room = new RelayRoom(async () => {});
+    relays.push(room);
+    bridge.deliver({
+      t: "tui_collab_opened",
+      sessionId: SESSION_LIVE,
+      requestId: openAsk.requestId as string,
+      link: room.fullLink(),
+      viewLink: room.viewLink(),
+      writable: true,
+    });
+
+    // Daemon should immediately close the room on the TUI bridge because no clients remain
+    const closeAsk = await waitForBridgeFrame(bridge, frame => frame.t === "tui_collab_close");
+    expect(closeAsk.requestId).toBe(openAsk.requestId);
+    expect(room.received).toHaveLength(0);
+    room.close();
+  });
+
+  test("G2: two concurrent opens for the same session share one in-flight open and single guest leg", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await hostWelcomeWithTranscript(r);
+    });
+    relays.push(room);
+
+    const bridge = await h.registerBridge();
+    const phone1 = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+    const phone2 = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+
+    phone1.send({ t: "collab_open", sessionId: SESSION_LIVE });
+    phone2.send({ t: "collab_open", sessionId: SESSION_LIVE });
+
+    const openAsk = await waitForBridgeFrame(bridge, frame => frame.t === "tui_collab_open");
+    await Bun.sleep(50);
+    const bridgeOpens = bridge.frames.filter(frame => frame.t === "tui_collab_open");
+    expect(bridgeOpens).toHaveLength(1);
+
+    bridge.deliver({
+      t: "tui_collab_opened",
+      sessionId: SESSION_LIVE,
+      requestId: openAsk.requestId as string,
+      link: room.fullLink(),
+      viewLink: room.viewLink(),
+      writable: true,
+    });
+
+    const op1 = openedFrame(await phone1.next(isCollabOpened, "phone1 collab_opened"));
+    const op2 = openedFrame(await phone2.next(isCollabOpened, "phone2 collab_opened"));
+    expect(op1.agentId).toBe(op2.agentId);
+
+    const hellos = room.received.filter(f => f.t === "hello");
+    expect(hellos).toHaveLength(1);
+    room.close();
+  });
+
+  test("G3: socket drop leaves leg alive under a lease; reconnect within lease recovers same agentId; explicit leave ends it immediately", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await hostWelcomeWithTranscript(r);
+    });
+    relays.push(room);
+
+    await h.registerBridge();
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
+    const phone = await h.connect(token);
+
+    phone.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+    const opened = openedFrame(await phone.next(isCollabOpened, "phone collab_opened"));
+
+    // Phone drops network
+    phone.close();
+    await Bun.sleep(50);
+
+    // Leg is still alive in daemon under lease
+    const agentWhileLeased = h.store.getAgent(opened.agentId);
+    expect(agentWhileLeased?.state).not.toBe("stopped");
+
+    // Phone reconnects within lease
+    const phone2 = await h.connect(token);
+    phone2.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+    const opened2 = openedFrame(await phone2.next(isCollabOpened, "phone2 reconnected"));
+    expect(opened2.agentId).toBe(opened.agentId);
+
+    // Explicit leave from last client ends leg immediately
+    phone2.send({ t: "collab_leave", sessionId: SESSION_LIVE });
+    await waitUntil(() => {
+      const agt = h.store.getAgent(opened.agentId);
+      return agt?.state === "stopped" ? agt : undefined;
+    }, "agent state stopped after explicit leave");
+
+    room.close();
+  });
+
+  test("G4: collab_open with link to room with mismatched session id is refused as session_mismatch", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await r.send({
+        t: "welcome",
+        proto: 3,
+        header: { type: "session", id: "sess-actual-room", timestamp: "t", cwd: "/w" },
+        state: HOST_STATE,
+        entryCount: 0,
+        agents: [],
+      });
+      await r.send({ t: "snapshot-chunk", final: true, entries: [] });
+    });
+    relays.push(room);
+
+    const phone = await h.connect(await h.pair([SCOPE_READ]));
+
+    phone.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+
+    const refusal = await phone.next(isErrorWithCode("collab_refused"), "session_mismatch refusal");
+    if (refusal.t !== "error") throw new Error("expected error frame");
+    expect(refusal.reason).toBe("session_mismatch");
+    expect(refusal.sessionId).toBe(SESSION_LIVE);
+    expect(refusal.message).toBe(COLLAB_REFUSAL_REASONS.session_mismatch);
 
     room.close();
   });
