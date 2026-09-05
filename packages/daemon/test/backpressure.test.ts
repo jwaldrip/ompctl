@@ -162,9 +162,14 @@ test("backpressure: when socket buffer exceeds cap, socket is closed with 1013 b
   client.send({ t: "ping" });
   await client.next(f => f.t === "pong", "pong after attach");
 
-  // Stream large updates to cross the cap
-  const chunk = "A".repeat(32 * 1024);
-  for (let i = 0; i < 20; i++) {
+  // Stream far more than any kernel can absorb. The client lives on this same
+  // event loop, so nothing drains while this loop runs; the socket's own
+  // buffer only grows once the kernel's send buffer is full, and a Linux
+  // loopback autotunes that buffer to several megabytes where macOS stops
+  // well under one. 640 KiB crossed the cap on a Mac and never on the CI
+  // runner; 32 MiB crosses it everywhere.
+  const chunk = "A".repeat(256 * 1024);
+  for (let i = 0; i < 128; i++) {
     fake.emitUpdate(agent.acpSessionId!, { chunk, i });
   }
 
