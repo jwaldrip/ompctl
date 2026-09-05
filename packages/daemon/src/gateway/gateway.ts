@@ -86,6 +86,7 @@ import {
   type PendingApproval,
   type PendingPlanReview,
   type Supervisor,
+  AgentBusyError,
   UnauthorizedError,
 } from "../supervisor.ts";
 import { WEB_ASSETS, WEB_ASSETS_BUILT } from "../web-assets.ts";
@@ -2090,6 +2091,9 @@ export class Gateway {
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
+        }
+        if (err instanceof AgentBusyError) {
+          return Response.json({ error: "agent_busy", message: err.message }, { status: 409 });
         }
         return Response.json({ error: err instanceof Error ? err.message : "prompt failed" }, { status: 404 });
       }
@@ -5064,7 +5068,12 @@ export class Gateway {
             this.#send(ws, {
               t: "error",
               agentId: frame.agentId,
-              code: err instanceof UnauthorizedError ? "unauthorized" : "prompt_failed",
+              code:
+                err instanceof AgentBusyError
+                  ? "agent_busy"
+                  : err instanceof UnauthorizedError
+                    ? "unauthorized"
+                    : "prompt_failed",
               message: err instanceof Error ? err.message : "prompt failed",
             });
           });
