@@ -901,7 +901,7 @@ describe("collab hosting", () => {
     expect(socket?.sent).toEqual([{ t: "tui_collab_closed", sessionId: SESSION, requestId: "req-6" }]);
   });
 
-  test("a request naming another session is ignored", async () => {
+  test("a request naming another session answers unavailable immediately", async () => {
     const f = fixture({ collab: { startCollab: async () => ({ link: "l", viewLink: "v" }) } });
     f.bridge.connect();
     const socket = f.sockets[0];
@@ -911,6 +911,46 @@ describe("collab hosting", () => {
     socket?.deliver({ t: "tui_collab_open", sessionId: "someone-elses", requestId: "req-7" });
     await Promise.resolve();
 
-    expect(socket?.sent).toEqual([]);
+    expect(socket?.sent).toEqual([
+      {
+        t: "tui_collab_error",
+        sessionId: "someone-elses",
+        requestId: "req-7",
+        reason: "unavailable",
+        detail: "this session is not registered on this terminal",
+      },
+    ]);
+  });
+
+  test("uses existing collab links when the session is already hosting a room", async () => {
+    let startCalled = false;
+    const f = fixture({
+      collab: {
+        getCollabLinks: () => ({ link: "room.EXISTING", viewLink: "room.VIEW_EXISTING" }),
+        startCollab: async () => {
+          startCalled = true;
+          throw new Error("occupied");
+        },
+      },
+    });
+    f.bridge.connect();
+    const socket = f.sockets[0];
+    socket?.accept();
+    socket?.sent.splice(0);
+
+    socket?.deliver({ t: "tui_collab_open", sessionId: SESSION, requestId: "req-8" });
+    await Promise.resolve();
+
+    expect(startCalled).toBe(false);
+    expect(socket?.sent).toEqual([
+      {
+        t: "tui_collab_opened",
+        sessionId: SESSION,
+        requestId: "req-8",
+        link: "room.EXISTING",
+        viewLink: "room.VIEW_EXISTING",
+        writable: true,
+      },
+    ]);
   });
 });

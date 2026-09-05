@@ -31,6 +31,7 @@ import {
 import type { ServerWebSocket } from "bun";
 import { importRoomKey, open, packEnvelope, seal, unpackEnvelope } from "../src/collab/guest-codec.ts";
 import type { CollabGuestFrame, CollabHostFrame } from "../src/collab/guest-frames.ts";
+import { COLLAB_PROMPT_MESSAGE_TYPE } from "../src/collab/guest-frames.ts";
 import { parseCollabLink } from "../src/collab/guest-link.ts";
 import { CollabStreamMapper } from "../src/collab/guest-mapper.ts";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
@@ -375,7 +376,7 @@ describe("CollabStreamMapper", () => {
     expect(settle.rawOutput.content[0]?.text).toBe("a\nb");
   });
 
-  test("this leg's own collab prompt is suppressed; another guest's is named", () => {
+  test("this leg's own collab prompt maps without prefix; another guest's is named", () => {
     const mapper = new CollabStreamMapper({ ownName: "ompd" });
     mapper.mapFrame({
       t: "welcome",
@@ -398,7 +399,13 @@ describe("CollabStreamMapper", () => {
         display: true,
       },
     });
-    expect(own.updates).toEqual([]);
+    expect(own.updates).toEqual([
+      {
+        sessionUpdate: "user_message_chunk",
+        content: { type: "text", text: "from the phone" },
+        messageId: "c1",
+      },
+    ]);
     const other = mapper.mapFrame({
       t: "entry",
       entry: {
@@ -708,6 +715,69 @@ describe("CollabStreamMapper", () => {
     expect(invalid.agents).toBeUndefined();
     const notAnArray = mapper.mapFrame({ t: "agents", agents: "Main" as unknown as never });
     expect(notAnArray.agents).toBeUndefined();
+  });
+
+  test("mid-stream duplication: streaming two chunks then reconnecting with finished entry yields exactly one assistant entry", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    // Stream chunk 1
+    const chunk1 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("hel"), content: [{ type: "text", text: "hel" }] },
+      },
+    });
+    expect(chunk1.updates).toHaveLength(1);
+    expect((chunk1.updates[0] as { content: { text: string } }).content.text).toBe("hel");
+    const msgId1 = (chunk1.updates[0] as { messageId: string }).messageId;
+
+    // Stream chunk 2
+    const chunk2 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("hello"), content: [{ type: "text", text: "hello" }] },
+      },
+    });
+    expect(chunk2.updates).toHaveLength(1);
+    expect((chunk2.updates[0] as { content: { text: string } }).content.text).toBe("lo");
+    const msgId2 = (chunk2.updates[0] as { messageId: string }).messageId;
+    expect(msgId1).toBe(msgId2);
+
+    // Connection drops and reconnects: welcome, then snapshot-chunk with finished entry
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 1,
+      agents: [],
+    });
+
+    const replayed = mapper.mapFrame({
+      t: "snapshot-chunk",
+      final: true,
+      entries: [assistantEntry("a1", "hello world")],
+    });
+
+    // Replay should emit only the unstreamed remainder, sharing msgId1
+    expect(replayed.updates).toHaveLength(1);
+    expect((replayed.updates[0] as { content: { text: string } }).content.text).toBe(" world");
+    expect((replayed.updates[0] as { messageId: string }).messageId).toBe(msgId1);
+
+    // Total chunks emitted across both phases share msgId1, producing exactly one assistant entry
+    const allChunks = [...chunk1.updates, ...chunk2.updates, ...replayed.updates];
+    const messageIds = allChunks.map(u => (u as { messageId: string }).messageId);
+    expect(new Set(messageIds).size).toBe(1);
   });
 });
 
@@ -1439,6 +1509,158 @@ describe("collab guest legs over the gateway socket", () => {
     const prompt = await waitUntil(() => room.received.find(frame => frame.t === "prompt"));
     if (prompt?.t !== "prompt") throw new Error("expected the prompt after reconnect");
     expect(prompt.text).toBe("still here");
+    room.close();
+  });
+
+  test("collab_open with a link joins directly and streams updates without tui_collab_open", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await hostWelcomeWithTranscript(r);
+    });
+    relays.push(room);
+
+    const bridge = await h.registerBridge();
+    const phone = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+
+    phone.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+
+    const opened = openedFrame(await phone.next(isCollabOpened, "collab_opened directly with link"));
+    expect(opened.agentId).toMatch(/^agt_/);
+    expect(opened.readOnly).toBe(false);
+
+    // Bridge should NOT have received a tui_collab_open frame
+    expect(bridge.frames.filter(frame => frame.t === "tui_collab_open")).toEqual([]);
+
+    // The back-transcript is in the update log: attach replays it
+    phone.send({ t: "attach", agentId: opened.agentId, sinceSeq: 0 });
+    const userChunk = await phone.next(
+      frame => frame.t === "update" && JSON.stringify(frame.update).includes("what is in this repo"),
+      "replayed user chunk",
+    );
+    expect(userChunk.t).toBe("update");
+    await phone.next(
+      frame => frame.t === "update" && JSON.stringify(frame.update).includes("a daemon and a phone app"),
+      "replayed assistant chunk",
+    );
+
+    room.close();
+  });
+
+  test("collab_open with an untrusted relay link is refused", async () => {
+    const h = await harness();
+    const phone = await h.connect(await h.pair([SCOPE_READ]));
+
+    phone.send({
+      t: "collab_open",
+      sessionId: SESSION_LIVE,
+      link: "wss://evil-relay.attacker.com/r/0123456789abcdef.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    });
+
+    const refusal = await phone.next(isErrorWithCode("collab_refused"), "untrusted_relay refusal");
+    if (refusal.t !== "error") throw new Error("expected an error frame");
+    expect(refusal.reason).toBe("untrusted_relay");
+    expect(refusal.message).toBe(COLLAB_REFUSAL_REASONS.untrusted_relay);
+  });
+
+  test("per-client accounting: one client leaving leaves the leg open; the last client leaving closes it", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await hostWelcomeWithTranscript(r);
+    });
+    relays.push(room);
+
+    const bridge = await h.registerBridge();
+    void bridge;
+    const phone1 = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+    const phone2 = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+
+    phone1.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+    const opened1 = openedFrame(await phone1.next(isCollabOpened, "phone1 collab_opened"));
+
+    phone2.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+    const opened2 = openedFrame(await phone2.next(isCollabOpened, "phone2 collab_opened"));
+    expect(opened2.agentId).toBe(opened1.agentId);
+
+    phone1.send({ t: "attach", agentId: opened1.agentId, sinceSeq: 0 });
+    phone2.send({ t: "attach", agentId: opened2.agentId, sinceSeq: 0 });
+
+    // Phone 1 leaves
+    phone1.send({ t: "collab_leave", sessionId: SESSION_LIVE });
+
+    // Host sends a live state update
+    await room.send({ t: "state", state: { ...HOST_STATE, sessionName: "still live for phone 2" } });
+
+    // Phone 2 still receives the update
+    await phone2.next(
+      frame => frame.t === "update" && JSON.stringify(frame.update).includes("still live for phone 2"),
+      "phone2 receives update after phone1 leaves",
+    );
+
+    expect(h.store.getAgent(opened1.agentId)?.state).not.toBe("stopped");
+
+    // Phone 2 leaves
+    phone2.send({ t: "collab_leave", sessionId: SESSION_LIVE });
+
+    // Now both have left, so the leg closes and agent state becomes stopped
+    await waitUntil(() => {
+      const agt = h.store.getAgent(opened1.agentId);
+      return agt?.state === "stopped" ? agt : undefined;
+    }, "agent state stopped after last client leaves");
+
+    room.close();
+  });
+
+  test("multi-client echo: a prompt sent through the guest leg appears as a user entry to every attached client", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await hostWelcomeWithTranscript(r);
+    });
+    relays.push(room);
+
+    const bridge = await h.registerBridge();
+    void bridge;
+    const phone1 = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+    const phone2 = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+
+    phone1.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+    const opened1 = openedFrame(await phone1.next(isCollabOpened, "phone1 collab_opened"));
+
+    phone2.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+    const opened2 = openedFrame(await phone2.next(isCollabOpened, "phone2 collab_opened"));
+
+    phone1.send({ t: "attach", agentId: opened1.agentId, sinceSeq: 0 });
+    phone2.send({ t: "attach", agentId: opened2.agentId, sinceSeq: 0 });
+
+    phone1.send({ t: "prompt", agentId: opened1.agentId, text: "hello from phone 1" });
+
+    const prompt = await waitUntil(() => room.received.find(f => f.t === "prompt" && f.text === "hello from phone 1"));
+    expect(prompt).toBeDefined();
+
+    await room.send({
+      t: "entry",
+      entry: {
+        type: "custom_message",
+        customType: COLLAB_PROMPT_MESSAGE_TYPE,
+        id: "prompt-echo-1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        content: "hello from phone 1",
+        display: true,
+        details: { from: "ompd" },
+      },
+    });
+
+    const p1Echo = await phone1.next(
+      frame => frame.t === "update" && JSON.stringify(frame.update).includes("hello from phone 1"),
+      "phone1 receives echo",
+    );
+    expect(p1Echo.t).toBe("update");
+    const p2Echo = await phone2.next(
+      frame => frame.t === "update" && JSON.stringify(frame.update).includes("hello from phone 1"),
+      "phone2 receives echo",
+    );
+    expect(p2Echo.t).toBe("update");
+
     room.close();
   });
 });

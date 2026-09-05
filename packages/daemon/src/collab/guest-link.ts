@@ -26,10 +26,10 @@ const DEFAULT_RELAY_URL = "wss://my.omp.sh";
 const ROOM_PATH_RE = /^\/r\/([A-Za-z0-9_-]{10,64})(?:\.([A-Za-z0-9_-]+))?$/;
 const BARE_LINK_RE = /^([A-Za-z0-9_-]{10,64})[#.]([A-Za-z0-9_-]+)$/;
 const B64URL_RE = /^[A-Za-z0-9_-]+$/;
-const LOCAL_HOSTNAMES: Record<string, true> = { localhost: true, "127.0.0.1": true, "::1": true, "[::1]": true };
+export const LOCAL_HOSTNAMES: Record<string, true> = { localhost: true, "127.0.0.1": true, "::1": true, "[::1]": true };
 
 export interface ParsedCollabLink {
-  /** ws(s)://host[:port]/r/<roomId> — no query, no fragment. */
+  /** ws(s)://host[:port]/r/<roomId>, no query, no fragment. */
   wsUrl: string;
   roomId: string;
   key: Uint8Array;

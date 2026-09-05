@@ -302,6 +302,8 @@ export interface OmpdConfig {
    * can happen, so it has to be chosen rather than discovered.
    */
   containerModelBrokerPort: number;
+  /** Whether the collab relay at /r/<roomId> accepts non-loopback connections. */
+  exposeCollabRelay: boolean;
 }
 
 export const DEFAULT_CONFIG: OmpdConfig = {
@@ -323,6 +325,7 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   containerModelAccess: true,
   containerModel: "",
   containerModelBrokerPort: 7788,
+  exposeCollabRelay: false,
 };
 
 export interface OmpdOptions {
@@ -485,6 +488,9 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
     throw new Error(
       `${path}: intentPollIntervalMs must be a non-negative integer, got ${String(merged.intentPollIntervalMs)}`,
     );
+  }
+  if (typeof merged.exposeCollabRelay !== "boolean") {
+    throw new Error(`${path}: exposeCollabRelay must be true or false, got ${String(merged.exposeCollabRelay)}`);
   }
   if (!Array.isArray(merged.fsRoots) || merged.fsRoots.some(root => typeof root !== "string")) {
     throw new Error(`${path}: fsRoots must be an array of absolute paths`);
@@ -880,6 +886,7 @@ export class Ompd {
       host: this.#config.host,
       port: this.#config.port,
       version: OMPD_VERSION,
+      exposeCollabRelay: this.#config.exposeCollabRelay,
       // Lets `ompd start` tell "that is me already running" from "something
       // else owns this port", instead of adopting any healthy listener.
       homeId: homeIdFor(this.#home),

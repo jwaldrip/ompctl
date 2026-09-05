@@ -1009,8 +1009,10 @@ export class OmpdClient {
    * `resumeSession`: the daemon-side guest outlives this socket, and
    * re-asking after a reconnect answers with the same agentId.
    */
-  openCollab(sessionId: string): void {
-    this.send({ t: "collab_open", sessionId });
+  openCollab(sessionId: string, opts?: { link?: string }): void {
+    this.send(
+      opts?.link !== undefined ? { t: "collab_open", sessionId, link: opts.link } : { t: "collab_open", sessionId },
+    );
   }
 
   /**

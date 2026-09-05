@@ -337,4 +337,38 @@ describe("collab relay", () => {
     const h = await harness();
     expect(h.gateway.collabRelayUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/);
   });
+
+  test("refuses non-loopback peers unless exposeCollabRelay is enabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "collab-relay-remote-"));
+    scratch.push(dir);
+    const store = new Store(join(dir, "ompd.db"));
+    stores.push(store);
+    const fake = createFakeHost();
+    const hosts = new HostRegistry({ spawn: fake.factory });
+    const sup = new Supervisor({ store, policy: new DefaultPolicy({ mode: "standard" }), spawnHost: hosts.spawn });
+
+    const defaultGw = new Gateway({
+      supervisor: sup,
+      store,
+      port: 0,
+      requestAddress: () => "192.168.1.50",
+    });
+    gateways.push(defaultGw);
+    const port1 = await defaultGw.listen();
+    const res1 = await fetch(`http://127.0.0.1:${port1}/r/${ROOM}?role=host`);
+    expect(res1.status).toBe(403);
+    expect(await res1.text()).toContain("collab relay is restricted to loopback peers");
+
+    const exposedGw = new Gateway({
+      supervisor: sup,
+      store,
+      port: 0,
+      exposeCollabRelay: true,
+      requestAddress: () => "192.168.1.50",
+    });
+    gateways.push(exposedGw);
+    const port2 = await exposedGw.listen();
+    const res2 = await fetch(`http://127.0.0.1:${port2}/r/${ROOM}?role=host`);
+    expect(res2.status).toBe(426);
+  });
 });

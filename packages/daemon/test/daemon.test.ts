@@ -120,6 +120,7 @@ describe("config", () => {
       // carries this endpoint and is written before the container starts, so
       // an OS-assigned port would not be known in time to seed it.
       containerModelBrokerPort: 7788,
+      exposeCollabRelay: false,
     });
   });
 
