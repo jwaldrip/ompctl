@@ -95,6 +95,7 @@ export interface TerminalSessionScreenProps {
    */
   onLoadEarlier: () => void;
   onSubmit: (text: string, images?: PromptImage[]) => void;
+  onRetry?: () => void;
 }
 
 /**
@@ -405,7 +406,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         <SessionLoadFailed
           message={load.error ?? "The daemon refused this session."}
           title={props.title || "Untitled session"}
-          onRetry={props.onLoadEarlier}
+          onRetry={props.onRetry ?? props.onLoadEarlier}
         />
       ) : rows.length === 0 ? (
         earlier === null ? (

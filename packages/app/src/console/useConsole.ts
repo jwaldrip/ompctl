@@ -67,6 +67,10 @@ export interface ConsoleActions {
    */
   loadEarlierTui: (sessionId: string) => void;
   /**
+   * Re-arm a failed terminal session load and repeat the initial open.
+   */
+  retryTui: (sessionId: string) => void;
+  /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
    * from here, and a refusal arrives as a notice, because nothing on screen
@@ -722,6 +726,15 @@ export function useConsole(
         // request on the wire for the same page.
         if (tui.historyCursor === null || tui.historyLoadingEarlier) return;
         askOlderTui(sessionId, tui.historyCursor);
+      },
+      retryTui(sessionId) {
+        dispatch({ t: "load_rearm", subject: sessionId });
+        const tui = tuiSessionFor(stateRef.current, sessionId);
+        if (tui.refusalKind !== null) {
+          client.sessionTail(sessionId);
+        } else {
+          client.openCollab(sessionId);
+        }
       },
       deleteSession(sessionId) {
         // The row renders the missing scope and offers no confirmation, but

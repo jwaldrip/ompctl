@@ -432,6 +432,9 @@ export function Console({
         onLoadEarlier={() => {
           actions.loadEarlierTui(sessionId);
         }}
+        onRetry={() => {
+          actions.retryTui(sessionId);
+        }}
       />
     );
   };
