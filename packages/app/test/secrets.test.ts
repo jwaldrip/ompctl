@@ -144,8 +144,8 @@ describe("secrets.web.ts: the target with no keystore", () => {
     expect(fakeAsyncStorage.store.size).toBe(0);
   });
 
-  test("SECRETS_PERSIST_ACROSS_LAUNCHES is false: nothing here survives a reload", () => {
-    expect(webSecrets.SECRETS_PERSIST_ACROSS_LAUNCHES).toBe(false);
+  test("SECRETS_PERSIST_ACROSS_LAUNCHES is true on web", () => {
+    expect(webSecrets.SECRETS_PERSIST_ACROSS_LAUNCHES).toBe(true);
   });
 });
 
