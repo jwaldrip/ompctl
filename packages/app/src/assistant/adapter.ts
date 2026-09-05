@@ -28,7 +28,12 @@
  *    round trip through assistant-ui's own vocabulary.
  */
 
-import type { RespondToToolApprovalOptions, ThreadMessageLike, ToolApprovalOption } from "@assistant-ui/core";
+import {
+  MessageNotSentError,
+  type RespondToToolApprovalOptions,
+  type ThreadMessageLike,
+  type ToolApprovalOption,
+} from "@assistant-ui/core";
 import type { Agent, ApprovalChoice, ApprovalScope, PlanReviewChoice, PromptImage } from "@ompd/core/contracts";
 import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
@@ -318,7 +323,7 @@ export interface OmpStoreInput {
    * (`Composer.tsx:89`), so a screen wires one handler to either surface. An
    * image-only prompt sends with empty text, which is #131's contract.
    */
-  readonly onSubmit: (text: string, images?: PromptImage[]) => void;
+  readonly onSubmit: (text: string, images?: PromptImage[]) => unknown;
   readonly onCancel: () => void;
   /**
    * False when this device's pairing does not hold the approve scope. It gates
@@ -408,7 +413,10 @@ export function ompStore(input: OmpStoreInput) {
       // is "nothing at all", not "no text". Refusing here would swallow a send
       // the composer had already accepted.
       if (text.length === 0 && images === undefined) return;
-      input.onSubmit(text, images);
+      const sent = await input.onSubmit(text, images);
+      if (sent === false) {
+        throw new MessageNotSentError();
+      }
     },
 
     onCancel: async (): Promise<void> => {

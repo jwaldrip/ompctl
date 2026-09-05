@@ -87,7 +87,7 @@ export interface ComposerProps {
   sendLabel: string;
   /** True while a turn is in flight. */
   busy: boolean;
-  onSubmit: (text: string, images?: PromptImage[]) => void;
+  onSubmit: (text: string, images?: PromptImage[]) => unknown;
   /**
    * Cancel the running turn. Present only where a turn can be cancelled from
    * here; with it, send becomes Stop while `busy`. Absent, sending stays
@@ -129,11 +129,16 @@ export function Composer({
   const canSend = enabled && !(busy && interruptible) && (trimmed.length > 0 || images.length > 0);
   const stopping = busy && interruptible;
 
-  const send = (): void => {
+  const send = async (): Promise<void> => {
     if (!canSend) return;
-    onSubmit(trimmed, images.length > 0 ? images : undefined);
-    setText("");
-    setImages([]);
+    try {
+      const sent = await onSubmit(trimmed, images.length > 0 ? images : undefined);
+      if (sent === false) return;
+      setText("");
+      setImages([]);
+    } catch {
+      // Keep draft on rejection
+    }
   };
 
   return (

@@ -41,7 +41,7 @@ export type { WebViewTarget } from "./webview.ts";
 export interface ConsoleActions {
   select: (agentId: AgentId) => void;
   back: () => void;
-  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => void;
+  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => boolean;
   cancel: (agentId: AgentId) => void;
   decide: (agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   decidePlan: (agentId: AgentId, requestId: string, choice: PlanReviewChoice) => void;
@@ -59,7 +59,7 @@ export interface ConsoleActions {
    * terminal that owns the session; progress arrives as `tui_activity`, and a
    * terminal with no bridge answers `tui_unreachable` instead.
    */
-  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => void;
+  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => boolean;
   /**
    * Ask a live terminal session for the page of turns older than the one on
    * screen. Ignored when the file's start is already reached or a page is
@@ -580,7 +580,7 @@ export function useConsole(
                 "This device does not hold the prompt scope. Pair it again with prompt access to steer this session.",
             },
           });
-          return;
+          return false;
         }
         if (stateRef.current.connection !== "connected") {
           dispatch({
@@ -590,10 +590,11 @@ export function useConsole(
               code: "offline",
             },
           });
-          return;
+          return false;
         }
         client.prompt(agentId, text, images);
         dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
+        return true;
       },
       cancel(agentId) {
         client.cancel(agentId);
@@ -700,8 +701,19 @@ export function useConsole(
         }
       },
       promptTui(sessionId, text, images) {
+        if (stateRef.current.connection !== "connected") {
+          dispatch({
+            t: "error",
+            event: {
+              message: "Not connected; the message was not sent",
+              code: "offline",
+            },
+          });
+          return false;
+        }
         client.sessionPrompt(sessionId, text, undefined, images);
         dispatch({ t: "tui_prompt", sessionId, text, imageCount: images?.length ?? 0 });
+        return true;
       },
       loadEarlierTui(sessionId) {
         const tui = tuiSessionFor(stateRef.current, sessionId);

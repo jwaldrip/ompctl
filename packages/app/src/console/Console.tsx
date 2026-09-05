@@ -379,9 +379,7 @@ export function Console({
         // Both parameters forward, because the screens widen before this
         // handler does: a one-parameter arrow here would still typecheck and
         // silently drop every image the operator attached.
-        onSubmit={(text, images) => {
-          actions.prompt(agent.id, text, images);
-        }}
+        onSubmit={(text, images) => actions.prompt(agent.id, text, images)}
         onCancel={() => {
           actions.cancel(agent.id);
         }}
@@ -430,9 +428,7 @@ export function Console({
         tui={tuiSessionFor(state, sessionId)}
         connection={state.connection}
         onBack={back}
-        onSubmit={(text, images) => {
-          actions.promptTui(sessionId, text, images);
-        }}
+        onSubmit={(text, images) => actions.promptTui(sessionId, text, images)}
         onLoadEarlier={() => {
           actions.loadEarlierTui(sessionId);
         }}
