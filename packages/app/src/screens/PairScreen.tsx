@@ -12,7 +12,7 @@
  * than guessing at it.
  */
 
-import { DEFAULT_HUB_HOST, parseDeviceCredential, parsePairTarget } from "@ompd/core/pairing";
+import { DEFAULT_HUB_HOST, parseDeviceCredential, parsePairTargetOutcome } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
@@ -66,7 +66,9 @@ export function PairScreen({
   const [token, setToken] = useState("");
   const { width } = useWindowDimensions();
   const formMaxWidth = useFormMaxWidth();
-  const target = parsePairTarget(raw);
+  const targetOutcome = parsePairTargetOutcome(raw);
+  const target = targetOutcome.kind === "ok" ? targetOutcome.target : null;
+  const targetRefusal = targetOutcome.kind === "refused" ? targetOutcome.reason : undefined;
   // The daemon travels inside the credential, so the token field is what
   // decides whether this form can produce a hub connection at all.
   const credential = parseDeviceCredential(token);
@@ -108,7 +110,7 @@ export function PairScreen({
           {raw.trim().length === 0 ? null : (
             <Label color={target === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
               {target === null
-                ? "Not a hub address"
+                ? (targetRefusal ?? "Not a hub address")
                 : // A hub base and a daemon's own socket read alike, so the
                   // transport is named back: one reaches a daemon behind NAT, the
                   // other only works on this network.

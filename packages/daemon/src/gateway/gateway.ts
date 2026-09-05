@@ -121,13 +121,23 @@ function contentTypeFor(key: string): string {
   return CONTENT_TYPES[extname(key)] ?? "application/octet-stream";
 }
 
-/** Decode one embedded asset into a response with an explicit content type. */
+/** Decode one embedded asset into a response with an explicit content type and cache-control. */
 function embeddedResponse(base64: string, key: string): Response {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-  return new Response(bytes, { headers: { "content-type": contentTypeFor(key) } });
+  const clean = key.replace(/^\/+/, "");
+  const cacheControl = clean.startsWith("assets/")
+    ? "public, max-age=31536000, immutable"
+    : "no-cache";
+
+  return new Response(bytes, {
+    headers: {
+      "content-type": contentTypeFor(key),
+      "cache-control": cacheControl,
+    },
+  });
 }
 /** Narrow an untrusted client payload before it reaches the MCP result path. */
 function isWebViewActionResult(value: unknown): value is WebViewActionResult {

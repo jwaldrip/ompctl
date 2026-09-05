@@ -895,13 +895,16 @@ describe("invite", () => {
     const credential = `${"c".repeat(64)}.tok_qr`;
     expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).toContain("hub.example.com");
     expect(out.split("\n").find(line => line.trim().startsWith("Token "))).toContain(credential);
-    // The link carries the granted scopes beside the token, so a one-tap
-    // pairing paints its console correctly before hello ever answers.
-    expect(out).toContain(`https://app.ompctl.ai/pair?token=${credential}&hub=hub.example.com&scopes=read%2Cprompt`);
+    // The link carries the granted scopes beside the hub host in the query,
+    // and the token credential in the fragment so it is never sent in HTTP request lines.
+    expect(out).toContain(`https://app.ompctl.ai/pair?hub=hub.example.com&scopes=read%2Cprompt#token=${credential}`);
+    const linkLine = out.split("\n").find(line => line.includes("https://app.ompctl.ai/pair"))?.trim() ?? "";
+    const parsedUrl = new URL(linkLine);
+    expect(parsedUrl.searchParams.has("token")).toBe(false);
+    expect(parsedUrl.hash).toBe(`#token=${credential}`);
     // The daemon id is not retyped by anyone, so it belongs inside the token.
     expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).not.toContain(daemon);
   });
-
   test("surfaces the daemon's scope_escalation refusal instead of crashing", async () => {
     const h = harness({
       routes: {

@@ -13,51 +13,67 @@
  * losing the credential on every page reload, navigation, or tab refresh, which
  * destroys portal usability and breaks long-lived pairing.
  *
+ * There is no memory fallback: if localStorage is disabled by browser privacy
+ * settings, quota is exceeded, or storage access throws, writeSecret rejects
+ * with a named error so the pairing screen surfaces the refusal rather than
+ * establishing a pairing that silently evaporates on the next refresh.
+ *
  * On native platforms, secure storage is handled by react-native-keychain
  * in secrets.ts; no fallback is added there.
  */
 
-const fallback = new Map<string, string>();
-
-function getStorage(): Storage | null {
+function requireStorage(): Storage {
   try {
     if (typeof globalThis !== "undefined" && globalThis.localStorage) {
       return globalThis.localStorage;
     }
-  } catch {
-    // Storage access can be denied by browser privacy or iframe sandbox settings.
+  } catch (cause) {
+    throw new Error(
+      `localStorage is not accessible: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
   }
-  return null;
+  throw new Error("localStorage is not available in this environment");
 }
 
 /**
- * True on web now that secrets persist to localStorage across launches and reloads.
+ * True on web: secrets persist to localStorage across launches and reloads.
  * Matches native keystore persistence semantics.
  */
 export const SECRETS_PERSIST_ACROSS_LAUNCHES = true;
 
 export async function readSecret(key: string): Promise<string | null> {
-  const storage = getStorage();
-  if (storage) {
+  try {
+    const storage = requireStorage();
     return storage.getItem(key);
+  } catch {
+    return null;
   }
-  return fallback.get(key) ?? null;
 }
 
 export async function writeSecret(key: string, value: string): Promise<void> {
-  const storage = getStorage();
-  if (storage) {
-    storage.setItem(key, value);
-    return;
+  let storage: Storage;
+  try {
+    storage = requireStorage();
+  } catch (cause) {
+    throw new Error(
+      `storage refused to store secret for "${key}": ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
   }
-  fallback.set(key, value);
+
+  try {
+    storage.setItem(key, value);
+  } catch (cause) {
+    throw new Error(
+      `localStorage write failed for "${key}": ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
 }
 
 export async function deleteSecret(key: string): Promise<void> {
-  const storage = getStorage();
-  if (storage) {
+  try {
+    const storage = requireStorage();
     storage.removeItem(key);
-    return;
+  } catch {
+    // Deleting when storage is absent or throws is a safe no-op.
   }
-  fallback.delete(key);
 }

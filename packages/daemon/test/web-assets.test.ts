@@ -83,6 +83,7 @@ describe("embedded web assets generator and gateway serving", () => {
     const res = await fetch(`http://127.0.0.1:${port}/`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(res.headers.get("cache-control")).toBe("no-cache");
     const text = await res.text();
     expect(text).toContain("<title>Fixture App</title>");
     expect(text).toContain("script type=\"module\"");
@@ -93,6 +94,7 @@ describe("embedded web assets generator and gateway serving", () => {
     const res = await fetch(`http://127.0.0.1:${port}/assets/fixture-font.ttf`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("font/ttf");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
     const text = await res.text();
     expect(text).toBe("TTF_FIXTURE_BINARY_DATA");
   });

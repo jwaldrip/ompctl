@@ -18,7 +18,9 @@ const token = readFileSync(join(home, "token"), "utf8").trim();
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 if (!existsSync(CHROME)) throw new Error(`no chrome at ${CHROME}`);
 
-const profile = mkdtempSync(join(tmpdir(), "ompd-profile-"));
+const resumeIdx = process.argv.indexOf("--resume");
+const resumeProfile = resumeIdx >= 0 && process.argv[resumeIdx + 1] ? process.argv[resumeIdx + 1] : undefined;
+const profile = resumeProfile ?? mkdtempSync(join(tmpdir(), "ompd-profile-"));
 
 /** Load a URL in the persistent profile and report what the page settled on. */
 async function visit(url: string, label: string): Promise<string> {
@@ -66,6 +68,16 @@ async function visit(url: string, label: string): Promise<string> {
   return verdict;
 }
 console.log(`profile ${profile}`);
+
+if (resumeProfile !== undefined) {
+  console.log(`resuming with existing profile ${resumeProfile}`);
+  const second = await visit(`${base}/`, "resume: bare url, no token");
+  const ok = second === "CONNECTED";
+  console.log(`\n${ok ? "PASS" : "FAIL"}: browser ${ok ? "remembers" : "forgets"} the pairing across daemon restart.`);
+  if (ok) rmSync(profile, { recursive: true, force: true });
+  process.exit(ok ? 0 : 1);
+}
+
 const first = await visit(
   `${base}/?token=${encodeURIComponent(token)}&scopes=read,prompt,manage,approve`,
   "1. first visit, token in query",
@@ -74,11 +86,6 @@ const second = await visit(`${base}/`, "2. reload, bare url, no token");
 
 console.log("\nnow restart the daemon, then run:");
 console.log(`  bun run scripts/check-browser-pairing.ts ${base} ${home} --resume ${profile}`);
-
-if (process.argv.includes("--resume")) {
-  const resumeProfile = process.argv[process.argv.indexOf("--resume") + 1];
-  console.log(`resuming in ${resumeProfile}`);
-}
 
 const ok = first === "CONNECTED" && second === "CONNECTED";
 console.log(`\n${ok ? "PASS" : "FAIL"}: browser ${ok ? "remembers" : "forgets"} the pairing across a reload.`);
