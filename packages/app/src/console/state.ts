@@ -1347,9 +1347,15 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   const loadSettled = load !== undefined && (load.phase === "ready" || load.phase === "failed");
   const rosterMisses = state.rosterMisses.get(agentId) ?? 0;
 
-  // "That session closed." copy renders only when the daemon says the session is gone:
-  // a subject-bearing error, or a roster miss after the load settled.
-  if (load?.phase === "failed" && (session === undefined || session.entries.length === 0)) {
+  // "That session closed." copy renders only when there is explicit gone evidence:
+  // an explicit session_gone / session closed refusal, or a roster miss after the load settled.
+  // Other load failures (e.g. deadline timeouts or transient read errors) keep the stand-in agent
+  // so SessionLoadFailed can render with its Retry button.
+  const isExplicitGone =
+    load?.error === "session_gone" ||
+    load?.error === "That session closed." ||
+    (load?.error !== null && load?.error !== undefined && load.error.includes("unknown_session"));
+  if (isExplicitGone && (session === undefined || session.entries.length === 0)) {
     return null;
   }
   if (rosterMisses >= 2 && loadSettled && (session === undefined || session.entries.length === 0)) {
