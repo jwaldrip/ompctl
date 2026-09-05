@@ -97,7 +97,7 @@ afterEach(async () => {
   scratchDirs.length = 0;
 });
 
-test("D7: resumed session returns only pre-resume turns from session_history, excluding post-resume turns", async () => {
+test("D7/D8: resumed session answers history with old turns, and replay from seq 0 contains exactly one user chunk plus new assistant chunks", async () => {
   const dbDir = mkdtempSync(join(tmpdir(), "gw-hist-db-"));
   scratchDirs.push(dbDir);
   const store = new Store(join(dbDir, "ompd.db"));
@@ -161,6 +161,13 @@ test("D7: resumed session returns only pre-resume turns from session_history, ex
   ];
   writeFileSync(sessionFile, `${lines.join("\n")}\n`);
 
+  // Configure fake-host to replay transcript chunks during session/load (simulating real omp acp load replay)
+  fake.replayOnLoad([
+    { sessionUpdate: "session_info_update", title: "d7 session" },
+    { sessionUpdate: "agent_thought_chunk", messageId: "m_old", content: { type: "text", text: "old thought" } },
+    { sessionUpdate: "agent_message_chunk", messageId: "m_old", content: { type: "text", text: "old reply" } },
+  ]);
+
   const client = await connect(port, token);
   await client.next(f => f.t === "hello", "hello");
 
@@ -170,8 +177,26 @@ test("D7: resumed session returns only pre-resume turns from session_history, ex
   if (opened.t !== "session_opened") throw new Error("expected session_opened");
   const agentId = opened.agentId;
 
-  // Now a third turn happens under this agent post-resume:
-  // (appended to session file with current timestamp, and stored in agent update log)
+  // Attach to agent
+  client.send({ t: "attach", agentId });
+  client.send({ t: "ping" });
+  await client.next(f => f.t === "pong", "pong after attach");
+
+  // Send a new prompt post-resume
+  fake.onPrompt(() => {
+    fake.emitUpdate(sessionId, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "new assistant reply" },
+      messageId: "asst_new_1",
+    });
+    return { stopReason: "end_turn" };
+  });
+
+  client.send({ t: "prompt", agentId, text: "post resume turn 3" });
+  await client.next(f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "user_message_chunk", "user_message_chunk");
+  await client.next(f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "agent_message_chunk", "agent_message_chunk");
+
+  // Append post-resume turn to session file
   const postResumeTimestamp = new Date(Date.now() + 1000).toISOString();
   const postResumeLine = JSON.stringify({
     type: "message",
@@ -180,23 +205,35 @@ test("D7: resumed session returns only pre-resume turns from session_history, ex
   });
   writeFileSync(sessionFile, `${lines.join("\n")}\n${postResumeLine}\n`);
 
-  // Record an update in the store for this post-resume turn
-  store.appendUpdate(agentId, { text: "post resume turn 3" });
-
   // Request session_history for the agent
   client.send({ t: "session_history", agentId, sessionId });
   const hist = await client.next(f => f.t === "session_history", "session_history");
   if (hist.t !== "session_history") throw new Error("expected session_history");
 
-  // Pre-fix: hist.entries has 3 entries (includes "post resume turn 3")
-  // Post-fix: hist.entries has exactly the 2 older turns ("old turn 1" and "old turn 2")!
+  // 1. History returns exactly the two older turns
   expect(hist.entries).toHaveLength(2);
   expect(hist.entries.map(e => e.kind === "user" ? e.text : "")).toEqual(["old turn 1", "old turn 2"]);
+
+  // 2. Replay from seq 0 contains:
+  // - state updates from loadSession (session_info_update)
+  // - exactly one user_message_chunk for "post resume turn 3"
+  // - new turn's assistant chunk ("new assistant reply")
+  // and ZERO transcript chunks from the old session/load replay!
+  const updates = store.updatesSince(agentId, 0);
+  const transcriptUpdates = updates.filter(u => {
+    const kind = (u.payload as { sessionUpdate?: string })?.sessionUpdate;
+    return kind === "user_message_chunk" || kind === "agent_message_chunk" || kind === "agent_thought_chunk";
+  });
+  expect(transcriptUpdates).toHaveLength(2);
+  expect((transcriptUpdates[0]!.payload as { sessionUpdate: string }).sessionUpdate).toBe("user_message_chunk");
+  expect((transcriptUpdates[0]!.payload as { content: { text: string } }).content.text).toBe("post resume turn 3");
+  expect((transcriptUpdates[1]!.payload as { sessionUpdate: string }).sessionUpdate).toBe("agent_message_chunk");
+  expect((transcriptUpdates[1]!.payload as { content: { text: string } }).content.text).toBe("new assistant reply");
 
   client.close();
 });
 
-test("D7: fresh agent created via agent_create answers empty first page for session_history", async () => {
+test("D7/D8: fresh agent created via agent_create answers empty first page for session_history and replay starts with user chunk", async () => {
   const dbDir = mkdtempSync(join(tmpdir(), "gw-hist-fresh-db-"));
   scratchDirs.push(dbDir);
   const store = new Store(join(dbDir, "ompd.db"));
@@ -262,13 +299,40 @@ test("D7: fresh agent created via agent_create answers empty first page for sess
   const client = await connect(port, token);
   await client.next(f => f.t === "hello", "hello");
 
+  // Attach to fresh agent
+  client.send({ t: "attach", agentId: agent.id });
+  client.send({ t: "ping" });
+  await client.next(f => f.t === "pong", "pong after attach");
+
+  // Send a prompt
+  fake.onPrompt(() => {
+    fake.emitUpdate(sessionId, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "fresh assistant reply" },
+      messageId: "asst_fresh_1",
+    });
+    return { stopReason: "end_turn" };
+  });
+
+  client.send({ t: "prompt", agentId: agent.id, text: "fresh prompt 1" });
+  await client.next(f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "user_message_chunk", "user_message_chunk");
+
+  // 1. Session history is empty for fresh agent
   client.send({ t: "session_history", agentId: agent.id, sessionId });
   const hist = await client.next(f => f.t === "session_history", "session_history");
   if (hist.t !== "session_history") throw new Error("expected session_history");
-
-  // Pre-fix: hist.entries has 1 entry ("msg_fresh_1")
-  // Post-fix: fresh agent has no pre-agent history, so entries is []!
   expect(hist.entries).toEqual([]);
+
+  // 2. First transcript update in replay is the user chunk
+  const updates = store.updatesSince(agent.id, 0);
+  const transcriptUpdates = updates.filter(u => {
+    const kind = (u.payload as { sessionUpdate?: string })?.sessionUpdate;
+    return kind === "user_message_chunk" || kind === "agent_message_chunk" || kind === "agent_thought_chunk";
+  });
+  expect(transcriptUpdates.length).toBeGreaterThanOrEqual(1);
+  const first = transcriptUpdates[0]!.payload as { sessionUpdate: string; content: { text: string } };
+  expect(first.sessionUpdate).toBe("user_message_chunk");
+  expect(first.content.text).toBe("fresh prompt 1");
 
   client.close();
 });
