@@ -618,8 +618,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // caret must stay.
       const live = state.agents.find(candidate => candidate.id === agentId);
       const applied = withSession(state, agentId, session => reduce(session, update));
+      const isChunk =
+        typeof update === "object" &&
+        update !== null &&
+        (Reflect.get(update, "sessionUpdate") === "agent_message_chunk" ||
+          Reflect.get(update, "sessionUpdate") === "agent_thought_chunk");
       const next =
-        live !== undefined && live.state !== "busy"
+        !isChunk && live !== undefined && live.state !== "busy"
           ? withSession(applied, agentId, session => endTurn(session))
           : applied;
       return { ...settleLoad(next, agentId), watermarks, rosterMisses };
@@ -856,7 +861,12 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "session_history": {
       const { agentId, sessionId, entries, nextBefore } = event.event;
-      const next = withSession(state, agentId, session => mergeSessionHistory(session, entries));
+      const merged = withSession(state, agentId, session => mergeSessionHistory(session, entries));
+      const live = state.agents.find(candidate => candidate.id === agentId);
+      const next =
+        live !== undefined && live.state !== "busy"
+          ? withSession(merged, agentId, session => endTurn(session))
+          : merged;
       const historyBefore = new Map(next.historyBefore);
       historyBefore.set(agentId, nextBefore);
       const historyLoading = new Set(next.historyLoading);
