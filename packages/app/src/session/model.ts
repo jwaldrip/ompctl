@@ -216,6 +216,7 @@ export function transcriptRowKey(entry: Entry): string {
 export function mergeSessionHistory(state: SessionState, history: readonly SessionHistoryEntry[]): SessionState {
   if (history.length === 0) return state;
   const existing = new Set(state.entries.map(transcriptRowKey));
+  const remaining = state.entries.slice();
   const prepend: Entry[] = [];
   for (const item of history) {
     const entry: Entry =
@@ -235,11 +236,24 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
             };
     const key = transcriptRowKey(entry);
     if (existing.has(key)) continue;
+
+    if (entry.kind === "user") {
+      const echoIdx = remaining.findIndex(
+        r => r.kind === "user" && r.id.startsWith("prompt-") && r.text === entry.text,
+      );
+      if (echoIdx >= 0) {
+        remaining.splice(echoIdx, 1);
+      }
+    }
+
     existing.add(key);
     prepend.push(entry);
   }
-  if (prepend.length === 0) return state;
-  return { ...state, entries: [...prepend, ...state.entries] };
+  const combined = prepend.length === 0 ? remaining : [...prepend, ...remaining];
+  if (combined.length === state.entries.length && combined.every((e, i) => e === state.entries[i])) {
+    return state;
+  }
+  return { ...state, entries: combined };
 }
 
 export interface SessionState {
