@@ -61,6 +61,7 @@ import {
   type SessionSummary,
   type SkillSummary,
   type Store,
+  TERMINAL_AGENT_STATES,
   type SyncSettings,
   type Task,
   type TriggerDraft,
@@ -87,6 +88,7 @@ import {
   type PendingApproval,
   type PendingPlanReview,
   type Supervisor,
+  AgentBusyError,
   UnauthorizedError,
 } from "../supervisor.ts";
 import { WEB_ASSETS, WEB_ASSETS_BUILT } from "../web-assets.ts";
@@ -1062,7 +1064,14 @@ export interface SyncDocument extends SyncSettings {
   connectors: ConnectorSummary[];
 }
 
+export const DEFAULT_MAX_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024; // 8 MiB
+
 export interface GatewayOptions {
+  /**
+   * Maximum bytes permitted in a socket outbound buffer before closing with 1013 backpressure.
+   * Defaults to 8 MiB.
+   */
+  maxSocketBufferBytes?: number;
   supervisor: Supervisor;
   store: Store;
   /**
@@ -1084,6 +1093,7 @@ export interface GatewayOptions {
    * no business reading.
    */
   onError?: (err: Error) => void;
+  onLog?: (message: string) => void;
   host?: string;
   /** 0 asks the OS for a free port; read the real one back from `listen()`. */
   port?: number;
@@ -1319,6 +1329,15 @@ export interface GatewaySocket {
   data: SocketState;
   send(data: string): unknown;
   close(code?: number, reason?: string): void;
+  /**
+   * Number of bytes currently buffered in the transport awaiting flush.
+   *
+   * Bun ServerWebSocket implements this natively. For tunnel connections
+   * tunneled through TunnelDaemon, frames are relayed immediately over the
+   * shared hub WebSocket without per-session buffer measurement; where
+   * unmeasurable, this returns undefined and the direct path enforces the cap.
+   */
+  getBufferedAmount?(): number;
 }
 
 /**
@@ -1346,6 +1365,9 @@ export class Gateway {
   #events: GatewayEvents | undefined;
   #host: string;
   #port: number;
+  #maxSocketBufferBytes: number;
+  #hasClosedSockets = false;
+  #notifiedGoneSessions = new Set<string>();
   #version: string;
   #homeId: string | undefined;
   #voice: VoiceHandlerFactory | undefined;
@@ -1382,6 +1404,7 @@ export class Gateway {
   #onWebViewUnavailable: GatewayOptions["onWebViewUnavailable"];
   #staticRoot: string | undefined;
   #onError: GatewayOptions["onError"];
+  #onLog: GatewayOptions["onLog"];
   #collab: CollabRooms;
   /**
    * Guest legs into omp collab rooms. A different thing from `#collab`
@@ -1449,6 +1472,7 @@ export class Gateway {
     this.#events = opts.events;
     this.#host = opts.host ?? DEFAULT_HOST;
     this.#port = opts.port ?? 0;
+    this.#maxSocketBufferBytes = opts.maxSocketBufferBytes ?? DEFAULT_MAX_SOCKET_BUFFER_BYTES;
     this.#version = opts.version ?? DEFAULT_VERSION;
     this.#homeId = opts.homeId;
     this.#voice = opts.voice;
@@ -1469,6 +1493,7 @@ export class Gateway {
     // Resolved once so the traversal check below compares two absolute paths.
     this.#staticRoot = opts.staticRoot === undefined ? undefined : resolve(opts.staticRoot);
     this.#onError = opts.onError;
+    this.#onLog = opts.onLog;
 
     this.#unsubscribe = this.#events?.add({
       onUpdate: (agentId, seq, update) => {
@@ -1620,7 +1645,7 @@ export class Gateway {
     // either way, so skipping the await costs nothing the shutdown order
     // relies on.
     const stopping = this.#server?.stop(true);
-    if (!this.#collabRelay.hasClosedLegs) await stopping;
+    if (!this.#collabRelay.hasClosedLegs && !this.#hasClosedSockets) await stopping;
     this.#server = undefined;
     this.#startedAtMs = undefined;
   }
@@ -1652,7 +1677,11 @@ export class Gateway {
    * closed so the daemon can audit it, and an exception collapses that back to
    * one outcome.
    */
-  acceptTunnelSession(token: string, send: (raw: string) => void): TunnelSessionResult {
+  acceptTunnelSession(
+    token: string,
+    send: (raw: string) => void,
+    getBufferedAmount?: () => number,
+  ): TunnelSessionResult {
     const verdict = this.#auth.authenticate(token);
     if (!verdict.ok) {
       switch (verdict.reason) {
@@ -1675,6 +1704,7 @@ export class Gateway {
       close: () => {
         this.#close(ws);
       },
+      getBufferedAmount,
     };
     this.#open(ws);
     return {
@@ -2115,6 +2145,9 @@ export class Gateway {
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           return Response.json({ error: "forbidden" }, { status: 403 });
+        }
+        if (err instanceof AgentBusyError) {
+          return Response.json({ error: "agent_busy", message: err.message }, { status: 409 });
         }
         return Response.json({ error: err instanceof Error ? err.message : "prompt failed" }, { status: 404 });
       }
@@ -3467,6 +3500,7 @@ export class Gateway {
     if (!index) {
       this.#send(ws, {
         t: "error",
+        sessionId: frame.sessionId,
         code: "sessions_unavailable",
         message: "no session index is wired into this daemon",
       });
@@ -3476,7 +3510,7 @@ export class Gateway {
     const claimed = { cwd: frame.cwd, ...(takeover ? { pid: frame.pid } : {}) };
     const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
     if (claim.verdict === "refuse") {
-      this.#send(ws, { t: "error", code: claim.code, message: claim.message });
+      this.#send(ws, { t: "error", sessionId: frame.sessionId, code: claim.code, message: claim.message });
       return;
     }
     if (claim.verdict === "held") {
@@ -3507,6 +3541,7 @@ export class Gateway {
       }
       this.#send(ws, {
         t: "error",
+        sessionId: frame.sessionId,
         code: err instanceof TakeoverRefusal ? err.code : takeover ? "takeover_failed" : "resume_failed",
         message: err instanceof Error ? err.message : "session open failed",
       });
@@ -3980,6 +4015,7 @@ export class Gateway {
           audit("denied", { reason: "unauthorized", sessionId: frame.sessionId });
           this.#send(ws, {
             t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
             code: "unauthorized",
             message: "session prompt requires prompt scope",
           });
@@ -3998,7 +4034,12 @@ export class Gateway {
           // `nextTurn` lands here: `pi.sendUserMessage` has no such mode, and
           // refusing it is the honest answer, not downgrading it to a steer.
           audit("denied", { reason: "bad_frame" });
-          this.#send(ws, { t: "error", code: "bad_frame", message: "invalid session prompt" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "bad_frame",
+            message: "invalid session prompt",
+          });
           return;
         }
         if (!images.ok) {
@@ -4009,6 +4050,7 @@ export class Gateway {
           audit("denied", { reason: `attachment_${images.refusal}`, sessionId: frame.sessionId });
           this.#send(ws, {
             t: "error",
+            sessionId: frame.sessionId,
             code: `attachment_${images.refusal}`,
             message: PROMPT_IMAGE_REFUSAL_REASONS[images.refusal],
           });
@@ -4025,6 +4067,7 @@ export class Gateway {
           audit("denied", { reason: "tui_unreachable", sessionId: frame.sessionId, deliverAs });
           this.#send(ws, {
             t: "error",
+            sessionId: frame.sessionId,
             code: "tui_unreachable",
             message: `no connected TUI owns session ${frame.sessionId}`,
           });
@@ -4096,6 +4139,7 @@ export class Gateway {
         // and arrive out of order, and `#deliverUpdate` drops anything at or
         // below the high-water mark so nothing arrives twice either.
         ws.data.attached.add(frame.agentId);
+        this.#armSessionWatcher();
         if (frame.sinceSeq !== undefined) {
           for (const record of this.#store.updatesSince(frame.agentId, frame.sinceSeq)) {
             this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload);
@@ -4122,6 +4166,7 @@ export class Gateway {
 
       case "detach":
         ws.data.attached.delete(frame.agentId);
+        if (!this.#hasSessionWatchers()) this.#disarmSessionWatcher();
         // Forget the high-water mark too, so a later attach may replay again.
         ws.data.delivered.delete(frame.agentId);
         // Same for approvals, so a reattach is shown a still-pending ask.
@@ -4246,7 +4291,12 @@ export class Gateway {
         // session changes, so there is no manage gate to pass and nothing to
         // audit that `sessions` does not already leave unaudited.
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "session tail requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "session tail requires read scope",
+          });
           return;
         }
         if (
@@ -4257,6 +4307,7 @@ export class Gateway {
         ) {
           this.#send(ws, {
             t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
             code: "bad_frame",
             message:
               "session tail needs a sessionId, a positive integer limit when given, and a non-negative integer cursor when given",
@@ -4267,6 +4318,7 @@ export class Gateway {
         if (!tailIndex) {
           this.#send(ws, {
             t: "error",
+            sessionId: frame.sessionId,
             code: "sessions_unavailable",
             message: "no session index is wired into this daemon",
           });
@@ -4281,7 +4333,13 @@ export class Gateway {
 
       case "session_history": {
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "session history requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            agentId: typeof frame.agentId === "string" ? frame.agentId : undefined,
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "session history requires read scope",
+          });
           return;
         }
         if (
@@ -4292,7 +4350,13 @@ export class Gateway {
           (frame.before !== undefined && (!Number.isSafeInteger(frame.before) || frame.before < 0)) ||
           (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0))
         ) {
-          this.#send(ws, { t: "error", code: "bad_frame", message: "session history frame is malformed" });
+          this.#send(ws, {
+            t: "error",
+            agentId: typeof frame.agentId === "string" ? frame.agentId : undefined,
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "bad_frame",
+            message: "session history frame is malformed",
+          });
           return;
         }
         const agent = this.#store.getAgent(frame.agentId);
@@ -4300,6 +4364,7 @@ export class Gateway {
           this.#send(ws, {
             t: "error",
             agentId: frame.agentId,
+            sessionId: frame.sessionId,
             code: "unknown_session",
             message: "agent does not own the requested session",
           });
@@ -4307,7 +4372,13 @@ export class Gateway {
         }
         const historyIndex = this.#sessionIndex;
         if (!historyIndex) {
-          this.#send(ws, { t: "error", code: "sessions_unavailable", message: "no session index is wired" });
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            sessionId: frame.sessionId,
+            code: "sessions_unavailable",
+            message: "no session index is wired",
+          });
           return;
         }
         void this.#serveSessionHistoryFrame(
@@ -4781,6 +4852,7 @@ export class Gateway {
         if (!ws.data.scopes.has(scope)) {
           this.#send(ws, {
             t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
             code: "unauthorized",
             message: `${frame.t} requires ${scopeName} scope`,
           });
@@ -4797,6 +4869,7 @@ export class Gateway {
         ) {
           this.#send(ws, {
             t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
             code: "bad_frame",
             message: `${frame.t} needs a sessionId, a non-empty cwd, and a positive pid when taking over`,
           });
@@ -5056,7 +5129,7 @@ export class Gateway {
         if (!ws.data.scopes.has(SCOPE_PROMPT)) {
           this.#send(ws, {
             t: "error",
-            agentId: frame.agentId,
+            agentId: typeof frame.agentId === "string" ? frame.agentId : undefined,
             code: "unauthorized",
             message: "prompt requires prompt scope",
           });
@@ -5127,7 +5200,12 @@ export class Gateway {
             this.#send(ws, {
               t: "error",
               agentId: frame.agentId,
-              code: err instanceof UnauthorizedError ? "unauthorized" : "prompt_failed",
+              code:
+                err instanceof AgentBusyError
+                  ? "agent_busy"
+                  : err instanceof UnauthorizedError
+                    ? "unauthorized"
+                    : "prompt_failed",
               message: err instanceof Error ? err.message : "prompt failed",
             });
           });
@@ -5138,7 +5216,7 @@ export class Gateway {
         if (!ws.data.scopes.has(SCOPE_PROMPT)) {
           this.#send(ws, {
             t: "error",
-            agentId: frame.agentId,
+            agentId: typeof frame.agentId === "string" ? frame.agentId : undefined,
             code: "unauthorized",
             message: "cancel requires prompt scope",
           });
@@ -5469,7 +5547,7 @@ export class Gateway {
 
   #hasSessionWatchers(): boolean {
     for (const other of this.#sockets) {
-      if (other.data.watchingSessions && !other.data.revoked) return true;
+      if ((other.data.watchingSessions || other.data.attached.size > 0) && !other.data.revoked) return true;
     }
     return false;
   }
@@ -5522,13 +5600,41 @@ export class Gateway {
     if (!index) return;
     let watchers = 0;
     for (const ws of this.#sockets) {
-      if (!ws.data.watchingSessions) continue;
-      if (!ws.data.scopes.has(SCOPE_READ)) continue;
       if (ws.data.revoked) continue;
-      watchers += 1;
-      void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery);
+      if (ws.data.watchingSessions && ws.data.scopes.has(SCOPE_READ)) {
+        watchers += 1;
+        void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery);
+      } else if (ws.data.attached.size > 0) {
+        watchers += 1;
+      }
     }
     if (watchers === 0) this.#disarmSessionWatcher();
+    void this.#checkGoneSessions();
+  }
+
+  async #checkGoneSessions(): Promise<void> {
+    const index = this.#sessionIndex;
+    if (!index) return;
+    for (const agent of this.#sup.listAgents()) {
+      if (!agent.acpSessionId || TERMINAL_AGENT_STATES.includes(agent.state)) continue;
+      const key = `${agent.id}:${agent.acpSessionId}`;
+      if (this.#notifiedGoneSessions.has(key)) continue;
+
+      const path = await index.pathFor(agent.acpSessionId);
+      if (path === undefined) {
+        this.#notifiedGoneSessions.add(key);
+        for (const ws of this.#sockets) {
+          if (!ws.data.attached.has(agent.id) || ws.data.revoked) continue;
+          this.#send(ws, {
+            t: "error",
+            code: "session_gone",
+            sessionId: agent.acpSessionId,
+            agentId: agent.id,
+            message: `session ${agent.acpSessionId} has been removed from disk`,
+          });
+        }
+      }
+    }
   }
 
   /**
@@ -5775,6 +5881,7 @@ export class Gateway {
       if (path === undefined) {
         this.#send(ws, {
           t: "error",
+          sessionId,
           code: "unknown_session",
           message: `no session ${sessionId} on this machine`,
         });
@@ -5801,6 +5908,7 @@ export class Gateway {
       // the asking socket exactly one error frame, never a dropped one.
       this.#send(ws, {
         t: "error",
+        sessionId,
         code: "session_tail_failed",
         message: err instanceof Error ? err.message : "session tail failed",
       });
@@ -5819,7 +5927,7 @@ export class Gateway {
     try {
       const path = await index.pathFor(sessionId);
       if (path === undefined) {
-        this.#send(ws, { t: "error", agentId, code: "unknown_session", message: `no session ${sessionId}` });
+        this.#send(ws, { t: "error", agentId, sessionId, code: "unknown_session", message: `no session ${sessionId}` });
         return;
       }
       const history = await readSessionHistory(path, {
@@ -5837,6 +5945,7 @@ export class Gateway {
       this.#send(ws, {
         t: "error",
         agentId,
+        sessionId,
         code: "session_history_failed",
         message: err instanceof Error ? err.message : "session history failed",
       });
@@ -5942,6 +6051,26 @@ export class Gateway {
   }
 
   #send(ws: GatewaySocket, frame: ServerFrame): void {
+    const buffered = ws.getBufferedAmount?.() ?? 0;
+    if (buffered > this.#maxSocketBufferBytes) {
+      this.#store.audit({
+        action: "socket.backpressure",
+        actorDeviceId: ws.data.deviceId,
+        outcome: "error",
+        detail: { buffered, limit: this.#maxSocketBufferBytes, code: 1013, reason: "backpressure" },
+      });
+      this.#onLog?.(
+        `[gateway] closing socket for ${ws.data.deviceId} due to backpressure: ${buffered} bytes buffered (limit ${this.#maxSocketBufferBytes})`,
+      );
+      this.#hasClosedSockets = true;
+      try {
+        ws.close(1013, "backpressure");
+      } catch {
+        // Socket closed or closing
+      }
+      this.#close(ws);
+      return;
+    }
     try {
       ws.send(JSON.stringify(frame));
     } catch {

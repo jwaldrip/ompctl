@@ -58,6 +58,17 @@ export class UnauthorizedError extends Error {
   }
 }
 
+/** Thrown when a prompt is attempted on an agent that already has a turn in flight. */
+export class AgentBusyError extends Error {
+  readonly agentId: AgentId;
+  readonly code = "agent_busy" as const;
+  constructor(agentId: AgentId, message = `agent ${agentId} is busy`) {
+    super(message);
+    this.name = "AgentBusyError";
+    this.agentId = agentId;
+  }
+}
+
 export interface PendingApproval {
   requestId: string;
   agentId: AgentId;
@@ -508,6 +519,7 @@ export class Supervisor {
   #sessionAgent = new Map<string, AgentId>();
   #pending = new Map<string, PendingApproval>();
   #pendingPlanReviews = new Map<string, PendingPlanReview>();
+  #inFlightTurns = new Map<AgentId, number>();
 
   constructor(opts: SupervisorOptions) {
     this.#store = opts.store;
@@ -880,6 +892,12 @@ export class Supervisor {
     const { agent, entry } = this.#resolve(agentId);
     if (!agent.acpSessionId) throw new Error(`agent ${agentId} has no session`);
 
+    const inFlight = this.#inFlightTurns.get(agentId) ?? 0;
+    if (inFlight > 0) {
+      throw new AgentBusyError(agentId, `agent ${agentId} has a turn in flight`);
+    }
+
+    this.#inFlightTurns.set(agentId, inFlight + 1);
     this.#setState(agentId, "busy");
     this.#store.audit({
       action: "agent.prompt",
@@ -891,14 +909,18 @@ export class Supervisor {
     try {
       return await entry.host.client.prompt(agent.acpSessionId, text, images);
     } finally {
-      // Only return to idle if the agent is still live. A turn can be
-      // abandoned by stopAgent or by its host dying, and both write a terminal
-      // state while this call is still unwinding. Writing idle unconditionally
-      // would resurrect a dead agent into something a client renders as ready
-      // to accept work.
-      const current = this.#store.getAgent(agentId);
-      if (current && !TERMINAL_AGENT_STATES.includes(current.state)) {
-        this.#setState(agentId, "idle");
+      // Only return to idle if the in-flight count reaches zero and the agent
+      // is still live. A turn can be abandoned by stopAgent or by its host dying,
+      // and both write a terminal state while this call is still unwinding.
+      const remaining = (this.#inFlightTurns.get(agentId) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.#inFlightTurns.delete(agentId);
+        const current = this.#store.getAgent(agentId);
+        if (current && !TERMINAL_AGENT_STATES.includes(current.state)) {
+          this.#setState(agentId, "idle");
+        }
+      } else {
+        this.#inFlightTurns.set(agentId, remaining);
       }
     }
   }
@@ -920,6 +942,7 @@ export class Supervisor {
       // exactly the state routine actions leave behind.
       if (this.#sessionAgent.get(agent.acpSessionId) === agentId) this.#sessionAgent.delete(agent.acpSessionId);
     }
+    this.#inFlightTurns.delete(agentId);
     entry.agents.delete(agentId);
     this.#setState(agentId, "stopped");
     this.#store.audit({ action: "agent.stop", agentId, outcome: "ok" });
@@ -944,6 +967,7 @@ export class Supervisor {
         }
       }
     }
+    this.#inFlightTurns.clear();
     this.#hosts.clear();
     for (const entry of entries) entry.host.kill();
     // Killing the local end of `docker exec` stops the remote `omp acp`, but

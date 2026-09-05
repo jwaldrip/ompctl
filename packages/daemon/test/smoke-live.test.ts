@@ -2,13 +2,13 @@
  * Live smoke test against a real `omp acp` child process.
  *
  * The scripted-peer tests in `permission-path.test.ts` prove ompd's logic. This
- * proves the assumption underneath all of it: that OMP genuinely asks before
- * running a built-in tool, and genuinely does not run it when told no. A fake
- * cannot establish that, because a fake is written by the same person who wrote
- * the assumption.
+ * proves the assumption underneath all of it: that OMP genuinely speaks the wire
+ * protocol, creates sessions via ACP `session/new`, loads dormant sessions via
+ * `session/load`, cancels via `session/cancel`, and asks before running tools.
  *
- * Gated behind OMPD_LIVE=1: it spends real model tokens. Run it before trusting
- * a release, not on every save.
+ * Gated on `which omp` succeeding so the token-free lifecycle and ACP handshake
+ * tests run locally whenever omp is installed (e.g. omp 18.1.11). Tests that spend
+ * real model tokens remain gated behind OMPD_LIVE=1.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -18,9 +18,11 @@ import { join } from "node:path";
 import { type Actor, SCOPE_APPROVE, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, Store } from "@ompd/core";
 import { type PendingApproval, Supervisor } from "../src/supervisor.ts";
 
-const d = process.env.OMPD_LIVE === "1" ? describe : describe.skip;
+const hasOmp = Bun.which("omp") !== null;
+const describeOmp = hasOmp ? describe : describe.skip;
+const testPrompt = hasOmp && process.env.OMPD_LIVE === "1" ? test : test.skip;
 
-d("live omp acp", () => {
+describeOmp("live omp acp", () => {
   const workdir = mkdtempSync(join(tmpdir(), "ompd-live-"));
   const store = new Store(join(workdir, "ompd.db"));
   let approvals: Array<Omit<PendingApproval, "resolve">> = [];
@@ -48,7 +50,67 @@ d("live omp acp", () => {
     rmSync(workdir, { recursive: true, force: true });
   });
 
-  test("a real agent cannot touch the filesystem when the gate is not answered", async () => {
+  test("ACP handshake and session/new against real omp process without spending tokens", async () => {
+    const agent = await sup.createAgent({ name: "live-handshake", cwd: workdir }, operator);
+    expect(agent.id).toBeDefined();
+    expect(agent.state).toBe("idle");
+    expect(agent.acpSessionId).toBeDefined();
+    expect(typeof agent.acpSessionId).toBe("string");
+    expect(agent.acpSessionId!.length).toBeGreaterThan(0);
+
+    // Cancel cleans up turn/session state without error
+    await expect(sup.cancel(agent.id, operator)).resolves.toBeUndefined();
+
+    // Clean stop
+    await sup.stopAgent(agent.id, operator);
+    expect(store.getAgent(agent.id)?.state).toBe("stopped");
+  }, 30_000);
+
+  test("ACP session/load resumes a dormant session against real omp process", async () => {
+    // 1. Create a session with real omp
+    const initial = await sup.createAgent({ name: "live-to-resume", cwd: workdir }, operator);
+    const sessionId = initial.acpSessionId!;
+    expect(sessionId).toBeDefined();
+
+    // 2. Stop agent so the session becomes dormant on disk
+    await sup.stopAgent(initial.id, operator);
+    expect(store.getAgent(initial.id)?.state).toBe("stopped");
+
+    // 3. Resume session via ACP session/load
+    const resumed = await sup.resumeAgent(
+      { name: "live-resumed", cwd: workdir, sessionId },
+      operator,
+    );
+    expect(resumed.id).toBeDefined();
+    expect(resumed.acpSessionId).toBe(sessionId);
+    expect(resumed.state).toBe("idle");
+
+    await sup.stopAgent(resumed.id, operator);
+  }, 30_000);
+
+  test("audit: supervisor #onUpdate SQLite 10k-update loop measurement", () => {
+    const benchAgentId = "agt_bench_updates";
+    store.upsertAgent({
+      id: benchAgentId,
+      name: "bench",
+      state: "idle",
+      host: { kind: "local", id: "1", spec: { kind: "local" } },
+      cwd: workdir,
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      labels: {},
+    });
+
+    const start = performance.now();
+    for (let i = 0; i < 10_000; i++) {
+      store.appendUpdate(benchAgentId, { seq: i, text: "audit update" });
+    }
+    const elapsedMs = performance.now() - start;
+    console.log(`[audit: #onUpdate Store.appendUpdate] 10,000 updates: ${elapsedMs.toFixed(2)}ms (${(elapsedMs / 10).toFixed(2)}µs/update)`);
+    expect(elapsedMs).toBeGreaterThan(0);
+  });
+
+  testPrompt("a real agent cannot touch the filesystem when the gate is not answered", async () => {
     approvals = [];
     const marker = join(workdir, "denied.txt");
     const agent = await sup.createAgent({ name: "live-deny", cwd: workdir }, operator);
@@ -63,7 +125,7 @@ d("live omp acp", () => {
     expect(existsSync(marker)).toBe(false);
   }, 180_000);
 
-  test("the same agent does touch the filesystem once an operator approves", async () => {
+  testPrompt("the same agent does touch the filesystem once an operator approves", async () => {
     approvals = [];
     const marker = join(workdir, "allowed.txt");
     const agent = await sup.createAgent({ name: "live-allow", cwd: workdir }, operator);

@@ -1651,4 +1651,38 @@ describe("session tail surface", () => {
     h.client.prompt(AGENT, "hello");
     expect(errors.length).toBe(1);
   });
+
+  test("close code 1013 (backpressure) is transient, reconnects with backoff and re-attaches with sinceSeq", async () => {
+    const h = harness({ verdict: "rejected" });
+    h.client.start();
+
+    // 1. If 1013 occurs before hello, it must not probe or suspect credentials
+    const firstSocket = h.latest();
+    firstSocket.close(1013, "backpressure");
+    expect(h.probes()).toBe(0);
+    expect(h.unauthorized).toEqual([]);
+    expect(h.statuses.at(-1)?.state).toBe("reconnecting");
+
+    // 2. Advance clock to reconnect
+    h.clock.runNext();
+    const secondSocket = bringUp(h);
+    expect(secondSocket).not.toBe(firstSocket);
+
+    // Attach agent and stream updates
+    h.client.attach(AGENT);
+    secondSocket.deliver({ t: "update", agentId: AGENT, seq: 1, update: "u1" });
+    secondSocket.deliver({ t: "update", agentId: AGENT, seq: 2, update: "u2" });
+    expect(h.client.watermark(AGENT)).toBe(2);
+
+    // 3. Mid-stream 1013 closes socket
+    secondSocket.close(1013, "backpressure");
+    expect(h.statuses.at(-1)?.state).toBe("reconnecting");
+    expect(h.statuses.at(-1)?.reason).toBe("backpressure");
+
+    // 4. Reconnect with hello, verify attach replays watermark (sinceSeq: 2)
+    h.clock.runNext();
+    const thirdSocket = bringUp(h);
+    const attaches = thirdSocket.framesOfType("attach");
+    expect(attaches).toEqual([{ t: "attach", agentId: AGENT, sinceSeq: 2 }]);
+  });
 });
