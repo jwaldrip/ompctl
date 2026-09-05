@@ -259,6 +259,7 @@ export function useConsole(
         client.detach?.(current.selected);
       }
       leaveCollab(current.selected, agentId ?? undefined);
+      client.selectTerminalSession?.(null);
       if (agentId === null) {
         dispatch({ t: "select", agentId: null });
         return;
@@ -379,8 +380,8 @@ export function useConsole(
         if (current.selected !== null && current.selected !== event.agentId) {
           client.detach?.(current.selected);
         }
+        client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: event.agentId, awaiting: true });
-        client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
       }),
       client.on("collab_opened", event => {
@@ -396,8 +397,7 @@ export function useConsole(
           client.detach?.(current.selected);
         }
         leaveCollab(current.selected, event.agentId);
-        // holds nothing of the joined session yet and a page that always
-        // answers was asked for.
+        client.selectTerminalSession?.(null);
         const fetchingHistory = !current.historyBefore.has(event.agentId);
         const replaying = !current.watermarks.has(event.agentId);
         dispatch({ t: "collab_opened", event, awaiting: replaying && fetchingHistory });
@@ -567,6 +567,7 @@ export function useConsole(
           client.detach?.(current.selected);
         }
         leaveCollab(current.selected);
+        client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: null });
       },
       prompt(agentId, text, images) {
@@ -657,6 +658,7 @@ export function useConsole(
             if (current.selected !== null) {
               client.detach?.(current.selected);
             }
+            client.selectTerminalSession?.(target.sessionId);
             // claims the renderer, and the transcript arrives through the
             // same frames an owned agent uses.
             //
