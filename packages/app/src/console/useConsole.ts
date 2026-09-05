@@ -228,9 +228,16 @@ export function useConsole(
    * only the replies that arrive after it.
    */
   const selectAgent = useCallback(
-    (agentId: AgentId): void => {
+    (agentId: AgentId | null): void => {
       const current = stateRef.current;
-      leaveCollab(current.selected, agentId);
+      if (current.selected !== null && current.selected !== agentId) {
+        client.detach?.(current.selected);
+      }
+      leaveCollab(current.selected, agentId ?? undefined);
+      if (agentId === null) {
+        dispatch({ t: "select", agentId: null });
+        return;
+      }
       const agent = current.agents.find(candidate => candidate.id === agentId);
       // What this open actually asks the daemon for, decided before the
       // dispatch because the reducer cannot know it.
@@ -343,6 +350,10 @@ export function useConsole(
         // Always awaiting: the history page below is asked for unconditionally
         // here, so there is always an answer coming, and a resume means this
         // device holds nothing of the session yet by definition.
+        const current = stateRef.current;
+        if (current.selected !== null && current.selected !== event.agentId) {
+          client.detach?.(current.selected);
+        }
         dispatch({ t: "select", agentId: event.agentId, awaiting: true });
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
@@ -356,8 +367,10 @@ export function useConsole(
         // watermark rather than replaying, and the history guard keeps the
         // first page from being asked for twice.
         const current = stateRef.current;
+        if (current.selected !== null && current.selected !== event.agentId) {
+          client.detach?.(current.selected);
+        }
         leaveCollab(current.selected, event.agentId);
-        // The same rule the ordinary open follows: wait only when this device
         // holds nothing of the joined session yet and a page that always
         // answers was asked for.
         const fetchingHistory = !current.historyBefore.has(event.agentId);
@@ -508,7 +521,11 @@ export function useConsole(
         selectAgent(agentId);
       },
       back() {
-        leaveCollab(stateRef.current.selected);
+        const current = stateRef.current;
+        if (current.selected !== null) {
+          client.detach?.(current.selected);
+        }
+        leaveCollab(current.selected);
         dispatch({ t: "select", agentId: null });
       },
       prompt(agentId, text, images) {
@@ -575,7 +592,10 @@ export function useConsole(
             selectAgent(target.agentId);
             return;
           case "live-tui": {
-            // A live terminal is joined, never taken over: nothing here
+            const current = stateRef.current;
+            if (current.selected !== null) {
+              client.detach?.(current.selected);
+            }
             // claims the renderer, and the transcript arrives through the
             // same frames an owned agent uses.
             //
