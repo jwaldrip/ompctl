@@ -121,13 +121,23 @@ function contentTypeFor(key: string): string {
   return CONTENT_TYPES[extname(key)] ?? "application/octet-stream";
 }
 
-/** Decode one embedded asset into a response with an explicit content type. */
+/** Decode one embedded asset into a response with an explicit content type and cache-control. */
 function embeddedResponse(base64: string, key: string): Response {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-  return new Response(bytes, { headers: { "content-type": contentTypeFor(key) } });
+  const clean = key.replace(/^\/+/, "");
+  const cacheControl = clean.startsWith("assets/")
+    ? "public, max-age=31536000, immutable"
+    : "no-cache";
+
+  return new Response(bytes, {
+    headers: {
+      "content-type": contentTypeFor(key),
+      "cache-control": cacheControl,
+    },
+  });
 }
 /** Narrow an untrusted client payload before it reaches the MCP result path. */
 function isWebViewActionResult(value: unknown): value is WebViewActionResult {
@@ -1221,6 +1231,8 @@ export interface GatewayOptions {
    * filesystem".
    */
   filesystem?: FilesystemSurface;
+  /** Embedded web assets map, for testing or overriding the compiled-in WEB_ASSETS. */
+  embeddedAssets?: { assets: Record<string, string>; built: boolean };
 }
 
 interface LiveTuiSocket {
@@ -1429,9 +1441,11 @@ export class Gateway {
   #unsubscribeSay: (() => void) | undefined;
   #unsubscribeRevoked: (() => void) | undefined;
   #unsubscribe: (() => void) | undefined;
+  #embeddedAssets?: { assets: Record<string, string>; built: boolean };
 
   constructor(opts: GatewayOptions) {
     this.#sup = opts.supervisor;
+    this.#embeddedAssets = opts.embeddedAssets;
     this.#exposeCollabRelay = opts.exposeCollabRelay ?? false;
     this.#requestAddress = opts.requestAddress ?? ((req, server) => server.requestIP(req)?.address ?? null);
     this.#store = opts.store;
@@ -3374,7 +3388,9 @@ export class Gateway {
    * names a key that was embedded or it does not exist.
    */
   #serveEmbedded(pathname: string): Response | null {
-    if (!WEB_ASSETS_BUILT) return null;
+    const assetsBuilt = this.#embeddedAssets !== undefined ? this.#embeddedAssets.built : WEB_ASSETS_BUILT;
+    const assetMap = this.#embeddedAssets !== undefined ? this.#embeddedAssets.assets : WEB_ASSETS;
+    if (!assetsBuilt) return null;
 
     let key = "";
     try {
@@ -3388,14 +3404,14 @@ export class Gateway {
     if (!key.startsWith("/")) key = `/${key}`;
     if (key === "/") key = "/index.html";
 
-    const embedded = WEB_ASSETS[key];
+    const embedded = assetMap[key];
     if (embedded !== undefined) return embeddedResponse(embedded, key);
 
     // Same rule as the on-disk path: an extensionless path is a client route
     // and gets the shell, while a missing asset stays a 404 so a broken build
     // fails where it broke rather than as a parse error somewhere unrelated.
     if (extname(key) !== "") return null;
-    const shell = WEB_ASSETS["/index.html"];
+    const shell = assetMap["/index.html"];
     if (shell === undefined) return null;
     return embeddedResponse(shell, "/index.html");
   }

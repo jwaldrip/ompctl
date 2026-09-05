@@ -31,12 +31,15 @@
 
 import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const require_ = createRequire(import.meta.url);
 
 /** Where `build:cli` puts the binary. Both live in the same directory or neither works. */
-const outDir = join(import.meta.dir, "..", "dist");
+const targetArg = process.argv[2];
+const outDir = targetArg
+  ? (existsSync(targetArg) && statSync(targetArg).isDirectory() ? resolve(targetArg) : dirname(resolve(targetArg)))
+  : join(import.meta.dir, "..", "dist");
 
 /**
  * The addon filename the loader will look for, built the way the loader builds

@@ -19,7 +19,7 @@
     }
   },
   "scripts": {
-    "build:cli": "bun run gen:omp-bridge && bun build --compile --external omp-legacy-pi-modules --outfile dist/ompd packages/cli/src/main.ts && bun run scripts/stage-native-addon.ts",
+    "build:cli": "bun scripts/build-cli.ts",
     "gen:web-assets": "bun scripts/gen-web-assets.ts",
     "gen:omp-bridge": "bun scripts/gen-omp-bridge.ts",
     "check": "bun run check:tools && bun run check:types && bun run check:web",

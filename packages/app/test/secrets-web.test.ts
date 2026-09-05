@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!(globalThis as { __ompdHappyDom?: boolean }).__ompdHappyDom) {
@@ -6,11 +6,26 @@ if (!(globalThis as { __ompdHappyDom?: boolean }).__ompdHappyDom) {
   (globalThis as { __ompdHappyDom?: boolean }).__ompdHappyDom = true;
 }
 
-import { deleteSecret, readSecret, SECRETS_PERSIST_ACROSS_LAUNCHES, writeSecret } from "../src/platform/secrets.web.ts";
+import {
+  deleteSecret,
+  readSecret,
+  SECRETS_PERSIST_ACROSS_LAUNCHES,
+  writeSecret,
+} from "../src/platform/secrets.web.ts";
 
 describe("secrets.web", () => {
+  const originalStorage = globalThis.localStorage;
+
   beforeEach(() => {
     globalThis.localStorage.clear();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(globalThis, "localStorage", {
+      value: originalStorage,
+      writable: true,
+      configurable: true,
+    });
   });
 
   test("SECRETS_PERSIST_ACROSS_LAUNCHES is true on web", () => {
@@ -52,5 +67,57 @@ describe("secrets.web", () => {
     // Test case intentionally exercises module loading boundary to simulate page reload.
     const reloaded = await import(`../src/platform/secrets.web.ts?bust=${Date.now()}`);
     expect(await reloaded.readSecret(key)).toBe(value);
+  });
+
+  test("writeSecret rejects when setItem throws (quota or security denial)", async () => {
+    const throwingStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError: DOM storage quota exceeded");
+      },
+      removeItem: () => {},
+      clear: () => {},
+      length: 0,
+      key: () => null,
+    };
+
+    Object.defineProperty(globalThis, "localStorage", {
+      value: throwingStorage,
+      writable: true,
+      configurable: true,
+    });
+
+    let caughtError: Error | null = null;
+    try {
+      await writeSecret("ompd.connection.token.fail", "secret");
+    } catch (err) {
+      caughtError = err as Error;
+    }
+
+    expect(caughtError).not.toBeNull();
+    expect(caughtError?.message).toContain("localStorage write failed");
+    expect(caughtError?.message).toContain("QuotaExceededError");
+  });
+
+  test("writeSecret rejects and readSecret returns null when localStorage access throws", async () => {
+    Object.defineProperty(globalThis, "localStorage", {
+      get() {
+        throw new Error("SecurityError: storage access denied");
+      },
+      configurable: true,
+    });
+
+    let caughtError: Error | null = null;
+    try {
+      await writeSecret("ompd.connection.token.denied", "secret");
+    } catch (err) {
+      caughtError = err as Error;
+    }
+
+    expect(caughtError).not.toBeNull();
+    expect(caughtError?.message).toContain("storage refused to store secret");
+    expect(caughtError?.message).toContain("SecurityError");
+
+    expect(await readSecret("ompd.connection.token.denied")).toBeNull();
   });
 });

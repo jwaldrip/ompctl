@@ -895,13 +895,16 @@ describe("invite", () => {
     const credential = `${"c".repeat(64)}.tok_qr`;
     expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).toContain("hub.example.com");
     expect(out.split("\n").find(line => line.trim().startsWith("Token "))).toContain(credential);
-    // The link carries the granted scopes beside the token, so a one-tap
-    // pairing paints its console correctly before hello ever answers.
-    expect(out).toContain(`https://app.ompctl.ai/pair?token=${credential}&hub=hub.example.com&scopes=read%2Cprompt`);
+    // The link carries the granted scopes beside the hub host in the query,
+    // and the token credential in the fragment so it is never sent in HTTP request lines.
+    expect(out).toContain(`https://app.ompctl.ai/pair?hub=hub.example.com&scopes=read%2Cprompt#token=${credential}`);
+    const linkLine = out.split("\n").find(line => line.includes("https://app.ompctl.ai/pair"))?.trim() ?? "";
+    const parsedUrl = new URL(linkLine);
+    expect(parsedUrl.searchParams.has("token")).toBe(false);
+    expect(parsedUrl.hash).toBe(`#token=${credential}`);
     // The daemon id is not retyped by anyone, so it belongs inside the token.
     expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).not.toContain(daemon);
   });
-
   test("surfaces the daemon's scope_escalation refusal instead of crashing", async () => {
     const h = harness({
       routes: {
@@ -1511,7 +1514,7 @@ describe("self-install", () => {
    */
   function compiler(version = "0.1.0"): (command: string[]) => ExecResult | undefined {
     return command => {
-      if (command[1] === "build") {
+      if (command[1] === "build" || command[1]?.endsWith("build-cli.ts")) {
         const outfileIndex = command.indexOf("--outfile");
         const staging = command[outfileIndex + 1];
         if (staging === undefined) throw new Error("build command had no --outfile argument");
@@ -1559,7 +1562,10 @@ describe("self-install", () => {
 
   test("a compile that fails leaves nothing behind", async () => {
     const h = harness({
-      onExec: command => (command[1] === "build" ? { code: 1, stdout: "", stderr: "error: boom" } : undefined),
+      onExec: command =>
+        command[1] === "build" || command[1]?.endsWith("build-cli.ts")
+          ? { code: 1, stdout: "", stderr: "error: boom" }
+          : undefined,
     });
 
     expect(await run(["self-install"], h.ctx)).toBe(1);

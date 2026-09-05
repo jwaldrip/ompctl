@@ -88,8 +88,8 @@ export interface PairDeepLink {
 
 export type OpenPairing = (link: PairDeepLink) => void;
 
-/** Scheme, authority, path, and query, read from the string. */
-function partsOf(raw: string): { scheme: string; authority: string; path: string; query: string } | null {
+/** Scheme, authority, path, query, and fragment, read from the string. */
+function partsOf(raw: string): { scheme: string; authority: string; path: string; query: string; fragment: string } | null {
   const trimmed = raw.trim();
   const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(trimmed);
   if (match === null) return null;
@@ -98,12 +98,14 @@ function partsOf(raw: string): { scheme: string; authority: string; path: string
   const rest = after.slice(authority.length);
   const hash = rest.indexOf("#");
   const withoutHash = hash < 0 ? rest : rest.slice(0, hash);
+  const fragment = hash < 0 ? "" : rest.slice(hash + 1);
   const q = withoutHash.indexOf("?");
   return {
     scheme: `${(match[1] ?? "").toLowerCase()}:`,
     authority: authority.toLowerCase(),
     path: q < 0 ? withoutHash : withoutHash.slice(0, q),
     query: q < 0 ? "" : withoutHash.slice(q + 1),
+    fragment,
   };
 }
 
@@ -123,10 +125,14 @@ export function parsePairDeepLink(raw: string): PairDeepLink | null {
     segments[0] === "pair";
   if (!custom && !universal) return null;
 
-  const params = new URLSearchParams(parts.query);
-  const credential = parseDeviceCredential(params.get("token") ?? "");
+  const queryParams = new URLSearchParams(parts.query);
+  const fragmentParams = new URLSearchParams(parts.fragment);
+  // Read token from fragment first, fallback to legacy query parameter
+  const rawToken = fragmentParams.get("token") ?? queryParams.get("token") ?? "";
+  const credential = parseDeviceCredential(rawToken);
   if (credential === null) return null;
-  const target = parsePairTarget(params.get("hub") ?? "");
+  const hubParam = fragmentParams.get("hub") ?? queryParams.get("hub") ?? "";
+  const target = parsePairTarget(hubParam);
   // A link naming a daemon's own socket is not a pairing this can complete: the
   // credential carries a daemon id, which only means something through a hub.
   if (target === null || target.transport !== "hub") return null;
@@ -134,7 +140,8 @@ export function parsePairDeepLink(raw: string): PairDeepLink | null {
   // Comma-separated, and only ever a hint: the daemon reports the real grant
   // on hello and the console prefers that answer. Absent stays an empty list
   // so a link printed before scopes were carried pairs exactly as it did.
-  const scopes = (params.get("scopes") ?? "")
+  const scopesParam = fragmentParams.get("scopes") ?? queryParams.get("scopes") ?? "";
+  const scopes = scopesParam
     .split(",")
     .map(scope => scope.trim())
     .filter(scope => scope.length > 0);
@@ -148,8 +155,7 @@ export function handlePairDeepLink(raw: string, openPairing: OpenPairing): boole
   if (link === null) return false;
   openPairing(link);
   if (typeof window !== "undefined" && typeof window.history?.replaceState === "function") {
-    const clean = `${window.location.pathname}${window.location.hash}`;
-    window.history.replaceState(null, "", clean);
+    window.history.replaceState(null, "", window.location.pathname);
   }
   return true;
 }

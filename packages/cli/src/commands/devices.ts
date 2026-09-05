@@ -181,9 +181,10 @@ async function printPairingQr(
     // secret: the token beside them is the sensitive part, and its
     // handling is unchanged.
     const granted = opts.scopes.length === 0 ? "" : `&scopes=${encodeURIComponent(opts.scopes.join(","))}`;
-    const link = `https://app.ompctl.ai/pair?token=${encodeURIComponent(
+    const cred = encodeURIComponent(
       formatDeviceCredential({ daemonId: offer.endpoint.daemonId, token: opts.token }),
-    )}&hub=${encodeURIComponent(hostOf(offer.endpoint.hubUrl))}${granted}`;
+    );
+    const link = `https://app.ompctl.ai/pair?hub=${encodeURIComponent(hostOf(offer.endpoint.hubUrl))}${granted}#token=${cred}`;
     ctx.out("");
     ctx.out("  can't scan it? open this on the device to pair in one tap:");
     ctx.out(`  ${link}`);

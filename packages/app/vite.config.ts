@@ -80,7 +80,7 @@ assertNoAssistantCloudEnv(process.env, "vite.config.ts");
 
 const webNodeModules = ["react-native-web", "react-native-svg", "@fortawesome/react-native-fontawesome"];
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [untranspiledJsxDeps(), react()],
   resolve: {
     alias: [
@@ -116,5 +116,5 @@ export default defineConfig({
     include: webNodeModules,
     esbuildOptions: { loader: { ".js": "jsx" }, resolveExtensions: [".web.js", ".js", ".ts", ".tsx"] },
   },
-  build: { outDir: "dist", sourcemap: true },
-});
+  build: { outDir: "dist", sourcemap: mode === "production" ? false : true },
+}));
