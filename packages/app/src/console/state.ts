@@ -167,10 +167,12 @@ export interface SessionLoad {
  * screen comparing loads across renders sees no change where none happened.
  */
 export const READY_LOAD: SessionLoad = { phase: "ready", generation: 0, error: null };
+export const MAX_RETAINED_SESSIONS = 8;
 
 export interface ConsoleState {
   readonly agents: readonly Agent[];
   readonly sessions: ReadonlyMap<AgentId, SessionState>;
+  readonly sessionRecency: readonly AgentId[];
   /** The durable ACP session identity last confirmed for each attached agent. */
   readonly sessionIds: ReadonlyMap<AgentId, string>;
   /** The newest failed open that named a durable session, if any. */
@@ -438,6 +440,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
   return {
     agents: [],
     sessions: new Map(),
+    sessionRecency: [],
     sessionIds: new Map(),
     lastFailedSessionOpen: null,
     sessionIndex: [],
@@ -745,18 +748,34 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // photograph taken before the resumed agent was registered. A double
       // tap answers twice, so the re-select retires the streak too.
       const rosterMisses = clearMiss(state.rosterMisses, event.agentId);
+      const sessionRecency = [event.agentId, ...(state.sessionRecency ?? []).filter(id => id !== event.agentId)];
       // A re-select of the pane's own subject changes nothing, including its
       // wait: a double tap must not restart a load that is already settled,
       // or the log an operator is reading flickers back to a spinner.
       if (state.selected === event.agentId && state.selectedTui === null) {
-        return rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses };
+        return { ...(rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses }), sessionRecency };
       }
-      return {
+      const nextState = {
         ...armLoad(state, event.agentId, event.awaiting === true),
         selected: event.agentId,
         selectedTui: null,
         rosterMisses,
+        sessionRecency,
       };
+      if (nextState.sessions.size > MAX_RETAINED_SESSIONS) {
+        const sessions = new Map(nextState.sessions);
+        const keep = new Set<AgentId>();
+        keep.add(event.agentId);
+        for (const id of sessionRecency) {
+          if (keep.size >= MAX_RETAINED_SESSIONS) break;
+          keep.add(id);
+        }
+        for (const key of sessions.keys()) {
+          if (!keep.has(key)) sessions.delete(key);
+        }
+        return { ...nextState, sessions };
+      }
+      return nextState;
     }
 
     case "tui_select": {
@@ -866,20 +885,19 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       if (held === undefined || (held.phase !== "loading" && held.phase !== "stalled")) return state;
       const loads = new Map(state.loads);
       loads.set(event.subject, { phase: "failed", generation: held.generation, error: event.message });
-      return { ...state, loads };
+      const historyLoading = new Set(state.historyLoading);
+      historyLoading.delete(event.subject);
+      return { ...state, loads, historyLoading };
     }
-
     case "load_rearm": {
       const held = state.loads.get(event.subject);
-      // Only a stall is re-armed, and only by the reconnect that has actually
-      // re-sent the ask. A `ready` subject needs nothing, and a `failed` one
-      // has its answer: re-arming that would turn a refusal back into a
-      // spinner on every flap.
-      if (held?.phase !== "stalled") return state;
+      if (held?.phase !== "stalled" && held?.phase !== "failed") return state;
       const selection = state.selection + 1;
       const loads = new Map(state.loads);
       loads.set(event.subject, { phase: "loading", generation: selection, error: null });
-      return { ...state, selection, loads };
+      const historyLoading = new Set(state.historyLoading);
+      historyLoading.delete(event.subject);
+      return { ...state, selection, loads, historyLoading };
     }
 
     case "prompt":
@@ -1109,7 +1127,19 @@ function withSession(
   if (after === before) return state;
   const sessions = new Map(state.sessions);
   sessions.set(agentId, after);
-  return { ...state, sessions };
+  const sessionRecency = [agentId, ...(state.sessionRecency ?? []).filter(id => id !== agentId)];
+  if (sessions.size > MAX_RETAINED_SESSIONS) {
+    const keep = new Set<AgentId>();
+    if (state.selected !== null) keep.add(state.selected);
+    for (const id of sessionRecency) {
+      if (keep.size >= MAX_RETAINED_SESSIONS) break;
+      keep.add(id);
+    }
+    for (const key of sessions.keys()) {
+      if (!keep.has(key)) sessions.delete(key);
+    }
+  }
+  return { ...state, sessions, sessionRecency };
 }
 
 /**
@@ -1264,21 +1294,38 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   const roster = state.agents.find(agent => agent.id === agentId);
   if (roster !== undefined) return roster;
   const session = state.sessions.get(agentId);
-  if (session === undefined) return null;
-  const gone = (state.rosterMisses.get(agentId) ?? 0) >= 2;
+  const load = state.loads.get(agentId);
+  const loadSettled = load !== undefined && (load.phase === "ready" || load.phase === "failed");
+  const rosterMisses = state.rosterMisses.get(agentId) ?? 0;
+
+  // "That session closed." copy renders only when the daemon says the session is gone:
+  // a subject-bearing error, or a roster miss after the load settled.
+  if (load?.phase === "failed" && (session === undefined || session.entries.length === 0)) {
+    return null;
+  }
+  if (rosterMisses >= 2 && loadSettled && (session === undefined || session.entries.length === 0)) {
+    return null;
+  }
+  if (session === undefined && load === undefined) {
+    return null;
+  }
+
+  const summary = state.sessionIndex.find(s => s.agentId === agentId || s.id === agentId);
+  const gone = rosterMisses >= 2;
   return {
     id: agentId,
-    name: session.info.title ?? "Session",
+    name: session?.info.title ?? summary?.title ?? "Session",
     // One missing roster may race a resume replay. Two means the host is gone:
     // keep the transcript selected, but do not offer controls that send to it.
     state: gone ? "stopped" : "idle",
     // Inert: nothing renders host data on a session screen, and the roster
     // entry replaces this whole object on arrival.
     host: { kind: "local", id: "0", spec: { kind: "local" } },
-    cwd: session.info.cwd ?? "",
-    createdAt: "",
-    lastActiveAt: session.info.updatedAt ?? "",
+    cwd: session?.info.cwd ?? summary?.cwd ?? "",
+    createdAt: summary?.createdAt ?? "",
+    lastActiveAt: session?.info.updatedAt ?? summary?.lastActivityAt ?? "",
     labels: {},
+    acpSessionId: summary?.id,
   };
 }
 

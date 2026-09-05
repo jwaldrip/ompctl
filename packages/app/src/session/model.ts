@@ -211,11 +211,23 @@ export function transcriptRowKey(entry: Entry): string {
   if (entry.kind === "assistant") return `assistant:${entry.thought ? "thought" : "message"}:${entry.id}`;
   return `${entry.kind}:${entry.id}`;
 }
+export const MAX_SESSION_ENTRIES = 2000;
+
+function trimEntries(entries: readonly Entry[]): { entries: readonly Entry[]; trimmed: boolean } {
+  if (entries.length <= MAX_SESSION_ENTRIES) {
+    return { entries, trimmed: false };
+  }
+  return {
+    entries: entries.slice(entries.length - MAX_SESSION_ENTRIES),
+    trimmed: true,
+  };
+}
 
 /** Prepend one durable history page without duplicating live/replayed rows. */
 export function mergeSessionHistory(state: SessionState, history: readonly SessionHistoryEntry[]): SessionState {
   if (history.length === 0) return state;
   const existing = new Set(state.entries.map(transcriptRowKey));
+  const remaining = state.entries.slice();
   const prepend: Entry[] = [];
   for (const item of history) {
     const entry: Entry =
@@ -235,15 +247,30 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
             };
     const key = transcriptRowKey(entry);
     if (existing.has(key)) continue;
+
+    if (entry.kind === "user") {
+      const echoIdx = remaining.findIndex(
+        r => r.kind === "user" && r.id.startsWith("prompt-") && r.text === entry.text,
+      );
+      if (echoIdx >= 0) {
+        remaining.splice(echoIdx, 1);
+      }
+    }
+
     existing.add(key);
     prepend.push(entry);
   }
-  if (prepend.length === 0) return state;
-  return { ...state, entries: [...prepend, ...state.entries] };
+  const combined = prepend.length === 0 ? remaining : [...prepend, ...remaining];
+  const { entries, trimmed } = trimEntries(combined);
+  if (entries.length === state.entries.length && entries.every((e, i) => e === state.entries[i])) {
+    return state;
+  }
+  return { ...state, entries, trimmed: state.trimmed || trimmed };
 }
 
 export interface SessionState {
   readonly entries: readonly Entry[];
+  readonly trimmed?: boolean;
   readonly plan: readonly PlanEntry[];
   /** Present while ACP waits for the operator to review the current plan. */
   readonly planReview: PlanReview | null;
@@ -369,6 +396,14 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
   if (index >= 0) {
     const current = state.entries[index];
     if (current === undefined) return state;
+    if (current.kind === "assistant" && (current as AssistantEntry).streaming) {
+      const assistant = current as AssistantEntry;
+      if (messageId !== undefined && messageId !== null) {
+        assistant.id = messageId;
+      }
+      assistant.text += text;
+      return { ...state };
+    }
     const extended: Entry =
       current.kind === "user"
         ? { ...current, text: current.text + text }
@@ -392,13 +427,15 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
         // following the wire so `findChunkTarget` can still resume a settled
         // row by the id a later chunk names.
         { kind: "assistant", id, rowId: id, text, streaming: true, thought };
+  const rawEntries = [...settled, entry];
+  const { entries, trimmed } = trimEntries(rawEntries);
   return {
     ...state,
-    entries: [...settled, entry],
+    entries,
+    trimmed: state.trimmed || trimmed,
     ordinal: state.ordinal + 1,
   };
 }
-
 /**
  * Where a chunk belongs. An id matches wherever it sits, because an agent may
  * resume a message after a tool call; without one, only a still-open block of
@@ -681,9 +718,12 @@ export function appendPrompt(state: SessionState, text: string, imageCount = 0):
   const echoed = echoText(text, imageCount);
   if (echoed.length === 0) return state;
   const entry: UserEntry = { kind: "user", id: `prompt-${state.ordinal}`, text: echoed };
+  const rawEntries = [...closeStreams(state.entries), entry];
+  const { entries, trimmed } = trimEntries(rawEntries);
   return {
     ...state,
-    entries: [...closeStreams(state.entries), entry],
+    entries,
+    trimmed: state.trimmed || trimmed,
     ordinal: state.ordinal + 1,
   };
 }
@@ -701,9 +741,12 @@ export function appendApproval(state: SessionState, approval: Approval): Session
     input: approval.input,
     decision: null,
   };
+  const rawEntries = [...closeStreams(state.entries), entry];
+  const { entries, trimmed } = trimEntries(rawEntries);
   return {
     ...state,
-    entries: [...closeStreams(state.entries), entry],
+    entries,
+    trimmed: state.trimmed || trimmed,
     pendingApprovals: [...state.pendingApprovals, approval],
     ordinal: state.ordinal + 1,
   };

@@ -1616,7 +1616,7 @@ describe("session tail surface", () => {
     ]);
   });
 
-  test("a reconnect does not re-issue the request: a tail belongs to a screen, not to the socket", () => {
+  test("defect 9: hello after a drop emits session_tail for the selected terminal session", () => {
     const h = harness();
     h.client.start();
     const first = bringUp(h);
@@ -1626,11 +1626,8 @@ describe("session tail surface", () => {
     h.clock.runNext();
     const second = bringUp(h);
 
-    // The whole sent log, not just this type: a replay implemented as
-    // remembered state would show up here as any frame after the hello this
-    // socket never asked for.
-    expect(second.sent).toEqual([]);
-    expect(second.framesOfType("session_tail")).toEqual([]);
+    // On hello after drop, the client re-requests the tail for the selected terminal session
+    expect(second.framesOfType("session_tail")).toEqual([{ t: "session_tail", sessionId: SESSION }]);
   });
 
   test("losing a tail request to a closed socket raises no error, unlike a prompt", () => {

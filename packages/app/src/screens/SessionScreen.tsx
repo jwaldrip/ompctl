@@ -400,55 +400,46 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         onDecidePlan={props.onDecidePlan}
       >
         <View style={styles.body}>
-          {/*
-          One branch for the whole working half of the screen. While this
-          session is arriving, or once its open has been refused, none of the
-          instruments below may render: a context panel, a plan card and a
-          transcript are all claims about a session this pane does not have
-          yet, and the header above already carries whose pane it is.
-        */}
           {load.phase === "loading" ? (
             <SessionLoading title={agent.name} />
           ) : load.phase === "stalled" ? (
             <SessionLoadStalled connection={connection} title={agent.name} />
           ) : load.phase === "failed" ? (
-            <SessionLoadFailed message={load.error ?? "The daemon refused this session."} title={agent.name} />
+            <SessionLoadFailed
+              message={load.error ?? "The daemon refused this session."}
+              title={agent.name}
+              onRetry={props.onLoadEarlier}
+            />
           ) : (
             <>
-              {/*
-                Session identity stays fixed above the log. A pending plan is
-                transcript context, so it scrolls with the transcript instead
-                of consuming the composer's fixed working space.
-              */}
               <SessionContext {...props.context} agent={agent} now={props.now} session={session} />
-
               <OmpThreadList
-                entries={session.entries}
-                canApprove={props.canApprove}
-                refusal={props.refusal}
-                onDecide={props.onDecide}
-                spoken={props.spoken}
-                header={
-                  <PlanCard
-                    canApprove={props.canApprove}
-                    onRespond={props.onDecidePlan}
-                    plan={session.plan}
-                    refusal={props.refusal}
-                    review={session.planReview}
-                  />
-                }
-                footer={
-                  activity === null ? null : (
-                    <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
-                  )
-                }
-                canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
-                loadingEarlier={props.historyLoading}
-                onLoadEarlier={props.onLoadEarlier}
-                historyCursor={typeof props.historyBefore === "number" ? props.historyBefore : null}
-              />
-            </>
-          )}
+              entries={session.entries}
+              canApprove={props.canApprove}
+              refusal={props.refusal}
+              onDecide={props.onDecide}
+              spoken={props.spoken}
+              header={
+                <PlanCard
+                  canApprove={props.canApprove}
+                  onRespond={props.onDecidePlan}
+                  plan={session.plan}
+                  refusal={props.refusal}
+                  review={session.planReview}
+                />
+              }
+              footer={
+                activity === null ? null : (
+                  <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
+                )
+              }
+              canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
+              loadingEarlier={props.historyLoading}
+              onLoadEarlier={props.onLoadEarlier}
+              historyCursor={typeof props.historyBefore === "number" ? props.historyBefore : null}
+            />
+          </>
+        )}
 
           {webViewCapability === null || !browserOpen ? null : (
             <View style={styles.browser} testID="session-browser">
