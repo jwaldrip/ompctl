@@ -128,10 +128,14 @@ async function main() {
 
     console.log(`PHASE: DAEMON STARTED on 127.0.0.1:${port}`);
 
-    // 3. Spawn real omp TUI with extension
+    // 3. Spawn real omp TUI with exactly one bridge. `ompd install` puts a
+    // copy of this extension under the operator's own agent directory, and
+    // omp discovers that copy on top of the `-e` one; two bridges register
+    // the same session twice and every steer lands as two turns. Discovery
+    // is off so the proof drives the bridge in this tree and nothing else.
     const decoder = new TextDecoder();
     const bridgeLogPath = join(scratchHome, "bridge.log");
-    ompProc = Bun.spawn(["/opt/homebrew/bin/omp", "-e", extensionPath], {
+    ompProc = Bun.spawn(["/opt/homebrew/bin/omp", "--no-extensions", "-e", extensionPath], {
       cwd: scratchCwd,
       env: { ...process.env, OMPD_HOME: scratchHome, OMPD_BRIDGE_DEBUG: bridgeLogPath, TERM: "xterm-256color" },
       terminal: {
