@@ -3508,41 +3508,50 @@ export class Gateway {
     }
     const takeover = frame.t === "session_takeover";
     const claimed = { cwd: frame.cwd, ...(takeover ? { pid: frame.pid } : {}) };
-    const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
-    if (claim.verdict === "refuse") {
-      this.#send(ws, { t: "error", sessionId: frame.sessionId, code: claim.code, message: claim.message });
-      return;
-    }
-    if (claim.verdict === "held") {
-      this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: claim.agentId });
-      return;
-    }
     try {
-      const agent = takeover
-        ? await this.#takeOverLiveTui(frame.sessionId, actor)
-        : await this.#sup.resumeAgent(
-            {
-              name: claim.row.title !== "" ? claim.row.title : `Session ${frame.sessionId}`,
-              cwd: frame.cwd,
-              sessionId: frame.sessionId,
-            },
-            actor,
-          );
-      this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: agent.id });
-    } catch (err) {
-      // The claim is re-verified rather than trusting the throw: a refusal
-      // naming "already held" from a path that lost a race means another
-      // caller's identical request finished in between, and that outcome is
-      // the idempotent answer, not a failure.
-      const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
-      if (settled.verdict === "held") {
-        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
+      const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+      if (claim.verdict === "refuse") {
+        this.#send(ws, { t: "error", sessionId: frame.sessionId, code: claim.code, message: claim.message });
         return;
       }
+      if (claim.verdict === "held") {
+        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: claim.agentId });
+        return;
+      }
+      try {
+        const agent = takeover
+          ? await this.#takeOverLiveTui(frame.sessionId, actor)
+          : await this.#sup.resumeAgent(
+              {
+                name: claim.row.title !== "" ? claim.row.title : `Session ${frame.sessionId}`,
+                cwd: frame.cwd,
+                sessionId: frame.sessionId,
+              },
+              actor,
+            );
+        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: agent.id });
+      } catch (err) {
+        // The claim is re-verified rather than trusting the throw: a refusal
+        // naming "already held" from a path that lost a race means another
+        // caller's identical request finished in between, and that outcome is
+        // the idempotent answer, not a failure.
+        const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+        if (settled.verdict === "held") {
+          this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
+          return;
+        }
+        this.#send(ws, {
+          t: "error",
+          sessionId: frame.sessionId,
+          code: err instanceof TakeoverRefusal ? err.code : takeover ? "takeover_failed" : "resume_failed",
+          message: err instanceof Error ? err.message : "session open failed",
+        });
+      }
+    } catch (err) {
       this.#send(ws, {
         t: "error",
         sessionId: frame.sessionId,
-        code: err instanceof TakeoverRefusal ? err.code : takeover ? "takeover_failed" : "resume_failed",
+        code: takeover ? "takeover_failed" : "resume_failed",
         message: err instanceof Error ? err.message : "session open failed",
       });
     }
@@ -3908,8 +3917,23 @@ export class Gateway {
       this.#send(ws, { t: "error", code: "frame_too_large", message: "ACP frame exceeds 32 MiB" });
       return;
     }
+    const parsedAgentId =
+      typeof parsed === "object" && parsed !== null && "agentId" in parsed && typeof parsed.agentId === "string"
+        ? (parsed.agentId as AgentId)
+        : undefined;
+    const parsedSessionId =
+      typeof parsed === "object" && parsed !== null && "sessionId" in parsed && typeof parsed.sessionId === "string"
+        ? (parsed.sessionId as string)
+        : undefined;
+
     if (!registeredTuiAcp && !ws.data.bucket.take()) {
-      this.#send(ws, { t: "error", code: "rate_limited", message: "too many frames" });
+      this.#send(ws, {
+        t: "error",
+        agentId: parsedAgentId,
+        sessionId: parsedSessionId,
+        code: "rate_limited",
+        message: "too many frames",
+      });
       return;
     }
 
@@ -3925,6 +3949,8 @@ export class Gateway {
       // hostile or merely malformed frame must cost one error frame, no more.
       this.#send(ws, {
         t: "error",
+        agentId: parsedAgentId,
+        sessionId: parsedSessionId,
         code:
           err instanceof CollabRoomError
             ? err.code
