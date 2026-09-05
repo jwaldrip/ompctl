@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { appendPrompt, EMPTY_SESSION, mergeSessionHistory, reduce } from "../src/session/model.ts";
 import type { SessionHistoryEntry } from "@ompd/core/contracts";
+import { appendPrompt, EMPTY_SESSION, mergeSessionHistory, reduce } from "../src/session/model.ts";
 
 describe("item 13: user_message_chunk echo adoption and position preservation", () => {
   test("user chunk with messageId and matching text replaces newest echo in place", () => {

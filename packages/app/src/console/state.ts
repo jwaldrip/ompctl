@@ -1185,13 +1185,7 @@ function withSession(
   const rawSessions = new Map(state.sessions);
   rawSessions.set(agentId, after);
   const rawRecency = [agentId, ...(state.sessionRecency ?? []).filter(id => id !== agentId)];
-  const pruned = pruneSessions(
-    rawSessions,
-    rawRecency,
-    state.selected,
-    state.watermarks,
-    state.historyBefore,
-  );
+  const pruned = pruneSessions(rawSessions, rawRecency, state.selected, state.watermarks, state.historyBefore);
   return {
     ...state,
     sessions: pruned.sessions,

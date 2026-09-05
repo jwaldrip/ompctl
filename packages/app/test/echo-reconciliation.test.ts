@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { appendPrompt, EMPTY_SESSION, mergeSessionHistory, reduce } from "../src/session/model.ts";
 import type { SessionHistoryEntry } from "@ompd/core/contracts";
+import { appendPrompt, EMPTY_SESSION, mergeSessionHistory, reduce } from "../src/session/model.ts";
 
 describe("item 3: echo reconciliation must correlate by position/turn, not global text search", () => {
   test("sending 'status' twice then paging older does not delete the live echo at the tail", () => {

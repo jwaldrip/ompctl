@@ -2,11 +2,11 @@ import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import { MessageNotSentError } from "@assistant-ui/core";
+import type { Agent } from "@ompd/core/contracts";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { ompStore } from "../src/assistant/adapter.ts";
 import { EMPTY_SESSION } from "../src/session/model.ts";
-import type { Agent } from "@ompd/core/contracts";
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -90,7 +90,9 @@ describe("item 4: offline prompt must reject with MessageNotSentError to restore
       );
     });
 
-    const input = host.querySelector('[data-testid="terminal-composer-input"]') as HTMLInputElement | HTMLTextAreaElement;
+    const input = host.querySelector('[data-testid="terminal-composer-input"]') as
+      | HTMLInputElement
+      | HTMLTextAreaElement;
     expect(input).not.toBeNull();
 
     // Type text into the field

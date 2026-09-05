@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { appendPrompt, EMPTY_SESSION, mergeSessionHistory } from "../src/session/model.ts";
 import type { SessionHistoryEntry } from "@ompd/core/contracts";
+import { appendPrompt, EMPTY_SESSION, mergeSessionHistory } from "../src/session/model.ts";
 
 describe("item 2: mergeSessionHistory must not trim the requested head page", () => {
   test("with 2,000 entries held, prepending older history keeps the prepended entries", () => {

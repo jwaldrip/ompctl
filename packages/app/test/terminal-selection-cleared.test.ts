@@ -1,8 +1,8 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
-import { OmpdClient } from "@ompd/core/ompd-client";
 import type { ClientFrame, ServerFrame } from "@ompd/core/contracts";
+import { OmpdClient } from "@ompd/core/ompd-client";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { ConsoleActions } from "../src/console/useConsole.ts";

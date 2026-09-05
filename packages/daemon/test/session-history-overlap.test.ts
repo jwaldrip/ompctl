@@ -155,9 +155,17 @@ test("D7/D8: resumed session answers history with old turns, and replay from seq
     JSON.stringify({ type: "title", v: 1, title: "d7 session", updatedAt: "2026-08-10T10:00:00.000Z" }),
     JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-08-10T10:00:00.000Z", cwd: "/work" }),
     // Turn 1 (old)
-    JSON.stringify({ type: "message", timestamp: "2026-08-10T10:01:00.000Z", message: { id: "msg_old_1", role: "user", content: "old turn 1" } }),
+    JSON.stringify({
+      type: "message",
+      timestamp: "2026-08-10T10:01:00.000Z",
+      message: { id: "msg_old_1", role: "user", content: "old turn 1" },
+    }),
     // Turn 2 (old)
-    JSON.stringify({ type: "message", timestamp: "2026-08-10T10:02:00.000Z", message: { id: "msg_old_2", role: "user", content: "old turn 2" } }),
+    JSON.stringify({
+      type: "message",
+      timestamp: "2026-08-10T10:02:00.000Z",
+      message: { id: "msg_old_2", role: "user", content: "old turn 2" },
+    }),
   ];
   writeFileSync(sessionFile, `${lines.join("\n")}\n`);
 
@@ -193,8 +201,14 @@ test("D7/D8: resumed session answers history with old turns, and replay from seq
   });
 
   client.send({ t: "prompt", agentId, text: "post resume turn 3" });
-  await client.next(f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "user_message_chunk", "user_message_chunk");
-  await client.next(f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "agent_message_chunk", "agent_message_chunk");
+  await client.next(
+    f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "user_message_chunk",
+    "user_message_chunk",
+  );
+  await client.next(
+    f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "agent_message_chunk",
+    "agent_message_chunk",
+  );
 
   // Append post-resume turn to session file
   const postResumeTimestamp = new Date(Date.now() + 1000).toISOString();
@@ -212,7 +226,7 @@ test("D7/D8: resumed session answers history with old turns, and replay from seq
 
   // 1. History returns exactly the two older turns
   expect(hist.entries).toHaveLength(2);
-  expect(hist.entries.map(e => e.kind === "user" ? e.text : "")).toEqual(["old turn 1", "old turn 2"]);
+  expect(hist.entries.map(e => (e.kind === "user" ? e.text : ""))).toEqual(["old turn 1", "old turn 2"]);
 
   // 2. Replay from seq 0 contains:
   // - state updates from loadSession (session_info_update)
@@ -292,7 +306,11 @@ test("D7/D8: fresh agent created via agent_create answers empty first page for s
   const fileLines = [
     JSON.stringify({ type: "title", v: 1, title: "fresh session", updatedAt: turnTime }),
     JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: turnTime, cwd: "/work" }),
-    JSON.stringify({ type: "message", timestamp: turnTime, message: { id: "msg_fresh_1", role: "user", content: "fresh turn 1" } }),
+    JSON.stringify({
+      type: "message",
+      timestamp: turnTime,
+      message: { id: "msg_fresh_1", role: "user", content: "fresh turn 1" },
+    }),
   ];
   writeFileSync(sessionFile, `${fileLines.join("\n")}\n`);
 
@@ -315,7 +333,10 @@ test("D7/D8: fresh agent created via agent_create answers empty first page for s
   });
 
   client.send({ t: "prompt", agentId: agent.id, text: "fresh prompt 1" });
-  await client.next(f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "user_message_chunk", "user_message_chunk");
+  await client.next(
+    f => f.t === "update" && (f.update as { sessionUpdate?: string })?.sessionUpdate === "user_message_chunk",
+    "user_message_chunk",
+  );
 
   // 1. Session history is empty for fresh agent
   client.send({ t: "session_history", agentId: agent.id, sessionId });

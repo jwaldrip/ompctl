@@ -1,11 +1,11 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
+import type { Agent } from "@ompd/core/contracts";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { appendPrompt, EMPTY_SESSION } from "../src/session/model.ts";
 import { READY_LOAD } from "../src/console/state.ts";
-import type { Agent } from "@ompd/core/contracts";
+import { appendPrompt, EMPTY_SESSION } from "../src/session/model.ts";
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -48,7 +48,7 @@ describe("item 7: assistant-ui repository must drop omitted ids when entries are
     const root = createRoot(host);
 
     // Initial mount with first prompt
-    let initialSession = appendPrompt(EMPTY_SESSION, "prompt 0");
+    const initialSession = appendPrompt(EMPTY_SESSION, "prompt 0");
     act(() => {
       root.render(createElement(Probe, { currentSession: initialSession }));
     });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { apply, emptyConsole } from "../src/console/state.ts";
 import type { Agent } from "@ompd/core/contracts";
+import { apply, emptyConsole } from "../src/console/state.ts";
 
 const HOST = { kind: "local" as const, id: "0", spec: { kind: "local" as const } };
 

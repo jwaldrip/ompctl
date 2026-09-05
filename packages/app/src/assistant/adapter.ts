@@ -378,7 +378,7 @@ export function ompStore(input: OmpStoreInput) {
     };
   });
   const messageRepository: ExportedMessageRepository = {
-    headId: repoMessages.length > 0 ? repoMessages[repoMessages.length - 1]?.message.id ?? null : null,
+    headId: repoMessages.length > 0 ? (repoMessages[repoMessages.length - 1]?.message.id ?? null) : null,
     messages: repoMessages,
   };
 

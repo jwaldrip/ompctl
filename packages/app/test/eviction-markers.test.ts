@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { apply, emptyConsole } from "../src/console/state.ts";
 import type { AgentId } from "@ompd/core/contracts";
+import { apply, emptyConsole } from "../src/console/state.ts";
 
 describe("item 1: eviction drops markers that suppress replay/history", () => {
   test("evicting least-recent session also drops its watermark and historyBefore", () => {

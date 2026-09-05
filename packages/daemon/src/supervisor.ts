@@ -35,6 +35,7 @@ import {
   type HostMount,
   type HostRef,
   type HostSpec,
+  MAX_PROMPT_IMAGE_BASE64_CHARS,
   type PlanReviewChoice,
   type PlanReviewRequest,
   type Policy,
@@ -45,7 +46,6 @@ import {
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   type Store,
-  MAX_PROMPT_IMAGE_BASE64_CHARS,
   TERMINAL_AGENT_STATES,
   toAcpOption,
 } from "@ompd/core";
