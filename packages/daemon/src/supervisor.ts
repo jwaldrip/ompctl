@@ -898,15 +898,15 @@ export class Supervisor {
     }
 
     this.#inFlightTurns.set(agentId, inFlight + 1);
-    this.#setState(agentId, "busy");
-    this.#store.audit({
-      action: "agent.prompt",
-      agentId,
-      actorDeviceId: who.deviceId,
-      outcome: "ok",
-      detail: { chars: text.length, ...(images?.length ? { images: images.length } : {}) },
-    });
     try {
+      this.#setState(agentId, "busy");
+      this.#store.audit({
+        action: "agent.prompt",
+        agentId,
+        actorDeviceId: who.deviceId,
+        outcome: "ok",
+        detail: { chars: text.length, ...(images?.length ? { images: images.length } : {}) },
+      });
       return await entry.host.client.prompt(agent.acpSessionId, text, images);
     } finally {
       // Only return to idle if the in-flight count reaches zero and the agent
