@@ -734,7 +734,7 @@ export class OmpdClient {
    */
   private askedSessions = false;
   private sessionQuery: SessionQuery | undefined;
-
+  private selectedTerminalSession: string | null = null;
   private socket: SocketLike | null = null;
   /** Invalidates handlers belonging to a socket we have already abandoned. */
   private generation = 0;
@@ -1009,8 +1009,12 @@ export class OmpdClient {
    * `resumeSession`: the daemon-side guest outlives this socket, and
    * re-asking after a reconnect answers with the same agentId.
    */
-  openCollab(sessionId: string): void {
-    this.send({ t: "collab_open", sessionId });
+  openCollab(sessionId: string, opts?: { link?: string }): void {
+    this.send({
+      t: "collab_open",
+      sessionId,
+      ...(opts?.link !== undefined ? { link: opts.link } : {}),
+    });
   }
 
   /**
@@ -1052,7 +1056,14 @@ export class OmpdClient {
    * for a screen nobody may still be on, and the daemon's `tui_activity`
    * stream already carries what changed since.
    */
+  selectTerminalSession(sessionId: string | null): void {
+    this.selectedTerminalSession = sessionId;
+  }
+
   sessionTail(sessionId: string, limit?: number, cursor?: number): void {
+    if (cursor === undefined) {
+      this.selectedTerminalSession = sessionId;
+    }
     const frame: ClientFrame = {
       t: "session_tail",
       sessionId,
@@ -1567,7 +1578,10 @@ export class OmpdClient {
         // Last, like the rooms: the index is a snapshot asked for, not state
         // the daemon holds about this socket, so there is no ordering
         // constraint with the replays above -- only that a client which
-        // asked before the drop is not left holding a stale list after it.
+        // Re-request the tail for the selected terminal session so steered-terminal transcripts resume.
+        if (this.selectedTerminalSession !== null) {
+          this.sessionTail(this.selectedTerminalSession);
+        }
         if (this.askedSessions) this.sendSessionsQuery();
         return;
       }

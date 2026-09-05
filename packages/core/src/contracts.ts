@@ -1204,7 +1204,7 @@ export type ClientFrame =
    * daemon already co-drives answers `collab_opened` with the same agentId,
    * so a reconnected phone can recover its row without a second guest.
    */
-  | { t: "collab_open"; sessionId: string }
+  | { t: "collab_open"; sessionId: string; link?: string }
   /**
    * Stop co-driving a session. The guest leaves the room and its agent row
    * goes terminal, exactly as a stopped owned agent does. One-shot like the
