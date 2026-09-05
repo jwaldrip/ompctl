@@ -45,6 +45,7 @@ import {
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   type Store,
+  MAX_PROMPT_IMAGE_BASE64_CHARS,
   TERMINAL_AGENT_STATES,
   toAcpOption,
 } from "@ompd/core";
@@ -67,6 +68,20 @@ export class AgentBusyError extends Error {
     this.name = "AgentBusyError";
     this.agentId = agentId;
   }
+}
+
+const TRANSCRIPT_UPDATE_KINDS: ReadonlySet<string> = new Set([
+  "user_message_chunk",
+  "agent_message_chunk",
+  "agent_thought_chunk",
+  "tool_call",
+  "tool_call_update",
+]);
+
+function isTranscriptUpdate(update: unknown): boolean {
+  if (typeof update !== "object" || update === null) return false;
+  const kind = (update as { sessionUpdate?: unknown }).sessionUpdate;
+  return typeof kind === "string" && TRANSCRIPT_UPDATE_KINDS.has(kind);
 }
 
 export interface PendingApproval {
@@ -520,6 +535,7 @@ export class Supervisor {
   #pending = new Map<string, PendingApproval>();
   #pendingPlanReviews = new Map<string, PendingPlanReview>();
   #inFlightTurns = new Map<AgentId, number>();
+  #loadingSessions = new Set<string>();
 
   constructor(opts: SupervisorOptions) {
     this.#store = opts.store;
@@ -697,11 +713,16 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, { resumed: true }, async (sessionEntry, agentId) => {
-      await sessionEntry.host.client.loadSession(
-        input.sessionId,
-        input.cwd,
-        this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
-      );
+      this.#loadingSessions.add(input.sessionId);
+      try {
+        await sessionEntry.host.client.loadSession(
+          input.sessionId,
+          input.cwd,
+          this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
+        );
+      } finally {
+        this.#loadingSessions.delete(input.sessionId);
+      }
       return input.sessionId;
     });
   }
@@ -782,7 +803,12 @@ export class Supervisor {
       who,
       { takeover: "live-tui" },
       async sessionEntry => {
-        await sessionEntry.host.client.loadSession(input.sessionId, input.cwd);
+        this.#loadingSessions.add(input.sessionId);
+        try {
+          await sessionEntry.host.client.loadSession(input.sessionId, input.cwd);
+        } finally {
+          this.#loadingSessions.delete(input.sessionId);
+        }
         return input.sessionId;
       },
     );
@@ -907,6 +933,28 @@ export class Supervisor {
         outcome: "ok",
         detail: { chars: text.length, ...(images?.length ? { images: images.length } : {}) },
       });
+
+      const messageId = `user_${crypto.randomUUID()}`;
+      let content: unknown = { type: "text", text };
+      if (images && images.length > 0) {
+        const blocks: unknown[] = [{ type: "text", text }];
+        for (const img of images) {
+          if (img.data.length <= MAX_PROMPT_IMAGE_BASE64_CHARS) {
+            blocks.push({ type: "image", mimeType: img.mimeType, data: img.data });
+          } else {
+            blocks.push({ type: "text", text: "[image]" });
+          }
+        }
+        content = blocks;
+      }
+      const userUpdate = {
+        sessionUpdate: "user_message_chunk",
+        content,
+        messageId,
+      };
+      const seq = this.#store.appendUpdate(agentId, userUpdate);
+      this.#events.onUpdate?.(agentId, seq, userUpdate);
+
       return await entry.host.client.prompt(agent.acpSessionId, text, images);
     } finally {
       // Only return to idle if the in-flight count reaches zero and the agent
@@ -1476,6 +1524,14 @@ export class Supervisor {
   #onUpdate(sessionId: string, update: unknown): void {
     const agentId = this.#sessionAgent.get(sessionId);
     if (!agentId) return;
+
+    if (this.#loadingSessions.has(sessionId) && isTranscriptUpdate(update)) {
+      // Transcript notifications during session/load replay are served by
+      // session_history from JSONL; suppressing them here prevents duplicate
+      // transcript rows on resume.
+      return;
+    }
+
     const seq = this.#store.appendUpdate(agentId, update);
     this.#events.onUpdate?.(agentId, seq, update);
   }
