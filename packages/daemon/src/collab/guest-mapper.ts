@@ -224,11 +224,11 @@ export class CollabStreamMapper {
   readonly #announcedTools = new Set<string>();
   #stream: StreamState | null = null;
   #messageSeq = 0;
-  #lastLiveUserText: string | null = null;
   #usedTokens = 0;
   #costTotal = 0;
   #inProgressEntryId: string | null = null;
   #inProgressStreamedText: string | null = null;
+  #inProgressStreamedThinking: string | null = null;
   #inProgressMessageId: string | null = null;
   #inProgressMessageFinished = false;
   constructor(opts: CollabStreamMapperOptions) {
@@ -331,37 +331,76 @@ export class CollabStreamMapper {
       if (opts.backfill) {
         if (message.role === "assistant") {
           const fullText = this.#flattenText(message.content);
+          const fullThinking = this.#flattenThinking(message.content);
+          const textMatches =
+            this.#inProgressStreamedText !== null &&
+            this.#inProgressStreamedText.length > 0 &&
+            (fullText.startsWith(this.#inProgressStreamedText) || this.#inProgressStreamedText.startsWith(fullText));
+          const thinkingMatches =
+            this.#inProgressStreamedThinking !== null &&
+            this.#inProgressStreamedThinking.length > 0 &&
+            (fullThinking.startsWith(this.#inProgressStreamedThinking) || this.#inProgressStreamedThinking.startsWith(fullThinking));
           const matchesInProgress =
             (this.#inProgressEntryId !== null && id === this.#inProgressEntryId) ||
-            (this.#inProgressStreamedText !== null &&
-              this.#inProgressStreamedText.length > 0 &&
-              (fullText.startsWith(this.#inProgressStreamedText) || this.#inProgressStreamedText.startsWith(fullText)));
+            textMatches ||
+            thinkingMatches;
+
           if (matchesInProgress) {
-            const streamedLen = this.#inProgressStreamedText?.length ?? 0;
-            if (fullText.length > streamedLen) {
-              const remainder = fullText.slice(streamedLen);
-              const messageId = this.#inProgressMessageId ?? this.#inProgressEntryId ?? id;
-              updates.push({
-                sessionUpdate: "agent_message_chunk",
-                content: { type: "text", text: remainder },
-                messageId,
-              });
+            const messageId = this.#inProgressMessageId ?? this.#inProgressEntryId ?? id;
+            let remainingTextToSkip = this.#inProgressStreamedText?.length ?? 0;
+            let remainingThinkingToSkip = this.#inProgressStreamedThinking?.length ?? 0;
+
+            for (const block of message.content ?? []) {
+              if (block.type === "text") {
+                const text = block.text;
+                if (remainingTextToSkip >= text.length) {
+                  remainingTextToSkip -= text.length;
+                } else {
+                  const unstreamed = block.text.slice(remainingTextToSkip);
+                  remainingTextToSkip = 0;
+                  if (unstreamed.length > 0) {
+                    updates.push({
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: unstreamed },
+                      messageId,
+                    });
+                  }
+                }
+              } else if (block.type === "thinking") {
+                const thinking = block.thinking;
+                if (remainingThinkingToSkip >= thinking.length) {
+                  remainingThinkingToSkip -= thinking.length;
+                } else {
+                  const unstreamed = block.thinking.slice(remainingThinkingToSkip);
+                  remainingThinkingToSkip = 0;
+                  if (unstreamed.length > 0) {
+                    updates.push({
+                      sessionUpdate: "agent_thought_chunk",
+                      content: { type: "text", text: unstreamed },
+                      messageId,
+                    });
+                  }
+                }
+              } else if (block.type === "toolCall") {
+                if (!this.#announcedTools.has(block.id)) {
+                  this.#announceTool(updates, block.id, block.name, block.arguments, "pending", messageId);
+                }
+              }
             }
+
             this.#accumulateUsage(message);
+            this.#stream = null;
             this.#inProgressEntryId = null;
             this.#inProgressStreamedText = null;
+            this.#inProgressStreamedThinking = null;
             this.#inProgressMessageId = null;
+            this.#inProgressMessageFinished = false;
             return;
           }
         }
         this.#mapMessageEntry(message, updates, id);
       } else if (message.role === "user") {
         const text = this.#flattenText(message.content);
-        if (this.#lastLiveUserText !== null && text === this.#lastLiveUserText) {
-          this.#lastLiveUserText = null;
-          return;
-        }
-        this.#lastLiveUserText = null;
         this.#pushUserChunk(updates, text, id);
       }
       // Live assistant and toolResult entries already streamed as events;
@@ -369,6 +408,7 @@ export class CollabStreamMapper {
       if (!opts.backfill && message.role === "assistant") {
         this.#inProgressEntryId = null;
         this.#inProgressStreamedText = null;
+        this.#inProgressStreamedThinking = null;
         this.#inProgressMessageId = null;
         this.#inProgressMessageFinished = false;
         this.#stream = null;
@@ -387,11 +427,6 @@ export class CollabStreamMapper {
       if (custom.customType === COLLAB_PROMPT_MESSAGE_TYPE) {
         const from = (custom.details as { from?: string } | undefined)?.from;
         const text = this.#flattenText(custom.content);
-        if (this.#lastLiveUserText !== null && text === this.#lastLiveUserText) {
-          this.#lastLiveUserText = null;
-          return;
-        }
-        this.#lastLiveUserText = null;
         const prefix = from === undefined || from === this.#ownName ? "" : `[${from}] `;
         this.#pushUserChunk(updates, `${prefix}${text}`, id);
         return;
@@ -443,8 +478,16 @@ export class CollabStreamMapper {
             (message as { id?: string }).id ??
             null;
 
+          if (this.#inProgressMessageFinished) {
+            this.#stream = null;
+            this.#inProgressStreamedText = null;
+            this.#inProgressMessageId = null;
+            this.#inProgressEntryId = eventMsgId;
+            this.#inProgressMessageFinished = false;
+          }
+
           const currentText = this.#flattenText(message.content);
-          const hasActiveInFlight = this.#stream !== null && !this.#inProgressMessageFinished;
+          const hasActiveInFlight = this.#stream !== null;
 
           let isSameMessage = false;
           if (hasActiveInFlight) {
@@ -464,11 +507,11 @@ export class CollabStreamMapper {
             if (!isSameMessage) {
               this.#stream = null;
               this.#inProgressStreamedText = null;
+              this.#inProgressStreamedThinking = null;
               this.#inProgressMessageId = null;
               this.#inProgressEntryId = eventMsgId;
               this.#inProgressMessageFinished = false;
             } else if (eventMsgId !== null && this.#inProgressEntryId === null) {
-              this.#inProgressEntryId = eventMsgId;
             }
           }
           this.#diffAssistant(message, updates);
@@ -487,13 +530,7 @@ export class CollabStreamMapper {
           });
           return;
         }
-        if (message.role === "user") {
-          const text = this.#flattenText(message.content);
-          if (text.length === 0 || text === this.#lastLiveUserText) return;
-          this.#lastLiveUserText = text;
-          this.#pushUserChunk(updates, text, `collab-u${this.#messageSeq++}`);
-          return;
-        }
+        if (message.role === "user") return;
         return;
       }
       case "tool_execution_start":
@@ -567,9 +604,7 @@ export class CollabStreamMapper {
     for (let index = Math.max(0, live.blocks - 1); index < content.length; index++) {
       const block = content[index]!;
       if (block.type === "text") {
-        const lastEmitted = live.last !== null && live.last.kind === "text" ? live.last.emitted : 0;
-        const streamedLen = this.#inProgressStreamedText?.length ?? 0;
-        const base = Math.max(lastEmitted, streamedLen);
+        const base = live.last !== null && live.last.kind === "text" ? live.last.emitted : 0;
         if (block.text.length > base) {
           const delta = block.text.slice(base);
           updates.push({
@@ -583,11 +618,13 @@ export class CollabStreamMapper {
       } else if (block.type === "thinking") {
         const base = live.last !== null && live.last.kind === "thinking" ? live.last.emitted : 0;
         if (block.thinking.length > base) {
+          const delta = block.thinking.slice(base);
           updates.push({
             sessionUpdate: "agent_thought_chunk",
-            content: { type: "text", text: block.thinking.slice(base) },
+            content: { type: "text", text: delta },
             messageId,
           });
+          this.#inProgressStreamedThinking = (this.#inProgressStreamedThinking ?? "") + delta;
         }
         live.last = { kind: "thinking", emitted: block.thinking.length };
       } else if (block.type === "toolCall") {
@@ -687,6 +724,18 @@ export class CollabStreamMapper {
       }
       // Image blocks carry base64 the phone transcript does not inline; the
       // prompt's local echo already names image counts.
+    }
+    return joined;
+  }
+
+  #flattenThinking(content: unknown): string {
+    if (!Array.isArray(content)) return "";
+    let joined = "";
+    for (const block of content) {
+      if (block !== null && typeof block === "object" && (block as { type?: unknown }).type === "thinking") {
+        const text = (block as { thinking?: unknown }).thinking;
+        if (typeof text === "string") joined += text;
+      }
     }
     return joined;
   }
