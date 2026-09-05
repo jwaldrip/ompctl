@@ -1,12 +1,11 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
-import { createElement } from "react";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
 import { OmpdClient, type SocketLike } from "@ompd/core/ompd-client";
-import { type ConsoleActions, useConsole } from "../src/console/useConsole.ts";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import type { ConsoleState } from "../src/console/state.ts";
+import { type ConsoleActions, useConsole } from "../src/console/useConsole.ts";
 import type { Connection } from "../src/platform/connection.ts";
 
 declare global {

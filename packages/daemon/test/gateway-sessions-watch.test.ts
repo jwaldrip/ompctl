@@ -18,7 +18,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ClientFrame, DefaultPolicy, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
+import {
+  type ClientFrame,
+  DefaultPolicy,
+  SCOPE_MANAGE,
+  SCOPE_PROMPT,
+  SCOPE_READ,
+  type ServerFrame,
+  Store,
+} from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { SESSION_WATCH_QUIET_MS, SessionIndex } from "../src/sessions/index.ts";
@@ -353,42 +361,42 @@ describe("the watcher-driven sessions push", () => {
   });
 });
 
-  test("session gone while attached: when session file disappears, emits error session_gone to attached sockets once", async () => {
-    const h = await harness();
-    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE]);
-    const client = await h.connect(token);
+test("session gone while attached: when session file disappears, emits error session_gone to attached sockets once", async () => {
+  const h = await harness();
+  const token = await h.pair([SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE]);
+  const client = await h.connect(token);
 
-    // Resume the seed session so an agent holds it
-    client.send({ t: "session_resume", sessionId: SESSION_BASE, cwd: "/work" });
-    const opened = await client.next(f => f.t === "session_opened", "session_opened");
-    if (opened.t !== "session_opened") throw new Error("expected session_opened");
-    const agentId = opened.agentId;
+  // Resume the seed session so an agent holds it
+  client.send({ t: "session_resume", sessionId: SESSION_BASE, cwd: "/work" });
+  const opened = await client.next(f => f.t === "session_opened", "session_opened");
+  if (opened.t !== "session_opened") throw new Error("expected session_opened");
+  const agentId = opened.agentId;
 
-    // Attach to the agent and flush via ping/pong
-    client.send({ t: "attach", agentId });
-    client.send({ t: "ping" });
-    await client.next(f => f.t === "pong", "pong after attach");
+  // Attach to the agent and flush via ping/pong
+  client.send({ t: "attach", agentId });
+  client.send({ t: "ping" });
+  await client.next(f => f.t === "pong", "pong after attach");
 
-    // Remove the session file from disk
-    rmSync(seedPath(h.sessionsRoot));
+  // Remove the session file from disk
+  rmSync(seedPath(h.sessionsRoot));
 
-    // The sessions watcher observes the file disappearance and emits error code: "session_gone"
-    const gone = await client.next(f => f.t === "error" && f.code === "session_gone", "session_gone error");
-    expect(gone).toMatchObject({
-      t: "error",
-      code: "session_gone",
-      sessionId: SESSION_BASE,
-      agentId,
-    });
-
-    // Write another session file to trigger another watcher notification
-    writeSessionFile(h.sessionsRoot, "-burst", "2026-08-16T00-00-00-000Z", burstId(0), "burst session", new Date());
-    await sleep(SESSION_WATCH_QUIET_MS + 200);
-
-    // Assert session_gone was emitted only once
-    const goneFrames = client.frames.filter(f => f.t === "error" && f.code === "session_gone");
-    expect(goneFrames).toHaveLength(1);
+  // The sessions watcher observes the file disappearance and emits error code: "session_gone"
+  const gone = await client.next(f => f.t === "error" && f.code === "session_gone", "session_gone error");
+  expect(gone).toMatchObject({
+    t: "error",
+    code: "session_gone",
+    sessionId: SESSION_BASE,
+    agentId,
   });
+
+  // Write another session file to trigger another watcher notification
+  writeSessionFile(h.sessionsRoot, "-burst", "2026-08-16T00-00-00-000Z", burstId(0), "burst session", new Date());
+  await sleep(SESSION_WATCH_QUIET_MS + 200);
+
+  // Assert session_gone was emitted only once
+  const goneFrames = client.frames.filter(f => f.t === "error" && f.code === "session_gone");
+  expect(goneFrames).toHaveLength(1);
+});
 
 afterEach(async () => {
   while (gateways.length) await gateways.pop()?.close();

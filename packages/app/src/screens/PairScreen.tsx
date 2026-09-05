@@ -23,11 +23,11 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
-import { directSocketUrlForOrigin, isDaemonOrigin } from "../platform/portal.ts";
 // Extensionless on purpose: Metro picks `e2e-plaintext.ios.ts` for iOS and the
 // plain module everywhere else. Naming the extension would defeat that and
 // hand every platform the same answer.
 import { E2E_PLAINTEXT_TOKEN } from "../platform/e2e-plaintext";
+import { directSocketUrlForOrigin, isDaemonOrigin } from "../platform/portal.ts";
 
 export function PairScreen({
   notice,

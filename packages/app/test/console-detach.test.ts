@@ -1,11 +1,10 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
-import { createElement } from "react";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
 import type { Agent, ClientFrame, ServerFrame } from "@ompd/core/contracts";
 import { OmpdClient, type SocketLike } from "@ompd/core/ompd-client";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { type ConsoleActions, useConsole } from "../src/console/useConsole.ts";
 import type { Connection } from "../src/platform/connection.ts";
 
@@ -86,8 +85,26 @@ describe("defect 2: detach on switch", () => {
     const sock1 = sockets[0];
     if (!sock1) throw new Error("sock1 missing");
     const agents: Agent[] = [
-      { id: "a1", name: "Agent 1", state: "idle", host: { kind: "local", id: "0", spec: { kind: "local" } }, cwd: "", createdAt: "", lastActiveAt: "", labels: {} },
-      { id: "a2", name: "Agent 2", state: "idle", host: { kind: "local", id: "0", spec: { kind: "local" } }, cwd: "", createdAt: "", lastActiveAt: "", labels: {} },
+      {
+        id: "a1",
+        name: "Agent 1",
+        state: "idle",
+        host: { kind: "local", id: "0", spec: { kind: "local" } },
+        cwd: "",
+        createdAt: "",
+        lastActiveAt: "",
+        labels: {},
+      },
+      {
+        id: "a2",
+        name: "Agent 2",
+        state: "idle",
+        host: { kind: "local", id: "0", spec: { kind: "local" } },
+        cwd: "",
+        createdAt: "",
+        lastActiveAt: "",
+        labels: {},
+      },
     ];
     act(() => {
       sock1.accept();

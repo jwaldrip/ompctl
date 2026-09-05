@@ -414,32 +414,32 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
             <>
               <SessionContext {...props.context} agent={agent} now={props.now} session={session} />
               <OmpThreadList
-              entries={session.entries}
-              canApprove={props.canApprove}
-              refusal={props.refusal}
-              onDecide={props.onDecide}
-              spoken={props.spoken}
-              header={
-                <PlanCard
-                  canApprove={props.canApprove}
-                  onRespond={props.onDecidePlan}
-                  plan={session.plan}
-                  refusal={props.refusal}
-                  review={session.planReview}
-                />
-              }
-              footer={
-                activity === null ? null : (
-                  <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
-                )
-              }
-              canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
-              loadingEarlier={props.historyLoading}
-              onLoadEarlier={props.onLoadEarlier}
-              historyCursor={typeof props.historyBefore === "number" ? props.historyBefore : null}
-            />
-          </>
-        )}
+                entries={session.entries}
+                canApprove={props.canApprove}
+                refusal={props.refusal}
+                onDecide={props.onDecide}
+                spoken={props.spoken}
+                header={
+                  <PlanCard
+                    canApprove={props.canApprove}
+                    onRespond={props.onDecidePlan}
+                    plan={session.plan}
+                    refusal={props.refusal}
+                    review={session.planReview}
+                  />
+                }
+                footer={
+                  activity === null ? null : (
+                    <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
+                  )
+                }
+                canLoadEarlier={props.historyBefore !== undefined && props.historyBefore !== null}
+                loadingEarlier={props.historyLoading}
+                onLoadEarlier={props.onLoadEarlier}
+                historyCursor={typeof props.historyBefore === "number" ? props.historyBefore : null}
+              />
+            </>
+          )}
 
           {webViewCapability === null || !browserOpen ? null : (
             <View style={styles.browser} testID="session-browser">

@@ -793,7 +793,17 @@ export function useConsole(
         settleWebViewAction(agentId, requestId, result);
       },
     }),
-    [askOlderTui, client, connection.scopes, leaveCollab, requestHistory, settleWebViewAction, selectAgent, voice],
+    [
+      armLoadDeadline,
+      askOlderTui,
+      client,
+      connection.scopes,
+      leaveCollab,
+      requestHistory,
+      settleWebViewAction,
+      selectAgent,
+      voice,
+    ],
   );
 
   return [state, actions];

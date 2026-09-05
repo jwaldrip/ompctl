@@ -61,9 +61,9 @@ import {
   type SessionSummary,
   type SkillSummary,
   type Store,
-  TERMINAL_AGENT_STATES,
   type SyncSettings,
   type Task,
+  TERMINAL_AGENT_STATES,
   type TriggerDraft,
   type TuiActivityKind,
   type TuiSteerDelivery,
@@ -73,8 +73,8 @@ import {
   type WireHostSpec,
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
-import { CollabGuests } from "../collab/guests.ts";
 import { LOCAL_HOSTNAMES, parseCollabLink } from "../collab/guest-link.ts";
+import { CollabGuests } from "../collab/guests.ts";
 import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData } from "../collab/relay.ts";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
@@ -84,11 +84,11 @@ import type { SessionIndex } from "../sessions/session-index.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
 import {
+  AgentBusyError,
   createAgentId,
   type PendingApproval,
   type PendingPlanReview,
   type Supervisor,
-  AgentBusyError,
   UnauthorizedError,
 } from "../supervisor.ts";
 import { WEB_ASSETS, WEB_ASSETS_BUILT } from "../web-assets.ts";

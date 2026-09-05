@@ -11,9 +11,9 @@
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:net";
 import type { Subprocess } from "bun";
 
 const repoRoot = join(import.meta.dir, "..");
@@ -39,7 +39,11 @@ async function getFreePort(): Promise<number> {
   });
 }
 
-async function waitUntil<T>(probe: () => T | undefined | Promise<T | undefined>, label: string, timeoutMs = 60_000): Promise<T> {
+async function waitUntil<T>(
+  probe: () => T | undefined | Promise<T | undefined>,
+  label: string,
+  timeoutMs = 60_000,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const res = await probe();
@@ -98,11 +102,14 @@ async function main() {
     await gitInit.exited;
 
     // 2. Start scratch daemon
-    daemonProc = Bun.spawn([process.execPath, cliPath, "start", "--host", "127.0.0.1", "--port", String(port), "--foreground"], {
-      env: { ...process.env, OMPD_HOME: scratchHome },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    daemonProc = Bun.spawn(
+      [process.execPath, cliPath, "start", "--host", "127.0.0.1", "--port", String(port), "--foreground"],
+      {
+        env: { ...process.env, OMPD_HOME: scratchHome },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
     (async () => {
       const dec = new TextDecoder();
       if (daemonProc?.stdout) for await (const chunk of daemonProc.stdout as any) daemonLogs += dec.decode(chunk);
@@ -115,16 +122,20 @@ async function main() {
     // Wait for daemon health
     const tokenPath = join(scratchHome, "token");
     let token = "";
-    await waitUntil(async () => {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/v1/health`);
-        if (res.status === 200) {
-          token = readFileSync(tokenPath, "utf8").trim();
-          return token.length > 0 ? token : undefined;
-        }
-      } catch {}
-      return undefined;
-    }, "daemon to start and write token", 20_000);
+    await waitUntil(
+      async () => {
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/v1/health`);
+          if (res.status === 200) {
+            token = readFileSync(tokenPath, "utf8").trim();
+            return token.length > 0 ? token : undefined;
+          }
+        } catch {}
+        return undefined;
+      },
+      "daemon to start and write token",
+      20_000,
+    );
 
     console.log(`PHASE: DAEMON STARTED on 127.0.0.1:${port}`);
 
@@ -149,19 +160,23 @@ async function main() {
 
     // 4. Wait for session to register with daemon
     let sessionId = "";
-    await waitUntil(async () => {
-      try {
-        if (existsSync(bridgeLogPath)) {
-          const log = readFileSync(bridgeLogPath, "utf8");
-          const match = log.match(/"registered","sessionId":"([^"]+)"/);
-          if (match) {
-            sessionId = match[1];
-            return sessionId;
+    await waitUntil(
+      async () => {
+        try {
+          if (existsSync(bridgeLogPath)) {
+            const log = readFileSync(bridgeLogPath, "utf8");
+            const match = log.match(/"registered","sessionId":"([^"]+)"/);
+            if (match) {
+              sessionId = match[1];
+              return sessionId;
+            }
           }
-        }
-      } catch {}
-      return undefined;
-    }, "omp TUI session registration in daemon", 30_000);
+        } catch {}
+        return undefined;
+      },
+      "omp TUI session registration in daemon",
+      30_000,
+    );
 
     console.log(`PHASE: TUI REGISTERED session=${sessionId}`);
 
@@ -194,17 +209,21 @@ async function main() {
     // `assistant_text` activity carrying the nonce. The PTY echoes the prompt
     // itself as the user turn, so "the nonce appeared on screen" would pass
     // before any model ran; that is not evidence of a reply.
-    await waitUntil(() => {
-      const act = incomingFrames.find(
-        f =>
-          f.t === "tui_activity" &&
-          f.sessionId === sessionId &&
-          f.kind === "assistant_text" &&
-          typeof f.text === "string" &&
-          f.text.includes(nonce1),
-      );
-      return act ? true : undefined;
-    }, "assistant_text activity carrying the steer nonce", 90_000);
+    await waitUntil(
+      () => {
+        const act = incomingFrames.find(
+          f =>
+            f.t === "tui_activity" &&
+            f.sessionId === sessionId &&
+            f.kind === "assistant_text" &&
+            typeof f.text === "string" &&
+            f.text.includes(nonce1),
+        );
+        return act ? true : undefined;
+      },
+      "assistant_text activity carrying the steer nonce",
+      90_000,
+    );
 
     console.log(`PHASE: STEER PROVEN nonce=${nonce1}`);
 
@@ -214,22 +233,26 @@ async function main() {
 
     // Capture collab link from PTY bytes
     let collabLink = "";
-    await waitUntil(() => {
-      const clean = stripAnsi(ptyOutput);
-      // Link matches ws://127.0.0.1:<port>/r/<roomId>.<key> or similar
-      const match = clean.match(/ws:\/\/127\.0\.0\.1:\d+\/r\/[A-Za-z0-9_.-]+/);
-      if (match) {
-        collabLink = match[0];
-        return collabLink;
-      }
-      // Also check if link was printed as bare room.key
-      const bareMatch = clean.match(/([A-Za-z0-9_-]{10,64}\.[A-Za-z0-9_-]{43,})/);
-      if (bareMatch) {
-        collabLink = `ws://127.0.0.1:${port}/r/${bareMatch[1]}`;
-        return collabLink;
-      }
-      return undefined;
-    }, "collab link to appear in PTY output", 30_000);
+    await waitUntil(
+      () => {
+        const clean = stripAnsi(ptyOutput);
+        // Link matches ws://127.0.0.1:<port>/r/<roomId>.<key> or similar
+        const match = clean.match(/ws:\/\/127\.0\.0\.1:\d+\/r\/[A-Za-z0-9_.-]+/);
+        if (match) {
+          collabLink = match[0];
+          return collabLink;
+        }
+        // Also check if link was printed as bare room.key
+        const bareMatch = clean.match(/([A-Za-z0-9_-]{10,64}\.[A-Za-z0-9_-]{43,})/);
+        if (bareMatch) {
+          collabLink = `ws://127.0.0.1:${port}/r/${bareMatch[1]}`;
+          return collabLink;
+        }
+        return undefined;
+      },
+      "collab link to appear in PTY output",
+      30_000,
+    );
 
     // The link is a credential: print the room, never the key after the dot.
     console.log(`PHASE: COLLAB LINK CAPTURED room=${collabLink.replace(/^.*\/r\//, "").replace(/\..*$/, "")}`);
@@ -238,9 +261,13 @@ async function main() {
     clientWs.send(JSON.stringify({ t: "collab_open", sessionId, link: collabLink }));
 
     // Wait for collab_opened frame
-    const collabOpened = await waitUntil(() => {
-      return incomingFrames.find(f => f.t === "collab_opened" && f.sessionId === sessionId);
-    }, "collab_opened frame", 20_000);
+    const collabOpened = await waitUntil(
+      () => {
+        return incomingFrames.find(f => f.t === "collab_opened" && f.sessionId === sessionId);
+      },
+      "collab_opened frame",
+      20_000,
+    );
 
     const agentId = collabOpened.agentId;
     console.log(`PHASE: COLLAB OPENED agentId=${agentId}`);
@@ -250,15 +277,19 @@ async function main() {
 
     // The back-transcript must carry the steered turn as the operator's own
     // user entry, which is what a guest joining late is owed.
-    await waitUntil(() => {
-      return incomingFrames.find(
-        f =>
-          f.t === "update" &&
-          f.agentId === agentId &&
-          f.update?.sessionUpdate === "user_message_chunk" &&
-          JSON.stringify(f.update).includes(nonce1),
-      );
-    }, "back-transcript user entry containing nonce1", 20_000);
+    await waitUntil(
+      () => {
+        return incomingFrames.find(
+          f =>
+            f.t === "update" &&
+            f.agentId === agentId &&
+            f.update?.sessionUpdate === "user_message_chunk" &&
+            JSON.stringify(f.update).includes(nonce1),
+        );
+      },
+      "back-transcript user entry containing nonce1",
+      20_000,
+    );
 
     console.log(`PHASE: BACK-TRANSCRIPT VERIFIED`);
 
@@ -268,20 +299,24 @@ async function main() {
 
     // Only the model's answer counts. The guest leg also maps the prompt's
     // own echo to a user entry carrying nonce2, which is not a reply.
-    await waitUntil(() => {
-      const textByMsg = new Map<string, string>();
-      for (const f of incomingFrames) {
-        if (f.t === "update" && f.agentId === agentId && f.update?.sessionUpdate === "agent_message_chunk") {
-          const mid = (f.update as { messageId?: string }).messageId ?? "";
-          const chunkText = (f.update as { content?: { text?: string } }).content?.text ?? "";
-          textByMsg.set(mid, (textByMsg.get(mid) ?? "") + chunkText);
+    await waitUntil(
+      () => {
+        const textByMsg = new Map<string, string>();
+        for (const f of incomingFrames) {
+          if (f.t === "update" && f.agentId === agentId && f.update?.sessionUpdate === "agent_message_chunk") {
+            const mid = (f.update as { messageId?: string }).messageId ?? "";
+            const chunkText = (f.update as { content?: { text?: string } }).content?.text ?? "";
+            textByMsg.set(mid, (textByMsg.get(mid) ?? "") + chunkText);
+          }
         }
-      }
-      for (const fullText of textByMsg.values()) {
-        if (fullText.includes(nonce2)) return true;
-      }
-      return undefined;
-    }, "assistant reply text containing nonce2", 90_000);
+        for (const fullText of textByMsg.values()) {
+          if (fullText.includes(nonce2)) return true;
+        }
+        return undefined;
+      },
+      "assistant reply text containing nonce2",
+      90_000,
+    );
 
     console.log(`PHASE: COLLAB PROMPT PROVEN nonce=${nonce2}`);
 

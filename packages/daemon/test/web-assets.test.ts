@@ -40,7 +40,7 @@ describe("embedded web assets", () => {
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
     const text = await res.text();
     expect(text).toContain("<html");
-    expect(text).toContain("script type=\"module\"");
+    expect(text).toContain('script type="module"');
   });
 
   test("serves embedded ttf font with font/ttf content type", async () => {

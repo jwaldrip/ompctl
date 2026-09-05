@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentId } from "@ompd/core/contracts";
 import { apply, emptyConsole } from "../src/console/state.ts";
 import { appendPrompt, EMPTY_SESSION } from "../src/session/model.ts";
-import type { AgentId } from "@ompd/core/contracts";
 
 describe("defect 7: memory bounds", () => {
   test("deselected sessions beyond the most recent 8 are dropped from state.sessions while keeping watermarks", () => {
