@@ -158,7 +158,7 @@ describe("each check can fail", () => {
   test("a second copy of @assistant-ui/core", () => {
     const failures = checkAssistantUiSingletons(
       withCopies([
-        { name: "@assistant-ui/core", version: "0.3.16", path: "packages/web/node_modules/@assistant-ui/core" },
+        { name: "@assistant-ui/core", version: "0.3.16", path: "packages/other/node_modules/@assistant-ui/core" },
       ]),
     );
     expect(failures).toHaveLength(1);
@@ -168,7 +168,7 @@ describe("each check can fail", () => {
   test("both singletons doubled produce one failure each", () => {
     const failures = checkAssistantUiSingletons(
       withCopies(
-        ASSISTANT_UI_SINGLETONS.map(name => ({ name, version: "9.9.9", path: `packages/web/node_modules/${name}` })),
+        ASSISTANT_UI_SINGLETONS.map(name => ({ name, version: "9.9.9", path: `packages/other/node_modules/${name}` })),
       ),
     );
     expect(failures).toHaveLength(ASSISTANT_UI_SINGLETONS.length);
@@ -266,7 +266,7 @@ describe("each check can fail", () => {
       appDependencies: withoutCloud,
       copies: [
         ...HEALTHY.copies,
-        { name: "@assistant-ui/core", version: "0.3.16", path: "packages/web/node_modules/@assistant-ui/core" },
+        { name: "@assistant-ui/core", version: "0.3.16", path: "packages/other/node_modules/@assistant-ui/core" },
         { name: "react", version: "19.2.7", path: "packages/app/node_modules/react" },
       ],
     });

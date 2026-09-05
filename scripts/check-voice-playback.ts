@@ -31,7 +31,7 @@ import { pcmToBase64, selectTtsEngine, speakableSegments } from "../packages/dae
 const SPOKEN_PROMPT = "Reply with exactly the words green light and nothing else.";
 
 const home = mkdtempSync(join(tmpdir(), "ompd-playback-"));
-const dist = resolve(import.meta.dir, "../packages/web/dist");
+const dist = resolve(import.meta.dir, "../packages/app/dist");
 const promptFile = join(dist, "spoken-prompt.b64");
 
 const daemon = new Ompd({
