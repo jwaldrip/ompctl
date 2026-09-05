@@ -1089,6 +1089,7 @@ export interface GatewayOptions {
    * no business reading.
    */
   onError?: (err: Error) => void;
+  onLog?: (message: string) => void;
   host?: string;
   /** 0 asks the OS for a free port; read the real one back from `listen()`. */
   port?: number;
@@ -1388,6 +1389,7 @@ export class Gateway {
   #onWebViewUnavailable: GatewayOptions["onWebViewUnavailable"];
   #staticRoot: string | undefined;
   #onError: GatewayOptions["onError"];
+  #onLog: GatewayOptions["onLog"];
   #collab: CollabRooms;
   /**
    * Guest legs into omp collab rooms. A different thing from `#collab`
@@ -1472,6 +1474,7 @@ export class Gateway {
     // Resolved once so the traversal check below compares two absolute paths.
     this.#staticRoot = opts.staticRoot === undefined ? undefined : resolve(opts.staticRoot);
     this.#onError = opts.onError;
+    this.#onLog = opts.onLog;
 
     this.#unsubscribe = this.#events?.add({
       onUpdate: (agentId, seq, update) => {
@@ -5993,7 +5996,7 @@ export class Gateway {
         outcome: "error",
         detail: { buffered, limit: this.#maxSocketBufferBytes, code: 1013, reason: "backpressure" },
       });
-      this.#events?.onLog?.(
+      this.#onLog?.(
         `[gateway] closing socket for ${ws.data.deviceId} due to backpressure: ${buffered} bytes buffered (limit ${this.#maxSocketBufferBytes})`,
       );
       this.#hasClosedSockets = true;
