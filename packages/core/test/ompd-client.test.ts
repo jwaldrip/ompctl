@@ -1682,4 +1682,47 @@ describe("session tail surface", () => {
     const attaches = thirdSocket.framesOfType("attach");
     expect(attaches).toEqual([{ t: "attach", agentId: AGENT, sinceSeq: 2 }]);
   });
+
+  test("D5: repeated 1013 closes grow backoff delay even across hello resets until durable progress", async () => {
+    const h = harness({
+      backoff: { baseMs: 500, maxMs: 30_000, factor: 2, jitter: 0 },
+    });
+    h.client.start();
+
+    // 1. First connection gets hello then 1013 backpressure
+    const s1 = bringUp(h);
+    s1.close(1013, "backpressure");
+
+    const delay1 = h.clock.pendingDelays().at(-1);
+    expect(delay1).toBe(500);
+
+    // 2. Second connection connects, gets hello, but is immediately 1013 backpressured again
+    h.clock.runNext();
+    const s2 = bringUp(h);
+    s2.close(1013, "backpressure");
+
+    // Pre-fix: hello reset attempt to 0, so delay2 was 500ms again!
+    // Post-fix: 1013 streak preserves exponential backoff, so delay2 is 1000ms!
+    const delay2 = h.clock.pendingDelays().at(-1);
+    expect(delay2).toBe(1000);
+
+    // 3. Third connection gets hello then 1013
+    h.clock.runNext();
+    const s3 = bringUp(h);
+    s3.close(1013, "backpressure");
+
+    const delay3 = h.clock.pendingDelays().at(-1);
+    expect(delay3).toBe(2000);
+
+    // 4. Fourth connection receives an update that advances watermark (durable progress)
+    h.clock.runNext();
+    const s4 = bringUp(h);
+    h.client.attach(AGENT);
+    s4.deliver({ t: "update", agentId: AGENT, seq: 1, update: "progress" });
+
+    // After durable progress, a subsequent 1013 drops back to base delay
+    s4.close(1013, "backpressure");
+    const delay4 = h.clock.pendingDelays().at(-1);
+    expect(delay4).toBe(500);
+  });
 });

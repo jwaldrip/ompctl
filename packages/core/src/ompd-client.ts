@@ -692,6 +692,7 @@ export interface OmpdClientOptions {
   pingIntervalMs?: number;
   /** How long a `pong` may take before the link is declared dead. */
   pongTimeoutMs?: number;
+  stabilityWindowMs?: number;
   createSocket?: SocketFactory;
   schedule?: Scheduler;
   random?: () => number;
@@ -719,6 +720,9 @@ export class OmpdClient {
   private readonly backoff: BackoffOptions;
   private readonly pingIntervalMs: number;
   private readonly pongTimeoutMs: number;
+  private readonly stabilityWindowMs: number;
+  private backpressureStreak = 0;
+  private cancelStability: (() => void) | null = null;
   private readonly createSocket: SocketFactory;
   private readonly schedule: Scheduler;
   private readonly random: () => number;
@@ -776,6 +780,7 @@ export class OmpdClient {
     this.backoff = { ...DEFAULT_BACKOFF, ...options.backoff };
     this.pingIntervalMs = options.pingIntervalMs ?? 15_000;
     this.pongTimeoutMs = options.pongTimeoutMs ?? 10_000;
+    this.stabilityWindowMs = options.stabilityWindowMs ?? 10_000;
     this.createSocket = options.createSocket ?? createPlatformSocket;
     this.schedule = options.schedule ?? scheduleWithTimeout;
     this.random = options.random ?? Math.random;
@@ -821,6 +826,7 @@ export class OmpdClient {
   /** Closes deliberately. No further reconnects until `start()` is called. */
   close(): void {
     this.started = false;
+    this.backpressureStreak = 0;
     this.clearTimers();
     this.generation += 1;
     const socket = this.socket;
@@ -1385,6 +1391,9 @@ export class OmpdClient {
       // upgrade. So the reconnect is scheduled exactly as it always was, and
       // the question is asked alongside it. An outage answers "unknown" and
       // nothing changes; only a daemon that is up and says 401 stops the loop.
+      if (info.code === 1013) {
+        this.backpressureStreak += 1;
+      }
       if (!this.authenticated && !isTransientCloseCode(info.code)) {
         this.checkCredential("The daemon rejected this device's token.");
       }
@@ -1419,7 +1428,8 @@ export class OmpdClient {
    * `[0, maxMs]` by construction, because it only ever shortens the wait.
    */
   private nextDelayMs(): number {
-    const proposed = computeBackoffDelay(this.attempt, this.backoff, this.random);
+    const effectiveAttempt = Math.max(this.attempt, this.backpressureStreak > 0 ? this.backpressureStreak - 1 : 0);
+    const proposed = computeBackoffDelay(effectiveAttempt, this.backoff, this.random);
     if (proposed !== this.previousDelayMs) {
       this.previousDelayMs = proposed;
       return proposed;
@@ -1517,6 +1527,10 @@ export class OmpdClient {
       this.cancelPong();
       this.cancelPong = null;
     }
+    if (this.cancelStability) {
+      this.cancelStability();
+      this.cancelStability = null;
+    }
   }
 
   // -- frames ---------------------------------------------------------------
@@ -1581,6 +1595,16 @@ export class OmpdClient {
         this.attempt = 0;
         this.authenticated = true;
         this.setStatus("connected", { reason: "hello" });
+        if (this.backpressureStreak > 0) {
+          if (this.cancelStability) {
+            this.cancelStability();
+            this.cancelStability = null;
+          }
+          this.cancelStability = this.schedule(() => {
+            this.cancelStability = null;
+            this.backpressureStreak = 0;
+          }, this.stabilityWindowMs);
+        }
         // The whole point of the watermark. Every agent this client cares about
         // is reattached from exactly where its stream stopped.
         this.emit("agents", { agents: frame.agents, deviceId: frame.deviceId, scopes: frame.scopes });
@@ -1808,6 +1832,9 @@ export class OmpdClient {
       });
     }
     this.watermarks.set(agentId, seq);
+    if (previous === undefined || seq > previous) {
+      this.backpressureStreak = 0;
+    }
     this.emit("update", { agentId, seq, update });
   }
 
