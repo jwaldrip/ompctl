@@ -241,16 +241,16 @@ test("D1: backpressure on tunnel-backed socket closes virtual session with 1013 
   const agent = await sup.createAgent({ name: "tunnel-bp-agent", cwd: agentDir }, actor);
 
   // Accept a tunnel session where getBufferedAmount reports exceeding the cap
-  let tunnelClosedWith: { code?: number; reason?: string } | null = null;
-  let tunnelDelivered: string[] = [];
-  let bufferedReported = 2048; // Exceeds TEST_CAP (1024)
+  const tunnelState: { closedWith: { code: number; reason: string } | null } = { closedWith: null };
+  const tunnelDelivered: string[] = [];
+  const bufferedReported = 2048; // Exceeds TEST_CAP (1024)
 
   const session = gw.acceptTunnelSession(
     token,
     raw => tunnelDelivered.push(raw),
     () => bufferedReported,
     (code, reason) => {
-      tunnelClosedWith = { code, reason };
+      tunnelState.closedWith = { code: code ?? 0, reason: reason ?? "" };
     },
   );
 
@@ -262,7 +262,8 @@ test("D1: backpressure on tunnel-backed socket closes virtual session with 1013 
   // Deliver an update: gateway will check getBufferedAmount (2048 > 1024), close with 1013, and audit
   fake.emitUpdate(agent.acpSessionId!, { text: "update" });
 
-  expect(tunnelClosedWith).toEqual({ code: 1013, reason: "backpressure" });
+  expect(tunnelState.closedWith?.code).toBe(1013);
+  expect(tunnelState.closedWith?.reason).toBe("backpressure");
 
   const audit = store.listAudit(5);
   const bpAudit = audit.find(e => e.action === "socket.backpressure");
