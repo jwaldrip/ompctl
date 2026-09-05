@@ -57,13 +57,19 @@ async function start(env: Record<string, string>): Promise<Started> {
   const decoder = new TextDecoder();
   let seen = "";
   // One reader for the stream's lifetime; racing individual reads would orphan
-  // the losing call and drop chunks.
-  for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
-    seen += decoder.decode(chunk, { stream: true });
+  // the losing call and drop chunks. A reader rather than `for await`: the
+  // app's tsc config types `ReadableStream` from the DOM lib, which has no
+  // async iterator, and the mobile workflow typechecks this file with it.
+  const reader = proc.stdout.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    seen += decoder.decode(value, { stream: true });
     // The readiness line carries the bound port, which is the only place this
     // process can learn it once the OS has done the choosing.
     const port = /"message":"ompctl web listening","port":(\d+)/.exec(seen)?.[1];
     if (port !== undefined) {
+      reader.releaseLock();
       const started: Started = { base: `http://127.0.0.1:${port}`, stop: () => proc.kill() };
       running.push(started);
       return started;
