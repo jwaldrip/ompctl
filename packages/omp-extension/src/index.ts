@@ -381,6 +381,24 @@ export class Bridge {
       this.#answer({ t: "tui_collab_closed", sessionId, requestId });
       return;
     }
+    if (this.#pi.getCollabLinks !== undefined) {
+      try {
+        const existingLinks = this.#pi.getCollabLinks();
+        if (existingLinks !== undefined) {
+          this.#answer({
+            t: "tui_collab_opened",
+            sessionId,
+            requestId,
+            link: existingLinks.link,
+            viewLink: existingLinks.viewLink,
+            writable: true,
+          });
+          return;
+        }
+      } catch {
+        // if getCollabLinks fails, proceed to startCollab
+      }
+    }
     const start = this.#pi.startCollab;
     if (start === undefined) {
       this.#answer({
@@ -455,7 +473,19 @@ export class Bridge {
     // rather than to push one turn into it, and it answers by request id
     // because hosting starts asynchronously.
     if (frame.t === "tui_collab_open" || frame.t === "tui_collab_close") {
-      if (frame.sessionId !== this.#registered || typeof frame.requestId !== "string") return;
+      if (typeof frame.requestId !== "string") return;
+      if (frame.sessionId !== this.#registered) {
+        if (frame.t === "tui_collab_open") {
+          this.#answer({
+            t: "tui_collab_error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : "",
+            requestId: frame.requestId,
+            reason: "unavailable",
+            detail: "this session is not registered on this terminal",
+          });
+        }
+        return;
+      }
       void this.#handleCollab(
         frame.t,
         frame.requestId,

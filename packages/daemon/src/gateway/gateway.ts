@@ -73,6 +73,7 @@ import {
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
 import { CollabGuests } from "../collab/guests.ts";
+import { LOCAL_HOSTNAMES, parseCollabLink } from "../collab/guest-link.ts";
 import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData } from "../collab/relay.ts";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
@@ -1085,6 +1086,17 @@ export interface GatewayOptions {
   port?: number;
   version?: string;
   /**
+   * Whether the collab relay at /r/<roomId> can be upgraded by non-loopback
+   * peers. Off by default: the relay is unauthenticated by design, so exposing
+   * it beyond loopback must be an explicit choice.
+   */
+  exposeCollabRelay?: boolean;
+  /**
+   * Peer address resolver for the relay upgrade guard. Injectable so tests can
+   * supply a fake remote address without spinning up a separate network.
+   */
+  requestAddress?: (req: Request, server: Server<any>) => string | null;
+  /**
    * Opaque identity of the state directory this daemon serves.
    *
    * Published on `/v1/health` so a second `ompd start` can tell "that is me
@@ -1376,6 +1388,8 @@ export class Gateway {
    */
   #collabGuests: CollabGuests;
   #collabRelay = new CollabRelay();
+  #exposeCollabRelay: boolean;
+  #requestAddress: (req: Request, server: Server<any>) => string | null;
 
   /** Set by `listen`, so uptime measures serving rather than construction. */
   #startedAtMs: number | undefined;
@@ -1392,6 +1406,8 @@ export class Gateway {
 
   constructor(opts: GatewayOptions) {
     this.#sup = opts.supervisor;
+    this.#exposeCollabRelay = opts.exposeCollabRelay ?? false;
+    this.#requestAddress = opts.requestAddress ?? ((req, server) => server.requestIP(req)?.address ?? null);
     this.#store = opts.store;
     this.#collab = new CollabRooms(this.#store);
     this.#collabGuests = new CollabGuests({
@@ -1903,6 +1919,12 @@ export class Gateway {
     const relayUpgrade = this.#collabRelay.upgradeData(url);
     if (relayUpgrade !== null) {
       if (relayUpgrade instanceof Response) return relayUpgrade;
+      if (!this.#exposeCollabRelay) {
+        const address = this.#requestAddress(req, server);
+        if (!isLoopbackPeer(address)) {
+          return new Response("collab relay is restricted to loopback peers", { status: 403 });
+        }
+      }
       if (server.upgrade(req, { data: relayUpgrade })) return undefined;
       return new Response("expected a websocket upgrade", { status: 426 });
     }
@@ -3768,6 +3790,7 @@ export class Gateway {
       this.#collab.leaveAll(ws.data.collab);
       ws.data.collab = null;
     }
+    this.#collabGuests.onClientDisconnected(ws);
     this.#unregisterWebViews(ws);
     this.#cancelClones(ws);
     for (const [sessionId, pending] of this.#tuiTakeovers) {
@@ -4793,11 +4816,48 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "bad_frame", message: "collab_open needs a sessionId" });
           return;
         }
+        const link = "link" in frame && typeof frame.link === "string" ? frame.link : undefined;
+        if ("link" in frame && frame.link !== undefined && typeof frame.link !== "string") {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "collab_open link must be a string" });
+          return;
+        }
+        if (link !== undefined) {
+          const parsed = parseCollabLink(link);
+          if ("error" in parsed) {
+            this.#send(ws, {
+              t: "error",
+              sessionId: frame.sessionId,
+              code: "collab_refused",
+              reason: "invalid_link",
+              message: COLLAB_REFUSAL_REASONS.invalid_link,
+            });
+            return;
+          }
+          const relayUrlObj = new URL(parsed.wsUrl);
+          const isLoopback = LOCAL_HOSTNAMES[relayUrlObj.hostname] === true;
+          let isOwnRelay = false;
+          try {
+            const ownOrigin = new URL(this.collabRelayUrl).origin;
+            isOwnRelay = relayUrlObj.origin === ownOrigin;
+          } catch {
+            // not listening
+          }
+          if (!isLoopback && !isOwnRelay) {
+            this.#send(ws, {
+              t: "error",
+              sessionId: frame.sessionId,
+              code: "collab_refused",
+              reason: "untrusted_relay",
+              message: COLLAB_REFUSAL_REASONS.untrusted_relay,
+            });
+            return;
+          }
+        }
         // Deliberately not awaited: the join walks a bridge round trip and a
         // relay handshake, and the socket must stay responsive to `collab_leave`
         // while it runs.
         void this.#collabGuests
-          .openCollab(frame.sessionId, this.#actorOf(ws))
+          .openCollab(frame.sessionId, this.#actorOf(ws), link, ws)
           .then(outcome => this.#answerCollabOpen(ws, frame.sessionId, outcome))
           .catch((err: unknown) => {
             this.#send(ws, {
@@ -4822,7 +4882,7 @@ export class Gateway {
         // Success needs no ack frame: the agent row goes terminal and every
         // attached socket is told through the ordinary `agents` push, which
         // is the same shape a stopped owned agent produces.
-        const outcome = this.#collabGuests.leaveCollab(frame.sessionId, this.#actorOf(ws));
+        const outcome = this.#collabGuests.leaveCollab(frame.sessionId, this.#actorOf(ws), ws);
         if ("refused" in outcome) {
           this.#send(ws, {
             t: "error",
@@ -5886,4 +5946,12 @@ export class Gateway {
       // removes it from the registry; there is nothing to report to.
     }
   }
+}
+
+function isLoopbackPeer(address: string | null): boolean {
+  if (address === null) return false;
+  const trimmed = address.trim().toLowerCase();
+  if (LOCAL_HOSTNAMES[trimmed] === true) return true;
+  const ipv4 = trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
+  return ipv4.startsWith("127.");
 }
