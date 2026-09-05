@@ -382,6 +382,7 @@ export function useConsole(
         }
         client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: event.agentId, awaiting: true });
+        client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
       }),
       client.on("collab_opened", event => {
@@ -710,16 +711,6 @@ export function useConsole(
         }
       },
       promptTui(sessionId, text, images) {
-        if (stateRef.current.connection !== "connected") {
-          dispatch({
-            t: "error",
-            event: {
-              message: "Not connected; the message was not sent",
-              code: "offline",
-            },
-          });
-          return false;
-        }
         client.sessionPrompt(sessionId, text, undefined, images);
         dispatch({ t: "tui_prompt", sessionId, text, imageCount: images?.length ?? 0 });
         return true;

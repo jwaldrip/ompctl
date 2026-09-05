@@ -129,11 +129,24 @@ export function Composer({
   const canSend = enabled && !(busy && interruptible) && (trimmed.length > 0 || images.length > 0);
   const stopping = busy && interruptible;
 
-  const send = async (): Promise<void> => {
+  const send = (): void => {
     if (!canSend) return;
     try {
-      const sent = await onSubmit(trimmed, images.length > 0 ? images : undefined);
-      if (sent === false) return;
+      const result = onSubmit(trimmed, images.length > 0 ? images : undefined);
+      if (result === false) return;
+      if (result instanceof Promise) {
+        result.then(
+          sent => {
+            if (sent === false) return;
+            setText("");
+            setImages([]);
+          },
+          () => {
+            // Keep draft on rejection
+          },
+        );
+        return;
+      }
       setText("");
       setImages([]);
     } catch {
