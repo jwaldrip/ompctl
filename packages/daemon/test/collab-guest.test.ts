@@ -779,6 +779,125 @@ describe("CollabStreamMapper", () => {
     const messageIds = allChunks.map(u => (u as { messageId: string }).messageId);
     expect(new Set(messageIds).size).toBe(1);
   });
+
+  test("defect B: live user entry matching earlier live message event does not duplicate user prompt", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    const eventResult = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_start",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Reply with exactly: collab_x" }],
+          timestamp: Date.now(),
+        },
+      },
+    });
+    expect(eventResult.updates).toHaveLength(1);
+    expect(eventResult.updates[0]).toMatchObject({
+      sessionUpdate: "user_message_chunk",
+      content: { type: "text", text: "Reply with exactly: collab_x" },
+    });
+
+    const entryResult = mapper.mapFrame({
+      t: "entry",
+      entry: {
+        type: "custom_message",
+        customType: COLLAB_PROMPT_MESSAGE_TYPE,
+        id: "2fd97c81",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        content: "Reply with exactly: collab_x",
+        display: true,
+        details: { from: "ompd" },
+      },
+    });
+    expect(entryResult.updates).toHaveLength(0);
+  });
+
+  test("defect A: message_start arriving after initial message_update does not re-emit chunks under a fresh messageId", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    const upd1 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("coll"), content: [{ type: "text", text: "coll" }] },
+      },
+    });
+    expect(upd1.updates).toHaveLength(1);
+    expect((upd1.updates[0] as { content: { text: string } }).content.text).toBe("coll");
+    const mid1 = (upd1.updates[0] as { messageId: string }).messageId;
+
+    const start = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_start",
+        message: { ...assistantMessage("coll"), content: [{ type: "text", text: "coll" }] },
+      },
+    });
+    expect(start.updates).toHaveLength(0);
+
+    const upd2 = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_update",
+        message: { ...assistantMessage("collab_mtost9o0"), content: [{ type: "text", text: "collab_mtost9o0" }] },
+      },
+    });
+    expect(upd2.updates).toHaveLength(1);
+    expect((upd2.updates[0] as { content: { text: string } }).content.text).toBe("ab_mtost9o0");
+    const mid2 = (upd2.updates[0] as { messageId: string }).messageId;
+    expect(mid2).toBe(mid1);
+  });
+
+  test("defect C: toolResult streamed as a message event maps to tool_call_update and not user_message_chunk", () => {
+    const mapper = new CollabStreamMapper({ ownName: "ompd" });
+    mapper.mapFrame({
+      t: "welcome",
+      proto: 3,
+      header: { type: "session", id: "s1", timestamp: "t", cwd: "/w" },
+      state: HOST_STATE,
+      entryCount: 0,
+      agents: [],
+    });
+
+    const res = mapper.mapFrame({
+      t: "event",
+      event: {
+        type: "message_end",
+        message: {
+          role: "toolResult",
+          toolCallId: "todo-call-1",
+          toolName: "todo",
+          content: [{ type: "text", text: "Remaining items: none. Overall: 1/1 done" }],
+          isError: false,
+          timestamp: Date.now(),
+        },
+      },
+    });
+
+    expect(res.updates).toHaveLength(1);
+    expect((res.updates[0] as { sessionUpdate: string }).sessionUpdate).toBe("tool_call_update");
+    expect((res.updates[0] as { toolCallId: string }).toolCallId).toBe("todo-call-1");
+  });
 });
 
 // ---------------------------------------------------------------------------

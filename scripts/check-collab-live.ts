@@ -269,14 +269,19 @@ async function main() {
     // Only the model's answer counts. The guest leg also maps the prompt's
     // own echo to a user entry carrying nonce2, which is not a reply.
     await waitUntil(() => {
-      return incomingFrames.find(
-        f =>
-          f.t === "update" &&
-          f.agentId === agentId &&
-          f.update?.sessionUpdate === "agent_message_chunk" &&
-          JSON.stringify(f.update.content ?? f.update).includes(nonce2),
-      );
-    }, "assistant reply chunk containing nonce2", 90_000);
+      const textByMsg = new Map<string, string>();
+      for (const f of incomingFrames) {
+        if (f.t === "update" && f.agentId === agentId && f.update?.sessionUpdate === "agent_message_chunk") {
+          const mid = (f.update as { messageId?: string }).messageId ?? "";
+          const chunkText = (f.update as { content?: { text?: string } }).content?.text ?? "";
+          textByMsg.set(mid, (textByMsg.get(mid) ?? "") + chunkText);
+        }
+      }
+      for (const fullText of textByMsg.values()) {
+        if (fullText.includes(nonce2)) return true;
+      }
+      return undefined;
+    }, "assistant reply text containing nonce2", 90_000);
 
     console.log(`PHASE: COLLAB PROMPT PROVEN nonce=${nonce2}`);
 
