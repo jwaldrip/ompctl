@@ -464,12 +464,15 @@ export function useConsole(
         // session's log is not an answer about the row they pressed. The
         // notice still goes out, because a refusal about a pane nobody is
         // watching must still reach the operator.
-        const subject = event.sessionId ?? event.agentId;
+        const subject = event.agentId ?? event.sessionId;
         if (subject !== undefined) {
           clearLoadDeadline(subject);
           if (event.code !== "agent_busy") {
             dispatch({ t: "open_failed", subject, message: event.message });
-            if (event.sessionId !== undefined) {
+            if (event.sessionId !== undefined && event.agentId !== undefined) {
+              clearLoadDeadline(event.sessionId);
+              dispatch({ t: "open_failed", subject: event.sessionId, message: event.message });
+            } else if (event.sessionId !== undefined) {
               const current = stateRef.current;
               const matchedAgent = current.agents.find(a => a.acpSessionId === event.sessionId);
               if (matchedAgent !== undefined && matchedAgent.id !== subject) {
