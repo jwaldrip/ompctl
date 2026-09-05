@@ -263,10 +263,10 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
     h.unmount();
   });
 
-  test("a direct socket url plus a token also enables Connect, and yields a direct connection", () => {
+  test("a direct wss socket url plus a token also enables Connect, and yields a direct connection", () => {
     const h = mountPairScreen();
     act(() => {
-      typeInto(h.endpointInput, "ws://10.4.1.221:7777/v1/socket");
+      typeInto(h.endpointInput, "wss://10.4.1.221:7777/v1/socket");
       typeInto(h.tokenInput, "tok_xyz");
     });
     expect(readsDisabled(h.submit)).toBe(false);
@@ -274,7 +274,36 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
       h.submit.click();
     });
     expect(h.paired).toEqual([
-      { transport: "direct", url: "ws://10.4.1.221:7777/v1/socket", token: "tok_xyz", scopes: [] },
+      { transport: "direct", url: "wss://10.4.1.221:7777/v1/socket", token: "tok_xyz", scopes: [] },
+    ]);
+    h.unmount();
+  });
+
+  test("a cleartext ws:// socket on a host that is not this machine leaves Connect disabled and says why", () => {
+    const h = mountPairScreen();
+    act(() => {
+      typeInto(h.endpointInput, "ws://10.4.1.221:7777/v1/socket");
+      typeInto(h.tokenInput, "tok_xyz");
+    });
+    expect(readsDisabled(h.submit)).toBe(true);
+    const kind = h.form.querySelector('[data-testid="pair-endpoint-kind"]');
+    expect(kind?.textContent).toContain("wss://");
+    expect(h.paired).toEqual([]);
+    h.unmount();
+  });
+
+  test("a cleartext ws:// socket on loopback is the daemon-served console's own address and still connects", () => {
+    const h = mountPairScreen();
+    act(() => {
+      typeInto(h.endpointInput, "ws://127.0.0.1:7777/v1/socket");
+      typeInto(h.tokenInput, "tok_xyz");
+    });
+    expect(readsDisabled(h.submit)).toBe(false);
+    act(() => {
+      h.submit.click();
+    });
+    expect(h.paired).toEqual([
+      { transport: "direct", url: "ws://127.0.0.1:7777/v1/socket", token: "tok_xyz", scopes: [] },
     ]);
     h.unmount();
   });

@@ -80,7 +80,7 @@ assertNoAssistantCloudEnv(process.env, "vite.config.ts");
 
 const webNodeModules = ["react-native-web", "react-native-svg", "@fortawesome/react-native-fontawesome"];
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig({
   plugins: [untranspiledJsxDeps(), react()],
   resolve: {
     alias: [
@@ -116,5 +116,9 @@ export default defineConfig(({ mode }) => ({
     include: webNodeModules,
     esbuildOptions: { loader: { ".js": "jsx" }, resolveExtensions: [".web.js", ".js", ".ts", ".tsx"] },
   },
-  build: { outDir: "dist", sourcemap: mode === "production" ? false : true },
-}));
+  // No source maps in the build: the deploy image copies all of `dist`, and a
+  // map carries every source file's contents to anyone who asks for it. The
+  // config stays a plain object because `scripts/check-web-build-jsx-deps.ts`
+  // spreads it; a function form would hand that gate no plugins at all.
+  build: { outDir: "dist", sourcemap: false },
+});
