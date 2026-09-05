@@ -1245,6 +1245,7 @@ interface SocketState {
   scopes: Set<string>;
   /** Agents this socket asked for. Nothing is pushed for anything else. */
   attached: Set<AgentId>;
+  notifiedGoneSessions: Set<string>;
   /**
    * Highest seq already delivered, per agent. Replay and the live stream both
    * go through this, which is what guarantees a reattach has no duplicates.
@@ -1367,7 +1368,6 @@ export class Gateway {
   #port: number;
   #maxSocketBufferBytes: number;
   #hasClosedSockets = false;
-  #notifiedGoneSessions = new Set<string>();
   #version: string;
   #homeId: string | undefined;
   #voice: VoiceHandlerFactory | undefined;
@@ -1730,6 +1730,7 @@ export class Gateway {
       deviceId: actor.deviceId,
       scopes: new Set(actor.scopes),
       attached: new Set(),
+      notifiedGoneSessions: new Set(),
       watchingSessions: false,
       sessionQuery: {},
       delivered: new Map(),
@@ -4166,6 +4167,28 @@ export class Gateway {
         // below the high-water mark so nothing arrives twice either.
         ws.data.attached.add(frame.agentId);
         this.#armSessionWatcher();
+        const attachedAgent = this.#store.getAgent(frame.agentId);
+        if (attachedAgent?.acpSessionId && !TERMINAL_AGENT_STATES.includes(attachedAgent.state) && this.#sessionIndex) {
+          const sid = attachedAgent.acpSessionId;
+          const key = `${attachedAgent.id}:${sid}`;
+          const index = this.#sessionIndex;
+          void (async () => {
+            const p1 = await index.pathFor(sid);
+            if (p1 !== undefined) return;
+            const p2 = await index.pathFor(sid);
+            if (p2 !== undefined) return;
+            if (!ws.data.attached.has(attachedAgent.id) || ws.data.revoked) return;
+            if (ws.data.notifiedGoneSessions.has(key)) return;
+            ws.data.notifiedGoneSessions.add(key);
+            this.#send(ws, {
+              t: "error",
+              code: "session_gone",
+              sessionId: sid,
+              agentId: attachedAgent.id,
+              message: `session ${sid} has been removed from disk`,
+            });
+          })();
+        }
         if (frame.sinceSeq !== undefined) {
           for (const record of this.#store.updatesSince(frame.agentId, frame.sinceSeq)) {
             this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload);
@@ -5644,21 +5667,35 @@ export class Gateway {
     for (const agent of this.#sup.listAgents()) {
       if (!agent.acpSessionId || TERMINAL_AGENT_STATES.includes(agent.state)) continue;
       const key = `${agent.id}:${agent.acpSessionId}`;
-      if (this.#notifiedGoneSessions.has(key)) continue;
 
-      const path = await index.pathFor(agent.acpSessionId);
-      if (path === undefined) {
-        this.#notifiedGoneSessions.add(key);
+      const path1 = await index.pathFor(agent.acpSessionId);
+      if (path1 !== undefined) {
         for (const ws of this.#sockets) {
-          if (!ws.data.attached.has(agent.id) || ws.data.revoked) continue;
-          this.#send(ws, {
-            t: "error",
-            code: "session_gone",
-            sessionId: agent.acpSessionId,
-            agentId: agent.id,
-            message: `session ${agent.acpSessionId} has been removed from disk`,
-          });
+          ws.data.notifiedGoneSessions.delete(key);
         }
+        continue;
+      }
+
+      // D3: Confirm absence with a fresh second lookup after the first miss before emitting
+      const path2 = await index.pathFor(agent.acpSessionId);
+      if (path2 !== undefined) {
+        for (const ws of this.#sockets) {
+          ws.data.notifiedGoneSessions.delete(key);
+        }
+        continue;
+      }
+
+      for (const ws of this.#sockets) {
+        if (!ws.data.attached.has(agent.id) || ws.data.revoked) continue;
+        if (ws.data.notifiedGoneSessions.has(key)) continue;
+        ws.data.notifiedGoneSessions.add(key);
+        this.#send(ws, {
+          t: "error",
+          code: "session_gone",
+          sessionId: agent.acpSessionId,
+          agentId: agent.id,
+          message: `session ${agent.acpSessionId} has been removed from disk`,
+        });
       }
     }
   }
