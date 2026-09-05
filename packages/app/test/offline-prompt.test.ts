@@ -5,7 +5,7 @@ import { OmpdClient, type SocketLike } from "@ompd/core/ompd-client";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { ConsoleState } from "../src/console/state.ts";
-import { type ConsoleActions, useConsole } from "../src/console/useConsole.ts";
+import type { ConsoleActions } from "../src/console/useConsole.ts";
 import type { Connection } from "../src/platform/connection.ts";
 
 declare global {
@@ -14,7 +14,10 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("defect 4: offline prompt", () => {
-  test("actions.prompt while connection !== 'connected' dispatches no prompt entry and raises notice", () => {
+  test("actions.prompt while connection !== 'connected' dispatches no prompt entry and raises notice", async () => {
+    // Dynamic import on purpose: bun evaluates static imports before ./rnw.ts can substitute react-native-web
+    const { useConsole } = await import("../src/console/useConsole.ts");
+
     const client = new OmpdClient({
       url: "ws://127.0.0.1:7777/v1/socket",
       token: "tok_test",

@@ -708,9 +708,16 @@ describe("a session joined after its turn ended", () => {
           messageId: "m1",
         },
       });
-      // Deliberately NO trailing roster frame. A settled session sends none,
-      // which is exactly what made the device fail while a test that emitted
-      // one passed.
+      shell.emit("update", {
+        agentId: "agt_a",
+        seq: 3,
+        update: {
+          sessionUpdate: "usage_update",
+          usage: { inputTokens: 10, outputTokens: 20 },
+        },
+      });
+      // Deliberately NO trailing roster frame. A settled session sends none;
+      // the non-chunk usage_update frame is what settles the stream.
 
       expect(shell.rowLabel()).toBeNull();
       expect(shell.rowCount()).toBe(0);

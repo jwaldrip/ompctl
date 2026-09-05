@@ -618,8 +618,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // caret must stay.
       const live = state.agents.find(candidate => candidate.id === agentId);
       const applied = withSession(state, agentId, session => reduce(session, update));
+      const isChunk =
+        typeof update === "object" &&
+        update !== null &&
+        (Reflect.get(update, "sessionUpdate") === "agent_message_chunk" ||
+          Reflect.get(update, "sessionUpdate") === "agent_thought_chunk");
       const next =
-        live !== undefined && live.state !== "busy"
+        !isChunk && live !== undefined && live.state !== "busy"
           ? withSession(applied, agentId, session => endTurn(session))
           : applied;
       return { ...settleLoad(next, agentId), watermarks, rosterMisses };
@@ -762,20 +767,20 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
         rosterMisses,
         sessionRecency,
       };
-      if (nextState.sessions.size > MAX_RETAINED_SESSIONS) {
-        const sessions = new Map(nextState.sessions);
-        const keep = new Set<AgentId>();
-        keep.add(event.agentId);
-        for (const id of sessionRecency) {
-          if (keep.size >= MAX_RETAINED_SESSIONS) break;
-          keep.add(id);
-        }
-        for (const key of sessions.keys()) {
-          if (!keep.has(key)) sessions.delete(key);
-        }
-        return { ...nextState, sessions };
-      }
-      return nextState;
+      const pruned = pruneSessions(
+        new Map(nextState.sessions),
+        sessionRecency,
+        event.agentId,
+        nextState.watermarks,
+        nextState.historyBefore,
+      );
+      return {
+        ...nextState,
+        sessions: pruned.sessions,
+        sessionRecency: pruned.sessionRecency,
+        watermarks: pruned.watermarks,
+        historyBefore: pruned.historyBefore,
+      };
     }
 
     case "tui_select": {
@@ -856,7 +861,12 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "session_history": {
       const { agentId, sessionId, entries, nextBefore } = event.event;
-      const next = withSession(state, agentId, session => mergeSessionHistory(session, entries));
+      const merged = withSession(state, agentId, session => mergeSessionHistory(session, entries));
+      const live = state.agents.find(candidate => candidate.id === agentId);
+      const next =
+        live !== undefined && live.state !== "busy"
+          ? withSession(merged, agentId, session => endTurn(session))
+          : merged;
       const historyBefore = new Map(next.historyBefore);
       historyBefore.set(agentId, nextBefore);
       const historyLoading = new Set(next.historyLoading);
@@ -1117,6 +1127,53 @@ function stallLoads(loads: ReadonlyMap<string, SessionLoad>): ReadonlyMap<string
   return next ?? loads;
 }
 
+function pruneSessions(
+  sessions: Map<AgentId, SessionState>,
+  sessionRecency: readonly AgentId[],
+  selected: AgentId | null,
+  watermarks: ReadonlyMap<AgentId, number>,
+  historyBefore: ReadonlyMap<AgentId, number | null>,
+): {
+  sessions: ReadonlyMap<AgentId, SessionState>;
+  sessionRecency: readonly AgentId[];
+  watermarks: ReadonlyMap<AgentId, number>;
+  historyBefore: ReadonlyMap<AgentId, number | null>;
+} {
+  const residentRecency = sessionRecency.filter(id => sessions.has(id));
+  if (sessions.size <= MAX_RETAINED_SESSIONS) {
+    return { sessions, sessionRecency: residentRecency, watermarks, historyBefore };
+  }
+  const keep = new Set<AgentId>();
+  if (selected !== null && sessions.has(selected)) keep.add(selected);
+  for (const id of residentRecency) {
+    if (keep.size >= MAX_RETAINED_SESSIONS) break;
+    keep.add(id);
+  }
+  let nextWatermarks = watermarks;
+  let nextHistoryBefore = historyBefore;
+  for (const key of sessions.keys()) {
+    if (!keep.has(key)) {
+      sessions.delete(key);
+      if (nextWatermarks.has(key)) {
+        const next = new Map(nextWatermarks);
+        next.delete(key);
+        nextWatermarks = next;
+      }
+      if (nextHistoryBefore.has(key)) {
+        const next = new Map(nextHistoryBefore);
+        next.delete(key);
+        nextHistoryBefore = next;
+      }
+    }
+  }
+  return {
+    sessions,
+    sessionRecency: residentRecency.filter(id => keep.has(id)),
+    watermarks: nextWatermarks,
+    historyBefore: nextHistoryBefore,
+  };
+}
+
 function withSession(
   state: ConsoleState,
   agentId: AgentId,
@@ -1125,21 +1182,23 @@ function withSession(
   const before = state.sessions.get(agentId) ?? EMPTY_SESSION;
   const after = change(before);
   if (after === before) return state;
-  const sessions = new Map(state.sessions);
-  sessions.set(agentId, after);
-  const sessionRecency = [agentId, ...(state.sessionRecency ?? []).filter(id => id !== agentId)];
-  if (sessions.size > MAX_RETAINED_SESSIONS) {
-    const keep = new Set<AgentId>();
-    if (state.selected !== null) keep.add(state.selected);
-    for (const id of sessionRecency) {
-      if (keep.size >= MAX_RETAINED_SESSIONS) break;
-      keep.add(id);
-    }
-    for (const key of sessions.keys()) {
-      if (!keep.has(key)) sessions.delete(key);
-    }
-  }
-  return { ...state, sessions, sessionRecency };
+  const rawSessions = new Map(state.sessions);
+  rawSessions.set(agentId, after);
+  const rawRecency = [agentId, ...(state.sessionRecency ?? []).filter(id => id !== agentId)];
+  const pruned = pruneSessions(
+    rawSessions,
+    rawRecency,
+    state.selected,
+    state.watermarks,
+    state.historyBefore,
+  );
+  return {
+    ...state,
+    sessions: pruned.sessions,
+    sessionRecency: pruned.sessionRecency,
+    watermarks: pruned.watermarks,
+    historyBefore: pruned.historyBefore,
+  };
 }
 
 /**
@@ -1298,9 +1357,15 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   const loadSettled = load !== undefined && (load.phase === "ready" || load.phase === "failed");
   const rosterMisses = state.rosterMisses.get(agentId) ?? 0;
 
-  // "That session closed." copy renders only when the daemon says the session is gone:
-  // a subject-bearing error, or a roster miss after the load settled.
-  if (load?.phase === "failed" && (session === undefined || session.entries.length === 0)) {
+  // "That session closed." copy renders only when there is explicit gone evidence:
+  // an explicit session_gone / session closed refusal, or a roster miss after the load settled.
+  // Other load failures (e.g. deadline timeouts or transient read errors) keep the stand-in agent
+  // so SessionLoadFailed can render with its Retry button.
+  const isExplicitGone =
+    load?.error === "session_gone" ||
+    load?.error === "That session closed." ||
+    (load?.error !== null && load?.error !== undefined && load.error.includes("unknown_session"));
+  if (isExplicitGone && (session === undefined || session.entries.length === 0)) {
     return null;
   }
   if (rosterMisses >= 2 && loadSettled && (session === undefined || session.entries.length === 0)) {

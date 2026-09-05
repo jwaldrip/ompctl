@@ -41,7 +41,7 @@ export type { WebViewTarget } from "./webview.ts";
 export interface ConsoleActions {
   select: (agentId: AgentId) => void;
   back: () => void;
-  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => void;
+  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => boolean;
   cancel: (agentId: AgentId) => void;
   decide: (agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   decidePlan: (agentId: AgentId, requestId: string, choice: PlanReviewChoice) => void;
@@ -59,13 +59,17 @@ export interface ConsoleActions {
    * terminal that owns the session; progress arrives as `tui_activity`, and a
    * terminal with no bridge answers `tui_unreachable` instead.
    */
-  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => void;
+  promptTui: (sessionId: string, text: string, images?: PromptImage[]) => boolean;
   /**
    * Ask a live terminal session for the page of turns older than the one on
    * screen. Ignored when the file's start is already reached or a page is
    * already in flight, so a double tap cannot ask twice.
    */
   loadEarlierTui: (sessionId: string) => void;
+  /**
+   * Re-arm a failed terminal session load and repeat the initial open.
+   */
+  retryTui: (sessionId: string) => void;
   /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
@@ -255,6 +259,7 @@ export function useConsole(
         client.detach?.(current.selected);
       }
       leaveCollab(current.selected, agentId ?? undefined);
+      client.selectTerminalSession?.(null);
       if (agentId === null) {
         dispatch({ t: "select", agentId: null });
         return;
@@ -375,6 +380,7 @@ export function useConsole(
         if (current.selected !== null && current.selected !== event.agentId) {
           client.detach?.(current.selected);
         }
+        client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: event.agentId, awaiting: true });
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
@@ -392,8 +398,7 @@ export function useConsole(
           client.detach?.(current.selected);
         }
         leaveCollab(current.selected, event.agentId);
-        // holds nothing of the joined session yet and a page that always
-        // answers was asked for.
+        client.selectTerminalSession?.(null);
         const fetchingHistory = !current.historyBefore.has(event.agentId);
         const replaying = !current.watermarks.has(event.agentId);
         dispatch({ t: "collab_opened", event, awaiting: replaying && fetchingHistory });
@@ -460,12 +465,15 @@ export function useConsole(
         // session's log is not an answer about the row they pressed. The
         // notice still goes out, because a refusal about a pane nobody is
         // watching must still reach the operator.
-        const subject = event.sessionId ?? event.agentId;
+        const subject = event.agentId ?? event.sessionId;
         if (subject !== undefined) {
           clearLoadDeadline(subject);
           if (event.code !== "agent_busy") {
             dispatch({ t: "open_failed", subject, message: event.message });
-            if (event.sessionId !== undefined) {
+            if (event.sessionId !== undefined && event.agentId !== undefined) {
+              clearLoadDeadline(event.sessionId);
+              dispatch({ t: "open_failed", subject: event.sessionId, message: event.message });
+            } else if (event.sessionId !== undefined) {
               const current = stateRef.current;
               const matchedAgent = current.agents.find(a => a.acpSessionId === event.sessionId);
               if (matchedAgent !== undefined && matchedAgent.id !== subject) {
@@ -563,6 +571,7 @@ export function useConsole(
           client.detach?.(current.selected);
         }
         leaveCollab(current.selected);
+        client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: null });
       },
       prompt(agentId, text, images) {
@@ -580,7 +589,7 @@ export function useConsole(
                 "This device does not hold the prompt scope. Pair it again with prompt access to steer this session.",
             },
           });
-          return;
+          return false;
         }
         if (stateRef.current.connection !== "connected") {
           dispatch({
@@ -590,10 +599,11 @@ export function useConsole(
               code: "offline",
             },
           });
-          return;
+          return false;
         }
         client.prompt(agentId, text, images);
         dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
+        return true;
       },
       cancel(agentId) {
         client.cancel(agentId);
@@ -652,6 +662,7 @@ export function useConsole(
             if (current.selected !== null) {
               client.detach?.(current.selected);
             }
+            client.selectTerminalSession?.(target.sessionId);
             // claims the renderer, and the transcript arrives through the
             // same frames an owned agent uses.
             //
@@ -702,6 +713,7 @@ export function useConsole(
       promptTui(sessionId, text, images) {
         client.sessionPrompt(sessionId, text, undefined, images);
         dispatch({ t: "tui_prompt", sessionId, text, imageCount: images?.length ?? 0 });
+        return true;
       },
       loadEarlierTui(sessionId) {
         const tui = tuiSessionFor(stateRef.current, sessionId);
@@ -710,6 +722,15 @@ export function useConsole(
         // request on the wire for the same page.
         if (tui.historyCursor === null || tui.historyLoadingEarlier) return;
         askOlderTui(sessionId, tui.historyCursor);
+      },
+      retryTui(sessionId) {
+        dispatch({ t: "load_rearm", subject: sessionId });
+        const tui = tuiSessionFor(stateRef.current, sessionId);
+        if (tui.refusalKind !== null) {
+          client.sessionTail(sessionId);
+        } else {
+          client.openCollab(sessionId);
+        }
       },
       deleteSession(sessionId) {
         // The row renders the missing scope and offers no confirmation, but
