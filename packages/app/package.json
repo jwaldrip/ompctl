@@ -54,7 +54,7 @@
     "react-native-vision-camera": "4.7.3",
     "react-native-web": "0.21.2",
     "react-native-webview": "15.0.0",
-    "react-native-windows": "0.81.30",
+    "react-native-windows": "0.81.35",
     "web-streams-polyfill": "4.3.0"
   },
   "devDependencies": {
