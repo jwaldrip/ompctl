@@ -1059,7 +1059,14 @@ export interface SyncDocument extends SyncSettings {
   connectors: ConnectorSummary[];
 }
 
+export const DEFAULT_MAX_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024; // 8 MiB
+
 export interface GatewayOptions {
+  /**
+   * Maximum bytes permitted in a socket outbound buffer before closing with 1013 backpressure.
+   * Defaults to 8 MiB.
+   */
+  maxSocketBufferBytes?: number;
   supervisor: Supervisor;
   store: Store;
   /**
@@ -1305,6 +1312,15 @@ export interface GatewaySocket {
   data: SocketState;
   send(data: string): unknown;
   close(code?: number, reason?: string): void;
+  /**
+   * Number of bytes currently buffered in the transport awaiting flush.
+   *
+   * Bun ServerWebSocket implements this natively. For tunnel connections
+   * tunneled through TunnelDaemon, frames are relayed immediately over the
+   * shared hub WebSocket without per-session buffer measurement; where
+   * unmeasurable, this returns undefined and the direct path enforces the cap.
+   */
+  getBufferedAmount?(): number;
 }
 
 /**
@@ -1332,6 +1348,8 @@ export class Gateway {
   #events: GatewayEvents | undefined;
   #host: string;
   #port: number;
+  #maxSocketBufferBytes: number;
+  #hasClosedSockets = false;
   #version: string;
   #homeId: string | undefined;
   #voice: VoiceHandlerFactory | undefined;
@@ -1431,6 +1449,7 @@ export class Gateway {
     this.#events = opts.events;
     this.#host = opts.host ?? DEFAULT_HOST;
     this.#port = opts.port ?? 0;
+    this.#maxSocketBufferBytes = opts.maxSocketBufferBytes ?? DEFAULT_MAX_SOCKET_BUFFER_BYTES;
     this.#version = opts.version ?? DEFAULT_VERSION;
     this.#homeId = opts.homeId;
     this.#voice = opts.voice;
@@ -1602,7 +1621,7 @@ export class Gateway {
     // either way, so skipping the await costs nothing the shutdown order
     // relies on.
     const stopping = this.#server?.stop(true);
-    if (!this.#collabRelay.hasClosedLegs) await stopping;
+    if (!this.#collabRelay.hasClosedLegs && !this.#hasClosedSockets) await stopping;
     this.#server = undefined;
     this.#startedAtMs = undefined;
   }
@@ -1634,7 +1653,11 @@ export class Gateway {
    * closed so the daemon can audit it, and an exception collapses that back to
    * one outcome.
    */
-  acceptTunnelSession(token: string, send: (raw: string) => void): TunnelSessionResult {
+  acceptTunnelSession(
+    token: string,
+    send: (raw: string) => void,
+    getBufferedAmount?: () => number,
+  ): TunnelSessionResult {
     const verdict = this.#auth.authenticate(token);
     if (!verdict.ok) {
       switch (verdict.reason) {
@@ -1657,6 +1680,7 @@ export class Gateway {
       close: () => {
         this.#close(ws);
       },
+      getBufferedAmount,
     };
     this.#open(ws);
     return {
@@ -5888,6 +5912,26 @@ export class Gateway {
   }
 
   #send(ws: GatewaySocket, frame: ServerFrame): void {
+    const buffered = ws.getBufferedAmount?.() ?? 0;
+    if (buffered > this.#maxSocketBufferBytes) {
+      this.#store.audit({
+        action: "socket.backpressure",
+        actorDeviceId: ws.data.deviceId,
+        outcome: "error",
+        detail: { buffered, limit: this.#maxSocketBufferBytes, code: 1013, reason: "backpressure" },
+      });
+      this.#events?.onLog?.(
+        `[gateway] closing socket for ${ws.data.deviceId} due to backpressure: ${buffered} bytes buffered (limit ${this.#maxSocketBufferBytes})`,
+      );
+      this.#hasClosedSockets = true;
+      try {
+        ws.close(1013, "backpressure");
+      } catch {
+        // Socket closed or closing
+      }
+      this.#close(ws);
+      return;
+    }
     try {
       ws.send(JSON.stringify(frame));
     } catch {

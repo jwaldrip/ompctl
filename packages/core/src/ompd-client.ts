@@ -112,6 +112,22 @@ const SOCKET_OPEN = 1;
 const AUTH_SUSPECT_CODES: Record<string, true> = { unauthorized: true };
 
 /**
+ * WebSocket close codes representing transient disconnections (overload,
+ * backpressure, network reset) where reconnecting with backoff is correct
+ * and the device credential must not be suspected.
+ *
+ * - 1001: Going Away
+ * - 1006: Abnormal Closure (network dropped)
+ * - 1012: Service Restart
+ * - 1013: Try Again Later (daemon backpressure / overload)
+ */
+export const TRANSIENT_CLOSE_CODES: ReadonlySet<number> = new Set([1013]);
+
+export function isTransientCloseCode(code?: number): boolean {
+  return code !== undefined && TRANSIENT_CLOSE_CODES.has(code);
+}
+
+/**
  * Whether losing a frame to a closed socket is worth telling the operator
  * about. Attach and detach are re-sent from `attached` on the next `hello`,
  * and a ping that never left is answered by the next ping, so their loss is
@@ -1360,7 +1376,7 @@ export class OmpdClient {
       // upgrade. So the reconnect is scheduled exactly as it always was, and
       // the question is asked alongside it. An outage answers "unknown" and
       // nothing changes; only a daemon that is up and says 401 stops the loop.
-      if (!this.authenticated) {
+      if (!this.authenticated && !isTransientCloseCode(info.code)) {
         this.checkCredential("The daemon rejected this device's token.");
       }
       this.scheduleReconnect(cause);

@@ -1699,7 +1699,9 @@ export type AuditAction =
    * carries the url and the destination; a url carrying a credential is
    * refused before this record is written, so one can never be logged.
    */
-  | "repo.clone";
+  | "repo.clone"
+  /** A direct socket exceeded the outbound backpressure ceiling and was closed with 1013. */
+  | "socket.backpressure";
 
 export interface AuditEntry {
   id: number;
