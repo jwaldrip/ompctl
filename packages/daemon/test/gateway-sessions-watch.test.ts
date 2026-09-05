@@ -398,6 +398,43 @@ test("session gone while attached: when session file disappears, emits error ses
   expect(goneFrames).toHaveLength(1);
 });
 
+
+  test("D2: session_gone is delivered to a socket that attaches AFTER the file disappeared", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE]);
+
+    // 1. Resume seed session so an agent holds it
+    const client1 = await h.connect(token);
+    client1.send({ t: "session_resume", sessionId: SESSION_BASE, cwd: "/work" });
+    const opened = await client1.next(f => f.t === "session_opened", "session_opened");
+    if (opened.t !== "session_opened") throw new Error("expected session_opened");
+    const agentId = opened.agentId;
+    client1.close();
+
+    // 2. Remove session file with NO sockets attached
+    rmSync(seedPath(h.sessionsRoot));
+    // Trigger watcher push by writing another file
+    writeSessionFile(h.sessionsRoot, "-burst", "2026-08-16T00-00-00-000Z", burstId(1), "burst", new Date());
+    await sleep(SESSION_WATCH_QUIET_MS + 200);
+
+    // 3. Connect a new client and attach to the agent whose session is gone
+    const client2 = await h.connect(token);
+    await client2.next(f => f.t === "hello", "hello");
+
+    client2.send({ t: "attach", agentId });
+
+    // Pre-fix: global notifiedGoneSessions already marked the session gone with 0 recipients,
+    // so client2 times out and NEVER receives session_gone!
+    const gone = await client2.next(f => f.t === "error" && f.code === "session_gone", "session_gone on late attach");
+    expect(gone).toMatchObject({
+      t: "error",
+      code: "session_gone",
+      sessionId: SESSION_BASE,
+      agentId,
+    });
+    client2.close();
+  });
+
 afterEach(async () => {
   while (gateways.length) await gateways.pop()?.close();
   while (stores.length) stores.pop()?.close();

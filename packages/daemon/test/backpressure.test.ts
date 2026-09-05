@@ -184,3 +184,94 @@ test("backpressure: when socket buffer exceeds cap, socket is closed with 1013 b
     limit: TEST_CAP,
   });
 });
+
+test("D1: backpressure on tunnel-backed socket closes virtual session with 1013 and invokes onClose", async () => {
+  const dbDir = mkdtempSync(join(tmpdir(), "gw-bp-tunnel-db-"));
+  scratchDirs.push(dbDir);
+  const store = new Store(join(dbDir, "ompd.db"));
+  stores.push(store);
+
+  const fake = createFakeHost();
+  const events = new GatewayEvents();
+  const hosts = new HostRegistry({ spawn: fake.factory });
+  const sup = new Supervisor({
+    store,
+    policy: new DefaultPolicy({ mode: "standard" }),
+    spawnHost: hosts.spawn,
+    events,
+  });
+
+  const TEST_CAP = 1024; // 1 KiB
+  const gw = new Gateway({
+    supervisor: sup,
+    store,
+    events,
+    port: 0,
+    sessions: hosts,
+    maxSocketBufferBytes: TEST_CAP,
+  });
+  gateways.push(gw);
+  const port = await gw.listen();
+
+  // Create pairing token
+  const pairRes = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "tunnel-dev", publicKey: `pk_${crypto.randomUUID()}` }),
+  });
+  const pairJson: unknown = await pairRes.json();
+  if (!pairJson || typeof pairJson !== "object" || !("code" in pairJson) || typeof pairJson.code !== "string") {
+    throw new Error("pair response carried no code");
+  }
+  const token = gw.approvePairing(pairJson.code, [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
+
+  const actor: Actor = {
+    deviceId: "dev_tunnel_bp",
+    scopes: [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE],
+  };
+  store.addDevice({
+    id: actor.deviceId,
+    name: "test-device-tunnel-bp",
+    publicKey: "pk_tunnel_bp",
+    scopes: actor.scopes,
+    createdAt: new Date().toISOString(),
+  });
+  const agentDir = mkdtempSync(join(tmpdir(), "agent-tunnel-bp-cwd-"));
+  scratchDirs.push(agentDir);
+  const agent = await sup.createAgent({ name: "tunnel-bp-agent", cwd: agentDir }, actor);
+
+  // Accept a tunnel session where getBufferedAmount reports exceeding the cap
+  const tunnelState: { closedWith: { code: number; reason: string } | null } = { closedWith: null };
+  const tunnelDelivered: string[] = [];
+  const bufferedReported = 2048; // Exceeds TEST_CAP (1024)
+
+  const session = gw.acceptTunnelSession(
+    token,
+    raw => tunnelDelivered.push(raw),
+    () => bufferedReported,
+    (code, reason) => {
+      tunnelState.closedWith = { code: code ?? 0, reason: reason ?? "" };
+    },
+  );
+
+  if (!session.ok) throw new Error("tunnel session was refused");
+
+  // Deliver attach frame from client
+  session.deliver(JSON.stringify({ t: "attach", agentId: agent.id } satisfies ClientFrame));
+
+  // Deliver an update: gateway will check getBufferedAmount (2048 > 1024), close with 1013, and audit
+  fake.emitUpdate(agent.acpSessionId!, { text: "update" });
+
+  expect(tunnelState.closedWith?.code).toBe(1013);
+  expect(tunnelState.closedWith?.reason).toBe("backpressure");
+
+  const audit = store.listAudit(5);
+  const bpAudit = audit.find(e => e.action === "socket.backpressure");
+  expect(bpAudit).toBeDefined();
+  expect(bpAudit?.outcome).toBe("error");
+  expect(bpAudit?.detail).toMatchObject({
+    code: 1013,
+    reason: "backpressure",
+    limit: TEST_CAP,
+  });
+});

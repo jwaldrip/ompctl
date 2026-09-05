@@ -1257,6 +1257,7 @@ interface SocketState {
   scopes: Set<string>;
   /** Agents this socket asked for. Nothing is pushed for anything else. */
   attached: Set<AgentId>;
+  notifiedGoneSessions: Set<string>;
   /**
    * Highest seq already delivered, per agent. Replay and the live stream both
    * go through this, which is what guarantees a reattach has no duplicates.
@@ -1379,7 +1380,6 @@ export class Gateway {
   #port: number;
   #maxSocketBufferBytes: number;
   #hasClosedSockets = false;
-  #notifiedGoneSessions = new Set<string>();
   #version: string;
   #homeId: string | undefined;
   #voice: VoiceHandlerFactory | undefined;
@@ -1695,6 +1695,7 @@ export class Gateway {
     token: string,
     send: (raw: string) => void,
     getBufferedAmount?: () => number,
+    onClose?: (code?: number, reason?: string) => void,
   ): TunnelSessionResult {
     const verdict = this.#auth.authenticate(token);
     if (!verdict.ok) {
@@ -1715,7 +1716,10 @@ export class Gateway {
     const ws: GatewaySocket = {
       data: this.#socketStateFor(verdict.actor),
       send,
-      close: () => {
+      close: (code?: number, reason?: string) => {
+        try {
+          onClose?.(code, reason);
+        } catch {}
         this.#close(ws);
       },
       getBufferedAmount,
@@ -1728,6 +1732,9 @@ export class Gateway {
         this.#message(ws, raw);
       },
       close: () => {
+        try {
+          onClose?.();
+        } catch {}
         this.#close(ws);
       },
     };
@@ -1744,6 +1751,7 @@ export class Gateway {
       deviceId: actor.deviceId,
       scopes: new Set(actor.scopes),
       attached: new Set(),
+      notifiedGoneSessions: new Set(),
       watchingSessions: false,
       sessionQuery: {},
       delivered: new Map(),
@@ -3524,41 +3532,50 @@ export class Gateway {
     }
     const takeover = frame.t === "session_takeover";
     const claimed = { cwd: frame.cwd, ...(takeover ? { pid: frame.pid } : {}) };
-    const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
-    if (claim.verdict === "refuse") {
-      this.#send(ws, { t: "error", sessionId: frame.sessionId, code: claim.code, message: claim.message });
-      return;
-    }
-    if (claim.verdict === "held") {
-      this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: claim.agentId });
-      return;
-    }
     try {
-      const agent = takeover
-        ? await this.#takeOverLiveTui(frame.sessionId, actor)
-        : await this.#sup.resumeAgent(
-            {
-              name: claim.row.title !== "" ? claim.row.title : `Session ${frame.sessionId}`,
-              cwd: frame.cwd,
-              sessionId: frame.sessionId,
-            },
-            actor,
-          );
-      this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: agent.id });
-    } catch (err) {
-      // The claim is re-verified rather than trusting the throw: a refusal
-      // naming "already held" from a path that lost a race means another
-      // caller's identical request finished in between, and that outcome is
-      // the idempotent answer, not a failure.
-      const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
-      if (settled.verdict === "held") {
-        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
+      const claim = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+      if (claim.verdict === "refuse") {
+        this.#send(ws, { t: "error", sessionId: frame.sessionId, code: claim.code, message: claim.message });
         return;
       }
+      if (claim.verdict === "held") {
+        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: claim.agentId });
+        return;
+      }
+      try {
+        const agent = takeover
+          ? await this.#takeOverLiveTui(frame.sessionId, actor)
+          : await this.#sup.resumeAgent(
+              {
+                name: claim.row.title !== "" ? claim.row.title : `Session ${frame.sessionId}`,
+                cwd: frame.cwd,
+                sessionId: frame.sessionId,
+              },
+              actor,
+            );
+        this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: agent.id });
+      } catch (err) {
+        // The claim is re-verified rather than trusting the throw: a refusal
+        // naming "already held" from a path that lost a race means another
+        // caller's identical request finished in between, and that outcome is
+        // the idempotent answer, not a failure.
+        const settled = await verifySessionClaim(index, frame.sessionId, claimed, takeover ? "live-tui" : "dormant");
+        if (settled.verdict === "held") {
+          this.#send(ws, { t: "session_opened", sessionId: frame.sessionId, agentId: settled.agentId });
+          return;
+        }
+        this.#send(ws, {
+          t: "error",
+          sessionId: frame.sessionId,
+          code: err instanceof TakeoverRefusal ? err.code : takeover ? "takeover_failed" : "resume_failed",
+          message: err instanceof Error ? err.message : "session open failed",
+        });
+      }
+    } catch (err) {
       this.#send(ws, {
         t: "error",
         sessionId: frame.sessionId,
-        code: err instanceof TakeoverRefusal ? err.code : takeover ? "takeover_failed" : "resume_failed",
+        code: takeover ? "takeover_failed" : "resume_failed",
         message: err instanceof Error ? err.message : "session open failed",
       });
     }
@@ -3924,8 +3941,23 @@ export class Gateway {
       this.#send(ws, { t: "error", code: "frame_too_large", message: "ACP frame exceeds 32 MiB" });
       return;
     }
+    const parsedAgentId =
+      typeof parsed === "object" && parsed !== null && "agentId" in parsed && typeof parsed.agentId === "string"
+        ? (parsed.agentId as AgentId)
+        : undefined;
+    const parsedSessionId =
+      typeof parsed === "object" && parsed !== null && "sessionId" in parsed && typeof parsed.sessionId === "string"
+        ? (parsed.sessionId as string)
+        : undefined;
+
     if (!registeredTuiAcp && !ws.data.bucket.take()) {
-      this.#send(ws, { t: "error", code: "rate_limited", message: "too many frames" });
+      this.#send(ws, {
+        t: "error",
+        agentId: parsedAgentId,
+        sessionId: parsedSessionId,
+        code: "rate_limited",
+        message: "too many frames",
+      });
       return;
     }
 
@@ -3941,6 +3973,8 @@ export class Gateway {
       // hostile or merely malformed frame must cost one error frame, no more.
       this.#send(ws, {
         t: "error",
+        agentId: parsedAgentId,
+        sessionId: parsedSessionId,
         code:
           err instanceof CollabRoomError
             ? err.code
@@ -4156,6 +4190,28 @@ export class Gateway {
         // below the high-water mark so nothing arrives twice either.
         ws.data.attached.add(frame.agentId);
         this.#armSessionWatcher();
+        const attachedAgent = this.#store.getAgent(frame.agentId);
+        if (attachedAgent?.acpSessionId && !TERMINAL_AGENT_STATES.includes(attachedAgent.state) && this.#sessionIndex) {
+          const sid = attachedAgent.acpSessionId;
+          const key = `${attachedAgent.id}:${sid}`;
+          const index = this.#sessionIndex;
+          void (async () => {
+            const p1 = await index.pathFor(sid);
+            if (p1 !== undefined) return;
+            const p2 = await index.pathFor(sid);
+            if (p2 !== undefined) return;
+            if (!ws.data.attached.has(attachedAgent.id) || ws.data.revoked) return;
+            if (ws.data.notifiedGoneSessions.has(key)) return;
+            ws.data.notifiedGoneSessions.add(key);
+            this.#send(ws, {
+              t: "error",
+              code: "session_gone",
+              sessionId: sid,
+              agentId: attachedAgent.id,
+              message: `session ${sid} has been removed from disk`,
+            });
+          })();
+        }
         if (frame.sinceSeq !== undefined) {
           for (const record of this.#store.updatesSince(frame.agentId, frame.sinceSeq)) {
             this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload);
@@ -5634,21 +5690,35 @@ export class Gateway {
     for (const agent of this.#sup.listAgents()) {
       if (!agent.acpSessionId || TERMINAL_AGENT_STATES.includes(agent.state)) continue;
       const key = `${agent.id}:${agent.acpSessionId}`;
-      if (this.#notifiedGoneSessions.has(key)) continue;
 
-      const path = await index.pathFor(agent.acpSessionId);
-      if (path === undefined) {
-        this.#notifiedGoneSessions.add(key);
+      const path1 = await index.pathFor(agent.acpSessionId);
+      if (path1 !== undefined) {
         for (const ws of this.#sockets) {
-          if (!ws.data.attached.has(agent.id) || ws.data.revoked) continue;
-          this.#send(ws, {
-            t: "error",
-            code: "session_gone",
-            sessionId: agent.acpSessionId,
-            agentId: agent.id,
-            message: `session ${agent.acpSessionId} has been removed from disk`,
-          });
+          ws.data.notifiedGoneSessions.delete(key);
         }
+        continue;
+      }
+
+      // D3: Confirm absence with a fresh second lookup after the first miss before emitting
+      const path2 = await index.pathFor(agent.acpSessionId);
+      if (path2 !== undefined) {
+        for (const ws of this.#sockets) {
+          ws.data.notifiedGoneSessions.delete(key);
+        }
+        continue;
+      }
+
+      for (const ws of this.#sockets) {
+        if (!ws.data.attached.has(agent.id) || ws.data.revoked) continue;
+        if (ws.data.notifiedGoneSessions.has(key)) continue;
+        ws.data.notifiedGoneSessions.add(key);
+        this.#send(ws, {
+          t: "error",
+          code: "session_gone",
+          sessionId: agent.acpSessionId,
+          agentId: agent.id,
+          message: `session ${agent.acpSessionId} has been removed from disk`,
+        });
       }
     }
   }

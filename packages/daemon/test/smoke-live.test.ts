@@ -4,7 +4,7 @@
  * The scripted-peer tests in `permission-path.test.ts` prove ompd's logic. This
  * proves the assumption underneath all of it: that OMP genuinely speaks the wire
  * protocol, creates sessions via ACP `session/new`, loads dormant sessions via
- * `session/load`, cancels via `session/cancel`, and asks before running tools.
+ * `session/load`, and enforces the approval gate.
  *
  * Gated on `which omp` succeeding so the token-free lifecycle and ACP handshake
  * tests run locally whenever omp is installed (e.g. omp 18.1.11). Tests that spend
@@ -58,9 +58,6 @@ describeOmp("live omp acp", () => {
     expect(typeof agent.acpSessionId).toBe("string");
     expect(agent.acpSessionId!.length).toBeGreaterThan(0);
 
-    // Cancel cleans up turn/session state without error
-    await expect(sup.cancel(agent.id, operator)).resolves.toBeUndefined();
-
     // Clean stop
     await sup.stopAgent(agent.id, operator);
     expect(store.getAgent(agent.id)?.state).toBe("stopped");
@@ -85,74 +82,56 @@ describeOmp("live omp acp", () => {
     await sup.stopAgent(resumed.id, operator);
   }, 30_000);
 
-  test("audit: supervisor #onUpdate SQLite 10k-update loop measurement", () => {
-    const benchAgentId = "agt_bench_updates";
-    store.upsertAgent({
-      id: benchAgentId,
-      name: "bench",
-      state: "idle",
-      host: { kind: "local", id: "1", spec: { kind: "local" } },
-      cwd: workdir,
-      createdAt: new Date().toISOString(),
-      lastActiveAt: new Date().toISOString(),
-      labels: {},
-    });
-
-    const start = performance.now();
-    for (let i = 0; i < 10_000; i++) {
-      store.appendUpdate(benchAgentId, { seq: i, text: "audit update" });
-    }
-    const elapsedMs = performance.now() - start;
-    console.log(
-      `[audit: #onUpdate Store.appendUpdate] 10,000 updates: ${elapsedMs.toFixed(2)}ms (${(elapsedMs / 10).toFixed(2)}µs/update)`,
+  testPrompt("cancelling an in-flight prompt on real omp settles the turn promptly", async () => {
+    const agent = await sup.createAgent({ name: "live-cancel", cwd: workdir }, operator);
+    const turn = sup.prompt(
+      agent.id,
+      "Write an exhaustive 5000-word essay about the history of computing.",
+      operator,
     );
-    expect(elapsedMs).toBeGreaterThan(0);
-  });
+    await Bun.sleep(100);
+    await sup.cancel(agent.id, operator);
+    const result = await turn;
+    expect(result.stopReason).toBeDefined();
+    await sup.stopAgent(agent.id, operator);
+  }, 60_000);
 
-  testPrompt(
-    "a real agent cannot touch the filesystem when the gate is not answered",
-    async () => {
-      approvals = [];
-      const marker = join(workdir, "denied.txt");
-      const agent = await sup.createAgent({ name: "live-deny", cwd: workdir }, operator);
+  testPrompt("a real agent cannot touch the filesystem when the gate is not answered", async () => {
+    approvals = [];
+    const marker = join(workdir, "denied.txt");
+    const agent = await sup.createAgent({ name: "live-deny", cwd: workdir }, operator);
 
-      await sup.prompt(
-        agent.id,
-        `Use your bash tool to run exactly: touch ${marker}\nThat is the entire task.`,
-        operator,
-      );
+    await sup.prompt(
+      agent.id,
+      `Use your bash tool to run exactly: touch ${marker}\nThat is the entire task.`,
+      operator,
+    );
 
-      expect(approvals.length).toBeGreaterThan(0);
-      expect(existsSync(marker)).toBe(false);
-    },
-    180_000,
-  );
+    expect(approvals.length).toBeGreaterThan(0);
+    expect(existsSync(marker)).toBe(false);
+  }, 180_000);
 
-  testPrompt(
-    "the same agent does touch the filesystem once an operator approves",
-    async () => {
-      approvals = [];
-      const marker = join(workdir, "allowed.txt");
-      const agent = await sup.createAgent({ name: "live-allow", cwd: workdir }, operator);
+  testPrompt("the same agent does touch the filesystem once an operator approves", async () => {
+    approvals = [];
+    const marker = join(workdir, "allowed.txt");
+    const agent = await sup.createAgent({ name: "live-allow", cwd: workdir }, operator);
 
-      const turn = sup.prompt(
-        agent.id,
-        `Use your bash tool to run exactly: touch ${marker}\nThat is the entire task.`,
-        operator,
-      );
+    const turn = sup.prompt(
+      agent.id,
+      `Use your bash tool to run exactly: touch ${marker}\nThat is the entire task.`,
+      operator,
+    );
 
-      const deadline = Date.now() + 60_000;
-      let approved = false;
-      while (Date.now() < deadline && !approved) {
-        const p = approvals[0];
-        if (p) approved = sup.decide(p.requestId, "allow", "once", operator);
-        if (!approved) await Bun.sleep(150);
-      }
+    const deadline = Date.now() + 60_000;
+    let approved = false;
+    while (Date.now() < deadline && !approved) {
+      const p = approvals[0];
+      if (p) approved = sup.decide(p.requestId, "allow", "once", operator);
+      if (!approved) await Bun.sleep(150);
+    }
 
-      expect(approved).toBe(true);
-      await turn;
-      expect(existsSync(marker)).toBe(true);
-    },
-    180_000,
-  );
+    expect(approved).toBe(true);
+    await turn;
+    expect(existsSync(marker)).toBe(true);
+  }, 180_000);
 });

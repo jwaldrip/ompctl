@@ -343,3 +343,50 @@ test("cancel works mid-turn on busy agent and returns to idle", async () => {
 
   client.close();
 });
+
+test("D4: if onAgentsChanged or audit throws when entering busy, in-flight turn is cleared so subsequent prompt is not blocked", async () => {
+  const dbDir = mkdtempSync(join(tmpdir(), "gw-busy-d4-db-"));
+  scratchDirs.push(dbDir);
+  const store = new Store(join(dbDir, "ompd.db"));
+  stores.push(store);
+
+  const fake = createFakeHost();
+  const events = new GatewayEvents();
+  const hosts = new HostRegistry({ spawn: fake.factory });
+  const sup = new Supervisor({
+    store,
+    policy: new DefaultPolicy({ mode: "standard" }),
+    spawnHost: hosts.spawn,
+    events,
+  });
+
+  const actor: Actor = {
+    deviceId: "dev_test_d4",
+    scopes: [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE],
+  };
+  store.addDevice({
+    id: actor.deviceId,
+    name: "test-device-d4",
+    publicKey: "pk_test_d4",
+    scopes: actor.scopes,
+    createdAt: new Date().toISOString(),
+  });
+  const agentDir = mkdtempSync(join(tmpdir(), "agent-d4-cwd-"));
+  scratchDirs.push(agentDir);
+  const agent = await sup.createAgent({ name: "busy-d4-agent", cwd: agentDir }, actor);
+
+  // Configure onAgentsChanged to throw once on next state change
+  let shouldThrow = true;
+  events.onAgentsChanged = () => {
+    if (shouldThrow) {
+      shouldThrow = false;
+      throw new Error("listener exploded");
+    }
+  };
+
+  // First prompt throws during #setState
+  await expect(sup.prompt(agent.id, "turn 1", actor)).rejects.toThrow("listener exploded");
+
+  // Subsequent prompt must NOT be refused as agent_busy!
+  await expect(sup.prompt(agent.id, "turn 2", actor)).resolves.toBeDefined();
+});

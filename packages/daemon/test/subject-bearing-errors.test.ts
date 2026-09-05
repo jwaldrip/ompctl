@@ -250,3 +250,108 @@ test("subject-bearing error: session_tail to unknown session carries sessionId i
 
   client.close();
 });
+
+test("D6: index rejection during session_resume yields subject-bearing error frame", async () => {
+  const dbDir = mkdtempSync(join(tmpdir(), "gw-subj-d6-db-"));
+  scratchDirs.push(dbDir);
+  const store = new Store(join(dbDir, "ompd.db"));
+  stores.push(store);
+
+  const fake = createFakeHost();
+  const events = new GatewayEvents();
+  const hosts = new HostRegistry({ spawn: fake.factory });
+  const sup = new Supervisor({
+    store,
+    policy: new DefaultPolicy({ mode: "standard" }),
+    spawnHost: hosts.spawn,
+    events,
+  });
+
+  const sessionsRoot = mkdtempSync(join(tmpdir(), "gw-subj-d6-sess-"));
+  scratchDirs.push(sessionsRoot);
+  const sessionIndex = new SessionIndex({ store, sessionsRoot });
+  // Force query to reject during verifySessionClaim
+  sessionIndex.get = () => Promise.reject(new Error("simulated index disk corruption"));
+
+  const gw = new Gateway({ supervisor: sup, store, events, port: 0, sessions: hosts, sessionIndex });
+  gateways.push(gw);
+  const port = await gw.listen();
+
+  const pairRes = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "operator-dev", publicKey: `pk_${crypto.randomUUID()}` }),
+  });
+  const pairJson: unknown = await pairRes.json();
+  if (!pairJson || typeof pairJson !== "object" || !("code" in pairJson) || typeof pairJson.code !== "string") {
+    throw new Error("pair response carried no code");
+  }
+  const token = gw.approvePairing(pairJson.code, [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
+
+  const client = await connect(port, token);
+  await client.next(f => f.t === "hello", "hello");
+
+  const targetSessionId = "019feebf-d6-session-id";
+  client.send({
+    t: "session_resume",
+    sessionId: targetSessionId,
+    cwd: "/tmp/fake-cwd",
+  });
+
+  // Pre-fix: unhandled rejection, no error frame ever sent (times out)!
+  // Post-fix: error frame with sessionId and resume_failed
+  const errorFrame = await client.next(f => f.t === "error", "error frame");
+  if (errorFrame.t !== "error") throw new Error("expected error frame");
+  expect(errorFrame.code).toBe("resume_failed");
+  expect(errorFrame.sessionId).toBe(targetSessionId);
+
+  client.close();
+});
+
+test("D6: rate-limited frame carries parsed agentId and sessionId in error frame", async () => {
+  const dbDir = mkdtempSync(join(tmpdir(), "gw-subj-d6-rl-db-"));
+  scratchDirs.push(dbDir);
+  const store = new Store(join(dbDir, "ompd.db"));
+  stores.push(store);
+
+  const fake = createFakeHost();
+  const events = new GatewayEvents();
+  const hosts = new HostRegistry({ spawn: fake.factory });
+  const sup = new Supervisor({
+    store,
+    policy: new DefaultPolicy({ mode: "standard" }),
+    spawnHost: hosts.spawn,
+    events,
+  });
+
+  const gw = new Gateway({ supervisor: sup, store, events, port: 0, sessions: hosts });
+  gateways.push(gw);
+  const port = await gw.listen();
+
+  const pairRes = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "operator-dev", publicKey: `pk_${crypto.randomUUID()}` }),
+  });
+  const pairJson: unknown = await pairRes.json();
+  if (!pairJson || typeof pairJson !== "object" || !("code" in pairJson) || typeof pairJson.code !== "string") {
+    throw new Error("pair response carried no code");
+  }
+  const token = gw.approvePairing(pairJson.code, [SCOPE_READ, SCOPE_PROMPT, SCOPE_MANAGE, SCOPE_APPROVE]);
+
+  const client = await connect(port, token);
+  await client.next(f => f.t === "hello", "hello");
+
+  // Deplete token bucket with frames carrying agentId
+  for (let i = 0; i < 200; i++) {
+    client.send({ t: "prompt", agentId: "agt_ratelimit_target", text: "hi" });
+  }
+
+  const rlFrame = await client.next(f => f.t === "error" && f.code === "rate_limited", "rate_limited frame");
+  if (rlFrame.t !== "error") throw new Error("expected error frame");
+  expect(rlFrame.code).toBe("rate_limited");
+  // Pre-fix: agentId is dropped (undefined)!
+  expect(rlFrame.agentId).toBe("agt_ratelimit_target");
+
+  client.close();
+});
