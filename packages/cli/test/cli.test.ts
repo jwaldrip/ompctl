@@ -1511,7 +1511,7 @@ describe("self-install", () => {
    */
   function compiler(version = "0.1.0"): (command: string[]) => ExecResult | undefined {
     return command => {
-      if (command[1] === "build") {
+      if (command[1] === "build" || command[1]?.endsWith("build-cli.ts")) {
         const outfileIndex = command.indexOf("--outfile");
         const staging = command[outfileIndex + 1];
         if (staging === undefined) throw new Error("build command had no --outfile argument");
@@ -1559,7 +1559,10 @@ describe("self-install", () => {
 
   test("a compile that fails leaves nothing behind", async () => {
     const h = harness({
-      onExec: command => (command[1] === "build" ? { code: 1, stdout: "", stderr: "error: boom" } : undefined),
+      onExec: command =>
+        command[1] === "build" || command[1]?.endsWith("build-cli.ts")
+          ? { code: 1, stdout: "", stderr: "error: boom" }
+          : undefined,
     });
 
     expect(await run(["self-install"], h.ctx)).toBe(1);
