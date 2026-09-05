@@ -61,6 +61,7 @@ import {
   type SessionSummary,
   type SkillSummary,
   type Store,
+  TERMINAL_AGENT_STATES,
   type SyncSettings,
   type Task,
   type TriggerDraft,
@@ -1350,6 +1351,7 @@ export class Gateway {
   #port: number;
   #maxSocketBufferBytes: number;
   #hasClosedSockets = false;
+  #notifiedGoneSessions = new Set<string>();
   #version: string;
   #homeId: string | undefined;
   #voice: VoiceHandlerFactory | undefined;
@@ -4108,6 +4110,7 @@ export class Gateway {
         // and arrive out of order, and `#deliverUpdate` drops anything at or
         // below the high-water mark so nothing arrives twice either.
         ws.data.attached.add(frame.agentId);
+        this.#armSessionWatcher();
         if (frame.sinceSeq !== undefined) {
           for (const record of this.#store.updatesSince(frame.agentId, frame.sinceSeq)) {
             this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload);
@@ -4134,6 +4137,7 @@ export class Gateway {
 
       case "detach":
         ws.data.attached.delete(frame.agentId);
+        if (!this.#hasSessionWatchers()) this.#disarmSessionWatcher();
         // Forget the high-water mark too, so a later attach may replay again.
         ws.data.delivered.delete(frame.agentId);
         // Same for approvals, so a reattach is shown a still-pending ask.
@@ -5477,7 +5481,7 @@ export class Gateway {
 
   #hasSessionWatchers(): boolean {
     for (const other of this.#sockets) {
-      if (other.data.watchingSessions && !other.data.revoked) return true;
+      if ((other.data.watchingSessions || other.data.attached.size > 0) && !other.data.revoked) return true;
     }
     return false;
   }
@@ -5530,13 +5534,41 @@ export class Gateway {
     if (!index) return;
     let watchers = 0;
     for (const ws of this.#sockets) {
-      if (!ws.data.watchingSessions) continue;
-      if (!ws.data.scopes.has(SCOPE_READ)) continue;
       if (ws.data.revoked) continue;
-      watchers += 1;
-      void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery);
+      if (ws.data.watchingSessions && ws.data.scopes.has(SCOPE_READ)) {
+        watchers += 1;
+        void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery);
+      } else if (ws.data.attached.size > 0) {
+        watchers += 1;
+      }
     }
     if (watchers === 0) this.#disarmSessionWatcher();
+    void this.#checkGoneSessions();
+  }
+
+  async #checkGoneSessions(): Promise<void> {
+    const index = this.#sessionIndex;
+    if (!index) return;
+    for (const agent of this.#sup.listAgents()) {
+      if (!agent.acpSessionId || TERMINAL_AGENT_STATES.includes(agent.state)) continue;
+      const key = `${agent.id}:${agent.acpSessionId}`;
+      if (this.#notifiedGoneSessions.has(key)) continue;
+
+      const path = await index.pathFor(agent.acpSessionId);
+      if (path === undefined) {
+        this.#notifiedGoneSessions.add(key);
+        for (const ws of this.#sockets) {
+          if (!ws.data.attached.has(agent.id) || ws.data.revoked) continue;
+          this.#send(ws, {
+            t: "error",
+            code: "session_gone",
+            sessionId: agent.acpSessionId,
+            agentId: agent.id,
+            message: `session ${agent.acpSessionId} has been removed from disk`,
+          });
+        }
+      }
+    }
   }
 
   /**
