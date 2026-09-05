@@ -46,7 +46,8 @@ export type RefusalCode =
   | "revoked"
   | "version_mismatch"
   | "relay_broken"
-  | "rate_limited";
+  | "rate_limited"
+  | "backpressure";
 
 // ---------------------------------------------------------------------------
 // Daemon leg

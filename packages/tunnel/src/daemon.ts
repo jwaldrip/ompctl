@@ -50,6 +50,7 @@ export interface DialSocket {
   onclose: ((info: { code: number; reason: string }) => void) | null;
   onerror: ((info: { message: string }) => void) | null;
   onmessage: ((data: string) => void) | null;
+  readonly bufferedAmount?: number;
 }
 
 export type DialTransport = (url: string) => DialSocket;
@@ -78,6 +79,9 @@ export function dialWebSocket(url: string): DialSocket {
     onclose: null,
     onerror: null,
     onmessage: null,
+    get bufferedAmount() {
+      return ws.bufferedAmount;
+    },
   };
   // Binary frames are not part of this protocol; decoding one to text would
   // invent a frame the peer never sent, so only strings are forwarded.
@@ -110,7 +114,12 @@ export type AcceptResult =
  * credentials rather than by the transport that carried one.
  */
 export interface SessionAcceptor {
-  accept(token: string, send: (raw: string) => void): AcceptResult;
+  accept(
+    token: string,
+    send: (raw: string) => void,
+    getBufferedAmount?: () => number,
+    onClose?: (code?: number, reason?: string) => void,
+  ): AcceptResult;
 }
 
 /**
@@ -546,7 +555,20 @@ export class TunnelDaemon {
       void this.#sealTo(session, raw);
     };
 
-    const admitted = this.#acceptor.accept(credential.token, deliver);
+    const getBufferedAmount = (): number => {
+      const pendingBytes = pending.reduce((sum, item) => sum + item.length, 0);
+      return (this.#socket?.bufferedAmount ?? 0) + pendingBytes;
+    };
+    const onClose = (code?: number, reason?: string): void => {
+      this.#send({
+        t: "close",
+        sessionId: session.sessionId,
+        code: (code === 1013 ? "backpressure" : "done") as RefusalCode | "done",
+        message: reason ?? "closed",
+      });
+      this.#tearDown(session.sessionId);
+    };
+    const admitted = this.#acceptor.accept(credential.token, deliver, getBufferedAmount, onClose);
     if (!admitted.ok) {
       this.#onSession?.({ sessionId: session.sessionId, outcome: "denied", reason: admitted.reason });
       this.#refuse(

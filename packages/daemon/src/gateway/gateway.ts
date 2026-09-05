@@ -1681,6 +1681,7 @@ export class Gateway {
     token: string,
     send: (raw: string) => void,
     getBufferedAmount?: () => number,
+    onClose?: (code?: number, reason?: string) => void,
   ): TunnelSessionResult {
     const verdict = this.#auth.authenticate(token);
     if (!verdict.ok) {
@@ -1701,7 +1702,10 @@ export class Gateway {
     const ws: GatewaySocket = {
       data: this.#socketStateFor(verdict.actor),
       send,
-      close: () => {
+      close: (code?: number, reason?: string) => {
+        try {
+          onClose?.(code, reason);
+        } catch {}
         this.#close(ws);
       },
       getBufferedAmount,
@@ -1714,6 +1718,9 @@ export class Gateway {
         this.#message(ws, raw);
       },
       close: () => {
+        try {
+          onClose?.();
+        } catch {}
         this.#close(ws);
       },
     };

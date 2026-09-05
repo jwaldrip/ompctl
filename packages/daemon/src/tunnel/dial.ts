@@ -52,7 +52,8 @@ export function createTunnelDialer(opts: TunnelDialerOptions): TunnelDaemon {
     // The gateway is the only thing that decides. This closure adds no check of
     // its own, and could not usefully add one: it has no credential store.
     acceptor: {
-      accept: (token, send) => opts.gateway.acceptTunnelSession(token, send),
+      accept: (token, send, getBufferedAmount, onClose) =>
+        opts.gateway.acceptTunnelSession(token, send, getBufferedAmount, onClose),
     },
     onWebhook: async request => {
       const response = await opts.gateway.fireWebhook(
