@@ -167,10 +167,12 @@ export interface SessionLoad {
  * screen comparing loads across renders sees no change where none happened.
  */
 export const READY_LOAD: SessionLoad = { phase: "ready", generation: 0, error: null };
+export const MAX_RETAINED_SESSIONS = 8;
 
 export interface ConsoleState {
   readonly agents: readonly Agent[];
   readonly sessions: ReadonlyMap<AgentId, SessionState>;
+  readonly sessionRecency: readonly AgentId[];
   /** The durable ACP session identity last confirmed for each attached agent. */
   readonly sessionIds: ReadonlyMap<AgentId, string>;
   /** The newest failed open that named a durable session, if any. */
@@ -438,6 +440,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
   return {
     agents: [],
     sessions: new Map(),
+    sessionRecency: [],
     sessionIds: new Map(),
     lastFailedSessionOpen: null,
     sessionIndex: [],
@@ -745,18 +748,34 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // photograph taken before the resumed agent was registered. A double
       // tap answers twice, so the re-select retires the streak too.
       const rosterMisses = clearMiss(state.rosterMisses, event.agentId);
+      const sessionRecency = [event.agentId, ...(state.sessionRecency ?? []).filter(id => id !== event.agentId)];
       // A re-select of the pane's own subject changes nothing, including its
       // wait: a double tap must not restart a load that is already settled,
       // or the log an operator is reading flickers back to a spinner.
       if (state.selected === event.agentId && state.selectedTui === null) {
-        return rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses };
+        return { ...(rosterMisses === state.rosterMisses ? state : { ...state, rosterMisses }), sessionRecency };
       }
-      return {
+      const nextState = {
         ...armLoad(state, event.agentId, event.awaiting === true),
         selected: event.agentId,
         selectedTui: null,
         rosterMisses,
+        sessionRecency,
       };
+      if (nextState.sessions.size > MAX_RETAINED_SESSIONS) {
+        const sessions = new Map(nextState.sessions);
+        const keep = new Set<AgentId>();
+        keep.add(event.agentId);
+        for (const id of sessionRecency) {
+          if (keep.size >= MAX_RETAINED_SESSIONS) break;
+          keep.add(id);
+        }
+        for (const key of sessions.keys()) {
+          if (!keep.has(key)) sessions.delete(key);
+        }
+        return { ...nextState, sessions };
+      }
+      return nextState;
     }
 
     case "tui_select": {
@@ -1108,7 +1127,19 @@ function withSession(
   if (after === before) return state;
   const sessions = new Map(state.sessions);
   sessions.set(agentId, after);
-  return { ...state, sessions };
+  const sessionRecency = [agentId, ...(state.sessionRecency ?? []).filter(id => id !== agentId)];
+  if (sessions.size > MAX_RETAINED_SESSIONS) {
+    const keep = new Set<AgentId>();
+    if (state.selected !== null) keep.add(state.selected);
+    for (const id of sessionRecency) {
+      if (keep.size >= MAX_RETAINED_SESSIONS) break;
+      keep.add(id);
+    }
+    for (const key of sessions.keys()) {
+      if (!keep.has(key)) sessions.delete(key);
+    }
+  }
+  return { ...state, sessions, sessionRecency };
 }
 
 /**
