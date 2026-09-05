@@ -762,20 +762,20 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
         rosterMisses,
         sessionRecency,
       };
-      if (nextState.sessions.size > MAX_RETAINED_SESSIONS) {
-        const sessions = new Map(nextState.sessions);
-        const keep = new Set<AgentId>();
-        keep.add(event.agentId);
-        for (const id of sessionRecency) {
-          if (keep.size >= MAX_RETAINED_SESSIONS) break;
-          keep.add(id);
-        }
-        for (const key of sessions.keys()) {
-          if (!keep.has(key)) sessions.delete(key);
-        }
-        return { ...nextState, sessions };
-      }
-      return nextState;
+      const pruned = pruneSessions(
+        new Map(nextState.sessions),
+        sessionRecency,
+        event.agentId,
+        nextState.watermarks,
+        nextState.historyBefore,
+      );
+      return {
+        ...nextState,
+        sessions: pruned.sessions,
+        sessionRecency: pruned.sessionRecency,
+        watermarks: pruned.watermarks,
+        historyBefore: pruned.historyBefore,
+      };
     }
 
     case "tui_select": {
@@ -1117,6 +1117,53 @@ function stallLoads(loads: ReadonlyMap<string, SessionLoad>): ReadonlyMap<string
   return next ?? loads;
 }
 
+function pruneSessions(
+  sessions: Map<AgentId, SessionState>,
+  sessionRecency: readonly AgentId[],
+  selected: AgentId | null,
+  watermarks: ReadonlyMap<AgentId, number>,
+  historyBefore: ReadonlyMap<AgentId, number | null>,
+): {
+  sessions: ReadonlyMap<AgentId, SessionState>;
+  sessionRecency: readonly AgentId[];
+  watermarks: ReadonlyMap<AgentId, number>;
+  historyBefore: ReadonlyMap<AgentId, number | null>;
+} {
+  const residentRecency = sessionRecency.filter(id => sessions.has(id));
+  if (sessions.size <= MAX_RETAINED_SESSIONS) {
+    return { sessions, sessionRecency: residentRecency, watermarks, historyBefore };
+  }
+  const keep = new Set<AgentId>();
+  if (selected !== null && sessions.has(selected)) keep.add(selected);
+  for (const id of residentRecency) {
+    if (keep.size >= MAX_RETAINED_SESSIONS) break;
+    keep.add(id);
+  }
+  let nextWatermarks = watermarks;
+  let nextHistoryBefore = historyBefore;
+  for (const key of sessions.keys()) {
+    if (!keep.has(key)) {
+      sessions.delete(key);
+      if (nextWatermarks.has(key)) {
+        const next = new Map(nextWatermarks);
+        next.delete(key);
+        nextWatermarks = next;
+      }
+      if (nextHistoryBefore.has(key)) {
+        const next = new Map(nextHistoryBefore);
+        next.delete(key);
+        nextHistoryBefore = next;
+      }
+    }
+  }
+  return {
+    sessions,
+    sessionRecency: residentRecency.filter(id => keep.has(id)),
+    watermarks: nextWatermarks,
+    historyBefore: nextHistoryBefore,
+  };
+}
+
 function withSession(
   state: ConsoleState,
   agentId: AgentId,
@@ -1125,21 +1172,23 @@ function withSession(
   const before = state.sessions.get(agentId) ?? EMPTY_SESSION;
   const after = change(before);
   if (after === before) return state;
-  const sessions = new Map(state.sessions);
-  sessions.set(agentId, after);
-  const sessionRecency = [agentId, ...(state.sessionRecency ?? []).filter(id => id !== agentId)];
-  if (sessions.size > MAX_RETAINED_SESSIONS) {
-    const keep = new Set<AgentId>();
-    if (state.selected !== null) keep.add(state.selected);
-    for (const id of sessionRecency) {
-      if (keep.size >= MAX_RETAINED_SESSIONS) break;
-      keep.add(id);
-    }
-    for (const key of sessions.keys()) {
-      if (!keep.has(key)) sessions.delete(key);
-    }
-  }
-  return { ...state, sessions, sessionRecency };
+  const rawSessions = new Map(state.sessions);
+  rawSessions.set(agentId, after);
+  const rawRecency = [agentId, ...(state.sessionRecency ?? []).filter(id => id !== agentId)];
+  const pruned = pruneSessions(
+    rawSessions,
+    rawRecency,
+    state.selected,
+    state.watermarks,
+    state.historyBefore,
+  );
+  return {
+    ...state,
+    sessions: pruned.sessions,
+    sessionRecency: pruned.sessionRecency,
+    watermarks: pruned.watermarks,
+    historyBefore: pruned.historyBefore,
+  };
 }
 
 /**
