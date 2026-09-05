@@ -209,7 +209,7 @@ async function harness(opts: { withSessionIndex?: boolean } = {}): Promise<Harne
     acpSessionId: SESSION,
     host: { kind: "local", id: "dead", spec: { kind: "local" } },
     cwd: "/work",
-    createdAt: "2026-08-13T00:00:00.000Z",
+    createdAt: "2026-08-13T00:00:10.000Z",
     lastActiveAt: "2026-08-13T00:00:05.000Z",
     labels: {},
   });

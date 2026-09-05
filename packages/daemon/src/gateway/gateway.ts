@@ -6033,11 +6033,34 @@ export class Gateway {
         ...(before === undefined ? {} : { before }),
         ...(limit === undefined ? {} : { limit: Math.min(limit, HISTORY_MAX_TURNS) }),
       });
+
+      // Filter entries to only return turns older than this agent's own update log:
+      // entries whose `at` is before the agent's `createdAt`, or before the timestamp
+      // of its first stored update, whichever is earlier/more precise.
+      // This guarantees that history is "what happened before this agent" and replay
+      // is "what happened under it", with zero duplicate overlap.
+      const agent = this.#store.getAgent(agentId);
+      let cutoffMs = agent ? new Date(agent.createdAt).getTime() : Infinity;
+      const firstUpdate = this.#store.updatesSince(agentId, 0, 1)[0];
+      if (firstUpdate) {
+        const updateMs = new Date(firstUpdate.ts).getTime();
+        if (!Number.isNaN(updateMs)) {
+          cutoffMs = Math.min(cutoffMs, updateMs);
+        }
+      }
+
+      const entries = Number.isFinite(cutoffMs)
+        ? history.entries.filter(entry => {
+            const entryMs = new Date(entry.at).getTime();
+            return Number.isNaN(entryMs) || entryMs < cutoffMs;
+          })
+        : history.entries;
+
       this.#send(ws, {
         t: "session_history",
         agentId,
         sessionId,
-        entries: history.entries,
+        entries,
         nextBefore: history.nextBefore,
       });
     } catch (err) {
