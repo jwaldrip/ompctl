@@ -1264,21 +1264,38 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   const roster = state.agents.find(agent => agent.id === agentId);
   if (roster !== undefined) return roster;
   const session = state.sessions.get(agentId);
-  if (session === undefined) return null;
-  const gone = (state.rosterMisses.get(agentId) ?? 0) >= 2;
+  const load = state.loads.get(agentId);
+  const loadSettled = load !== undefined && (load.phase === "ready" || load.phase === "failed");
+  const rosterMisses = state.rosterMisses.get(agentId) ?? 0;
+
+  // "That session closed." copy renders only when the daemon says the session is gone:
+  // a subject-bearing error, or a roster miss after the load settled.
+  if (load?.phase === "failed" && (session === undefined || session.entries.length === 0)) {
+    return null;
+  }
+  if (rosterMisses >= 2 && loadSettled && (session === undefined || session.entries.length === 0)) {
+    return null;
+  }
+  if (session === undefined && load === undefined) {
+    return null;
+  }
+
+  const summary = state.sessionIndex.find(s => s.agentId === agentId || s.id === agentId);
+  const gone = rosterMisses >= 2;
   return {
     id: agentId,
-    name: session.info.title ?? "Session",
+    name: session?.info.title ?? summary?.title ?? "Session",
     // One missing roster may race a resume replay. Two means the host is gone:
     // keep the transcript selected, but do not offer controls that send to it.
     state: gone ? "stopped" : "idle",
     // Inert: nothing renders host data on a session screen, and the roster
     // entry replaces this whole object on arrival.
     host: { kind: "local", id: "0", spec: { kind: "local" } },
-    cwd: session.info.cwd ?? "",
-    createdAt: "",
-    lastActiveAt: session.info.updatedAt ?? "",
+    cwd: session?.info.cwd ?? summary?.cwd ?? "",
+    createdAt: summary?.createdAt ?? "",
+    lastActiveAt: session?.info.updatedAt ?? summary?.lastActivityAt ?? "",
     labels: {},
+    acpSessionId: summary?.id,
   };
 }
 
