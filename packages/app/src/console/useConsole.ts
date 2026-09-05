@@ -465,6 +465,14 @@ export function useConsole(
           clearLoadDeadline(subject);
           if (event.code !== "agent_busy") {
             dispatch({ t: "open_failed", subject, message: event.message });
+            if (event.sessionId !== undefined) {
+              const current = stateRef.current;
+              const matchedAgent = current.agents.find(a => a.acpSessionId === event.sessionId);
+              if (matchedAgent !== undefined && matchedAgent.id !== subject) {
+                clearLoadDeadline(matchedAgent.id);
+                dispatch({ t: "open_failed", subject: matchedAgent.id, message: event.message });
+              }
+            }
           }
         }
         dispatch({ t: "error", event });
