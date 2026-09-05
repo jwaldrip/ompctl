@@ -74,7 +74,7 @@ export interface FakeHostController {
   onClose(fn: (sessionId: string) => Promise<unknown> | unknown): void;
 }
 
-export function createFakeHost(): FakeHostController {
+export function createFakeHost(opts: { nextSessionId?: () => string } = {}): FakeHostController {
   let nextSession = 1;
   let nextId = 10_000;
   // The supervisor keys its host pool by pid, and it spawns concurrently: two
@@ -178,7 +178,7 @@ export function createFakeHost(): FakeHostController {
         cwd: String(msg.params?.cwd),
         mcpServers: Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [],
       });
-      const sessionId = `sess_${nextSession++}`;
+      const sessionId = opts.nextSessionId ? opts.nextSessionId() : `sess_${nextSession++}`;
       sessions.push(sessionId);
       sessionClients.set(sessionId, client);
       modes.set(sessionId, "default");
