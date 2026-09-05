@@ -398,12 +398,12 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
     const current = state.entries[index];
     if (current === undefined) return state;
     if (current.kind === "assistant" && (current as AssistantEntry).streaming) {
-      const assistant = current as AssistantEntry;
-      if (messageId !== undefined && messageId !== null) {
-        assistant.id = messageId;
-      }
-      assistant.text += text;
-      return { ...state };
+      const extended: AssistantEntry = {
+        ...(current as AssistantEntry),
+        ...(messageId !== undefined && messageId !== null ? { id: messageId } : {}),
+        text: (current as AssistantEntry).text + text,
+      };
+      return { ...state, entries: replaceAt(state.entries, index, extended) };
     }
     const extended: Entry =
       current.kind === "user"
