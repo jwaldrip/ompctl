@@ -38,7 +38,7 @@
 import { AssistantRuntimeProvider, ThreadPrimitive } from "@assistant-ui/react-native";
 import type { JSX, ReactElement, ReactNode } from "react";
 import { useMemo, useRef } from "react";
-import { StyleSheet, View } from "react-native";
+import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { Button, Surface } from "react-native-paper";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
@@ -218,6 +218,11 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
           {props.loadingEarlier === true ? "Loading earlier…" : "Load earlier"}
         </Button>
       </View>
+    ) : props.loadingEarlier === true ? (
+      <View style={styles.header} testID="transcript-loading-band">
+        <ActivityIndicator size="small" color={theme.signal.amber} />
+        <Label color={theme.ink.muted}>Loading earlier history…</Label>
+      </View>
     ) : null;
 
   const header =
@@ -274,7 +279,7 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
         // not render. That is the right answer rather than a gap -- the footer's
         // working row is already saying what is happening, and "Nothing on this
         // strip yet" would contradict it.
-        ListEmptyComponent={<Empty />}
+        ListEmptyComponent={<Empty loading={props.loadingEarlier === true} />}
       >
         {({ message }) => (
           <OmpRow message={message} canApprove={props.canApprove} refusal={props.refusal} onDecide={props.onDecide} />
@@ -321,8 +326,16 @@ function OmpRow({
  * now, so this rides in `ListEmptyComponent` rather than being rendered beside
  * it -- the empty slot belongs to the list that knows it has no rows.
  */
-function Empty(): JSX.Element {
+function Empty({ loading }: { loading?: boolean }): JSX.Element {
   const theme = useOmpTheme();
+  if (loading === true) {
+    return (
+      <View style={styles.empty} testID="transcript-loading">
+        <ActivityIndicator size="small" color={theme.signal.amber} />
+        <Label color={theme.ink.muted}>Loading transcript…</Label>
+      </View>
+    );
+  }
   return (
     <View style={styles.empty} testID="transcript-empty">
       <Glyph name="bay" size={22} color={theme.ground.edge} />

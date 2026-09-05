@@ -866,20 +866,19 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       if (held === undefined || (held.phase !== "loading" && held.phase !== "stalled")) return state;
       const loads = new Map(state.loads);
       loads.set(event.subject, { phase: "failed", generation: held.generation, error: event.message });
-      return { ...state, loads };
+      const historyLoading = new Set(state.historyLoading);
+      historyLoading.delete(event.subject);
+      return { ...state, loads, historyLoading };
     }
-
     case "load_rearm": {
       const held = state.loads.get(event.subject);
-      // Only a stall is re-armed, and only by the reconnect that has actually
-      // re-sent the ask. A `ready` subject needs nothing, and a `failed` one
-      // has its answer: re-arming that would turn a refusal back into a
-      // spinner on every flap.
-      if (held?.phase !== "stalled") return state;
+      if (held?.phase !== "stalled" && held?.phase !== "failed") return state;
       const selection = state.selection + 1;
       const loads = new Map(state.loads);
       loads.set(event.subject, { phase: "loading", generation: selection, error: null });
-      return { ...state, selection, loads };
+      const historyLoading = new Set(state.historyLoading);
+      historyLoading.delete(event.subject);
+      return { ...state, selection, loads, historyLoading };
     }
 
     case "prompt":
