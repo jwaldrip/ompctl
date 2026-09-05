@@ -229,7 +229,9 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
   const existing = new Set(state.entries.map(transcriptRowKey));
   const remaining = state.entries.slice();
   const prepend: Entry[] = [];
-  for (const item of history) {
+  for (let i = 0; i < history.length; i++) {
+    const item = history[i];
+    if (item === undefined) continue;
     const entry: Entry =
       item.kind === "user"
         ? { kind: "user", id: item.id, text: item.text }
@@ -248,24 +250,23 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
     const key = transcriptRowKey(entry);
     if (existing.has(key)) continue;
 
-    if (entry.kind === "user") {
-      const echoIdx = remaining.findIndex(
-        r => r.kind === "user" && r.id.startsWith("prompt-") && r.text === entry.text,
-      );
-      if (echoIdx >= 0) {
-        remaining.splice(echoIdx, 1);
+    // An incoming durable user row can only replace an echo if it lands at the turn
+    // immediately adjacent to the echo at the boundary (e.g. initial history landing on an echoed prompt).
+    // It must never search globally across the transcript to remove live echoes at the tail.
+    if (entry.kind === "user" && i === history.length - 1) {
+      if (remaining[0]?.kind === "user" && remaining[0].id.startsWith("prompt-") && remaining[0].text === entry.text) {
+        remaining.shift();
       }
     }
 
     existing.add(key);
     prepend.push(entry);
   }
-  const combined = prepend.length === 0 ? remaining : [...prepend, ...remaining];
-  const { entries, trimmed } = trimEntries(combined);
+  const entries = prepend.length === 0 ? remaining : [...prepend, ...remaining];
   if (entries.length === state.entries.length && entries.every((e, i) => e === state.entries[i])) {
     return state;
   }
-  return { ...state, entries, trimmed: state.trimmed || trimmed };
+  return { ...state, entries, trimmed: state.trimmed };
 }
 
 export interface SessionState {
@@ -406,7 +407,11 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
     }
     const extended: Entry =
       current.kind === "user"
-        ? { ...current, text: current.text + text }
+        ? {
+            kind: "user",
+            id: messageId ?? current.id,
+            text: current.id.startsWith("prompt-") ? text : current.text + text,
+          }
         : {
             ...(current as AssistantEntry),
             // A chunk that names its message adopts the row it is continuing,
@@ -453,6 +458,7 @@ function findChunkTarget(
       if (entry.kind !== "user") continue;
       if (messageId !== null) {
         if (entry.id === messageId) return index;
+        if (index === entries.length - 1 && entry.id.startsWith("prompt-")) return index;
         continue;
       }
       return index;
