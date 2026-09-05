@@ -2064,6 +2064,140 @@ describe("collab guest legs over the gateway socket", () => {
 
     room.close();
   });
+
+  test("G1: client disconnecting while bridge open is in flight cancels the join and closes the room", async () => {
+    const h = await harness();
+    const bridge = await h.registerBridge();
+    const phone = await h.connect(await h.pair([SCOPE_READ]));
+
+    phone.send({ t: "collab_open", sessionId: SESSION_LIVE });
+    const openAsk = await waitForBridgeFrame(bridge, frame => frame.t === "tui_collab_open");
+
+    // Phone disconnects before bridge answers
+    phone.close();
+    await Bun.sleep(50);
+
+    // Bridge answers late
+    const room = new RelayRoom(async () => {});
+    relays.push(room);
+    bridge.deliver({
+      t: "tui_collab_opened",
+      sessionId: SESSION_LIVE,
+      requestId: openAsk.requestId as string,
+      link: room.fullLink(),
+      viewLink: room.viewLink(),
+      writable: true,
+    });
+
+    // Daemon should immediately close the room on the TUI bridge because no clients remain
+    const closeAsk = await waitForBridgeFrame(bridge, frame => frame.t === "tui_collab_close");
+    expect(closeAsk.requestId).toBe(openAsk.requestId);
+    expect(room.received).toHaveLength(0);
+    room.close();
+  });
+
+  test("G2: two concurrent opens for the same session share one in-flight open and single guest leg", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await hostWelcomeWithTranscript(r);
+    });
+    relays.push(room);
+
+    const bridge = await h.registerBridge();
+    const phone1 = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+    const phone2 = await h.connect(await h.pair([SCOPE_READ, SCOPE_PROMPT]));
+
+    phone1.send({ t: "collab_open", sessionId: SESSION_LIVE });
+    phone2.send({ t: "collab_open", sessionId: SESSION_LIVE });
+
+    const openAsk = await waitForBridgeFrame(bridge, frame => frame.t === "tui_collab_open");
+    await Bun.sleep(50);
+    const bridgeOpens = bridge.frames.filter(frame => frame.t === "tui_collab_open");
+    expect(bridgeOpens).toHaveLength(1);
+
+    bridge.deliver({
+      t: "tui_collab_opened",
+      sessionId: SESSION_LIVE,
+      requestId: openAsk.requestId as string,
+      link: room.fullLink(),
+      viewLink: room.viewLink(),
+      writable: true,
+    });
+
+    const op1 = openedFrame(await phone1.next(isCollabOpened, "phone1 collab_opened"));
+    const op2 = openedFrame(await phone2.next(isCollabOpened, "phone2 collab_opened"));
+    expect(op1.agentId).toBe(op2.agentId);
+
+    const hellos = room.received.filter(f => f.t === "hello");
+    expect(hellos).toHaveLength(1);
+    room.close();
+  });
+
+  test("G3: socket drop leaves leg alive under a lease; reconnect within lease recovers same agentId; explicit leave ends it immediately", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await hostWelcomeWithTranscript(r);
+    });
+    relays.push(room);
+
+    await h.registerBridge();
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
+    const phone = await h.connect(token);
+
+    phone.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+    const opened = openedFrame(await phone.next(isCollabOpened, "phone collab_opened"));
+
+    // Phone drops network
+    phone.close();
+    await Bun.sleep(50);
+
+    // Leg is still alive in daemon under lease
+    const agentWhileLeased = h.store.getAgent(opened.agentId);
+    expect(agentWhileLeased?.state).not.toBe("stopped");
+
+    // Phone reconnects within lease
+    const phone2 = await h.connect(token);
+    phone2.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+    const opened2 = openedFrame(await phone2.next(isCollabOpened, "phone2 reconnected"));
+    expect(opened2.agentId).toBe(opened.agentId);
+
+    // Explicit leave from last client ends leg immediately
+    phone2.send({ t: "collab_leave", sessionId: SESSION_LIVE });
+    await waitUntil(() => {
+      const agt = h.store.getAgent(opened.agentId);
+      return agt?.state === "stopped" ? agt : undefined;
+    }, "agent state stopped after explicit leave");
+
+    room.close();
+  });
+
+  test("G4: collab_open with link to room with mismatched session id is refused as session_mismatch", async () => {
+    const h = await harness();
+    const room = new RelayRoom(async r => {
+      await r.send({
+        t: "welcome",
+        proto: 3,
+        header: { type: "session", id: "sess-actual-room", timestamp: "t", cwd: "/w" },
+        state: HOST_STATE,
+        entryCount: 0,
+        agents: [],
+      });
+      await r.send({ t: "snapshot-chunk", final: true, entries: [] });
+    });
+    relays.push(room);
+
+    const phone = await h.connect(await h.pair([SCOPE_READ]));
+
+    phone.send({ t: "collab_open", sessionId: SESSION_LIVE, link: room.fullLink() });
+
+    const refusal = await phone.next(isErrorWithCode("collab_refused"), "session_mismatch refusal");
+    if (refusal.t !== "error") throw new Error("expected error frame");
+    expect(refusal.reason).toBe("session_mismatch");
+    expect(refusal.sessionId).toBe(SESSION_LIVE);
+    expect(refusal.message).toBe(COLLAB_REFUSAL_REASONS.session_mismatch);
+
+    room.close();
+  });
 });
 
 // -- helpers -----------------------------------------------------------------

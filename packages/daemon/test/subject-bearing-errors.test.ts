@@ -250,3 +250,85 @@ test("subject-bearing error: session_tail to unknown session carries sessionId i
 
   client.close();
 });
+
+test("subject-bearing error: collab_open without read scope carries sessionId in error frame", async () => {
+  const dir1 = mkdtempSync(join(tmpdir(), "sbe-collab-scope-"));
+  scratchDirs.push(dir1);
+  const store = new Store(join(dir1, "ompd.db"));
+  stores.push(store);
+  const events = new GatewayEvents();
+  const fake = createFakeHost();
+  const hosts = new HostRegistry({ spawn: fake.factory });
+  const sup = new Supervisor({ store, policy: new DefaultPolicy(), spawnHost: hosts.spawn, events });
+  const gw = new Gateway({ supervisor: sup, store, events, port: 0 });
+  gateways.push(gw);
+  const port = await gw.listen();
+
+  const pairRes = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "unscoped-dev", publicKey: `pk_${crypto.randomUUID()}` }),
+  });
+  const pairJson: unknown = await pairRes.json();
+  if (!pairJson || typeof pairJson !== "object" || !("code" in pairJson) || typeof pairJson.code !== "string") {
+    throw new Error("pair response carried no code");
+  }
+  const token = gw.approvePairing(pairJson.code, [SCOPE_PROMPT]);
+
+  const client = await connect(port, token);
+  await client.next(f => f.t === "hello", "hello");
+
+  const testSessionId = "019feebf-collab-session-scope";
+  client.send({
+    t: "collab_open",
+    sessionId: testSessionId,
+  });
+
+  const errorFrame = await client.next(f => f.t === "error", "error frame");
+  if (errorFrame.t !== "error") throw new Error("expected error frame");
+  expect(errorFrame.code).toBe("unauthorized");
+  expect(errorFrame.sessionId).toBe(testSessionId);
+
+  client.close();
+});
+
+test("subject-bearing error: collab_leave without read scope carries sessionId in error frame", async () => {
+  const dir2 = mkdtempSync(join(tmpdir(), "sbe-collab-leave-"));
+  scratchDirs.push(dir2);
+  const store = new Store(join(dir2, "ompd.db"));
+  stores.push(store);
+  const events = new GatewayEvents();
+  const fake = createFakeHost();
+  const hosts = new HostRegistry({ spawn: fake.factory });
+  const sup = new Supervisor({ store, policy: new DefaultPolicy(), spawnHost: hosts.spawn, events });
+  const gw = new Gateway({ supervisor: sup, store, events, port: 0 });
+  gateways.push(gw);
+  const port = await gw.listen();
+
+  const pairRes = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "unscoped-dev-leave", publicKey: `pk_${crypto.randomUUID()}` }),
+  });
+  const pairJson: unknown = await pairRes.json();
+  if (!pairJson || typeof pairJson !== "object" || !("code" in pairJson) || typeof pairJson.code !== "string") {
+    throw new Error("pair response carried no code");
+  }
+  const token = gw.approvePairing(pairJson.code, [SCOPE_PROMPT]);
+
+  const client = await connect(port, token);
+  await client.next(f => f.t === "hello", "hello");
+
+  const testSessionId = "019feebf-collab-leave-scope";
+  client.send({
+    t: "collab_leave",
+    sessionId: testSessionId,
+  });
+
+  const errorFrame = await client.next(f => f.t === "error", "error frame");
+  if (errorFrame.t !== "error") throw new Error("expected error frame");
+  expect(errorFrame.code).toBe("unauthorized");
+  expect(errorFrame.sessionId).toBe(testSessionId);
+
+  client.close();
+});
