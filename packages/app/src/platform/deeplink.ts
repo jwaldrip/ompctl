@@ -114,7 +114,13 @@ export function parsePairDeepLink(raw: string): PairDeepLink | null {
   const segments = parts.path.split("/").filter(Boolean);
   const custom = parts.scheme === "ompctl:" && parts.authority === "pair" && segments.length === 0;
   const universal =
-    parts.scheme === "https:" && parts.authority === "app.ompctl.ai" && segments.length === 1 && segments[0] === "pair";
+    (parts.scheme === "https:" || parts.scheme === "http:") &&
+    (parts.authority === "app.ompctl.ai" ||
+      parts.authority.startsWith("localhost") ||
+      parts.authority.startsWith("127.0.0.1") ||
+      (typeof window !== "undefined" && Boolean(window.location?.host) && parts.authority === window.location.host)) &&
+    segments.length === 1 &&
+    segments[0] === "pair";
   if (!custom && !universal) return null;
 
   const params = new URLSearchParams(parts.query);
@@ -141,6 +147,10 @@ export function handlePairDeepLink(raw: string, openPairing: OpenPairing): boole
   const link = parsePairDeepLink(raw);
   if (link === null) return false;
   openPairing(link);
+  if (typeof window !== "undefined" && typeof window.history?.replaceState === "function") {
+    const clean = `${window.location.pathname}${window.location.hash}`;
+    window.history.replaceState(null, "", clean);
+  }
   return true;
 }
 
