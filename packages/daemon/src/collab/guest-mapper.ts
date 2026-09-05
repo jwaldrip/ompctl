@@ -230,6 +230,7 @@ export class CollabStreamMapper {
   #inProgressEntryId: string | null = null;
   #inProgressStreamedText: string | null = null;
   #inProgressMessageId: string | null = null;
+  #inProgressMessageFinished = false;
   constructor(opts: CollabStreamMapperOptions) {
     this.#ownName = opts.ownName;
   }
@@ -355,9 +356,13 @@ export class CollabStreamMapper {
         }
         this.#mapMessageEntry(message, updates, id);
       } else if (message.role === "user") {
-        // Live user entries have no event counterpart; without this the
-        // operator's own terminal prompts would never reach the phone.
-        this.#pushUserChunk(updates, this.#flattenText(message.content), id);
+        const text = this.#flattenText(message.content);
+        if (this.#lastLiveUserText !== null && text === this.#lastLiveUserText) {
+          this.#lastLiveUserText = null;
+          return;
+        }
+        this.#lastLiveUserText = null;
+        this.#pushUserChunk(updates, text, id);
       }
       // Live assistant and toolResult entries already streamed as events;
       // rendering them again would duplicate the transcript.
@@ -365,6 +370,8 @@ export class CollabStreamMapper {
         this.#inProgressEntryId = null;
         this.#inProgressStreamedText = null;
         this.#inProgressMessageId = null;
+        this.#inProgressMessageFinished = false;
+        this.#stream = null;
       }
       return;
     }
@@ -380,6 +387,11 @@ export class CollabStreamMapper {
       if (custom.customType === COLLAB_PROMPT_MESSAGE_TYPE) {
         const from = (custom.details as { from?: string } | undefined)?.from;
         const text = this.#flattenText(custom.content);
+        if (this.#lastLiveUserText !== null && text === this.#lastLiveUserText) {
+          this.#lastLiveUserText = null;
+          return;
+        }
+        this.#lastLiveUserText = null;
         const prefix = from === undefined || from === this.#ownName ? "" : `[${from}] `;
         this.#pushUserChunk(updates, `${prefix}${text}`, id);
         return;
@@ -424,28 +436,64 @@ export class CollabStreamMapper {
         const message = event.message as WireMessage | undefined;
         if (message == null) return;
         if (message.role === "assistant") {
-          // `message_start` announces a NEW message: drop the in-flight
-          // stream so the next chunks open their own row instead of reading
-          // as growth of the message that just ended.
+          const eventMsgId =
+            (event as { id?: string; messageId?: string; entryId?: string }).id ??
+            (event as { id?: string; messageId?: string; entryId?: string }).messageId ??
+            (event as { id?: string; messageId?: string; entryId?: string }).entryId ??
+            (message as { id?: string }).id ??
+            null;
+
+          const currentText = this.#flattenText(message.content);
+          const hasActiveInFlight = this.#stream !== null && !this.#inProgressMessageFinished;
+
+          let isSameMessage = false;
+          if (hasActiveInFlight) {
+            if (eventMsgId !== null && this.#inProgressEntryId !== null) {
+              isSameMessage = eventMsgId === this.#inProgressEntryId;
+            } else if (this.#inProgressStreamedText !== null && this.#inProgressStreamedText.length > 0) {
+              isSameMessage =
+                currentText.length === 0 ||
+                currentText.startsWith(this.#inProgressStreamedText) ||
+                this.#inProgressStreamedText.startsWith(currentText);
+            } else {
+              isSameMessage = true;
+            }
+          }
+
           if (event.type === "message_start") {
-            this.#stream = null;
-            this.#inProgressStreamedText = null;
-            this.#inProgressEntryId =
-              (event as { id?: string; entryId?: string }).id ??
-              (event as { entryId?: string }).entryId ??
-              (message as { id?: string }).id ??
-              null;
+            if (!isSameMessage) {
+              this.#stream = null;
+              this.#inProgressStreamedText = null;
+              this.#inProgressMessageId = null;
+              this.#inProgressEntryId = eventMsgId;
+              this.#inProgressMessageFinished = false;
+            } else if (eventMsgId !== null && this.#inProgressEntryId === null) {
+              this.#inProgressEntryId = eventMsgId;
+            }
           }
           this.#diffAssistant(message, updates);
-          if (event.type === "message_end") this.#accumulateUsage(message);
+          if (event.type === "message_end") {
+            this.#accumulateUsage(message);
+            this.#inProgressMessageFinished = true;
+          }
           return;
         }
-        // Non-assistant messages normally arrive as entries; a host that
-        // streams one live gets it whole, once per distinct text.
-        const text = this.#flattenText(message.content);
-        if (text.length === 0 || text === this.#lastLiveUserText) return;
-        this.#lastLiveUserText = text;
-        this.#pushUserChunk(updates, text, `collab-u${this.#messageSeq++}`);
+        if (message.role === "toolResult") {
+          updates.push({
+            sessionUpdate: "tool_call_update",
+            toolCallId: message.toolCallId,
+            status: message.isError ? "failed" : "completed",
+            rawOutput: { content: message.content ?? [] },
+          });
+          return;
+        }
+        if (message.role === "user") {
+          const text = this.#flattenText(message.content);
+          if (text.length === 0 || text === this.#lastLiveUserText) return;
+          this.#lastLiveUserText = text;
+          this.#pushUserChunk(updates, text, `collab-u${this.#messageSeq++}`);
+          return;
+        }
         return;
       }
       case "tool_execution_start":
@@ -505,10 +553,13 @@ export class CollabStreamMapper {
     const stream = this.#stream;
     if (stream === null || content.length < stream.blocks || !this.#compatibleTip(content, stream)) {
       this.#stream = { blocks: 0, last: null };
-      this.#messageSeq++;
+      if (this.#inProgressMessageId === null) {
+        this.#messageSeq++;
+        this.#inProgressMessageId = this.#inProgressEntryId ?? `collab-m${this.#messageSeq}`;
+      }
     }
     const live = this.#stream!;
-    const messageId = this.#inProgressEntryId ?? `collab-m${this.#messageSeq}`;
+    const messageId = this.#inProgressMessageId ?? this.#inProgressEntryId ?? `collab-m${this.#messageSeq}`;
     this.#inProgressMessageId = messageId;
     // The walk restarts at the last walked block, not after it: that block
     // may still be growing, and re-walking it is idempotent (nothing is
@@ -516,7 +567,9 @@ export class CollabStreamMapper {
     for (let index = Math.max(0, live.blocks - 1); index < content.length; index++) {
       const block = content[index]!;
       if (block.type === "text") {
-        const base = live.last !== null && live.last.kind === "text" ? live.last.emitted : 0;
+        const lastEmitted = live.last !== null && live.last.kind === "text" ? live.last.emitted : 0;
+        const streamedLen = this.#inProgressStreamedText?.length ?? 0;
+        const base = Math.max(lastEmitted, streamedLen);
         if (block.text.length > base) {
           const delta = block.text.slice(base);
           updates.push({
