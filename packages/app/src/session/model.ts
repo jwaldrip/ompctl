@@ -392,7 +392,7 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
 
   const messageId = readString(payload, "messageId");
   const thought = channel === "thought";
-  const index = findChunkTarget(state.entries, channel, messageId);
+  const index = findChunkTarget(state.entries, channel, messageId, text);
 
   if (index >= 0) {
     const current = state.entries[index];
@@ -450,19 +450,38 @@ function findChunkTarget(
   entries: readonly Entry[],
   channel: "user" | "message" | "thought",
   messageId: string | null,
+  text: string,
 ): number {
+  if (channel === "user") {
+    if (messageId !== null) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index];
+        if (entry?.kind === "user" && entry.id === messageId) return index;
+      }
+    }
+    // When a user chunk arrives and the newest user entry is a local echo
+    // (`prompt-*` id) with the same text, adopt that echo in place.
+    // A user chunk whose text differs appends (another device's prompt).
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry?.kind === "user") {
+        if (entry.id.startsWith("prompt-") && entry.text === text) {
+          return index;
+        }
+        break;
+      }
+    }
+    if (messageId === null) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        if (entries[index]?.kind === "user") return index;
+      }
+    }
+    return -1;
+  }
+
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry === undefined) continue;
-    if (channel === "user") {
-      if (entry.kind !== "user") continue;
-      if (messageId !== null) {
-        if (entry.id === messageId) return index;
-        if (index === entries.length - 1 && entry.id.startsWith("prompt-")) return index;
-        continue;
-      }
-      return index;
-    }
     if (entry.kind !== "assistant") continue;
     if (entry.thought !== (channel === "thought")) continue;
     // An id locates a message that has already settled, which is how an agent
