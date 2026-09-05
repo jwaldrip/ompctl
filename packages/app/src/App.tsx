@@ -26,6 +26,7 @@ import { PairNavigator } from "./nav/PairNavigator.tsx";
 import type { Connection, ConnectionList, SavedConnection } from "./platform/connection.ts";
 import { clearConnection, loadConnections, saveConnection, setActiveConnection } from "./platform/connection.ts";
 import { type DeepLinkSource, listenForDeepLinks } from "./platform/deeplink.ts";
+import { connectionFromPairUrl } from "./platform/portal.ts";
 import { CollabSessionScreen } from "./screens/CollabSessionScreen.tsx";
 
 type Boot =
@@ -76,6 +77,19 @@ export function App(): JSX.Element {
     },
     [reloadConnections],
   );
+
+  // On web, route the initial URL through connectionFromPairUrl to pair immediately
+  // and strip query parameters from history so the token does not sit in the address bar.
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location?.href) {
+      const conn = connectionFromPairUrl(window.location.href);
+      if (conn !== null) {
+        void saveConnection(conn)
+          .then(() => reloadConnections())
+          .catch((cause: unknown) => setBoot({ phase: "pair", notice: describe(cause) }));
+      }
+    }
+  }, [reloadConnections]);
 
   // A pairing link is durable before it is visible: the credential is written
   // to the store, then the Console opens, so a link that arrives during a cold

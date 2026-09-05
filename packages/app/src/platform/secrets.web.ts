@@ -1,47 +1,63 @@
 /**
- * The web build's answer to "where does a scoped bearer token live": nowhere
- * durable, on purpose.
+ * Storage for scoped bearer tokens on the web portal build.
  *
- * A browser tab has no keystore. The one storage this build does have --
- * `localStorage` -- is plaintext, readable by any script that ever runs on
- * this origin, and exactly the failure `platform/secrets.ts`'s header
- * describes AsyncStorage as being. Writing the daemon's token there would
- * not be a lesser version of secure storage; it would be the same mistake
- * this whole slice exists to remove, just moved one file over. So this file
- * does not try: a secret written here lives in a module-level `Map` for as
- * long as this page stays loaded, and nowhere else. There is no persistence
- * to opt into and no degraded fallback hiding behind these three functions.
+ * Persists tokens to localStorage under the exact same keys the native keystore
+ * uses (such as "ompd.connection.token.<id>" and "ompd.connection.token").
  *
- * The consequence is real, and it is meant to be reached rather than hidden
- * behind a swallowed error. A page reload clears this module the same way
- * it clears every other one, while `platform/connection.ts`'s metadata half
- * of a pairing survives a reload because it goes through AsyncStorage,
- * which on web is backed by `localStorage`. `loadConnection` already treats
- * metadata with no matching secret as half a pairing and refuses to treat
- * it as a whole one, so a web reload lands back on the pairing screen
- * instead of opening a socket with a token that silently stopped existing.
- * That refusal is a real state transition a caller actually reaches, not an
- * exception this module eats on the way out.
+ * XSS Tradeoff:
+ * A browser tab has no hardware-backed keychain, secure enclave, or protected
+ * storage. localStorage is unencrypted text accessible to any JavaScript that
+ * executes on this origin. If an attacker achieves cross-site scripting (XSS)
+ * on this domain, they could read stored daemon bearer tokens. This is an
+ * explicit security tradeoff accepted for the web portal: the alternative is
+ * losing the credential on every page reload, navigation, or tab refresh, which
+ * destroys portal usability and breaks long-lived pairing.
  *
- * This is `.web.ts` -- resolved the same way Metro resolves `.ios.tsx` and
- * Vite resolves it per `vite.config.ts`'s `resolve.extensions` -- so a
- * caller importing `./secrets` gets this file's honest behaviour on the web
- * target without ever having to ask which platform it is running on.
+ * On native platforms, secure storage is handled by react-native-keychain
+ * in secrets.ts; no fallback is added there.
  */
 
-const memory = new Map<string, string>();
+const fallback = new Map<string, string>();
 
-/** `false` here, `true` on every target with a real keystore. See `secrets.ts`. */
-export const SECRETS_PERSIST_ACROSS_LAUNCHES = false;
+function getStorage(): Storage | null {
+  try {
+    if (typeof globalThis !== "undefined" && globalThis.localStorage) {
+      return globalThis.localStorage;
+    }
+  } catch {
+    // Storage access can be denied by browser privacy or iframe sandbox settings.
+  }
+  return null;
+}
+
+/**
+ * True on web now that secrets persist to localStorage across launches and reloads.
+ * Matches native keystore persistence semantics.
+ */
+export const SECRETS_PERSIST_ACROSS_LAUNCHES = true;
 
 export async function readSecret(key: string): Promise<string | null> {
-  return memory.get(key) ?? null;
+  const storage = getStorage();
+  if (storage) {
+    return storage.getItem(key);
+  }
+  return fallback.get(key) ?? null;
 }
 
 export async function writeSecret(key: string, value: string): Promise<void> {
-  memory.set(key, value);
+  const storage = getStorage();
+  if (storage) {
+    storage.setItem(key, value);
+    return;
+  }
+  fallback.set(key, value);
 }
 
 export async function deleteSecret(key: string): Promise<void> {
-  memory.delete(key);
+  const storage = getStorage();
+  if (storage) {
+    storage.removeItem(key);
+    return;
+  }
+  fallback.delete(key);
 }

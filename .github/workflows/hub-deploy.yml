@@ -174,7 +174,7 @@ jobs:
           }
 
           submit_and_wait packages/hub/deploy/cloudbuild.yaml "${REG}/hub:${{ github.sha }}"
-          submit_and_wait packages/web/deploy/cloudbuild.yaml "${REG}/web:${{ github.sha }}"
+          submit_and_wait packages/app/deploy/cloudbuild.yaml "${REG}/web:${{ github.sha }}"
           submit_and_wait packages/site/deploy/cloudbuild.yaml "${REG}/site:${{ github.sha }}"
 
       - uses: hashicorp/setup-terraform@v3

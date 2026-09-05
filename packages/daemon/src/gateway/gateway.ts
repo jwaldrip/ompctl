@@ -109,6 +109,9 @@ const CONTENT_TYPES: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
   ".json": "application/json",
   ".map": "application/json",
+  ".ttf": "font/ttf",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
 };
 
 function contentTypeFor(key: string): string {

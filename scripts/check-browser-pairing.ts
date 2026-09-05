@@ -58,10 +58,10 @@ async function visit(url: string, label: string): Promise<string> {
   await proc.exited.catch(() => 0);
 
   // The pairing screen is the tell: if it rendered, the stored credential did
-  // not carry. The strip bay means it connected.
-  const sawPairing = /Pair this device|pairing-form/i.test(dom);
-  const sawBay = /STRIP BAY/i.test(dom);
-  const verdict = dom.length === 0 ? "NO DOM" : sawBay && !sawPairing ? "CONNECTED" : "PAIRING SCREEN";
+  // not carry. The connected console showing N SESSIONS means it connected.
+  const sawPairing = /data-testid="pair-token"|pair-token/i.test(dom);
+  const sawSessions = /\b\d+\s+sessions\b/i.test(dom);
+  const verdict = dom.length === 0 ? "NO DOM" : sawSessions && !sawPairing ? "CONNECTED" : "PAIRING SCREEN";
   console.log(`${label.padEnd(38)} ${verdict}`);
   return verdict;
 }

@@ -33,6 +33,8 @@ type PairParamList = {
 export interface PairNavigatorProps {
   /** Why the operator is looking at this screen rather than at their sessions. */
   notice?: string;
+  /** Default target address to prefill. */
+  defaultTarget?: string;
   /** Present only when there is a saved daemon to go back to. */
   onCancel?: () => void;
   onPair: (connection: Connection) => void;
@@ -66,6 +68,7 @@ function PairRoute({ navigation }: NativeStackScreenProps<PairParamList, "pair">
   return (
     <PairScreen
       notice={pairing.notice}
+      defaultTarget={pairing.defaultTarget}
       onCancel={pairing.onCancel}
       onPair={pairing.onPair}
       onScan={() => navigation.navigate("scan")}

@@ -1,7 +1,7 @@
 /**
  * Generate the module that embeds the built web console into the CLI binary.
  *
- * `defaultStaticRoot()` looks for `packages/web/dist` relative to the source
+ * `defaultStaticRoot()` looks for `packages/app/dist` relative to the source
  * tree. That works from a checkout and is exactly wrong for the installed
  * artifact: a compiled binary has no source tree, so the console silently
  * became API-only and `ompd open` opened a page answering
@@ -19,7 +19,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { join, relative, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..");
-const dist = join(repoRoot, "packages", "web", "dist");
+const dist = join(repoRoot, "packages", "app", "dist");
 const out = join(repoRoot, "packages", "daemon", "src", "web-assets.ts");
 
 function walk(dir: string): string[] {
@@ -36,8 +36,8 @@ if (!existsSync(join(dist, "index.html"))) {
   // Fail rather than emit an API-only binary. Shipping an artifact whose
   // console silently 404s is the exact defect this file exists to fix, and a
   // release build must not be able to produce one by omission.
-  console.error("packages/web/dist/index.html is missing, refusing to generate an empty console.");
-  console.error("Run: bun run --cwd packages/web build");
+  console.error("packages/app/dist/index.html is missing, refusing to generate an empty console.");
+  console.error("Run: bun run --cwd packages/app build:web");
   process.exit(1);
 }
 
@@ -60,7 +60,7 @@ writeFileSync(
 //
 // Embeds the built web console so the compiled binary serves it. Without this
 // the installed artifact answers {"error":"not_found"} at / because it has no
-// source tree in which to find packages/web/dist.
+// source tree in which to find packages/app/dist.
 //
 // ${files.length} files, ${bytes} bytes before base64.
 

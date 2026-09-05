@@ -5,15 +5,17 @@
  * Universal Links / App Links. TEAMID and the Play cert fingerprint are
  * injected at container start so the image stays free of account secrets.
  */
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
 
-const root = join(import.meta.dir, "dist");
+const root = existsSync(join(import.meta.dir, "dist"))
+  ? join(import.meta.dir, "dist")
+  : join(import.meta.dir, "..", "dist");
 const port = Number(process.env.PORT ?? 8080);
 function requireEnv(name: string): string {
   const v = process.env[name]?.trim() ?? "";
   if (!v) {
-    console.error(JSON.stringify({ severity: "ERROR", message: `${name} is required` }));
+    console.error(JSON.stringify({ severity: "ERROR", message: `missing required env: ${name}` }));
     process.exit(2);
   }
   return v;
@@ -28,12 +30,12 @@ const bundleMac = process.env.OMPCTL_MACOS_BUNDLE_ID?.trim() || "ai.ompctl.app";
 const androidPkg = process.env.OMPCTL_ANDROID_PACKAGE?.trim() || "ai.ompctl.app";
 
 if (!/^[A-Z0-9]{10}$/.test(teamId)) {
-  console.error(JSON.stringify({ severity: "ERROR", message: "OMPCTL_APPLE_TEAM_ID must be a 10-char Apple Team ID" }));
+  console.error(JSON.stringify({ severity: "ERROR", message: `invalid OMPCTL_APPLE_TEAM_ID: "${teamId}"` }));
   process.exit(2);
 }
 // Play Console app-signing cert fingerprint: 32 hex bytes with optional colons.
 if (!/^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$|^[0-9A-Fa-f]{64}$/.test(playSha)) {
-  console.error(JSON.stringify({ severity: "ERROR", message: "OMPCTL_PLAY_CERT_SHA256 must be a SHA-256 fingerprint (Play app signing cert)" }));
+  console.error(JSON.stringify({ severity: "ERROR", message: `invalid OMPCTL_PLAY_CERT_SHA256: "${playSha}"` }));
   process.exit(2);
 }
 
@@ -42,7 +44,7 @@ function aasa(): Response {
    * Deduplicated: iOS and macOS ship under the same universal bundle id, so the
    * naive two-element list would name the same appID twice. Apple does not
    * document rejecting that, which is exactly why it is worth removing rather
-   * than shipping and hoping -- a malformed association fails silently, with
+   * than shipping and hoping: a malformed association fails silently, with
    * Universal Links simply not opening the app.
    *
    * Still built from both variables rather than one, so a future split back into
@@ -103,6 +105,9 @@ function contentType(path: string): string {
   if (path.endsWith(".png")) return "image/png";
   if (path.endsWith(".webmanifest")) return "application/manifest+json";
   if (path.endsWith(".json")) return "application/json";
+  if (path.endsWith(".ttf")) return "font/ttf";
+  if (path.endsWith(".woff2")) return "font/woff2";
+  if (path.endsWith(".woff")) return "font/woff";
   return "application/octet-stream";
 }
 

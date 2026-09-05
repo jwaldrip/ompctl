@@ -3,5 +3,5 @@
 # why this exists instead of `gcloud builds submit --tag`.
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "-f", "packages/web/deploy/Dockerfile", "-t", "${_IMAGE_TAG}", "."]
+    args: ["build", "-f", "packages/app/deploy/Dockerfile", "-t", "${_IMAGE_TAG}", "."]
 images: ["${_IMAGE_TAG}"]

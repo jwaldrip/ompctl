@@ -53,6 +53,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Typecheck and lint every workspace
         run: bun run check
+      - name: Build web portal
+        run: bun run --cwd packages/app build:web
       - name: Unit and integration tests
         env:
           OMPD_TEST_REDIS_URL: redis://127.0.0.1:6379

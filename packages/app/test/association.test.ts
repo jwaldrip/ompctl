@@ -78,7 +78,7 @@ async function start(env: Record<string, string>): Promise<Started> {
 describe("association files", () => {
   test("apple-app-site-association is served and claims the universal bundle once", async () => {
     const { base } = await start({ OMPCTL_APPLE_TEAM_ID: TEAM, OMPCTL_PLAY_CERT_SHA256: SHA });
-    const res = await fetch(`${base}/.well-known/apple-app-site-association`);
+    const res = await Bun.fetch(`${base}/.well-known/apple-app-site-association`);
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as {
@@ -109,7 +109,7 @@ describe("association files", () => {
 
   test("assetlinks.json delegates the domain to the Android package", async () => {
     const { base } = await start({ OMPCTL_APPLE_TEAM_ID: TEAM, OMPCTL_PLAY_CERT_SHA256: SHA });
-    const res = await fetch(`${base}/.well-known/assetlinks.json`);
+    const res = await Bun.fetch(`${base}/.well-known/assetlinks.json`);
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as Array<{
@@ -128,7 +128,7 @@ describe("association files", () => {
 
   test("an unknown well-known path is not invented", async () => {
     const { base } = await start({ OMPCTL_APPLE_TEAM_ID: TEAM, OMPCTL_PLAY_CERT_SHA256: SHA });
-    const res = await fetch(`${base}/.well-known/not-a-real-association`);
+    const res = await Bun.fetch(`${base}/.well-known/not-a-real-association`);
     expect(res.status).toBe(404);
   });
 });

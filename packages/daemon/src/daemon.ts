@@ -332,7 +332,7 @@ export interface OmpdOptions {
   overrides?: Partial<OmpdConfig>;
   /**
    * Built web client served from `/`. Defaults to the workspace's
-   * `packages/web/dist` when it has been built, and to API-only when it has not.
+   * `packages/app/dist` when it has been built, and to API-only when it has not.
    */
   staticRoot?: string;
   /** Repository the evolution engine proposes against. Defaults to the cwd. */
@@ -1462,10 +1462,10 @@ export class Ompd {
  * Resolved from this file rather than the cwd, so the daemon serves the UI
  * shipped alongside it no matter where it was started from. Inside a compiled
  * binary this resolves into the bundle and finds nothing, which is correct:
- * `packages/web/dist` is a local build artifact that no clone starts with, so
+ * `packages/app/dist` is a local build artifact that no clone starts with, so
  * the console is served when it has been built and the API is served always.
  */
 function defaultStaticRoot(): string | undefined {
-  const dist = resolve(import.meta.dir, "../../web/dist");
+  const dist = resolve(import.meta.dir, "../../app/dist");
   return existsSync(join(dist, "index.html")) ? dist : undefined;
 }

@@ -7,13 +7,13 @@ WORKDIR /app
 # match, not just this package's own.
 COPY . .
 RUN bun install --frozen-lockfile
-WORKDIR /app/packages/web
-RUN bun run build
+WORKDIR /app/packages/app
+RUN bun run build:web
 
 FROM oven/bun:1.3.14-alpine
 WORKDIR /srv
-COPY --from=build /app/packages/web/dist ./dist
-COPY packages/web/deploy/server.ts ./server.ts
+COPY --from=build /app/packages/app/dist ./dist
+COPY packages/app/deploy/server.ts ./server.ts
 ENV NODE_ENV=production
 EXPOSE 8080
 USER bun

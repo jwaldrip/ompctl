@@ -14,7 +14,7 @@
 
 import { DEFAULT_HUB_HOST, parseDeviceCredential, parsePairTarget } from "@ompd/core/pairing";
 import type { JSX } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { useFormMaxWidth } from "../design/layout.ts";
@@ -23,6 +23,7 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
+import { directSocketUrlForOrigin, isDaemonOrigin } from "../platform/portal.ts";
 // Extensionless on purpose: Metro picks `e2e-plaintext.ios.ts` for iOS and the
 // plain module everywhere else. Naming the extension would defeat that and
 // hand every platform the same answer.
@@ -30,11 +31,13 @@ import { E2E_PLAINTEXT_TOKEN } from "../platform/e2e-plaintext";
 
 export function PairScreen({
   notice,
+  defaultTarget,
   onCancel,
   onPair,
   onScan,
 }: {
   notice?: string;
+  defaultTarget?: string;
   onCancel?: () => void;
   onPair: (connection: Connection) => void;
   /**
@@ -44,7 +47,22 @@ export function PairScreen({
    */
   onScan: () => void;
 }): JSX.Element {
-  const [raw, setRaw] = useState(DEFAULT_HUB_HOST);
+  const [raw, setRaw] = useState(defaultTarget ?? DEFAULT_HUB_HOST);
+
+  useEffect(() => {
+    if (defaultTarget !== undefined) {
+      setRaw(defaultTarget);
+      return;
+    }
+    if (typeof window !== "undefined" && window.location?.origin) {
+      const origin = window.location.origin;
+      void isDaemonOrigin(origin).then(isDaemon => {
+        if (isDaemon) {
+          setRaw(directSocketUrlForOrigin(origin));
+        }
+      });
+    }
+  }, [defaultTarget]);
   const [token, setToken] = useState("");
   const { width } = useWindowDimensions();
   const formMaxWidth = useFormMaxWidth();
