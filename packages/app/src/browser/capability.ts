@@ -31,8 +31,8 @@ export const WEBVIEW_PLATFORM_STATUS: readonly WebViewPlatformStatus[] = [
   },
   {
     platform: "windows",
-    support: "unverified",
-    note: "react-native-webview 15's Windows project is a C++ Fabric module and is autolinked; @ompd/app/windows is scaffolded and CI builds it, but no Windows run of the WebView has been exercised. Screenshot is unavailable there: react-native-view-shot ships only a UWP C# module for the old architecture, which a RnwNewArch app cannot host, so it is excluded from Windows autolinking (react-native.config.cjs) and webview_screenshot answers with a stated error.",
+    support: "unavailable",
+    note: "A version intersection, not a scaffolding gap: react-native-webview 15's Windows Fabric component calls IReactViewComponentBuilder.XamlSupport, which react-native-windows added in 0.82; RNW 0.82 needs react-native 0.82, and react-native-macos stops at 0.81.9, so on the 0.81 line every platform here shares the component does not compile. It is excluded from Windows autolinking (react-native.config.cjs) and index.windows.ts exports webViewCapability as the literal null. react-native-view-shot is excluded there too: its Windows project is a UWP C# module for the old architecture. Both return the day react-native-macos reaches 0.82 and the app moves with it.",
   },
   {
     platform: "web",

@@ -14,9 +14,5 @@
     <ProjectReference Include="$(ProjectDir)..\..\..\..\node_modules\react-native-svg\windows\RNSVG\RNSVG.vcxproj">
       <Project>{7acf84ec-efba-4043-8e14-40b159508902}</Project>
     </ProjectReference>
-    <!-- Projects from react-native-webview -->
-    <ProjectReference Include="$(ProjectDir)..\..\..\..\node_modules\react-native-webview\windows\ReactNativeWebView\ReactNativeWebView.vcxproj">
-      <Project>{30CADFC7-80EF-4296-A405-47E4B97C0C71}</Project>
-    </ProjectReference>
   </ItemGroup>
 </Project>

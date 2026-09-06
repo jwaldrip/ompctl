@@ -45,6 +45,21 @@ module.exports = {
         windows: null,
       },
     },
+    // react-native-webview 15's Windows project is a C++ Fabric component,
+    // but it calls IReactViewComponentBuilder.XamlSupport, which
+    // react-native-windows added in 0.82 (absent from 0.81.35's
+    // IReactViewComponentBuilder.idl, present in 0.82.8's). RNW 0.82 needs
+    // react-native 0.82, and react-native-macos stops at 0.81.9, so on the
+    // one React Native version every platform here can build, this component
+    // cannot compile (error C2039 in RCTWebView2ComponentView.cpp). Until
+    // react-native-macos reaches 0.82 and the whole app moves with it, the
+    // Windows build carries no WebView and `src/browser/index.windows.ts`
+    // says so as a type.
+    "react-native-webview": {
+      platforms: {
+        windows: null,
+      },
+    },
   },
   assets: ["./src/design/fonts"],
 };

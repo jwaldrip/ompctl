@@ -64,16 +64,19 @@ jobs:
             throw "No Windows SDK with Windows.h is installed on this runner."
           }
           # Build the app's vcxproj with the solution named for it, so the
-          # autolinked native closure (async-storage, clipboard, svg, webview)
-          # resolves exactly as it does from ompd.sln, while the MSIX packaging
-          # project stays with `scripts/windows-msix.sh`, which builds the
-          # solution's ompd_Package target unsigned on purpose. No C# project
-          # is in that closure: react-native-view-shot's UWP C# module is
-          # excluded from Windows autolinking in react-native.config.cjs, which
-          # is what kept dragging Microsoft.ReactNative.Managed into every
-          # build here and made the run red on WindowsAppSDK 1.8's .NET check
-          # and its UWP XAML type forwarders. The autolink verification step
-          # above is what proves the generated files still say so.
+          # autolinked native closure (async-storage, clipboard, svg) resolves
+          # exactly as it does from ompd.sln, while the MSIX packaging project
+          # stays with `scripts/windows-msix.sh`, which builds the solution's
+          # ompd_Package target unsigned on purpose. Two community modules are
+          # excluded from Windows autolinking in react-native.config.cjs and
+          # the notes there say why: react-native-view-shot's UWP C# module
+          # was what kept dragging Microsoft.ReactNative.Managed into every
+          # build here (red on WindowsAppSDK 1.8's .NET check and its UWP
+          # XAML type forwarders), and react-native-webview 15's Fabric
+          # component needs react-native-windows 0.82, which the 0.81 line
+          # this app shares across platforms cannot provide. The autolink
+          # verification step above is what proves the generated files still
+          # say so.
           & $msbuild ompd\ompd.vcxproj /m /restore "/p:SolutionDir=$PWD\" "/p:SolutionPath=$PWD\ompd.sln" /p:SolutionFileName=ompd.sln /p:Configuration=Debug /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$sdkVersion" /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
