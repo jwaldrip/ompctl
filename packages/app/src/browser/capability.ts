@@ -27,12 +27,12 @@ export const WEBVIEW_PLATFORM_STATUS: readonly WebViewPlatformStatus[] = [
   {
     platform: "macos",
     support: "unverified",
-    note: "react-native-webview genuinely supports it (podspec declares osx 10.13; WebView.macos.tsx and a dedicated macos/RNCWebView.xcodeproj ship in 14.0.1), but @ompd/app has no macos/ native project scaffolded (react-native-macos-init has never run here), so there is nothing to build yet. Screenshot is narrower still: react-native-view-shot's podspec is ios-only, so webview_screenshot has no macOS implementation at all, not merely an unverified one.",
+    note: "react-native-webview genuinely supports it (podspec declares osx 10.13; WebView.macos.tsx and a dedicated macos/RNCWebView.xcodeproj ship in 14.0.1) and @ompd/app/macos is scaffolded, but no macOS run of the WebView has been exercised. Screenshot is narrower still: react-native-view-shot's podspec is ios-only, so webview_screenshot answers with a stated error on macOS; the library is loaded on demand (browser/screenshot.ts) so its absence cannot take the app down at launch.",
   },
   {
     platform: "windows",
     support: "unverified",
-    note: "react-native-webview ships Windows support (windows/ReactNativeWebView.sln, WebView.windows.tsx) and react-native-view-shot ships a windows/ project too, but @ompd/app has no windows/ native project scaffolded, and this machine has no Windows build environment regardless -- two independent gaps.",
+    note: "react-native-webview 15's Windows project is a C++ Fabric module and is autolinked; @ompd/app/windows is scaffolded and CI builds it, but no Windows run of the WebView has been exercised. Screenshot is unavailable there: react-native-view-shot ships only a UWP C# module for the old architecture, which a RnwNewArch app cannot host, so it is excluded from Windows autolinking (react-native.config.cjs) and webview_screenshot answers with a stated error.",
   },
   {
     platform: "web",

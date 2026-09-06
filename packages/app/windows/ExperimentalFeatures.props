@@ -6,10 +6,9 @@
       Required for building a New Architecture project.
 
       react-native-webview 15.0.0+ ships a Fabric-based Windows implementation.
-      react-native-view-shot has no New Architecture Windows implementation in
-      any published or unreleased version as of this writing (last checked
-      react-native-view-shot@5.1.1 and the gre/react-native-view-shot master
-      branch); it fails to build here until upstream migrates it.
+      react-native-view-shot ships only a UWP C# module for the old
+      architecture, so it is excluded from Windows autolinking in
+      react-native.config.cjs rather than built here; see the note there.
     -->
     <RnwNewArch>true</RnwNewArch>
 
@@ -20,14 +19,6 @@
     <UseExperimentalNuget>true</UseExperimentalNuget>
 
     <WindowsAppSDKVerifyTransitiveDependencies>false</WindowsAppSDKVerifyTransitiveDependencies>
-    <!--
-      WindowsAppSDK 1.8 (pulled in transitively from the runner image's newer
-      WASDK) adds a C#/csproj-only version check whose Error fires against the
-      UWP-TargetFramework Microsoft.ReactNative.Managed.csproj that RNW 0.81
-      ships. RNW 0.81 never had this check, so disable it rather than retarget
-      the framework project.
-    -->
-    <WindowsAppSDKVerifyCsWinRtVersions>false</WindowsAppSDKVerifyCsWinRtVersions>
     <RunCodegenWindows>false</RunCodegenWindows>
     <ReactExperimentalFeaturesSet>true</ReactExperimentalFeaturesSet>
   </PropertyGroup>

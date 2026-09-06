@@ -28,6 +28,23 @@ module.exports = {
         windows: null,
       },
     },
+    // react-native-view-shot's Windows project (RNViewShot.csproj) is a
+    // UWP C# XAML library for the old architecture: it references
+    // Microsoft.ReactNative.Managed and Windows.UI.Xaml, neither of which a
+    // RnwNewArch composition app can host, and no published version of the
+    // package ships anything else for Windows (last checked 5.1.1 and the
+    // gre/react-native-view-shot master branch). Autolinking it made the app's
+    // build compile the Managed assembly, which WindowsAppSDK 1.8 refuses and
+    // whose UWP XAML type forwarders then fail against WinUI 3; every run on
+    // main was red for that reason alone. Left out, the C++ closure builds.
+    // `webview_screenshot` answers with a stated error on Windows: see
+    // `src/browser/WebViewDriver.tsx` and the Windows row in
+    // `src/browser/capability.ts`.
+    "react-native-view-shot": {
+      platforms: {
+        windows: null,
+      },
+    },
   },
   assets: ["./src/design/fonts"],
 };
