@@ -130,10 +130,13 @@
     <Import Project="$(ReactNativeWindowsDir)\PropertySheets\External\Microsoft.ReactNative.Composition.CppApp.targets" Condition="Exists('$(ReactNativeWindowsDir)\PropertySheets\External\Microsoft.ReactNative.Composition.CppApp.targets')" />
   </ImportGroup>
   <!-- Bare PackageReference versions are minimums. Pin NuGet to the npm
-       react-native-windows release so the C++ renderer and JS package match. -->
+       react-native-windows release so the C++ renderer and JS package match:
+       Microsoft.ReactNative.VersionCheck.targets fails the build on any
+       difference, so a bump to react-native-windows in package.json lands
+       here in the same change. -->
   <ItemGroup>
-    <PackageReference Update="Microsoft.ReactNative" Version="[0.81.30]" />
-    <PackageReference Update="Microsoft.ReactNative.Cxx" Version="[0.81.30]" />
+    <PackageReference Update="Microsoft.ReactNative" Version="[0.81.35]" />
+    <PackageReference Update="Microsoft.ReactNative.Cxx" Version="[0.81.35]" />
   </ItemGroup>
   <ItemGroup>
   </ItemGroup>

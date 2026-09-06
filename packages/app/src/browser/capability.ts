@@ -27,12 +27,12 @@ export const WEBVIEW_PLATFORM_STATUS: readonly WebViewPlatformStatus[] = [
   {
     platform: "macos",
     support: "unverified",
-    note: "react-native-webview genuinely supports it (podspec declares osx 10.13; WebView.macos.tsx and a dedicated macos/RNCWebView.xcodeproj ship in 14.0.1), but @ompd/app has no macos/ native project scaffolded (react-native-macos-init has never run here), so there is nothing to build yet. Screenshot is narrower still: react-native-view-shot's podspec is ios-only, so webview_screenshot has no macOS implementation at all, not merely an unverified one.",
+    note: "react-native-webview genuinely supports it (podspec declares osx 10.13; WebView.macos.tsx and a dedicated macos/RNCWebView.xcodeproj ship in 14.0.1) and @ompd/app/macos is scaffolded, but no macOS run of the WebView has been exercised. Screenshot is narrower still: react-native-view-shot's podspec is ios-only, so webview_screenshot answers with a stated error on macOS; the library is loaded on demand (browser/screenshot.ts) so its absence cannot take the app down at launch.",
   },
   {
     platform: "windows",
-    support: "unverified",
-    note: "react-native-webview ships Windows support (windows/ReactNativeWebView.sln, WebView.windows.tsx) and react-native-view-shot ships a windows/ project too, but @ompd/app has no windows/ native project scaffolded, and this machine has no Windows build environment regardless -- two independent gaps.",
+    support: "unavailable",
+    note: "A version intersection, not a scaffolding gap: react-native-webview 15's Windows Fabric component calls IReactViewComponentBuilder.XamlSupport, which react-native-windows added in 0.82; RNW 0.82 needs react-native 0.82, and react-native-macos stops at 0.81.9, so on the 0.81 line every platform here shares the component does not compile. It is excluded from Windows autolinking (react-native.config.cjs) and index.windows.ts exports webViewCapability as the literal null. react-native-view-shot is excluded there too: its Windows project is a UWP C# module for the old architecture. Both return the day react-native-macos reaches 0.82 and the app moves with it.",
   },
   {
     platform: "web",

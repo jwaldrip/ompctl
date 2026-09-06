@@ -22,9 +22,9 @@ import type { WebViewAction, WebViewActionResult } from "@ompd/core/contracts";
 import { undriveableUrlReason } from "@ompd/core/policy";
 import { forwardRef, useCallback, useImperativeHandle, useRef } from "react";
 import { type StyleProp, View, type ViewStyle } from "react-native";
-import { captureRef } from "react-native-view-shot";
 import WebView, { type WebViewMessageEvent, type WebViewNavigation } from "react-native-webview";
 import { buildInjectedScript, mintNonce, parseBridgeMessage } from "./bridge.ts";
+import { captureViewAsPng } from "./screenshot.ts";
 
 export interface WebViewDriverHandle {
   /** Perform one action. Resolves to an error result rather than throwing or hanging silently -- see the module doc on `navigate`/`screenshot`. */
@@ -128,7 +128,7 @@ export const WebViewDriver = forwardRef<WebViewDriverHandle, WebViewDriverProps>
   const screenshot = useCallback((): Promise<WebViewActionResult> => {
     const container = containerRef.current;
     if (!container) return Promise.resolve({ kind: "error", message: "webview is not mounted" });
-    return captureRef(container, { format: "png", result: "base64" })
+    return captureViewAsPng(container)
       .then((pngBase64): WebViewActionResult => ({ kind: "screenshot", pngBase64 }))
       .catch(
         (err: unknown): WebViewActionResult => ({

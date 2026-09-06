@@ -49,9 +49,13 @@ finds a click target. It is also the one action with a real capability gap
 of its own: `react-native-view-shot`'s podspec is `ios`-only (no `:osx`,
 no `macos/` folder in the package at all), so `webview_screenshot` has no
 macOS implementation to even be unverified about, unlike the other four
-actions, which macOS genuinely could run once this app scaffolds a `macos/`
-project. Windows is covered (`react-native-view-shot` ships a `windows/`
-project alongside `react-native-webview`'s).
+actions, which macOS genuinely could run. Its Windows project is a UWP C#
+module for the old architecture, which this RnwNewArch app cannot host, so
+it is excluded from Windows autolinking. Because the library resolves its
+native module with `getEnforcing` at import, the driver loads it on demand
+(`app/src/browser/screenshot.ts`): on a build without `RNViewShot` the
+screenshot action answers with a stated error instead of the app failing at
+launch.
 
 **A ref is a handle, not an address.** It is valid until the next `observe`
 or a navigation invalidates it; the native side mints it, the page never
@@ -169,8 +173,8 @@ screen's registration.
 | --- | --- | --- |
 | iOS | unverified | `react-native-webview`'s primary target: podspec declares `ios => 11.0`, `WebView.ios.tsx` implements `injectJavaScript`/`onMessage` (read at `node_modules/react-native-webview/src/WebView.ios.tsx`), and `@ompd/app/ios` already has a scaffolded Xcode workspace. No simulator run was exercised in this pass -- Xcode 26.6 and simulators are present on this machine, so that is the concrete next step, not a structural blocker. |
 | Android | unverified | Same shape as iOS: `WebView.android.tsx` implements the identical `injectJavaScript`/`onMessage` surface, `@ompd/app/android` has a Gradle project already. No emulator run was exercised. |
-| macOS | unverified | `react-native-webview` genuinely supports it at the source level -- the podspec declares `osx => 10.13`, and `WebView.macos.tsx` / `WebViewNativeComponent.macos.ts` / a dedicated `macos/RNCWebView.xcodeproj` all ship in the 14.0.1 package. The gap is this app, not the library: `@ompd/app` has no `macos/` native project (`react-native-macos-init` has never been run here), so there is nothing to build yet. `react-native-macos` is a listed dependency (`0.81.9`) with no declared peer range against `react-native-webview`, which is why this could not simply be assumed to work. |
-| Windows | unverified | Two independent gaps. `@ompd/app` has no `windows/` native project either, and even if it did, this machine has no Windows build environment to exercise it from. `react-native-webview` does ship Windows support (`windows/ReactNativeWebView.sln`, autolinking declared in its own `react-native.config.js`, `WebView.windows.tsx` implementing the same bridge surface) and `react-native-windows` (`0.81.32`) is a listed dependency, again with no declared peer range. |
+| macOS | unverified | `react-native-webview` genuinely supports it at the source level -- the podspec declares `osx => 10.13`, and `WebView.macos.tsx` / `WebViewNativeComponent.macos.ts` / a dedicated `macos/RNCWebView.xcodeproj` ship in the package -- and `@ompd/app/macos` is scaffolded and builds for TestFlight. No macOS run of the WebView has been exercised. `webview_screenshot` answers with a stated error there: `react-native-view-shot`'s podspec is ios-only. |
+| Windows | unavailable | A version intersection, not a scaffolding gap. `@ompd/app/windows` is scaffolded and CI builds it, but `react-native-webview` 15's Windows Fabric component calls `IReactViewComponentBuilder.XamlSupport`, which `react-native-windows` added in 0.82; RNW 0.82 requires `react-native` 0.82, and `react-native-macos` stops at 0.81.9, so on the 0.81 line every platform of this app shares the component does not compile (`error C2039` in `RCTWebView2ComponentView.cpp`). It is excluded from Windows autolinking in `react-native.config.cjs`, and `app/src/browser/index.windows.ts` exports `webViewCapability: null` exactly as the web build does. The condition that reopens it is `react-native-macos` reaching 0.82 and the app moving to 0.82 across platforms. |
 | Web (`react-native-web`) | unavailable | Not a gap -- a deliberate absence. A browser tab cannot honestly host a driveable browser inside itself: there is no second content process to sandbox, no separate storage partition, and "the agent's own browser" would just be the visitor's own tab. `app/src/browser/index.web.ts` exports `webViewCapability: null`, typed as literal `null` rather than `WebViewCapability \| null`, so a caller cannot compile code that assumes the capability might be present on web and only discovers otherwise at runtime. The relay -- the laptop's real mechanism -- is what the web/desktop story actually is, and it is out of this slice's scope, not replaced by this one. |
 
 Nothing above is claimed "verified" in this pass. `WebViewSupport` has three
