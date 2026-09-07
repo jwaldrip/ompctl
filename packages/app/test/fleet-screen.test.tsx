@@ -27,6 +27,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ScopeAccess } from "../src/console/state.ts";
 import type { BrowserSession, BrowserState } from "../src/session/browser.ts";
 import { EMPTY_BROWSER } from "../src/session/browser.ts";
+import { signal } from "../src/design/tokens.ts";
 import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
 
 // Dynamic on purpose, same reason as `smoke.test.tsx`: a static import of
@@ -53,6 +54,12 @@ function browserState(overrides: Partial<BrowserState> = {}): BrowserState {
 
 function windowedState(overrides: Partial<BrowserState> = {}): BrowserState {
   return { ...EMPTY_BROWSER, sessions: WINDOWED, ...overrides };
+}
+
+/** A `#rrggbb` token as react-native-web writes it into a class rule. */
+function rgbaOf(hex: string): string {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},1.00)`;
 }
 
 const NOOP_SESSION = (_session: BrowserSession) => {};
@@ -265,9 +272,11 @@ describe("collapsed group status precedence, rendered", () => {
     expect(html).toContain(`data-testid="group-header-${dir}"`);
     expect(html).toContain(`data-testid="group-count-${dir}"`);
     // amber is live-tui's signal colour; the collapsed header still carries it.
+    // react-native-web writes the token out as rgba, so the assertion reads it
+    // from the token rather than pinning a hex that a retheme would change.
     const headerStart = html.indexOf(`group-header-${dir}`);
     const headerRegion = html.slice(Math.max(0, headerStart - 300), headerStart + 400);
-    expect(headerRegion).toContain("rgba(224,163,58,1.00)");
+    expect(headerRegion).toContain(rgbaOf(signal.amber));
   });
 
   test("collapsing a group removes its rows from the list but not its header", () => {

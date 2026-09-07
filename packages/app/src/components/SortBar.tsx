@@ -32,7 +32,6 @@ const LABEL_ADVANCES: Record<SortField, number> = {
   status: 48.56,
   age: 26.95,
   lastActive: 81.83,
-  activity: 81.83,
   messageCount: 71.28,
   size: 29.18,
 };
@@ -74,7 +73,7 @@ export function SortBar({ sort, onChange }: SortBarProps): JSX.Element {
       contentContainerStyle={styles.row}
     >
       {FIELDS.map(field => {
-        const active = sort.field === field || (field === "lastActive" && sort.field === "activity");
+        const active = sort.field === field;
         return (
           <Pressable
             key={field}
@@ -86,9 +85,7 @@ export function SortBar({ sort, onChange }: SortBarProps): JSX.Element {
                 ? `Sort by ${SORT_LABELS[field]}, ${sort.direction === "asc" ? "ascending" : "descending"}`
                 : `Sort by ${SORT_LABELS[field]}`
             }
-            onPress={() => {
-              onChange(field === "lastActive" && sort.field === "activity" ? "activity" : field);
-            }}
+            onPress={() => onChange(field)}
             style={({ pressed }) => [
               styles.chip,
               active && styles.chipActive,

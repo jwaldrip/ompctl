@@ -468,7 +468,9 @@ function holder(overrides: Partial<Agent> = {}): Agent {
     host: { kind: "local", id: "1", spec: { kind: "local" } },
     cwd: "/Users/op/dev/src/github.com/op/repo_00",
     createdAt: "2026-02-01T00:00:00.000Z",
-    lastActiveAt: "2026-02-01T00:00:00.000Z",
+    // Newer than every indexed row: an agent holding a session is the most
+    // recent activity there is, and recency-first puts it in the first window.
+    lastActiveAt: "2026-02-28T00:00:01.000Z",
     labels: {},
     ...overrides,
   };

@@ -60,7 +60,7 @@ export interface BrowserSession {
 // Sort
 // ---------------------------------------------------------------------------
 
-export type SortField = "status" | "age" | "lastActive" | "activity" | "messageCount" | "size";
+export type SortField = "status" | "age" | "lastActive" | "messageCount" | "size";
 export type SortDirection = "asc" | "desc";
 
 export interface SortSpec {
@@ -73,7 +73,6 @@ export const SORT_LABELS: Record<SortField, string> = {
   status: "Status",
   age: "Age",
   lastActive: "Last active",
-  activity: "Activity",
   messageCount: "Messages",
   size: "Size",
 };
@@ -88,7 +87,6 @@ function compareSessions(a: BrowserSession, b: BrowserSession, sort: SortSpec): 
       // Older first in ascending: earlier createdAt sorts first.
       cmp = Date.parse(a.createdAt) - Date.parse(b.createdAt);
       break;
-    case "activity":
     case "lastActive":
       cmp = Date.parse(a.lastActiveAt) - Date.parse(b.lastActiveAt);
       break;
@@ -182,7 +180,7 @@ export interface BrowserState {
   readonly query: string;
 }
 
-export const DEFAULT_SORT: SortSpec = { field: "activity", direction: "desc" };
+export const DEFAULT_SORT: SortSpec = { field: "lastActive", direction: "desc" };
 
 export const EMPTY_BROWSER: BrowserState = {
   sessions: [],

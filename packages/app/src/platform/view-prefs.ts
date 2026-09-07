@@ -31,7 +31,6 @@ const VALID_SORT_FIELDS: ReadonlySet<SortField> = new Set([
   "status",
   "age",
   "lastActive",
-  "activity",
   "messageCount",
   "size",
 ]);

@@ -112,7 +112,7 @@ describe("status precedence in a collapsed group", () => {
 });
 
 describe("every sort order", () => {
-  const fields: SortField[] = ["status", "age", "lastActive", "activity", "messageCount", "size"];
+  const fields: SortField[] = ["status", "age", "lastActive", "messageCount", "size"];
 
   for (const field of fields) {
     test(`${field} ascending is monotonic across the whole corpus`, () => {
@@ -183,9 +183,9 @@ describe("every sort order", () => {
       expect(a.sizeBytes).toBeGreaterThanOrEqual(b.sizeBytes);
     }
   });
-  test("default sort is recency-first: activity descending", () => {
-    expect(DEFAULT_SORT).toEqual({ field: "activity", direction: "desc" });
-    expect(EMPTY_BROWSER.sort).toEqual({ field: "activity", direction: "desc" });
+  test("default sort is recency-first: last active descending", () => {
+    expect(DEFAULT_SORT).toEqual({ field: "lastActive", direction: "desc" });
+    expect(EMPTY_BROWSER.sort).toEqual({ field: "lastActive", direction: "desc" });
   });
 
   test("default grouping is off: flat sessions list", () => {
@@ -410,7 +410,6 @@ function sortKey(session: BrowserSession, field: SortField): number {
       return { "live-tui": 0, "live-ompd": 1, dormant: 2, archived: 3 }[session.status];
     case "age":
       return Date.parse(session.createdAt);
-    case "activity":
     case "lastActive":
       return Date.parse(session.lastActiveAt);
     case "messageCount":

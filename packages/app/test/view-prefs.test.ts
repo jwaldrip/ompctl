@@ -42,7 +42,7 @@ describe("view preferences defaults and coercion", () => {
   test("returns default preferences when storage is empty", async () => {
     const prefs = await loadViewPrefs();
     expect(prefs).toEqual(DEFAULT_VIEW_PREFS);
-    expect(prefs.sort).toEqual({ field: "activity", direction: "desc" });
+    expect(prefs.sort).toEqual({ field: "lastActive", direction: "desc" });
     expect(prefs.grouped).toBe(false);
     expect(prefs.project).toBeNull();
   });
@@ -57,7 +57,7 @@ describe("view preferences defaults and coercion", () => {
       grouped: true,
       project: "/path",
     });
-    expect(invalidField.sort.field).toBe("activity");
+    expect(invalidField.sort.field).toBe("lastActive");
     expect(invalidField.sort.direction).toBe("asc");
     expect(invalidField.grouped).toBe(true);
     expect(invalidField.project).toBe("/path");

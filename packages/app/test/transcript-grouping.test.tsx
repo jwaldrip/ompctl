@@ -43,6 +43,7 @@ function makeTool(
     input: opts.input ?? null,
     output: opts.output ?? null,
     locations: [],
+    content: [],
   };
 }
 
