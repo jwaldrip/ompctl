@@ -41,6 +41,7 @@ import type {
   PlanReviewEvent,
   SayEvent,
   SessionHistoryEvent,
+  SessionStatsEvent,
   SessionTailEvent,
   StatusEvent,
   TranscriptEvent,
@@ -56,6 +57,7 @@ import {
   EMPTY_SESSION,
   echoText,
   endTurn,
+  seedCost,
   mergeSessionHistory,
   reduce,
   resolveApproval,
@@ -169,6 +171,7 @@ export interface SessionLoad {
  */
 export const READY_LOAD: SessionLoad = { phase: "ready", generation: 0, error: null };
 export const MAX_RETAINED_SESSIONS = 8;
+export const SESSION_STATS_MIN_INTERVAL_MS = 5_000;
 
 export interface ConsoleState {
   readonly agents: readonly Agent[];
@@ -228,6 +231,8 @@ export interface ConsoleState {
   /** Opaque byte cursor for the next older durable history page per agent. */
   readonly historyBefore: ReadonlyMap<AgentId, number | null>;
   readonly historyLoading: ReadonlySet<AgentId>;
+  /** The last time session stats were requested per session id, to respect SESSION_STATS_MIN_INTERVAL_MS. */
+  readonly statsRequestedAt: ReadonlyMap<string, number>;
   readonly connection: ConnectionState;
   readonly attempt: number;
   readonly delayMs: number | undefined;
@@ -458,6 +463,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     capturing: null,
     historyBefore: new Map(),
     historyLoading: new Set(),
+    statsRequestedAt: new Map(),
     spoken: new Map(),
     connection: "connecting",
     attempt: 0,
@@ -502,6 +508,10 @@ export type ConsoleEvent =
   | { t: "session_tail"; event: SessionTailEvent }
   | { t: "session_history"; event: SessionHistoryEvent }
   | { t: "history_request"; agentId: AgentId }
+  /** Daemon: lifetime session stats answering this device's ask. */
+  | { t: "session_stats"; event: SessionStatsEvent }
+  /** Local: this device just asked for session stats. */
+  | { t: "stats_request"; sessionId: string; agentId?: AgentId; at?: number }
   /** Local: this device just asked a terminal session for an older page. */
   | { t: "tui_history_request"; sessionId: string }
   /**
@@ -871,6 +881,51 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       const historyLoading = new Set(state.historyLoading);
       historyLoading.add(event.agentId);
       return { ...state, historyLoading };
+    }
+
+    case "stats_request": {
+      const statsRequestedAt = new Map(state.statsRequestedAt);
+      statsRequestedAt.set(event.sessionId, event.at ?? Date.now());
+      let sessionIds: ReadonlyMap<AgentId, string> = state.sessionIds;
+      if (event.agentId !== undefined && !state.sessionIds.has(event.agentId)) {
+        const next = new Map(state.sessionIds);
+        next.set(event.agentId, event.sessionId);
+        sessionIds = next;
+      }
+      return { ...state, statsRequestedAt, sessionIds };
+    }
+
+    case "session_stats": {
+      const { sessionId, stats } = event.event;
+      const matched = new Set<AgentId>();
+      for (const [agentId, sid] of state.sessionIds) {
+        if (sid === sessionId) matched.add(agentId);
+      }
+      for (const agent of state.agents) {
+        if (agent.acpSessionId === sessionId || agent.id === sessionId) {
+          matched.add(agent.id);
+        }
+      }
+      for (const [agentId, join] of state.collabAgents) {
+        if (join.sessionId === sessionId) matched.add(agentId);
+      }
+      if (state.sessions.has(sessionId)) {
+        matched.add(sessionId);
+      }
+      if (matched.size === 0) {
+        if (state.selected !== null) {
+          matched.add(state.selected);
+        } else {
+          matched.add(sessionId);
+        }
+      }
+      let current = state;
+      for (const agentId of matched) {
+        current = withSession(current, agentId, session =>
+          seedCost(session, stats.cost),
+        );
+      }
+      return current;
     }
 
     case "session_history": {
@@ -1300,6 +1355,42 @@ function applySessionTail(state: ConsoleState, event: SessionTailEvent): Console
  * larger than the whole read budget is the only way -- would otherwise be
  * asked for forever.
  */
+/**
+ * Whether enough time has passed to ask the daemon for session stats again.
+ *
+ * The daemon parses a whole JSONL transcript to compute lifetime stats,
+ * so asks are rate-limited to avoid reading large files repeatedly on rapid
+ * actions or quick turns.
+ */
+export function shouldRequestSessionStats(
+  lastRequestedAt: number | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (lastRequestedAt === undefined) return true;
+  return now - lastRequestedAt >= SESSION_STATS_MIN_INTERVAL_MS;
+}
+
+/**
+ * Identifies session IDs whose turns have transitioned from busy to idle.
+ */
+export function sessionTurnsEnded(
+  previousAgents: readonly Agent[],
+  currentAgents: readonly Agent[],
+  sessionIds?: ReadonlyMap<AgentId, string>,
+): string[] {
+  const previous = new Map(previousAgents.map(a => [a.id, a]));
+  const endedSessionIds: string[] = [];
+  for (const agent of currentAgents) {
+    if (previous.get(agent.id)?.state === "busy" && agent.state !== "busy") {
+      const sessionId = agent.acpSessionId ?? sessionIds?.get(agent.id);
+      if (sessionId !== undefined) {
+        endedSessionIds.push(sessionId);
+      }
+    }
+  }
+  return endedSessionIds;
+}
+
 export function tuiPageToAskFor(event: SessionTailEvent): number | null {
   if (event.cursor === undefined) return null;
   if (event.messages.length > 0) return null;

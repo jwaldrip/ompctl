@@ -837,6 +837,46 @@ export function endTurn(state: SessionState): SessionState {
   return { ...state, entries };
 }
 
+/**
+ * Seeds or updates the session's lifetime cost from daemon stats.
+ *
+ * When usage is not yet reported, usage is seeded with zero context tokens
+ * and the stats cost. When usage is already present, the cost updates only if
+ * the stats answer is higher than the reducer's running figure, because
+ * mid-turn usage updates can only add cost. Context window figures (used/size)
+ * are preserved.
+ */
+export function seedCost(
+  state: SessionState,
+  costAmount: number,
+  costCurrency = "USD",
+): SessionState {
+  if (!Number.isFinite(costAmount) || costAmount < 0) return state;
+  const previous = state.usage;
+  if (previous === null) {
+    return {
+      ...state,
+      usage: {
+        used: 0,
+        size: 0,
+        costAmount,
+        costCurrency: costCurrency || "USD",
+      },
+    };
+  }
+  if (costAmount <= previous.costAmount) {
+    return state;
+  }
+  return {
+    ...state,
+    usage: {
+      ...previous,
+      costAmount,
+      costCurrency: costCurrency || previous.costCurrency || "USD",
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Reading untyped wire data
 // ---------------------------------------------------------------------------
