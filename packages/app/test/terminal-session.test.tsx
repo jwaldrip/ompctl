@@ -707,6 +707,68 @@ describe("live hints continue the conversation rather than detaching from it", (
 });
 
 // ---------------------------------------------------------------------------
+// A terminal reply is markdown, and is drawn as such
+// ---------------------------------------------------------------------------
+
+describe("a terminal turn renders its markdown as structure, not punctuation", () => {
+  // The kind of reply omp's TUI actually writes: a heading, a list, inline
+  // code and a fence. Drawn as a bare Body it came out as `#`, `**` and
+  // backticks on the phone, which is what "markdown rendered as markup"
+  // reported on 2026-09-06.
+  const reply = [
+    "## What changed",
+    "",
+    "- The gate needs a `session-body` testID on the body view.",
+    "- **Nothing** between the list and its bands pads it.",
+    "",
+    "```ts",
+    "body: { flex: 1, minHeight: 0 },",
+    "```",
+  ].join("\n");
+  const tail: ConsoleEvent = {
+    t: "session_tail",
+    event: {
+      sessionId: SESSION,
+      messages: [
+        { role: "user", text: "what changed?", at: "2026-08-13T00:00:01.000Z" },
+        { role: "assistant", text: reply, at: "2026-08-13T00:00:02.000Z" },
+      ],
+      truncated: false,
+      nextCursor: null,
+    },
+  };
+
+  test("headings, lists, inline code and fences are drawn, and the markup itself is gone", () => {
+    const { host, root } = mountScreen(drive([tail]));
+    try {
+      const row = byTestID(host, "terminal-turn-1");
+      // The raw words survive exactly once, as the row's own label, for the
+      // round-trip gate that reads what the terminal said.
+      expect(row.getAttribute("aria-label")).toBe(`agent: ${reply}`);
+      // What is painted is structure.
+      const heading = row.querySelector('[role="heading"]');
+      expect(heading?.textContent).toBe("What changed");
+      const painted = [...row.querySelectorAll("*")]
+        .filter(el => el.children.length === 0)
+        .map(el => el.textContent ?? "");
+      expect(painted.join("\n")).not.toContain("## ");
+      expect(painted.join("\n")).not.toContain("**");
+      expect(painted.join("\n")).not.toContain("```");
+      expect(painted.join("\n")).not.toContain("`session-body`");
+      // The inline code and the fence land in the mono face, the prose does not.
+      const mono = [...row.querySelectorAll("*")].filter(
+        el => el.children.length === 0 && /Plex|mono/i.test(getComputedStyle(el).fontFamily),
+      );
+      expect(mono.map(el => el.textContent)).toContain("session-body");
+      expect(mono.some(el => /flex: 1, minHeight: 0/.test(el.textContent ?? ""))).toBe(true);
+      expect(painted).toContain("Nothing");
+    } finally {
+      unmountScreen(host, root);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // One design: this surface and the agent log pay the same gutter
 // ---------------------------------------------------------------------------
 
