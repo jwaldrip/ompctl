@@ -32,6 +32,7 @@ import {
   emptyConsole,
   loadFor,
   openSessionTarget,
+  sessionFor,
   tuiSessionFor,
 } from "../src/console/state.ts";
 import type { ConsoleActions } from "../src/console/useConsole.ts";
@@ -340,6 +341,7 @@ class CannedClient {
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly tails: Array<{ sessionId: string; limit: number | undefined; cursor?: number }> = [];
   readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
+  readonly statsRequests: string[] = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -385,6 +387,9 @@ class CannedClient {
   }
   sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
     this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
+  }
+  sessionStats(sessionId: string): void {
+    this.statsRequests.push(sessionId);
   }
   prompt(): void {}
   cancel(): void {}
@@ -505,6 +510,20 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
       });
       expect(mounted.client.attached).toEqual([{ agentId: "agt_here", options: { sinceSeq: 0 } }]);
       expect(mounted.state().selected).toBe("agt_here");
+      expect(mounted.client.statsRequests).toEqual(["s-held"]);
+      act(() => {
+        mounted.client.emit("session_stats", {
+          sessionId: "s-held",
+          stats: {
+            cost: 0.042,
+            tokens: { input: 80, output: 20, cacheRead: 0, cacheWrite: 0 },
+            cacheRate: 0,
+            calls: 1,
+            errors: 0,
+          },
+        });
+      });
+      expect(sessionFor(mounted.state(), "agt_here").usage?.costAmount).toBe(0.042);
     } finally {
       mounted.unmount();
     }

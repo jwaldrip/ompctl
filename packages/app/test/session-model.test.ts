@@ -19,6 +19,7 @@ import {
   reduce,
   reduceAll,
   resolveApproval,
+  seedCost,
   transcriptRowKey,
 } from "../src/session/model.ts";
 
@@ -309,5 +310,56 @@ describe("tool content and diff extraction", () => {
     const entry = session.entries[0];
     if (entry?.kind !== "tool") throw new Error("expected tool entry");
     expect(entry.content).toEqual([diff, text]);
+  });
+});
+
+
+describe("seedCost", () => {
+  test("seeds costAmount and costCurrency when usage is null", () => {
+    expect(EMPTY_SESSION.usage).toBeNull();
+    const seeded = seedCost(EMPTY_SESSION, 0.042);
+    expect(seeded.usage).not.toBeNull();
+    expect(seeded.usage?.costAmount).toBe(0.042);
+    expect(seeded.usage?.costCurrency).toBe("USD");
+    expect(seeded.usage?.used).toBe(0);
+    expect(seeded.usage?.size).toBe(0);
+  });
+
+  test("updates costAmount when incoming cost is higher and preserves context tokens", () => {
+    const initial = {
+      ...EMPTY_SESSION,
+      usage: {
+        used: 12_000,
+        size: 200_000,
+        costAmount: 0.10,
+        costCurrency: "USD",
+      },
+    };
+    const updated = seedCost(initial, 0.25);
+    expect(updated.usage?.costAmount).toBe(0.25);
+    expect(updated.usage?.used).toBe(12_000);
+    expect(updated.usage?.size).toBe(200_000);
+    expect(updated.usage?.costCurrency).toBe("USD");
+  });
+
+  test("a lower stats answer does not lower a higher running figure", () => {
+    const initial = {
+      ...EMPTY_SESSION,
+      usage: {
+        used: 12_000,
+        size: 200_000,
+        costAmount: 1.50,
+        costCurrency: "USD",
+      },
+    };
+    const updated = seedCost(initial, 1.00);
+    expect(updated).toBe(initial);
+    expect(updated.usage?.costAmount).toBe(1.50);
+  });
+
+  test("ignores invalid or negative costs", () => {
+    expect(seedCost(EMPTY_SESSION, -5)).toBe(EMPTY_SESSION);
+    expect(seedCost(EMPTY_SESSION, Number.NaN)).toBe(EMPTY_SESSION);
+    expect(seedCost(EMPTY_SESSION, Number.POSITIVE_INFINITY)).toBe(EMPTY_SESSION);
   });
 });

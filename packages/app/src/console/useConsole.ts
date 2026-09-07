@@ -27,6 +27,8 @@ import {
   agentFor,
   apply,
   emptyConsole,
+  sessionTurnsEnded,
+  shouldRequestSessionStats,
   manageScopeAccess,
   promptScopeAccess,
   readScopeAccess,
@@ -209,6 +211,20 @@ export function useConsole(
     loadDeadlines.current.delete(subject);
   }, []);
 
+  const lastStatsRequest = useRef(new Map<string, number>());
+
+  const requestStats = useCallback(
+    (sessionId: string, agentId?: AgentId): void => {
+      const last = lastStatsRequest.current.get(sessionId);
+      const now = Date.now();
+      if (!shouldRequestSessionStats(last, now)) return;
+      lastStatsRequest.current.set(sessionId, now);
+      dispatch({ t: "stats_request", sessionId, agentId, at: now });
+      client.sessionStats(sessionId);
+    },
+    [client],
+  );
+
   const requestHistory = useCallback(
     (agentId: AgentId, sessionId: string, before?: number): void => {
       if (stateRef.current.historyLoading.has(agentId)) return;
@@ -292,8 +308,12 @@ export function useConsole(
       if (agent?.acpSessionId !== undefined && fetchingHistory) {
         requestHistory(agentId, agent.acpSessionId);
       }
+      const statsSessionId = agent?.acpSessionId ?? current.sessionIds.get(agentId);
+      if (statsSessionId !== undefined) {
+        requestStats(statsSessionId, agentId);
+      }
     },
-    [client, leaveCollab, requestHistory],
+    [client, leaveCollab, requestHistory, requestStats],
   );
 
   /**
@@ -374,6 +394,14 @@ export function useConsole(
         client.listSessions({ includeArchived: true });
       }),
       client.on("agents", event => {
+        const endedSessionIds = sessionTurnsEnded(
+          stateRef.current.agents,
+          event.agents,
+          stateRef.current.sessionIds,
+        );
+        for (const sessionId of endedSessionIds) {
+          requestStats(sessionId);
+        }
         dispatch({ t: "agents", event });
       }),
       client.on("session_opened", event => {
@@ -393,6 +421,7 @@ export function useConsole(
         dispatch({ t: "select", agentId: event.agentId, awaiting: true });
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
+        requestStats(event.sessionId, event.agentId);
       }),
       client.on("collab_opened", event => {
         // The join's answer lands exactly like a resume's: it may arrive
@@ -415,6 +444,7 @@ export function useConsole(
         if (fetchingHistory) {
           requestHistory(event.agentId, event.sessionId);
         }
+        requestStats(event.sessionId, event.agentId);
       }),
       client.on("sessions", event => {
         dispatch({ t: "sessions", event });
@@ -430,6 +460,9 @@ export function useConsole(
       client.on("session_history", event => {
         clearLoadDeadline(event.agentId);
         dispatch({ t: "session_history", event });
+      }),
+      client.on("session_stats", event => {
+        dispatch({ t: "session_stats", event });
       }),
       client.on("update", event => {
         dispatch({ t: "update", event });
@@ -467,6 +500,7 @@ export function useConsole(
           // to no change, so the wait survives the fallback rather than
           // restarting under it.
           dispatch({ t: "tui_select", sessionId: event.sessionId, awaiting: true });
+          requestStats(event.sessionId);
           client.sessionTail(event.sessionId);
           return;
         }
@@ -517,6 +551,9 @@ export function useConsole(
           });
       }),
       client.on("tui_activity", event => {
+        if (event.kind === "turn_end") {
+          requestStats(event.sessionId);
+        }
         dispatch({ t: "tui_activity", event });
       }),
       client.on("session_tail", event => {
@@ -558,7 +595,7 @@ export function useConsole(
       loadDeadlines.current.clear();
       client.close();
     };
-  }, [askOlderTui, clearLoadDeadline, client, leaveCollab, reopenStalled, requestHistory, settleWebViewAction, voice]);
+  }, [askOlderTui, clearLoadDeadline, client, leaveCollab, reopenStalled, requestHistory, requestStats, settleWebViewAction, voice]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -667,6 +704,7 @@ export function useConsole(
         // (see the error handler), so no omp build is left without a way in.
         switch (target.kind) {
           case "agent":
+            requestStats(target.sessionId, target.agentId);
             selectAgent(target.agentId);
             return;
           case "live-tui": {
@@ -685,6 +723,7 @@ export function useConsole(
             // below -- lands on a pane that is already this session's rather
             // than on the session the operator was reading a moment ago.
             dispatch({ t: "tui_select", sessionId: target.sessionId, awaiting: true });
+            requestStats(target.sessionId);
             // Watching spends the read scope, so a pairing that provably
             // lacks it gets the reason stated rather than a frame the daemon
             // must refuse; an unknown one asks optimistically, and the
@@ -738,6 +777,7 @@ export function useConsole(
       retryTui(sessionId) {
         dispatch({ t: "load_rearm", subject: sessionId });
         const tui = tuiSessionFor(stateRef.current, sessionId);
+        requestStats(sessionId);
         if (tui.refusalKind !== null) {
           client.sessionTail(sessionId);
         } else {

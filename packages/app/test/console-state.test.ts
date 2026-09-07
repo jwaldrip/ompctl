@@ -21,6 +21,9 @@ import {
   fleetClearances,
   sessionFor,
   stripStats,
+  SESSION_STATS_MIN_INTERVAL_MS,
+  sessionTurnsEnded,
+  shouldRequestSessionStats,
   tuiPageToAskFor,
   tuiSessionFor,
 } from "../src/console/state.ts";
@@ -630,5 +633,93 @@ describe("connection", () => {
     });
     expect(state.unauthorized).toContain("rejected");
     expect(state.connection).toBe("offline");
+  });
+});
+
+describe("session stats", () => {
+  test("opening a session issues session_stats and that the answer seeds usage.costAmount", () => {
+    expect(shouldRequestSessionStats(undefined)).toBe(true);
+
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1", { acpSessionId: "s1" })] } },
+      { t: "select", agentId: "a1" },
+      { t: "stats_request", sessionId: "s1", agentId: "a1" },
+      {
+        t: "session_stats",
+        event: {
+          sessionId: "s1",
+          stats: {
+            cost: 0.042,
+            tokens: { input: 800, output: 200, cacheRead: 0, cacheWrite: 0 },
+            cacheRate: 0,
+            calls: 5,
+            errors: 0,
+          },
+        },
+      },
+    ]);
+    const session = sessionFor(state, "a1");
+    expect(session.usage).not.toBeNull();
+    expect(session.usage?.costAmount).toBe(0.042);
+    expect(session.usage?.costCurrency).toBe("USD");
+    expect(session.usage?.used).toBe(0);
+    expect(session.usage?.size).toBe(0);
+    expect(stripStats(session).costAmount).toBe(0.042);
+  });
+
+  test("a lower stats answer does not lower a higher running figure", () => {
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1", { acpSessionId: "s1" })] } },
+      { t: "select", agentId: "a1" },
+      {
+        t: "session_stats",
+        event: {
+          sessionId: "s1",
+          stats: {
+            cost: 1.5,
+            tokens: { input: 800, output: 200, cacheRead: 0, cacheWrite: 0 },
+            cacheRate: 0,
+            calls: 5,
+            errors: 0,
+          },
+        },
+      },
+      {
+        t: "session_stats",
+        event: {
+          sessionId: "s1",
+          stats: {
+            cost: 1.0,
+            tokens: { input: 800, output: 200, cacheRead: 0, cacheWrite: 0 },
+            cacheRate: 0,
+            calls: 5,
+            errors: 0,
+          },
+        },
+      },
+    ]);
+    const session = sessionFor(state, "a1");
+    expect(session.usage?.costAmount).toBe(1.5);
+  });
+
+  test("shouldRequestSessionStats respects the interval", () => {
+    const t0 = 1_000_000;
+    expect(shouldRequestSessionStats(undefined, t0)).toBe(true);
+    expect(shouldRequestSessionStats(t0, t0 + 1000)).toBe(false);
+    expect(shouldRequestSessionStats(t0, t0 + SESSION_STATS_MIN_INTERVAL_MS - 1)).toBe(false);
+    expect(shouldRequestSessionStats(t0, t0 + SESSION_STATS_MIN_INTERVAL_MS)).toBe(true);
+    expect(shouldRequestSessionStats(t0, t0 + SESSION_STATS_MIN_INTERVAL_MS + 1000)).toBe(true);
+  });
+
+  test("sessionTurnsEnded identifies sessions transitioning from busy to idle", () => {
+    const before = [
+      agent("a1", { state: "busy", acpSessionId: "s1" }),
+      agent("a2", { state: "idle", acpSessionId: "s2" }),
+    ];
+    const after = [
+      agent("a1", { state: "idle", acpSessionId: "s1" }),
+      agent("a2", { state: "idle", acpSessionId: "s2" }),
+    ];
+    expect(sessionTurnsEnded(before, after)).toEqual(["s1"]);
   });
 });
