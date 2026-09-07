@@ -49,7 +49,8 @@ import { rhythm } from "../design/rhythm.ts";
 import { Code, Label, Title } from "../design/text.tsx";
 import { radius, stroke, toolSignal, type as typeScale } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
-import type { ToolEntry } from "../session/model.ts";
+import type { ToolContentItem, ToolEntry } from "../session/model.ts";
+import { DiffView } from "./DiffView.tsx";
 
 /** Lines of output shown before the card asks to be opened. */
 const CLAMP_LINES = 6;
@@ -68,7 +69,15 @@ export function ToolCard({ entry }: { entry: ToolEntry }): JSX.Element {
   const lines = output === null ? 0 : output.split("\n").length;
   const clamped = !open && lines > CLAMP_LINES;
   const overflow = entry.locations.length - CLAMP_LOCATIONS;
-
+  const diffItems =
+    entry.content?.filter((item): item is Extract<ToolContentItem, { type: "diff" }> => item.type === "diff") ?? [];
+  const firstNonEmptyLine =
+    output !== null
+      ? (output
+          .split("\n")
+          .map(line => line.trim())
+          .find(line => line.length > 0) ?? null)
+      : null;
   return (
     <Surface
       mode="flat"
@@ -122,9 +131,22 @@ export function ToolCard({ entry }: { entry: ToolEntry }): JSX.Element {
           </View>
         ) : null}
 
+        {diffItems.length > 0 ? (
+          <View style={styles.diffs} testID={`tool-diffs-${entry.id}`}>
+            {diffItems.map(diff => (
+              <DiffView key={diff.path} path={diff.path} oldText={diff.oldText} newText={diff.newText} />
+            ))}
+          </View>
+        ) : null}
+
         {output !== null && output.length > 0 ? (
           <View style={styles.output}>
             <Divider />
+            {firstNonEmptyLine !== null ? (
+              <Label color={ink.muted} numberOfLines={1} style={styles.summary} testID={`tool-summary-${entry.id}`}>
+                {firstNonEmptyLine}
+              </Label>
+            ) : null}
             <Code numberOfLines={clamped ? CLAMP_LINES : undefined} testID={`tool-output-${entry.id}`}>
               {output}
             </Code>
@@ -187,4 +209,6 @@ const styles = StyleSheet.create({
   // reads as a card that will not open.
   more: { minHeight: rhythm.minTarget, justifyContent: "center" },
   moreRow: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
+  diffs: { gap: rhythm.cardGap },
+  summary: { ...typeScale.label },
 });

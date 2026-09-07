@@ -162,6 +162,10 @@ export interface AssistantEntry {
   thought: boolean;
 }
 
+export type ToolContentItem =
+  | { type: "diff"; path: string; oldText: string; newText: string }
+  | { type: "text"; text: string };
+
 export interface ToolEntry {
   kind: "tool";
   id: string;
@@ -172,6 +176,7 @@ export interface ToolEntry {
   output: string | null;
   /** Files the call touched, as ACP reports them. */
   locations: string[];
+  content: ToolContentItem[];
 }
 
 export interface ApprovalEntry {
@@ -246,6 +251,7 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
               input: item.input,
               output: item.output,
               locations: item.locations,
+              content: [],
             };
     const key = transcriptRowKey(entry);
     if (existing.has(key)) continue;
@@ -519,6 +525,7 @@ function reduceToolCall(state: SessionState, payload: unknown): SessionState {
 
   const existing = indexOfTool(state.entries, toolCallId);
   const status = readStatus(payload) ?? "pending";
+  const content = extractToolContent(payload);
   const entry: ToolEntry = {
     kind: "tool",
     id: toolCallId,
@@ -528,15 +535,20 @@ function reduceToolCall(state: SessionState, payload: unknown): SessionState {
     input: readField(payload, "rawInput") ?? null,
     output: extractToolOutput(payload),
     locations: readLocations(payload),
+    content,
   };
 
   // A repeated announcement amends rather than duplicates. Agents retry.
   if (existing >= 0) {
     const before = state.entries[existing];
     if (before === undefined || before.kind !== "tool") return state;
+    const merged: ToolEntry = {
+      ...entry,
+      content: entry.content.length > 0 ? entry.content : before.content,
+    };
     return {
       ...state,
-      entries: replaceAt(state.entries, existing, entry),
+      entries: replaceAt(state.entries, existing, merged),
       activity: countActivity(state.activity, before.status, entry.status, false, before.toolKind, entry.toolKind),
     };
   }
@@ -569,6 +581,7 @@ function reduceToolCallUpdate(state: SessionState, payload: unknown): SessionSta
   const title = readString(payload, "title");
   const rawInput = readField(payload, "rawInput");
   const locations = readLocations(payload);
+  const content = extractToolContent(payload);
   const entry: ToolEntry = {
     kind: "tool",
     id: before.id,
@@ -580,6 +593,7 @@ function reduceToolCallUpdate(state: SessionState, payload: unknown): SessionSta
     // Output accumulates: a long command reports progress before it finishes.
     output: output === null ? before.output : output,
     locations: locations.length > 0 ? locations : before.locations,
+    content: content.length > 0 ? content : before.content,
   };
 
   return {
@@ -885,6 +899,56 @@ function extractToolOutput(payload: unknown): string | null {
   if (fromBlocks.length > 0) return fromBlocks;
   if (typeof raw === "string" && raw.length > 0) return raw;
   return null;
+}
+
+function extractToolContent(payload: unknown): ToolContentItem[] {
+  const raw = readField(payload, "rawOutput");
+  const rawContent = readField(raw, "content");
+  const blockContent = readField(payload, "content");
+  const items: ToolContentItem[] = [];
+  collectContentItems(rawContent, items);
+  collectContentItems(blockContent, items);
+  const unique: ToolContentItem[] = [];
+  for (const item of items) {
+    const exists = unique.some(u => {
+      if (u.type === "diff" && item.type === "diff") {
+        return u.path === item.path && u.oldText === item.oldText && u.newText === item.newText;
+      }
+      if (u.type === "text" && item.type === "text") {
+        return u.text === item.text;
+      }
+      return false;
+    });
+    if (!exists) unique.push(item);
+  }
+  return unique;
+}
+
+function collectContentItems(source: unknown, out: ToolContentItem[]): void {
+  if (!source) return;
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      collectContentItems(item, out);
+    }
+    return;
+  }
+  if (typeof source !== "object") return;
+  const type = readString(source, "type");
+  if (type === "diff") {
+    const path = readString(source, "path");
+    const oldText = readField(source, "oldText");
+    const newText = readField(source, "newText");
+    if (path !== null && typeof oldText === "string" && typeof newText === "string") {
+      out.push({ type: "diff", path, oldText, newText });
+    }
+  } else if (type === "text") {
+    const text = readField(source, "text");
+    if (typeof text === "string") {
+      out.push({ type: "text", text });
+    }
+  } else if (type === "content") {
+    collectContentItems(readField(source, "content"), out);
+  }
 }
 
 /** Flattens an ACP content block, a list of them, or a bare string, to text. */

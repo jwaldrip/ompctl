@@ -307,6 +307,50 @@ describe("every entry kind renders the component the transcript already draws", 
     }
   });
 
+  test("a tool card with a diff entry contains the path and the added line", () => {
+    const session = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "tc_diff",
+      kind: "edit",
+      title: "edit src/config.ts",
+      status: "completed",
+      rawOutput: {
+        content: [
+          {
+            type: "diff",
+            path: "src/config.ts",
+            oldText: "const port = 8080;\n",
+            newText: 'const port = 9090;\nconst host = "0.0.0.0";\n',
+          },
+        ],
+      },
+    });
+    const entry = session.entries[0];
+    if (entry === undefined || entry.kind !== "tool") throw new Error("the reducer produced no tool entry");
+    const mounted = themed(<ToolCard entry={entry} />);
+    try {
+      expect(byTestID(mounted.host, `tool-${entry.id}`)).toBeDefined();
+      expect(mounted.host.textContent).toContain("src/config.ts");
+      expect(mounted.host.textContent).toContain('const host = "0.0.0.0";');
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a tool card with output renders a one-line summary above clamped output", () => {
+    const entry = {
+      ...toolEntry("bun test"),
+      output: "bun test v1.3.14\n15 pass\n0 fail\nRan 15 tests across 1 file.\nLine 5\nLine 6\nLine 7\n",
+    };
+    const mounted = themed(<ToolCard entry={entry} />);
+    try {
+      const summary = byTestID(mounted.host, `tool-summary-${entry.id}`);
+      expect(summary.textContent).toBe("bun test v1.3.14");
+    } finally {
+      mounted.unmount();
+    }
+  });
+
   test("a pending clearance is a marker in the log that points at the tray, with no controls of its own", () => {
     // The decision itself is pinned above the readout by `SessionScreen`,
     // where the log cannot scroll it away; a second copy of the same three
