@@ -112,7 +112,7 @@ describe("status precedence in a collapsed group", () => {
 });
 
 describe("every sort order", () => {
-  const fields: SortField[] = ["status", "age", "lastActive", "messageCount", "size"];
+  const fields: SortField[] = ["status", "age", "lastActive", "activity", "messageCount", "size"];
 
   for (const field of fields) {
     test(`${field} ascending is monotonic across the whole corpus`, () => {
@@ -183,6 +183,28 @@ describe("every sort order", () => {
       expect(a.sizeBytes).toBeGreaterThanOrEqual(b.sizeBytes);
     }
   });
+  test("default sort is recency-first: activity descending", () => {
+    expect(DEFAULT_SORT).toEqual({ field: "activity", direction: "desc" });
+    expect(EMPTY_BROWSER.sort).toEqual({ field: "activity", direction: "desc" });
+  });
+
+  test("default grouping is off: flat sessions list", () => {
+    expect(EMPTY_BROWSER.grouped).toBe(false);
+  });
+
+  test("default order of flatSessions on empty browser is recency-first descending", () => {
+    const state: BrowserState = {
+      ...EMPTY_BROWSER,
+      sessions: CORPUS,
+    };
+    const view = browserView(state);
+    expect(view.flatSessions.length).toBeGreaterThan(0);
+    for (let i = 1; i < view.flatSessions.length; i++) {
+      const prev = Date.parse((view.flatSessions[i - 1] as BrowserSession).lastActiveAt);
+      const curr = Date.parse((view.flatSessions[i] as BrowserSession).lastActiveAt);
+      expect(prev).toBeGreaterThanOrEqual(curr);
+    }
+  });
 });
 
 describe("archived sessions", () => {
@@ -239,15 +261,125 @@ describe("archived sessions", () => {
     expect(view.groups.some(g => g.sessions.some(s => s.id === target.id))).toBe(true);
   });
 });
+describe("project filter", () => {
+  test("initial project filter is null (all projects)", () => {
+    expect(EMPTY_BROWSER.project).toBeNull();
+  });
+
+  test("setProject action updates active project", () => {
+    let state = EMPTY_BROWSER;
+    state = browserReduce(state, { t: "setProject", project: "/my/project" });
+    expect(state.project).toBe("/my/project");
+    state = browserReduce(state, { t: "setProject", project: null });
+    expect(state.project).toBeNull();
+  });
+
+  test("project filter narrows visible sessions to that exact cwd", () => {
+    const targetCwd = CORPUS[0]?.cwd as string;
+    const matchingCount = CORPUS.filter(s => s.cwd === targetCwd && s.status !== "archived").length;
+    expect(matchingCount).toBeGreaterThan(0);
+    expect(matchingCount).toBeLessThan(CORPUS.length);
+
+    const state: BrowserState = {
+      ...EMPTY_BROWSER,
+      sessions: CORPUS,
+      project: targetCwd,
+    };
+    const view = browserView(state);
+    expect(view.visibleCount).toBe(matchingCount);
+    expect(view.flatSessions.every(s => s.cwd === targetCwd)).toBe(true);
+    expect(view.groups.length).toBe(1);
+    expect(view.groups[0]?.cwd).toBe(targetCwd);
+  });
+});
+
+describe("search query filter", () => {
+  test("initial query is empty", () => {
+    expect(EMPTY_BROWSER.query).toBe("");
+  });
+
+  test("setQuery action updates query", () => {
+    let state = EMPTY_BROWSER;
+    state = browserReduce(state, { t: "setQuery", query: "audit" });
+    expect(state.query).toBe("audit");
+  });
+
+  test("query narrows visible sessions by case-insensitive title match", () => {
+    const sample = CORPUS.find(s => s.status !== "archived" && s.title.length > 3) as BrowserSession;
+    const searchTerm = sample.title.slice(1, 4).toUpperCase();
+
+    const state: BrowserState = {
+      ...EMPTY_BROWSER,
+      sessions: CORPUS,
+      query: searchTerm,
+    };
+    const view = browserView(state);
+    expect(view.visibleCount).toBeGreaterThan(0);
+    expect(view.flatSessions.some(s => s.id === sample.id)).toBe(true);
+    for (const s of view.flatSessions) {
+      const matchTitle = s.title.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchCwd = s.cwd.toLowerCase().includes(searchTerm.toLowerCase());
+      expect(matchTitle || matchCwd).toBe(true);
+    }
+  });
+
+  test("query narrows visible sessions by case-insensitive cwd match", () => {
+    const targetCwd = CORPUS[0]?.cwd as string;
+    const segment = targetCwd.split("/").filter(Boolean).pop()?.toUpperCase() as string;
+
+    const state: BrowserState = {
+      ...EMPTY_BROWSER,
+      sessions: CORPUS,
+      query: segment,
+    };
+    const view = browserView(state);
+    expect(view.visibleCount).toBeGreaterThan(0);
+    for (const s of view.flatSessions) {
+      const matchTitle = s.title.toLowerCase().includes(segment.toLowerCase());
+      const matchCwd = s.cwd.toLowerCase().includes(segment.toLowerCase());
+      expect(matchTitle || matchCwd).toBe(true);
+    }
+  });
+
+  test("combining project and query filters narrows by both", () => {
+    const sample = CORPUS.find(s => s.status !== "archived" && s.title.length > 2) as BrowserSession;
+    const state: BrowserState = {
+      ...EMPTY_BROWSER,
+      sessions: CORPUS,
+      project: sample.cwd,
+      query: sample.title,
+    };
+    const view = browserView(state);
+    expect(view.flatSessions.every(s => s.cwd === sample.cwd)).toBe(true);
+    expect(view.flatSessions.every(s => s.title.toLowerCase().includes(sample.title.toLowerCase()))).toBe(true);
+  });
+});
+
+describe("hydratePrefs action", () => {
+  test("restores sort, grouped, and project together", () => {
+    let state = EMPTY_BROWSER;
+    state = browserReduce(state, {
+      t: "hydratePrefs",
+      prefs: {
+        sort: { field: "size", direction: "asc" },
+        grouped: true,
+        project: "/restored/path",
+      },
+    });
+    expect(state.sort).toEqual({ field: "size", direction: "asc" });
+    expect(state.grouped).toBe(true);
+    expect(state.project).toBe("/restored/path");
+  });
+});
 
 describe("grouping toggle and group collapse", () => {
   test("toggleGrouped flips the grouped flag", () => {
     let state = EMPTY_BROWSER;
-    expect(state.grouped).toBe(true);
-    state = browserReduce(state, { t: "toggleGrouped" });
     expect(state.grouped).toBe(false);
     state = browserReduce(state, { t: "toggleGrouped" });
     expect(state.grouped).toBe(true);
+    state = browserReduce(state, { t: "toggleGrouped" });
+    expect(state.grouped).toBe(false);
   });
 
   test("toggleGroup collapses and re-expands a single group by cwd", () => {
@@ -278,6 +410,7 @@ function sortKey(session: BrowserSession, field: SortField): number {
       return { "live-tui": 0, "live-ompd": 1, dormant: 2, archived: 3 }[session.status];
     case "age":
       return Date.parse(session.createdAt);
+    case "activity":
     case "lastActive":
       return Date.parse(session.lastActiveAt);
     case "messageCount":

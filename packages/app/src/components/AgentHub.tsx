@@ -2,6 +2,7 @@ import { type Agent, type AgentState, COLLAB_GUEST_AGENT_SOURCE, TERMINAL_AGENT_
 import { type JSX, memo, useMemo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Surface } from "react-native-paper";
+import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { Body, Kicker, Label } from "../design/text.tsx";
 import { type SignalName, space, stroke } from "../design/tokens.ts";
@@ -91,9 +92,10 @@ export interface AgentHubProps {
   agents: readonly Agent[];
   /** Open this exact root or nested agent's durable transcript. */
   onOpen: (agent: Agent) => void;
-  /** A fixed clock makes runtime output deterministic for callers and tests. */
   now?: number;
   testID?: string;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 /**
@@ -163,6 +165,8 @@ export function AgentHub({
   onOpen,
   now = Date.now(),
   testID = "agent-hub",
+  collapsed = false,
+  onToggleCollapse,
 }: AgentHubProps): JSX.Element | null {
   const theme = useOmpTheme();
   /**
@@ -182,10 +186,40 @@ export function AgentHub({
   if (tree.length === 0) {
     const reason = agentHubEmptyReason(agents);
     if (reason === null) return null;
+    if (collapsed) {
+      return (
+        <Surface elevation={0} mode="flat" style={panel} testID={testID} accessibilityLabel="Agent hierarchy">
+          <Pressable
+            testID={`${testID}-toggle`}
+            onPress={onToggleCollapse}
+            style={styles.collapsedHint}
+            accessibilityRole="button"
+            accessibilityLabel="Expand Agent Hub hint"
+          >
+            <Kicker color={theme.ink.muted}>AGENT HUB</Kicker>
+            <Label color={theme.ink.faint} style={styles.collapsedLabel}>
+              Hint
+            </Label>
+            <Glyph name="chevron" size={10} color={theme.ink.muted} />
+          </Pressable>
+        </Surface>
+      );
+    }
     return (
       <Surface elevation={0} mode="flat" style={panel} testID={testID} accessibilityLabel="Agent hierarchy">
         <View style={styles.heading}>
           <Kicker color={theme.ink.muted}>AGENT HUB</Kicker>
+          {onToggleCollapse ? (
+            <Pressable
+              testID={`${testID}-dismiss`}
+              onPress={onToggleCollapse}
+              accessibilityRole="button"
+              accessibilityLabel="Collapse Agent Hub hint"
+              style={styles.dismissButton}
+            >
+              <Glyph name="deny" size={10} color={theme.ink.muted} />
+            </Pressable>
+          ) : null}
         </View>
         <Label testID={`${testID}-empty`} color={theme.ink.muted}>
           {AGENT_HUB_EMPTY_COPY[reason]}
@@ -338,4 +372,12 @@ const styles = StyleSheet.create({
   status: { minWidth: 64, paddingHorizontal: space.tight, paddingVertical: space.hair, alignItems: "center" },
   details: { flex: 1, gap: rhythm.pairGap },
   meta: { flexDirection: "row", flexWrap: "wrap", columnGap: rhythm.cardGap, rowGap: rhythm.pairGap },
+  collapsedHint: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: rhythm.rowGapTight,
+  },
+  collapsedLabel: { flex: 1, minWidth: 0 },
+  dismissButton: { padding: space.hair },
 });

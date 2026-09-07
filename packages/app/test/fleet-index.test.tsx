@@ -138,9 +138,11 @@ describe("an index with zero agents renders the fleet", () => {
     expect(html).toContain('data-testid="session-row-s-b1"');
   });
 
-  test("the rows are grouped under both directories", () => {
-    expect(html).toContain(`data-testid="group-header-${DIR_A}"`);
-    expect(html).toContain(`data-testid="group-header-${DIR_B}"`);
+  test("the rows are ungrouped by default and grouped when enabled", () => {
+    expect(html).not.toContain(`data-testid="group-header-${DIR_A}"`);
+    const groupedHtml = renderFleet({ ...browser, grouped: true });
+    expect(groupedHtml).toContain(`data-testid="group-header-${DIR_A}"`);
+    expect(groupedHtml).toContain(`data-testid="group-header-${DIR_B}"`);
   });
 
   test("the empty state does not appear while the index holds sessions", () => {
