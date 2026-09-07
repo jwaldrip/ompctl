@@ -32,13 +32,13 @@ import {
   FlatList,
   Pressable,
   type PressableStateCallbackType,
-  ScrollView,
   SectionList,
   StyleSheet,
   TextInput,
   View,
 } from "react-native";
 import { GroupHeader } from "../components/GroupHeader.tsx";
+import { ProjectPicker } from "../components/ProjectPicker.tsx";
 import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
 import type { ScopeAccess } from "../console/state.ts";
@@ -166,17 +166,6 @@ export function FleetScreen({
       })),
     [view.groups, browser.collapsedGroups],
   );
-  const projects = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of browser.sessions) {
-      if (s.cwd) set.add(s.cwd);
-    }
-    return Array.from(set).sort((a, b) => {
-      const baseA = a.split("/").filter(Boolean).pop() ?? a;
-      const baseB = b.split("/").filter(Boolean).pop() ?? b;
-      return baseA.localeCompare(baseB);
-    });
-  }, [browser.sessions]);
   // Memoised on the link rather than hoisted: the empty state is a claim
   // about the daemon, and it changes when the link does. The console builds
   // `link` from its three fields, so its identity changes only with them.
@@ -301,51 +290,12 @@ export function FleetScreen({
             <Glyph name="deny" size={10} color={ink.faint} />
           </Pressable>
         ) : null}
+        <ProjectPicker
+          sessions={browser.sessions}
+          selectedProject={browser.project}
+          onSelectProject={onSetProject ?? (() => {})}
+        />
       </View>
-
-      <ScrollView
-        testID="project-filter-bar"
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.filterBar}
-        contentContainerStyle={styles.filterRow}
-      >
-        <Pressable
-          testID="project-chip-all"
-          accessibilityRole="button"
-          accessibilityState={{ selected: browser.project === null }}
-          accessibilityLabel="All projects"
-          onPress={() => onSetProject?.(null)}
-          style={({ pressed }) => [
-            styles.chip,
-            browser.project === null && styles.chipActive,
-            pressed && { backgroundColor: ground.active },
-          ]}
-        >
-          <Kicker color={browser.project === null ? signal.working : ink.muted}>All projects</Kicker>
-        </Pressable>
-        {projects.map(cwd => {
-          const base = cwd.split("/").filter(Boolean).pop() ?? cwd;
-          const active = browser.project === cwd;
-          return (
-            <Pressable
-              key={cwd}
-              testID={`project-chip-${base}`}
-              accessibilityRole="button"
-              accessibilityState={{ selected: active }}
-              accessibilityLabel={cwd}
-              onPress={() => onSetProject?.(cwd)}
-              style={({ pressed }) => [
-                styles.chip,
-                active && styles.chipActive,
-                pressed && { backgroundColor: ground.active },
-              ]}
-            >
-              <Kicker color={active ? signal.working : ink.muted}>{base}</Kicker>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
 
       {deleteAccess === "missing" ? (
         // A band in the column, never a layer over it: see
@@ -509,29 +459,5 @@ const styles = StyleSheet.create({
     height: 24,
     alignItems: "center",
     justifyContent: "center",
-  },
-  filterBar: {
-    borderBottomWidth: stroke.hair,
-    borderBottomColor: ground.line,
-    backgroundColor: ground.surface,
-  },
-  filterRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: space.wide,
-    paddingVertical: space.snug,
-    gap: space.tight,
-  },
-  chip: {
-    paddingHorizontal: space.snug,
-    paddingVertical: space.tight,
-    borderRadius: 2,
-    borderWidth: stroke.hair,
-    borderColor: ground.line,
-    backgroundColor: ground.base,
-  },
-  chipActive: {
-    borderColor: signal.working,
-    backgroundColor: ground.active,
   },
 });

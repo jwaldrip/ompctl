@@ -54,6 +54,8 @@ export interface BrowserSession {
   readonly messageCount: number;
   /** Bytes on disk. */
   readonly sizeBytes: number;
+  /** Total session cost in USD, or null when not reported. */
+  readonly cost?: number | null;
 }
 
 // ---------------------------------------------------------------------------
