@@ -4,9 +4,11 @@
 
 "Spacing looks off." That is the whole brief, and it was right.
 
-The app already had a good vocabulary. `design/tokens.ts` holds a warm-graphite
-palette where every hue means something, a seven-step type scale named by job,
-and a four-point spacing grid. None of that was the problem.
+The app already had a good vocabulary. `design/tokens.ts` holds a palette where
+every hue means something (since 2026-09-07 the near-black ground of the app
+icon with its azure and amber, and six signals named by meaning: working, ready,
+holding, failed, cold, reasoning), a seven-step type scale named by job, and a
+four-point spacing grid. None of that was the problem.
 
 The problem was that the grid had no **mapping from job to step**. Each surface
 picked its own step for the same job, so the app shipped several different
@@ -90,13 +92,15 @@ app:
 
 - **Elevation is off everywhere.** Every `Surface` is `mode="flat"`
   `elevation={0}` with a hairline. MD3 signals hierarchy with a shadow; ompctl
-  signals it with a step of warm graphite, which is why `ground` has six steps.
-  The theme's `elevation` ramp is therefore the flat `ground` steps and `shadow`
-  is `transparent`, so a Paper component reaching for `elevation.level2` still
-  lands on our material.
-- **`primary` is signal sage, not Material purple.** A filled control in this
-  app means "this is the action that completes the turn", and sage means that
-  everywhere else on screen.
+  signals it with a step of the ground ramp, which is why `ground` has six
+  steps. The theme's `elevation` ramp is therefore the flat `ground` steps and
+  `shadow` is `transparent`, so a Paper component reaching for
+  `elevation.level2` still lands on our material.
+- **`primary` is `brand.azure`, not Material purple.** A filled control in this
+  app means "this is the action that completes the turn", and azure is the one
+  colour reserved for actions, links and selection; a signal never fills a
+  control, because amber means working and green means ready everywhere else
+  on screen.
 - **The icon slot is ompctl's `Glyph`.** `PaperProvider`'s `settings.icon`
   renders Font Awesome paths through `react-native-svg`, so no Material glyph
   and no linked icon font can appear, and an `IconButton` sits in a row beside a
