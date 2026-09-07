@@ -34,19 +34,24 @@
 
 import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
+import { useState } from "react";
 import { StyleSheet, useWindowDimensions, View } from "react-native";
+import { TouchableRipple } from "react-native-paper";
 import { ApprovalCard } from "../components/ApprovalCard.tsx";
 import { RichText } from "../components/rich/RichText.tsx";
 import { ToolCard } from "../components/ToolCard.tsx";
+import { ToolGroupCard } from "../components/ToolGroupCard.tsx";
 import { Glyph } from "../design/icons.tsx";
 import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { Kicker, Label } from "../design/text.tsx";
-import { stroke } from "../design/tokens.ts";
+import type { OmpTheme } from "../design/theme.ts";
+import { radius, stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
-import type { Entry } from "../session/model.ts";
+import type { AssistantEntry, Entry } from "../session/model.ts";
+import type { ToolGroupEntry } from "./grouping.ts";
 
 export interface OmpEntryRowProps {
-  entry: Entry;
+  entry: Entry | ToolGroupEntry;
   /** False when this device's pairing does not hold the approve scope. */
   canApprove: boolean;
   /** Why approval is refused, when the daemon has said so. */
@@ -80,25 +85,25 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
       );
 
     case "assistant":
+      if (entry.thought) {
+        return <ThinkingRow entry={entry} fontScale={fontScale} signal={signal} />;
+      }
       return (
-        <View
-          style={styles.row}
-          testID="entry-assistant"
-          accessible
-          accessibilityLabel={`${entry.thought ? "thinking" : "agent"}: ${entry.text}`}
-        >
-          <View
-            style={[
-              styles.gutter,
-              { width: attributionWidth(fontScale), borderLeftColor: entry.thought ? signal.violet : signal.sage },
-            ]}
-          >
-            <Kicker color={entry.thought ? signal.violet : signal.sage} numberOfLines={1}>
-              {entry.thought ? "thinking" : "agent"}
+        <View style={styles.row} testID="entry-assistant" accessible accessibilityLabel={`agent: ${entry.text}`}>
+          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.sage }]}>
+            <Kicker color={signal.sage} numberOfLines={1}>
+              agent
             </Kicker>
             {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
           </View>
-          <RichText muted={entry.thought} text={entry.text} />
+          <RichText text={entry.text} />
+        </View>
+      );
+
+    case "tool_group":
+      return (
+        <View style={styles.cardRow}>
+          <ToolGroupCard group={entry as ToolGroupEntry} />
         </View>
       );
 
@@ -156,6 +161,56 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
   }
 }
 
+function ThinkingRow({
+  entry,
+  fontScale,
+  signal,
+}: {
+  entry: AssistantEntry;
+  fontScale: number;
+  signal: OmpTheme["signal"];
+}): JSX.Element {
+  const [userToggled, setUserToggled] = useState<boolean | null>(null);
+  const expanded = userToggled ?? entry.streaming;
+  const lineCount = entry.text.length === 0 ? 0 : entry.text.split("\n").length;
+  const lineLabel = lineCount === 1 ? "1 line" : `${lineCount} lines`;
+  const summary = `Thinking, ${lineLabel}`;
+
+  return (
+    <View style={styles.row} testID="entry-assistant" accessible accessibilityLabel={`thinking: ${entry.text}`}>
+      <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.violet }]}>
+        <Kicker color={signal.violet} numberOfLines={1}>
+          thinking
+        </Kicker>
+        {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
+      </View>
+      <View style={styles.prose}>
+        <TouchableRipple
+          accessibilityRole="button"
+          accessibilityLabel={expanded ? `Collapse thinking (${lineLabel})` : `Expand thinking (${lineLabel})`}
+          testID={`thinking-toggle-${entry.id}`}
+          onPress={() => setUserToggled(!expanded)}
+          style={styles.thinkingToggle}
+        >
+          <View style={styles.thinkingSummaryRow}>
+            <View style={[styles.chevronWrap, { transform: [{ rotate: expanded ? "90deg" : "0deg" }] }]}>
+              <Glyph name="chevron" size={8} color={signal.violet} />
+            </View>
+            <Label color={signal.violet} testID={`thinking-summary-${entry.id}`}>
+              {summary}
+            </Label>
+          </View>
+        </TouchableRipple>
+        {expanded ? (
+          <View style={styles.thinkingBody} testID={`thinking-body-${entry.id}`}>
+            <RichText muted text={entry.text} />
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   // The prose sits a tight step off the attribution column rather than a full
   // row gap: the column and the words are one turn, not two siblings, and the
@@ -178,4 +233,22 @@ const styles = StyleSheet.create({
   // symmetric margin here charged the separation twice and left a run of cards
   // sitting further apart than the turns around them.
   cardRow: { marginTop: rhythm.cardStack },
+  thinkingToggle: {
+    alignSelf: "flex-start",
+    borderRadius: radius.control,
+    paddingVertical: rhythm.pairGap,
+    paddingHorizontal: rhythm.pairGap,
+  },
+  thinkingSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: rhythm.glyphGap,
+  },
+  thinkingBody: {
+    marginTop: rhythm.pairGap,
+  },
+  chevronWrap: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
 });

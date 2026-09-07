@@ -172,7 +172,9 @@ function press(el: HTMLElement): void {
   if (key === undefined) throw new Error("no React props on the rendered pressable");
   const props = Reflect.get(el, key) as { onClick?: unknown };
   if (typeof props.onClick !== "function") throw new Error("the rendered pressable has no click handler");
-  el.click();
+  act(() => {
+    el.click();
+  });
 }
 
 /**
@@ -693,7 +695,9 @@ describe("attribution survives the move into assistant-ui", () => {
 
       // Muted is not a decoration: `RichText muted` drops prose from
       // `ink.bright` to `ink.plain`, and the same string must therefore render
-      // at two different colours in the two rows.
+      // at two different colours in the two rows. Tapping the collapsed thought
+      // reveals its prose.
+      press(byTestID(thoughtRow, "thinking-toggle-m1"));
       const thoughtProse = colourOfProse(thoughtRow, "weighing it");
       const replyProse = colourOfProse(replyRow, "weighing it");
       expect(thoughtProse).toBe(rgb(ink.plain));
@@ -714,6 +718,45 @@ describe("attribution survives the move into assistant-ui", () => {
     } finally {
       live.unmount();
       done.unmount();
+    }
+  });
+
+  test("a settled thought renders collapsed to one line with the line count", () => {
+    const thought = row(assistantEntry("line one\nline two\nline three", { thought: true }));
+    try {
+      const thoughtRow = byTestID(thought.host, "entry-assistant");
+      const summary = byTestID(thoughtRow, "thinking-summary-m1");
+      expect(summary.textContent).toBe("Thinking, 3 lines");
+      expect(declarationsFor(summary).get("color")).toBe(rgb(signal.violet));
+      expect(colourOfProse(thoughtRow, "line one")).toBeUndefined();
+    } finally {
+      thought.unmount();
+    }
+  });
+
+  test("a streaming thought stays expanded so the operator sees live reasoning", () => {
+    const thought = row(assistantEntry("reasoning in progress", { thought: true, streaming: true }));
+    try {
+      const thoughtRow = byTestID(thought.host, "entry-assistant");
+      expect(colourOfProse(thoughtRow, "reasoning in progress")).toBe(rgb(ink.plain));
+      const summary = byTestID(thoughtRow, "thinking-summary-m1");
+      expect(summary.textContent).toBe("Thinking, 1 line");
+    } finally {
+      thought.unmount();
+    }
+  });
+
+  test("tapping a collapsed thought expands and collapses it", () => {
+    const thought = row(assistantEntry("hidden reason", { thought: true }));
+    try {
+      const thoughtRow = byTestID(thought.host, "entry-assistant");
+      expect(colourOfProse(thoughtRow, "hidden reason")).toBeUndefined();
+      press(byTestID(thoughtRow, "thinking-toggle-m1"));
+      expect(colourOfProse(thoughtRow, "hidden reason")).toBe(rgb(ink.plain));
+      press(byTestID(thoughtRow, "thinking-toggle-m1"));
+      expect(colourOfProse(thoughtRow, "hidden reason")).toBeUndefined();
+    } finally {
+      thought.unmount();
     }
   });
 });
