@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getSessionsDir } from "@oh-my-pi/pi-utils";
 import { SCOPE_READ, Store } from "@ompd/core";
 import { Gateway } from "../../src/gateway/gateway.ts";
 import { SessionIndex } from "../../src/sessions/session-index.ts";
@@ -66,20 +67,47 @@ async function makeHarness(sessionsRoot: string): Promise<{
 }
 
 describe("gateway stats endpoints", () => {
-  test("GET /v1/stats returns dashboard stats shape", async () => {
+  test("the dashboard is omp's own home's to serve, and a daemon on another root says so", async () => {
+    // `@oh-my-pi/omp-stats` aggregates exactly one tree, omp's own sessions
+    // directory. Before 2026-09-07 a gateway built its own subsystem and
+    // synced that real home from every harness that built a gateway, which
+    // crashed the daemon suite under --parallel and served one home's
+    // figures for another. A foreign root now refuses with the reason.
     const sessionsRoot = tempDir("gw-sessions-");
     const h = await makeHarness(sessionsRoot);
+    expect(h.stats.available).toBe(false);
+    expect(new StatsSubsystem().available).toBe(true);
+    expect(new StatsSubsystem({ sessionsRoot: getSessionsDir() }).available).toBe(true);
 
     const res = await fetch(`${h.url}/v1/stats?range=7d`, {
       headers: { Authorization: `Bearer ${h.token}` },
     });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string; reason: string };
+    expect(body.error).toBe("stats_unavailable");
+    expect(body.reason).toContain(sessionsRoot);
+    expect(body.reason).toContain(getSessionsDir());
+  });
 
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as any;
-    expect(data.overall).toBeDefined();
-    expect(data.overall.totalRequests).toBeNumber();
-    expect(data.overall.totalCost).toBeNumber();
-    expect(data.byModel).toBeArray();
+  test("a gateway with no stats subsystem answers the session stats route with stats_unavailable", async () => {
+    const dbDir = tempDir("gw-nostats-");
+    const store = new Store(join(dbDir, "ompd.db"));
+    const supervisor = new Supervisor({ store, home: dbDir });
+    const gateway = new Gateway({ store, supervisor });
+    gateways.push(gateway);
+    const port = await gateway.listen();
+    const base = `http://127.0.0.1:${port}`;
+    const pairRes = await fetch(`${base}/v1/pair`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "test-device", publicKey: `pk_${crypto.randomUUID()}` }),
+    });
+    const token = gateway.approvePairing(((await pairRes.json()) as { code: string }).code, [SCOPE_READ]);
+    const res = await fetch(`${base}/v1/sessions/019fee60-2c7a-7000-9fd5-7439c7bf3dd2/stats`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error: string }).error).toBe("stats_unavailable");
   });
 
   test("GET /v1/sessions/:id/stats returns per-session stats from JSONL", async () => {

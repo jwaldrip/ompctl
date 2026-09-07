@@ -67,6 +67,7 @@ import { DaemonModelAccess } from "./model-broker/index.ts";
 import { ContainerBackend, HostProvisioner, KNOWN_RUNTIMES, LocalBackend } from "./provisioner/index.ts";
 import { Scheduler } from "./routines/index.ts";
 import { SessionIndex } from "./sessions/session-index.ts";
+import { StatsSubsystem } from "./stats/index.ts";
 import { Supervisor } from "./supervisor.ts";
 import { createTunnelDialer } from "./tunnel/dial.ts";
 import { identityPath, loadIdentity } from "./tunnel/identity.ts";
@@ -635,6 +636,7 @@ export class Ompd {
   #scheduler: Scheduler;
   #tasks: TaskManager;
   #sessionIndex: SessionIndex;
+  #stats: StatsSubsystem;
   #evolution: EvolutionEngine;
   #gateway: Gateway;
   #queuedIntentDrainer: QueuedIntentDrainer | undefined;
@@ -867,6 +869,9 @@ export class Ompd {
     });
     this.#tasks = new TaskManager({ store: this.#store, supervisor: this.#supervisor });
     this.#sessionIndex = new SessionIndex({ store: this.#store });
+    // Same default root as the index (omp's own sessions directory), which is
+    // the only tree `@oh-my-pi/omp-stats` can aggregate; see `available`.
+    this.#stats = new StatsSubsystem();
 
     // Constructed here rather than in `start`, because opening the vault is
     // what proves the master key is reachable, and a daemon that cannot read
@@ -895,6 +900,7 @@ export class Ompd {
       routines: this.#scheduler,
       sessions: this.#hosts,
       sessionIndex: this.#sessionIndex,
+      stats: this.#stats,
       endpoints: () => this.#reachableEndpoints(),
       // Read from the config the daemon booted with, so widening or narrowing
       // what a phone may browse is a config edit and a restart, never

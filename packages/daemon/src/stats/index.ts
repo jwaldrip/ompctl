@@ -123,18 +123,47 @@ export interface StatsSubsystemOptions {
   statsDbPath?: string;
 }
 
+/** Thrown where the dashboard would otherwise serve figures from a home this daemon does not index. */
+export class StatsUnavailableError extends Error {
+  constructor(sessionsRoot: string) {
+    super(`stats cover omp's own sessions under ${getSessionsDir()}; this daemon indexes ${sessionsRoot}`);
+    this.name = "StatsUnavailableError";
+  }
+}
+
+/** The sentence a route returns beside `stats_unavailable`. */
+export function statsUnavailableReason(stats: StatsSubsystem | undefined): string {
+  if (stats === undefined) return "this daemon keeps no stats";
+  return new StatsUnavailableError(stats.sessionsRoot).message;
+}
+
 export class StatsSubsystem {
-  #sessionsRoot?: string;
+  readonly sessionsRoot: string;
   #statsDbPath: string;
   #syncInFlight: Promise<void> | null = null;
   #timer: Timer | null = null;
 
   constructor(opts: StatsSubsystemOptions = {}) {
-    this.#sessionsRoot = opts.sessionsRoot ?? getSessionsDir();
+    this.sessionsRoot = opts.sessionsRoot ?? getSessionsDir();
     this.#statsDbPath = opts.statsDbPath ?? getStatsDbPath();
   }
 
+  /**
+   * Whether the aggregate dashboard is this daemon's to serve.
+   *
+   * `@oh-my-pi/omp-stats` indexes exactly one tree, omp's own sessions
+   * directory, into omp's own database; it takes no root. So a daemon whose
+   * sessions root is anything else (a test harness, a scratch home) must not
+   * sync, because the sync would index a tree it does not serve, and must not
+   * answer the dashboard, because the answer would describe a different home.
+   * Per-session stats are unaffected: they are read from the daemon's own root.
+   */
+  get available(): boolean {
+    return this.sessionsRoot === getSessionsDir();
+  }
+
   start(): void {
+    if (!this.available) return;
     void this.sync().catch(() => {});
     this.#timer = setInterval(() => {
       void this.sync().catch(() => {});
@@ -149,6 +178,7 @@ export class StatsSubsystem {
   }
 
   async sync(): Promise<void> {
+    if (!this.available) return;
     if (this.#syncInFlight) return this.#syncInFlight;
     const task = withStatsSyncLock(this.#statsDbPath, async () => {
       await syncAllSessions();
@@ -162,11 +192,12 @@ export class StatsSubsystem {
   }
 
   async getDashboardStats(range?: string | null): Promise<DashboardStats> {
+    if (!this.available) throw new StatsUnavailableError(this.sessionsRoot);
     return (await ompGetDashboardStats(range)) as DashboardStats;
   }
 
   async getSessionStats(sessionId: string): Promise<SessionStats | null> {
-    const filePath = findSessionFile(sessionId, this.#sessionsRoot);
+    const filePath = findSessionFile(sessionId, this.sessionsRoot);
     if (!filePath || !existsSync(filePath)) return null;
     const stats = await computeSessionStatsFromFile(filePath);
     setSessionCost(sessionId, stats.cost);

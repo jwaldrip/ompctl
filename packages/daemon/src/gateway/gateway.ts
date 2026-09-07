@@ -83,7 +83,7 @@ import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
-import { StatsSubsystem } from "../stats/index.ts";
+import { type StatsSubsystem, statsUnavailableReason } from "../stats/index.ts";
 import {
   AgentBusyError,
   createAgentId,
@@ -1401,7 +1401,13 @@ export class Gateway {
   #syncConfig: SyncConfig | undefined;
   #tasks: TaskCatalog | undefined;
   #sessionIndex: SessionIndex | undefined;
-  #stats: StatsSubsystem;
+  /**
+   * Owned by the daemon and handed in, never built here: a gateway that
+   * constructed its own would index omp's real home from every test harness
+   * that builds a gateway, which is what crashed the suite under --parallel
+   * on 2026-09-07. Absent in harnesses that pass none; every use tolerates it.
+   */
+  #stats: StatsSubsystem | undefined;
   /**
    * The sessions-root watcher, running only while at least one socket has
    * asked for the index. Started lazily by the first `sessions` ask and
@@ -1511,8 +1517,8 @@ export class Gateway {
     this.#mcpAuth = opts.mcpAuth;
     this.#tasks = opts.tasks;
     this.#sessionIndex = opts.sessionIndex;
-    this.#stats = opts.stats ?? new StatsSubsystem();
-    this.#stats.start();
+    this.#stats = opts.stats;
+    this.#stats?.start();
     this.#endpoints = opts.endpoints;
     this.#filesystem = opts.filesystem;
     this.#containerStateProvider = opts.containerState;
@@ -1536,9 +1542,8 @@ export class Gateway {
         for (const ws of this.#sockets) {
           if (ws.data.attached.size === 0) continue;
           if (ws.data.scopes.has(SCOPE_READ)) this.#send(ws, { t: "agents", agents });
-          if (ws.data.scopes.has(SCOPE_READ)) this.#send(ws, { t: "agents", agents });
         }
-        void this.#stats.sync().catch(() => {});
+        void this.#stats?.sync().catch(() => {});
       },
       onApprovalNeeded: approval => {
         for (const ws of this.#sockets) {
@@ -1674,7 +1679,7 @@ export class Gateway {
     this.#unsubscribeSay = undefined;
     this.#unsubscribeRevoked?.();
     this.#unsubscribeRevoked = undefined;
-    this.#stats.stop();
+    this.#stats?.stop();
     this.#unsubscribeRoutineProgress?.();
     this.#unsubscribeRoutineProgress = undefined;
     this.#disarmSessionWatcher();
@@ -3045,6 +3050,12 @@ export class Gateway {
 
     if (path === "/v1/stats" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      if (this.#stats === undefined || !this.#stats.available) {
+        return Response.json(
+          { error: "stats_unavailable", reason: statsUnavailableReason(this.#stats) },
+          { status: 503 },
+        );
+      }
       const stats = await this.#stats.getDashboardStats(url.searchParams.get("range"));
       return Response.json(stats);
     }
@@ -3052,6 +3063,7 @@ export class Gateway {
     const sessionStatsRoute = /^\/v1\/sessions\/([^/]+)\/stats$/.exec(path);
     if (sessionStatsRoute && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      if (this.#stats === undefined) return Response.json({ error: "stats_unavailable" }, { status: 503 });
       const sessionId = sessionStatsRoute[1] ?? "";
       const stats = await this.#stats.getSessionStats(sessionId);
       if (!stats) return Response.json({ error: "session_not_found" }, { status: 404 });
@@ -6193,6 +6205,10 @@ export class Gateway {
   }
 
   async #serveSessionStatsFrame(ws: GatewaySocket, sessionId: string): Promise<void> {
+    if (this.#stats === undefined) {
+      this.#send(ws, { t: "error", sessionId, code: "stats_unavailable", message: "this daemon keeps no stats" });
+      return;
+    }
     try {
       const stats = await this.#stats.getSessionStats(sessionId);
       if (!stats) {
