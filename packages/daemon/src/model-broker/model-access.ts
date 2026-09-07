@@ -539,6 +539,21 @@ export class DaemonModelAccess implements ModelAccessProvider {
   }
 
   /**
+   * The model broker's readiness and precondition status for cowork containers.
+   * Field reads only: safe to call any time.
+   */
+  modelBrokerState(): { ready: boolean; reason: string | null } {
+    if (!this.#enabled) {
+      return { ready: false, reason: "container model access is disabled" };
+    }
+    const model = this.#configuredModel() ?? this.#resolvedModel;
+    if (!model) {
+      return { ready: false, reason: "no model configured for container agents" };
+    }
+    return { ready: true, reason: null };
+  }
+
+  /**
    * The three addresses a bridge shape decides: where the broker binds, what the
    * guest dials, and which peers may speak to it.
    *

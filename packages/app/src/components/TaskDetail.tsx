@@ -20,10 +20,11 @@ import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/toke
 export interface TaskDetailProps {
   task: Task;
   onOpenSession: (agentId: string) => void;
+  onRetry?: () => void;
   now?: number;
 }
 
-export function TaskDetail({ task, onOpenSession, now }: TaskDetailProps): JSX.Element {
+export function TaskDetail({ task, onOpenSession, onRetry, now }: TaskDetailProps): JSX.Element {
   const tone = signal[TASK_STATE_SIGNALS[task.state]];
 
   return (
@@ -50,10 +51,26 @@ export function TaskDetail({ task, onOpenSession, now }: TaskDetailProps): JSX.E
       </View>
 
       {task.result !== undefined ? (
-        <View style={styles.section}>
-          <Kicker color={ink.muted}>Result</Kicker>
-          <Body color={ink.plain}>{task.result}</Body>
+        <View style={styles.section} testID={task.state === "failed" ? "task-detail-failed" : "task-detail-result"}>
+          <Kicker color={task.state === "failed" ? signal.oxide : ink.muted}>
+            {task.state === "failed" ? "Failed" : "Result"}
+          </Kicker>
+          <Body color={task.state === "failed" ? signal.oxide : ink.plain}>{task.result}</Body>
         </View>
+      ) : null}
+
+      {task.state === "failed" && onRetry !== undefined ? (
+        <Pressable
+          testID="task-detail-retry"
+          accessibilityRole="button"
+          accessibilityLabel="Retry this failed task"
+          onPress={onRetry}
+          style={({ pressed }) => [styles.retryAction, pressed && { backgroundColor: ground.active }]}
+        >
+          {/* Client-side resubmit: triggers the existing task creation flow with the same prompt. */}
+          <Glyph name="restore" size={13} color={signal.oxide} />
+          <Label color={signal.oxide}>Retry</Label>
+        </Pressable>
       ) : null}
 
       <View style={styles.meta}>
@@ -89,6 +106,17 @@ const styles = StyleSheet.create({
     minHeight: TOUCH_TARGET,
     borderWidth: stroke.hair,
     borderColor: signal.sage,
+    alignSelf: "flex-start",
+    paddingHorizontal: space.wide,
+  },
+  retryAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.tight,
+    minHeight: TOUCH_TARGET,
+    borderWidth: stroke.hair,
+    borderColor: signal.oxide,
     alignSelf: "flex-start",
     paddingHorizontal: space.wide,
   },

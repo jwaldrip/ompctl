@@ -29,6 +29,7 @@
  * one-handed moment of choosing, then hands the absolute path back.
  */
 
+import type { ModelBrokerStatus } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -135,6 +136,7 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
       <FolderBinding
         folders={folderState.folders}
         start={folderState.start}
+        modelBroker={folderState.modelBroker}
         onAdd={() => setPicking(true)}
         onUnbind={folderActions.unbind}
         onStart={folderActions.start}
@@ -157,7 +159,24 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
     if (view === "skills") return <SkillsView skills={skills} onInvoke={onInvokeSkill} />;
     if (view === "connectors") return <ConnectorsView connectors={connectors} />;
     if (view === "plugins") return <PluginsView skills={skills} connectors={connectors} />;
-    if (selectedTask !== null) return <TaskDetail task={selectedTask} onOpenSession={onOpenSession} now={now} />;
+    if (selectedTask !== null) {
+      return (
+        <TaskDetail
+          task={selectedTask}
+          onOpenSession={onOpenSession}
+          onRetry={() => {
+            // Client-side resubmit: re-uses the existing task creation path with the
+            // same prompt, title, and skill, without needing a dedicated daemon frame.
+            onStartTask({
+              title: selectedTask.title,
+              prompt: selectedTask.prompt,
+              skillName: selectedTask.skillName,
+            });
+          }}
+          now={now}
+        />
+      );
+    }
     return <TasksEmpty />;
   })();
 
@@ -222,6 +241,7 @@ function TasksEmpty(): JSX.Element {
 function FolderBinding({
   folders,
   start,
+  modelBroker,
   onAdd,
   onUnbind,
   onStart,
@@ -229,11 +249,15 @@ function FolderBinding({
 }: {
   folders: readonly BoundFolder[];
   start: ContainerStart;
+  modelBroker?: ModelBrokerStatus;
   onAdd: () => void;
   onUnbind: (hostPath: string) => void;
   onStart: () => void;
   onOpenSession: (agentId: string) => void;
 }): JSX.Element {
+  const [unbindingPath, setUnbindingPath] = useState<string | null>(null);
+  const brokerNotReady = modelBroker !== undefined && !modelBroker.ready;
+  const startDisabled = start.status === "starting" || brokerNotReady;
   return (
     <View style={styles.folders} testID="cowork-folders">
       <View style={styles.foldersHead}>
@@ -245,7 +269,7 @@ function FolderBinding({
       </View>
       {folders.length === 0 ? (
         <Label color={ink.muted} testID="cowork-folders-empty">
-          Nothing bound. The container will see only its own workspace.
+          No folders bound; the container will see only its own workspace.
         </Label>
       ) : (
         folders.map(folder => (
@@ -258,15 +282,47 @@ function FolderBinding({
                 path at this same absolute path inside: what the operator
                 reads here is exactly what the container gets. */}
             <Label color={ink.faint}>{folder.mode}</Label>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Unbind ${folder.hostPath}`}
-              onPress={() => onUnbind(folder.hostPath)}
-              style={styles.unbind}
-              testID={`cowork-folder-unbind-${folder.hostPath}`}
-            >
-              <Glyph name="deny" size={12} color={ink.muted} />
-            </Pressable>
+            {unbindingPath === folder.hostPath ? (
+              <View style={styles.confirmUnbind} testID={`cowork-folder-unbind-confirm-dialog-${folder.hostPath}`}>
+                <Label color={ink.bright} style={styles.confirmText}>
+                  Unbind {folder.hostPath}? The container loses this mount; running tasks in it are not stopped.
+                </Label>
+                <View style={styles.confirmActions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel unbind"
+                    onPress={() => setUnbindingPath(null)}
+                    style={styles.cancelButton}
+                    testID={`cowork-folder-unbind-cancel-${folder.hostPath}`}
+                  >
+                    <Label color={ink.plain}>Cancel</Label>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Confirm unbind ${folder.hostPath}`}
+                    onPress={() => {
+                      setUnbindingPath(null);
+                      onUnbind(folder.hostPath);
+                    }}
+                    style={styles.confirmButton}
+                    testID={`cowork-folder-unbind-confirm-${folder.hostPath}`}
+                  >
+                    <Glyph name="deny" size={12} color={signal.oxide} />
+                    <Label color={signal.oxide}>Unbind</Label>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Unbind ${folder.hostPath}`}
+                onPress={() => setUnbindingPath(folder.hostPath)}
+                style={styles.unbind}
+                testID={`cowork-folder-unbind-${folder.hostPath}`}
+              >
+                <Glyph name="deny" size={12} color={ink.muted} />
+              </Pressable>
+            )}
           </View>
         ))
       )}
@@ -276,6 +332,20 @@ function FolderBinding({
           <Label color={signal.ochre} style={styles.refusedText}>
             {start.reason}
             {start.retryable ? " Worth trying again." : ""}
+          </Label>
+        </View>
+      ) : null}
+      {modelBroker !== undefined ? (
+        <View style={styles.brokerRow} testID="cowork-model-broker-state">
+          <Glyph
+            name={modelBroker.ready ? "allow" : "warning"}
+            size={12}
+            color={modelBroker.ready ? signal.sage : signal.ochre}
+          />
+          <Label color={modelBroker.ready ? signal.sage : signal.ochre}>
+            {modelBroker.ready
+              ? "Model broker ready"
+              : `Model broker not ready: ${modelBroker.reason ?? "unavailable"}`}
           </Label>
         </View>
       ) : null}
@@ -292,10 +362,13 @@ function FolderBinding({
       ) : (
         <Pressable
           accessibilityRole="button"
-          accessibilityState={{ disabled: start.status === "starting" }}
-          disabled={start.status === "starting"}
+          accessibilityState={{ disabled: startDisabled }}
+          accessibilityLabel={
+            brokerNotReady ? `Start container disabled: ${modelBroker.reason ?? "model broker not ready"}` : undefined
+          }
+          disabled={startDisabled}
           onPress={onStart}
-          style={[styles.containerStart, start.status === "starting" && styles.disabled]}
+          style={[styles.containerStart, startDisabled && styles.disabled]}
           testID="cowork-container-start"
         >
           <Glyph name="resume" color={ink.inverse} size={13} />
@@ -425,4 +498,34 @@ const styles = StyleSheet.create({
   },
   containerStartText: { ...type.title, color: ink.inverse },
   disabled: { opacity: 0.45 },
+  brokerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    paddingVertical: space.hair,
+  },
+  confirmUnbind: {
+    backgroundColor: ground.surface,
+    borderColor: signal.oxide,
+    borderWidth: stroke.hair,
+    padding: space.snug,
+    gap: space.tight,
+    marginTop: space.hair,
+    width: "100%",
+  },
+  confirmText: { flexShrink: 1 },
+  confirmActions: { flexDirection: "row", gap: space.snug, justifyContent: "flex-end" },
+  confirmButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    paddingHorizontal: space.snug,
+    minHeight: TOUCH_TARGET,
+  },
+  cancelButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: space.snug,
+    minHeight: TOUCH_TARGET,
+  },
 });

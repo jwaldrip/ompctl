@@ -30,11 +30,11 @@ export interface SkillsViewProps {
 export function SkillsView({ skills, onInvoke }: SkillsViewProps): JSX.Element {
   return (
     <ScrollView testID="skills-view" contentContainerStyle={styles.list}>
-      <Head glyph="skill" count={skills.length} noun="skill" testID="skills-count" />
+      <Head glyph="skill" count={skills.length} noun="skill" emptyLabel="No skills installed" testID="skills-count" />
       {skills.length === 0 ? (
         <Empty
           glyph="skill"
-          title="No skills discovered."
+          title="No skills installed."
           hint="A skill lives under skills/ in a plugin or an OMP config directory."
         />
       ) : (
@@ -55,11 +55,17 @@ export function ConnectorsView({ connectors }: { connectors: readonly ConnectorS
 
   return (
     <ScrollView testID="connectors-view" contentContainerStyle={styles.list}>
-      <Head glyph="connector" count={connectors.length} noun="connector" testID="connectors-count" />
+      <Head
+        glyph="connector"
+        count={connectors.length}
+        noun="connector"
+        emptyLabel="No connectors installed"
+        testID="connectors-count"
+      />
       {connectors.length === 0 ? (
         <Empty
           glyph="connector"
-          title="No connectors configured."
+          title="No connectors installed."
           hint="Wire one in .mcp.json or a plugin's own config."
         />
       ) : (
@@ -98,9 +104,15 @@ export function PluginsView({ skills, connectors }: PluginsViewProps): JSX.Eleme
 
   return (
     <ScrollView testID="plugins-view" contentContainerStyle={styles.list}>
-      <Head glyph="plugin" count={groups.length} noun="plugin" testID="plugins-count" />
+      <Head
+        glyph="plugin"
+        count={groups.length}
+        noun="plugin"
+        emptyLabel="No plugins installed"
+        testID="plugins-count"
+      />
       {groups.length === 0 ? (
-        <Empty glyph="plugin" title="No plugins discovered." />
+        <Empty glyph="plugin" title="No plugins installed." />
       ) : (
         groups.map(group => <PluginGroupCard key={group.key} group={group} />)
       )}
@@ -114,9 +126,21 @@ function PluginGroupCard({ group }: { group: PluginGroup }): JSX.Element {
       <View style={styles.groupHead}>
         <PluginBadge origin={group.origin} label={group.label} testID={`plugin-group-${group.key}-badge`} />
         <Label color={ink.muted}>{ORIGIN_LABELS[group.origin]}</Label>
-        <Data color={ink.faint} style={styles.groupCounts}>{`${group.skills.length} skill${
-          group.skills.length === 1 ? "" : "s"
-        } · ${group.connectors.length} connector${group.connectors.length === 1 ? "" : "s"}`}</Data>
+        {(() => {
+          const counts: string[] = [];
+          if (group.skills.length > 0) {
+            counts.push(`${group.skills.length} skill${group.skills.length === 1 ? "" : "s"}`);
+          }
+          if (group.connectors.length > 0) {
+            counts.push(`${group.connectors.length} connector${group.connectors.length === 1 ? "" : "s"}`);
+          }
+          const text = counts.join(" · ");
+          return text.length > 0 ? (
+            <Data color={ink.faint} style={styles.groupCounts}>
+              {text}
+            </Data>
+          ) : null;
+        })()}
       </View>
       {group.skills.map(skill => (
         <SkillRow key={`${skill.kind}:${skill.name}:${skill.source}`} skill={skill} />
@@ -158,16 +182,21 @@ function Head({
   count,
   noun,
   testID,
+  emptyLabel,
 }: {
   glyph: GlyphName;
   count: number;
   noun: string;
   testID: string;
+  emptyLabel?: string;
 }): JSX.Element {
+  const label = count === 0 ? (emptyLabel ?? `No ${noun}s installed`) : `${count} ${count === 1 ? noun : `${noun}s`}`;
   return (
     <View style={styles.head}>
       <Glyph name={glyph} size={16} color={ink.plain} />
-      <Kicker color={ink.muted} testID={testID}>{`${count} ${count === 1 ? noun : `${noun}s`}`}</Kicker>
+      <Kicker color={ink.muted} testID={testID}>
+        {label}
+      </Kicker>
     </View>
   );
 }

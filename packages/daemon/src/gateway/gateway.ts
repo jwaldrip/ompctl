@@ -1232,6 +1232,11 @@ export interface GatewayOptions {
    * filesystem".
    */
   filesystem?: FilesystemSurface;
+  /**
+   * Provides the cowork container state, notably model broker readiness.
+   * When absent, reports ready: true.
+   */
+  containerState?: () => { modelBroker: { ready: boolean; reason: string | null } };
   /** Embedded web assets map, for testing or overriding the compiled-in WEB_ASSETS. */
   embeddedAssets?: { assets: Record<string, string>; built: boolean };
 }
@@ -1405,6 +1410,7 @@ export class Gateway {
   #sessionWatch: SessionWatch | undefined;
   #endpoints: (() => EndpointOffer[]) | undefined;
   #filesystem: FilesystemSurface | undefined;
+  #containerStateProvider: (() => { modelBroker: { ready: boolean; reason: string | null } }) | undefined;
   /**
    * Clones in flight, per socket.
    *
@@ -1506,6 +1512,7 @@ export class Gateway {
     this.#stats.start();
     this.#endpoints = opts.endpoints;
     this.#filesystem = opts.filesystem;
+    this.#containerStateProvider = opts.containerState;
     this.#onWebViewResult = opts.onWebViewResult;
     this.#onWebViewUnavailable = opts.onWebViewUnavailable;
     // Resolved once so the traversal check below compares two absolute paths.
@@ -4780,6 +4787,16 @@ export class Gateway {
         return;
       }
 
+      case "container_state_read": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "container_state_read requires read scope" });
+          return;
+        }
+        const state = this.#containerState();
+        this.#send(ws, { t: "container_state", modelBroker: state.modelBroker });
+        return;
+      }
+
       case "settings_read": {
         // The same read gate the HTTP route runs, because a hub-relayed
         // phone reaches this frame instead of that route and must not meet
@@ -6329,6 +6346,13 @@ export class Gateway {
       // The socket went away between an event firing and this send. `#close`
       // removes it from the registry; there is nothing to report to.
     }
+  }
+
+  #containerState(): { modelBroker: { ready: boolean; reason: string | null } } {
+    if (this.#containerStateProvider) {
+      return this.#containerStateProvider();
+    }
+    return { modelBroker: { ready: true, reason: null } };
   }
 }
 

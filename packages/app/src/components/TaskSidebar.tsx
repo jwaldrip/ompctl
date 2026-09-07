@@ -60,7 +60,9 @@ export function TaskSidebar({
     <View style={styles.sidebar} testID="task-sidebar">
       <View style={styles.head}>
         <Glyph name="tasks" size={16} color={ink.plain} />
-        <Kicker color={ink.muted} testID="task-sidebar-count">{`${total} ${total === 1 ? "task" : "tasks"}`}</Kicker>
+        <Kicker color={ink.muted} testID="task-sidebar-count">
+          {total === 0 ? "No tasks" : `${total} ${total === 1 ? "task" : "tasks"}`}
+        </Kicker>
       </View>
 
       <View style={styles.composer}>

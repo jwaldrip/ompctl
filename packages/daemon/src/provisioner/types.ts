@@ -190,6 +190,12 @@ export interface ModelAccessProvider {
   activate(input: { bridge: GuestBridge }): Promise<void>;
   /** Revoke a grant on teardown. Must be safe for a token the provider has already forgotten. */
   release(input: { token: string }): Promise<void>;
+  /**
+   * Report the model broker's readiness and reason.
+   * Field reads only: safe to call any time.
+   */
+  modelBrokerState?(): { ready: boolean; reason: string | null };
+  status?(): { enabled: boolean; model: string | null };
 }
 
 export interface CommandResult {

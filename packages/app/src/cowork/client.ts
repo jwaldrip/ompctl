@@ -21,6 +21,7 @@ import type {
   ClientErrorEvent,
   ConnectionState,
   ConnectorsEvent,
+  ContainerStateEvent,
   SkillsEvent,
   StatusEvent,
   TaskEvent,
@@ -50,6 +51,7 @@ export interface CoworkClient {
   createTask(input: NewTaskInput & { agentId: AgentId }): void;
   cancelTask(taskId: string): void;
   createAgent(request: AgentCreateRequest): void;
+  readContainerState?(): void;
   on(name: "skills", listener: (event: SkillsEvent) => void): () => void;
   on(name: "connectors", listener: (event: ConnectorsEvent) => void): () => void;
   on(name: "tasks", listener: (event: TasksEvent) => void): () => void;
@@ -57,4 +59,5 @@ export interface CoworkClient {
   on(name: "agent_created", listener: (event: AgentCreatedEvent) => void): () => void;
   on(name: "error", listener: (event: ClientErrorEvent) => void): () => void;
   on(name: "status", listener: (event: StatusEvent) => void): () => void;
+  on(name: "container_state", listener: (event: ContainerStateEvent) => void): () => void;
 }
