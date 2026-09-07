@@ -104,6 +104,14 @@ export interface ConsoleActions {
  * A direct connection dials the socket the device was handed. A hub
  * connection has no socket of its own: it goes through the pinned daemon's
  * relay instead, which is why it needs its own `createSocket`.
+ *
+ * It also gets no HTTP credential probe. The client's default probe derives
+ * `/v1/agents` from the socket URL, which through a hub is the hub's own
+ * origin: the relay has no such route and the browser refuses the
+ * cross-origin request before it leaves, so every reconnect logged a CORS
+ * error and learned nothing. A refused credential reaches this client as the
+ * daemon's sealed verdict instead (`CREDENTIAL_REFUSED_CLOSE_CODE`), which
+ * needs no probe.
  */
 export function createOmpdClient(connection: Connection): OmpdClient {
   if (connection.transport === "direct") {
@@ -113,6 +121,7 @@ export function createOmpdClient(connection: Connection): OmpdClient {
     url: connection.hubUrl,
     token: connection.token,
     createSocket: createHubSocketFactory({ daemonId: connection.daemonId }),
+    probeCredential: async () => "unknown",
   });
 }
 

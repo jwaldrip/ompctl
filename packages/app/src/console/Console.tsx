@@ -127,6 +127,10 @@ export function Console({
   }, [rows]);
 
   const clearances = useMemo(() => fleetClearances(state), [state]);
+  const fleetLink = useMemo(
+    () => ({ connection: state.connection, attempt: state.attempt, indexed: state.indexed }),
+    [state.connection, state.attempt, state.indexed],
+  );
 
   // Wide enough for both and nothing open is a hole rather than a choice, so
   // the top strip is taken once. Only once: an operator who backed out of a
@@ -496,6 +500,7 @@ export function Console({
               onUnarchive={onUnarchive}
               onDelete={onDelete}
               deleteAccess={manageScopeAccess(state, connection.scopes)}
+              link={fleetLink}
             />
           </View>
           {/*

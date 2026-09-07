@@ -25,6 +25,7 @@
  * above has already paid it, `useOwnedBottomInset` reads zero and nothing doubles.
  */
 
+import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useMemo } from "react";
 import { FlatList, Pressable, type PressableStateCallbackType, SectionList, StyleSheet, View } from "react-native";
@@ -39,6 +40,23 @@ import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/toke
 import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
 import { browserView } from "../session/browser.ts";
 
+/**
+ * What the bay may honestly claim about the daemon.
+ *
+ * An empty roster is a fact only once the daemon has said so. Before the
+ * first index arrives, and whenever the link is down, "no sessions" is not a
+ * finding but the absence of one, and a phone that drew it as one told its
+ * operator to go start a session on a laptop it could not reach. Observed on
+ * 2026-09-06 against a revoked pairing and again against a dead tunnel:
+ * both read "0 sessions" over a working daemon with 699 of them.
+ */
+export interface FleetLink {
+  connection: ConnectionState;
+  /** Reconnect attempts so far, for the operator to see the link is trying. */
+  attempt: number;
+  /** Whether the daemon has delivered its session index at least once on this pairing. */
+  indexed: boolean;
+}
 export interface FleetScreenProps {
   browser: BrowserState;
   onSort: (field: SortField) => void;
@@ -58,6 +76,7 @@ export interface FleetScreenProps {
    * would be a silent refusal.
    */
   deleteAccess: ScopeAccess;
+  link: FleetLink;
   /** Injected so a test can pin the row clocks instead of racing the wall. */
   now?: number;
 }
@@ -83,10 +102,14 @@ const WINDOW_SIZE = 5;
 /** How long the virtualizer coalesces cell work. One frame at 60Hz is 16ms. */
 const BATCH_PERIOD_MS = 50;
 
-/** Stable and hoisted: a fresh element here would remount the empty state per render. */
-const EMPTY = <Empty />;
-
 const keyOf = (session: BrowserSession): string => session.id;
+
+/** The header's word for a link that is not up, in the kicker slot the count otherwise fills. */
+const LINK_WORD: Record<Exclude<ConnectionState, "connected">, string> = {
+  connecting: "connecting",
+  reconnecting: "reconnecting",
+  offline: "offline",
+};
 
 export function FleetScreen({
   browser,
@@ -99,6 +122,7 @@ export function FleetScreen({
   onUnarchive,
   onDelete,
   deleteAccess,
+  link,
   now,
 }: FleetScreenProps): JSX.Element {
   // The list is the bottom-most surface in the bay, with no composer beneath
@@ -129,6 +153,10 @@ export function FleetScreen({
       })),
     [view.groups, browser.collapsedGroups],
   );
+  // Memoised on the link rather than hoisted: the empty state is a claim
+  // about the daemon, and it changes when the link does. The console builds
+  // `link` from its three fields, so its identity changes only with them.
+  const empty = useMemo(() => <Empty link={link} />, [link]);
 
   const renderGrouped = useCallback(
     ({ item }: { item: BrowserSession }) => (
@@ -181,9 +209,18 @@ export function FleetScreen({
           <Display heading testID="fleet-title">
             Sessions
           </Display>
-          <Kicker color={ink.muted} testID="fleet-count">
-            {`${view.visibleCount} ${view.visibleCount === 1 ? "session" : "sessions"}`}
-          </Kicker>
+          {link.connection === "connected" ? (
+            <Kicker color={ink.muted} testID="fleet-count">
+              {`${view.visibleCount} ${view.visibleCount === 1 ? "session" : "sessions"}`}
+            </Kicker>
+          ) : (
+            // The count is a claim about the daemon, and with the link down
+            // there is nobody to have made it. The slot says what the link is
+            // doing instead, so a stale list is legible as stale.
+            <Kicker color={signal.ochre} testID="fleet-link">
+              {LINK_WORD[link.connection]}
+            </Kicker>
+          )}
         </View>
         <Pressable
           testID="grouped-toggle"
@@ -243,7 +280,7 @@ export function FleetScreen({
           maxToRenderPerBatch={FIRST_WINDOW}
           windowSize={WINDOW_SIZE}
           updateCellsBatchingPeriod={BATCH_PERIOD_MS}
-          ListEmptyComponent={EMPTY}
+          ListEmptyComponent={empty}
         />
       ) : (
         <FlatList
@@ -256,14 +293,41 @@ export function FleetScreen({
           maxToRenderPerBatch={FIRST_WINDOW}
           windowSize={WINDOW_SIZE}
           updateCellsBatchingPeriod={BATCH_PERIOD_MS}
-          ListEmptyComponent={EMPTY}
+          ListEmptyComponent={empty}
         />
       )}
     </View>
   );
 }
 
-function Empty(): JSX.Element {
+/**
+ * Three different absences. Only the last is a daemon saying it has nothing;
+ * the first two are this device not knowing, and say so.
+ */
+function Empty({ link }: { link: FleetLink }): JSX.Element {
+  if (link.connection !== "connected") {
+    return (
+      <View style={styles.empty} testID="fleet-unreachable">
+        <Glyph name="warning" size={26} color={signal.ochre} />
+        <Body color={ink.plain}>Not connected to the daemon.</Body>
+        <Label color={ink.muted}>
+          {link.connection === "connecting"
+            ? "Connecting."
+            : link.attempt > 0
+              ? `Reconnecting, attempt ${link.attempt}. Sessions list again when the link is back.`
+              : "Sessions list again when the link is back."}
+        </Label>
+      </View>
+    );
+  }
+  if (!link.indexed) {
+    return (
+      <View style={styles.empty} testID="fleet-loading">
+        <Glyph name="bay" size={26} color={ground.edge} />
+        <Body color={ink.plain}>Loading sessions.</Body>
+      </View>
+    );
+  }
   return (
     <View style={styles.empty} testID="fleet-empty">
       <Glyph name="bay" size={26} color={ground.edge} />

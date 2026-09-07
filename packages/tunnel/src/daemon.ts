@@ -30,6 +30,7 @@ import {
   type ClientCredential,
   type ClientHello,
   HandshakeError,
+  type SessionDenied,
   type SessionReady,
 } from "./handshake.ts";
 import { type DaemonKeyPair, signWith } from "./identity.ts";
@@ -667,11 +668,14 @@ export class TunnelDaemon {
     const admitted = this.#acceptor.accept(credential.token, deliver, getBufferedAmount, onClose);
     if (!admitted.ok) {
       this.#onSession?.({ sessionId: session.sessionId, outcome: "denied", reason: admitted.reason });
-      this.#refuse(
-        session,
-        admitted.reason === "revoked" ? "revoked" : "unknown_client",
-        `credential was ${admitted.reason}`,
-      );
+      const code = admitted.reason === "revoked" ? "revoked" : "unknown_client";
+      const message = `credential was ${admitted.reason}`;
+      // The verdict goes sealed first, then the refusal the hub relays. Only
+      // the sealed one can make a client forget the credential; the plain
+      // one is what closes the session on the hub. Awaited so they arrive in
+      // that order.
+      await this.#sealTo(session, JSON.stringify({ t: "denied", code, message } satisfies SessionDenied));
+      this.#refuse(session, code, message);
       return;
     }
 

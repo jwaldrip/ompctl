@@ -81,6 +81,7 @@ function render(browser: BrowserState): string {
       onUnarchive={NOOP_SESSION}
       onDelete={NOOP_SESSION}
       deleteAccess="granted"
+      link={{ connection: "connected", attempt: 0, indexed: true }}
     />,
   );
 }

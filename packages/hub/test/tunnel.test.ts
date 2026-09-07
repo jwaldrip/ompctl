@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   type AcceptResult,
+  CREDENTIAL_REFUSED_CLOSE,
   connectThroughHub,
   generateIdentity,
   type SessionAcceptor,
@@ -424,6 +425,37 @@ describe("refusals", () => {
     // Not collapsed into the same answer as an unknown token: an operator
     // needs to tell "never real" from "I withdrew that".
     expect(sessions[0]?.reason).toBe("revoked");
+    // And the client learns it from the daemon's sealed verdict, as a close
+    // code an `OmpdClient` stops retrying on, not from the hub's plain
+    // `refused` frame that follows. Before this, a revoked phone reconnected
+    // forever and drew the loop as an empty roster.
+    expect(client.closed).toEqual({
+      code: CREDENTIAL_REFUSED_CLOSE,
+      reason: "This device's credential was revoked by the daemon.",
+    });
+    expect(client.errors).toEqual(["This device's credential was revoked by the daemon."]);
+  });
+
+  test("an unknown credential's verdict is worded as unknown, with the same close", async () => {
+    fleet = await startHubs(1);
+    const url = fleet.hubs[0]?.url ?? "";
+    const identity = await enroll(fleet, "alpha");
+    const daemon = new TunnelDaemon({
+      hubUrl: url,
+      identity,
+      acceptor: echoAcceptor("alpha", { good: "dev_a" }),
+      transport: browserTransport,
+    });
+    running.push(daemon);
+    daemon.start();
+    await until(() => daemon.registered, "alpha to register");
+
+    const client = openClient(url, identity.daemonId, "never-issued");
+    await until(() => client.closed !== null, "the unknown credential to be refused");
+    expect(client.closed).toEqual({
+      code: CREDENTIAL_REFUSED_CLOSE,
+      reason: "The daemon does not recognise this device's credential.",
+    });
   });
 
   test("a hub that substitutes a key for a pinned daemon id is caught", async () => {

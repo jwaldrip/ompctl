@@ -32,6 +32,7 @@ export {
   HandshakeError,
   type HandshakeFailure,
   handshakeTranscript,
+  type SessionDenied,
   type SessionReady,
   type TranscriptInput,
 } from "./handshake.ts";
@@ -61,6 +62,7 @@ export {
   type SessionId,
 } from "./protocol.ts";
 export {
+  CREDENTIAL_REFUSED_CLOSE,
   connectThroughHub,
   hubSocketUrl,
   type TunnelSocketLike,
