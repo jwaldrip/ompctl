@@ -31,6 +31,7 @@ import {
   type ClientCredential,
   type ClientHandshake,
   type DaemonAuth,
+  type SessionDenied,
   type SessionReady,
 } from "./handshake.ts";
 import type { DaemonId } from "./identity.ts";
@@ -52,6 +53,21 @@ export type TunnelTransportFactory = (url: string) => TunnelSocketLike;
 const CONNECTING = 0;
 const OPEN = 1;
 const CLOSED = 3;
+
+/**
+ * The close code a tunnel socket reports when the daemon's own sealed verdict
+ * refused the credential.
+ *
+ * `OmpdClient` treats every other close as a link that broke and reconnects,
+ * asking the daemon over HTTP whether the token is still good. Through a hub
+ * there is no daemon to ask over HTTP, so a revoked token reconnected forever
+ * and the portal drew the loop as an empty roster. This code carries the
+ * daemon's answer inside the close itself. A hub cannot produce it: the
+ * verdict that leads here arrived sealed under the channel key, which only
+ * the daemon holds, so a relay that wanted every client to forget its
+ * pairing has no way to say this.
+ */
+export const CREDENTIAL_REFUSED_CLOSE = 4401;
 
 /**
  * Where a session is in the handshake.
@@ -293,14 +309,26 @@ class TunnelSocket implements TunnelSocketLike {
   async #onReady(payload: string): Promise<void> {
     const channel = this.#channel;
     if (channel === null) return;
-    let ready: SessionReady | null;
+    let verdict: SessionReady | SessionDenied | null;
     try {
-      ready = parseFrame<SessionReady>(await channel.open(payload));
+      verdict = parseFrame<SessionReady | SessionDenied>(await channel.open(payload));
     } catch (cause) {
       this.#fail(`session confirmation did not authenticate: ${describe(cause)}`);
       return;
     }
-    if (ready?.t !== "ready") {
+    if (verdict?.t === "denied") {
+      // Sealed, so the daemon itself said it: the credential is not one. The
+      // close code is the client's cue to stop presenting it, which it must
+      // not do on the hub's word alone; see `CREDENTIAL_REFUSED_CLOSE`.
+      this.#fail(
+        verdict.code === "revoked"
+          ? "This device's credential was revoked by the daemon."
+          : "The daemon does not recognise this device's credential.",
+        CREDENTIAL_REFUSED_CLOSE,
+      );
+      return;
+    }
+    if (verdict?.t !== "ready") {
       this.#fail("daemon refused the credential");
       return;
     }

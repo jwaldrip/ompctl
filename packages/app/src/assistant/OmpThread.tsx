@@ -393,8 +393,14 @@ const styles = StyleSheet.create({
    * The header control, every turn, the spoken row and the empty state all
    * render inside this container, so none of them pays a screen inset a second
    * time -- which is what made the transcript read as padded out.
+   *
+   * The vertical air is here too, as content padding, and nowhere outside the
+   * list. The first row sits a row step below the band above and the last a
+   * row step above the band below, and both scroll under those edges with the
+   * rest of the log. Paid by the screen's stack instead, it was a fixed band
+   * of dead colour the list could never scroll into.
    */
-  listContent: { paddingHorizontal: rhythm.gutter, gap: rhythm.rowGap },
+  listContent: { paddingHorizontal: rhythm.gutter, paddingVertical: rhythm.rowGap, gap: rhythm.rowGap },
   // The control belongs to the history above it rather than standing as its own
   // section, so it pays the tight step.
   header: { alignItems: "center", paddingVertical: rhythm.rowGapTight },

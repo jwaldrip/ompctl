@@ -110,6 +110,30 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
       );
 
     case "approval":
+      // While it waits, the decision lives in the tray pinned above the
+      // readout (`SessionScreen`), where the log cannot scroll it away. The
+      // log marks the place with one line rather than a second copy of the
+      // same three buttons, and draws the full card once the clearance is
+      // settled, which is when it becomes a record.
+      if (entry.decision === null) {
+        return (
+          <View
+            style={styles.row}
+            testID="entry-approval-pending"
+            accessible
+            accessibilityLabel={`clearance: waiting on ${entry.tool}, answer it below`}
+          >
+            <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.ochre }]}>
+              <Kicker color={signal.ochre} numberOfLines={1}>
+                clearance
+              </Kicker>
+            </View>
+            <View style={styles.prose}>
+              <Label color={ink.muted}>{`Waiting on ${entry.tool}. Answer it below.`}</Label>
+            </View>
+          </View>
+        );
+      }
       return (
         <View style={styles.cardRow}>
           <ApprovalCard entry={entry} canApprove={canApprove} refusal={refusal} onDecide={onDecide} />

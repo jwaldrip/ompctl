@@ -187,6 +187,12 @@ export interface ConsoleState {
    * driving, which is most of a long-running machine's history, is invisible.
    */
   readonly sessionIndex: readonly SessionSummary[];
+  /**
+   * Whether the daemon has delivered `sessionIndex` at least once on this
+   * pairing. Until it has, an empty index is this device not knowing, not
+   * the daemon having nothing; the bay draws the two differently.
+   */
+  readonly indexed: boolean;
   /** Highest `seq` seen per agent, for the readout and for `say` de-duplication. */
   readonly watermarks: ReadonlyMap<AgentId, number>;
   /**
@@ -444,6 +450,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     sessionIds: new Map(),
     lastFailedSessionOpen: null,
     sessionIndex: [],
+    indexed: false,
     watermarks: new Map(),
     rosterMisses: new Map(),
     dictation: new Map(),
@@ -1041,8 +1048,8 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
  * shorter answer than the last one is the machine telling the truth.
  */
 function applySessions(state: ConsoleState, sessions: readonly SessionSummary[]): ConsoleState {
-  if (state.sessionIndex === sessions) return state;
-  return { ...state, sessionIndex: sessions };
+  if (state.sessionIndex === sessions && state.indexed) return state;
+  return { ...state, sessionIndex: sessions, indexed: true };
 }
 
 /**

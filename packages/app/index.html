@@ -49,6 +49,40 @@
       #root {
         display: flex;
       }
+
+      /*
+       * Scrollbars are part of the interface, drawn in its own materials.
+       *
+       * The browser default is a 15px light-grey classic bar on a dark panel,
+       * sitting in a gutter of its own, and it read as a foreign object beside
+       * every list. The values are `ground.edge` for the thumb, `ink.faint`
+       * under the pointer, and no track at all, so the bar runs to the very
+       * edge of whatever scrolls (`tokens.ts` is the source; this file cannot
+       * import it). `scrollbar-width` and `scrollbar-color` are the standard
+       * properties and cover Firefox and current Chromium; the `::-webkit-`
+       * rules reach the Chromium and WebKit builds that still ignore them.
+       */
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: #403a30 transparent;
+      }
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #403a30;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #5a5449;
+      }
+      ::-webkit-scrollbar-corner {
+        background: transparent;
+      }
     </style>
   </head>
   <body>

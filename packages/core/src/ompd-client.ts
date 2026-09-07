@@ -128,6 +128,18 @@ export function isTransientCloseCode(code?: number): boolean {
 }
 
 /**
+ * The close code `@ompd/tunnel`'s socket reports (its `CREDENTIAL_REFUSED_CLOSE`)
+ * when the daemon's own sealed verdict refused the credential.
+ *
+ * Through a hub there is no daemon to ask over HTTP whether a token is still
+ * good, so `checkCredential` learns nothing and a revoked token reconnected
+ * forever; the portal drew that loop as an empty roster. This close carries
+ * the daemon's answer, sealed under a key the hub does not hold, so it is
+ * the one close that ends the loop without a probe.
+ */
+export const CREDENTIAL_REFUSED_CLOSE_CODE = 4401;
+
+/**
  * Whether losing a frame to a closed socket is worth telling the operator
  * about. Attach and detach are re-sent from `attached` on the next `hello`,
  * and a ping that never left is answered by the next ping, so their loss is
@@ -1393,6 +1405,10 @@ export class OmpdClient {
       // nothing changes; only a daemon that is up and says 401 stops the loop.
       if (info.code === 1013) {
         this.backpressureStreak += 1;
+      }
+      if (info.code === CREDENTIAL_REFUSED_CLOSE_CODE) {
+        this.declareRejected(cause);
+        return;
       }
       if (!this.authenticated && !isTransientCloseCode(info.code)) {
         this.checkCredential("The daemon rejected this device's token.");

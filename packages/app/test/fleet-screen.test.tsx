@@ -35,6 +35,9 @@ import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
 const { FleetScreen } = await import("../src/screens/FleetScreen.tsx");
 const { StyleSheet } = await import("react-native");
 
+/** Read off the screen rather than imported by name: see the note above the dynamic imports. */
+type FleetLink = Parameters<typeof FleetScreen>[0]["link"];
+
 const NOW = Date.parse("2026-03-01T00:00:00.000Z");
 const CORPUS = makeSessionCorpus(12);
 
@@ -91,8 +94,10 @@ function stylesForMarkup(markup: string): string {
     .join("\n");
 }
 
+const CONNECTED: FleetLink = { connection: "connected", attempt: 0, indexed: true };
+
 /** Markup plus only the atomic CSS used by that rendered page. */
-function render(browser: BrowserState, deleteAccess: ScopeAccess = "granted"): string {
+function render(browser: BrowserState, deleteAccess: ScopeAccess = "granted", link: FleetLink = CONNECTED): string {
   const markup = renderToStaticMarkup(
     <FleetScreen
       browser={browser}
@@ -105,6 +110,7 @@ function render(browser: BrowserState, deleteAccess: ScopeAccess = "granted"): s
       onUnarchive={NOOP_SESSION}
       onDelete={NOOP_SESSION}
       deleteAccess={deleteAccess}
+      link={link}
       now={NOW}
     />,
   );
@@ -156,6 +162,57 @@ describe("the session browser renders a realistic corpus", () => {
     const empty = render({ ...EMPTY_BROWSER, sessions: [] });
     expect(empty).toContain("No sessions.");
     expect(empty).toContain("0 sessions");
+  });
+});
+
+/**
+ * The three absences. Observed on 2026-09-06: a phone holding a revoked
+ * pairing, and later one behind a dead tunnel, both drew "0 sessions" and
+ * "Start one with ompd agents create" over a daemon holding 699 sessions.
+ * An empty roster is the daemon's finding; before the first index, and with
+ * the link down, it is this device not knowing.
+ */
+describe("an absent roster is only 'no sessions' once the daemon has said so", () => {
+  test("before the first index arrives the bay is loading, not empty", () => {
+    const html = render({ ...EMPTY_BROWSER, sessions: [] }, "granted", { ...CONNECTED, indexed: false });
+    expect(html).toContain('data-testid="fleet-loading"');
+    expect(html).toContain("Loading sessions.");
+    expect(html).not.toContain("No sessions.");
+    expect(html).not.toContain("ompd agents create");
+  });
+
+  test("with the link down the bay says so, and the header shows the link instead of a count", () => {
+    const html = render({ ...EMPTY_BROWSER, sessions: [] }, "granted", {
+      connection: "reconnecting",
+      attempt: 3,
+      indexed: false,
+    });
+    expect(html).toContain('data-testid="fleet-unreachable"');
+    expect(html).toContain("Not connected to the daemon.");
+    expect(html).toContain("Reconnecting, attempt 3.");
+    expect(html).toContain('data-testid="fleet-link"');
+    expect(html).toContain(">reconnecting<");
+    expect(html).not.toContain('data-testid="fleet-count"');
+    expect(html).not.toContain("0 sessions");
+    expect(html).not.toContain("No sessions.");
+  });
+
+  test("a stale list under a dropped link keeps its rows and wears the link word", () => {
+    const html = render(windowedState(), "granted", { connection: "offline", attempt: 0, indexed: true });
+    expect(html).toContain('data-testid="session-row-');
+    expect(html).toContain(">offline<");
+    expect(html).not.toContain('data-testid="fleet-count"');
+  });
+
+  test("a first connection that is still connecting says connecting, not empty", () => {
+    const html = render({ ...EMPTY_BROWSER, sessions: [] }, "granted", {
+      connection: "connecting",
+      attempt: 0,
+      indexed: false,
+    });
+    expect(html).toContain(">connecting<");
+    expect(html).toContain("Connecting.");
+    expect(html).not.toContain("No sessions.");
   });
 });
 

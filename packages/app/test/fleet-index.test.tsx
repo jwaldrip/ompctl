@@ -108,6 +108,7 @@ function renderFleet(browser: BrowserState): string {
       onUnarchive={() => {}}
       onDelete={() => {}}
       deleteAccess="granted"
+      link={{ connection: "connected", attempt: 0, indexed: true }}
       now={NOW}
     />,
   );

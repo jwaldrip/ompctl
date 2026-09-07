@@ -22,6 +22,7 @@ import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { CloneProgress } from "../components/CloneProgress.tsx";
 import { Glyph } from "../design/icons.tsx";
+import { rhythm } from "../design/rhythm.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Code, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
@@ -97,10 +98,12 @@ export function BrowseScreen({
       )}
 
       {state.clone === null ? null : (
-        <CloneProgress clone={state.clone} onDismiss={onDismissClone} onOpenDestination={onOpenPath} />
+        <View style={styles.inset}>
+          <CloneProgress clone={state.clone} onDismiss={onDismissClone} onOpenDestination={onOpenPath} />
+        </View>
       )}
 
-      <ScrollView style={styles.list} testID="browse-entries">
+      <ScrollView style={styles.list} contentContainerStyle={styles.listContent} testID="browse-entries">
         {state.entries.map(entry => (
           <EntryRow
             entry={entry}
@@ -223,11 +226,22 @@ function EntryRow({
 }
 
 const styles = StyleSheet.create({
-  screen: { backgroundColor: ground.base, gap: space.step, padding: space.wide },
-  header: { gap: space.tight },
+  // No padding and no gap at the screen: the list is a scroll field and runs
+  // edge to edge, its rule spanning the full width and its bar at the very
+  // edge. The chrome above and below pays the gutter for itself, and the
+  // rows pay it as content, where it scrolls with them.
+  screen: { backgroundColor: ground.base },
+  header: {
+    gap: space.tight,
+    paddingHorizontal: rhythm.gutter,
+    paddingTop: rhythm.gutter,
+    paddingBottom: rhythm.rowGap,
+  },
   headerRow: { alignItems: "center", flexDirection: "row", gap: space.snug },
   headerButton: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET, minWidth: TOUCH_TARGET },
   headerCopy: { flex: 1, gap: space.hair },
+  /** A card between the header and the list keeps the screen's gutter. */
+  inset: { paddingHorizontal: rhythm.gutter, paddingBottom: rhythm.rowGap },
   notice: {
     alignItems: "center",
     backgroundColor: ground.surface,
@@ -237,9 +251,12 @@ const styles = StyleSheet.create({
     gap: space.snug,
     minHeight: TOUCH_TARGET,
     paddingHorizontal: space.step,
+    marginHorizontal: rhythm.gutter,
+    marginBottom: rhythm.rowGap,
   },
   noticeText: { flex: 1 },
   list: { borderColor: ground.edge, borderTopWidth: stroke.hair, flex: 1 },
+  listContent: { paddingHorizontal: rhythm.gutter, paddingBottom: rhythm.rowGap },
   entry: {
     alignItems: "center",
     borderBottomColor: ground.line,
@@ -254,7 +271,7 @@ const styles = StyleSheet.create({
   bounded: { paddingVertical: space.step },
   // Pinned under the list: these are the two reasons the screen exists, and a
   // thumb has to reach them without scrolling.
-  actions: { gap: space.snug },
+  actions: { gap: space.snug, paddingHorizontal: rhythm.gutter, paddingVertical: rhythm.rowGap },
   start: {
     alignItems: "center",
     backgroundColor: signal.sage,

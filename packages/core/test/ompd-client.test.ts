@@ -32,6 +32,7 @@ import {
   type ClientErrorEvent,
   type CloneDoneEvent,
   type CloneProgressEvent,
+  CREDENTIAL_REFUSED_CLOSE_CODE,
   type CredentialVerdict,
   computeBackoffDelay,
   type DeviceInvitedEvent,
@@ -568,6 +569,36 @@ describe("a rejected credential", () => {
 
     await h.answerProbes();
     expect(h.unauthorized).toHaveLength(1);
+  });
+
+  test("a close carrying the daemon's sealed verdict ends the session without a probe", async () => {
+    // Through a hub the probe can only answer "unknown": there is no daemon
+    // origin to ask. The tunnel socket closes with the verdict instead.
+    const h = harness({ verdict: "unknown" });
+    h.client.start();
+    h.latest().accept();
+
+    h.latest().close(CREDENTIAL_REFUSED_CLOSE_CODE, "This device's credential was revoked by the daemon.");
+    await h.answerProbes();
+
+    expect(h.probes()).toBe(0);
+    expect(h.unauthorized).toEqual([{ reason: "This device's credential was revoked by the daemon." }]);
+    expect(h.clock.pendingDelays()).toEqual([]);
+    expect(h.sockets).toHaveLength(1);
+    expect(h.statuses.at(-1)?.state).toBe("offline");
+  });
+
+  test("an ordinary refusal close still reconnects and asks", async () => {
+    const h = harness({ verdict: "unknown" });
+    h.client.start();
+    h.latest().accept();
+
+    h.latest().close(4400, "rate_limited: leg over budget");
+    await h.answerProbes();
+
+    expect(h.probes()).toBe(1);
+    expect(h.unauthorized).toEqual([]);
+    expect(h.clock.pendingDelays()).toHaveLength(1);
   });
 
   test("reconnectNow does not restart a client the daemon has cut off", async () => {

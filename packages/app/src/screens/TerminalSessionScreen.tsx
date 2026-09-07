@@ -53,6 +53,7 @@ import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, useWindowDime
 import { Button } from "react-native-paper";
 import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
+import { RichText } from "../components/rich/RichText.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
@@ -278,6 +279,15 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
       // Gutter attribution rather than alternating bubbles, the same call
       // `Transcript` made: there are only ever two speakers and bubbles halve
       // the usable width on a phone.
+      //
+      // The words go through `RichText`, the renderer the owned transcript
+      // uses, because a terminal reply is the same markdown an owned one is:
+      // headings, lists, fences, inline code. Drawn as a bare `Body` it came
+      // out as punctuation ("a `session-body` testID", "**Problem**") and the
+      // operator re-parsed it by eye, which is what "markdown rendered as
+      // markup" reported on 2026-09-06. The accessibility label on the row
+      // keeps the raw words, so the round-trip gate reads exactly what was
+      // said.
       const row = (
         <>
           <View
@@ -289,9 +299,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             <Kicker color={mine ? theme.ink.muted : theme.signal.sage}>{mine ? "you" : "agent"}</Kicker>
             {under}
           </View>
-          <Body color={theme.ink.bright} style={styles.prose}>
-            {words}
-          </Body>
+          <RichText text={words} />
         </>
       );
       return (
@@ -655,7 +663,6 @@ const styles = StyleSheet.create({
     gap: rhythm.pairGap,
     alignItems: "flex-start",
   },
-  prose: { flex: 1 },
   // Only non-turns live here: the busy kicker, refusals, the explainer, and
   // the boundary. The bands claim just what they need under the log. With no
   // rows at all there is nothing above them, and filling the pane is what

@@ -23,6 +23,7 @@ import { OmpComposer } from "../assistant/OmpComposer.tsx";
 import { OmpThreadList, OmpThreadProvider } from "../assistant/OmpThread.tsx";
 import { webViewCapability } from "../browser";
 import { ActivityRow } from "../components/ActivityRow.tsx";
+import { ApprovalCard } from "../components/ApprovalCard.tsx";
 import { PlanCard } from "../components/PlanCard.tsx";
 import { SessionContext, type SessionContextSource } from "../components/SessionContext.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
@@ -39,7 +40,7 @@ import { agentSignal, ground, ink, signal, space, stroke } from "../design/token
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
 import { agentActivity, conversationActivity } from "../session/activity.ts";
-import type { SessionState } from "../session/model.ts";
+import type { ApprovalEntry, SessionState } from "../session/model.ts";
 import type { VoiceAvailability } from "../voice/memo.ts";
 import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
 
@@ -205,6 +206,11 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
    * derives from: a missing prompt scope, and a clearance still waiting.
    */
   const clearances = session.pendingApprovals.length + (session.planReview === null ? 0 : 1);
+  // The transcript's own entries for what is still waiting, in the order they
+  // were asked, so the pinned tray and the log agree on every field.
+  const pendingClearances = session.entries.filter(
+    (entry): entry is ApprovalEntry => entry.kind === "approval" && entry.decision === null,
+  );
   const sendRefusal =
     props.voice.access === "missing"
       ? "This device does not hold the prompt scope. Pair it again with prompt access to steer this agent."
@@ -399,7 +405,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         onDecide={props.onDecide}
         onDecidePlan={props.onDecidePlan}
       >
-        <View style={styles.body}>
+        <View style={styles.body} testID="session-body">
           {load.phase === "loading" ? (
             <SessionLoading title={agent.name} />
           ) : load.phase === "stalled" ? (
@@ -444,6 +450,33 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           {webViewCapability === null || !browserOpen ? null : (
             <View style={styles.browser} testID="session-browser">
               <webViewCapability.Driver ref={driver} style={styles.driver} />
+            </View>
+          )}
+
+          {/*
+            A clearance the agent is waiting on is the one thing on this
+            screen the operator has to act on, and it lived only in the
+            transcript, where a context strip, a plan card and a screenful
+            of tool cards could scroll it out of sight. On 2026-09-06 two
+            bash clearances timed out into refusals on a phone whose
+            operator never saw a card, and the agent gave up on running the
+            tests. Pending clearances are pinned here as well, above the
+            readout and the composer, until they settle; the transcript's
+            copy stays as the record. A device without the approve scope
+            sees the same tray with the card's own refusal note, so the wait
+            is at least legible.
+          */}
+          {pendingClearances.length === 0 ? null : (
+            <View style={styles.clearances} testID="session-clearances">
+              {pendingClearances.map(entry => (
+                <ApprovalCard
+                  key={entry.requestId}
+                  entry={entry}
+                  canApprove={props.canApprove}
+                  refusal={props.refusal}
+                  onDecide={props.onDecide}
+                />
+              ))}
             </View>
           )}
 
@@ -540,15 +573,17 @@ const styles = StyleSheet.create({
   // Owns the space between the header and the bottom of the screen, so the
   // keyboard's inset lands here rather than on top of the composer.
   //
-  // It is also where this screen's vertical rhythm is set, once, for every
-  // instrument in it. `sectionGap` above, because the chrome bands and the
-  // working area are genuinely different sections and nothing separated them
-  // but a hairline. `rowGap` between, because the context strip, the plan
-  // card, the transcript, the readout and the dock are consecutive rows of
-  // the same kind: instruments. Before this they had no gap at all and each
-  // one made up its own margin, which is the vertical half of what the
-  // operator was reporting.
-  body: { flex: 1, minHeight: 0, paddingTop: rhythm.sectionGap, gap: rhythm.rowGap },
+  // No gap and no top pad, on purpose. The transcript is a scroll field, not
+  // a row in a stack: it runs flush against the band above it and the band
+  // below, and the air the first and last rows need lives inside its own
+  // content (`OmpThread`'s `listContent`), where it scrolls under the edges
+  // like everything else. A `gap` here drew a dead band of base colour above
+  // and below the list on every platform, with the scrollbar stopping short
+  // of the readout, which is what "there is a hard space above and below the
+  // message window" reported on 2026-09-06. The bands around the field draw
+  // their own boundaries: the context strip ends in a rule and the readout
+  // begins with one, so nothing needs a gap to be told apart.
+  body: { flex: 1, minHeight: 0 },
   // The band that owns the screen's bottom edge, composer to home
   // indicator. It paints the composer's surface because it is the view that
   // pays the inset below the composer: a parent's padding is outside every
@@ -600,6 +635,17 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.heavy,
     borderTopColor: ground.edge,
     backgroundColor: ground.surface,
+  },
+  // The pinned clearance tray: a band of its own, the card's ochre carrying
+  // the meaning, on the surface colour so it reads as chrome rather than as
+  // one more row of the log it sits under.
+  clearances: {
+    paddingHorizontal: rhythm.gutter,
+    paddingVertical: rhythm.rowGap,
+    gap: rhythm.cardStack,
+    backgroundColor: ground.surface,
+    borderTopWidth: stroke.hair,
+    borderTopColor: ground.line,
   },
   // The three bands that stand in for the composer. They pay the screen
   // gutter themselves rather than taking one from the band around them, so

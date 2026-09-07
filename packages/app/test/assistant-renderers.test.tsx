@@ -307,8 +307,27 @@ describe("every entry kind renders the component the transcript already draws", 
     }
   });
 
-  test("a clearance is an ApprovalCard, keyed by the request id", () => {
+  test("a pending clearance is a marker in the log that points at the tray, with no controls of its own", () => {
+    // The decision itself is pinned above the readout by `SessionScreen`,
+    // where the log cannot scroll it away; a second copy of the same three
+    // buttons here read as two clearances on the phone.
     const mounted = row(approvalEntry("git branch -D park/old"), { canApprove: true, onDecide: () => {} });
+    try {
+      const marker = byTestID(mounted.host, "entry-approval-pending");
+      expect(marker.textContent).toContain("clearance");
+      expect(marker.textContent).toContain("Waiting on bash");
+      expect(marker.getAttribute("aria-label")).toBe("clearance: waiting on bash, answer it below");
+      expect(mounted.host.querySelector('[data-testid="approval-r1"]')).toBeNull();
+      expect(mounted.host.querySelector('[data-testid="approval-allow-r1"]')).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("the tray's card is an ApprovalCard, keyed by the request id", () => {
+    const mounted = themed(
+      <ApprovalCard canApprove entry={approvalEntry("git branch -D park/old")} onDecide={() => {}} />,
+    );
     try {
       expect(byTestID(mounted.host, "approval-r1")).toBeDefined();
       expect(byTestID(mounted.host, "approval-state-r1").textContent).toBe("clearance");
@@ -382,23 +401,27 @@ describe("a tool title carries argument text, so it never leaves the card's own 
     }
   });
 
-  test("the same holds for a clearance, which is where a person actually reads one", () => {
-    const mounted = row(approvalEntry(SECRET_TITLE), { canApprove: true, onDecide: () => {} });
+  test("the same holds for a clearance, in the tray's card and in the log's marker", () => {
+    const card = themed(<ApprovalCard canApprove entry={approvalEntry(SECRET_TITLE)} onDecide={() => {}} />);
+    const marker = row(approvalEntry(SECRET_TITLE), { canApprove: true, onDecide: () => {} });
     try {
       // The card's own two surfaces: the title, and the command preview under
       // it. Both are deliberate; both are the card's.
-      expect(byTestID(mounted.host, "approval-title-r1").textContent).toContain("sk-live-DEADBEEF");
+      expect(byTestID(card.host, "approval-title-r1").textContent).toContain("sk-live-DEADBEEF");
 
-      for (const label of labelsIn(mounted.host)) {
+      for (const label of [...labelsIn(card.host), ...labelsIn(marker.host)]) {
         expect(label).not.toContain("sk-live");
         expect(label).not.toContain("Authorization");
       }
+      // The marker names the tool and nothing of the title.
+      expect(marker.host.textContent).not.toContain("sk-live");
       // The three buttons are labelled by their verb, never by the subject.
-      expect(byTestID(mounted.host, "approval-allow-r1").getAttribute("aria-label")).toBe("Allow");
-      expect(byTestID(mounted.host, "approval-deny-r1").getAttribute("aria-label")).toBe("Reject");
-      expect(byTestID(mounted.host, "approval-always-r1").getAttribute("aria-label")).toBe("Always");
+      expect(byTestID(card.host, "approval-allow-r1").getAttribute("aria-label")).toBe("Allow");
+      expect(byTestID(card.host, "approval-deny-r1").getAttribute("aria-label")).toBe("Reject");
+      expect(byTestID(card.host, "approval-always-r1").getAttribute("aria-label")).toBe("Always");
     } finally {
-      mounted.unmount();
+      card.unmount();
+      marker.unmount();
     }
   });
 
@@ -420,12 +443,15 @@ describe("a tool title carries argument text, so it never leaves the card's own 
 describe("a clearance is a decision, not a picture of one", () => {
   test("pressing allow, reject and always each dispatch their own choice and scope", () => {
     const decided: DecidedCall[] = [];
-    const mounted = row(approvalEntry("rm -rf build"), {
-      canApprove: true,
-      onDecide: (requestId, choice, scope) => {
-        decided.push([requestId, choice, scope]);
-      },
-    });
+    const mounted = themed(
+      <ApprovalCard
+        canApprove
+        entry={approvalEntry("rm -rf build")}
+        onDecide={(requestId, choice, scope) => {
+          decided.push([requestId, choice, scope]);
+        }}
+      />,
+    );
     try {
       act(() => {
         press(byTestID(mounted.host, "approval-allow-r1"));
@@ -450,11 +476,14 @@ describe("a clearance is a decision, not a picture of one", () => {
   });
 
   test("without the approve scope there are no controls, and the refusal says why", () => {
-    const mounted = row(approvalEntry("rm -rf build"), {
-      canApprove: false,
-      refusal: "Pair with the approve scope to answer clearances.",
-      onDecide: NO_DECIDE,
-    });
+    const mounted = themed(
+      <ApprovalCard
+        canApprove={false}
+        entry={approvalEntry("rm -rf build")}
+        refusal="Pair with the approve scope to answer clearances."
+        onDecide={NO_DECIDE}
+      />,
+    );
     try {
       expect(byTestID(mounted.host, "approval-refusal-r1").textContent).toBe(
         "Pair with the approve scope to answer clearances.",
@@ -468,7 +497,9 @@ describe("a clearance is a decision, not a picture of one", () => {
   });
 
   test("with no refusal supplied the card still says something true", () => {
-    const mounted = row(approvalEntry("rm -rf build"), { canApprove: false, onDecide: NO_DECIDE });
+    const mounted = themed(
+      <ApprovalCard canApprove={false} entry={approvalEntry("rm -rf build")} onDecide={NO_DECIDE} />,
+    );
     try {
       expect(byTestID(mounted.host, "approval-refusal-r1").textContent).toBe(
         "This device does not hold the approve scope.",

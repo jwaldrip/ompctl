@@ -75,6 +75,21 @@ export interface SessionReady {
   readonly deviceId: string;
 }
 
+/**
+ * Fourth message when the daemon does not accept: sealed, so a client knows
+ * the verdict is the daemon's own and not the hub's.
+ *
+ * The `refused` frame the hub relays afterwards carries the same code, but a
+ * hub can say anything; only the holder of the channel key can say this. A
+ * client that hears it stops retrying the credential, and that is a decision
+ * no relay may be able to force.
+ */
+export interface SessionDenied {
+  readonly t: "denied";
+  readonly code: "revoked" | "unknown_client";
+  readonly message: string;
+}
+
 export interface TranscriptInput {
   daemonId: DaemonId;
   sessionId: SessionId;
