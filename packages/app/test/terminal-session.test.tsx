@@ -760,7 +760,9 @@ describe("a terminal turn renders its markdown as structure, not punctuation", (
         el => el.children.length === 0 && /Plex|mono/i.test(getComputedStyle(el).fontFamily),
       );
       expect(mono.map(el => el.textContent)).toContain("session-body");
-      expect(mono.some(el => /flex: 1, minHeight: 0/.test(el.textContent ?? ""))).toBe(true);
+      // A highlighted fence is several mono spans per line, so the line is
+      // read back as their concatenation rather than as one leaf.
+      expect(mono.map(el => el.textContent ?? "").join("")).toContain("flex: 1, minHeight: 0");
       expect(painted).toContain("Nothing");
     } finally {
       unmountScreen(host, root);
