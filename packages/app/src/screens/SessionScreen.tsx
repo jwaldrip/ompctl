@@ -399,7 +399,7 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         onDecide={props.onDecide}
         onDecidePlan={props.onDecidePlan}
       >
-        <View style={styles.body}>
+        <View style={styles.body} testID="session-body">
           {load.phase === "loading" ? (
             <SessionLoading title={agent.name} />
           ) : load.phase === "stalled" ? (
@@ -540,15 +540,17 @@ const styles = StyleSheet.create({
   // Owns the space between the header and the bottom of the screen, so the
   // keyboard's inset lands here rather than on top of the composer.
   //
-  // It is also where this screen's vertical rhythm is set, once, for every
-  // instrument in it. `sectionGap` above, because the chrome bands and the
-  // working area are genuinely different sections and nothing separated them
-  // but a hairline. `rowGap` between, because the context strip, the plan
-  // card, the transcript, the readout and the dock are consecutive rows of
-  // the same kind: instruments. Before this they had no gap at all and each
-  // one made up its own margin, which is the vertical half of what the
-  // operator was reporting.
-  body: { flex: 1, minHeight: 0, paddingTop: rhythm.sectionGap, gap: rhythm.rowGap },
+  // No gap and no top pad, on purpose. The transcript is a scroll field, not
+  // a row in a stack: it runs flush against the band above it and the band
+  // below, and the air the first and last rows need lives inside its own
+  // content (`OmpThread`'s `listContent`), where it scrolls under the edges
+  // like everything else. A `gap` here drew a dead band of base colour above
+  // and below the list on every platform, with the scrollbar stopping short
+  // of the readout, which is what "there is a hard space above and below the
+  // message window" reported on 2026-09-06. The bands around the field draw
+  // their own boundaries: the context strip ends in a rule and the readout
+  // begins with one, so nothing needs a gap to be told apart.
+  body: { flex: 1, minHeight: 0 },
   // The band that owns the screen's bottom edge, composer to home
   // indicator. It paints the composer's surface because it is the view that
   // pays the inset below the composer: a parent's padding is outside every

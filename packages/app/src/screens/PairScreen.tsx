@@ -194,11 +194,13 @@ function Field({
 }
 
 const styles = StyleSheet.create({
-  // The shell keeps the same screen gutter as connections. The inner scroll
-  // gives large Dynamic Type a route above the keyboard.
-  screen: { padding: space.loose },
+  // The same screen gutter as connections, paid by the scroll content rather
+  // than by the shell around the scroll: the scroll field runs edge to edge
+  // and its bar sits at the screen's edge, while the form keeps its inset
+  // and large Dynamic Type still gets a route above the keyboard.
+  screen: {},
   scroll: { flex: 1 },
-  scrollContent: { flexGrow: 1, justifyContent: "center" },
+  scrollContent: { flexGrow: 1, justifyContent: "center", padding: space.loose },
   form: { gap: space.step, width: "100%", alignSelf: "center" },
   notice: {
     flexDirection: "row",

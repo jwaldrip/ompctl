@@ -29,7 +29,7 @@ import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
 import { rhythm } from "../design/rhythm.ts";
 import { Body, Data, Kicker, Label } from "../design/text.tsx";
-import { radius, type SignalName, space, type as typeScale } from "../design/tokens.ts";
+import { radius, type SignalName, space, stroke, type as typeScale } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { PlanEntry, PlanStatus, SessionState } from "../session/model.ts";
 import { AgentHubBranch, type AgentHubNode, subagentsOf } from "./AgentHub.tsx";
@@ -176,7 +176,15 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
     .join(" · ");
 
   return (
-    <Surface elevation={0} mode="flat" style={{ backgroundColor: theme.ground.surface }} testID="session-context">
+    <Surface
+      elevation={0}
+      mode="flat"
+      // A rule on top as well as the one at the bottom: this strip now sits
+      // flush under the header bands, all the same surface, and a boundary
+      // is drawn rather than left to a gap of base colour.
+      style={{ backgroundColor: theme.ground.surface, borderTopWidth: stroke.hair, borderTopColor: theme.ground.line }}
+      testID="session-context"
+    >
       <Pressable
         accessibilityLabel={
           open ? "Hide this session's context" : `Show this session's context${summary === "" ? "" : `: ${summary}`}`

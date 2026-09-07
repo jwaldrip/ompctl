@@ -190,11 +190,21 @@ describe("pair and connections draw from one design", () => {
     const pair = mountPair();
     const switcher = mountSwitcher();
     try {
-      const pairGutter = declarationsFor(contentView(pair.host, "pair")).get("padding");
+      // The pair screen is a scroll field, so its gutter is paid by the scroll
+      // content (the form's parent) and the scroll itself runs edge to edge;
+      // the switcher does not scroll, so its shell content pays it directly.
+      // Same token either way, which is the claim.
+      const pairContent = byTestID(pair.host, "pair-form").parentElement;
+      if (!(pairContent instanceof HTMLElement)) throw new Error("the pair form has no scroll content around it");
+      const pairGutter = declarationsFor(pairContent).get("padding");
       const switcherGutter = declarationsFor(contentView(switcher.host, "connection-switcher")).get("padding");
       expect(pairGutter).toBe(`${space.loose}px`);
       expect(switcherGutter).toBe(`${space.loose}px`);
       expect(pairGutter).toBe(switcherGutter);
+      // And nothing pads the scroll from outside: the shell content around
+      // the pair scroll carries no inset of its own (SafeScreen's own zero
+      // is the only padding it declares).
+      expect(["0px", undefined]).toContain(declarationsFor(contentView(pair.host, "pair")).get("padding"));
     } finally {
       pair.unmount();
       switcher.unmount();
