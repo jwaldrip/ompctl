@@ -559,6 +559,10 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
                   model={model}
                   onOpenConfig={props.onOpenConfig}
                   refusal={sendRefusal}
+                  commands={session.commands}
+                  commandDetails={session.commandDetails}
+                  cwd={agent.cwd}
+                  agentId={agent.id}
                 />
               </View>
             )}
