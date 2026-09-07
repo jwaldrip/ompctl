@@ -39,7 +39,7 @@ import type { ImageAttachmentPicker, PickedAttachments } from "../src/platform/a
 const { AssistantRuntimeProvider } = await import("@assistant-ui/react-native");
 const { useOmpRuntime } = await import("../src/assistant/runtime.ts");
 const { OmpComposer } = await import("../src/assistant/OmpComposer.tsx");
-const { ground, radius, signal } = await import("../src/design/tokens.ts");
+const { brand, ground, radius, signal } = await import("../src/design/tokens.ts");
 const { rhythm } = await import("../src/design/rhythm.ts");
 const { WithOmpTheme } = await import("./theme.tsx");
 const { StyleSheet } = await import("react-native");
@@ -928,6 +928,113 @@ describe("slash commands, file picker, and prompt queue", () => {
 
       m.press("composer-queued-remove-0");
       expect(removedId ?? "").toBe("q1");
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("command names in the slash menu render in brand.azure", async () => {
+    const commands = [
+      { name: "commit", description: "Create a git commit", hint: "[message]" },
+    ];
+    const m = open({}, { commands });
+    try {
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "/");
+      });
+      expect(m.find("command-menu")).not.toBeNull();
+      const name = m.need("command-name");
+      expect(renderedStyle(name)).toContain(`color:${rgba(brand.azure)}`);
+      expect(renderedStyle(name)).not.toContain(`color:${rgba(signal.working)}`);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("out_of_roots refusal renders refusal text with path and lists known roots", async () => {
+    const refusedPath = "/private/tmp/ompctl-rel/playground";
+    const roots = ["/Users/test/repo"];
+    const listeners: Record<string, ((arg: unknown) => void)[]> = {};
+    const mockClient = {
+      listDirectory(path?: string) {
+        if (path === refusedPath) {
+          listeners["error"]?.forEach(cb =>
+            cb({
+              code: "out_of_roots",
+              message: `${refusedPath} resolves outside this daemon's browsable directories`,
+            }),
+          );
+        } else if (path === "" || path === undefined) {
+          listeners["fs_listing"]?.forEach(cb =>
+            cb({
+              path: "",
+              parent: null,
+              roots,
+              entries: roots.map(r => ({ name: r, kind: "dir" as const })),
+              bounded: false,
+            }),
+          );
+        }
+      },
+      on(event: string, listener: (arg: unknown) => void) {
+        listeners[event] = listeners[event] ?? [];
+        listeners[event].push(listener);
+        return () => {
+          const list = listeners[event];
+          if (list) listeners[event] = list.filter(l => l !== listener);
+        };
+      },
+    };
+
+    const m = open(
+      {},
+      {
+        cwd: refusedPath,
+        client: mockClient,
+      },
+    );
+    try {
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "Look at @");
+      });
+      expect(m.find("file-picker")).not.toBeNull();
+      const pickerText = m.need("file-picker").textContent ?? "";
+      expect(pickerText).toContain("Outside this daemon's browsable directories");
+      expect(pickerText).toContain(refusedPath);
+      expect(pickerText).toContain("/Users/test/repo");
+      expect(m.find("file-picker-root-/Users/test/repo")).not.toBeNull();
+      expect(pickerText).not.toContain("No entries");
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a genuinely empty fs listing renders 'No entries'", async () => {
+    const emptyListing = {
+      path: "/Users/test/empty-dir",
+      parent: "/Users/test",
+      roots: ["/Users/test"],
+      bounded: false,
+      entries: [],
+    };
+    const m = open(
+      {},
+      {
+        cwd: "/Users/test/empty-dir",
+        fsListing: emptyListing,
+      },
+    );
+    try {
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "Look at @");
+      });
+      expect(m.find("file-picker")).not.toBeNull();
+      const pickerText = m.need("file-picker").textContent ?? "";
+      expect(pickerText).toContain("No entries");
+      expect(pickerText).not.toContain("Outside this daemon's browsable directories");
     } finally {
       m.unmount();
     }

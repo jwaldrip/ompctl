@@ -11,11 +11,16 @@ import { type JSX, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Label } from "../design/text.tsx";
-import { ground, ink, radius, signal, space, stroke, type } from "../design/tokens.ts";
+import { brand, ground, ink, radius, signal, space, stroke, type } from "../design/tokens.ts";
+
+export interface FilePickerErrorEvent {
+  code?: string;
+  message?: string;
+}
 
 export interface FilePickerClient {
   listDirectory?(path?: string): void;
-  on?(event: string, listener: (listing: FsListing) => void): () => void;
+  on?(event: string, listener: Function): () => void;
 }
 
 export interface FilePickerProps {
@@ -44,14 +49,21 @@ export function childPath(base: string, name: string): string {
 
 export function breadcrumbSegments(cwd: string, current: string): Array<{ label: string; path: string }> {
   const normCwd = cwd.replace(/\/+$/, "");
+  const normCurrent = current.replace(/\/+$/, "");
   const rootName = normCwd.split("/").pop() || "root";
   const segments: Array<{ label: string; path: string }> = [{ label: rootName, path: normCwd }];
 
-  if (current === normCwd || !current.startsWith(`${normCwd}/`)) {
+  if (normCurrent === normCwd) {
     return segments;
   }
 
-  const rel = current.slice(normCwd.length + 1);
+  if (!normCurrent.startsWith(`${normCwd}/`)) {
+    const curParts = normCurrent.split("/").filter(p => p.length > 0);
+    const curLabel = curParts[curParts.length - 1] || normCurrent;
+    return [{ label: curLabel, path: normCurrent }];
+  }
+
+  const rel = normCurrent.slice(normCwd.length + 1);
   const parts = rel.split("/").filter(p => p.length > 0);
   let accumulated = normCwd;
   for (const part of parts) {
@@ -73,26 +85,51 @@ export function FilePicker({
   const normCwd = cwd.replace(/\/+$/, "");
   const [currentPath, setCurrentPath] = useState(normCwd);
   const [entries, setEntries] = useState<FsEntry[]>(listing?.entries ?? []);
-
+  const [knownRoots, setKnownRoots] = useState<string[]>(listing?.roots ?? []);
+  const [refusal, setRefusal] = useState<{ path: string; message: string } | null>(null);
   useEffect(() => {
+    if (listing?.roots && listing.roots.length > 0) {
+      setKnownRoots(listing.roots);
+    }
     if (listing?.entries) {
       setEntries(listing.entries);
     }
   }, [listing]);
 
   useEffect(() => {
-    if (!client?.listDirectory) return;
-    client.listDirectory(currentPath);
-  }, [client, currentPath]);
-
-  useEffect(() => {
-    if (!client?.on) return;
-    const unsub = client.on("fs_listing", (event: FsListing) => {
-      if (event.path === currentPath || (currentPath === normCwd && event.path === "")) {
+    if (!client) return;
+    const unsubListing = client.on?.("fs_listing", (event: FsListing) => {
+      if (event.roots && event.roots.length > 0) {
+        setKnownRoots(event.roots);
+      }
+      if (event.path === "" && event.entries && event.entries.length > 0) {
+        const rootPaths = event.entries.map(e => e.name);
+        setKnownRoots(prev => Array.from(new Set([...prev, ...rootPaths, ...(event.roots ?? [])])));
+      }
+      const normEventPath = event.path.replace(/\/+$/, "");
+      const normCurrent = currentPath.replace(/\/+$/, "");
+      if (normEventPath === normCurrent) {
         setEntries(event.entries);
+        setRefusal(null);
       }
     });
-    return unsub;
+    const unsubError = client.on?.("error", (err: FilePickerErrorEvent) => {
+      if (
+        err.code === "out_of_roots" ||
+        (typeof err.message === "string" && err.message.includes("outside this daemon's browsable directories"))
+      ) {
+        setRefusal({
+          path: currentPath,
+          message: err.message ?? "Outside this daemon's browsable directories",
+        });
+        client.listDirectory?.("");
+      }
+    });
+    client.listDirectory?.(currentPath);
+    return () => {
+      unsubListing?.();
+      unsubError?.();
+    };
   }, [client, currentPath, normCwd]);
 
   const breadcrumbs = useMemo(() => breadcrumbSegments(normCwd, currentPath), [normCwd, currentPath]);
@@ -110,6 +147,8 @@ export function FilePicker({
     const full = childPath(currentPath, entry.name);
     if (entry.kind === "dir") {
       setCurrentPath(full);
+      setEntries([]);
+      setRefusal(null);
       client?.listDirectory?.(full);
     } else {
       const rel = relativePath(normCwd, full);
@@ -137,6 +176,8 @@ export function FilePicker({
                 accessibilityLabel={`Go to ${crumb.label}`}
                 onPress={() => {
                   setCurrentPath(crumb.path);
+                  setEntries([]);
+                  setRefusal(null);
                   client?.listDirectory?.(crumb.path);
                 }}
                 style={({ pressed }) => [styles.crumbBtn, pressed && styles.crumbPressed]}
@@ -163,7 +204,54 @@ export function FilePicker({
 
       {/* Directory entries */}
       <ScrollView style={styles.list} keyboardShouldPersistTaps="always">
-        {sortedEntries.length === 0 ? (
+        {refusal !== null ? (
+          <View style={styles.refusal} testID="file-picker-refusal">
+            <View style={styles.refusalHeader}>
+              <Glyph name="warning" size={13} color={signal.holding} />
+              <Label style={[type.label, styles.refusalTitle]}>
+                Outside this daemon's browsable directories
+              </Label>
+            </View>
+            <Label style={[type.code, styles.refusalPath]} numberOfLines={2}>
+              {refusal.path}
+            </Label>
+            {knownRoots.length > 0 ? (
+              <View style={styles.rootsSection}>
+                <Label style={[type.kicker, styles.rootsHeader]}>Browsable roots</Label>
+                {knownRoots.map(root => (
+                  <View key={root} style={styles.item}>
+                    <Pressable
+                      testID={`file-picker-root-${root}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open root folder ${root}`}
+                      onPress={() => {
+                        setCurrentPath(root);
+                        setRefusal(null);
+                        setEntries([]);
+                        client?.listDirectory?.(root);
+                      }}
+                      style={({ pressed }) => [styles.entryMain, pressed && styles.itemPressed]}
+                    >
+                      <Glyph name="folder" size={13} color={signal.working} />
+                      <Label style={[type.code, styles.entryName]} numberOfLines={1}>
+                        {root}
+                      </Label>
+                    </Pressable>
+                    <Pressable
+                      testID={`file-picker-insert-root-${root}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Insert root path ${root}`}
+                      onPress={() => onSelect(root.endsWith("/") ? root : `${root}/`)}
+                      style={({ pressed }) => [styles.insertBtn, pressed && styles.crumbPressed]}
+                    >
+                      <Label style={[type.label, styles.insertText]}>Select</Label>
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : sortedEntries.length === 0 ? (
           <View style={styles.empty}>
             <Label style={[type.label, styles.emptyText]}>No entries</Label>
           </View>
@@ -306,6 +394,32 @@ const styles = StyleSheet.create({
     borderColor: ground.edge,
   },
   insertText: {
-    color: signal.working,
+    color: brand.azure,
+  },
+  refusal: {
+    padding: space.step,
+  },
+  refusalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    marginBottom: 4,
+  },
+  refusalTitle: {
+    color: signal.holding,
+  },
+  refusalPath: {
+    color: ink.muted,
+    marginBottom: space.snug,
+  },
+  rootsSection: {
+    marginTop: space.snug,
+    borderTopWidth: stroke.hair,
+    borderTopColor: ground.edge,
+    paddingTop: space.snug,
+  },
+  rootsHeader: {
+    color: ink.muted,
+    marginBottom: space.snug,
   },
 });
