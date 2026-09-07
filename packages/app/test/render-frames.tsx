@@ -632,7 +632,7 @@ for (const frame of FRAMES) {
 <html><head><meta charset="utf-8"><title>${frame.name}</title>
 <style>${styles}</style>
 <style>
-html,body{margin:0!important;padding:0!important;background:#141310;overflow:hidden}
+html,body{margin:0!important;padding:0!important;background:#0a0c10;overflow:hidden}
 #frame{width:${frame.width}px;height:${frame.height}px;overflow:hidden;position:relative;display:flex;flex-direction:column}
 #frame > *{flex:1 1 auto;min-height:0}
 </style>

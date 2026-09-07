@@ -23,37 +23,42 @@
  * copy on a marketing page, so this sheet uses the brighter step of each pair and
  * draws chips as signal-on-ground with a hairline instead of signal-on-wash.
  *
- * Ratios against `--ground-base` #141310: ink-plain 8.34, sage 7.19, amber 8.38,
- * ochre 4.61, violet 5.07. Against `--ground-surface` #1C1A16: ink-plain 7.80.
- * All above the 4.5 needed for text this size.
+ * Ratios against `--ground-base` #0a0c10: ink-plain 13.49, sage 10.97, amber 10.70,
+ * ochre 7.57, violet 7.19, azure 7.19. Against `--ground-surface` #11151c: ink-plain 12.61.
+ * All well above the 4.5 needed for text this size.
  */
 
 :root {
-  /* Warm graphite. Every step shares a hue, so stacking two reads as depth. */
-  --ground-base: #141310;
-  --ground-surface: #1c1a16;
-  --ground-raised: #24211b;
-  --ground-active: #2e2a22;
-  --ground-line: #332f27;
-  --ground-edge: #403a30;
+  /* Near-black ground and bright accents from the logo palette. */
+  --ground-base: #0a0c10;
+  --ground-surface: #11151c;
+  --ground-raised: #181d26;
+  --ground-active: #1f2632;
+  --ground-line: #1c2230;
+  --ground-edge: #262d38;
 
-  --ink-bright: #ede7da;
-  --ink-plain: #b5ad9d;
-  --ink-muted: #847c6d;
-  --ink-faint: #5a5449;
-  --ink-inverse: #141310;
+  --ink-bright: #f4f7fb;
+  --ink-plain: #cfd7e2;
+  --ink-muted: #8b96a6;
+  --ink-faint: #7a8595;
+  --ink-inverse: #0a0c10;
 
-  --signal-amber: #e0a33a;
-  --signal-sage: #8fa97b;
-  --signal-ochre: #c1662f;
-  --signal-oxide: #b4462f;
-  --signal-slate: #7a828a;
-  --signal-violet: #8b7bc4;
+  --brand-azure: #5b9dff;
+  --brand-amber: #ffb020;
 
-  --wash-amber: #31281a;
-  --wash-sage: #232a1f;
-  --wash-ochre: #2d1f16;
-  --wash-violet: #231f30;
+  --signal-amber: #ffb020;
+  --signal-sage: #3ddc84;
+  --signal-ochre: #ff7a45;
+  --signal-oxide: #ff4d4d;
+  --signal-slate: #7d8794;
+  --signal-violet: #a78bfa;
+
+  --wash-amber: #352c1d;
+  --wash-sage: #18332c;
+  --wash-ochre: #352422;
+  --wash-oxide: #351d23;
+  --wash-slate: #21262e;
+  --wash-violet: #28273d;
 
   /* The app's four-point grid, same names. */
   --hair: 2px;
@@ -75,6 +80,32 @@
 *::before,
 *::after {
   box-sizing: border-box;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ground-edge) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ground-edge);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-faint);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 html {

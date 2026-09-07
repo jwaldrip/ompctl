@@ -44,7 +44,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 // `./rnw.ts` could substitute react-native-web for it.
 const { OmpThemeProvider, useOmpTheme } = await import("../src/design/OmpTheme.tsx");
 const { ompDarkTheme, ompLightTheme } = await import("../src/design/theme.ts");
-const { ground, ink, signal, signalWash } = await import("../src/design/tokens.ts");
+const { brand, ground, ink, signal, signalWash } = await import("../src/design/tokens.ts");
 const { useColorScheme, View } = await import("react-native");
 const { Button, Chip, Divider } = await import("react-native-paper");
 
@@ -126,6 +126,7 @@ test("the production root takes ompctl dark on a light device, and does not ask"
   expect(theme.ink).toBe(ink);
   expect(theme.signal).toBe(signal);
   expect(theme.signalWash).toBe(signalWash);
+  expect(theme.brand).toBe(brand);
   // And it is genuinely not the light theme, which is still defined.
   expect(theme.ground).not.toBe(ompLightTheme.ground);
 });
@@ -165,7 +166,7 @@ test("Paper's own components under the production root paint one dark ompctl pal
   expect(spellings("#6750A4").some(form => markup.includes(form))).toBe(false);
 
   // And the dark ramp did arrive, so this is not passing on an empty render.
-  const darkTones = [ground.base, ground.surface, ground.raised, ground.line, ground.edge, signal.sage];
+  const darkTones = [ground.base, ground.surface, ground.raised, ground.line, ground.edge, brand.azure, signal.sage];
   expect(
     darkTones.some(hex => spellings(hex).some(form => markup.includes(form))),
     "no ompctl dark tone reached Paper",

@@ -3,10 +3,9 @@
  *
  * Two rules make this file worth having. Colour is meaning: a hue is only in
  * the palette because it says something an operator has to read at a glance,
- * and nothing here is decorative. And the ground is warm graphite rather than
- * the blue-black every component kit ships, because an operator stares at this
- * for hours and a cold ground under amber signals reads as a dashboard warning
- * light rather than a working surface.
+ * and nothing here is decorative. And the ground is near-black with bright
+ * accents drawn from the app icon, giving high-contrast legibility for long
+ * operational shifts where signals and status need immediate recognition.
  *
  * No gradients, no translucency, no rounded corners. A strip either is or is
  * not, and a soft edge on a failure state is a lie about how the run went.
@@ -20,22 +19,22 @@ import type { ToolStatus } from "../session/model.ts";
 // ---------------------------------------------------------------------------
 
 /**
- * Warm graphite, from deepest to lightest. Every step shares a hue so stacking
- * two of them reads as depth rather than as a different material.
+ * Near-black ground steps, from deepest to lightest. Every step shares a hue
+ * so stacking two of them reads as depth rather than as a different material.
  */
 export const ground = {
   /** Behind everything. The window itself. */
-  base: "#141310",
+  base: "#0a0c10",
   /** A panel sitting on the base: the bay, the composer, the readout. */
-  surface: "#1C1A16",
+  surface: "#11151c",
   /** A card sitting on a panel: a tool call, an approval. */
-  raised: "#24211B",
+  raised: "#181d26",
   /** Pressed, selected, or otherwise held. */
-  active: "#2E2A22",
+  active: "#1f2632",
   /** Hairlines. Structure, not decoration. */
-  line: "#332F27",
+  line: "#1c2230",
   /** A heavier rule where a section genuinely ends. */
-  edge: "#403A30",
+  edge: "#262d38",
 } as const;
 
 /**
@@ -44,16 +43,34 @@ export const ground = {
  */
 export const ink = {
   /** Primary reading text. */
-  bright: "#EDE7DA",
+  bright: "#f4f7fb",
   /** Labels, secondary prose. */
-  plain: "#B5AD9D",
+  plain: "#cfd7e2",
+  /** Primary reading text alias for plain. */
+  primary: "#cfd7e2",
   /** Units, timestamps, the quiet half of a data pair. */
-  muted: "#847C6D",
+  muted: "#8b96a6",
   /** Present but not to be read unless looked for. */
-  faint: "#5A5449",
-  /** On top of a filled signal swatch. */
-  inverse: "#141310",
+  faint: "#7a8595",
+  /** On top of a filled signal or brand swatch. */
+  inverse: "#0a0c10",
 } as const;
+
+// ---------------------------------------------------------------------------
+// Brand
+// ---------------------------------------------------------------------------
+
+/**
+ * Brand accent tokens from the app icon.
+ */
+export const brand = {
+  /** Actions, links, focus, selection, primary button fill with ink.inverse text. */
+  azure: "#5b9dff",
+  /** Brand amber accent. */
+  amber: "#ffb020",
+} as const;
+
+export type BrandName = keyof typeof brand;
 
 // ---------------------------------------------------------------------------
 // Signals
@@ -65,17 +82,17 @@ export const ink = {
  */
 export const signal = {
   /** Working. A turn is in flight and tokens are moving. */
-  amber: "#E0A33A",
+  amber: "#ffb020",
   /** Ready. Idle, healthy, waiting on a person rather than on itself. */
-  sage: "#8FA97B",
+  sage: "#3ddc84",
   /** Holding. Blocked on something that is not an error: a clearance, a host. */
-  ochre: "#C1662F",
+  ochre: "#ff7a45",
   /** Failed. A run that will not finish without someone. */
-  oxide: "#B4462F",
+  oxide: "#ff4d4d",
   /** Cold. Stopped on purpose, transcript retained, nothing running. */
-  slate: "#7A828A",
+  slate: "#7d8794",
   /** Reasoning. Thought rather than reply; never the same weight as an answer. */
-  violet: "#8B7BC4",
+  violet: "#a78bfa",
 } as const;
 
 export type SignalName = keyof typeof signal;
@@ -86,12 +103,12 @@ export type SignalName = keyof typeof signal;
  * in the same material as the panel under it.
  */
 export const signalWash = {
-  amber: "#31281A",
-  sage: "#232A1F",
-  ochre: "#2D1F16",
-  oxide: "#2B1A16",
-  slate: "#20242A",
-  violet: "#231F30",
+  amber: "#352c1d",
+  sage: "#18332c",
+  ochre: "#352422",
+  oxide: "#351d23",
+  slate: "#21262e",
+  violet: "#28273d",
 } as const satisfies Record<SignalName, string>;
 
 // ---------------------------------------------------------------------------

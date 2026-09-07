@@ -3,8 +3,8 @@
  *
  * ## Why Paper, and why it is not a Provider bolted on the side
  *
- * The app needed real components -- a button, a chip, a divider, a surface, a
- * progress bar -- and it needed one theming mechanism that five platforms read.
+ * The app needed real components: a button, a chip, a divider, a surface, a
+ * progress bar, and it needed one theming mechanism that five platforms read.
  * It had neither: every surface hand-rolled a `Pressable` with a `StyleSheet`
  * block, and the grid in `tokens.ts` was spent differently by each of them.
  *
@@ -12,7 +12,7 @@
  * dependencies, all pure JavaScript (`color`, `use-latest-callback`,
  * `@callstack/react-theme-provider`), no native module, no Babel plugin and no
  * compiler step, and its peers are `react`, `react-native` and
- * `react-native-safe-area-context` -- all three already in this app. That is
+ * `react-native-safe-area-context` (all three already in this app). That is
  * what makes it work on iOS, Android, macOS, Windows and react-native-web at
  * once: there is nothing in it that has to be ported to an out-of-tree
  * platform. The rejection matrix is in `docs/design-system.md`.
@@ -20,9 +20,9 @@
  * The theme below is where the adoption is real. Paper's own components read
  * `colors`, `fonts` and `roundness` from here, so a `Button`, a `Chip` and a
  * `Divider` come out in ompctl's palette and faces without a wrapper, and the
- * extended keys (`rhythm`, `ground`, `ink`, `signal`, `space`, `radius`,
- * `stroke`, `control`) mean a surface reads ONE object for both the library's
- * vocabulary and ours.
+ * extended keys (`rhythm`, `ground`, `ink`, `signal`, `brand`, `space`,
+ * `radius`, `stroke`, `control`) mean a surface reads ONE object for both the
+ * library's vocabulary and ours.
  *
  * ## Nothing Material survives contact with this file
  *
@@ -31,13 +31,13 @@
  *
  *  - **No elevation.** Every `Surface` in this app is `mode="flat"`
  *    `elevation={0}` and carries a hairline instead. MD3 signals hierarchy with
- *    a shadow; ompctl signals it with a step of warm graphite, which is why
+ *    a shadow; ompctl signals it with a step of near-black ground, which is why
  *    `ground` has six of them. The `elevation` colour ramp below is therefore
  *    the flat `ground` steps rather than tinted overlays, so a Paper component
  *    that reaches for `elevation.level2` still lands on our material.
- *  - **No Material purple, no Material blue.** `primary` is signal sage,
- *    because in this app a filled control means "this is the action that
- *    completes the turn" and sage is what that means everywhere else on screen.
+ *  - **Bright logo accents.** `primary` is brand azure from the app icon for
+ *    high-contrast actions, and `secondary` is brand amber, rather than generic
+ *    component-kit purples.
  *  - **Faces, not weights.** Archivo and IBM Plex Mono are named by PostScript
  *    name and every variant carries `fontWeight: "normal"`, because naming a
  *    face and a numeric weight together makes Android synthesise a bold on top
@@ -49,6 +49,7 @@ import { configureFonts, MD3DarkTheme, MD3LightTheme } from "react-native-paper"
 import type { MD3Type, MD3TypescaleKey } from "react-native-paper/lib/typescript/types";
 import { rhythm } from "./rhythm.ts";
 import {
+  brand,
   face,
   ground,
   ink,
@@ -66,7 +67,12 @@ import {
  *
  * `fontWeight: "normal"` on every one of them, always. See the file header.
  */
-function variant(entry: { fontFamily: string; fontSize: number; lineHeight: number; letterSpacing?: number }): MD3Type {
+function variant(entry: {
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+  letterSpacing?: number;
+}): MD3Type {
   return {
     fontFamily: entry.fontFamily,
     fontSize: entry.fontSize,
@@ -79,28 +85,27 @@ function variant(entry: { fontFamily: string; fontSize: number; lineHeight: numb
 /**
  * ompctl's scale mapped onto MD3's variant names.
  *
- * The mapping is by JOB, not by size, which is why it is not one-to-one:
- * `bodyLarge` and `bodyMedium` are both our body, because Paper reaches for
- * whichever suits the component and both must land on the same reading size.
- * `labelSmall` is our kicker; the tracking it carries assumes upper case, and
- * every consumer of it upper-cases.
+ * Paper components read these by role: a `Button` reads `labelLarge`, a `Chip`
+ * reads `labelMedium`, a `Card` reads `titleMedium`. Mapping our roles onto
+ * theirs means Paper components come out at ompctl's sizes without overriding
+ * typography at every call site.
  */
 const TYPESCALE: Partial<Record<MD3TypescaleKey, MD3Type>> = {
   displayLarge: variant(typeScale.display),
   displayMedium: variant(typeScale.display),
   displaySmall: variant(typeScale.display),
-  headlineLarge: variant(typeScale.display),
+  headlineLarge: variant(typeScale.title),
   headlineMedium: variant(typeScale.title),
   headlineSmall: variant(typeScale.title),
   titleLarge: variant(typeScale.title),
   titleMedium: variant(typeScale.title),
-  titleSmall: variant(typeScale.data),
-  bodyLarge: variant(typeScale.body),
-  bodyMedium: variant(typeScale.body),
-  bodySmall: variant(typeScale.code),
+  titleSmall: variant(typeScale.title),
   labelLarge: variant(typeScale.label),
   labelMedium: variant(typeScale.label),
   labelSmall: variant(typeScale.kicker),
+  bodyLarge: variant(typeScale.body),
+  bodyMedium: variant(typeScale.body),
+  bodySmall: variant(typeScale.body),
 };
 
 const fonts = configureFonts({ config: TYPESCALE });
@@ -108,9 +113,11 @@ const fonts = configureFonts({ config: TYPESCALE });
 /**
  * Control geometry, named by the job rather than by the number.
  *
- * `ghost` in `design/controls.ts` is the style; this is the measurement both it
- * and Paper's own components have to agree on, so an `IconButton` sitting next
- * to a hand-rolled ghost is the same height.
+ * Paper does not have a concept for "how tall is a button" or "how much padding
+ * inside a chip", so it computes those from font size plus hardcoded constants.
+ * That produces controls that are too tall for this dense layout. Surfaces that
+ * need explicit control metrics read them from here so every small control in
+ * the app agrees.
  */
 const control = {
   /** Icon-only: a square target, so a row of them keeps an even rhythm. */
@@ -134,16 +141,16 @@ const shared = {
   control,
   signal,
   signalWash,
+  brand,
   face,
 } as const;
 
 /**
  * The dark theme, which is the app.
  *
- * ompctl is a tool an operator stares at for hours, and the ground is warm
- * graphite rather than the blue-black every component kit ships, for the reason
- * `tokens.ts` states: a cold ground under amber signals reads as a dashboard
- * warning light rather than as a working surface.
+ * ompctl is a tool an operator stares at for hours. The ground is near-black
+ * with bright accents drawn from the app icon, giving high-contrast clarity
+ * where controls, signals, and transcript status are instantly distinguishable.
  */
 export const ompDarkTheme = {
   ...MD3DarkTheme,
@@ -151,19 +158,19 @@ export const ompDarkTheme = {
   dark: true,
   ground,
   ink,
+  brand,
   colors: {
     ...MD3DarkTheme.colors,
-    // The filled action. Sage means "ready, this is the one to press" on every
-    // other surface in the app, so it means that here too.
-    primary: signal.sage,
+    // The filled primary action, drawn from the logo palette.
+    primary: brand.azure,
     onPrimary: ink.inverse,
-    primaryContainer: signalWash.sage,
-    onPrimaryContainer: signal.sage,
-    // The quiet action beside it.
-    secondary: ink.plain,
+    primaryContainer: "#172942",
+    onPrimaryContainer: brand.azure,
+    // The accent action beside it.
+    secondary: brand.amber,
     onSecondary: ink.inverse,
-    secondaryContainer: ground.active,
-    onSecondaryContainer: ink.bright,
+    secondaryContainer: signalWash.amber,
+    onSecondaryContainer: brand.amber,
     // Reasoning, which is never the same weight as an answer.
     tertiary: signal.violet,
     onTertiary: ink.inverse,
@@ -185,9 +192,9 @@ export const ompDarkTheme = {
     outlineVariant: ground.line,
     inverseSurface: ink.bright,
     inverseOnSurface: ground.base,
-    inversePrimary: signal.sage,
+    inversePrimary: brand.azure,
     // Flat, on purpose. Paper reaches for these when a component wants depth;
-    // in this app depth is a step of graphite, never a shadow.
+    // in this app depth is a step of ground, never a shadow.
     elevation: {
       level0: "transparent",
       level1: ground.surface,
@@ -197,8 +204,8 @@ export const ompDarkTheme = {
       level5: ground.active,
     },
     shadow: "transparent",
-    scrim: "#0A0908",
-    backdrop: "rgba(10, 9, 8, 0.72)",
+    scrim: ground.base,
+    backdrop: "rgba(10, 12, 16, 0.72)",
   },
 } as const;
 
@@ -233,6 +240,7 @@ export const ompLightTheme = {
   dark: false,
   ground: lightGround,
   ink: lightInk,
+  brand,
   colors: {
     ...MD3LightTheme.colors,
     primary: "#5F7A4B",
@@ -263,7 +271,7 @@ export const ompLightTheme = {
     outlineVariant: lightGround.line,
     inverseSurface: lightInk.bright,
     inverseOnSurface: lightGround.base,
-    inversePrimary: "#8FA97B",
+    inversePrimary: "#5F7A4B",
     elevation: {
       level0: "transparent",
       level1: lightGround.surface,
