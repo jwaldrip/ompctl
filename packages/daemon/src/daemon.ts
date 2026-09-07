@@ -631,6 +631,7 @@ export class Ompd {
    * daemon that failed part-way through `start`.
    */
   #modelAccess: DaemonModelAccess;
+  #containerBackend: ContainerBackend;
   #scheduler: Scheduler;
   #tasks: TaskManager;
   #sessionIndex: SessionIndex;
@@ -752,6 +753,15 @@ export class Ompd {
     // defaults for one reason: they have to spawn through the registry above,
     // or a container agent's session would be the only kind the gateway could
     // not answer a mode query for.
+    this.#containerBackend = new ContainerBackend({
+      workspace: opts.repoRoot ?? process.cwd(),
+      home: this.#home,
+      spawn: this.#hosts.spawn,
+      // Not optional in the daemon, only in the type: every container this
+      // process provisions goes through the broker, or fails saying why.
+      modelAccess: this.#modelAccess,
+      ...containerBackendSettings(this.#config),
+    });
     this.#provisioner = new HostProvisioner({
       store: this.#store,
       workspace: opts.repoRoot ?? process.cwd(),
@@ -759,15 +769,7 @@ export class Ompd {
         local: new LocalBackend({ ompPath: this.#config.ompPath, spawn: this.#hosts.spawn }),
         // Runtime and image come from the validated config on disk, not from
         // the environment. See `containerBackendSettings`.
-        container: new ContainerBackend({
-          workspace: opts.repoRoot ?? process.cwd(),
-          home: this.#home,
-          spawn: this.#hosts.spawn,
-          // Not optional in the daemon, only in the type: every container this
-          // process provisions goes through the broker, or fails saying why.
-          modelAccess: this.#modelAccess,
-          ...containerBackendSettings(this.#config),
-        }),
+        container: this.#containerBackend,
       },
       onLog: this.#onLog,
     });
@@ -905,6 +907,7 @@ export class Ompd {
       connectors: { list: listConnectorCatalog },
       mcpAuth: this.#mcpAuth,
       tasks: this.#tasks,
+      containerState: () => ({ modelBroker: this.#containerBackend.modelBrokerState() }),
       syncConfig: {
         read: () => {
           const config = loadConfig(this.#home);

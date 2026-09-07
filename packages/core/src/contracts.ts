@@ -1380,6 +1380,11 @@ export type ClientFrame =
       routineId?: string;
       labels?: Record<string, string>;
     }
+  /**
+   * Read the cowork container state, including model broker readiness.
+   * Answered by `container_state`, to the asking socket only.
+   */
+  | { t: "container_state_read" }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -1500,6 +1505,8 @@ export type ServerFrame =
   | { t: "task"; task: Task }
   /** The agent an `agent_create` made, sent only to the socket that asked. */
   | { t: "agent_created"; agent: Agent }
+  /** The cowork container state, carrying model broker readiness. */
+  | { t: "container_state"; modelBroker: ModelBrokerStatus }
   /**
    * What a `routine_delete` did, one result per id asked for, sent only to the
    * socket that asked. Beside `sessions_deleted` rather than an error frame,
@@ -1985,6 +1992,19 @@ export interface Task {
   /** Stop reason on success, or an error message on failure. Redacted. */
   result?: string;
   labels: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Cowork container state
+// ---------------------------------------------------------------------------
+
+export interface ModelBrokerStatus {
+  ready: boolean;
+  reason: string | null;
+}
+
+export interface ContainerState {
+  modelBroker: ModelBrokerStatus;
 }
 
 // ---------------------------------------------------------------------------

@@ -618,6 +618,30 @@ export class ContainerBackend implements ProvisionerBackend {
     this.#toolchain = opts.toolchain ?? ensureToolchain;
   }
 
+  /**
+   * Derive the model broker's readiness and reason for cowork containers.
+   * Checks whether model access is configured and delegates to the provider.
+   */
+  modelBrokerState(): { ready: boolean; reason: string | null } {
+    if (this.#modelAccess === undefined) {
+      return { ready: false, reason: "container model access is not configured" };
+    }
+    if (typeof this.#modelAccess.modelBrokerState === "function") {
+      return this.#modelAccess.modelBrokerState();
+    }
+    if (typeof this.#modelAccess.status === "function") {
+      const s = this.#modelAccess.status();
+      if (!s.enabled) {
+        return { ready: false, reason: "container model access is disabled" };
+      }
+      if (!s.model) {
+        return { ready: false, reason: "no model configured for container agents" };
+      }
+      return { ready: true, reason: null };
+    }
+    return { ready: true, reason: null };
+  }
+
   async provision(spec: HostSpec): Promise<HostHandle> {
     if (spec.kind !== "container") {
       throw new ProvisionError(`container backend cannot serve a ${spec.kind} host`, spec.kind);

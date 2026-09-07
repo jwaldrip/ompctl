@@ -19,8 +19,8 @@
  * one sealed socket the relay carries.
  */
 
-import type { AgentId, HostMount, WireHostSpec } from "@ompd/core/contracts";
-import type { AgentCreatedEvent, ClientErrorEvent } from "@ompd/core/ompd-client";
+import type { AgentId, HostMount, ModelBrokerStatus, WireHostSpec } from "@ompd/core/contracts";
+import type { AgentCreatedEvent, ClientErrorEvent, ContainerStateEvent } from "@ompd/core/ompd-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { directoryLabel } from "../remote/model.ts";
 import type { AgentCreateRequest, CoworkClient } from "./client.ts";
@@ -49,6 +49,7 @@ export interface CoworkFoldersState {
   active: boolean;
   folders: BoundFolder[];
   start: ContainerStart;
+  modelBroker?: ModelBrokerStatus;
 }
 
 export interface CoworkFoldersActions {
@@ -90,6 +91,7 @@ export function coworkContainerRequest(folders: readonly BoundFolder[]): AgentCr
 export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFoldersState, CoworkFoldersActions] {
   const [folders, setFolders] = useState<BoundFolder[]>([]);
   const [start, setStart] = useState<ContainerStart>({ status: "idle" });
+  const [modelBroker, setModelBroker] = useState<ModelBrokerStatus | undefined>(undefined);
 
   /**
    * Whether a start is awaiting its answer. The daemon's `agent_created` and
@@ -112,7 +114,14 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
         awaiting.current = false;
         setStart(refusalFor(event.code, event.message));
       }),
+      client.on("container_state", (event: ContainerStateEvent) => {
+        setModelBroker(event.modelBroker);
+      }),
+      client.on("status", event => {
+        if (event.state === "connected") client.readContainerState?.();
+      }),
     ];
+    if (client.connectionState === "connected") client.readContainerState?.();
     return () => {
       for (const off of offs) off();
     };
@@ -144,6 +153,14 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
       });
       return;
     }
+    if (modelBroker !== undefined && !modelBroker.ready) {
+      setStart({
+        status: "refused",
+        reason: `Model broker not ready: ${modelBroker.reason ?? "unavailable"}`,
+        retryable: false,
+      });
+      return;
+    }
 
     setStart({ status: "starting" });
     awaiting.current = true;
@@ -152,10 +169,10 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
     // link too dead to carry the frame reports itself as an `error` event
     // with code `offline`, the same named exit a refusal takes.
     client.createAgent(request);
-  }, [client, folders]);
+  }, [client, folders, modelBroker]);
 
   return [
-    { active: client !== undefined, folders, start },
+    { active: client !== undefined, folders, start, modelBroker },
     { bind, unbind, start: startContainer },
   ];
 }

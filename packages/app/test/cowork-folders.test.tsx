@@ -338,15 +338,31 @@ describe("binding on the cowork screen", () => {
     h.unmount();
   });
 
-  test("an unbind removes the folder and the empty state returns", () => {
+  test("an unbind asks first and removes the folder once confirmed", () => {
     const h = mount();
     browseToDev(h);
     h.press("folder-picker-confirm");
 
     h.press(`cowork-folder-unbind-${DEV}`);
 
+    // Unbind asks first: folder is still bound and consequence is named
+    expect(h.query(`cowork-folder-${DEV}`)).not.toBeNull();
+    expect(h.query(`cowork-folder-unbind-confirm-${DEV}`)).not.toBeNull();
+    expect(h.text(`cowork-folder-unbind-confirm-dialog-${DEV}`)).toContain(
+      "The container loses this mount; running tasks in it are not stopped.",
+    );
+
+    // Cancel leaves folder bound
+    h.press(`cowork-folder-unbind-cancel-${DEV}`);
+    expect(h.query(`cowork-folder-${DEV}`)).not.toBeNull();
+    expect(h.query(`cowork-folder-unbind-confirm-${DEV}`)).toBeNull();
+
+    // Re-arm and confirm removes the folder
+    h.press(`cowork-folder-unbind-${DEV}`);
+    h.press(`cowork-folder-unbind-confirm-${DEV}`);
+
     expect(h.query(`cowork-folder-${DEV}`)).toBeNull();
-    expect(h.text("cowork-folders-empty")).toContain("Nothing bound");
+    expect(h.text("cowork-folders-empty")).toContain("No folders bound");
 
     h.unmount();
   });
@@ -529,6 +545,36 @@ describe("starting the container", () => {
 
     expect(h.text("cowork-container-refused")).toContain("Bind a folder first");
     expect(h.socket.framesOfType("agent_create")).toEqual([]);
+
+    h.unmount();
+  });
+  test("broker state line renders from a fixture frame and disables start when not ready", () => {
+    const h = mount();
+    browseToDev(h);
+    h.press("folder-picker-confirm");
+
+    h.deliver({
+      t: "container_state",
+      modelBroker: { ready: false, reason: "container model access is disabled" },
+    });
+
+    expect(h.text("cowork-model-broker-state")).toContain("Model broker not ready: container model access is disabled");
+    const startBtn = h.query("cowork-container-start");
+    expect(startBtn?.getAttribute("aria-disabled")).toBe("true");
+
+    h.press("cowork-container-start");
+    // Does not send agent_create because start is disabled
+    expect(h.socket.framesOfType("agent_create")).toEqual([]);
+
+    // When broker becomes ready, state updates and start is enabled
+    h.deliver({
+      t: "container_state",
+      modelBroker: { ready: true, reason: null },
+    });
+    expect(h.text("cowork-model-broker-state")).toContain("Model broker ready");
+    expect(h.query("cowork-container-start")?.getAttribute("aria-disabled")).not.toBe("true");
+    h.press("cowork-container-start");
+    expect(h.socket.framesOfType("agent_create").length).toBe(1);
 
     h.unmount();
   });

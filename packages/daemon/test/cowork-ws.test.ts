@@ -313,6 +313,29 @@ describe("the agent_create frame", () => {
   });
 });
 
+describe("the cowork container state frame", () => {
+  test("a read-scoped phone receives container_state carrying modelBroker", async () => {
+    const h = await harness();
+    const reader = await h.connect(await h.pair("state-reader", [SCOPE_READ]));
+
+    reader.send({ t: "container_state_read" });
+    const answer = await reader.next(frame => frame.t === "container_state", "container_state frame");
+    expect(answer).toEqual({
+      t: "container_state",
+      modelBroker: { ready: true, reason: null },
+    });
+  });
+
+  test("a phone without read scope cannot read container_state", async () => {
+    const h = await harness();
+    const prompter = await h.connect(await h.pair("state-prompter", [SCOPE_MANAGE]));
+
+    prompter.send({ t: "container_state_read" });
+    const denied = await prompter.next(frame => refusal(frame, "unauthorized"), "unauthorized on container_state_read");
+    expect(denied.t).toBe("error");
+  });
+});
+
 describe("the same frames over a hub-relayed tunnel session", () => {
   test("a relayed socket reaches every cowork capability, and meets the same gates", async () => {
     const h = await harness();

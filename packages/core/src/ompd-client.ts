@@ -34,6 +34,7 @@ import type {
   CollabVoiceParticipant,
   ConnectorSummary,
   FsListing,
+  ModelBrokerStatus,
   PlanReviewChoice,
   PromptImage,
   RemoteRoutine,
@@ -265,6 +266,7 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   task_create: true,
   task_cancel: true,
   agent_create: true,
+  container_state_read: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -646,6 +648,11 @@ export interface TaskEvent {
 export interface AgentCreatedEvent {
   agent: Agent;
 }
+
+/** The cowork container state, carrying model broker readiness. */
+export interface ContainerStateEvent {
+  modelBroker: ModelBrokerStatus;
+}
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -673,6 +680,7 @@ export interface ClientEventMap {
   tasks: TasksEvent;
   task: TaskEvent;
   agent_created: AgentCreatedEvent;
+  container_state: ContainerStateEvent;
   fs_listing: FsListingEvent;
   clone_progress: CloneProgressEvent;
   clone_done: CloneDoneEvent;
@@ -1261,6 +1269,14 @@ export class OmpdClient {
   }
 
   /**
+   * Read the cowork container state, including model broker readiness.
+   * Delivered as the `container_state` event.
+   */
+  readContainerState(): void {
+    this.send({ t: "container_state_read" });
+  }
+
+  /**
    * Ask what config options one agent's session holds, the mode among them.
    * The answer arrives as the `agent_config` event, or an `error` naming the
    * refusal: `unknown_agent` for an id this daemon holds no row for,
@@ -1710,6 +1726,9 @@ export class OmpdClient {
         return;
       case "agent_created":
         this.emit("agent_created", { agent: frame.agent });
+        return;
+      case "container_state":
+        this.emit("container_state", { modelBroker: frame.modelBroker });
         return;
       case "settings":
         this.emit("settings", {
