@@ -756,13 +756,12 @@ describe("a terminal turn renders its markdown as structure, not punctuation", (
       expect(painted.join("\n")).not.toContain("```");
       expect(painted.join("\n")).not.toContain("`session-body`");
       // The inline code and the fence land in the mono face, the prose does not.
-      const mono = [...row.querySelectorAll("*")].filter(
-        el => el.children.length === 0 && /Plex|mono/i.test(getComputedStyle(el).fontFamily),
-      );
-      expect(mono.map(el => el.textContent)).toContain("session-body");
-      // A highlighted fence is several mono spans per line, so the line is
-      // read back as their concatenation rather than as one leaf.
-      expect(mono.map(el => el.textContent ?? "").join("")).toContain("flex: 1, minHeight: 0");
+      // A highlighted fence line is one mono node whose spans carry only colour,
+      // so the face is read from whichever element declares it, leaf or not.
+      const mono = [...row.querySelectorAll("*")].filter(el => /Plex|mono/i.test(getComputedStyle(el).fontFamily));
+      const monoText = mono.map(el => el.textContent ?? "");
+      expect(monoText).toContain("session-body");
+      expect(monoText.some(text => text.includes("flex: 1, minHeight: 0"))).toBe(true);
       expect(painted).toContain("Nothing");
     } finally {
       unmountScreen(host, root);
