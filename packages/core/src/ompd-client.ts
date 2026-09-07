@@ -980,22 +980,12 @@ export class OmpdClient {
    * `parsePromptImages` are enforced again by the daemon, so this method
    * trusting its caller is not the boundary; it is a convenience that keeps
    * the empty-images case byte-identical to the frame every older peer sends.
+   *
+   * `deliverAs: "followUp"` asks the daemon to hold the prompt behind the
+   * turn in flight; the daemon answers `prompt_queued`.
    */
-  prompt(
-    agentId: AgentId,
-    text: string,
-    imagesOrOptions?: PromptImage[] | { images?: PromptImage[]; deliverAs?: "followUp" },
-    options?: { deliverAs?: "followUp" },
-  ): void {
-    let images: PromptImage[] | undefined;
-    let deliverAs: "followUp" | undefined;
-    if (Array.isArray(imagesOrOptions)) {
-      images = imagesOrOptions;
-      deliverAs = options?.deliverAs;
-    } else if (imagesOrOptions) {
-      images = imagesOrOptions.images;
-      deliverAs = imagesOrOptions.deliverAs;
-    }
+  prompt(agentId: AgentId, text: string, images?: PromptImage[], options?: { deliverAs?: "followUp" }): void {
+    const deliverAs = options?.deliverAs;
     const frame: ClientFrame = {
       t: "prompt",
       agentId,

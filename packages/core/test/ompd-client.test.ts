@@ -809,7 +809,10 @@ describe("outbound frames", () => {
     const png: PromptImage = { data: "iVBORw0KGgo=", mimeType: "image/png" };
     h.client.prompt(AGENT, "ship it");
     h.client.prompt(AGENT, "look at this", [png]);
-    h.client.prompt(AGENT, "queued message", { deliverAs: "followUp" });
+    // Exactly how the console queues: no images, the option in the fourth
+    // slot. On 2026-09-07 a two-shape signature dropped the option on this
+    // call and every queued prompt left the phone as a plain one.
+    h.client.prompt(AGENT, "queued message", undefined, { deliverAs: "followUp" });
     h.client.sessionPrompt("s-tui", "steer this");
     h.client.sessionPrompt("s-tui", "with a picture", "followUp", [png]);
     h.client.cancel(AGENT);
