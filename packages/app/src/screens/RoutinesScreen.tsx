@@ -632,13 +632,13 @@ export function RoutinesScreen({
 
       {!canManage ? (
         <View style={styles.notice} testID="routines-readonly-notice">
-          <Label color={signal.ochre}>
+          <Label color={signal.holding}>
             This pairing can read routines but not change or run them: it holds no manage scope.
           </Label>
         </View>
       ) : !canRun ? (
         <View style={styles.notice} testID="routines-run-disabled-notice">
-          <Label color={signal.ochre}>
+          <Label color={signal.holding}>
             This pairing can edit routines but cannot run them: it holds no prompt scope.
           </Label>
         </View>
@@ -646,7 +646,7 @@ export function RoutinesScreen({
 
       {actionError !== null ? (
         <View style={styles.notice} testID="routines-action-error">
-          <Label color={signal.oxide}>The daemon refused that: {actionError}</Label>
+          <Label color={signal.failed}>The daemon refused that: {actionError}</Label>
           <Pressable
             accessibilityRole="button"
             onPress={() => setActionError(null)}
@@ -664,9 +664,9 @@ export function RoutinesScreen({
         </View>
       ) : status.kind === "failed" ? (
         <View style={styles.notice} testID="routines-read-error">
-          <Label color={signal.oxide}>Could not read routines: {status.message}</Label>
+          <Label color={signal.failed}>Could not read routines: {status.message}</Label>
           <Pressable accessibilityRole="button" onPress={retry} style={styles.smallButton} testID="routines-retry">
-            <Label color={signal.sage}>Try again</Label>
+            <Label color={signal.ready}>Try again</Label>
           </Pressable>
         </View>
       ) : (
@@ -700,14 +700,14 @@ export function RoutinesScreen({
                     style={styles.toggleButton}
                     testID={`routine-${routine.id}-toggle`}
                   >
-                    <Label color={routine.enabled ? signal.sage : ink.faint}>{routine.enabled ? "On" : "Off"}</Label>
+                    <Label color={routine.enabled ? signal.ready : ink.faint}>{routine.enabled ? "On" : "Off"}</Label>
                     {!routine.enabled ? <Label color={ink.muted}> · Will not fire</Label> : null}
                   </Pressable>
                 </View>
 
                 {armed !== null ? (
                   armed.error !== undefined ? (
-                    <Label color={signal.oxide}>Schedule unreadable: {armed.error}</Label>
+                    <Label color={signal.failed}>Schedule unreadable: {armed.error}</Label>
                   ) : (
                     <Body color={ink.muted} testID={`routine-${routine.id}-next-fire`}>
                       {`Next fire ${formatFireTime(armed.fire, armed.zone)}${armed.suffix}`}
@@ -728,7 +728,7 @@ export function RoutinesScreen({
                   return (
                     <View key={action.id} style={styles.action} testID={`routine-${routine.id}-action-${action.id}`}>
                       <View style={styles.actionOrder}>
-                        <Label color={isActionRunning ? signal.amber : ink.muted}>{index + 1}</Label>
+                        <Label color={isActionRunning ? signal.working : ink.muted}>{index + 1}</Label>
                       </View>
                       <View style={styles.copy}>
                         <Label color={ink.plain}>{action.name}</Label>
@@ -737,11 +737,11 @@ export function RoutinesScreen({
                             style={styles.liveActionRow}
                             testID={`routine-${routine.id}-action-${action.id}-running`}
                           >
-                            <View style={[styles.signalDot, { backgroundColor: signal.amber }]} />
-                            <Body color={signal.amber}>Running{actionElapsed ? ` · ${actionElapsed}` : ""}</Body>
+                            <View style={[styles.signalDot, { backgroundColor: signal.working }]} />
+                            <Body color={signal.working}>Running{actionElapsed ? ` · ${actionElapsed}` : ""}</Body>
                           </View>
                         ) : (
-                          <Body color={failure === undefined ? ink.muted : signal.oxide}>
+                          <Body color={failure === undefined ? ink.muted : signal.failed}>
                             {failure ?? outcome?.state ?? "Not run yet"}
                           </Body>
                         )}
@@ -760,8 +760,8 @@ export function RoutinesScreen({
                           style={styles.smallButton}
                           testID={`routine-${routine.id}-action-${action.id}-retry`}
                         >
-                          <Glyph name="resume" size={12} color={signal.sage} />
-                          <Label color={signal.sage}>Retry from here</Label>
+                          <Glyph name="resume" size={12} color={signal.ready} />
+                          <Label color={signal.ready}>Retry from here</Label>
                         </Pressable>
                       ) : null}
                       {sessionId && onOpenSession ? (
@@ -772,8 +772,8 @@ export function RoutinesScreen({
                           style={styles.smallButton}
                           testID={`routine-${routine.id}-action-${action.id}-session`}
                         >
-                          <Glyph name="attach" size={12} color={signal.sage} />
-                          <Label color={signal.sage}>Session</Label>
+                          <Glyph name="attach" size={12} color={signal.ready} />
+                          <Label color={signal.ready}>Session</Label>
                         </Pressable>
                       ) : null}
                     </View>
@@ -808,7 +808,7 @@ export function RoutinesScreen({
                     <View style={styles.secretSection} testID={`routine-${routine.id}-secret-section`}>
                       {rotatingSecret === routine.id ? (
                         <View style={styles.confirmRotate} testID={`routine-${routine.id}-confirm-rotate-box`}>
-                          <Label color={signal.ochre}>
+                          <Label color={signal.holding}>
                             Callers holding the old secret get 403 until they are updated.
                           </Label>
                           <View style={styles.controls}>
@@ -834,8 +834,8 @@ export function RoutinesScreen({
                               style={styles.smallButton}
                               testID={`routine-${routine.id}-confirm-rotate`}
                             >
-                              <Glyph name="link" size={13} color={canManage ? signal.ochre : ink.faint} />
-                              <Label color={canManage ? signal.ochre : ink.faint}>Rotate secret</Label>
+                              <Glyph name="link" size={13} color={canManage ? signal.holding : ink.faint} />
+                              <Label color={canManage ? signal.holding : ink.faint}>Rotate secret</Label>
                             </Pressable>
                           </View>
                         </View>
@@ -880,11 +880,11 @@ export function RoutinesScreen({
                     testID={`routine-${routine.id}-run`}
                   >
                     {isRunning ? (
-                      <ActivityIndicator size="small" color={signal.amber} style={{ width: 13, height: 13 }} />
+                      <ActivityIndicator size="small" color={signal.working} style={{ width: 13, height: 13 }} />
                     ) : (
-                      <Glyph name="resume" size={13} color={canRun ? signal.sage : ink.faint} />
+                      <Glyph name="resume" size={13} color={canRun ? signal.ready : ink.faint} />
                     )}
-                    <Label color={isRunning ? signal.amber : canRun ? signal.sage : ink.faint}>
+                    <Label color={isRunning ? signal.working : canRun ? signal.ready : ink.faint}>
                       {isRunning ? "Running..." : "Run"}
                     </Label>
                   </Pressable>
@@ -892,7 +892,7 @@ export function RoutinesScreen({
 
                 {secret?.routineId === routine.id ? (
                   <View style={styles.secret}>
-                    <Kicker color={signal.ochre}>Shown once</Kicker>
+                    <Kicker color={signal.holding}>Shown once</Kicker>
                     <Code color={ink.plain} selectable testID="routine-secret-value">
                       {secret.value}
                     </Code>
@@ -925,7 +925,7 @@ export function RoutinesScreen({
                 <View style={styles.danger}>
                   {arming === routine.id ? (
                     <View style={styles.confirmDelete} testID={`routine-${routine.id}-confirm-delete`}>
-                      <Label color={signal.oxide}>
+                      <Label color={signal.failed}>
                         {`Delete "${routine.name}" for good? Its runs and its webhook secret go with it.`}
                       </Label>
                       <View style={styles.controls}>
@@ -945,8 +945,8 @@ export function RoutinesScreen({
                           style={styles.smallButton}
                           testID={`routine-${routine.id}-confirm-yes`}
                         >
-                          <Glyph name="delete" size={13} color={canManage ? signal.oxide : ink.faint} />
-                          <Label color={canManage ? signal.oxide : ink.faint}>Delete for good</Label>
+                          <Glyph name="delete" size={13} color={canManage ? signal.failed : ink.faint} />
+                          <Label color={canManage ? signal.failed : ink.faint}>Delete for good</Label>
                         </Pressable>
                       </View>
                     </View>
@@ -967,7 +967,7 @@ export function RoutinesScreen({
                     </Pressable>
                   )}
                   {refusal?.routineId === routine.id ? (
-                    <Label color={signal.oxide} testID={`routine-${routine.id}-delete-refused`}>
+                    <Label color={signal.failed} testID={`routine-${routine.id}-delete-refused`}>
                       {refusal.reason}
                     </Label>
                   ) : null}
@@ -1010,8 +1010,8 @@ export function RoutinesScreen({
             style={styles.option}
             testID="routine-editor-enabled"
           >
-            <Glyph name={draft.enabled ? "allow" : "deny"} size={13} color={draft.enabled ? signal.sage : ink.muted} />
-            <Label color={draft.enabled ? signal.sage : ink.muted}>{draft.enabled ? "Enabled" : "Disabled"}</Label>
+            <Glyph name={draft.enabled ? "allow" : "deny"} size={13} color={draft.enabled ? signal.ready : ink.muted} />
+            <Label color={draft.enabled ? signal.ready : ink.muted}>{draft.enabled ? "Enabled" : "Disabled"}</Label>
           </Pressable>
 
           <Kicker color={ink.muted}>Trigger</Kicker>
@@ -1035,8 +1035,8 @@ export function RoutinesScreen({
                   style={[styles.option, selected ? styles.optionSelected : null]}
                   testID={option.testID}
                 >
-                  <Glyph name={option.glyph} size={13} color={selected ? signal.sage : ink.muted} />
-                  <Label color={selected ? signal.sage : ink.muted}>{option.label}</Label>
+                  <Glyph name={option.glyph} size={13} color={selected ? signal.ready : ink.muted} />
+                  <Label color={selected ? signal.ready : ink.muted}>{option.label}</Label>
                 </Pressable>
               );
             })}
@@ -1052,7 +1052,7 @@ export function RoutinesScreen({
                   style={[styles.option, draft.trigger.kind === "cron" ? styles.optionSelected : null]}
                   testID="routine-schedule-cron"
                 >
-                  <Label color={draft.trigger.kind === "cron" ? signal.sage : ink.muted}>At times</Label>
+                  <Label color={draft.trigger.kind === "cron" ? signal.ready : ink.muted}>At times</Label>
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
@@ -1061,7 +1061,7 @@ export function RoutinesScreen({
                   style={[styles.option, draft.trigger.kind === "interval" ? styles.optionSelected : null]}
                   testID="routine-schedule-interval"
                 >
-                  <Label color={draft.trigger.kind === "interval" ? signal.sage : ink.muted}>Every</Label>
+                  <Label color={draft.trigger.kind === "interval" ? signal.ready : ink.muted}>Every</Label>
                 </Pressable>
               </View>
 
@@ -1134,7 +1134,7 @@ export function RoutinesScreen({
                         style={[styles.option, intervalEdit.unit === unit ? styles.optionSelected : null]}
                         testID={`routine-interval-unit-${unit}`}
                       >
-                        <Label color={intervalEdit.unit === unit ? signal.sage : ink.muted}>
+                        <Label color={intervalEdit.unit === unit ? signal.ready : ink.muted}>
                           {INTERVAL_LABELS[unit]}
                         </Label>
                       </Pressable>
@@ -1176,8 +1176,8 @@ export function RoutinesScreen({
 
           {triggerCheck.error !== null ? (
             <View style={styles.triggerError} testID="routine-trigger-error">
-              <Glyph name="warning" size={13} color={signal.oxide} />
-              <Label color={signal.oxide}>{triggerCheck.error}</Label>
+              <Glyph name="warning" size={13} color={signal.failed} />
+              <Label color={signal.failed}>{triggerCheck.error}</Label>
             </View>
           ) : null}
 
@@ -1215,7 +1215,7 @@ export function RoutinesScreen({
                 value={action.cwd}
               />
               {action.cwd.trim() === "" ? (
-                <Label color={signal.oxide} testID={`routine-action-${index}-cwd-error`}>
+                <Label color={signal.failed} testID={`routine-action-${index}-cwd-error`}>
                   A working directory is required: the daemon cannot run an action that has none.
                 </Label>
               ) : null}
@@ -1236,8 +1236,8 @@ export function RoutinesScreen({
                 style={styles.smallButton}
                 testID={`routine-action-${index}-remove`}
               >
-                <Glyph name="delete" size={13} color={draft.actions.length === 1 ? ink.faint : signal.oxide} />
-                <Label color={draft.actions.length === 1 ? ink.faint : signal.oxide}>Remove</Label>
+                <Glyph name="delete" size={13} color={draft.actions.length === 1 ? ink.faint : signal.failed} />
+                <Label color={draft.actions.length === 1 ? ink.faint : signal.failed}>Remove</Label>
               </Pressable>
             </View>
           ))}
@@ -1266,8 +1266,8 @@ export function RoutinesScreen({
               style={styles.smallButton}
               testID="routine-add-action"
             >
-              <Glyph name="newTask" size={13} color={signal.sage} />
-              <Label color={signal.sage}>Add action</Label>
+              <Glyph name="newTask" size={13} color={signal.ready} />
+              <Label color={signal.ready}>Add action</Label>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -1285,8 +1285,8 @@ export function RoutinesScreen({
               style={styles.smallButton}
               testID="routine-save"
             >
-              <Glyph name="allow" size={13} color={!canManage || saveBlocked ? ink.faint : signal.sage} />
-              <Label color={!canManage || saveBlocked ? ink.faint : signal.sage}>Save</Label>
+              <Glyph name="allow" size={13} color={!canManage || saveBlocked ? ink.faint : signal.ready} />
+              <Label color={!canManage || saveBlocked ? ink.faint : signal.ready}>Save</Label>
             </Pressable>
           </View>
         </ScrollView>
@@ -1347,7 +1347,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: space.hair,
-    backgroundColor: signal.sage,
+    backgroundColor: signal.ready,
   },
   webhookBlock: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },
   /** Its own row at the card's bottom edge, so a thumb reaching for Edit or
@@ -1359,7 +1359,7 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.hair,
     borderTopColor: ground.edge,
   },
-  confirmDelete: { gap: space.hair, padding: space.step, backgroundColor: signalWash.oxide },
+  confirmDelete: { gap: space.hair, padding: space.step, backgroundColor: signalWash.failed },
   secret: { gap: space.hair, padding: space.step, backgroundColor: ground.active },
   editor: { gap: space.step, paddingHorizontal: space.wide, paddingBottom: space.wide },
   editorAction: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },
@@ -1375,14 +1375,14 @@ const styles = StyleSheet.create({
     borderColor: ground.line,
     backgroundColor: ground.active,
   },
-  optionSelected: { borderColor: signal.sage, backgroundColor: signalWash.sage },
+  optionSelected: { borderColor: signal.ready, backgroundColor: signalWash.ready },
   triggerSection: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },
   triggerError: {
     flexDirection: "row",
     alignItems: "center",
     gap: space.hair,
     padding: space.step,
-    backgroundColor: signalWash.oxide,
+    backgroundColor: signalWash.failed,
   },
   input: {
     minHeight: TOUCH_TARGET,
@@ -1405,5 +1405,5 @@ const styles = StyleSheet.create({
   liveActionRow: { flexDirection: "row", alignItems: "center", gap: space.hair },
   signalDot: { width: 8, height: 8, borderRadius: 4 },
   secretSection: { marginTop: space.hair },
-  confirmRotate: { gap: space.hair, padding: space.step, backgroundColor: signalWash.ochre },
+  confirmRotate: { gap: space.hair, padding: space.step, backgroundColor: signalWash.holding },
 });

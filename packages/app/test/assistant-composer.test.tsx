@@ -427,7 +427,7 @@ describe("one filled control, three ghosts", () => {
         // fills that would make a ghost compete with send, not for the absence
         // of the property.
         expect(control).not.toContain(`background-color:${rgba(ground.active)}`);
-        expect(control).not.toContain(`background-color:${rgba(signal.sage)}`);
+        expect(control).not.toContain(`background-color:${rgba(signal.ready)}`);
       }
     } finally {
       m.unmount();
@@ -453,8 +453,8 @@ describe("one filled control, three ghosts", () => {
       act(() => {
         typeInto(m.need("composer-input"), "ready to go");
       });
-      expect(renderedStyle(m.need("composer-send"))).toContain(`background-color:${rgba(signal.sage)}`);
-      expect(renderedStyle(m.need("composer-attach"))).not.toContain(`background-color:${rgba(signal.sage)}`);
+      expect(renderedStyle(m.need("composer-send"))).toContain(`background-color:${rgba(signal.ready)}`);
+      expect(renderedStyle(m.need("composer-attach"))).not.toContain(`background-color:${rgba(signal.ready)}`);
     } finally {
       m.unmount();
     }
@@ -491,7 +491,7 @@ describe("the action is send or interrupt, and the runtime decides which", () =>
       expect(geometry).toContain(`border-top-left-radius:${radius.pill}px`);
       expect(geometry).toContain("width:44px");
       // Filled in the failure colour rather than boxed in it.
-      expect(geometry).toContain(`background-color:${rgba(signal.oxide)}`);
+      expect(geometry).toContain(`background-color:${rgba(signal.failed)}`);
       // And it really is wired to the store's cancel.
       m.press("composer-cancel");
       expect(cancels.count).toBe(1);

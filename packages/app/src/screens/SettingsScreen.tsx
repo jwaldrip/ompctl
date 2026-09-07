@@ -199,18 +199,18 @@ export function SettingsScreen({
         </View>
       ) : status.kind === "read-failed" ? (
         <View style={styles.notice} testID="settings-read-error">
-          <Label color={signal.ochre} style={styles.noticeText}>
+          <Label color={signal.holding} style={styles.noticeText}>
             Could not read the daemon&rsquo;s settings: {status.message}
           </Label>
           <Pressable accessibilityRole="button" onPress={retryRead} style={styles.retry} testID="settings-retry-read">
-            <Label color={signal.sage}>Try again</Label>
+            <Label color={signal.ready}>Try again</Label>
           </Pressable>
         </View>
       ) : shown === null ? null : (
         <>
           {canManage ? null : (
             <View style={styles.notice} testID="settings-readonly-notice">
-              <Label color={signal.ochre} style={styles.noticeText}>
+              <Label color={signal.holding} style={styles.noticeText}>
                 This pairing can watch but not change: it holds no manage scope. Grant manage when minting this
                 device&rsquo;s credential, from the daemon or from a device that can invite.
               </Label>
@@ -219,7 +219,7 @@ export function SettingsScreen({
 
           {status.kind === "write-failed" ? (
             <View style={styles.notice} testID="settings-write-error">
-              <Label color={signal.oxide} style={styles.noticeText}>
+              <Label color={signal.failed} style={styles.noticeText}>
                 Could not save: {status.message}
               </Label>
               <Pressable
@@ -228,7 +228,7 @@ export function SettingsScreen({
                 style={styles.retry}
                 testID="settings-retry-write"
               >
-                <Label color={signal.sage}>Try again</Label>
+                <Label color={signal.ready}>Try again</Label>
               </Pressable>
             </View>
           ) : null}
@@ -249,11 +249,11 @@ export function SettingsScreen({
                     testID={`settings-policy-${option.mode}`}
                   >
                     <View style={styles.optionCopy}>
-                      <Label color={current ? signal.sage : ink.plain}>{option.name}</Label>
+                      <Label color={current ? signal.ready : ink.plain}>{option.name}</Label>
                       <Body color={ink.muted}>{option.governs}</Body>
                     </View>
                     {current ? (
-                      <Label color={signal.sage} testID={`settings-policy-${option.mode}-current`}>
+                      <Label color={signal.ready} testID={`settings-policy-${option.mode}-current`}>
                         Current
                       </Label>
                     ) : null}
@@ -279,7 +279,7 @@ export function SettingsScreen({
                 </Body>
               </View>
               <Label
-                color={shown.keepAwake ? signal.sage : ink.muted}
+                color={shown.keepAwake ? signal.ready : ink.muted}
                 testID={shown.keepAwake ? "settings-keepawake-on" : "settings-keepawake-off"}
               >
                 {shown.keepAwake ? "On" : "Off"}

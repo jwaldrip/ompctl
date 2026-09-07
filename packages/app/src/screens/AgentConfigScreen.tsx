@@ -353,7 +353,7 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
           </View>
         ) : phase.kind === "refused" ? (
           <View style={styles.state} testID="agent-config-load-failure">
-            <Glyph name="warning" size={16} color={signal.oxide} />
+            <Glyph name="warning" size={16} color={signal.failed} />
             <Label color={ink.bright}>{phase.reason}</Label>
             <Pressable
               testID="agent-config-load-retry"
@@ -520,7 +520,7 @@ const styles = StyleSheet.create({
   state: { padding: space.wide, gap: space.snug },
   banner: {
     borderWidth: stroke.hair,
-    borderColor: signal.oxide,
+    borderColor: signal.failed,
     padding: space.step,
     gap: space.snug,
   },

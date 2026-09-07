@@ -11,16 +11,12 @@ import { brand, ground, ink, signal } from "../src/design/tokens.ts";
 
 function parseHex(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
-  return [
-    Number.parseInt(h.slice(0, 2), 16),
-    Number.parseInt(h.slice(2, 4), 16),
-    Number.parseInt(h.slice(4, 6), 16),
-  ];
+  return [Number.parseInt(h.slice(0, 2), 16), Number.parseInt(h.slice(2, 4), 16), Number.parseInt(h.slice(4, 6), 16)];
 }
 
 function srgbToLinear(c: number): number {
   const s = c / 255;
-  return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
 }
 
 export function relativeLuminance(hex: string): number {
@@ -112,7 +108,7 @@ describe("WCAG 2.x contrast ratios for palette tokens", () => {
     const fills = {
       "brand.azure": brand.azure,
       "brand.amber": brand.amber,
-      "signal.sage": signal.sage,
+      "signal.ready": signal.ready,
     };
     for (const [fillName, fillHex] of Object.entries(fills)) {
       const ratio = contrastRatio(ink.inverse, fillHex);

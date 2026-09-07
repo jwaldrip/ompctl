@@ -163,7 +163,7 @@ export function StatsScreen({ connection, stats: initialStats, onBack }: StatsSc
         </View>
       ) : error ? (
         <View style={styles.notice} testID="stats-error">
-          <Label color={signal.oxide}>{error}</Label>
+          <Label color={signal.failed}>{error}</Label>
         </View>
       ) : activeStats ? (
         <ScrollView contentContainerStyle={styles.scrollContent} style={styles.scroll}>
@@ -196,7 +196,7 @@ export function StatsScreen({ connection, stats: initialStats, onBack }: StatsSc
                 <View style={styles.cardHead}>
                   <Label color={ink.muted}>Cache Rate</Label>
                 </View>
-                <Data color={signal.sage}>{formatPercent(activeStats.overall.cacheRate)}</Data>
+                <Data color={signal.ready}>{formatPercent(activeStats.overall.cacheRate)}</Data>
                 <Label color={ink.faint}>{formatTokens(activeStats.overall.totalCacheReadTokens)} read</Label>
               </View>
 
@@ -204,7 +204,7 @@ export function StatsScreen({ connection, stats: initialStats, onBack }: StatsSc
                 <View style={styles.cardHead}>
                   <Label color={ink.muted}>Error Rate</Label>
                 </View>
-                <Data color={activeStats.overall.errorRate > 0 ? signal.oxide : ink.bright}>
+                <Data color={activeStats.overall.errorRate > 0 ? signal.failed : ink.bright}>
                   {formatPercent(activeStats.overall.errorRate)}
                 </Data>
                 <Label color={ink.faint}>{activeStats.overall.failedRequests} failed</Label>

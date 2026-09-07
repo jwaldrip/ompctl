@@ -11,7 +11,7 @@
 import type { ConnectorStatus, ConnectorSummary, SkillSummary } from "./types.ts";
 
 /** Decoupled from `design/tokens.ts` on purpose — see `tasks.ts` for why. */
-export type SignalName = "amber" | "sage" | "ochre" | "oxide" | "slate" | "violet";
+export type SignalName = "working" | "ready" | "holding" | "failed" | "cold" | "reasoning";
 
 // ---------------------------------------------------------------------------
 // Plugin grouping
@@ -134,9 +134,9 @@ export function filterSkills(skills: readonly SkillSummary[], query: string): Sk
 // ---------------------------------------------------------------------------
 
 export const CONNECTOR_STATUS_SIGNALS: Record<ConnectorStatus, SignalName> = {
-  connected: "sage",
-  connecting: "amber",
-  disconnected: "oxide",
+  connected: "ready",
+  connecting: "working",
+  disconnected: "failed",
 };
 
 export const CONNECTOR_STATUS_LABELS: Record<ConnectorStatus, string> = {

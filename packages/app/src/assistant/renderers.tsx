@@ -90,11 +90,11 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
       }
       return (
         <View style={styles.row} testID="entry-assistant" accessible accessibilityLabel={`agent: ${entry.text}`}>
-          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.sage }]}>
-            <Kicker color={signal.sage} numberOfLines={1}>
+          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.ready }]}>
+            <Kicker color={signal.ready} numberOfLines={1}>
               agent
             </Kicker>
-            {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
+            {entry.streaming ? <Glyph name="activity" size={9} color={signal.working} /> : null}
           </View>
           <RichText text={entry.text} />
         </View>
@@ -128,8 +128,8 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
             accessible
             accessibilityLabel={`clearance: waiting on ${entry.tool}, answer it below`}
           >
-            <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.ochre }]}>
-              <Kicker color={signal.ochre} numberOfLines={1}>
+            <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.holding }]}>
+              <Kicker color={signal.holding} numberOfLines={1}>
                 clearance
               </Kicker>
             </View>
@@ -178,11 +178,11 @@ function ThinkingRow({
 
   return (
     <View style={styles.row} testID="entry-assistant" accessible accessibilityLabel={`thinking: ${entry.text}`}>
-      <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.violet }]}>
-        <Kicker color={signal.violet} numberOfLines={1}>
+      <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.reasoning }]}>
+        <Kicker color={signal.reasoning} numberOfLines={1}>
           thinking
         </Kicker>
-        {entry.streaming ? <Glyph name="activity" size={9} color={signal.amber} /> : null}
+        {entry.streaming ? <Glyph name="activity" size={9} color={signal.working} /> : null}
       </View>
       <View style={styles.prose}>
         <TouchableRipple
@@ -194,9 +194,9 @@ function ThinkingRow({
         >
           <View style={styles.thinkingSummaryRow}>
             <View style={[styles.chevronWrap, { transform: [{ rotate: expanded ? "90deg" : "0deg" }] }]}>
-              <Glyph name="chevron" size={8} color={signal.violet} />
+              <Glyph name="chevron" size={8} color={signal.reasoning} />
             </View>
-            <Label color={signal.violet} testID={`thinking-summary-${entry.id}`}>
+            <Label color={signal.reasoning} testID={`thinking-summary-${entry.id}`}>
               {summary}
             </Label>
           </View>

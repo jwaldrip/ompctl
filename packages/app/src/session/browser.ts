@@ -323,13 +323,13 @@ export function browserView(state: BrowserState): BrowserView {
 // Status signal mapping
 // ---------------------------------------------------------------------------
 
-export type SignalName = "amber" | "sage" | "ochre" | "oxide" | "slate" | "violet";
+export type SignalName = "working" | "ready" | "holding" | "failed" | "cold" | "reasoning";
 
 export const SESSION_STATUS_SIGNALS: Record<SessionStatus, SignalName> = {
-  "live-tui": "amber",
-  "live-ompd": "sage",
-  dormant: "slate",
-  archived: "slate",
+  "live-tui": "working",
+  "live-ompd": "ready",
+  dormant: "cold",
+  archived: "cold",
 };
 
 /** Human-readable status label. */

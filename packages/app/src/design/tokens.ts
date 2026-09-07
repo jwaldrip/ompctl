@@ -82,17 +82,17 @@ export type BrandName = keyof typeof brand;
  */
 export const signal = {
   /** Working. A turn is in flight and tokens are moving. */
-  amber: "#ffb020",
+  working: "#ffb020",
   /** Ready. Idle, healthy, waiting on a person rather than on itself. */
-  sage: "#3ddc84",
+  ready: "#3ddc84",
   /** Holding. Blocked on something that is not an error: a clearance, a host. */
-  ochre: "#ff7a45",
+  holding: "#ff7a45",
   /** Failed. A run that will not finish without someone. */
-  oxide: "#ff4d4d",
+  failed: "#ff4d4d",
   /** Cold. Stopped on purpose, transcript retained, nothing running. */
-  slate: "#7d8794",
+  cold: "#7d8794",
   /** Reasoning. Thought rather than reply; never the same weight as an answer. */
-  violet: "#a78bfa",
+  reasoning: "#a78bfa",
 } as const;
 
 export type SignalName = keyof typeof signal;
@@ -103,12 +103,12 @@ export type SignalName = keyof typeof signal;
  * in the same material as the panel under it.
  */
 export const signalWash = {
-  amber: "#352c1d",
-  sage: "#18332c",
-  ochre: "#352422",
-  oxide: "#351d23",
-  slate: "#21262e",
-  violet: "#28273d",
+  working: "#352c1d",
+  ready: "#18332c",
+  holding: "#352422",
+  failed: "#351d23",
+  cold: "#21262e",
+  reasoning: "#28273d",
 } as const satisfies Record<SignalName, string>;
 
 // ---------------------------------------------------------------------------
@@ -211,39 +211,39 @@ export const TOUCH_TARGET = 44;
  * and the two that need nothing (`stopped`) share the one that means so.
  */
 const AGENT_SIGNALS: Record<AgentState, SignalName> = {
-  provisioning: "ochre",
-  starting: "ochre",
-  idle: "sage",
-  busy: "amber",
-  waiting: "ochre",
-  stopped: "slate",
-  failed: "oxide",
+  provisioning: "holding",
+  starting: "holding",
+  idle: "ready",
+  busy: "working",
+  waiting: "holding",
+  stopped: "cold",
+  failed: "failed",
 };
 
 export function agentSignal(state: AgentState): SignalName {
-  return AGENT_SIGNALS[state] ?? "slate";
+  return AGENT_SIGNALS[state] ?? "cold";
 }
 
 const TOOL_SIGNALS: Record<ToolStatus, SignalName> = {
-  pending: "slate",
-  in_progress: "amber",
-  completed: "sage",
-  failed: "oxide",
+  pending: "cold",
+  in_progress: "working",
+  completed: "ready",
+  failed: "failed",
 };
 
 export function toolSignal(status: ToolStatus): SignalName {
-  return TOOL_SIGNALS[status] ?? "slate";
+  return TOOL_SIGNALS[status] ?? "cold";
 }
 
 /**
  * Context pressure. A window filling up is the single most useful number on
  * the board, and it earns a colour change rather than a percentage nobody
- * reads: sage while there is room, ochre once the end is in sight, oxide when
+ * reads: ready while there is room, holding once the end is in sight, failed when
  * the next turn may not fit.
  */
 export function pressureSignal(fraction: number): SignalName {
-  if (!Number.isFinite(fraction) || fraction <= 0) return "slate";
-  if (fraction >= 0.9) return "oxide";
-  if (fraction >= 0.7) return "ochre";
-  return "sage";
+  if (!Number.isFinite(fraction) || fraction <= 0) return "cold";
+  if (fraction >= 0.9) return "failed";
+  if (fraction >= 0.7) return "holding";
+  return "ready";
 }

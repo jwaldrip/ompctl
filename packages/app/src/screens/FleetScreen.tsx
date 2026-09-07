@@ -241,7 +241,7 @@ export function FleetScreen({
             // The count is a claim about the daemon, and with the link down
             // there is nobody to have made it. The slot says what the link is
             // doing instead, so a stale list is legible as stale.
-            <Kicker color={signal.ochre} testID="fleet-link">
+            <Kicker color={signal.holding} testID="fleet-link">
               {LINK_WORD[link.connection]}
             </Kicker>
           )}
@@ -254,7 +254,7 @@ export function FleetScreen({
           onPress={onToggleGrouped}
           style={toggleStyle}
         >
-          <Glyph name="folder" size={12} color={browser.grouped ? signal.amber : ink.faint} />
+          <Glyph name="folder" size={12} color={browser.grouped ? signal.working : ink.faint} />
         </Pressable>
         <Pressable
           testID="archived-toggle"
@@ -268,7 +268,7 @@ export function FleetScreen({
           onPress={onToggleArchived}
           style={toggleStyle}
         >
-          <Glyph name="archive" size={12} color={browser.showArchived ? signal.amber : ink.faint} />
+          <Glyph name="archive" size={12} color={browser.showArchived ? signal.working : ink.faint} />
           {!browser.showArchived && view.hiddenArchived > 0 ? (
             <Label color={ink.faint} testID="archived-hidden-count">
               {view.hiddenArchived}
@@ -322,7 +322,7 @@ export function FleetScreen({
             pressed && { backgroundColor: ground.active },
           ]}
         >
-          <Kicker color={browser.project === null ? signal.amber : ink.muted}>All projects</Kicker>
+          <Kicker color={browser.project === null ? signal.working : ink.muted}>All projects</Kicker>
         </Pressable>
         {projects.map(cwd => {
           const base = cwd.split("/").filter(Boolean).pop() ?? cwd;
@@ -341,7 +341,7 @@ export function FleetScreen({
                 pressed && { backgroundColor: ground.active },
               ]}
             >
-              <Kicker color={active ? signal.amber : ink.muted}>{base}</Kicker>
+              <Kicker color={active ? signal.working : ink.muted}>{base}</Kicker>
             </Pressable>
           );
         })}
@@ -351,8 +351,8 @@ export function FleetScreen({
         // A band in the column, never a layer over it: see
         // `test/no-hidden-content.test.ts` for why nothing here floats.
         <View style={styles.scopeNotice} testID="fleet-delete-scope-notice">
-          <Glyph name="warning" size={12} color={signal.ochre} />
-          <Label color={signal.ochre} style={styles.scopeNoticeText}>
+          <Glyph name="warning" size={12} color={signal.holding} />
+          <Label color={signal.holding} style={styles.scopeNoticeText}>
             This pairing can archive but not delete: it holds no manage scope. Grant manage when minting this
             device&rsquo;s credential, from the daemon or from a device that can invite.
           </Label>
@@ -402,7 +402,7 @@ function Empty({ link }: { link: FleetLink }): JSX.Element {
   if (link.connection !== "connected") {
     return (
       <View style={styles.empty} testID="fleet-unreachable">
-        <Glyph name="warning" size={26} color={signal.ochre} />
+        <Glyph name="warning" size={26} color={signal.holding} />
         <Body color={ink.plain}>Not connected to the daemon.</Body>
         <Label color={ink.muted}>
           {link.connection === "connecting"
@@ -531,7 +531,7 @@ const styles = StyleSheet.create({
     backgroundColor: ground.base,
   },
   chipActive: {
-    borderColor: signal.amber,
+    borderColor: signal.working,
     backgroundColor: ground.active,
   },
 });

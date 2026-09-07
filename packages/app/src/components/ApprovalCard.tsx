@@ -89,7 +89,7 @@ function settledStateLabel(entry: ApprovalEntry): string {
 export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalCardProps): JSX.Element {
   const { ground, ink, signal, signalWash } = useOmpTheme();
   const settled = entry.decision !== null;
-  const tone = settled ? (entry.decision === "allow" ? signal.sage : signal.oxide) : signal.ochre;
+  const tone = settled ? (entry.decision === "allow" ? signal.ready : signal.failed) : signal.holding;
   const preview = describeInput(entry.input);
   const [now, setNow] = useState(() => Date.now());
 
@@ -114,7 +114,7 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
       style={[styles.card, { backgroundColor: ground.surface, borderColor: tone }]}
       testID={`approval-${entry.requestId}`}
     >
-      <View style={[styles.head, { backgroundColor: settled ? ground.raised : signalWash.ochre }]}>
+      <View style={[styles.head, { backgroundColor: settled ? ground.raised : signalWash.holding }]}>
         <Glyph name="clearance" size={13} color={tone} />
         <Kicker color={tone} testID={`approval-state-${entry.requestId}`}>
           {stateLabel}
@@ -147,7 +147,7 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
             accessibilityLabel="Allow"
             style={styles.decision}
             contentStyle={styles.decisionContent}
-            buttonColor={signal.sage}
+            buttonColor={signal.ready}
             textColor={ink.inverse}
             onPress={() => {
               onDecide(entry.requestId, "allow", "once");
@@ -158,12 +158,12 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
           <Button
             compact
             mode="outlined"
-            icon={decisionGlyph("deny", signal.oxide)}
+            icon={decisionGlyph("deny", signal.failed)}
             testID={`approval-deny-${entry.requestId}`}
             accessibilityLabel="Reject"
-            style={[styles.decision, { borderColor: signal.oxide }]}
+            style={[styles.decision, { borderColor: signal.failed }]}
             contentStyle={styles.decisionContent}
-            textColor={signal.oxide}
+            textColor={signal.failed}
             onPress={() => {
               onDecide(entry.requestId, "deny", "once");
             }}

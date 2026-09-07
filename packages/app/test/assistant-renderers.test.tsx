@@ -275,7 +275,7 @@ describe("every entry kind renders the component the transcript already draws", 
     try {
       const el = byTestID(mounted.host, "entry-assistant");
       expect(el.getAttribute("aria-label")).toBe("agent: pineapple-agent-nonce");
-      expect(declarationsFor(el.firstElementChild!).get("border-left-color")).toBe(rgb(signal.sage));
+      expect(declarationsFor(el.firstElementChild!).get("border-left-color")).toBe(rgb(signal.ready));
     } finally {
       mounted.unmount();
     }
@@ -675,8 +675,8 @@ describe("attribution survives the move into assistant-ui", () => {
       const replyGutter = replyRow.firstElementChild;
       if (thoughtGutter === null || replyGutter === null) throw new Error("a row rendered without its gutter");
 
-      expect(declarationsFor(thoughtGutter).get("border-left-color")).toBe(rgb(signal.violet));
-      expect(declarationsFor(replyGutter).get("border-left-color")).toBe(rgb(signal.sage));
+      expect(declarationsFor(thoughtGutter).get("border-left-color")).toBe(rgb(signal.reasoning));
+      expect(declarationsFor(replyGutter).get("border-left-color")).toBe(rgb(signal.ready));
 
       const thoughtKicker = thoughtGutter.firstElementChild;
       const replyKicker = replyGutter.firstElementChild;
@@ -684,8 +684,8 @@ describe("attribution survives the move into assistant-ui", () => {
 
       expect(thoughtKicker.textContent).toBe("thinking");
       expect(replyKicker.textContent).toBe("agent");
-      expect(declarationsFor(thoughtKicker).get("color")).toBe(rgb(signal.violet));
-      expect(declarationsFor(replyKicker).get("color")).toBe(rgb(signal.sage));
+      expect(declarationsFor(thoughtKicker).get("color")).toBe(rgb(signal.reasoning));
+      expect(declarationsFor(replyKicker).get("color")).toBe(rgb(signal.ready));
       // The gutter caps at 1.5x dynamic type, so its label must ellipsise
       // rather than wrap and make an activity row unexpectedly taller.
       for (const kicker of [thoughtKicker, replyKicker]) {
@@ -727,7 +727,7 @@ describe("attribution survives the move into assistant-ui", () => {
       const thoughtRow = byTestID(thought.host, "entry-assistant");
       const summary = byTestID(thoughtRow, "thinking-summary-m1");
       expect(summary.textContent).toBe("Thinking, 3 lines");
-      expect(declarationsFor(summary).get("color")).toBe(rgb(signal.violet));
+      expect(declarationsFor(summary).get("color")).toBe(rgb(signal.reasoning));
       expect(colourOfProse(thoughtRow, "line one")).toBeUndefined();
     } finally {
       thought.unmount();
@@ -926,11 +926,11 @@ describe("a clearance's three answers are three different weights", () => {
       const deny = surfaceOf("approval-deny-r1");
       const always = surfaceOf("approval-always-r1");
 
-      expect(declarationsFor(allow).get("background-color")).toBe(rgb(signal.sage));
+      expect(declarationsFor(allow).get("background-color")).toBe(rgb(signal.ready));
       expect(pixels(allow, "border-width")).toBe(0);
 
       expect(declarationsFor(deny).get("background-color")).toBe(NO_FILL);
-      expect(declarationsFor(deny).get("border-color")).toBe(rgb(signal.oxide));
+      expect(declarationsFor(deny).get("border-color")).toBe(rgb(signal.failed));
       expect(pixels(deny, "border-width")).toBeGreaterThan(0);
 
       expect(declarationsFor(always).get("background-color")).toBe(NO_FILL);

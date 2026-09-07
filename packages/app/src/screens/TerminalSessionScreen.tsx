@@ -214,7 +214,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   // refused adds no row here. "Not live" and a refusal already have bands of
   // their own below that say more than a word and can be acted on.
   const activity = conversationActivity(tuiActivity(tui, connection, load, liveTerminal));
-  const tone = status === null ? theme.signal.oxide : theme.signal[SESSION_STATUS_SIGNALS[status]];
+  const tone = status === null ? theme.signal.failed : theme.signal[SESSION_STATUS_SIGNALS[status]];
   const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
   const ownedBottom = useOwnedBottomInset();
   // The same mechanism the agent log uses: KeyboardAvoidingView is inert on an
@@ -303,9 +303,9 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
               accessibilityLabel={`thinking: ${item.entry.text}`}
             >
               <View
-                style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: theme.signal.violet }]}
+                style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: theme.signal.reasoning }]}
               >
-                <Kicker color={theme.signal.violet} numberOfLines={1}>
+                <Kicker color={theme.signal.reasoning} numberOfLines={1}>
                   thinking
                 </Kicker>
                 {under}
@@ -332,10 +332,10 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           <View
             style={[
               styles.gutter,
-              { width: attributionWidth(fontScale), borderLeftColor: mine ? theme.ink.faint : theme.signal.sage },
+              { width: attributionWidth(fontScale), borderLeftColor: mine ? theme.ink.faint : theme.signal.ready },
             ]}
           >
-            <Kicker color={mine ? theme.ink.muted : theme.signal.sage}>{mine ? "you" : "agent"}</Kicker>
+            <Kicker color={mine ? theme.ink.muted : theme.signal.ready}>{mine ? "you" : "agent"}</Kicker>
             {under}
           </View>
           <RichText text={words} />
@@ -501,8 +501,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {liveTerminal ? null : (
               <View testID="terminal-not-live-tui" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
-                  <Label color={theme.signal.oxide}>Not a live terminal session</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.failed} />
+                  <Label color={theme.signal.failed}>Not a live terminal session</Label>
                 </View>
                 <Body color={theme.ink.bright}>{notLiveGuidance(status)}</Body>
               </View>
@@ -511,8 +511,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {promptAccess === "missing" || tui.refusalKind === "scope" ? (
               <View testID="terminal-scope-refusal" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
-                  <Label color={theme.signal.oxide}>Prompt scope required</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.failed} />
+                  <Label color={theme.signal.failed}>Prompt scope required</Label>
                 </View>
                 <Body color={theme.ink.bright}>
                   {tui.refusalKind === "scope" && tui.refusal !== null
@@ -525,8 +525,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {tui.refusalKind === "owner-gone" && tui.refusal !== null ? (
               <View testID="terminal-owner-gone" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
-                  <Label color={theme.signal.oxide}>Owning terminal is unreachable</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.failed} />
+                  <Label color={theme.signal.failed}>Owning terminal is unreachable</Label>
                 </View>
                 <Body color={theme.ink.bright}>{tui.refusal}</Body>
               </View>
@@ -535,8 +535,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {tui.replyUnavailable ? (
               <View testID="terminal-reply-unavailable" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={theme.signal.ochre} />
-                  <Label color={theme.signal.ochre}>Reply stayed in the terminal</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.holding} />
+                  <Label color={theme.signal.holding}>Reply stayed in the terminal</Label>
                 </View>
                 <Body color={theme.ink.bright}>
                   This turn ended without readable assistant text. Its full transcript and tool output remain in the
@@ -697,7 +697,7 @@ const styles = StyleSheet.create({
   // crushing it against the composer.
   hints: { gap: rhythm.rowGap, padding: rhythm.gutter },
   hintsFill: { flex: 1 },
-  refusal: { gap: rhythm.cardGap, borderWidth: stroke.hair, borderColor: signal.oxide, padding: rhythm.cardPad },
+  refusal: { gap: rhythm.cardGap, borderWidth: stroke.hair, borderColor: signal.failed, padding: rhythm.cardPad },
   refusalHead: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
   boundary: { marginTop: "auto", paddingTop: rhythm.rowGapTight },
   cardRow: { marginTop: rhythm.cardStack },

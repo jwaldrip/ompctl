@@ -52,10 +52,10 @@ export function TaskDetail({ task, onOpenSession, onRetry, now }: TaskDetailProp
 
       {task.result !== undefined ? (
         <View style={styles.section} testID={task.state === "failed" ? "task-detail-failed" : "task-detail-result"}>
-          <Kicker color={task.state === "failed" ? signal.oxide : ink.muted}>
+          <Kicker color={task.state === "failed" ? signal.failed : ink.muted}>
             {task.state === "failed" ? "Failed" : "Result"}
           </Kicker>
-          <Body color={task.state === "failed" ? signal.oxide : ink.plain}>{task.result}</Body>
+          <Body color={task.state === "failed" ? signal.failed : ink.plain}>{task.result}</Body>
         </View>
       ) : null}
 
@@ -68,8 +68,8 @@ export function TaskDetail({ task, onOpenSession, onRetry, now }: TaskDetailProp
           style={({ pressed }) => [styles.retryAction, pressed && { backgroundColor: ground.active }]}
         >
           {/* Client-side resubmit: triggers the existing task creation flow with the same prompt. */}
-          <Glyph name="restore" size={13} color={signal.oxide} />
-          <Label color={signal.oxide}>Retry</Label>
+          <Glyph name="restore" size={13} color={signal.failed} />
+          <Label color={signal.failed}>Retry</Label>
         </Pressable>
       ) : null}
 
@@ -85,8 +85,8 @@ export function TaskDetail({ task, onOpenSession, onRetry, now }: TaskDetailProp
         onPress={() => onOpenSession(task.agentId)}
         style={({ pressed }) => [styles.action, pressed && { backgroundColor: ground.active }]}
       >
-        <Glyph name="link" size={13} color={signal.sage} />
-        <Label color={signal.sage}>Open session</Label>
+        <Glyph name="link" size={13} color={signal.ready} />
+        <Label color={signal.ready}>Open session</Label>
       </Pressable>
     </ScrollView>
   );
@@ -105,7 +105,7 @@ const styles = StyleSheet.create({
     gap: space.tight,
     minHeight: TOUCH_TARGET,
     borderWidth: stroke.hair,
-    borderColor: signal.sage,
+    borderColor: signal.ready,
     alignSelf: "flex-start",
     paddingHorizontal: space.wide,
   },
@@ -116,7 +116,7 @@ const styles = StyleSheet.create({
     gap: space.tight,
     minHeight: TOUCH_TARGET,
     borderWidth: stroke.hair,
-    borderColor: signal.oxide,
+    borderColor: signal.failed,
     alignSelf: "flex-start",
     paddingHorizontal: space.wide,
   },

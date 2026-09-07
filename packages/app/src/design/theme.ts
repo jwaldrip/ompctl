@@ -67,12 +67,7 @@ import {
  *
  * `fontWeight: "normal"` on every one of them, always. See the file header.
  */
-function variant(entry: {
-  fontFamily: string;
-  fontSize: number;
-  lineHeight: number;
-  letterSpacing?: number;
-}): MD3Type {
+function variant(entry: { fontFamily: string; fontSize: number; lineHeight: number; letterSpacing?: number }): MD3Type {
   return {
     fontFamily: entry.fontFamily,
     fontSize: entry.fontSize,
@@ -169,13 +164,13 @@ export const ompDarkTheme = {
     // The accent action beside it.
     secondary: brand.amber,
     onSecondary: ink.inverse,
-    secondaryContainer: signalWash.amber,
+    secondaryContainer: signalWash.working,
     onSecondaryContainer: brand.amber,
     // Reasoning, which is never the same weight as an answer.
-    tertiary: signal.violet,
+    tertiary: signal.reasoning,
     onTertiary: ink.inverse,
-    tertiaryContainer: signalWash.violet,
-    onTertiaryContainer: signal.violet,
+    tertiaryContainer: signalWash.reasoning,
+    onTertiaryContainer: signal.reasoning,
     background: ground.base,
     onBackground: ink.bright,
     surface: ground.surface,
@@ -184,10 +179,10 @@ export const ompDarkTheme = {
     onSurfaceVariant: ink.plain,
     surfaceDisabled: ground.active,
     onSurfaceDisabled: ink.faint,
-    error: signal.oxide,
+    error: signal.failed,
     onError: ink.inverse,
-    errorContainer: signalWash.oxide,
-    onErrorContainer: signal.oxide,
+    errorContainer: signalWash.failed,
+    onErrorContainer: signal.failed,
     outline: ground.edge,
     outlineVariant: ground.line,
     inverseSurface: ink.bright,

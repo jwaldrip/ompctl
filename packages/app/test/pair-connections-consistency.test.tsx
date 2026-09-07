@@ -177,8 +177,8 @@ describe("pair and connections draw from one design", () => {
       const addFill = declarationsFor(byTestID(switcher.host, "add-connection")).get("background-color");
       // The filled swatch the rest of the app already uses, not the ghost
       // outline that read as one more text field.
-      expect(submitFill).toBe(rgb(signal.sage));
-      expect(addFill).toBe(rgb(signal.sage));
+      expect(submitFill).toBe(rgb(signal.ready));
+      expect(addFill).toBe(rgb(signal.ready));
       expect(submitFill).toBe(addFill);
     } finally {
       pair.unmount();

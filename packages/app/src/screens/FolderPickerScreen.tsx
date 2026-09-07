@@ -118,8 +118,8 @@ export function FolderPickerScreen(props: FolderPickerScreenProps): JSX.Element 
           style={styles.notice}
           testID="folder-picker-notice"
         >
-          <Glyph name="warning" color={signal.ochre} size={13} />
-          <Label color={signal.ochre} style={styles.noticeText}>
+          <Glyph name="warning" color={signal.holding} size={13} />
+          <Label color={signal.holding} style={styles.noticeText}>
             {state.notice}
           </Label>
         </Pressable>
@@ -253,7 +253,7 @@ const styles = StyleSheet.create({
   notice: {
     alignItems: "center",
     backgroundColor: ground.surface,
-    borderColor: signal.ochre,
+    borderColor: signal.holding,
     borderWidth: stroke.hair,
     flexDirection: "row",
     gap: space.snug,
@@ -281,7 +281,7 @@ const styles = StyleSheet.create({
   actions: { gap: space.snug, paddingHorizontal: rhythm.gutter, paddingVertical: rhythm.rowGap },
   bind: {
     alignItems: "center",
-    backgroundColor: signal.sage,
+    backgroundColor: signal.ready,
     flexDirection: "row",
     gap: space.snug,
     justifyContent: "center",

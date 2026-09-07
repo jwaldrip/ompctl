@@ -201,7 +201,7 @@ function Row({ line, first }: { line: DiffLine; first: boolean }): JSX.Element {
   // The sign is the colour-blind channel; the tone below is the second
   // channel, never the only one.
   const sign = line.kind === "add" ? "+" : line.kind === "del" ? "-" : "";
-  const signTone = line.kind === "add" ? signal.sage : line.kind === "del" ? signal.oxide : ink.faint;
+  const signTone = line.kind === "add" ? signal.ready : line.kind === "del" ? signal.failed : ink.faint;
 
   return (
     <View
@@ -247,8 +247,8 @@ const styles = StyleSheet.create({
     borderTopColor: ground.edge,
   },
   hunk: { backgroundColor: ground.active },
-  add: { backgroundColor: signalWash.sage },
-  del: { backgroundColor: signalWash.oxide },
+  add: { backgroundColor: signalWash.ready },
+  del: { backgroundColor: signalWash.failed },
   sign: { width: space.step, textAlign: "center" },
   // Shrink, do not push: without this a long line widens its row instead of
   // wrapping inside the content column.

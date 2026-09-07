@@ -120,16 +120,16 @@ export function DiffView({ path, oldText, newText, renderLine }: DiffViewProps):
                 <View
                   style={[
                     styles.gutter,
-                    isAdded && { backgroundColor: signalWash.sage },
-                    isDeleted && { backgroundColor: signalWash.oxide },
+                    isAdded && { backgroundColor: signalWash.ready },
+                    isDeleted && { backgroundColor: signalWash.failed },
                   ]}
                   testID="diff-gutter"
                 >
                   <Text
                     style={[
                       styles.signText,
-                      isAdded && { color: signal.sage },
-                      isDeleted && { color: signal.oxide },
+                      isAdded && { color: signal.ready },
+                      isDeleted && { color: signal.failed },
                       !isAdded && !isDeleted && { color: "transparent" },
                     ]}
                   >

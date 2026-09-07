@@ -112,14 +112,14 @@ export function taskListView(state: TaskListState): TaskListView {
 // ---------------------------------------------------------------------------
 
 /** Decoupled from `design/tokens.ts` on purpose: this is a data-layer file and names its own signal vocabulary, resolved to a colour only where it renders. */
-export type SignalName = "amber" | "sage" | "ochre" | "oxide" | "slate" | "violet";
+export type SignalName = "working" | "ready" | "holding" | "failed" | "cold" | "reasoning";
 
 export const TASK_STATE_SIGNALS: Record<TaskState, SignalName> = {
-  running: "amber",
-  waiting: "ochre",
-  done: "sage",
-  failed: "oxide",
-  canceled: "slate",
+  running: "working",
+  waiting: "holding",
+  done: "ready",
+  failed: "failed",
+  canceled: "cold",
 };
 
 export const TASK_STATE_LABELS: Record<TaskState, string> = {

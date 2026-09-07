@@ -49,12 +49,12 @@ import { formatAge } from "../session/browser.ts";
 export const RUNS_PER_PAGE = 3;
 
 const RUN_STATE_SIGNALS: Record<RunState, SignalName> = {
-  queued: "slate",
-  running: "amber",
-  succeeded: "sage",
-  failed: "oxide",
-  skipped: "slate",
-  timed_out: "oxide",
+  queued: "cold",
+  running: "working",
+  succeeded: "ready",
+  failed: "failed",
+  skipped: "cold",
+  timed_out: "failed",
 };
 
 const RUN_STATE_LABELS: Record<RunState, string> = {
@@ -72,13 +72,13 @@ const RUN_STATE_LABELS: Record<RunState, string> = {
  * nor a skip, so it wears the holding colour rather than either of theirs.
  */
 const ACTION_STATE_SIGNALS: Record<ActionRunState, SignalName> = {
-  queued: "slate",
-  running: "amber",
-  succeeded: "sage",
-  failed: "oxide",
-  refused: "ochre",
-  skipped: "slate",
-  timed_out: "oxide",
+  queued: "cold",
+  running: "working",
+  succeeded: "ready",
+  failed: "failed",
+  refused: "holding",
+  skipped: "cold",
+  timed_out: "failed",
 };
 
 const ACTION_STATE_LABELS: Record<ActionRunState, string> = {
@@ -249,7 +249,7 @@ function RunCard({
             {timing}
           </Label>
           {run.error === undefined ? null : (
-            <Label color={signal.oxide} testID={`run-${run.id}-error`}>
+            <Label color={signal.failed} testID={`run-${run.id}-error`}>
               {run.error}
             </Label>
           )}
@@ -305,7 +305,7 @@ function RunActionRow({
           </Kicker>
         </View>
         {outcome === undefined ? null : (
-          <Body color={action.refusal === undefined && action.error === undefined ? ink.muted : signal.oxide}>
+          <Body color={action.refusal === undefined && action.error === undefined ? ink.muted : signal.failed}>
             {outcome}
           </Body>
         )}
@@ -320,8 +320,8 @@ function RunActionRow({
             style={openStyle}
             testID={`run-${run.id}-action-${action.actionId}-retry`}
           >
-            <Glyph name="resume" size={13} color={signal.sage} />
-            <Label color={signal.sage}>Retry from here</Label>
+            <Glyph name="resume" size={13} color={signal.ready} />
+            <Label color={signal.ready}>Retry from here</Label>
           </Pressable>
         ) : null}
 
@@ -341,9 +341,9 @@ function RunActionRow({
           <Glyph
             name={sessionId === undefined ? "unknown" : "attach"}
             size={13}
-            color={sessionId === undefined ? ink.faint : signal.sage}
+            color={sessionId === undefined ? ink.faint : signal.ready}
           />
-          <Label color={sessionId === undefined ? ink.faint : signal.sage}>
+          <Label color={sessionId === undefined ? ink.faint : signal.ready}>
             {sessionId === undefined ? "No session" : "Open session"}
           </Label>
         </Pressable>
@@ -394,7 +394,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: rhythm.glyphGap,
     paddingHorizontal: rhythm.controlPad,
-    backgroundColor: signalWash.sage,
+    backgroundColor: signalWash.ready,
   },
   openDisabled: { backgroundColor: ground.active },
   more: {

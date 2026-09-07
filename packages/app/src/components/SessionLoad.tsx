@@ -38,8 +38,8 @@ export function SessionLoading({ title, testID = "session-loading" }: SessionLoa
       style={styles.panel}
       testID={testID}
     >
-      <Glyph name="activity" size={22} color={signal.amber} />
-      <Kicker color={signal.amber}>Loading</Kicker>
+      <Glyph name="activity" size={22} color={signal.working} />
+      <Kicker color={signal.working}>Loading</Kicker>
       <Body color={ink.bright} numberOfLines={2} testID={`${testID}-title`}>
         {title}
       </Body>
@@ -79,8 +79,8 @@ export function SessionLoadFailed({
       style={styles.panel}
       testID={testID}
     >
-      <Glyph name="warning" size={22} color={signal.oxide} />
-      <Kicker color={signal.oxide}>Could not open</Kicker>
+      <Glyph name="warning" size={22} color={signal.failed} />
+      <Kicker color={signal.failed}>Could not open</Kicker>
       <Body color={ink.bright} numberOfLines={2} testID={`${testID}-title`}>
         {title}
       </Body>
@@ -95,7 +95,7 @@ export function SessionLoadFailed({
           style={({ pressed }) => [styles.retryButton, pressed && { backgroundColor: ground.active }]}
           testID={`${testID}-retry`}
         >
-          <Glyph color={signal.amber} name="resume" size={13} />
+          <Glyph color={signal.working} name="resume" size={13} />
           <Label color={ink.bright}>Retry</Label>
         </Pressable>
       )}
@@ -134,8 +134,8 @@ export function SessionLoadStalled({
         : "No link. This session is asked for again as soon as there is one.";
   return (
     <View accessible accessibilityLabel={`${title} did not arrive: ${detail}`} style={styles.panel} testID={testID}>
-      <Glyph name="link" size={22} color={signal.slate} />
-      <Kicker color={signal.slate}>Link lost</Kicker>
+      <Glyph name="link" size={22} color={signal.cold} />
+      <Kicker color={signal.cold}>Link lost</Kicker>
       <Body color={ink.bright} numberOfLines={2} testID={`${testID}-title`}>
         {title}
       </Body>

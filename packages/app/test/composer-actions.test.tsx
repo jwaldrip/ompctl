@@ -581,7 +581,7 @@ describe("a composer reads as one surface", () => {
         // fills that would make this control compete with send, not for the
         // absence of the property.
         expect(attach).not.toContain(`background-color:${rgba(ground.active)}`);
-        expect(attach).not.toContain(`background-color:${rgba(signal.sage)}`);
+        expect(attach).not.toContain(`background-color:${rgba(signal.ready)}`);
 
         // Send is the one filled control, and round rather than merely
         // rounded, so the shape alone answers "what do I press".
@@ -602,9 +602,9 @@ describe("a composer reads as one surface", () => {
       act(() => {
         typeInto(m.need("composer-input"), "ready to go");
       });
-      expect(renderedStyle(m.need("composer-send"))).toContain(`background-color:${rgba(signal.sage)}`);
+      expect(renderedStyle(m.need("composer-send"))).toContain(`background-color:${rgba(signal.ready)}`);
       // The paperclip beside it is still a ghost. One emphasis per surface.
-      expect(renderedStyle(m.need("composer-attach"))).not.toContain(`background-color:${rgba(signal.sage)}`);
+      expect(renderedStyle(m.need("composer-attach"))).not.toContain(`background-color:${rgba(signal.ready)}`);
     } finally {
       m.unmount();
     }
@@ -622,7 +622,7 @@ describe("a composer reads as one surface", () => {
       expect(stop).toContain("width:44px");
       expect(geometry).toContain("width:44px");
       // Filled in the failure colour rather than boxed in it.
-      expect(stop).toContain(`background-color:${rgba(signal.oxide)}`);
+      expect(stop).toContain(`background-color:${rgba(signal.failed)}`);
     } finally {
       running.unmount();
     }
