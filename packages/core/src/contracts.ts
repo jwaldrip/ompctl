@@ -1091,6 +1091,12 @@ export interface PromptImage {
 /** At most this many images per prompt. */
 export const MAX_PROMPT_IMAGES = 4;
 
+/**
+ * Maximum prompts queued per agent while a turn is in flight.
+ * Rationale: an operator typing ahead, not a script.
+ */
+export const PROMPT_QUEUE_MAX = 8;
+
 /** One image's base64 may be at most this many characters (about 256 KiB decoded). */
 export const MAX_PROMPT_IMAGE_BASE64_CHARS = 350_000;
 
@@ -1147,7 +1153,7 @@ export function parsePromptImages(
 export type ClientFrame =
   | { t: "attach"; agentId: AgentId; sinceSeq?: number }
   | { t: "detach"; agentId: AgentId }
-  | { t: "prompt"; agentId: AgentId; text: string; images?: PromptImage[] }
+  | { t: "prompt"; agentId: AgentId; text: string; images?: PromptImage[]; deliverAs?: "followUp" }
   | { t: "cancel"; agentId: AgentId }
   | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice; scope?: ApprovalScope }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
@@ -1602,6 +1608,8 @@ export type ServerFrame =
    */
   | { t: "agent_config"; agentId: AgentId; configOptions: AgentConfigOption[] }
   | { t: "session_stats"; sessionId: string; stats: SessionStats }
+  /** A prompt submitted with `deliverAs: "followUp"` while a turn was in flight has been queued. */
+  | { t: "prompt_queued"; agentId: AgentId; queued: number }
   | { t: "pong" };
 // Audit
 // ---------------------------------------------------------------------------

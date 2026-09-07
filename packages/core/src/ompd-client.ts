@@ -665,10 +665,13 @@ export interface SessionStatsEvent {
   stats: SessionStats;
 }
 
-
 /** The cowork container state, carrying model broker readiness. */
 export interface ContainerStateEvent {
   modelBroker: ModelBrokerStatus;
+}
+export interface PromptQueuedEvent {
+  agentId: AgentId;
+  queued: number;
 }
 export interface ClientEventMap {
   status: StatusEvent;
@@ -711,6 +714,7 @@ export interface ClientEventMap {
   session_history: SessionHistoryEvent;
   session_stats: SessionStatsEvent;
   agent_config: AgentConfigEvent;
+  prompt_queued: PromptQueuedEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -937,9 +941,28 @@ export class OmpdClient {
    * trusting its caller is not the boundary; it is a convenience that keeps
    * the empty-images case byte-identical to the frame every older peer sends.
    */
-  prompt(agentId: AgentId, text: string, images?: PromptImage[]): void {
-    const frame: ClientFrame =
-      images && images.length > 0 ? { t: "prompt", agentId, text, images } : { t: "prompt", agentId, text };
+  prompt(
+    agentId: AgentId,
+    text: string,
+    imagesOrOptions?: PromptImage[] | { images?: PromptImage[]; deliverAs?: "followUp" },
+    options?: { deliverAs?: "followUp" },
+  ): void {
+    let images: PromptImage[] | undefined;
+    let deliverAs: "followUp" | undefined;
+    if (Array.isArray(imagesOrOptions)) {
+      images = imagesOrOptions;
+      deliverAs = options?.deliverAs;
+    } else if (imagesOrOptions) {
+      images = imagesOrOptions.images;
+      deliverAs = imagesOrOptions.deliverAs;
+    }
+    const frame: ClientFrame = {
+      t: "prompt",
+      agentId,
+      text,
+      ...(images && images.length > 0 ? { images } : {}),
+      ...(deliverAs ? { deliverAs } : {}),
+    };
     this.send(frame);
   }
 
@@ -1800,6 +1823,12 @@ export class OmpdClient {
         this.emit("agent_config", {
           agentId: frame.agentId,
           configOptions: frame.configOptions,
+        });
+        return;
+      case "prompt_queued":
+        this.emit("prompt_queued", {
+          agentId: frame.agentId,
+          queued: frame.queued,
         });
         return;
       case "tui_activity":

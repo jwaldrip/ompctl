@@ -826,3 +826,110 @@ describe("nothing sits on this surface permanently to explain a control", () => 
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gaps: Slash Commands, @file, and Prompt Queue
+// ---------------------------------------------------------------------------
+
+describe("slash commands, file picker, and prompt queue", () => {
+  test("'/' shows commands from state and tap inserts command", async () => {
+    const commands = [
+      { name: "commit", description: "Create a git commit", hint: "[message]" },
+      { name: "help", description: "Show available commands", hint: "" },
+    ];
+    const m = open({}, { commands });
+    try {
+      expect(m.find("command-menu")).toBeNull();
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "/co");
+      });
+      expect(m.find("command-menu")).not.toBeNull();
+      expect(m.find("command-item-commit")).not.toBeNull();
+      expect(m.find("command-item-help")).toBeNull();
+
+      m.press("command-item-commit");
+      expect(input.value).toBe("/commit ");
+      expect(m.find("command-menu")).toBeNull();
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("'@' lists fs entries from a fixture and tap inserts relative path", async () => {
+    const fixtureListing = {
+      path: "/Users/test/repo",
+      parent: "/Users/test",
+      roots: ["/Users/test/repo"],
+      bounded: false,
+      entries: [
+        { name: "src", kind: "dir" as const },
+        { name: "package.json", kind: "file" as const },
+      ],
+    };
+    const m = open(
+      {},
+      {
+        cwd: "/Users/test/repo",
+        fsListing: fixtureListing,
+      },
+    );
+    try {
+      expect(m.find("file-picker")).toBeNull();
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "Look at @");
+      });
+      expect(m.find("file-picker")).not.toBeNull();
+      expect(m.find("file-picker-entry-package.json")).not.toBeNull();
+
+      m.press("file-picker-entry-package.json");
+      expect(input.value).toBe("Look at package.json ");
+      expect(m.find("file-picker")).toBeNull();
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a turn in flight shows Queue control with badge and separate interrupt control", () => {
+    const cancels = { count: 0 };
+    const m = open({ running: true, cancels });
+    try {
+      expect(m.find("composer-cancel")).not.toBeNull();
+      expect(m.find("composer-queue")).not.toBeNull();
+      expect(m.find("composer-queue-badge")).not.toBeNull();
+      expect(m.find("composer-send")).toBeNull();
+
+      m.press("composer-cancel");
+      expect(cancels.count).toBe(1);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("queued prompts strip lists pending prompts with remove", () => {
+    let removedId: string | null = null;
+    const m = open(
+      {},
+      {
+        queuedPrompts: [
+          { id: "q1", text: "fix the build" },
+          { id: "q2", text: "run tests" },
+        ],
+        onRemoveQueued: id => {
+          removedId = id;
+        },
+      },
+    );
+    try {
+      expect(m.find("composer-queued-strip")).not.toBeNull();
+      expect(m.need("composer-queued-item-0").textContent).toContain("fix the build");
+      expect(m.need("composer-queued-item-1").textContent).toContain("run tests");
+
+      m.press("composer-queued-remove-0");
+      expect(removedId ?? "").toBe("q1");
+    } finally {
+      m.unmount();
+    }
+  });
+});

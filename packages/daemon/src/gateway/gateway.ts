@@ -89,6 +89,7 @@ import {
   createAgentId,
   type PendingApproval,
   type PendingPlanReview,
+  PromptQueueFullError,
   type SettledApproval,
   type Supervisor,
   UnauthorizedError,
@@ -1555,6 +1556,13 @@ export class Gateway {
           this.#deliverPlanReview(ws, review);
         }
       },
+      onPromptQueued: (agentId, queued) => {
+        for (const ws of this.#sockets) {
+          if (ws.data.attached.has(agentId)) {
+            this.#send(ws, { t: "prompt_queued", agentId, queued });
+          }
+        }
+      },
     });
 
     this.#unsubscribeSay = this.#events?.addSayListener(event => {
@@ -2217,6 +2225,9 @@ export class Gateway {
         }
         if (err instanceof AgentBusyError) {
           return Response.json({ error: "agent_busy", message: err.message }, { status: 409 });
+        }
+        if (err instanceof PromptQueueFullError) {
+          return Response.json({ error: "prompt_queue_full", message: err.message }, { status: 429 });
         }
         return Response.json({ error: err instanceof Error ? err.message : "prompt failed" }, { status: 404 });
       }
@@ -5396,8 +5407,26 @@ export class Gateway {
 
         // Deliberately not awaited: a turn outlives the frame that started it,
         // and the socket has to stay responsive to `cancel` while it runs.
+        const promptOptions = frame.deliverAs === "followUp" ? ({ deliverAs: "followUp" } as const) : undefined;
         void this.#sup
-          .prompt(frame.agentId, frame.text, this.#actorOf(ws), images.images.length > 0 ? images.images : undefined)
+          .prompt(
+            frame.agentId,
+            frame.text,
+            this.#actorOf(ws),
+            images.images.length > 0 ? images.images : undefined,
+            promptOptions,
+          )
+          .then(outcome => {
+            if (outcome && typeof outcome === "object" && "queued" in outcome && typeof outcome.queued === "number") {
+              if (!ws.data.attached.has(frame.agentId)) {
+                this.#send(ws, {
+                  t: "prompt_queued",
+                  agentId: frame.agentId,
+                  queued: outcome.queued,
+                });
+              }
+            }
+          })
           .catch((err: unknown) => {
             this.#send(ws, {
               t: "error",
@@ -5405,9 +5434,11 @@ export class Gateway {
               code:
                 err instanceof AgentBusyError
                   ? "agent_busy"
-                  : err instanceof UnauthorizedError
-                    ? "unauthorized"
-                    : "prompt_failed",
+                  : err instanceof PromptQueueFullError
+                    ? "prompt_queue_full"
+                    : err instanceof UnauthorizedError
+                      ? "unauthorized"
+                      : "prompt_failed",
               message: err instanceof Error ? err.message : "prompt failed",
             });
           });

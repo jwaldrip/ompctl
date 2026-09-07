@@ -97,9 +97,9 @@
 
 import type { Attachment, CreateAttachment } from "@assistant-ui/core";
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react-native";
-import type { PromptImage } from "@ompd/core/contracts";
-import { type JSX, useMemo } from "react";
-import { StyleSheet, useWindowDimensions, View } from "react-native";
+import type { AgentId, FsListing, PromptImage } from "@ompd/core/contracts";
+import { type JSX, useEffect, useMemo, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { IconButton, Surface, TouchableRipple } from "react-native-paper";
 import { AttachmentControl, AttachmentsBar, useImageAttachments } from "../components/AttachmentsBar.tsx";
 import { Glyph } from "../design/icons.tsx";
@@ -109,6 +109,14 @@ import { radius, space, stroke, type } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { ImageAttachmentPicker } from "../platform/attachments.ts";
 import type { SessionVoice } from "../screens/SessionScreen.tsx";
+import type { SlashCommand } from "../session/model.ts";
+import { CommandMenu, cleanCommandName } from "./CommandMenu.tsx";
+import { FilePicker, type FilePickerClient } from "./FilePicker.tsx";
+
+export interface QueuedPromptItem {
+  id: string;
+  text: string;
+}
 
 export interface OmpComposerProps {
   /**
@@ -142,6 +150,25 @@ export interface OmpComposerProps {
    * waiting. The field stays usable and this states why the words will not go.
    */
   refusal?: string;
+  /** Available slash commands from state.commands. */
+  commands?: readonly SlashCommand[] | readonly string[];
+  commandDetails?: ReadonlyMap<string, SlashCommand>;
+  /** Session working directory for the @ file picker. */
+  cwd?: string;
+  /** Optional file listing fixture for tests. */
+  fsListing?: FsListing | null;
+  /** Optional client for listing directories and prompt queueing. */
+  client?: FilePickerClient & {
+    prompt?(agentId: AgentId, text: string, images?: PromptImage[], options?: { deliverAs?: "followUp" }): void;
+    on?(name: string, listener: (...args: any[]) => void): () => void;
+  };
+  agentId?: AgentId;
+  /** External queued prompts list (mirror of daemon queue). */
+  queuedPrompts?: QueuedPromptItem[];
+  /** Callback when a prompt is queued. */
+  onQueue?: (text: string, images?: PromptImage[]) => void;
+  /** Callback when a prompt is removed from the queue strip. */
+  onRemoveQueued?: (id: string) => void;
 }
 
 /**
@@ -195,6 +222,15 @@ export function OmpComposer({
   model,
   onOpenConfig,
   refusal,
+  commands,
+  commandDetails,
+  cwd,
+  fsListing,
+  client,
+  agentId,
+  queuedPrompts,
+  onQueue,
+  onRemoveQueued,
 }: OmpComposerProps): JSX.Element {
   const aui = useAui();
   const theme = useOmpTheme();
@@ -216,9 +252,52 @@ export function OmpComposer({
    * AND this surface can stop it.
    */
   const isDisabled = useAuiState(s => s.thread.isDisabled);
+  const isRunning = useAuiState(s => s.thread.isRunning);
   const canSend = useAuiState(s => s.composer.canSend);
   const canCancel = useAuiState(s => s.composer.canCancel);
   const held = useAuiState(s => s.composer.attachments);
+  const text = useAuiState(s => s.composer.text) ?? "";
+
+  const [localQueued, setLocalQueued] = useState<QueuedPromptItem[]>([]);
+  const [filePickerDismissed, setFilePickerDismissed] = useState(false);
+  const [commandMenuDismissed, setCommandMenuDismissed] = useState(false);
+
+  const queuedItems = queuedPrompts ?? localQueued;
+
+  useEffect(() => {
+    if (!text.includes("@") && filePickerDismissed) {
+      setFilePickerDismissed(false);
+    }
+  }, [text, filePickerDismissed]);
+
+  useEffect(() => {
+    if (!text.startsWith("/") && commandMenuDismissed) {
+      setCommandMenuDismissed(false);
+    }
+  }, [text, commandMenuDismissed]);
+
+  useEffect(() => {
+    if (!client?.on || !agentId) return;
+    const unsub = client.on("prompt_queued", (event: unknown) => {
+      if (typeof event === "object" && event !== null && "agentId" in event && "queued" in event) {
+        const queuedEvent = event as { agentId: string; queued: number };
+        if (queuedEvent.agentId === agentId) {
+          setLocalQueued(prev => {
+            if (queuedEvent.queued === 0) return [];
+            if (prev.length > queuedEvent.queued) return prev.slice(-queuedEvent.queued);
+            return prev;
+          });
+        }
+      }
+    });
+    return unsub;
+  }, [client, agentId]);
+
+  useEffect(() => {
+    if (!isRunning && localQueued.length > 0 && !queuedPrompts) {
+      setLocalQueued([]);
+    }
+  }, [isRunning, localQueued.length, queuedPrompts]);
 
   /**
    * The prompt's images, both directions, over the runtime's own attachment
@@ -298,7 +377,50 @@ export function OmpComposer({
    * `composer.canSend` does not include `isDisabled`.
    */
   const sendHeld = isDisabled || !canSend;
+  const queueHeld = isDisabled || (text.trim().length === 0 && images.length === 0);
   const hasNotes = micNotice !== null || voice.dictation !== null || refusal !== undefined;
+
+  const handleQueue = () => {
+    if (queueHeld) return;
+    const promptText = text.trim();
+    const promptImages = images.length > 0 ? images : undefined;
+    if (promptText.length === 0 && (!promptImages || promptImages.length === 0)) return;
+
+    const id = `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setLocalQueued(prev => [...prev, { id, text: promptText }]);
+
+    if (onQueue) {
+      onQueue(promptText, promptImages);
+    } else if (client?.prompt && agentId) {
+      client.prompt(agentId, promptText, promptImages, { deliverAs: "followUp" });
+    }
+
+    aui.composer.setText("");
+    void aui.composer.clearAttachments();
+  };
+
+  const handleRemoveQueued = (id: string) => {
+    setLocalQueued(prev => prev.filter(item => item.id !== id));
+    onRemoveQueued?.(id);
+  };
+
+  const handleSelectCommand = (cmd: SlashCommand) => {
+    const clean = cleanCommandName(cmd.name);
+    aui.composer.setText(`/${clean} `);
+    setCommandMenuDismissed(true);
+  };
+
+  const handleSelectFile = (relPath: string) => {
+    const atIndex = text.lastIndexOf("@");
+    const head = atIndex >= 0 ? text.slice(0, atIndex) : text;
+    aui.composer.setText(`${head}${relPath} `);
+    setFilePickerDismissed(true);
+  };
+
+  const showCommandMenu =
+    text.startsWith("/") && !commandMenuDismissed && commands !== undefined && commands.length > 0;
+
+  const showFilePicker = text.includes("@") && !filePickerDismissed;
 
   return (
     // The dock pays the margin around the surface and paints nothing: the band
@@ -310,6 +432,70 @@ export function OmpComposer({
     // alternate bands the shell draws in this slot share the composer's left
     // edge; the shell's own wrapper pays nothing horizontally.
     <View style={styles.dock} testID={`${prefix}-dock`}>
+      {/* Queued prompts strip above the composer */}
+      {queuedItems.length > 0 ? (
+        <View
+          style={[styles.queuedStrip, { backgroundColor: theme.ground.surface, borderColor: theme.ground.edge }]}
+          testID={`${prefix}-queued-strip`}
+        >
+          <View style={styles.queuedHeader}>
+            <View style={[styles.queuedBadge, { backgroundColor: theme.signal.amber }]}>
+              <Label style={[type.kicker, { color: theme.ink.inverse, fontSize: 10, fontWeight: "700" }]}>
+                {queuedItems.length} QUEUED
+              </Label>
+            </View>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.queuedList}>
+            {queuedItems.map((item, index) => (
+              <View
+                key={item.id}
+                style={[styles.queuedCard, { backgroundColor: theme.ground.raised, borderColor: theme.ground.line }]}
+                testID={`${prefix}-queued-item-${index}`}
+              >
+                <Label style={[type.code, { color: theme.ink.bright, fontSize: 12 }]} numberOfLines={1}>
+                  {item.text}
+                </Label>
+                <Pressable
+                  testID={`${prefix}-queued-remove-${index}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove queued prompt ${index + 1}`}
+                  onPress={() => handleRemoveQueued(item.id)}
+                  style={({ pressed }) => [styles.queuedRemove, pressed && styles.pressedDim]}
+                >
+                  <Glyph name="deny" size={10} color={theme.ink.muted} />
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+
+      {/* Slash command menu */}
+      {showCommandMenu ? (
+        <CommandMenu
+          prefix="command-menu"
+          query={text}
+          commands={commands ?? []}
+          commandDetails={commandDetails}
+          onSelect={handleSelectCommand}
+          onClose={() => setCommandMenuDismissed(true)}
+          testID="command-menu"
+        />
+      ) : null}
+
+      {/* File picker */}
+      {showFilePicker ? (
+        <FilePicker
+          prefix="file-picker"
+          cwd={cwd ?? ""}
+          listing={fsListing}
+          client={client}
+          onSelect={handleSelectFile}
+          onClose={() => setFilePickerDismissed(true)}
+          testID="file-picker"
+        />
+      ) : null}
+
       <Surface
         mode="flat"
         elevation={0}
@@ -335,15 +521,26 @@ export function OmpComposer({
           submitBehavior="submit"
           onKeyPress={event => {
             const native = event.nativeEvent;
-            // React Native's `TextInputKeyPressEventData` carries only `key`.
-            // react-native-web hands the DOM keyboard event straight through,
-            // which is where `shiftKey` comes from and the only target where
-            // the primitive's Enter path exists to be cancelled.
             const shift = "shiftKey" in native && native.shiftKey === true;
-            if (native.key === "Enter" && !shift && sendHeld) event.preventDefault();
+            if (native.key === "Enter" && !shift) {
+              if (canCancel) {
+                if (queueHeld) {
+                  event.preventDefault();
+                } else {
+                  event.preventDefault();
+                  handleQueue();
+                }
+              } else if (sendHeld) {
+                event.preventDefault();
+              }
+            }
           }}
           onSubmitEditing={() => {
-            if (!sendHeld) aui.composer.send();
+            if (canCancel) {
+              if (!queueHeld) handleQueue();
+            } else if (!sendHeld) {
+              aui.composer.send();
+            }
           }}
         />
 
@@ -477,6 +674,32 @@ export function OmpComposer({
               >
                 <Glyph name="interrupt" size={ACTION_GLYPH} color={theme.ink.inverse} />
               </ComposerPrimitive.Cancel>
+            ) : null}
+
+            {canCancel ? (
+              <Pressable
+                testID={`${prefix}-queue`}
+                accessibilityRole="button"
+                accessibilityLabel="Queue prompt"
+                accessibilityState={{ disabled: queueHeld }}
+                disabled={queueHeld}
+                onPress={handleQueue}
+                style={({ pressed }) => [
+                  styles.emphasis,
+                  { backgroundColor: queueHeld ? theme.ground.active : theme.signal.sage },
+                  pressed && !queueHeld && styles.pressedDim,
+                ]}
+              >
+                <View style={styles.queueInner}>
+                  <Glyph name="send" size={ACTION_GLYPH} color={queueHeld ? theme.ink.faint : theme.ink.inverse} />
+                  <View
+                    style={[styles.queueBadge, { backgroundColor: theme.signal.amber }]}
+                    testID={`${prefix}-queue-badge`}
+                  >
+                    <Label style={[styles.queueBadgeText, { color: theme.ink.inverse }]}>Q</Label>
+                  </View>
+                </View>
+              </Pressable>
             ) : (
               <ComposerPrimitive.Send
                 testID={`${prefix}-send`}
@@ -584,4 +807,58 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   pressedDim: { opacity: 0.72 },
+  queueInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  queueBadge: {
+    position: "absolute",
+    top: -6,
+    right: -8,
+    width: 12,
+    height: 12,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  queueBadgeText: {
+    fontSize: 8,
+    fontWeight: "bold",
+    lineHeight: 10,
+  },
+  queuedStrip: {
+    marginBottom: space.snug,
+    borderRadius: radius.control,
+    borderWidth: stroke.hair,
+    padding: space.snug,
+  },
+  queuedHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  queuedBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radius.pill,
+  },
+  queuedList: {
+    flexDirection: "row",
+    gap: space.snug,
+  },
+  queuedCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    paddingHorizontal: space.snug,
+    paddingVertical: 4,
+    borderRadius: radius.control,
+    borderWidth: stroke.hair,
+    maxWidth: 200,
+  },
+  queuedRemove: {
+    padding: 2,
+  },
 });

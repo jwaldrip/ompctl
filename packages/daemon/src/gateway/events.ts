@@ -59,6 +59,10 @@ export class GatewayEvents implements SupervisorEvents {
     for (const listener of this.#listeners) listener.onPlanReviewNeeded?.(review);
   }
 
+  onPromptQueued(agentId: AgentId, queued: number): void {
+    for (const listener of this.#listeners) listener.onPromptQueued?.(agentId, queued);
+  }
+
   /** Subscribe to spoken-form summaries. The returned function unsubscribes. */
   addSayListener(listener: SayListener): () => void {
     this.#sayListeners.add(listener);
