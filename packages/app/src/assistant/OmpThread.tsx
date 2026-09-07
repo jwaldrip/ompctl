@@ -49,6 +49,7 @@ import { radius, stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { Entry } from "../session/model.ts";
 import { entryOf, messageRowId, type OmpStoreInput, ompStore } from "./adapter.ts";
+import { groupEntries } from "./grouping.ts";
 import { OmpEntryRow } from "./renderers.tsx";
 import { useOmpRuntime } from "./runtime.ts";
 
@@ -87,11 +88,15 @@ export function useOmpAssistantRuntime(input: OmpStoreInput) {
   actions.current = input;
 
   const { agent, session, connection, load, promptAccess, canApprove, refusal } = input;
+  const groupedEntries = useMemo(() => groupEntries(session.entries), [session.entries]);
   const store = useMemo(
     () =>
       ompStore({
         agent,
-        session,
+        session: {
+          ...session,
+          entries: groupedEntries as unknown as readonly Entry[],
+        },
         connection,
         load,
         promptAccess,
@@ -102,7 +107,7 @@ export function useOmpAssistantRuntime(input: OmpStoreInput) {
         onDecide: (requestId, choice, scope) => actions.current.onDecide(requestId, choice, scope),
         onDecidePlan: (requestId, choice) => actions.current.onDecidePlan(requestId, choice),
       }),
-    [agent, session, connection, load, promptAccess, canApprove, refusal],
+    [agent, session, groupedEntries, connection, load, promptAccess, canApprove, refusal],
   );
   return useOmpRuntime(store);
 }
@@ -175,9 +180,9 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
    * derivations would make a prepend and a re-render indistinguishable to the
    * shared machine.
    */
-  const first = props.entries[0];
-  const headKey = first === undefined ? null : messageRowId(first);
-
+  const groupedEntries = useMemo(() => groupEntries(props.entries), [props.entries]);
+  const first = groupedEntries[0];
+  const headKey = first === undefined ? null : messageRowId(first as Entry);
   const pagination = useTopHistoryPagination({
     canLoadEarlier: props.canLoadEarlier === true,
     loadingEarlier: props.loadingEarlier === true,
