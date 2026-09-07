@@ -12,7 +12,6 @@ import type { Connection } from "../src/platform/connection.ts";
 // pulls Paper, which pulls React Native, so a static import would run first.
 const { WithOmpTheme } = await import("./theme.tsx");
 const { RoutinesScreen } = await import("../src/screens/RoutinesScreen.tsx");
-const { RUNS_PER_PAGE } = await import("../src/components/RunHistory.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -644,6 +643,8 @@ describe("RoutinesScreen delete and webhook surface", () => {
 
     act(() => el(host, "routine-rtn_calls-rotate-secret")?.click());
     await settle();
+    act(() => el(host, "routine-rtn_calls-confirm-rotate")?.click());
+    await settle();
     expect(socket.framesOfType("routine_secret_rotate")).toEqual([
       { t: "routine_secret_rotate", routineId: ROUTINE.id },
     ]);
@@ -958,12 +959,12 @@ describe("RoutinesScreen run history", () => {
     act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: many }));
     await settle();
 
-    expect(runRows(host)).toHaveLength(RUNS_PER_PAGE);
-    expect(el(host, "routine-rtn_calls-runs-more")?.textContent).toContain("of 500");
+    expect(runRows(host)).toHaveLength(1);
+    expect(el(host, "routine-rtn_calls-runs-more")?.textContent).toContain("Show 499 earlier");
 
     act(() => el(host, "routine-rtn_calls-runs-more")?.click());
     await settle();
-    expect(runRows(host)).toHaveLength(RUNS_PER_PAGE * 2);
+    expect(runRows(host)).toHaveLength(11);
     // Still bounded after the reveal: the control adds a page, it does not
     // drop the cap.
     expect(el(host, "routine-rtn_calls-runs-more")).not.toBeNull();
@@ -1006,6 +1007,100 @@ describe("RoutinesScreen run history", () => {
     // Opened, and not silently empty: a toggle that reveals nothing reads as a
     // control that does not work.
     expect(el(host, "run-run_skipped-no-actions")?.textContent).toContain("before any action started");
+
+    act(() => root.unmount());
+    host.remove();
+  });
+});
+
+describe("RoutinesScreen gaps and improvements", () => {
+  test("history lists more than one run when multiple runs exist", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    const run1: Run = { ...LINKED_RUN, id: "run_1", startedAt: "2026-08-19T09:00:00.000Z" };
+    const run2: Run = { ...LINKED_RUN, id: "run_2", startedAt: "2026-08-19T10:00:00.000Z" };
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [run2, run1] }));
+    await settle();
+
+    expect(el(host, "run-run_2")).not.toBeNull();
+    const showEarlier = el(host, "routine-rtn_calls-runs-more");
+    expect(showEarlier?.textContent).toContain("Show 1 earlier");
+    act(() => showEarlier?.click());
+    await settle();
+    expect(el(host, "run-run_1")).not.toBeNull();
+    expect(el(host, "run-run_2")).not.toBeNull();
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("the card toggle writes enabled: false", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    const toggle = el(host, `routine-${ROUTINE.id}-toggle`);
+    expect(toggle).not.toBeNull();
+    act(() => toggle?.click());
+    await settle();
+
+    const writes = socket.framesOfType("routine_write");
+    expect(writes).toHaveLength(1);
+    const writeFrame = writes[0];
+    expect(writeFrame).toBeDefined();
+    if (writeFrame && "routine" in writeFrame) {
+      expect(writeFrame.routine.enabled).toBe(false);
+    }
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("rotate is behind confirmation naming consequence", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    const rotateBtn = el(host, `routine-${ROUTINE.id}-rotate-secret`);
+    expect(rotateBtn).not.toBeNull();
+    act(() => rotateBtn?.click());
+    await settle();
+
+    // Does not send frame immediately
+    expect(socket.framesOfType("routine_secret_rotate")).toHaveLength(0);
+    expect(host.textContent).toContain("Callers holding the old secret get 403 until they are updated");
+
+    act(() => el(host, `routine-${ROUTINE.id}-confirm-rotate`)?.click());
+    await settle();
+    expect(socket.framesOfType("routine_secret_rotate")).toHaveLength(1);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a running action renders live from a routine_action_started frame", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [] }));
+    await settle();
+
+    act(() =>
+      socket.deliver({
+        t: "routine_action_started",
+        routineId: ROUTINE.id,
+        runId: "run_live",
+        actionIndex: 0,
+        agentId: "agt_live",
+        at: new Date().toISOString(),
+      }),
+    );
+    await settle();
+
+    const running = el(host, `routine-${ROUTINE.id}-action-${ROUTINE.actions[0]!.id}-running`);
+    expect(running).not.toBeNull();
+    expect(running?.textContent).toContain("Running");
 
     act(() => root.unmount());
     host.remove();

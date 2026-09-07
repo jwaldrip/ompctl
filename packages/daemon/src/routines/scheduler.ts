@@ -21,6 +21,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { joinAssistantText, type PromptResult } from "@ompd/acp";
 import {
   type ActionRun,
+  type ActionRunState,
   type Actor,
   type AgentId,
   nextFireTime,
@@ -28,6 +29,7 @@ import {
   type RoutineAction,
   type RoutineDeleteResult,
   type Run,
+  type RunState,
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   type Store,
@@ -59,8 +61,28 @@ export interface SchedulerOptions {
   actor: Actor;
   tickMs?: number;
   now?: () => Date;
+  onProgress?: (frame: RoutineProgressFrame) => void;
 }
 
+export type RoutineProgressFrame =
+  | { t: "routine_run_started"; routineId: string; runId: string; at: string }
+  | {
+      t: "routine_action_started";
+      routineId: string;
+      runId: string;
+      actionIndex: number;
+      agentId?: AgentId;
+      at: string;
+    }
+  | {
+      t: "routine_action_finished";
+      routineId: string;
+      runId: string;
+      actionIndex: number;
+      outcome: ActionRunState;
+      at: string;
+    }
+  | { t: "routine_run_finished"; routineId: string; runId: string; outcome: RunState; at: string };
 /** Everything a `routine.run` audit row needs, including who caused it. */
 interface RunAuditInput {
   actor: Actor;
@@ -159,6 +181,7 @@ export class Scheduler {
    * that cannot leave a row claiming a routine is still going.
    */
   #draining = false;
+  #progressListeners = new Set<(frame: RoutineProgressFrame) => void>();
 
   constructor(opts: SchedulerOptions) {
     this.#store = opts.store;
@@ -166,6 +189,26 @@ export class Scheduler {
     this.#actor = opts.actor;
     this.#tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
     this.#now = opts.now ?? (() => new Date());
+    if (opts.onProgress) {
+      this.#progressListeners.add(opts.onProgress);
+    }
+  }
+
+  onProgress(listener: (frame: RoutineProgressFrame) => void): () => void {
+    this.#progressListeners.add(listener);
+    return () => {
+      this.#progressListeners.delete(listener);
+    };
+  }
+
+  #emitProgress(frame: RoutineProgressFrame): void {
+    for (const listener of this.#progressListeners) {
+      try {
+        listener(frame);
+      } catch {
+        // A listener error must not disrupt execution
+      }
+    }
   }
 
   start(): void {
@@ -329,7 +372,7 @@ export class Scheduler {
   }
 
   /** Run a routine immediately, outside its schedule. */
-  async runNow(routineId: string, actor: Actor): Promise<Run> {
+  async runNow(routineId: string, actor: Actor, fromAction?: number): Promise<Run> {
     // Checked before the lookup so an unauthorized caller cannot probe which
     // routine ids exist. The supervisor authorizes again from the device row;
     // this is the cheap first gate, not the authority.
@@ -342,7 +385,13 @@ export class Scheduler {
     const routine = this.#store.listRoutines().find(r => r.id === routineId);
     if (!routine) throw new Error(`unknown routine ${routineId}`);
     if (!routine.enabled) throw new Error(`routine ${routineId} is disabled`);
-    return await this.#execute(routine, actor);
+    if (
+      fromAction !== undefined &&
+      (!Number.isInteger(fromAction) || fromAction < 0 || fromAction >= routine.actions.length)
+    ) {
+      throw new Error(`invalid fromAction: ${fromAction}`);
+    }
+    return await this.#execute(routine, actor, fromAction);
   }
 
   /**
@@ -449,7 +498,7 @@ export class Scheduler {
    * holds the same `Run` object the run will settle, and can force it terminal
    * when the run cannot.
    */
-  async #execute(routine: Routine, actor: Actor): Promise<Run> {
+  async #execute(routine: Routine, actor: Actor, fromAction?: number): Promise<Run> {
     // A fire that arrives after the drain, from a request the gateway was still
     // serving as it closed, would write a row nothing is left to settle.
     if (this.#draining) throw new Error("the scheduler is shutting down");
@@ -460,13 +509,26 @@ export class Scheduler {
       routineId: routine.id,
       state: "queued",
       startedAt,
-      actions: routine.actions.map((action, index) => ({
-        actionId: action.id,
-        actionName: action.name,
-        index,
-        state: "queued",
-        startedAt,
-      })),
+      ...(fromAction !== undefined ? { fromAction } : {}),
+      actions: routine.actions.map((action, index) => {
+        if (fromAction !== undefined && index < fromAction) {
+          return {
+            actionId: action.id,
+            actionName: action.name,
+            index,
+            state: "skipped",
+            startedAt,
+            finishedAt: startedAt,
+          };
+        }
+        return {
+          actionId: action.id,
+          actionName: action.name,
+          index,
+          state: "queued",
+          startedAt,
+        };
+      }),
     };
 
     const finished = this.#executeRun(run, routine, actor);
@@ -502,20 +564,34 @@ export class Scheduler {
     // Written before the first agent exists so a concurrent tick sees the
     // event as active and skips, rather than racing another event into it.
     this.#recordRun(run);
+    this.#emitProgress({
+      t: "routine_run_started",
+      routineId: routine.id,
+      runId: run.id,
+      at: run.startedAt,
+    });
 
     for (const outcome of run.actions) {
       if (this.#inflight.get(run.id)?.interrupted === true || this.#draining) break;
+      if (outcome.state === "skipped") continue;
       const action = routine.actions[outcome.index];
       if (action === undefined) {
         outcome.state = "refused";
         outcome.finishedAt = this.#now().toISOString();
         outcome.refusal = { code: "invalid_action", reason: "action is missing" };
         this.#recordRun(run);
+        this.#emitProgress({
+          t: "routine_action_finished",
+          routineId: routine.id,
+          runId: run.id,
+          actionIndex: outcome.index,
+          outcome: outcome.state,
+          at: outcome.finishedAt,
+        });
         continue;
       }
       await this.#executeAction(run, routine, action, outcome, actor);
     }
-
     if (this.#inflight.get(run.id)?.interrupted === true || this.#draining) {
       run.state = "failed";
       run.error = INTERRUPTED;
@@ -529,7 +605,7 @@ export class Scheduler {
     } else if (run.actions.length === 0) {
       run.state = "failed";
       run.error = "routine has no actions";
-    } else if (run.actions.every(action => action.state === "succeeded")) {
+    } else if (run.actions.every(action => action.state === "succeeded" || action.state === "skipped")) {
       run.state = "succeeded";
     } else if (run.actions.every(action => action.state === "timed_out")) {
       run.state = "timed_out";
@@ -542,6 +618,13 @@ export class Scheduler {
 
     run.finishedAt = this.#now().toISOString();
     this.#recordRun(run);
+    this.#emitProgress({
+      t: "routine_run_finished",
+      routineId: routine.id,
+      runId: run.id,
+      outcome: run.state,
+      at: run.finishedAt,
+    });
     this.#audit({
       actor,
       routineId: routine.id,
@@ -572,6 +655,21 @@ export class Scheduler {
       outcome.finishedAt = this.#now().toISOString();
       outcome.refusal = { code: "invalid_action", reason: "prompt is empty" };
       this.#recordRun(run);
+      this.#emitProgress({
+        t: "routine_action_started",
+        routineId: routine.id,
+        runId: run.id,
+        actionIndex: outcome.index,
+        at: outcome.startedAt,
+      });
+      this.#emitProgress({
+        t: "routine_action_finished",
+        routineId: routine.id,
+        runId: run.id,
+        actionIndex: outcome.index,
+        outcome: outcome.state,
+        at: outcome.finishedAt,
+      });
       this.#audit({
         actor,
         routineId: routine.id,
@@ -619,6 +717,14 @@ export class Scheduler {
       outcome.state = "running";
       run.state = "running";
       this.#recordRun(run);
+      this.#emitProgress({
+        t: "routine_action_started",
+        routineId: routine.id,
+        runId: run.id,
+        actionIndex: outcome.index,
+        ...(outcome.agentId !== undefined ? { agentId: outcome.agentId } : {}),
+        at: outcome.startedAt,
+      });
 
       if (this.#draining || this.#inflight.get(run.id)?.interrupted === true) {
         outcome.state = "failed";
@@ -657,6 +763,14 @@ export class Scheduler {
       }
       outcome.finishedAt = this.#now().toISOString();
       this.#recordRun(run);
+      this.#emitProgress({
+        t: "routine_action_finished",
+        routineId: routine.id,
+        runId: run.id,
+        actionIndex: outcome.index,
+        outcome: outcome.state,
+        at: outcome.finishedAt,
+      });
       this.#audit({
         actor,
         routineId: routine.id,

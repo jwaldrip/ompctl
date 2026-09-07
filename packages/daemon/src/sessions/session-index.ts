@@ -324,7 +324,7 @@ export class SessionIndex {
         }
       }
     }
-
+    const routineOrigins = this.#store.listRoutineSessionOrigins();
     const summaries: SessionSummary[] = [];
     for (const file of files) {
       const cwdScope: SessionCwdScope =
@@ -375,6 +375,7 @@ export class SessionIndex {
         archived: isArchived,
         ...(pid !== undefined ? { pid } : {}),
         ...(status === "live-ompd" && agentId !== undefined ? { agentId } : {}),
+        ...(routineOrigins.has(file.id) ? { origin: routineOrigins.get(file.id) } : {}),
       });
     }
     const warm = misses.length > 0 ? this.#startWarm(misses) : null;
@@ -655,6 +656,11 @@ function applyQuery(rows: SessionSummary[], q: SessionQuery): SessionSummary[] {
   if (q.cwd !== undefined) {
     const wantedCwd = q.cwd;
     out = out.filter(r => r.cwd === wantedCwd || r.flattenedDir === wantedCwd);
+  }
+  if (q.origin === "routine") {
+    out = out.filter(r => r.origin?.kind === "routine");
+  } else if (q.origin === "operator") {
+    out = out.filter(r => r.origin === undefined);
   }
   return sortSessions(out, q.sort ?? "lastActivity", q.sortDir ?? "desc");
 }

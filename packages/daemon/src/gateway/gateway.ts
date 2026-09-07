@@ -450,13 +450,14 @@ export interface WebhookFireAttempt {
 }
 
 export interface RoutineRunner {
-  runNow(routineId: string, actor: Actor): Promise<Run>;
+  runNow(routineId: string, actor: Actor, fromAction?: number): Promise<Run>;
   fireWebhook(routineId: string, presentedSecret: string): Promise<WebhookFireAttempt>;
   /**
    * Delete routines for good, with per-id results. On the runner rather than
    * the store because only the scheduler knows whether a run is in flight.
    */
   deleteRoutines(routineIds: readonly string[]): Promise<RoutineDeleteResult[]>;
+  onProgress?(listener: (frame: ServerFrame) => void): () => void;
 }
 
 /**
@@ -1439,6 +1440,7 @@ export class Gateway {
   #unsubscribeSay: (() => void) | undefined;
   #unsubscribeRevoked: (() => void) | undefined;
   #unsubscribe: (() => void) | undefined;
+  #unsubscribeRoutineProgress: (() => void) | undefined;
   #embeddedAssets?: { assets: Record<string, string>; built: boolean };
 
   constructor(opts: GatewayOptions) {
@@ -1567,6 +1569,9 @@ export class Gateway {
         this.#close(ws);
       }
     });
+    this.#unsubscribeRoutineProgress = this.#routines?.onProgress?.(frame => {
+      this.#broadcastRoutine(frame);
+    });
   }
 
   /** Start serving. Returns the bound port, which matters when `port` was 0. */
@@ -1640,6 +1645,8 @@ export class Gateway {
     this.#unsubscribeSay = undefined;
     this.#unsubscribeRevoked?.();
     this.#unsubscribeRevoked = undefined;
+    this.#unsubscribeRoutineProgress?.();
+    this.#unsubscribeRoutineProgress = undefined;
     this.#disarmSessionWatcher();
     for (const ws of [...this.#sockets]) this.#close(ws);
     // Relay legs are not in `#sockets`; `stop(true)` tears them down with
@@ -1660,6 +1667,14 @@ export class Gateway {
     if (!this.#collabRelay.hasClosedLegs && !this.#hasClosedSockets) await stopping;
     this.#server = undefined;
     this.#startedAtMs = undefined;
+  }
+
+  #broadcastRoutine(frame: ServerFrame): void {
+    for (const ws of this.#sockets) {
+      if (!ws.data.scopes.has(SCOPE_READ)) continue;
+      if (ws.data.revoked) continue;
+      this.#send(ws, frame);
+    }
   }
 
   /**
@@ -4798,6 +4813,7 @@ export class Gateway {
         if (
           typeof frame.routineId !== "string" ||
           frame.routineId.length === 0 ||
+          (frame.fromAction !== undefined && !Number.isInteger(frame.fromAction)) ||
           !ws.data.scopes.has(SCOPE_MANAGE) ||
           !ws.data.scopes.has(SCOPE_PROMPT)
         ) {
@@ -4813,7 +4829,7 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "routines_unavailable", message: "no routine runner is wired in" });
           return;
         }
-        void runner.runNow(frame.routineId, this.#actorOf(ws)).then(
+        void runner.runNow(frame.routineId, this.#actorOf(ws), frame.fromAction).then(
           run => this.#send(ws, { t: "routine_ran", run }),
           err =>
             this.#send(ws, {

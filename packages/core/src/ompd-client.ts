@@ -19,6 +19,7 @@
  */
 
 import type {
+  ActionRunState,
   Agent,
   AgentConfigOption,
   AgentId,
@@ -39,6 +40,7 @@ import type {
   RemoteRoutine,
   RoutineDeleteResult,
   Run,
+  RunState,
   ServerFrame,
   SessionDeleteResult,
   SessionHistoryEntry,
@@ -585,6 +587,39 @@ export interface RoutineRanEvent {
   run: Run;
 }
 
+/** Broadcast when a routine run starts execution. */
+export interface RoutineRunStartedEvent {
+  routineId: string;
+  runId: string;
+  at: string;
+}
+
+/** Broadcast when a specific action in a routine run begins. */
+export interface RoutineActionStartedEvent {
+  routineId: string;
+  runId: string;
+  actionIndex: number;
+  agentId?: AgentId;
+  at: string;
+}
+
+/** Broadcast when a specific action in a routine run completes. */
+export interface RoutineActionFinishedEvent {
+  routineId: string;
+  runId: string;
+  actionIndex: number;
+  outcome: ActionRunState;
+  at: string;
+}
+
+/** Broadcast when a routine run finishes. */
+export interface RoutineRunFinishedEvent {
+  routineId: string;
+  runId: string;
+  outcome: RunState;
+  at: string;
+}
+
 /**
  * A routine's webhook secret, freshly minted by `rotateRoutineSecret`. Shown
  * once: the daemon keeps only what it needs to verify a caller.
@@ -681,6 +716,10 @@ export interface ClientEventMap {
   routine_ran: RoutineRanEvent;
   routines_deleted: RoutinesDeletedEvent;
   routine_secret: RoutineSecretEvent;
+  routine_run_started: RoutineRunStartedEvent;
+  routine_action_started: RoutineActionStartedEvent;
+  routine_action_finished: RoutineActionFinishedEvent;
+  routine_run_finished: RoutineRunFinishedEvent;
   session_tail: SessionTailEvent;
   session_history: SessionHistoryEvent;
   agent_config: AgentConfigEvent;
@@ -1153,8 +1192,8 @@ export class OmpdClient {
   }
 
   /** Run one routine now. The completed per-action outcomes arrive as `routine_ran`. */
-  runRoutine(routineId: string): void {
-    this.send({ t: "routine_run", routineId });
+  runRoutine(routineId: string, fromAction?: number): void {
+    this.send({ t: "routine_run", routineId, ...(fromAction !== undefined ? { fromAction } : {}) });
   }
 
   /** Rotate a webhook secret. The plaintext arrives once as `routine_secret`. */
@@ -1721,6 +1760,35 @@ export class OmpdClient {
         return;
       case "routine_ran":
         this.emit("routine_ran", { run: frame.run });
+        return;
+      case "routine_run_started":
+        this.emit("routine_run_started", { routineId: frame.routineId, runId: frame.runId, at: frame.at });
+        return;
+      case "routine_action_started":
+        this.emit("routine_action_started", {
+          routineId: frame.routineId,
+          runId: frame.runId,
+          actionIndex: frame.actionIndex,
+          agentId: frame.agentId,
+          at: frame.at,
+        });
+        return;
+      case "routine_action_finished":
+        this.emit("routine_action_finished", {
+          routineId: frame.routineId,
+          runId: frame.runId,
+          actionIndex: frame.actionIndex,
+          outcome: frame.outcome,
+          at: frame.at,
+        });
+        return;
+      case "routine_run_finished":
+        this.emit("routine_run_finished", {
+          routineId: frame.routineId,
+          runId: frame.runId,
+          outcome: frame.outcome,
+          at: frame.at,
+        });
         return;
       case "routine_secret":
         this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });

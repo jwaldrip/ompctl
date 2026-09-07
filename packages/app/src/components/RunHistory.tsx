@@ -99,9 +99,19 @@ const ACTION_STATE_LABELS: Record<ActionRunState, string> = {
 function linkedSessionIds(run: Run): ReadonlySet<string> {
   const ids = new Set<string>();
   for (const action of run.actions) {
-    if (action.sessionId !== undefined) ids.add(action.sessionId);
+    const sessionId = action.sessionId ?? action.agentId;
+    if (sessionId !== undefined) ids.add(sessionId);
   }
   return ids;
+}
+
+function formatDuration(startedAt: string, finishedAt?: string): string | null {
+  if (!finishedAt) return null;
+  const seconds = Math.max(0, Math.round((Date.parse(finishedAt) - Date.parse(startedAt)) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
 /** What one action has to say for itself beyond its state, or nothing. */
@@ -125,7 +135,8 @@ export interface RunHistoryProps {
    * from the session index, so this component never decides whether a link
    * lands on an owned log, a co-driven terminal, or a resume claim.
    */
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession?: (sessionId: string) => void;
+  onRetryAction?: (routineId: string, actionIndex: number) => void;
 }
 
 export function RunHistory({
@@ -136,11 +147,10 @@ export function RunHistory({
   openRunId,
   onToggleRun,
   onOpenSession,
+  onRetryAction,
 }: RunHistoryProps): JSX.Element {
   const visible = runs.slice(0, shown);
   const withheld = runs.length - visible.length;
-  /** What one more press reveals, which is a page unless the tail is shorter. */
-  const nextPage = Math.min(RUNS_PER_PAGE, withheld);
   return (
     <View style={styles.runs} testID={`routine-${routineId}-runs`}>
       <View style={styles.runsHead}>
@@ -161,19 +171,20 @@ export function RunHistory({
           open={openRunId === run.id}
           onToggleRun={onToggleRun}
           onOpenSession={onOpenSession}
+          onRetryAction={onRetryAction}
         />
       ))}
 
       {withheld > 0 ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Show ${nextPage} more of this routine's ${runs.length} runs`}
+          accessibilityLabel={`Show ${withheld} earlier runs`}
           onPress={() => onShowMore(routineId)}
           style={moreStyle}
           testID={`routine-${routineId}-runs-more`}
         >
           <Glyph name="chevron" size={12} color={ink.plain} />
-          <Label color={ink.plain}>{`Show ${nextPage} more of ${runs.length}`}</Label>
+          <Label color={ink.plain}>{`Show ${withheld} earlier`}</Label>
         </Pressable>
       ) : null}
     </View>
@@ -185,21 +196,23 @@ function RunCard({
   open,
   onToggleRun,
   onOpenSession,
+  onRetryAction,
 }: {
   run: Run;
   open: boolean;
   onToggleRun: (runId: string) => void;
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession?: (sessionId: string) => void;
+  onRetryAction?: (routineId: string, actionIndex: number) => void;
 }): JSX.Element {
   const tone = signal[RUN_STATE_SIGNALS[run.state]];
   const linked = linkedSessionIds(run);
-  // Two readings, never one invented: a run with no finish stamp is still
-  // running, and saying "ended" of it would be a time this run never reached.
+  const duration = formatDuration(run.startedAt, run.finishedAt);
   const timing =
     run.finishedAt === undefined
       ? `started ${formatAge(run.startedAt)} ago, still running`
-      : `started ${formatAge(run.startedAt)} ago, ended ${formatAge(run.finishedAt)} ago`;
+      : `started ${formatAge(run.startedAt)} ago, ended ${formatAge(run.finishedAt)} ago${duration ? ` (${duration})` : ""}`;
   const sessions = linked.size === 1 ? "1 linked session" : `${linked.size} linked sessions`;
+  const fromActionText = run.fromAction !== undefined ? `From action ${run.fromAction + 1}` : null;
   return (
     <Surface elevation={0} style={styles.run} testID={`run-${run.id}`}>
       <Pressable
@@ -218,6 +231,16 @@ function RunCard({
             <Kicker color={tone} testID={`run-${run.id}-state`}>
               {RUN_STATE_LABELS[run.state]}
             </Kicker>
+            {fromActionText !== null ? (
+              <Label color={ink.muted} testID={`run-${run.id}-from-action`}>
+                {fromActionText}
+              </Label>
+            ) : null}
+            {duration !== null ? (
+              <Label color={ink.muted} testID={`run-${run.id}-duration`}>
+                {duration}
+              </Label>
+            ) : null}
             <Label color={ink.muted} testID={`run-${run.id}-sessions`}>
               {sessions}
             </Label>
@@ -244,7 +267,13 @@ function RunCard({
         </View>
       ) : (
         run.actions.map(action => (
-          <RunActionRow key={action.actionId} run={run} action={action} onOpenSession={onOpenSession} />
+          <RunActionRow
+            key={action.actionId}
+            run={run}
+            action={action}
+            onOpenSession={onOpenSession}
+            onRetryAction={onRetryAction}
+          />
         ))
       )}
     </Surface>
@@ -255,14 +284,17 @@ function RunActionRow({
   run,
   action,
   onOpenSession,
+  onRetryAction,
 }: {
   run: Run;
   action: ActionRun;
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession?: (sessionId: string) => void;
+  onRetryAction?: (routineId: string, actionIndex: number) => void;
 }): JSX.Element {
   const tone = signal[ACTION_STATE_SIGNALS[action.state]];
   const outcome = outcomeOf(action);
-  const sessionId = action.sessionId;
+  const sessionId = action.sessionId ?? action.agentId;
+  const isFailed = action.state === "failed" || action.state === "timed_out" || action.error !== undefined;
   return (
     <View style={styles.runAction} testID={`run-${run.id}-action-${action.actionId}`}>
       <View style={styles.runCopy}>
@@ -279,35 +311,47 @@ function RunActionRow({
         )}
       </View>
 
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={
-          sessionId === undefined
-            ? `No session to open for ${action.actionName}: this run recorded none for it`
-            : `Open the session ${action.actionName} ran in`
-        }
-        accessibilityState={{ disabled: sessionId === undefined }}
-        disabled={sessionId === undefined}
-        onPress={sessionId === undefined ? undefined : () => onOpenSession(sessionId)}
-        style={sessionId === undefined ? openDisabledStyle : openStyle}
-        testID={`run-${run.id}-action-${action.actionId}-open`}
-      >
-        <Glyph
-          name={sessionId === undefined ? "unknown" : "attach"}
-          size={13}
-          color={sessionId === undefined ? ink.faint : signal.sage}
-        />
-        <Label color={sessionId === undefined ? ink.faint : signal.sage}>
-          {sessionId === undefined ? "No session" : "Open session"}
-        </Label>
-      </Pressable>
+      <View style={styles.actionControls}>
+        {isFailed && onRetryAction !== undefined ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Retry routine from ${action.actionName}`}
+            onPress={() => onRetryAction(run.routineId, action.index)}
+            style={openStyle}
+            testID={`run-${run.id}-action-${action.actionId}-retry`}
+          >
+            <Glyph name="resume" size={13} color={signal.sage} />
+            <Label color={signal.sage}>Retry from here</Label>
+          </Pressable>
+        ) : null}
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={
+            sessionId === undefined
+              ? `No session to open for ${action.actionName}: this run recorded none for it`
+              : `Open the session ${action.actionName} ran in`
+          }
+          accessibilityState={{ disabled: sessionId === undefined || onOpenSession === undefined }}
+          disabled={sessionId === undefined || onOpenSession === undefined}
+          onPress={sessionId === undefined || onOpenSession === undefined ? undefined : () => onOpenSession(sessionId)}
+          style={sessionId === undefined || onOpenSession === undefined ? openDisabledStyle : openStyle}
+          testID={`run-${run.id}-action-${action.actionId}-open`}
+        >
+          <Glyph
+            name={sessionId === undefined ? "unknown" : "attach"}
+            size={13}
+            color={sessionId === undefined ? ink.faint : signal.sage}
+          />
+          <Label color={sessionId === undefined ? ink.faint : signal.sage}>
+            {sessionId === undefined ? "No session" : "Open session"}
+          </Label>
+        </Pressable>
+      </View>
     </View>
   );
 }
-// Hoisted, so a card's rows do not hand the pressables a fresh style function
-// on every render of the screen above them. The structural measurements are
-// semantic rhythm jobs rather than picked `space.*` steps, so the card can
-// change as one surface when the design system changes.
+
 const runHeadStyle = ({ pressed }: { pressed: boolean }) => [styles.runHead, pressed && styles.pressed];
 const moreStyle = ({ pressed }: { pressed: boolean }) => [styles.more, pressed && styles.pressed];
 const openStyle = ({ pressed }: { pressed: boolean }) => [styles.open, pressed && styles.pressed];
@@ -327,7 +371,6 @@ const styles = StyleSheet.create({
     padding: rhythm.cardPad,
   },
   runHead: { flexDirection: "row", alignItems: "center", gap: rhythm.cardGap, minHeight: rhythm.minTarget },
-  /** The state's own colour as a rule down the run's leading edge. */
   bar: { alignSelf: "stretch", width: stroke.heavy },
   runCopy: { flex: 1, minWidth: 0, gap: rhythm.pairGap },
   runHeadline: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: rhythm.cardGap },
@@ -338,6 +381,11 @@ const styles = StyleSheet.create({
     gap: rhythm.cardGap,
     borderTopWidth: stroke.hair,
     borderTopColor: ground.line,
+  },
+  actionControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: rhythm.pairGap,
   },
   open: {
     minHeight: rhythm.minTarget,
