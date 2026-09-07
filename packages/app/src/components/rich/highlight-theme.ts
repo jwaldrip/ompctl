@@ -41,12 +41,12 @@ function extractInkPrimary(): string {
 
 // Brand tokens (azure, amber) will be added by the theme slice.
 // At this base, brand is not yet exported, so we fall back to signal tokens:
-// keywords fall back to signal.violet (or brand.azure when available),
-// numbers fall back to signal.amber (or brand.amber when available),
+// keywords fall back to signal.reasoning (or brand.azure when available),
+// numbers fall back to signal.working (or brand.amber when available),
 // and default text falls back to ink.plain (or ink.primary when available).
-export const KEYWORD_COLOR = extractBrandAzure() ?? signal.violet;
-export const STRING_COLOR = signal.sage;
-export const NUMBER_COLOR = extractBrandAmber() ?? signal.amber;
+export const KEYWORD_COLOR = extractBrandAzure() ?? signal.reasoning;
+export const STRING_COLOR = signal.ready;
+export const NUMBER_COLOR = extractBrandAmber() ?? signal.working;
 export const COMMENT_COLOR = ink.faint;
 export const PUNCTUATION_COLOR = ink.muted;
 export const DEFAULT_COLOR = extractInkPrimary();
@@ -86,8 +86,8 @@ export const TOKEN_COLORS: Record<string, string> = {
   operator: PUNCTUATION_COLOR,
 
   // Diff deletions
-  "deleted-sign": signal.oxide,
-  deleted: signal.oxide,
+  "deleted-sign": signal.failed,
+  deleted: signal.failed,
 
   // Default
   plain: DEFAULT_COLOR,

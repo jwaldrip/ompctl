@@ -369,7 +369,7 @@ export function OmpComposer({
    * message box. It is the microphone's accessibility hint now.
    */
   const micNotice = micGate === "ready" && !voice.capturing && voice.speech.available ? null : micStatus;
-  const micTone = voice.capturing ? theme.signal.amber : micDisabled ? theme.ink.faint : theme.ink.plain;
+  const micTone = voice.capturing ? theme.signal.working : micDisabled ? theme.ink.faint : theme.ink.plain;
 
   /**
    * Send is held whenever the runtime says the composer cannot send, or when
@@ -439,7 +439,7 @@ export function OmpComposer({
           testID={`${prefix}-queued-strip`}
         >
           <View style={styles.queuedHeader}>
-            <View style={[styles.queuedBadge, { backgroundColor: theme.signal.amber }]}>
+            <View style={[styles.queuedBadge, { backgroundColor: theme.signal.working }]}>
               <Label style={[type.kicker, { color: theme.ink.inverse, fontSize: 10, fontWeight: "700" }]}>
                 {queuedItems.length} QUEUED
               </Label>
@@ -668,7 +668,7 @@ export function OmpComposer({
                 accessibilityLabel="Interrupt this turn"
                 style={({ pressed }) => [
                   styles.emphasis,
-                  { backgroundColor: theme.signal.oxide },
+                  { backgroundColor: theme.signal.failed },
                   pressed && styles.pressedDim,
                 ]}
               >
@@ -686,14 +686,14 @@ export function OmpComposer({
                 onPress={handleQueue}
                 style={({ pressed }) => [
                   styles.emphasis,
-                  { backgroundColor: queueHeld ? theme.ground.active : theme.signal.sage },
+                  { backgroundColor: queueHeld ? theme.ground.active : theme.signal.ready },
                   pressed && !queueHeld && styles.pressedDim,
                 ]}
               >
                 <View style={styles.queueInner}>
                   <Glyph name="send" size={ACTION_GLYPH} color={queueHeld ? theme.ink.faint : theme.ink.inverse} />
                   <View
-                    style={[styles.queueBadge, { backgroundColor: theme.signal.amber }]}
+                    style={[styles.queueBadge, { backgroundColor: theme.signal.working }]}
                     testID={`${prefix}-queue-badge`}
                   >
                     <Label style={[styles.queueBadgeText, { color: theme.ink.inverse }]}>Q</Label>
@@ -712,7 +712,7 @@ export function OmpComposer({
                   // quiet disc rather than a vanished control, because an
                   // operator has to see where send lives before they have
                   // typed anything.
-                  { backgroundColor: sendHeld ? theme.ground.active : theme.signal.sage },
+                  { backgroundColor: sendHeld ? theme.ground.active : theme.signal.ready },
                   pressed && !sendHeld && styles.pressedDim,
                 ]}
               >

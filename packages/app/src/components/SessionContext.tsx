@@ -121,11 +121,11 @@ const TODO_LABELS: Record<PlanStatus, string> = {
  * error, and slate is cold -- not started, or stopped on purpose.
  */
 const TODO_SIGNALS: Record<PlanStatus, SignalName> = {
-  pending: "slate",
-  in_progress: "amber",
-  completed: "sage",
-  blocked: "ochre",
-  abandoned: "slate",
+  pending: "cold",
+  in_progress: "working",
+  completed: "ready",
+  blocked: "holding",
+  abandoned: "cold",
 };
 
 /**
@@ -370,7 +370,7 @@ function TodoRow({ todo }: { todo: PlanEntry }): JSX.Element {
         </Body>
       </View>
       {todo.blocker === undefined ? null : (
-        <Label color={theme.signal.ochre} style={styles.blocker}>
+        <Label color={theme.signal.holding} style={styles.blocker}>
           {`Blocked on ${todo.blocker}`}
         </Label>
       )}
@@ -421,7 +421,7 @@ function contextRows(props: SessionContextProps): ContextRow[] {
     rows.push({
       label: "Awaiting you",
       value: `${session.pendingApprovals.length} ${session.pendingApprovals.length === 1 ? "clearance" : "clearances"}`,
-      tone: "ochre",
+      tone: "holding",
       testID: "clearances",
     });
   }
@@ -429,7 +429,7 @@ function contextRows(props: SessionContextProps): ContextRow[] {
     rows.push({
       label: "Running",
       value: `${session.activity.running} ${session.activity.running === 1 ? "tool" : "tools"}`,
-      tone: "amber",
+      tone: "working",
       testID: "running",
     });
   }
@@ -437,7 +437,7 @@ function contextRows(props: SessionContextProps): ContextRow[] {
     rows.push({
       label: "Failed",
       value: `${session.activity.failed} ${session.activity.failed === 1 ? "tool" : "tools"}`,
-      tone: "oxide",
+      tone: "failed",
       testID: "failed",
     });
   }

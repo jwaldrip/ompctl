@@ -780,7 +780,7 @@ function CoworkSurface({
     <SafeScreen testID="cowork-surface">
       {notice === null ? null : (
         <View style={styles.coworkNotice} testID="cowork-notice">
-          <Body color={signal.ochre}>{notice}</Body>
+          <Body color={signal.holding}>{notice}</Body>
         </View>
       )}
       <CoworkScreen

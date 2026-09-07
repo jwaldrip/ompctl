@@ -65,7 +65,7 @@ export function CommandMenu({
   return (
     <View style={styles.card} testID={testID}>
       <View style={styles.header}>
-        <Glyph name="commands" size={12} color={signal.amber} />
+        <Glyph name="commands" size={12} color={signal.working} />
         <Label style={[type.kicker, styles.headerText]}>Commands</Label>
       </View>
       <ScrollView style={styles.list} keyboardShouldPersistTaps="always">
@@ -148,7 +148,7 @@ const styles = StyleSheet.create({
     gap: space.snug,
   },
   commandName: {
-    color: signal.amber,
+    color: signal.working,
   },
   commandHint: {
     color: ink.faint,

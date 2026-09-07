@@ -44,9 +44,9 @@ import type { ConversationActivity, ConversationActivityKind } from "../session/
  * to give a resting state a colour it should never have had.
  */
 const TONES: Record<ConversationActivityKind, SignalName> = {
-  running: "amber",
-  working: "amber",
-  waiting: "ochre",
+  running: "working",
+  working: "working",
+  waiting: "holding",
 };
 
 export interface ActivityRowProps {

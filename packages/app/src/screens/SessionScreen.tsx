@@ -355,13 +355,13 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           onPress={narration.toggle}
           style={({ pressed }) => [styles.headControl, pressed && { backgroundColor: ground.active }]}
         >
-          <Glyph name="narration" size={14} color={narration.enabled ? signal.sage : ink.muted} />
+          <Glyph name="narration" size={14} color={narration.enabled ? signal.ready : ink.muted} />
           <Label color={narration.enabled ? ink.bright : ink.muted} testID="session-narration-status">
             {!narration.available ? "Narration unavailable" : narration.enabled ? "Narration on" : "Narration off"}
           </Label>
         </Pressable>
         <Label
-          color={narration.reason === null ? ink.faint : signal.slate}
+          color={narration.reason === null ? ink.faint : signal.cold}
           style={styles.narrationReason}
           testID="session-narration-reason"
         >

@@ -37,9 +37,14 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
   };
 
   return (
-    <Surface elevation={0} mode="flat" style={[styles.card, { borderColor: theme.signal.ochre }]} testID="plan-review">
+    <Surface
+      elevation={0}
+      mode="flat"
+      style={[styles.card, { borderColor: theme.signal.holding }]}
+      testID="plan-review"
+    >
       <View style={styles.head}>
-        <Kicker color={theme.signal.ochre}>plan review</Kicker>
+        <Kicker color={theme.signal.holding}>plan review</Kicker>
         <Label color={theme.ink.muted}>{review === null ? "waiting for plan details" : "approval required"}</Label>
       </View>
       {review === null ? null : <Body color={theme.ink.plain}>{review.message}</Body>}
@@ -94,7 +99,7 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
             respond("Refine plan");
           }}
           testID="plan-refine"
-          textColor={theme.signal.ochre}
+          textColor={theme.signal.holding}
         >
           Refine plan
         </Button>

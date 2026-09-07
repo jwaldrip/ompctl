@@ -25,9 +25,9 @@ import "./rnw.ts";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ScopeAccess } from "../src/console/state.ts";
+import { signal } from "../src/design/tokens.ts";
 import type { BrowserSession, BrowserState } from "../src/session/browser.ts";
 import { EMPTY_BROWSER } from "../src/session/browser.ts";
-import { signal } from "../src/design/tokens.ts";
 import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
 
 // Dynamic on purpose, same reason as `smoke.test.tsx`: a static import of
@@ -276,7 +276,7 @@ describe("collapsed group status precedence, rendered", () => {
     // from the token rather than pinning a hex that a retheme would change.
     const headerStart = html.indexOf(`group-header-${dir}`);
     const headerRegion = html.slice(Math.max(0, headerStart - 300), headerStart + 400);
-    expect(headerRegion).toContain(rgbaOf(signal.amber));
+    expect(headerRegion).toContain(rgbaOf(signal.working));
   });
 
   test("collapsing a group removes its rows from the list but not its header", () => {

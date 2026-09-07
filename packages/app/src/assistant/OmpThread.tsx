@@ -225,7 +225,7 @@ export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
       </View>
     ) : props.loadingEarlier === true ? (
       <View style={styles.header} testID="transcript-loading-band">
-        <ActivityIndicator size="small" color={theme.signal.amber} />
+        <ActivityIndicator size="small" color={theme.signal.working} />
         <Label color={theme.ink.muted}>Loading earlier history…</Label>
       </View>
     ) : null;
@@ -336,7 +336,7 @@ function Empty({ loading }: { loading?: boolean }): JSX.Element {
   if (loading === true) {
     return (
       <View style={styles.empty} testID="transcript-loading">
-        <ActivityIndicator size="small" color={theme.signal.amber} />
+        <ActivityIndicator size="small" color={theme.signal.working} />
         <Label color={theme.ink.muted}>Loading transcript…</Label>
       </View>
     );
@@ -360,10 +360,10 @@ function Spoken({ text }: { text: string }): JSX.Element {
     <Surface
       mode="flat"
       elevation={0}
-      style={[styles.spoken, { backgroundColor: theme.ground.surface, borderLeftColor: theme.signal.violet }]}
+      style={[styles.spoken, { backgroundColor: theme.ground.surface, borderLeftColor: theme.signal.reasoning }]}
       testID="transcript-say"
     >
-      <Glyph name="link" size={11} color={theme.signal.violet} />
+      <Glyph name="link" size={11} color={theme.signal.reasoning} />
       <Code color={theme.ink.plain} style={styles.spokenText}>
         {text}
       </Code>

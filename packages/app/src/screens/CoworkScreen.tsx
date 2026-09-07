@@ -307,8 +307,8 @@ function FolderBinding({
                     style={styles.confirmButton}
                     testID={`cowork-folder-unbind-confirm-${folder.hostPath}`}
                   >
-                    <Glyph name="deny" size={12} color={signal.oxide} />
-                    <Label color={signal.oxide}>Unbind</Label>
+                    <Glyph name="deny" size={12} color={signal.failed} />
+                    <Label color={signal.failed}>Unbind</Label>
                   </Pressable>
                 </View>
               </View>
@@ -328,8 +328,8 @@ function FolderBinding({
       )}
       {start.status === "refused" ? (
         <View style={styles.refused} testID="cowork-container-refused">
-          <Glyph name="warning" color={signal.ochre} size={13} />
-          <Label color={signal.ochre} style={styles.refusedText}>
+          <Glyph name="warning" color={signal.holding} size={13} />
+          <Label color={signal.holding} style={styles.refusedText}>
             {start.reason}
             {start.retryable ? " Worth trying again." : ""}
           </Label>
@@ -340,9 +340,9 @@ function FolderBinding({
           <Glyph
             name={modelBroker.ready ? "allow" : "warning"}
             size={12}
-            color={modelBroker.ready ? signal.sage : signal.ochre}
+            color={modelBroker.ready ? signal.ready : signal.holding}
           />
-          <Label color={modelBroker.ready ? signal.sage : signal.ochre}>
+          <Label color={modelBroker.ready ? signal.ready : signal.holding}>
             {modelBroker.ready
               ? "Model broker ready"
               : `Model broker not ready: ${modelBroker.reason ?? "unavailable"}`}
@@ -356,8 +356,8 @@ function FolderBinding({
           style={styles.started}
           testID="cowork-container-open"
         >
-          <Glyph name="attach" color={signal.sage} size={13} />
-          <Label color={signal.sage}>Container running. Open the session.</Label>
+          <Glyph name="attach" color={signal.ready} size={13} />
+          <Label color={signal.ready}>Container running. Open the session.</Label>
         </Pressable>
       ) : (
         <Pressable
@@ -407,8 +407,8 @@ function Nav({
               pressed && { backgroundColor: ground.active },
             ]}
           >
-            <Glyph name={destination.glyph} size={16} color={isActive ? signal.amber : ink.muted} />
-            <Kicker color={isActive ? signal.amber : ink.muted}>{destination.label}</Kicker>
+            <Glyph name={destination.glyph} size={16} color={isActive ? signal.working : ink.muted} />
+            <Kicker color={isActive ? signal.working : ink.muted}>{destination.label}</Kicker>
           </Pressable>
         );
       })}
@@ -479,7 +479,7 @@ const styles = StyleSheet.create({
   refused: {
     alignItems: "center",
     backgroundColor: ground.surface,
-    borderColor: signal.ochre,
+    borderColor: signal.holding,
     borderWidth: stroke.hair,
     flexDirection: "row",
     gap: space.snug,
@@ -489,7 +489,7 @@ const styles = StyleSheet.create({
   started: { flexDirection: "row", alignItems: "center", gap: space.snug, minHeight: TOUCH_TARGET },
   containerStart: {
     alignItems: "center",
-    backgroundColor: signal.sage,
+    backgroundColor: signal.ready,
     flexDirection: "row",
     gap: space.snug,
     justifyContent: "center",
@@ -506,7 +506,7 @@ const styles = StyleSheet.create({
   },
   confirmUnbind: {
     backgroundColor: ground.surface,
-    borderColor: signal.oxide,
+    borderColor: signal.failed,
     borderWidth: stroke.hair,
     padding: space.snug,
     gap: space.tight,

@@ -28,7 +28,7 @@ export function CloneProgress({
 }): JSX.Element {
   const failed = clone.failure !== null;
   const landed = clone.path !== null;
-  const accent = failed ? signal.oxide : landed ? signal.sage : signal.amber;
+  const accent = failed ? signal.failed : landed ? signal.ready : signal.working;
 
   return (
     <View style={styles.panel} testID="clone-progress">
@@ -44,7 +44,7 @@ export function CloneProgress({
       </Code>
 
       {failed ? (
-        <Label color={signal.oxide} testID="clone-failure">
+        <Label color={signal.failed} testID="clone-failure">
           {clone.failure}
         </Label>
       ) : (
@@ -97,6 +97,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.step,
   },
   actionText: { ...type.label, color: ink.plain },
-  primary: { backgroundColor: signal.sage, flex: 1 },
+  primary: { backgroundColor: signal.ready, flex: 1 },
   primaryText: { ...type.title, color: ink.inverse },
 });

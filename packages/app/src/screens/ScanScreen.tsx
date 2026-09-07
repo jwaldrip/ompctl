@@ -75,7 +75,7 @@ export function ScanScreen({
             style={styles.action}
             testID="scan-request-permission"
           >
-            <Label color={signal.sage}>Allow camera access</Label>
+            <Label color={signal.ready}>Allow camera access</Label>
           </Pressable>
         </View>
       ) : device === undefined ? (
@@ -93,8 +93,8 @@ export function ScanScreen({
           />
           {invalid && pending === null ? (
             <View style={styles.notice} testID="scan-invalid">
-              <Glyph color={signal.ochre} name="unpair" size={12} />
-              <Label color={signal.ochre} style={styles.noticeText}>
+              <Glyph color={signal.holding} name="unpair" size={12} />
+              <Label color={signal.holding} style={styles.noticeText}>
                 That code isn't an ompd pairing code.
               </Label>
             </View>
@@ -120,7 +120,7 @@ export function ScanScreen({
               style={styles.confirmAccept}
               testID="scan-confirm-accept"
             >
-              <Label color={signal.sage}>Pair</Label>
+              <Label color={signal.ready}>Pair</Label>
             </Pressable>
           </View>
         </View>
@@ -140,8 +140,8 @@ const styles = StyleSheet.create({
   action: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET, paddingHorizontal: space.wide },
   notice: {
     alignItems: "center",
-    backgroundColor: signalWash.ochre,
-    borderLeftColor: signal.ochre,
+    backgroundColor: signalWash.holding,
+    borderLeftColor: signal.holding,
     borderLeftWidth: stroke.heavy,
     flexDirection: "row",
     gap: space.snug,
@@ -160,7 +160,7 @@ const styles = StyleSheet.create({
   confirmCancel: { alignItems: "center", flex: 1, justifyContent: "center", minHeight: TOUCH_TARGET },
   confirmAccept: {
     alignItems: "center",
-    borderColor: signal.sage,
+    borderColor: signal.ready,
     borderWidth: stroke.hair,
     flex: 1,
     justifyContent: "center",

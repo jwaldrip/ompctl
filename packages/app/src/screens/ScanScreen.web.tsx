@@ -44,7 +44,7 @@ export function ScanScreen({
       </View>
 
       <View style={styles.centered} testID="scan-no-device">
-        <Glyph color={signal.ochre} name="unpair" size={12} />
+        <Glyph color={signal.holding} name="unpair" size={12} />
         <Body color={ink.bright}>Scanning needs the camera on a phone or tablet.</Body>
         <Label color={ink.muted}>Paste the endpoint and token instead.</Label>
       </View>

@@ -92,9 +92,9 @@ export function SortBar({ sort, onChange }: SortBarProps): JSX.Element {
               pressed && { backgroundColor: ground.active },
             ]}
           >
-            <Kicker color={active ? signal.amber : ink.muted}>{SORT_LABELS[field]}</Kicker>
+            <Kicker color={active ? signal.working : ink.muted}>{SORT_LABELS[field]}</Kicker>
             {active ? (
-              <Data color={signal.amber} testID={`sort-direction-${field}`}>
+              <Data color={signal.working} testID={`sort-direction-${field}`}>
                 {sort.direction === "asc" ? "\u2191" : "\u2193"}
               </Data>
             ) : null}
@@ -117,5 +117,5 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderBottomColor: "transparent",
   },
-  chipActive: { borderBottomColor: signal.amber },
+  chipActive: { borderBottomColor: signal.working },
 });

@@ -171,7 +171,7 @@ export function FilePicker({
           sortedEntries.map(entry => {
             const isDir = entry.kind === "dir";
             const glyph = isDir ? (entry.gitRepo ? "repo" : "folder") : entry.kind === "link" ? "symlink" : "read";
-            const glyphColor = isDir ? signal.amber : ink.muted;
+            const glyphColor = isDir ? signal.working : ink.muted;
 
             return (
               <View key={entry.name} style={styles.item}>
@@ -306,6 +306,6 @@ const styles = StyleSheet.create({
     borderColor: ground.edge,
   },
   insertText: {
-    color: signal.amber,
+    color: signal.working,
   },
 });

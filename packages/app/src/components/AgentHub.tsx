@@ -343,11 +343,11 @@ export const AgentHubBranch = memo(function AgentHubBranch({
 });
 
 function statusSignal(state: AgentState): SignalName {
-  if (state === "busy") return "amber";
-  if (state === "idle") return "sage";
-  if (state === "waiting" || state === "provisioning" || state === "starting") return "ochre";
-  if (state === "failed") return "oxide";
-  return "slate";
+  if (state === "busy") return "working";
+  if (state === "idle") return "ready";
+  if (state === "waiting" || state === "provisioning" || state === "starting") return "holding";
+  if (state === "failed") return "failed";
+  return "cold";
 }
 
 function formatRuntime(durationMs: number): string {

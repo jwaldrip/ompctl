@@ -166,7 +166,7 @@ test("Paper's own components under the production root paint one dark ompctl pal
   expect(spellings("#6750A4").some(form => markup.includes(form))).toBe(false);
 
   // And the dark ramp did arrive, so this is not passing on an empty render.
-  const darkTones = [ground.base, ground.surface, ground.raised, ground.line, ground.edge, brand.azure, signal.sage];
+  const darkTones = [ground.base, ground.surface, ground.raised, ground.line, ground.edge, brand.azure, signal.ready];
   expect(
     darkTones.some(hex => spellings(hex).some(form => markup.includes(form))),
     "no ompctl dark tone reached Paper",

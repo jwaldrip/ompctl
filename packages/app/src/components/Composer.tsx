@@ -282,12 +282,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.pill,
   },
-  sendReady: { backgroundColor: signal.sage },
+  sendReady: { backgroundColor: signal.ready },
   // Present, unmistakably not ready. A filled-but-quiet disc rather than a
   // vanished control: an operator has to be able to see where send lives
   // before they have typed anything.
   sendHeld: { backgroundColor: ground.active },
-  sendPressed: { backgroundColor: signal.sage, opacity: 0.72 },
-  stop: { backgroundColor: signal.oxide },
+  sendPressed: { backgroundColor: signal.ready, opacity: 0.72 },
+  stop: { backgroundColor: signal.failed },
   stopPressed: { opacity: 0.72 },
 });

@@ -142,7 +142,7 @@ export const SessionRow = memo(function SessionRow({
   if (armed) {
     return (
       <View testID={`session-row-${session.id}`} style={styles.row}>
-        <View style={[styles.bar, { backgroundColor: signal.oxide }]} />
+        <View style={[styles.bar, { backgroundColor: signal.failed }]} />
 
         <Pressable
           testID={`session-delete-confirm-${session.id}`}
@@ -151,8 +151,8 @@ export const SessionRow = memo(function SessionRow({
           onPress={confirmDelete}
           style={confirmActionStyle}
         >
-          <Glyph name="delete" size={13} color={signal.oxide} />
-          <Kicker color={signal.oxide}>Delete</Kicker>
+          <Glyph name="delete" size={13} color={signal.failed} />
+          <Kicker color={signal.failed}>Delete</Kicker>
         </Pressable>
 
         <View style={styles.confirmBody}>

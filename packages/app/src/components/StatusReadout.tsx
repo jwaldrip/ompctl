@@ -29,10 +29,10 @@ const LINK_WORDS: Record<ConnectionState, string> = {
 };
 
 const LINK_SIGNALS: Record<ConnectionState, SignalName> = {
-  connecting: "ochre",
-  connected: "sage",
-  reconnecting: "ochre",
-  offline: "oxide",
+  connecting: "holding",
+  connected: "ready",
+  reconnecting: "holding",
+  offline: "failed",
 };
 
 export interface StatusReadoutProps {
@@ -128,7 +128,7 @@ export function StatusReadout({ state, attempt, delayMs, usage, clearances }: St
             <Meter
               glyph="clearance"
               label="holding"
-              tone={signal.ochre}
+              tone={signal.holding}
               testID="status-clearances"
               value={String(clearances)}
             />

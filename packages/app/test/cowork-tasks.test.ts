@@ -124,9 +124,9 @@ describe("task state vocabulary", () => {
   });
 
   test("working, holding, and settled states carry their established meaning", () => {
-    expect(TASK_STATE_SIGNALS.running).toBe("amber");
-    expect(TASK_STATE_SIGNALS.waiting).toBe("ochre");
-    expect(TASK_STATE_SIGNALS.done).toBe("sage");
-    expect(TASK_STATE_SIGNALS.failed).toBe("oxide");
+    expect(TASK_STATE_SIGNALS.running).toBe("working");
+    expect(TASK_STATE_SIGNALS.waiting).toBe("holding");
+    expect(TASK_STATE_SIGNALS.done).toBe("ready");
+    expect(TASK_STATE_SIGNALS.failed).toBe("failed");
   });
 });
