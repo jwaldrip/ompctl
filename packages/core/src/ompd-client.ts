@@ -1275,17 +1275,32 @@ export class OmpdClient {
   }
 
   /**
-   * Move one agent's session onto `modeId`. The answer arrives as the
-   * `agent_config` event carrying what the daemon read back from the session,
-   * so a surface renders the confirmed mode rather than its own request; a
-   * scope, shape, or unknown-mode refusal arrives as an `error` naming it.
+   * Set one config option on an agent's session (e.g. mode, model, thinking).
+   * The answer arrives as the `agent_config` event carrying what the daemon
+   * read back from the session, so a surface renders confirmed state rather
+   * than its own request; a scope, shape, or unknown-option refusal arrives
+   * as an `error` naming it.
    *
-   * One-shot, like the other instructions: not replayed after a reconnect,
-   * because an operator who retaps is informed and one whose mode change is
-   * silently replayed later is not.
+   * One-shot, like the other instructions: not replayed after a reconnect.
    */
-  writeAgentConfig(agentId: AgentId, modeId: string): void {
-    this.send({ t: "agent_config_write", agentId, modeId });
+  writeAgentConfig(agentId: AgentId, optionId: string, value: string): void;
+  /**
+   * Move one agent's session onto `modeId`.
+   * @deprecated Use `writeAgentConfig(agentId, optionId, value)` instead.
+   */
+  writeAgentConfig(agentId: AgentId, modeId: string): void;
+  writeAgentConfig(agentId: AgentId, optionIdOrModeId: string, value?: string): void {
+    if (value !== undefined) {
+      this.send({ t: "agent_config_write", agentId, optionId: optionIdOrModeId, value });
+    } else {
+      this.send({
+        t: "agent_config_write",
+        agentId,
+        optionId: "mode",
+        value: optionIdOrModeId,
+        modeId: optionIdOrModeId,
+      });
+    }
   }
 
   /**

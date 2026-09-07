@@ -672,7 +672,9 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, {}, (sessionEntry, agentId) =>
-      sessionEntry.host.client.newSession(input.cwd, this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? []),
+      sessionEntry.host.client
+        .newSession(input.cwd, this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [])
+        .then(r => (typeof r === "string" ? r : r.sessionId)),
     );
   }
 

@@ -61,8 +61,10 @@ export interface FakeHostController {
   prompts: Array<{ sessionId: string; text: string; blocks: unknown[] }>;
   /** Session ids the peer was told to cancel, in order. */
   cancels: string[];
-  /** Current mode per session, as `session/set_mode` left it. */
+  /** Current mode per session, as session/set_mode or session/set_config_option left it. */
   modeOf(sessionId: string): string;
+  /** Current model per session, as session/set_config_option left it. */
+  modelOf(sessionId: string): string;
   /** Set the reply a `session/prompt` resolves with. */
   onPrompt(fn: (sessionId: string, text: string) => Promise<unknown> | unknown): void;
   /**
@@ -93,8 +95,10 @@ export function createFakeHost(opts: { nextSessionId?: () => string } = {}): Fak
   /** Which host serves each session, so a frame reaches the right transport. */
   const sessionClients = new Map<string, AcpClient>();
   const cancels: string[] = [];
-  /** Mode per session, mirroring what `omp acp` reports in `configOptions`. */
+  /** Mode per session, mirroring what omp acp reports in configOptions. */
   const modes = new Map<string, string>();
+  /** Model per session, mirroring what omp acp reports in configOptions. */
+  const models = new Map<string, string>();
   /**
    * In-flight prompts, so `session/cancel` can settle the turn the way a real
    * agent does: the pending `session/prompt` answers with a cancelled stop
@@ -138,8 +142,11 @@ export function createFakeHost(opts: { nextSessionId?: () => string } = {}): Fak
         name: "Model",
         category: "model",
         type: "select",
-        currentValue: "anthropic/claude-opus-5",
-        options: [{ value: "anthropic/claude-opus-5", name: "Claude Opus 5" }],
+        currentValue: models.get(sessionId) ?? "anthropic/claude-opus-5",
+        options: [
+          { value: "anthropic/claude-opus-5", name: "Claude Opus 5" },
+          { value: "openai/gpt-5.4", name: "GPT-5.4" },
+        ],
       },
     ];
   };
@@ -244,6 +251,33 @@ export function createFakeHost(opts: { nextSessionId?: () => string } = {}): Fak
       });
       return;
     }
+    if (msg.method === "session/set_config_option") {
+      const sessionId = String(msg.params?.sessionId);
+      const configId = String(msg.params?.configId);
+      const value = String(msg.params?.value);
+      if (configId === "mode") {
+        modes.set(sessionId, value);
+      } else if (configId === "model") {
+        models.set(sessionId, value);
+      }
+      toClient(client, { jsonrpc: "2.0", id: msg.id, result: { configOptions: configFor(sessionId) } });
+      if (configId === "mode") {
+        toClient(client, {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: { sessionId, update: { sessionUpdate: "current_mode_update", currentModeId: value } },
+        });
+      }
+      toClient(client, {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: { sessionUpdate: "config_option_update", configOptions: configFor(sessionId) },
+        },
+      });
+      return;
+    }
 
     if (msg.method === "session/prompt") {
       const sessionId = String(msg.params?.sessionId);
@@ -310,6 +344,7 @@ export function createFakeHost(opts: { nextSessionId?: () => string } = {}): Fak
     prompts,
     cancels,
     modeOf: sessionId => modes.get(sessionId) ?? "default",
+    modelOf: sessionId => models.get(sessionId) ?? "anthropic/claude-opus-5",
     onPrompt: fn => {
       promptHandler = fn;
     },

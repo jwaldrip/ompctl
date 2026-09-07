@@ -35,14 +35,6 @@ import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/toke
 import type { Connection } from "../platform/connection.ts";
 import { restRoot } from "../platform/rest-root.ts";
 
-/**
- * The one option the daemon's POST accepts. Mirrors the gateway's
- * `MODE_OPTION_ID`, which the app cannot import across the daemon's package
- * edge; if the route ever grows a field for another option, this is the
- * single place that learns it.
- */
-const SETTABLE_OPTION_ID = "mode";
-
 /** One choice inside an option, as the daemon reports it. Mirrors the daemon's `SessionConfigChoice` behind its package edge. */
 interface ConfigChoice {
   value: string;
@@ -61,10 +53,8 @@ interface ConfigOption {
 }
 
 /**
- * Groups options by category, the model first. The model is what the operator
- * came to check, so it leads; the mode, the one option this route can set,
- * follows; anything else keeps its wire order behind them. A stable sort, so
- * equal ranks never shuffle what the daemon sent.
+ * Groups options by category, the model first, then the mode, then thinking,
+ * then anything else keeping wire order. A stable sort.
  */
 function groupByCategory(options: readonly ConfigOption[]): Array<{ category: string; options: ConfigOption[] }> {
   const groups: Array<{ category: string; options: ConfigOption[] }> = [];
@@ -76,7 +66,8 @@ function groupByCategory(options: readonly ConfigOption[]): Array<{ category: st
       existing.options.push(option);
     }
   }
-  const rank = (category: string): number => (category === "model" ? 0 : category === SETTABLE_OPTION_ID ? 1 : 2);
+  const rank = (category: string): number =>
+    category === "model" ? 0 : category === "mode" ? 1 : category === "thought_level" ? 2 : 3;
   return groups.toSorted((a, b) => rank(a.category) - rank(b.category));
 }
 
@@ -155,24 +146,29 @@ function describeLoadRefusal(status: number): string {
 /** Cause and remedy for a refused change, same rule as the read. */
 function describePostRefusal(status: number, code: string | null): string {
   if (status === 403) {
-    return "This device's pairing lacks the prompt scope, so the daemon refuses to change this session's mode. Pair it again with prompt to set it from here.";
+    return "This device's pairing lacks the prompt scope, so the daemon refuses to change this session's setting. Pair it again with prompt to set it from here.";
   }
-  if (code === "unknown_mode") {
-    return "That mode is not one this session offers. The list changed under this screen; reload it and pick again.";
+  if (code === "unknown_mode" || code === "unknown_value") {
+    return "That choice is not one this session offers. The list changed under this screen; reload it and pick again.";
+  }
+  if (code === "unknown_option") {
+    return "That option is not one this session offers. The list changed under this screen; reload it and pick again.";
   }
   if (status === 404) {
-    return "The daemon no longer knows this agent, so the mode was not changed.";
+    return "The daemon no longer knows this agent, so the setting was not changed.";
   }
   if (status === 409) {
-    return "This agent has no live session behind it, so the mode was not changed.";
+    return "This agent has no live session behind it, so the setting was not changed.";
   }
   if (status === 503) {
-    return "The daemon has no config surface for this session right now, so the mode was not changed.";
+    return "The daemon has no config surface for this session right now, so the setting was not changed.";
   }
   if (status === 502) {
-    return code === null ? "The agent refused to change its mode." : `The agent refused to change its mode: ${code}.`;
+    return code === null
+      ? "The agent refused to change its setting."
+      : `The agent refused to change its setting: ${code}.`;
   }
-  return `The daemon refused with HTTP ${status}${code === null ? "" : ` (${code})`}; the mode was not changed.`;
+  return `The daemon refused with HTTP ${status}${code === null ? "" : ` (${code})`}; the setting was not changed.`;
 }
 
 function describeCause(cause: unknown): string {
@@ -218,11 +214,11 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
           : "This device's pairing holds no read scope, so the daemon will not serve this screen its config. Pair it again with read to configure a session from here.";
 
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
-  /** The choice value a POST is carrying, null when none is out. */
-  const [pending, setPending] = useState<string | null>(null);
+  /** The option and choice value a POST is carrying, null when none is out. */
+  const [pending, setPending] = useState<{ optionId: string; value: string } | null>(null);
   const [postRefusal, setPostRefusal] = useState<string | null>(null);
   /** The last attempted change, so its retry re-sends the same body. */
-  const [lastAttempt, setLastAttempt] = useState<{ value: string; name: string } | null>(null);
+  const [lastAttempt, setLastAttempt] = useState<{ optionId: string; value: string; name: string } | null>(null);
 
   // Answers are matched to the ask that produced them. A retry or a unmount
   // between request and response would otherwise let a slow refusal clobber
@@ -264,25 +260,29 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
   }, [load]);
 
   const choose = useCallback(
-    (value: string, name: string): void => {
+    (optionId: string, value: string, name: string): void => {
       if (root === null || !canRead || !canSet) return;
       if (pending !== null || phase.kind !== "ready") return;
-      const mode = phase.options.find(option => option.id === SETTABLE_OPTION_ID);
+      const option = phase.options.find(opt => opt.id === optionId);
       // The active row is already the daemon's answer; re-sending it would be
       // a POST that cannot change anything but can still fail.
-      if (mode === undefined || mode.currentValue === value) return;
+      if (option === undefined || option.currentValue === value) return;
 
       postSeq.current += 1;
       const seq = postSeq.current;
-      setPending(value);
-      setLastAttempt({ value, name });
+      setPending({ optionId, value });
+      setLastAttempt({ optionId, value, name });
       setPostRefusal(null);
       void (async () => {
         try {
           const response = await fetch(`${root}/v1/agents/${agentId}/config`, {
             method: "POST",
             headers: { Authorization: `Bearer ${connection.token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ modeId: value }),
+            body: JSON.stringify({
+              optionId,
+              value,
+              ...(optionId === "mode" ? { modeId: value } : {}),
+            }),
           });
           if (!response.ok) {
             const code = await errorCode(response);
@@ -296,14 +296,14 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
           setPending(null);
           if (options === null) {
             setPostRefusal(
-              "The daemon changed the mode but its answer was not a config this screen can read. Reload it.",
+              "The daemon changed the setting but its answer was not a config this screen can read. Reload it.",
             );
             return;
           }
           setPhase({ kind: "ready", options });
         } catch (cause) {
           if (seq !== postSeq.current) return;
-          setPostRefusal(`The mode was not changed: ${describeCause(cause)}`);
+          setPostRefusal(`The setting was not changed: ${describeCause(cause)}`);
           setPending(null);
         }
       })();
@@ -313,7 +313,7 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
 
   const retryLast = useCallback((): void => {
     if (lastAttempt === null) return;
-    choose(lastAttempt.value, lastAttempt.name);
+    choose(lastAttempt.optionId, lastAttempt.value, lastAttempt.name);
   }, [lastAttempt, choose]);
 
   return (
@@ -415,19 +415,15 @@ function ConfigOptionBlock({
 }: {
   option: ConfigOption;
   canSet: boolean;
-  pending: string | null;
-  onChoose: (value: string, name: string) => void;
+  pending: { optionId: string; value: string } | null;
+  onChoose: (optionId: string, value: string, name: string) => void;
 }): JSX.Element {
-  const settable = option.id === SETTABLE_OPTION_ID;
   const current = option.options.find(choice => choice.value === option.currentValue) ?? null;
 
   let reason: string | null = null;
-  if (!settable) {
-    reason = "This remote changes the session mode only. Set this from the agent itself.";
-  } else if (!canSet) {
-    reason = "Changing the mode needs the prompt scope, which this device's pairing does not hold.";
+  if (!canSet) {
+    reason = "Changing this setting needs the prompt scope, which this device's pairing does not hold.";
   }
-
   return (
     <View style={styles.option} testID={`agent-config-option-${option.id}`}>
       <View style={styles.optionHead}>
@@ -436,10 +432,8 @@ function ConfigOptionBlock({
       </View>
       {option.options.map(choice => {
         const active = choice.value === option.currentValue;
-        // Scoped to the settable option: a value that happens to match on
-        // another option's row is a coincidence of strings, not this change.
-        const applying = settable && pending !== null && choice.value === pending;
-        const enabled = settable && canSet && pending === null && !active;
+        const applying = pending !== null && pending.optionId === option.id && pending.value === choice.value;
+        const enabled = canSet && pending === null && !active;
         return (
           <Pressable
             key={choice.value}
@@ -449,7 +443,7 @@ function ConfigOptionBlock({
             accessibilityState={{ disabled: !enabled, selected: active }}
             disabled={!enabled}
             onPress={() => {
-              onChoose(choice.value, choice.name);
+              onChoose(option.id, choice.value, choice.name);
             }}
             style={({ pressed }) => [styles.choice, pressed && enabled && { backgroundColor: ground.active }]}
           >
