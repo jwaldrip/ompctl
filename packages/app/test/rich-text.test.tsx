@@ -25,6 +25,9 @@ import type { Entry } from "../src/session/model.ts";
 // modules load, so these cannot be static imports (see rnw.ts).
 const { parseRich } = await import("../src/components/rich/parse.ts");
 const { OmpEntryRow } = await import("../src/assistant/renderers.tsx");
+const { highlight } = await import("../src/components/rich/highlight.ts");
+const { KEYWORD_COLOR } = await import("../src/components/rich/highlight-theme.ts");
+const { RichText } = await import("../src/components/rich/RichText.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -294,5 +297,61 @@ describe("repeated blocks keep distinct keys", () => {
       root.unmount();
     });
     host.remove();
+  });
+});
+
+describe("code fence syntax highlighting", () => {
+  test('highlight("const a = 1", "ts") yields a keyword token and a number token', () => {
+    const lines = highlight("const a = 1", "ts");
+    expect(lines).toHaveLength(1);
+    const tokens = lines[0];
+    const kinds = tokens?.map(t => t.kind);
+    expect(kinds).toContain("keyword");
+    expect(kinds).toContain("number");
+    const keywordToken = tokens?.find(t => t.kind === "keyword");
+    expect(keywordToken?.text).toBe("const");
+    const numberToken = tokens?.find(t => t.kind === "number");
+    expect(numberToken?.text).toBe("1");
+  });
+
+  test("an unknown language yields one plain token per line", () => {
+    const lines = highlight("alpha\nbeta\ngamma", "unsupported-lang-404");
+    expect(lines).toHaveLength(3);
+    for (const line of lines) {
+      expect(line).toHaveLength(1);
+      expect(line[0]?.kind).toBe("plain");
+    }
+    expect(lines[0]?.[0]?.text).toBe("alpha");
+    expect(lines[1]?.[0]?.text).toBe("beta");
+    expect(lines[2]?.[0]?.text).toBe("gamma");
+  });
+
+  test("RichText renders a fenced ts block with at least one span coloured from the theme", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => {
+      root.render(<RichText text={"```ts\nconst a = 1;\n```"} />);
+    });
+
+    const spans = Array.from(host.querySelectorAll("span, div"));
+    const colouredSpan = spans.find(el => {
+      const style = el.getAttribute("style") ?? "";
+      return (
+        style.includes(KEYWORD_COLOR.toLowerCase()) ||
+        style.includes(KEYWORD_COLOR.toUpperCase()) ||
+        style.includes("139, 123, 196") ||
+        style.includes("91, 157, 255")
+      );
+    });
+
+    try {
+      expect(colouredSpan).toBeDefined();
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      host.remove();
+    }
   });
 });
