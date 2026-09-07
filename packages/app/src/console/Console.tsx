@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { StyleSheet, View } from "react-native";
 import { Divider } from "react-native-paper";
 import { AgentHub } from "../components/AgentHub.tsx";
+import { ResumeNudge, shouldNudgeResume } from "../components/ResumeNudge.tsx";
 import { Toast } from "../components/Toast.tsx";
 import { skillInvocation } from "../cowork/catalog.ts";
 import type { NewTaskInput } from "../cowork/tasks.ts";
@@ -107,8 +108,9 @@ export function Console({
   const bayWidth = useSplitBayWidth();
   const [browser, dispatchBrowser] = useReducer(browserReduce, EMPTY_BROWSER);
   const [hubDismissed, setHubDismissed] = useState(false);
+  const [nudgedSession, setNudgedSession] = useState<BrowserSession | null>(null);
+  const resumedSessionIds = useRef<Set<string>>(new Set());
   const prefsLoadedRef = useRef(false);
-
   useEffect(() => {
     let mounted = true;
     void loadViewPrefs().then(prefs => {
@@ -127,12 +129,13 @@ export function Console({
   useEffect(() => {
     if (!prefsLoadedRef.current) return;
     void saveViewPrefs({
+      view: browser.view,
       sort: browser.sort,
       grouped: browser.grouped,
       project: browser.project,
       hubDismissed,
     });
-  }, [browser.sort, browser.grouped, browser.project, hubDismissed]);
+  }, [browser.view, browser.sort, browser.grouped, browser.project, hubDismissed]);
 
   const onToggleHubDismiss = useCallback(() => {
     setHubDismissed(prev => !prev);
@@ -293,6 +296,10 @@ export function Console({
   }, []);
   const onOpen = useCallback(
     (session: BrowserSession) => {
+      if (shouldNudgeResume(session, resumedSessionIds.current)) {
+        setNudgedSession(session);
+        return;
+      }
       openSessionById(session.id);
     },
     [openSessionById],
@@ -337,6 +344,18 @@ export function Console({
   const onOpenAgent = useCallback((agent: Agent) => {
     latest.current.actions.select(agent.id);
   }, []);
+  const onSetView = useCallback((view: "list" | "board") => {
+    dispatchBrowser({ t: "setView", view });
+  }, []);
+
+  const agentClearances = useCallback(
+    (agentId: AgentId): number => {
+      const sess = state.sessions.get(agentId);
+      if (!sess) return 0;
+      return sess.pendingApprovals.length + (sess.planReview === null ? 0 : 1);
+    },
+    [state.sessions],
+  );
 
   const log = (agentId: AgentId, back: () => void, openConfig: () => void): JSX.Element => {
     // `agentFor`, not a raw roster lookup: a resumed session starts streaming
@@ -546,6 +565,10 @@ export function Console({
               link={fleetLink}
               onSetProject={onSetProject}
               onSetQuery={onSetQuery}
+              onSetView={onSetView}
+              agents={state.agents}
+              pendingClearances={agentClearances}
+              tuiSessions={state.tuiSessions}
             />
           </View>
           {/*
@@ -559,6 +582,25 @@ export function Console({
           {split ? <Divider style={styles.splitSeam} testID="split-seam" /> : null}
           {split ? <View style={styles.splitDetail}>{splitPane()}</View> : null}
         </View>
+        {nudgedSession !== null ? (
+          <ResumeNudge
+            session={nudgedSession}
+            onStartFresh={() => {
+              const cwd = nudgedSession.cwd;
+              setNudgedSession(null);
+              actions.createAgent({ cwd });
+            }}
+            onResumeAnyway={() => {
+              const id = nudgedSession.id;
+              resumedSessionIds.current.add(id);
+              setNudgedSession(null);
+              openSessionById(id);
+            }}
+            onClose={() => {
+              setNudgedSession(null);
+            }}
+          />
+        ) : null}
       </SafeScreen>
     ),
     session: log,

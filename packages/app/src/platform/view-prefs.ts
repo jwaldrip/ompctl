@@ -14,6 +14,7 @@ import { DEFAULT_SORT, type SortField, type SortSpec } from "../session/browser.
 export const FLEET_VIEW_PREFS_KEY = "ompd.fleet.view";
 
 export interface FleetViewPrefs {
+  readonly view?: "list" | "board";
   readonly sort: SortSpec;
   readonly grouped: boolean;
   readonly project: string | null;
@@ -21,6 +22,7 @@ export interface FleetViewPrefs {
 }
 
 export const DEFAULT_VIEW_PREFS: FleetViewPrefs = {
+  view: "list",
   sort: DEFAULT_SORT,
   grouped: false,
   project: null,
@@ -44,11 +46,13 @@ function coerceSort(value: unknown): SortSpec {
 export function coerceViewPrefs(value: unknown): FleetViewPrefs {
   if (typeof value !== "object" || value === null) return DEFAULT_VIEW_PREFS;
   const raw = value as Record<string, unknown>;
+  const view = raw.view === "board" ? "board" : raw.view === "list" ? "list" : undefined;
   const sort = coerceSort(raw.sort);
   const grouped = typeof raw.grouped === "boolean" ? raw.grouped : DEFAULT_VIEW_PREFS.grouped;
   const project = typeof raw.project === "string" ? raw.project : null;
   const hubDismissed = typeof raw.hubDismissed === "boolean" ? raw.hubDismissed : undefined;
   return {
+    ...(view !== undefined ? { view } : {}),
     sort,
     grouped,
     project,

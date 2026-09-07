@@ -45,6 +45,7 @@ import {
   faHand,
   faLayerGroup,
   faLink,
+  faList,
   faListCheck,
   faMagnifyingGlass,
   faMicrophone,
@@ -62,6 +63,7 @@ import {
   faSignal,
   faSliders,
   faStore,
+  faTableColumns,
   faTerminal,
   faTrashCan,
   faTriangleExclamation,
@@ -131,7 +133,9 @@ export type GlyphName =
    */
   | "attachment"
   | "unknown"
-  | "copy";
+  | "copy"
+  | "list"
+  | "board";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
@@ -241,8 +245,9 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   attachment: faPaperclip,
   unknown: faCircleQuestion,
   // Two sheets of paper, one lifted off the other: the one shape every
-  // platform's users already read as "duplicate this exactly".
   copy: faCopy,
+  list: faList,
+  board: faTableColumns,
 };
 
 export interface GlyphProps {

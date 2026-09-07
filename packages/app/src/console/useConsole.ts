@@ -82,6 +82,10 @@ export interface ConsoleActions {
    * confirmation: this sends the frame, it does not ask.
    */
   deleteSession: (sessionId: string) => void;
+  /**
+   * Start a new agent session in a working directory.
+   */
+  createAgent: (request: { cwd: string; name?: string }) => void;
   /** Register this selected screen as the agent's live WebView target. */
   mountWebView: (agentId: AgentId) => void;
   /** Withdraw the selected screen's target. Safe to call after a failed mount. */
@@ -422,6 +426,19 @@ export function useConsole(
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
         requestStats(event.sessionId, event.agentId);
+      }),
+      client.on("agent_created", event => {
+        const current = stateRef.current;
+        if (current.selected !== null && current.selected !== event.agent.id) {
+          client.detach?.(current.selected);
+        }
+        client.selectTerminalSession?.(null);
+        dispatch({ t: "select", agentId: event.agent.id, awaiting: true });
+        client.attach(event.agent.id, stateRef.current.watermarks.has(event.agent.id) ? {} : { sinceSeq: 0 });
+        if (event.agent.acpSessionId !== undefined) {
+          requestHistory(event.agent.id, event.agent.acpSessionId);
+          requestStats(event.agent.acpSessionId, event.agent.id);
+        }
       }),
       client.on("collab_opened", event => {
         // The join's answer lands exactly like a resume's: it may arrive
@@ -799,6 +816,18 @@ export function useConsole(
           return;
         }
         client.deleteSessions([sessionId]);
+      },
+      createAgent(request) {
+        const name = request.name || request.cwd.split("/").filter(Boolean).pop() || "session";
+        const anyClient = client as unknown as {
+          createAgent?: (req: { name: string; cwd: string }) => void;
+          createSession?: (cwd: string, name?: string) => void;
+        };
+        if (typeof anyClient.createAgent === "function") {
+          anyClient.createAgent({ name, cwd: request.cwd });
+        } else if (typeof anyClient.createSession === "function") {
+          anyClient.createSession(request.cwd, name);
+        }
       },
       startVoice(agentId) {
         const current = stateRef.current;
