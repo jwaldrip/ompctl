@@ -568,3 +568,22 @@ describe("the header's controls sit at the trailing content edge", () => {
     }
   });
 });
+
+describe("the fleet header List/Board view toggle", () => {
+  test("renders list and board toggle buttons in the fleet header", () => {
+    const markup = render(browserState({ view: "list" }));
+    expect(markup).toContain('data-testid="fleet-view-toggle"');
+    expect(markup).toContain('data-testid="view-toggle-list"');
+    expect(markup).toContain('data-testid="view-toggle-board"');
+  });
+
+  test("renders the board when view is 'board' and list when view is 'list'", () => {
+    const listMarkup = render(browserState({ view: "list" }));
+    expect(listMarkup).toContain('data-testid="fleet-list"');
+    expect(listMarkup).not.toContain('data-testid="session-board"');
+
+    const boardMarkup = render(browserState({ view: "board" }));
+    expect(boardMarkup).toContain('data-testid="session-board"');
+    expect(boardMarkup).not.toContain('data-testid="fleet-list"');
+  });
+});

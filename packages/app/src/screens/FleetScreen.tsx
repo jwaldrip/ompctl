@@ -37,18 +37,19 @@ import {
   TextInput,
   View,
 } from "react-native";
+import type { Agent, AgentId } from "@ompd/core/contracts";
 import { GroupHeader } from "../components/GroupHeader.tsx";
 import { ProjectPicker } from "../components/ProjectPicker.tsx";
+import { SessionBoard } from "../components/SessionBoard.tsx";
 import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
-import type { ScopeAccess } from "../console/state.ts";
+import type { ScopeAccess, TuiSessionState } from "../console/state.ts";
 import { Glyph } from "../design/icons.tsx";
 import { useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { brand, ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
 import { browserView } from "../session/browser.ts";
-
 /**
  * What the bay may honestly claim about the daemon.
  *
@@ -90,6 +91,10 @@ export interface FleetScreenProps {
   now?: number;
   onSetProject?: (project: string | null) => void;
   onSetQuery?: (query: string) => void;
+  onSetView?: (view: "list" | "board") => void;
+  agents?: readonly Agent[];
+  pendingClearances?: (agentId: AgentId) => number;
+  tuiSessions?: ReadonlyMap<string, TuiSessionState>;
 }
 
 /**
@@ -137,6 +142,10 @@ export function FleetScreen({
   now,
   onSetProject,
   onSetQuery,
+  onSetView,
+  agents,
+  pendingClearances,
+  tuiSessions,
 }: FleetScreenProps): JSX.Element {
   // The list is the bottom-most surface in the bay, with no composer beneath
   // it, so it owns the home-indicator inset itself. Paying it as content
@@ -150,6 +159,7 @@ export function FleetScreen({
   // identity per render would re-render the whole mounted window.
   const ownedBottom = useOwnedBottomInset();
   const listContentStyle = useMemo(() => ({ paddingBottom: ownedBottom }), [ownedBottom]);
+  const activeView = browser.view ?? "list";
   const view = useMemo(() => browserView(browser), [browser]);
   // The sections array, both row renderers, and the section header renderer
   // are memoised because each is a prop the virtualizer compares. A new
@@ -235,6 +245,28 @@ export function FleetScreen({
             </Kicker>
           )}
         </View>
+        <View style={styles.viewToggle} testID="fleet-view-toggle">
+          <Pressable
+            testID="view-toggle-list"
+            accessibilityRole="button"
+            accessibilityState={{ selected: activeView === "list" }}
+            accessibilityLabel="List view"
+            onPress={() => onSetView?.("list")}
+            style={[styles.viewToggleBtn, activeView === "list" && styles.viewToggleBtnActive]}
+          >
+            <Glyph name="list" size={12} color={activeView === "list" ? brand.azure : ink.faint} />
+          </Pressable>
+          <Pressable
+            testID="view-toggle-board"
+            accessibilityRole="button"
+            accessibilityState={{ selected: activeView === "board" }}
+            accessibilityLabel="Board view"
+            onPress={() => onSetView?.("board")}
+            style={[styles.viewToggleBtn, activeView === "board" && styles.viewToggleBtnActive]}
+          >
+            <Glyph name="board" size={12} color={activeView === "board" ? brand.azure : ink.faint} />
+          </Pressable>
+        </View>
         <Pressable
           testID="grouped-toggle"
           accessibilityRole="button"
@@ -309,36 +341,49 @@ export function FleetScreen({
         </View>
       ) : null}
 
-      <SortBar sort={browser.sort} onChange={onSort} />
-
-      {browser.grouped ? (
-        <SectionList
-          testID="fleet-list"
-          sections={sections}
-          keyExtractor={keyOf}
-          renderSectionHeader={renderSectionHeader}
-          renderItem={renderGrouped}
-          contentContainerStyle={listContentStyle}
-          stickySectionHeadersEnabled
-          initialNumToRender={FIRST_WINDOW}
-          maxToRenderPerBatch={FIRST_WINDOW}
-          windowSize={WINDOW_SIZE}
-          updateCellsBatchingPeriod={BATCH_PERIOD_MS}
-          ListEmptyComponent={empty}
+      {activeView === "board" ? (
+        <SessionBoard
+          sessions={view.flatSessions as BrowserSession[]}
+          onOpen={onOpen}
+          agents={agents}
+          pendingClearances={pendingClearances}
+          tuiSessions={tuiSessions}
+          now={now}
+          empty={empty}
         />
       ) : (
-        <FlatList
-          testID="fleet-list"
-          data={view.flatSessions as BrowserSession[]}
-          keyExtractor={keyOf}
-          renderItem={renderFlat}
-          contentContainerStyle={listContentStyle}
-          initialNumToRender={FIRST_WINDOW}
-          maxToRenderPerBatch={FIRST_WINDOW}
-          windowSize={WINDOW_SIZE}
-          updateCellsBatchingPeriod={BATCH_PERIOD_MS}
-          ListEmptyComponent={empty}
-        />
+        <>
+          <SortBar sort={browser.sort} onChange={onSort} />
+          {browser.grouped ? (
+            <SectionList
+              testID="fleet-list"
+              sections={sections}
+              keyExtractor={keyOf}
+              renderSectionHeader={renderSectionHeader}
+              renderItem={renderGrouped}
+              contentContainerStyle={listContentStyle}
+              stickySectionHeadersEnabled
+              initialNumToRender={FIRST_WINDOW}
+              maxToRenderPerBatch={FIRST_WINDOW}
+              windowSize={WINDOW_SIZE}
+              updateCellsBatchingPeriod={BATCH_PERIOD_MS}
+              ListEmptyComponent={empty}
+            />
+          ) : (
+            <FlatList
+              testID="fleet-list"
+              data={view.flatSessions as BrowserSession[]}
+              keyExtractor={keyOf}
+              renderItem={renderFlat}
+              contentContainerStyle={listContentStyle}
+              initialNumToRender={FIRST_WINDOW}
+              maxToRenderPerBatch={FIRST_WINDOW}
+              windowSize={WINDOW_SIZE}
+              updateCellsBatchingPeriod={BATCH_PERIOD_MS}
+              ListEmptyComponent={empty}
+            />
+          )}
+        </>
       )}
     </View>
   );
@@ -459,5 +504,26 @@ const styles = StyleSheet.create({
     height: 24,
     alignItems: "center",
     justifyContent: "center",
+  },
+  viewToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: ground.raised,
+    borderRadius: radius.control,
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+    padding: space.hair,
+  },
+  viewToggleBtn: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.control - 2,
+  },
+  viewToggleBtnActive: {
+    backgroundColor: ground.active,
+    borderWidth: stroke.hair,
+    borderColor: brand.azure,
   },
 });

@@ -68,6 +68,11 @@ describe("view preferences defaults and coercion", () => {
     });
     expect(invalidDir.sort.field).toBe("status");
     expect(invalidDir.sort.direction).toBe("desc");
+
+    // View coercion
+    expect(coerceViewPrefs({ view: "board" }).view).toBe("board");
+    expect(coerceViewPrefs({ view: "list" }).view).toBe("list");
+    expect(coerceViewPrefs({ view: "invalid" }).view).toBeUndefined();
   });
 });
 
@@ -108,5 +113,25 @@ describe("view preferences persistence across simulated relaunch", () => {
     expect(session2Prefs.grouped).toBe(true);
     expect(session2Prefs.project).toBe("/Users/op/dev/repo-1");
     expect(session2Prefs.hubDismissed).toBe(true);
+  });
+
+  test("view choice (list | board) persists across storage seam", async () => {
+    const boardPrefs = {
+      view: "board" as const,
+      sort: { field: "lastActive" as const, direction: "desc" as const },
+      grouped: false,
+      project: null,
+    };
+    await saveViewPrefs(boardPrefs);
+    const loaded = await loadViewPrefs();
+    expect(loaded.view).toBe("board");
+
+    const listPrefs = {
+      ...boardPrefs,
+      view: "list" as const,
+    };
+    await saveViewPrefs(listPrefs);
+    const loadedList = await loadViewPrefs();
+    expect(loadedList.view).toBe("list");
   });
 });
