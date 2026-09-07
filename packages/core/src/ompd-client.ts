@@ -24,6 +24,7 @@ import type {
   AgentId,
   ApprovalChoice,
   ApprovalScope,
+  ApprovalSettledBy,
   ClientFrame,
   CloneId,
   CollabSignalFrame,
@@ -353,8 +354,17 @@ export interface ApprovalEvent {
   title: string;
   tool: string;
   input: unknown;
+  deadlineAt: string;
 }
 
+export interface ApprovalSettledEvent {
+  agentId: AgentId;
+  requestId: string;
+  decision: ApprovalChoice;
+  scope: ApprovalScope;
+  by: ApprovalSettledBy;
+  at: string;
+}
 export interface PlanReviewEvent {
   agentId: AgentId;
   requestId: string;
@@ -651,6 +661,7 @@ export interface ClientEventMap {
   agents: AgentsEvent;
   update: UpdateEvent;
   approval: ApprovalEvent;
+  approval_settled: ApprovalSettledEvent;
   plan_review: PlanReviewEvent;
   error: ClientErrorEvent;
   say: SayEvent;
@@ -1751,6 +1762,17 @@ export class OmpdClient {
           title: frame.title,
           tool: frame.tool,
           input: frame.input,
+          deadlineAt: frame.deadlineAt,
+        });
+        return;
+      case "approval_settled":
+        this.emit("approval_settled", {
+          agentId: frame.agentId,
+          requestId: frame.requestId,
+          decision: frame.decision,
+          scope: frame.scope,
+          by: frame.by,
+          at: frame.at,
         });
         return;
       case "room_participants":

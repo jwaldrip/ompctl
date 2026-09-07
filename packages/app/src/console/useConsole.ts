@@ -437,6 +437,9 @@ export function useConsole(
       client.on("approval", event => {
         dispatch({ t: "approval", event });
       }),
+      client.on("approval_settled", event => {
+        dispatch({ t: "approval_settled", event });
+      }),
       client.on("plan_review", event => {
         dispatch({ t: "plan_review", event });
       }),

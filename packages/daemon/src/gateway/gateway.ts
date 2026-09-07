@@ -88,6 +88,7 @@ import {
   createAgentId,
   type PendingApproval,
   type PendingPlanReview,
+  type SettledApproval,
   type Supervisor,
   UnauthorizedError,
 } from "../supervisor.ts";
@@ -1526,6 +1527,12 @@ export class Gateway {
         for (const ws of this.#sockets) {
           if (!ws.data.attached.has(approval.agentId)) continue;
           this.#deliverApproval(ws, approval);
+        }
+      },
+      onApprovalSettled: settled => {
+        for (const ws of this.#sockets) {
+          if (!ws.data.attached.has(settled.agentId)) continue;
+          this.#deliverApprovalSettled(ws, settled);
         }
       },
       onPlanReviewNeeded: review => {
@@ -5610,6 +5617,19 @@ export class Gateway {
       title: approval.title,
       tool: approval.tool,
       input: approval.input,
+      deadlineAt: approval.deadlineAt,
+    });
+  }
+
+  #deliverApprovalSettled(ws: GatewaySocket, settled: SettledApproval): void {
+    this.#send(ws, {
+      t: "approval_settled",
+      agentId: settled.agentId,
+      requestId: settled.requestId,
+      decision: settled.decision,
+      scope: settled.scope,
+      by: settled.by,
+      at: settled.at,
     });
   }
 

@@ -1703,6 +1703,8 @@ describe("approvals over the socket", () => {
     const option = h.fake.requestPermission(agent.acpSessionId ?? "", bashCall("echo hi"));
     const approval = await sock.next(f => f.t === "approval", "approval");
     if (approval.t !== "approval") throw new Error("expected an approval frame");
+    expect(typeof approval.deadlineAt).toBe("string");
+    expect(Number.isNaN(new Date(approval.deadlineAt).getTime())).toBe(false);
 
     sock.send({
       t: "decide",
@@ -1710,6 +1712,16 @@ describe("approvals over the socket", () => {
       requestId: approval.requestId,
       choice: "allow",
       scope: "once",
+    });
+
+    const settled = await sock.next(f => "t" in f && f.t === "approval_settled", "approval_settled");
+    expect(settled).toMatchObject({
+      t: "approval_settled",
+      agentId: agent.id,
+      requestId: approval.requestId,
+      decision: "allow",
+      scope: "once",
+      by: "operator",
     });
 
     expect(await option).toBe("allow_once");
@@ -1736,6 +1748,60 @@ describe("approvals over the socket", () => {
     await barrier(bystander, "bystander drain");
     expect(bystander.frames.filter(f => f.t === "approval")).toHaveLength(0);
     await option;
+  });
+
+  test("when an operator never answers and the clearance times out, approval_settled is emitted", async () => {
+    const h = await harness({ approvalTimeoutMs: 150 });
+    const operator = await h.pair("operator", [SCOPE_READ, SCOPE_MANAGE, SCOPE_APPROVE]);
+    const agent = await createAgent(h, operator, "worker");
+
+    const sock = await openSocket(h.port, operator);
+    sock.send({ t: "attach", agentId: agent.id });
+    await barrier(sock, "attach");
+
+    const option = h.fake.requestPermission(agent.acpSessionId ?? "", bashCall("rm -rf /"));
+    const approval = await sock.next(f => f.t === "approval", "approval");
+    if (approval.t !== "approval") throw new Error("expected an approval frame");
+
+    // Operator never answers. The timeout fires.
+    const settled = await sock.next(f => "t" in f && f.t === "approval_settled", "approval_settled");
+    expect(settled).toMatchObject({
+      t: "approval_settled",
+      agentId: agent.id,
+      requestId: approval.requestId,
+      decision: "deny",
+      by: "timeout",
+    });
+    expect(await option).toBe("reject_once");
+  });
+
+  test("policy auto-settlement broadcasts approval_settled to attached sockets", async () => {
+    const h = await harness();
+    const operator = await h.pair("operator", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT, SCOPE_APPROVE]);
+    const agent = await createAgent(h, operator, "worker");
+
+    const sock = await openSocket(h.port, operator);
+    sock.send({ t: "attach", agentId: agent.id });
+    await barrier(sock, "attach");
+
+    // An action that policy auto-settles (e.g. read inside workspace)
+    const action = h.sup.gateAction({
+      agentId: agent.id,
+      tool: "read",
+      title: "Read file in workspace",
+      input: { path: `${agent.cwd}/notes.txt` },
+    });
+
+    const settled = await sock.next(f => "t" in f && f.t === "approval_settled", "approval_settled");
+    expect(settled).toMatchObject({
+      t: "approval_settled",
+      agentId: agent.id,
+      decision: "allow",
+      scope: "once",
+      by: "policy",
+    });
+    const res = await action;
+    expect(res.allowed).toBe(true);
   });
 });
 

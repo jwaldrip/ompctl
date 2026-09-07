@@ -110,8 +110,28 @@ describe("clearances", () => {
   const asked: ConsoleEvent[] = [
     { t: "agents", event: { agents: [agent("a1"), agent("a2")] } },
     { t: "select", agentId: "a1" },
-    { t: "approval", event: { agentId: "a1", requestId: "r1", tool: "shell", title: "rm -rf /", input: {} } },
-    { t: "approval", event: { agentId: "a2", requestId: "r2", tool: "shell", title: "ls", input: {} } },
+    {
+      t: "approval",
+      event: {
+        agentId: "a1",
+        requestId: "r1",
+        tool: "shell",
+        title: "rm -rf /",
+        input: {},
+        deadlineAt: "2026-01-01T00:02:00.000Z",
+      },
+    },
+    {
+      t: "approval",
+      event: {
+        agentId: "a2",
+        requestId: "r2",
+        tool: "shell",
+        title: "ls",
+        input: {},
+        deadlineAt: "2026-01-01T00:02:00.000Z",
+      },
+    },
   ];
 
   test("are counted across the fleet, not just the open strip", () => {
@@ -132,6 +152,46 @@ describe("clearances", () => {
     expect(stripStats(sessionFor(state, "a1")).clearances).toBe(0);
     const card = sessionFor(state, "a1").entries.find(entry => entry.kind === "approval");
     expect(card).toMatchObject({ decision: "deny" });
+  });
+
+  test("approval_settled frame from daemon settles with timeout attribution", () => {
+    const state = drive([
+      ...asked,
+      {
+        t: "approval_settled",
+        event: {
+          agentId: "a1",
+          requestId: "r1",
+          decision: "deny",
+          scope: "once",
+          by: "timeout",
+          at: "2026-01-01T00:02:00.000Z",
+        },
+      },
+    ]);
+    expect(stripStats(sessionFor(state, "a1")).clearances).toBe(0);
+    const card = sessionFor(state, "a1").entries.find(entry => entry.kind === "approval");
+    expect(card).toMatchObject({ decision: "deny", settledBy: "timeout" });
+  });
+
+  test("approval_settled frame from daemon settles with policy attribution", () => {
+    const state = drive([
+      ...asked,
+      {
+        t: "approval_settled",
+        event: {
+          agentId: "a1",
+          requestId: "r1",
+          decision: "allow",
+          scope: "once",
+          by: "policy",
+          at: "2026-01-01T00:02:00.000Z",
+        },
+      },
+    ]);
+    expect(stripStats(sessionFor(state, "a1")).clearances).toBe(0);
+    const card = sessionFor(state, "a1").entries.find(entry => entry.kind === "approval");
+    expect(card).toMatchObject({ decision: "allow", settledBy: "policy" });
   });
 });
 

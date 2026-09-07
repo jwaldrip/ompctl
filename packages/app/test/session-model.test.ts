@@ -174,6 +174,36 @@ describe("locally originated state", () => {
     expect(settled.entries[0]).toMatchObject({ kind: "approval", decision: "deny" });
   });
 
+  test("a clearance carries deadlineAt and settles with settledBy attribution", () => {
+    const asked = appendApproval(EMPTY_SESSION, {
+      requestId: "req-timeout",
+      tool: "bash",
+      title: "rm -rf /",
+      input: {},
+      deadlineAt: "2026-01-01T00:02:00.000Z",
+    });
+    expect(asked.entries[0]).toMatchObject({
+      kind: "approval",
+      deadlineAt: "2026-01-01T00:02:00.000Z",
+      decision: null,
+      settledBy: null,
+    });
+
+    const timeoutSettled = resolveApproval(asked, "req-timeout", "deny", "timeout");
+    expect(timeoutSettled.entries[0]).toMatchObject({
+      kind: "approval",
+      decision: "deny",
+      settledBy: "timeout",
+    });
+
+    const policySettled = resolveApproval(asked, "req-timeout", "allow", "policy");
+    expect(policySettled.entries[0]).toMatchObject({
+      kind: "approval",
+      decision: "allow",
+      settledBy: "policy",
+    });
+  });
+
   test("the same clearance asked twice is one card", () => {
     const approval = { requestId: "req-1", tool: "shell", title: "ls", input: null };
     const once = appendApproval(EMPTY_SESSION, approval);
