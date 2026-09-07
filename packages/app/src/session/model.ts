@@ -17,7 +17,9 @@
  * is owed the truth that something happened, even when we cannot name it.
  */
 
-import type { ApprovalChoice, PlanReviewChoice, SessionHistoryEntry } from "@ompd/core/contracts";
+import type { ApprovalChoice, ApprovalSettledBy, PlanReviewChoice, SessionHistoryEntry } from "@ompd/core/contracts";
+
+export type { ApprovalSettledBy };
 
 // ---------------------------------------------------------------------------
 // State
@@ -89,6 +91,7 @@ export interface Approval {
   tool: string;
   title: string;
   input: unknown;
+  deadlineAt?: string | null;
 }
 
 /** Whatever the session has told us about itself. All of it optional. */
@@ -188,6 +191,8 @@ export interface ApprovalEntry {
   input: unknown;
   /** Null until this device, or another one, settles it. */
   decision: ApprovalChoice | null;
+  settledBy?: ApprovalSettledBy | null;
+  deadlineAt?: string | null;
 }
 
 export interface UnknownEntry {
@@ -779,6 +784,8 @@ export function appendApproval(state: SessionState, approval: Approval): Session
     title: approval.title,
     input: approval.input,
     decision: null,
+    settledBy: null,
+    deadlineAt: approval.deadlineAt ?? null,
   };
   const rawEntries = [...closeStreams(state.entries), entry];
   const { entries, trimmed } = trimEntries(rawEntries);
@@ -802,7 +809,12 @@ export function resolvePlanReview(state: SessionState, requestId: string): Sessi
 }
 
 /** Settles a clearance. The card stays, showing what was decided. */
-export function resolveApproval(state: SessionState, requestId: string, decision: ApprovalChoice): SessionState {
+export function resolveApproval(
+  state: SessionState,
+  requestId: string,
+  decision: ApprovalChoice,
+  settledBy: ApprovalSettledBy = "operator",
+): SessionState {
   const index = state.entries.findIndex(entry => entry.kind === "approval" && entry.requestId === requestId);
   const pending = state.pendingApprovals.filter(approval => approval.requestId !== requestId);
   if (index < 0) {
@@ -813,7 +825,7 @@ export function resolveApproval(state: SessionState, requestId: string, decision
   if (before === undefined || before.kind !== "approval") return state;
   return {
     ...state,
-    entries: replaceAt(state.entries, index, { ...before, decision }),
+    entries: replaceAt(state.entries, index, { ...before, decision, settledBy }),
     pendingApprovals: pending,
   };
 }

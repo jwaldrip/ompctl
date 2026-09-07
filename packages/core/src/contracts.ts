@@ -339,6 +339,7 @@ export interface HostRef {
 
 export type ApprovalChoice = "allow" | "deny";
 export type ApprovalScope = "once" | "always";
+export type ApprovalSettledBy = "operator" | "policy" | "timeout";
 
 /**
  * The only choices OMP offers when it asks an operator to review a plan.
@@ -1394,7 +1395,24 @@ export type ServerFrame =
   | { t: "hello"; deviceId: string; agents: Agent[]; scopes?: string[] }
   | { t: "agents"; agents: Agent[] }
   | { t: "update"; agentId: AgentId; seq: number; update: unknown }
-  | { t: "approval"; agentId: AgentId; requestId: string; title: string; tool: string; input: unknown }
+  | {
+      t: "approval";
+      agentId: AgentId;
+      requestId: string;
+      title: string;
+      tool: string;
+      input: unknown;
+      deadlineAt: string;
+    }
+  | {
+      t: "approval_settled";
+      agentId: AgentId;
+      requestId: string;
+      decision: ApprovalChoice;
+      scope: ApprovalScope;
+      by: ApprovalSettledBy;
+      at: string;
+    }
   | { t: "plan_review"; agentId: AgentId; requestId: string; message: string; choices: readonly PlanReviewChoice[] }
   /**
    * The speakable form of a turn's answer, as prose.

@@ -90,7 +90,17 @@ export interface PendingApproval {
   tool: string;
   title: string;
   input: unknown;
+  deadlineAt: string;
   resolve: (choice: { choice: "allow" | "deny"; scope?: "once" | "always"; actor: Actor }) => void;
+}
+
+export interface SettledApproval {
+  agentId: AgentId;
+  requestId: string;
+  decision: "allow" | "deny";
+  scope: "once" | "always";
+  by: "operator" | "policy" | "timeout";
+  at: string;
 }
 
 export interface PendingPlanReview extends PlanReviewRequest {
@@ -106,6 +116,7 @@ export interface SupervisorEvents {
   onUpdate?: (agentId: AgentId, seq: number, update: unknown) => void;
   onAgentsChanged?: (agents: Agent[]) => void;
   onApprovalNeeded?: (p: Omit<PendingApproval, "resolve">) => void;
+  onApprovalSettled?: (settled: SettledApproval) => void;
   onPlanReviewNeeded?: (p: Omit<PendingPlanReview, "resolve">) => void;
 }
 
@@ -1295,6 +1306,7 @@ export class Supervisor {
     // idle as well as from inside a busy turn.
     const stateBeforeApproval = agent.state;
     this.#setState(agentId, "waiting");
+    const deadlineAt = new Date(Date.now() + this.#approvalTimeout).toISOString();
     const answer = await new Promise<{
       choice: "allow" | "deny";
       scope?: "once" | "always";
@@ -1311,6 +1323,7 @@ export class Supervisor {
         tool,
         title,
         input,
+        deadlineAt,
         resolve: v => {
           clearTimeout(timer);
           this.#pending.delete(requestId);
@@ -1318,7 +1331,7 @@ export class Supervisor {
         },
       });
 
-      this.#events.onApprovalNeeded?.({ requestId, agentId, tool, title, input });
+      this.#events.onApprovalNeeded?.({ requestId, agentId, tool, title, input, deadlineAt });
     });
     if (this.#store.getAgent(agentId)?.state === "waiting") {
       this.#setState(agentId, stateBeforeApproval);
@@ -1326,19 +1339,26 @@ export class Supervisor {
 
     const option = toAcpOption(decision, answer ? { choice: answer.choice, scope: answer.scope } : undefined);
     const allowed = option.startsWith("allow");
-    this.#store.resolveApproval(
-      requestId,
-      allowed ? "allow" : "deny",
-      answer?.scope ?? "once",
-      answer ? "operator" : "timeout",
-      answer?.actor.deviceId ?? null,
-    );
+    const by: "operator" | "timeout" = answer ? "operator" : "timeout";
+    const decisionChoice: "allow" | "deny" = allowed ? "allow" : "deny";
+    const scope: "once" | "always" = answer?.scope ?? "once";
+    const settledAt = new Date().toISOString();
+
+    this.#store.resolveApproval(requestId, decisionChoice, scope, by, answer?.actor.deviceId ?? null);
     this.#store.audit({
       action: "approval.decide",
       agentId,
       actorDeviceId: answer?.actor.deviceId ?? null,
       outcome: allowed ? "ok" : "denied",
       detail: { requestId, tool, rule: decision.rule, timedOut: answer === null },
+    });
+    this.#events.onApprovalSettled?.({
+      agentId,
+      requestId,
+      decision: decisionChoice,
+      scope,
+      by,
+      at: settledAt,
     });
     return {
       option,
@@ -1367,6 +1387,14 @@ export class Supervisor {
       agentId,
       outcome: outcome === "allow" ? "ok" : "denied",
       detail: { requestId, tool, rule, reason, automatic: true },
+    });
+    this.#events.onApprovalSettled?.({
+      agentId,
+      requestId,
+      decision: outcome,
+      scope: "once",
+      by: "policy",
+      at: new Date().toISOString(),
     });
   }
 

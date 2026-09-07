@@ -34,6 +34,7 @@ import {
 import type {
   AgentsEvent,
   ApprovalEvent,
+  ApprovalSettledEvent,
   ClientErrorEvent,
   CollabOpenedEvent,
   ConnectionState,
@@ -486,6 +487,7 @@ export type ConsoleEvent =
   | { t: "sessions"; event: { sessions: readonly SessionSummary[] } }
   | { t: "update"; event: UpdateEvent }
   | { t: "approval"; event: ApprovalEvent }
+  | { t: "approval_settled"; event: ApprovalSettledEvent }
   | { t: "plan_review"; event: PlanReviewEvent }
   | { t: "error"; event: ClientErrorEvent }
   | { t: "say"; event: SayEvent }
@@ -637,14 +639,19 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       return { ...settleLoad(next, agentId), watermarks, rosterMisses };
     }
     case "approval": {
-      const { agentId, requestId, tool, title, input } = event.event;
+      const { agentId, requestId, tool, title, input, deadlineAt } = event.event;
       const next = settleLoad(
-        withSession(state, agentId, session => appendApproval(session, { requestId, tool, title, input })),
+        withSession(state, agentId, session => appendApproval(session, { requestId, tool, title, input, deadlineAt })),
         agentId,
       );
       if (agentId === state.selected) return next;
       const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
       return { ...next, notice: `${name} needs a clearance.`, noticeAboutLink: false };
+    }
+
+    case "approval_settled": {
+      const { agentId, requestId, decision, by } = event.event;
+      return withSession(state, agentId, session => resolveApproval(session, requestId, decision, by));
     }
 
     case "plan_review": {
