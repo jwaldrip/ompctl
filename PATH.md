@@ -231,11 +231,23 @@ Everything Jason has asked for, in exactly one state. Parked is not dropped.
 - Notifications, collab, collab voice, plan review UI, agent hub UI, role and settings UI
 - Cowork containers, session takeover from a TUI, QR device binding
 - TestFlight and Play Console distribution, the marketing site
-- Render markdown instead of raw text in the transcript
-- Render diffs in a readable form
 - View images and other attachments
 - Trigger multiple actions per webhook event, for example text back and another app invoked from one event
-- Let a terminal session and ompd share one session without either overwriting the other, by hosting OMP collab at the daemon instead of shipping `tui_activity` hints. Retires the `live-tui` carve-out in the fleet.
+- Let a terminal session and ompd share one session without either overwriting the other, by hosting OMP collab at the daemon instead of shipping `tui_activity` hints. Retires the `live-tui` carve-out in the fleet. The one wall is that upstream's `CollabHost` takes an `InteractiveModeContext`, so only the TUI can start a room; the fork-free path is jwaldrip's upstream PR can1357/oh-my-pi#9525 (`pi.startCollab`), open since 2026-08-23 and unreviewed. The agent's read on 2026-09-07 was not to re-fork omp (the control-plane fork sat 3,720 commits behind after 26 days) and, if upstream stalls, to carry that one patch as a daily-rebuilt distribution rather than a branch. Jason's call, still open
+
+**done, 2026-09-07 (#162)**
+- Render markdown instead of raw text in the transcript, with syntax-highlighted fences
+- Render diffs in a readable form: ACP `diff` content items reach the tool card as a unified diff
+- Logo palette, signals named by meaning, every ink and signal pair proven at 4.5:1 by computation
+- Sessions recency-first with a project picker, search, one More control per row, spend per row
+- Clearance timeouts reach the operator: a countdown while pending, "Denied: no answer in time" after
+- Model and thinking switching over ACP `session/set_config_option`
+- omp stats on every surface: per-session cost in the readout and the fleet, a Stats screen from `@oh-my-pi/omp-stats`
+- Terminal sessions carry tools and thinking in the tail, not prose alone
+- Read runs grouped, bookkeeping tools folded, thinking collapsed with a line count
+- Composer: slash commands from ACP, `@file` over the daemon's browsable roots, a prompt queue behind a running turn
+- Routines: run history, live progress frames, retry from an action, on/off, secret rotation behind a confirmation, routine attribution on sessions
+- Cowork: model broker readiness named, task retry, unbind behind a confirmation, honest empty states
 
 **done**
 - Hub deployed and healthy at `hub.ompctl.ai`, DNS delegated to Google Cloud
