@@ -42,7 +42,8 @@ import { RichText } from "../components/rich/RichText.tsx";
 import { ToolCard } from "../components/ToolCard.tsx";
 import { ToolGroupCard } from "../components/ToolGroupCard.tsx";
 import { Glyph } from "../design/icons.tsx";
-import { attributionWidth, rhythm } from "../design/rhythm.ts";
+import { useIsTablet } from "../design/layout.ts";
+import { attributionWidth, attributionWidthCompact, rhythm } from "../design/rhythm.ts";
 import { Kicker, Label } from "../design/text.tsx";
 import type { OmpTheme } from "../design/theme.ts";
 import { radius, stroke } from "../design/tokens.ts";
@@ -65,6 +66,7 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
   // point "thinking", which is 1.065x of headroom, so any accessibility size
   // at all broke the word while a default-size-only gate kept passing.
   const { fontScale } = useWindowDimensions();
+  const isTablet = useIsTablet();
   // Colour is the one thing here that genuinely varies at render time: the two
   // ramps invert between the light and dark themes, and a row that read `ink`
   // straight off `tokens.ts` would draw the dark ramp in daylight. Measurement
@@ -75,10 +77,21 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
     case "user":
       return (
         <View style={styles.row} testID="entry-user" accessible accessibilityLabel={`you: ${entry.text}`}>
-          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: ink.faint }]}>
-            <Kicker color={ink.muted} numberOfLines={1}>
-              you
-            </Kicker>
+          <View
+            style={[
+              styles.gutter,
+              { width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact, borderLeftColor: ink.faint },
+            ]}
+            accessible
+            accessibilityLabel="you"
+          >
+            {isTablet ? (
+              <Kicker color={ink.muted} numberOfLines={1}>
+                you
+              </Kicker>
+            ) : (
+              <Glyph name="operator" size={11} color={ink.muted} />
+            )}
           </View>
           <RichText text={entry.text} />
         </View>
@@ -86,20 +99,30 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
 
     case "assistant":
       if (entry.thought) {
-        return <ThinkingRow entry={entry} fontScale={fontScale} signal={signal} />;
+        return <ThinkingRow entry={entry} fontScale={fontScale} isTablet={isTablet} signal={signal} />;
       }
       return (
         <View style={styles.row} testID="entry-assistant" accessible accessibilityLabel={`agent: ${entry.text}`}>
-          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.ready }]}>
-            <Kicker color={signal.ready} numberOfLines={1}>
-              agent
-            </Kicker>
+          <View
+            style={[
+              styles.gutter,
+              { width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact, borderLeftColor: signal.ready },
+            ]}
+            accessible
+            accessibilityLabel="agent"
+          >
+            {isTablet ? (
+              <Kicker color={signal.ready} numberOfLines={1}>
+                agent
+              </Kicker>
+            ) : (
+              <Glyph name="agent" size={11} color={signal.ready} />
+            )}
             {entry.streaming ? <Glyph name="activity" size={9} color={signal.working} /> : null}
           </View>
           <RichText text={entry.text} />
         </View>
       );
-
     case "tool_group":
       return (
         <View style={styles.cardRow}>
@@ -128,10 +151,21 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
             accessible
             accessibilityLabel={`clearance: waiting on ${entry.tool}, answer it below`}
           >
-            <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.holding }]}>
-              <Kicker color={signal.holding} numberOfLines={1}>
-                clearance
-              </Kicker>
+            <View
+              style={[
+                styles.gutter,
+                { width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact, borderLeftColor: signal.holding },
+              ]}
+              accessible
+              accessibilityLabel="clearance"
+            >
+              {isTablet ? (
+                <Kicker color={signal.holding} numberOfLines={1}>
+                  clearance
+                </Kicker>
+              ) : (
+                <Glyph name="clearance" size={11} color={signal.holding} />
+              )}
             </View>
             <View style={styles.prose}>
               <Label color={ink.muted}>{`Waiting on ${entry.tool}. Answer it below.`}</Label>
@@ -150,7 +184,14 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
       // is owed the truth that something happened, even unnamed.
       return (
         <View style={styles.row} testID={`entry-unknown-${entry.id}`}>
-          <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: ground.edge }]}>
+          <View
+            style={[
+              styles.gutter,
+              { width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact, borderLeftColor: ground.edge },
+            ]}
+            accessible
+            accessibilityLabel="unknown"
+          >
             <Glyph name="unknown" size={11} color={ink.faint} />
           </View>
           <View style={styles.prose}>
@@ -164,10 +205,12 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
 function ThinkingRow({
   entry,
   fontScale,
+  isTablet,
   signal,
 }: {
   entry: AssistantEntry;
   fontScale: number;
+  isTablet: boolean;
   signal: OmpTheme["signal"];
 }): JSX.Element {
   const [userToggled, setUserToggled] = useState<boolean | null>(null);
@@ -178,10 +221,21 @@ function ThinkingRow({
 
   return (
     <View style={styles.row} testID="entry-assistant" accessible accessibilityLabel={`thinking: ${entry.text}`}>
-      <View style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: signal.reasoning }]}>
-        <Kicker color={signal.reasoning} numberOfLines={1}>
-          thinking
-        </Kicker>
+      <View
+        style={[
+          styles.gutter,
+          { width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact, borderLeftColor: signal.reasoning },
+        ]}
+        accessible
+        accessibilityLabel="thinking"
+      >
+        {isTablet ? (
+          <Kicker color={signal.reasoning} numberOfLines={1}>
+            thinking
+          </Kicker>
+        ) : (
+          <Glyph name="think" size={11} color={signal.reasoning} />
+        )}
         {entry.streaming ? <Glyph name="activity" size={9} color={signal.working} /> : null}
       </View>
       <View style={styles.prose}>

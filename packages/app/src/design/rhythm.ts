@@ -149,3 +149,33 @@ export function attributionWidth(fontScale: number): number {
   const scale = Number.isFinite(fontScale) ? Math.min(Math.max(fontScale, 1), 1.5) : 1;
   return Math.round(rhythm.attribution * scale);
 }
+
+/**
+ * The attribution gutter's width on compact widths: glyph only.
+ *
+ * 28 points leaves room for the 2-point signal rule, a glyphGap left pad,
+ * and an 11-point glyph without taking width from the conversation.
+ */
+export const attributionWidthCompact = 28;
+
+/** The attribution gutter's width on tablet screens: kicker word. */
+export const attributionWidthTablet = rhythm.attribution;
+
+/** The header's vertical budget on compact widths. */
+export const CHROME_HEADER_HEIGHT_COMPACT = 48;
+
+/** The session context collapsed summary row's vertical budget. */
+export const CHROME_STRIP_SUMMARY_HEIGHT = 36;
+
+/** The single-line status readout's vertical budget on compact widths. */
+export const CHROME_READOUT_HEIGHT_COMPACT = 32;
+
+/** The resting composer's vertical budget on compact widths with keyboard down. */
+export const CHROME_COMPOSER_HEIGHT_COMPACT = 70;
+
+/** Total chrome height on compact screens: header + strip summary + readout + composer. */
+export const CHROME_BUDGET_COMPACT =
+  CHROME_HEADER_HEIGHT_COMPACT +
+  CHROME_STRIP_SUMMARY_HEIGHT +
+  CHROME_READOUT_HEIGHT_COMPACT +
+  CHROME_COMPOSER_HEIGHT_COMPACT; // 186 points (< 200 points)

@@ -11,7 +11,8 @@
 
 import "./rnw.ts";
 
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 import { act, type ComponentProps, createContext, type JSX, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -372,6 +373,13 @@ describe("SafeScreen", () => {
  * here rather than reading fine in the file.
  */
 describe("one gutter, every band of the session shell", () => {
+  beforeEach(() => {
+    setWindowSize(820, 1180);
+  });
+  afterEach(() => {
+    resetWindowSize();
+  });
+
   const AGENT = {
     id: "agt_test",
     name: "probe",

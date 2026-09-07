@@ -14,6 +14,7 @@ import { StyleSheet, View } from "react-native";
 import { ProgressBar } from "react-native-paper";
 import { formatTokens } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { rhythm } from "../design/rhythm.ts";
 import { Data, Kicker, Label } from "../design/text.tsx";
 import type { SignalName } from "../design/tokens.ts";
@@ -74,7 +75,7 @@ function formatCostReading(amount: number, currency: string = "USD"): string {
  * [0, 1] and clamps neither end. omp keeps counting past a model's nominal
  * size, so an over-budget window handed Paper a number above 1 and got a fill
  * wider than its own track plus an accessibility value above 100. The colour
- * ramp is unaffected -- `pressureSignal` already saturates at oxide -- so only
+ * ramp is unaffected: `pressureSignal` already saturates at failed, so only
  * the drawing was wrong, which is exactly the kind of thing no assertion on the
  * figure beside it would have caught.
  */
@@ -86,14 +87,15 @@ function pressureFraction(usage: Usage | null): number | null {
 }
 
 export function StatusReadout({ state, attempt, delayMs, usage, clearances }: StatusReadoutProps): JSX.Element {
+  const isTablet = useIsTablet();
   const tone = signal[LINK_SIGNALS[state]];
   const wash = signalWash[LINK_SIGNALS[state]];
   const fraction = pressureFraction(usage);
   const pressure = fraction === null ? ink.faint : signal[pressureSignal(fraction)];
 
   return (
-    <View style={styles.readout} testID="status-readout">
-      <View style={styles.instruments}>
+    <View style={[styles.readout, !isTablet && styles.readoutCompact]} testID="status-readout">
+      <View style={[styles.instruments, !isTablet && styles.instrumentsCompact]}>
         <View style={[styles.link, { backgroundColor: wash, borderColor: tone }]}>
           <Glyph name="link" size={11} color={tone} />
           <Kicker color={tone} testID="status-link">
@@ -107,8 +109,9 @@ export function StatusReadout({ state, attempt, delayMs, usage, clearances }: St
           ) : null}
         </View>
 
-        <View style={styles.meters}>
+        <View style={[styles.meters, !isTablet && styles.metersCompact]}>
           <Meter
+            compact={!isTablet}
             glyph="load"
             label="context"
             tone={pressure}
@@ -118,6 +121,7 @@ export function StatusReadout({ state, attempt, delayMs, usage, clearances }: St
             }
           />
           <Meter
+            compact={!isTablet}
             glyph="cost"
             label="spend"
             tone={ink.bright}
@@ -126,6 +130,7 @@ export function StatusReadout({ state, attempt, delayMs, usage, clearances }: St
           />
           {clearances > 0 ? (
             <Meter
+              compact={!isTablet}
               glyph="clearance"
               label="holding"
               tone={signal.holding}
@@ -139,16 +144,10 @@ export function StatusReadout({ state, attempt, delayMs, usage, clearances }: St
       {/*
         The one number an operator watches, drawn as well as printed. `42k/200k`
         is the fact and it stays exactly as it was; a filled bar is how far
-        through the window that is, at arm's length, without arithmetic. Paper's
-        own `ProgressBar` rather than two nested Views, coloured by the same
-        `pressureSignal` the figure beside it already wears, so the bar and the
-        number can never disagree about how much room is left.
-
-        Absent when the agent has reported no usage. A bar at zero is a claim
-        that the window is empty, which is the same lie the readout refuses to
-        tell with a dash.
+        through the window that is, at arm's length, without arithmetic.
+        Tablets keep this bar; compact phone screens keep the readout to one line.
       */}
-      {fraction === null ? null : (
+      {fraction === null || !isTablet ? null : (
         <ProgressBar color={pressure} progress={fraction} style={styles.pressure} testID="status-pressure" />
       )}
     </View>
@@ -161,6 +160,7 @@ function Meter({
   value,
   tone,
   testID,
+  compact = false,
 }: {
   glyph: "load" | "cost" | "clearance";
   label: string;
@@ -168,7 +168,25 @@ function Meter({
   value: string | null;
   tone: string;
   testID: string;
+  compact?: boolean;
 }): JSX.Element {
+  if (compact) {
+    return (
+      <View style={styles.meterCompact} accessible accessibilityLabel={`${label}: ${value ?? "not reported"}`}>
+        <Glyph name={glyph} size={10} color={ink.faint} />
+        {value === null ? (
+          <Label color={ink.faint} testID={testID}>
+            not reported
+          </Label>
+        ) : (
+          <Data color={tone} testID={testID}>
+            {value}
+          </Data>
+        )}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.meter}>
       <View style={styles.meterHead}>
@@ -177,8 +195,8 @@ function Meter({
       </View>
       {value === null ? (
         // No usage report has arrived from the agent, so there is no number.
-        // A bare "--" in this slot read as a value — as a zero, or as a
-        // failure — and both are claims the app cannot make. Words say what
+        // A bare "--" in this slot read as a value: as a zero, or as a
+        // failure, and both are claims the app cannot make. Words say what
         // the dash could not: the reading is absent because nothing upstream
         // has spoken. The row stays: hiding it would make a silent host
         // indistinguishable from a healthy one.
@@ -195,15 +213,6 @@ function Meter({
 }
 
 const styles = StyleSheet.create({
-  // The band. A column now rather than a row, because the pressure bar spans
-  // its whole width under the instruments: the bar is about the same fact as
-  // the `context` figure, so it belongs beneath it rather than squeezed into
-  // the row beside it.
-  //
-  // The gutter is the screen's, not this band's own idea of one: it was 16
-  // here while the header above it was 12, which is exactly the kind of near
-  // miss that reads as "the spacing is off" without any one number looking
-  // wrong.
   readout: {
     gap: rhythm.rowGapTight,
     paddingHorizontal: rhythm.gutter,
@@ -212,11 +221,18 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.hair,
     borderTopColor: ground.line,
   },
+  readoutCompact: {
+    gap: 0,
+    paddingVertical: space.tight,
+  },
   instruments: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: space.wide,
+  },
+  instrumentsCompact: {
+    gap: space.snug,
   },
   link: {
     flexDirection: "row",
@@ -226,13 +242,10 @@ const styles = StyleSheet.create({
     paddingVertical: space.tight,
     borderLeftWidth: stroke.heavy,
   },
-  // Consecutive readings of the same kind, so the gap between them is the row
-  // rhythm. It was 24, the section step, which is what made three numbers read
-  // as three separate instruments rather than as one readout.
   meters: { flexDirection: "row", gap: rhythm.rowGap },
+  metersCompact: { gap: space.snug, alignItems: "center" },
   meter: { gap: rhythm.pairGap },
+  meterCompact: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
   meterHead: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
-  // Structure, so it is square: `radius.flat` is the token that says so, and a
-  // rounded bar would be the one object-shaped thing in a band of rules.
   pressure: { borderRadius: radius.flat },
 });

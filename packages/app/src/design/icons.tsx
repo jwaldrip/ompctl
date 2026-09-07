@@ -58,6 +58,7 @@ import {
   faPuzzlePiece,
   faQrcode,
   faRightLeft,
+  faRobot,
   faRoute,
   faSignal,
   faSliders,
@@ -68,6 +69,7 @@ import {
   faVolumeHigh,
   faWandMagicSparkles,
   faWindowMaximize,
+  faUser,
   faXmark,
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-native-fontawesome";
@@ -131,7 +133,9 @@ export type GlyphName =
    */
   | "attachment"
   | "unknown"
-  | "copy";
+  | "copy"
+  | "agent"
+  | "operator";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
@@ -243,6 +247,10 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // Two sheets of paper, one lifted off the other: the one shape every
   // platform's users already read as "duplicate this exactly".
   copy: faCopy,
+  // The two speakers in conversation attribution: the agent, drawn with the
+  // robot glyph, and the operator, drawn with the user glyph.
+  agent: faRobot,
+  operator: faUser,
 };
 
 export interface GlyphProps {

@@ -24,7 +24,7 @@
 
 import "./rnw.ts";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ExternalStoreAdapter } from "@assistant-ui/core";
 import type { Agent, ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import { act, type ReactElement } from "react";
@@ -32,6 +32,8 @@ import { createRoot } from "react-dom/client";
 import type { OmpEntryRowProps } from "../src/assistant/renderers.tsx";
 import type { Entry } from "../src/session/model.ts";
 // Pure data with no `react-native` in its graph, so this one can stay static.
+import { attributionWidthCompact } from "../src/design/rhythm.ts";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 import { advance } from "./type-metrics.ts";
 
 // Dynamic on purpose, the same way `pair-connections-consistency.test.tsx`
@@ -51,6 +53,13 @@ const { EMPTY_SESSION, appendApproval, endTurn, reduce, resolveApproval } = awai
 const { READY_LOAD } = await import("../src/console/state.ts");
 const { WithOmpTheme } = await import("./theme.tsx");
 const { StyleSheet } = await import("react-native");
+
+beforeEach(() => {
+  setWindowSize(820, 1180);
+});
+afterEach(() => {
+  resetWindowSize();
+});
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -852,6 +861,20 @@ describe("the attribution column costs what the rhythm says and not a point more
       if (gutter === null) throw new Error("the row rendered without its gutter");
       const room = pixels(gutter, "width") - pixels(gutter, "padding-left") - pixels(gutter, "border-left-width");
       expect(room).toBeGreaterThanOrEqual(advance("kicker", "thinking"));
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("on compact widths the gutter is attributionWidthCompact and glyph only", () => {
+    setWindowSize(390, 844);
+    const mounted = row(userEntry("compact turn"));
+    try {
+      const gutter = byTestID(mounted.host, "entry-user").firstElementChild as HTMLElement | null;
+      if (gutter === null) throw new Error("the row rendered without its gutter");
+      expect(pixels(gutter, "width")).toBe(attributionWidthCompact);
+      expect(gutter.getAttribute("aria-label")).toBe("you");
+      expect(gutter.textContent).toBe("");
     } finally {
       mounted.unmount();
     }

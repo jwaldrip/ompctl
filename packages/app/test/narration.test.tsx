@@ -1,12 +1,12 @@
 import "./rnw.ts";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Agent } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Entry, SessionState } from "../src/session/model.ts";
 import { EMPTY_SESSION, endTurn, reduce } from "../src/session/model.ts";
-
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 // These modules import React Native. Loading them after rnw.ts is what makes
 // this test exercise the web target instead of Bun trying to load native code.
 
@@ -17,6 +17,12 @@ declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+beforeEach(() => {
+  setWindowSize(820, 1180);
+});
+afterEach(() => {
+  resetWindowSize();
+});
 
 const AGENT: Agent = {
   id: "agt_narration",

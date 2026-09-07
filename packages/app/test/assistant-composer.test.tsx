@@ -24,13 +24,14 @@
 
 import "./rnw.ts";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AppendMessage, ExternalStoreAdapter } from "@assistant-ui/core";
 import { MAX_PROMPT_IMAGES, type PromptImage } from "@ompd/core/contracts";
 import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ImageAttachmentPicker, PickedAttachments } from "../src/platform/attachments.ts";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
 // Dynamic on purpose, the same reason every rendering test here does it: these
 // modules import "react-native", and a static import is hoisted above
@@ -48,6 +49,13 @@ declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+beforeEach(() => {
+  setWindowSize(820, 1180);
+});
+afterEach(() => {
+  resetWindowSize();
+});
+
 
 // ---------------------------------------------------------------------------
 // The store, and the composer standing on it

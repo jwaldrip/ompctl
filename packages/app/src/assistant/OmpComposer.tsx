@@ -101,8 +101,9 @@ import type { AgentId, FsListing, PromptImage } from "@ompd/core/contracts";
 import { type JSX, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { IconButton, Surface, TouchableRipple } from "react-native-paper";
-import { AttachmentControl, AttachmentsBar, useImageAttachments } from "../components/AttachmentsBar.tsx";
+import { AttachmentsBar, useImageAttachments } from "../components/AttachmentsBar.tsx";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { rhythm } from "../design/rhythm.ts";
 import { Label } from "../design/text.tsx";
 import { radius, space, stroke, type } from "../design/tokens.ts";
@@ -234,6 +235,7 @@ export function OmpComposer({
 }: OmpComposerProps): JSX.Element {
   const aui = useAui();
   const theme = useOmpTheme();
+  const isTablet = useIsTablet();
   const { fontScale } = useWindowDimensions();
   // A larger face owns more vertical room per line, so a fixed pixel ceiling
   // buries the action row behind the keyboard at accessibility sizes. Keep the
@@ -258,6 +260,7 @@ export function OmpComposer({
   const held = useAuiState(s => s.composer.attachments);
   const text = useAuiState(s => s.composer.text) ?? "";
 
+  const [activeNotice, setActiveNotice] = useState<{ kind: "attach" | "mic"; text: string } | null>(null);
   const [localQueued, setLocalQueued] = useState<QueuedPromptItem[]>([]);
   const [filePickerDismissed, setFilePickerDismissed] = useState(false);
   const [commandMenuDismissed, setCommandMenuDismissed] = useState(false);
@@ -378,8 +381,11 @@ export function OmpComposer({
    */
   const sendHeld = isDisabled || !canSend;
   const queueHeld = isDisabled || (text.trim().length === 0 && images.length === 0);
-  const hasNotes = micNotice !== null || voice.dictation !== null || refusal !== undefined;
-
+  const isRecording = voice.capturing;
+  const isRefusalNotice =
+    micNotice !== null &&
+    (isTablet || voice.access === "missing" || voice.busyElsewhere || isDisabled || micNotice === "no microphone in this test");
+  const hasNotes = isRecording || isRefusalNotice || voice.dictation !== null || refusal !== undefined;
   const handleQueue = () => {
     if (queueHeld) return;
     const promptText = text.trim();
@@ -550,8 +556,35 @@ export function OmpComposer({
           composers, absent entirely while there is nothing to say -- so an
           ordinary empty composer is the field and the row.
         */}
-        <AttachmentsBar band={band} prefix={prefix} />
+        <AttachmentsBar band={isTablet ? band : { ...band, status: band.unavailable ? "" : band.status }} prefix={prefix} />
 
+        {/* Transient capability notice row, revealed on press of disabled affordances */}
+        {activeNotice !== null ? (
+          <View
+            style={[
+              styles.transientBand,
+              { backgroundColor: theme.ground.surface, borderLeftColor: theme.signal.holding },
+            ]}
+            testID={`${prefix}-${activeNotice.kind}-notice`}
+          >
+            <Label
+              color={theme.ink.plain}
+              testID={`${prefix}-${activeNotice.kind}-status`}
+              style={styles.transientText}
+            >
+              {activeNotice.text}
+            </Label>
+            <IconButton
+              testID={`${prefix}-notice-dismiss`}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss notice"
+              onPress={() => setActiveNotice(null)}
+              icon={({ size }) => <Glyph name="deny" size={size} color={theme.ink.muted} />}
+              size={12}
+              style={styles.transientDismiss}
+            />
+          </View>
+        ) : null}
         {/*
           Prose in the column, never a layer over it, and never permanently: a
           refusal or a live dictation occupies real space between the words and
@@ -565,11 +598,15 @@ export function OmpComposer({
                 {refusal}
               </Label>
             )}
-            {micNotice === null ? null : (
+            {isRecording ? (
+              <Label color={theme.ink.plain} testID={`${prefix}-mic-status`}>
+                Recording
+              </Label>
+            ) : isRefusalNotice ? (
               <Label color={theme.ink.plain} testID={`${prefix}-mic-status`}>
                 {micNotice}
               </Label>
-            )}
+            ) : null}
             {voice.dictation === null ? null : (
               <Label color={theme.ink.bright} testID={`${prefix}-dictation`}>
                 {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
@@ -584,15 +621,52 @@ export function OmpComposer({
           so neither end can drift when the other grows.
         */}
         <View style={styles.actions} testID={`${prefix}-actions`}>
-          <View style={styles.group} testID={`${prefix}-actions-left`}>
+          <Pressable
+            style={styles.group}
+            testID={`${prefix}-actions-left`}
+            onPress={() => {
+              if (band.disabled) {
+                setActiveNotice(prev =>
+                  prev?.kind === "attach" ? null : { kind: "attach", text: band.status },
+                );
+              }
+            }}
+          >
             {/*
               The paperclip, from the same file that owns the chips, so the two
               halves of one band cannot end up with two arrangements. It carries
               no visible label on purpose: the row is a row of gestures and the
               band above explains this one. Assistive technology hears both.
             */}
-            <AttachmentControl band={band} prefix={prefix} />
-          </View>
+            <IconButton
+              testID={`${prefix}-attach`}
+              disabled={band.disabled}
+              accessibilityLabel={
+                band.disabled && band.status !== "" ? band.status : "Attach an image to this prompt"
+              }
+              accessibilityHint="Choose images from this device's photo library"
+              accessibilityState={{ disabled: band.disabled }}
+              onPress={band.pick}
+              icon={({ size }) => (
+                <Glyph
+                  name="attachment"
+                  size={size}
+                  color={
+                    band.disabled
+                      ? theme.ink.faint
+                      : band.images.length > 0
+                        ? theme.signal.ready
+                        : theme.ink.plain
+                  }
+                />
+              )}
+              size={14}
+              containerColor="transparent"
+              rippleColor={theme.ground.active}
+              style={[styles.iconTarget, styles.noMargin]}
+              contentStyle={styles.iconTarget}
+            />
+          </Pressable>
 
           <View style={styles.group} testID={`${prefix}-actions-right`}>
             {/*
@@ -623,27 +697,26 @@ export function OmpComposer({
                 </View>
               </TouchableRipple>
             )}
-
             <IconButton
               testID={`${prefix}-mic`}
-              accessibilityLabel={voice.capturing ? "Stop the microphone and send" : "Speak to this agent"}
-              // The sentence that used to sit permanently under the field. It
-              // costs nothing here and it is the whole of what a screen reader
-              // needs.
-              accessibilityHint={micStatus}
-              accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
               disabled={micDisabled}
+              accessibilityLabel={
+                voice.capturing
+                  ? "Stop the microphone and send"
+                  : micNotice !== null
+                    ? micNotice
+                    : "Speak to this agent"
+              }
+              accessibilityHint={micStatus ?? undefined}
+              accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
               onPress={voice.onToggle}
               icon={({ size }) => <Glyph name="mic" size={size} color={micTone} />}
               size={MIC_GLYPH}
-              // Held on is a wash rather than a border, so turning the
-              // microphone on does not change the row's silhouette.
               containerColor={voice.capturing ? theme.ground.active : "transparent"}
               rippleColor={theme.ground.active}
               style={[styles.iconTarget, styles.noMargin]}
               contentStyle={styles.iconTarget}
             />
-
             {/*
               The one emphasised control, in one slot, wearing one geometry.
               Which of the two it is comes from `canCancel`, which is the
@@ -860,5 +933,21 @@ const styles = StyleSheet.create({
   },
   queuedRemove: {
     padding: 2,
+  },
+  transientBand: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: space.snug,
+    paddingVertical: space.tight,
+    paddingHorizontal: space.snug,
+    borderRadius: radius.control,
+    borderLeftWidth: stroke.heavy,
+  },
+  transientText: { flex: 1 },
+  transientDismiss: {
+    margin: 0,
+    width: 24,
+    height: 24,
   },
 });

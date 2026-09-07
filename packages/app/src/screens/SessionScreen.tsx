@@ -18,7 +18,6 @@ import {
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import { Divider } from "react-native-paper";
 import { OmpComposer } from "../assistant/OmpComposer.tsx";
 import { OmpThreadList, OmpThreadProvider } from "../assistant/OmpThread.tsx";
 import { webViewCapability } from "../browser";
@@ -33,10 +32,11 @@ import type { WebViewTarget } from "../console/webview.ts";
 import { routeWebViewAction } from "../console/webview.ts";
 import { elapsed, modelLabel, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { rhythm } from "../design/rhythm.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
-import { agentSignal, ground, ink, signal, space, stroke } from "../design/tokens.ts";
+import { agentSignal, ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
 import { agentActivity, conversationActivity } from "../session/activity.ts";
@@ -138,7 +138,9 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   const tone = signal[agentSignal(agent.state)];
   const terminal = TERMINAL_AGENT_STATES.includes(agent.state);
   const ownedBottom = useOwnedBottomInset();
+  const isTablet = useIsTablet();
   const narration = useNarration(session.entries, props.narrationSpeech);
+  const [narrationNoticeOpen, setNarrationNoticeOpen] = useState(false);
 
   const [browserOpen, setBrowserOpen] = useState(false);
   // Shared with every other bottom-anchored control, so the mechanism is one
@@ -206,8 +208,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
    * derives from: a missing prompt scope, and a clearance still waiting.
    */
   const clearances = session.pendingApprovals.length + (session.planReview === null ? 0 : 1);
-  // The transcript's own entries for what is still waiting, in the order they
-  // were asked, so the pinned tray and the log agree on every field.
   const pendingClearances = session.entries.filter(
     (entry): entry is ApprovalEntry => entry.kind === "approval" && entry.decision === null,
   );
@@ -289,96 +289,201 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         activity indicator used to live here, and "it moved" is only provable
         by reading the header itself rather than by finding the row elsewhere.
       */}
-      <View style={[styles.head, { borderBottomColor: tone }]} testID="session-head">
-        <Pressable
-          testID="session-back"
-          accessibilityRole="button"
-          accessibilityLabel="Back to sessions"
-          onPress={props.onBack}
-          style={({ pressed }) => [styles.headControl, pressed && { backgroundColor: ground.active }]}
-        >
-          <Glyph name="back" size={14} color={ink.plain} />
-          <Label color={ink.plain} testID="session-back-label">
-            Sessions
-          </Label>
-        </Pressable>
+      {isTablet ? (
+        <View style={[styles.head, { borderBottomColor: tone }]} testID="session-head">
+          <Pressable
+            testID="session-back"
+            accessibilityRole="button"
+            accessibilityLabel="Back to sessions"
+            onPress={props.onBack}
+            style={({ pressed }) => [styles.back, pressed && { backgroundColor: ground.active }]}
+          >
+            <Glyph name="back" size={14} color={ink.plain} />
+            <Label color={ink.plain} testID="session-back-label">
+              Sessions
+            </Label>
+          </Pressable>
 
-        <View style={styles.ident}>
-          <Title heading numberOfLines={1} testID="session-name">
-            {agent.name}
-          </Title>
-          <View style={styles.meta}>
-            <Label color={ink.muted} numberOfLines={1} style={styles.origin}>
+          <View style={styles.ident}>
+            <Title heading numberOfLines={1} testID="session-name">
+              {agent.name}
+            </Title>
+            <View style={styles.meta}>
+              <Label color={ink.muted} numberOfLines={1} style={styles.origin}>
+                {shortenPath(agent.cwd, 3)}
+              </Label>
+              <Data color={ink.faint}>{elapsed(agent.lastActiveAt, props.now)}</Data>
+            </View>
+          </View>
+
+          <Kicker color={tone} testID="session-state">
+            {agent.state}
+          </Kicker>
+
+          {webViewCapability === null ? null : (
+            <Pressable
+              testID="session-browser-toggle"
+              accessibilityRole="button"
+              accessibilityLabel={browserOpen ? "Close the agent's browser" : "Open the agent's browser"}
+              accessibilityState={{ selected: browserOpen }}
+              onPress={() => {
+                setBrowserOpen(open => !open);
+              }}
+              style={({ pressed }) => [styles.headAction, pressed && { backgroundColor: ground.active }]}
+            >
+              <Glyph name="browser" size={14} color={browserOpen ? tone : ink.muted} />
+              <Label color={browserOpen ? ink.plain : ink.muted}>Browser</Label>
+            </Pressable>
+          )}
+        </View>
+      ) : (
+        <View style={[styles.headCompact, { borderBottomColor: tone }]} testID="session-head">
+          <View style={styles.compactRow}>
+            <Pressable
+              testID="session-back"
+              accessibilityRole="button"
+              accessibilityLabel="Back to sessions"
+              onPress={props.onBack}
+              style={({ pressed }) => [styles.backCompact, pressed && { backgroundColor: ground.active }]}
+            >
+              <Glyph name="back" size={13} color={ink.plain} />
+              <Label color={ink.plain} testID="session-back-label">
+                Sessions
+              </Label>
+            </Pressable>
+
+            <View style={styles.titleAndState}>
+              <Title heading numberOfLines={1} testID="session-name" style={styles.nameCompact}>
+                {agent.name}
+              </Title>
+              <Kicker color={tone} testID="session-state">
+                {agent.state}
+              </Kicker>
+            </View>
+
+            <View style={styles.compactActions}>
+              {webViewCapability === null ? null : (
+                <Pressable
+                  testID="session-browser-toggle"
+                  accessibilityRole="button"
+                  accessibilityLabel={browserOpen ? "Close the agent's browser" : "Open the agent's browser"}
+                  accessibilityState={{ selected: browserOpen }}
+                  onPress={() => {
+                    setBrowserOpen(open => !open);
+                  }}
+                  style={({ pressed }) => [styles.headActionCompact, pressed && { backgroundColor: ground.active }]}
+                >
+                  <Glyph name="browser" size={13} color={browserOpen ? tone : ink.muted} />
+                </Pressable>
+              )}
+
+              {!narration.available ? (
+                <Pressable
+                  testID="session-narration-toggle"
+                  accessibilityRole="button"
+                  accessibilityLabel={narration.reason ?? "Narration unavailable"}
+                  accessibilityState={{ disabled: true }}
+                  onPress={() => setNarrationNoticeOpen(open => !open)}
+                  style={styles.headActionCompact}
+                >
+                  <Glyph name="narration" size={13} color={ink.faint} />
+                </Pressable>
+              ) : narration.enabled ? null : (
+                <Pressable
+                  testID="session-narration-toggle"
+                  accessibilityRole="switch"
+                  accessibilityLabel="Turn narration on"
+                  accessibilityState={{ checked: false }}
+                  onPress={narration.toggle}
+                  style={styles.headActionCompact}
+                >
+                  <Glyph name="narration" size={13} color={ink.muted} />
+                </Pressable>
+              )}
+            </View>
+          </View>
+
+          <View style={styles.metaCompact}>
+            <Label color={ink.muted} numberOfLines={1} style={styles.originCompact}>
               {shortenPath(agent.cwd, 3)}
             </Label>
+            <Data color={ink.faint}>·</Data>
             <Data color={ink.faint}>{elapsed(agent.lastActiveAt, props.now)}</Data>
           </View>
+
+          {narration.enabled ? (
+            <View style={styles.narrationLineCompact}>
+              <Pressable
+                testID="session-narration-toggle"
+                accessibilityRole="switch"
+                accessibilityLabel="Turn narration off"
+                accessibilityState={{ checked: true }}
+                onPress={narration.toggle}
+                style={styles.narrationOnPill}
+              >
+                <Glyph name="narration" size={11} color={signal.ready} />
+                <Label color={ink.bright} testID="session-narration-status">
+                  Narration on
+                </Label>
+              </Pressable>
+            </View>
+          ) : null}
+
+          {narrationNoticeOpen && !narration.available ? (
+            <View style={styles.narrationNoticeCompact} testID="session-narration-notice">
+              <Label color={signal.cold} style={styles.narrationNoticeText} testID="session-narration-reason">
+                {narration.reason ?? "Narration unavailable"}
+              </Label>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close narration notice"
+                onPress={() => setNarrationNoticeOpen(false)}
+                style={styles.noticeClose}
+              >
+                <Glyph name="deny" size={10} color={ink.muted} />
+              </Pressable>
+            </View>
+          ) : null}
         </View>
+      )}
 
-        <Kicker color={tone} testID="session-state">
-          {agent.state}
-        </Kicker>
-
-        {webViewCapability === null ? null : (
+      {isTablet && (
+        <View
+          testID="session-narration"
+          style={[styles.narration, narration.enabled && { backgroundColor: ground.active }]}
+        >
           <Pressable
-            testID="session-browser-toggle"
-            accessibilityRole="button"
-            accessibilityLabel={browserOpen ? "Close the agent's browser" : "Open the agent's browser"}
-            accessibilityState={{ selected: browserOpen }}
-            onPress={() => {
-              setBrowserOpen(open => !open);
-            }}
-            style={({ pressed }) => [styles.headControl, pressed && { backgroundColor: ground.active }]}
+            testID="session-narration-toggle"
+            accessibilityRole="switch"
+            accessibilityLabel={
+              !narration.available
+                ? "Narration unavailable"
+                : narration.enabled
+                  ? "Turn narration off"
+                  : "Turn narration on"
+            }
+            accessibilityState={{ checked: narration.enabled, disabled: !narration.available }}
+            disabled={!narration.available}
+            onPress={narration.toggle}
+            style={({ pressed }) => [styles.narrationToggle, pressed && { backgroundColor: ground.active }]}
           >
-            <Glyph name="browser" size={14} color={browserOpen ? tone : ink.muted} />
-            <Label color={browserOpen ? ink.plain : ink.muted}>Browser</Label>
+            <Glyph name="narration" size={14} color={narration.enabled ? signal.ready : ink.muted} />
+            <Label color={narration.enabled ? ink.bright : ink.muted} testID="session-narration-status">
+              {!narration.available ? "Narration unavailable" : narration.enabled ? "Narration on" : "Narration off"}
+            </Label>
           </Pressable>
-        )}
-      </View>
-
-      <View
-        testID="session-narration"
-        style={[styles.narration, narration.enabled && { backgroundColor: ground.active }]}
-      >
-        <Pressable
-          testID="session-narration-toggle"
-          accessibilityRole="switch"
-          accessibilityLabel={
-            !narration.available
-              ? "Narration unavailable"
-              : narration.enabled
-                ? "Turn narration off"
-                : "Turn narration on"
-          }
-          accessibilityState={{ checked: narration.enabled, disabled: !narration.available }}
-          disabled={!narration.available}
-          onPress={narration.toggle}
-          style={({ pressed }) => [styles.headControl, pressed && { backgroundColor: ground.active }]}
-        >
-          <Glyph name="narration" size={14} color={narration.enabled ? signal.ready : ink.muted} />
-          <Label color={narration.enabled ? ink.bright : ink.muted} testID="session-narration-status">
-            {!narration.available ? "Narration unavailable" : narration.enabled ? "Narration on" : "Narration off"}
+          <Label
+            color={narration.reason === null ? ink.faint : signal.cold}
+            style={styles.narrationReason}
+            testID="session-narration-reason"
+          >
+            {narration.reason ??
+              (narration.enabled
+                ? "Reading new agent prose as it arrives."
+                : "Read new agent prose aloud as it arrives.")}
           </Label>
-        </Pressable>
-        <Label
-          color={narration.reason === null ? ink.faint : signal.cold}
-          style={styles.narrationReason}
-          testID="session-narration-reason"
-        >
-          {narration.reason ??
-            (narration.enabled
-              ? "Reading new agent prose as it arrives."
-              : "Read new agent prose aloud as it arrives.")}
-        </Label>
-      </View>
-      {/*
-        The seam between the chrome and the working area, drawn by Paper rather
-        than by a border on the band above it. `Divider` reads `outlineVariant`
-        off the theme, which IS `ground.line`, so this is the same hairline the
-        band used to carry -- one element that means "these two things are
-        divided" instead of a border rule repeated on every band in the app.
-      */}
-      <Divider bold />
+        </View>
+      )}
 
       {/*
         The keyboard takes its space from the transcript, never from the
@@ -406,34 +511,48 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
         onDecidePlan={props.onDecidePlan}
       >
         <View style={styles.body} testID="session-body">
+          {/*
+          One branch for the whole working half of the screen. While this
+          session is arriving, or once its open has been refused, none of the
+          instruments below may render: a context panel, a plan card and a
+          transcript are all claims about a session this pane does not have
+          yet, and the header above already carries whose pane it is.
+        */}
           {load.phase === "loading" ? (
             <SessionLoading title={agent.name} />
           ) : load.phase === "stalled" ? (
             <SessionLoadStalled connection={connection} title={agent.name} />
           ) : load.phase === "failed" ? (
-            <SessionLoadFailed
-              message={load.error ?? "The daemon refused this session."}
-              title={agent.name}
-              onRetry={props.onLoadEarlier}
-            />
+            <SessionLoadFailed message={load.error ?? "The daemon refused this session."} title={agent.name} />
           ) : (
             <>
-              <SessionContext {...props.context} agent={agent} now={props.now} session={session} />
+              {/*
+              Above the plan card and the transcript, inside the scroll-free
+              part of the column: collapsed it is one row, so the log keeps
+              every point it had, and it never becomes a rail the transcript
+              has to share its width with.
+            */}
+              <SessionContext
+                {...props.context}
+                defaultOpen={isTablet}
+                agent={agent}
+                now={props.now}
+                session={session}
+              />
+              <PlanCard
+                canApprove={props.canApprove}
+                onRespond={props.onDecidePlan}
+                plan={session.plan}
+                refusal={props.refusal}
+                review={session.planReview}
+              />
+
               <OmpThreadList
                 entries={session.entries}
                 canApprove={props.canApprove}
                 refusal={props.refusal}
                 onDecide={props.onDecide}
                 spoken={props.spoken}
-                header={
-                  <PlanCard
-                    canApprove={props.canApprove}
-                    onRespond={props.onDecidePlan}
-                    plan={session.plan}
-                    refusal={props.refusal}
-                    review={session.planReview}
-                  />
-                }
                 footer={
                   activity === null ? null : (
                     <ActivityRow activity={activity} reduceMotion={props.reduceMotion} testID="session-activity" />
@@ -452,20 +571,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
               <webViewCapability.Driver ref={driver} style={styles.driver} />
             </View>
           )}
-
-          {/*
-            A clearance the agent is waiting on is the one thing on this
-            screen the operator has to act on, and it lived only in the
-            transcript, where a context strip, a plan card and a screenful
-            of tool cards could scroll it out of sight. On 2026-09-06 two
-            bash clearances timed out into refusals on a phone whose
-            operator never saw a card, and the agent gave up on running the
-            tests. Pending clearances are pinned here as well, above the
-            readout and the composer, until they settle; the transcript's
-            copy stays as the record. A device without the approve scope
-            sees the same tray with the card's own refusal note, so the wait
-            is at least legible.
-          */}
           {pendingClearances.length === 0 ? null : (
             <View style={styles.clearances} testID="session-clearances">
               {pendingClearances.map(entry => (
@@ -500,12 +605,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           only a surface-coloured pad owner runs the composer's colour the
           last inset down to the screen edge instead of stopping short and
           showing the shell's base beneath the message box.
-
-          Nothing else: this band pays no gutter and no top pad. Whichever of
-          the four things below fills the slot brings its own `rhythm.gutter`,
-          so they share one left edge without nesting two gutters, and the
-          composer's own dock owns the vertical air above its surface. A top
-          pad here would be added to that one, not replace it.
         */}
           <View
             style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
@@ -559,10 +658,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
                   model={model}
                   onOpenConfig={props.onOpenConfig}
                   refusal={sendRefusal}
-                  commands={session.commands}
-                  commandDetails={session.commandDetails}
-                  cwd={agent.cwd}
-                  agentId={agent.id}
                 />
               </View>
             )}
@@ -576,27 +671,12 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
 const styles = StyleSheet.create({
   // Owns the space between the header and the bottom of the screen, so the
   // keyboard's inset lands here rather than on top of the composer.
-  //
-  // No gap and no top pad, on purpose. The transcript is a scroll field, not
-  // a row in a stack: it runs flush against the band above it and the band
-  // below, and the air the first and last rows need lives inside its own
-  // content (`OmpThread`'s `listContent`), where it scrolls under the edges
-  // like everything else. A `gap` here drew a dead band of base colour above
-  // and below the list on every platform, with the scrollbar stopping short
-  // of the readout, which is what "there is a hard space above and below the
-  // message window" reported on 2026-09-06. The bands around the field draw
-  // their own boundaries: the context strip ends in a rule and the readout
-  // begins with one, so nothing needs a gap to be told apart.
-  body: { flex: 1, minHeight: 0 },
+  body: { flex: 1 },
   // The band that owns the screen's bottom edge, composer to home
   // indicator. It paints the composer's surface because it is the view that
   // pays the inset below the composer: a parent's padding is outside every
   // child, so a transparent pad owner is how the shell's base colour ends up
   // showing between the message box and the screen edge.
-  //
-  // No gutter and no top pad here, on purpose. See the comment at the call
-  // site: the four things that can fill this slot each pay `gutter`, and the
-  // composer's own dock owns the air above its surface.
   composerSafe: { backgroundColor: ground.surface },
   head: {
     flexDirection: "row",
@@ -607,32 +687,43 @@ const styles = StyleSheet.create({
     backgroundColor: ground.surface,
     borderBottomWidth: stroke.heavy,
   },
-  // One block for every labelled control in the chrome: the back control, the
-  // browser toggle and the narration switch. They were three blocks saying
-  // almost the same thing -- 8 here, 8 there, a `minWidth` on one of them --
-  // which is how a header ends up with controls of three different widths.
-  //
-  // Labelled on purpose, all of them. An icon alone under a thumb is how an
-  // operator ends up trapped in a session with no idea the bay is one tap
-  // away, so `minTarget` is a floor on the height and the word sets the width.
-  headControl: {
-    minHeight: rhythm.minTarget,
-    paddingHorizontal: rhythm.controlPad,
+  // Labeled on purpose. An icon alone under a thumb is how an operator ends up
+  // trapped in a session with no idea the bay is one tap away.
+  back: {
+    minHeight: TOUCH_TARGET,
+    minWidth: TOUCH_TARGET,
+    paddingHorizontal: space.snug,
     flexDirection: "row",
     alignItems: "center",
-    gap: rhythm.glyphGap,
+    gap: space.tight,
+  },
+  headAction: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.snug,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
   },
   narration: {
-    minHeight: rhythm.minTarget,
+    minHeight: TOUCH_TARGET,
     paddingHorizontal: rhythm.gutter,
     flexDirection: "row",
     alignItems: "center",
     gap: space.snug,
     backgroundColor: ground.surface,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+  },
+  narrationToggle: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.snug,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
   },
   narrationReason: { flex: 1 },
-  ident: { flex: 1, gap: rhythm.pairGap },
-  meta: { flexDirection: "row", alignItems: "center", gap: space.tight },
+  ident: { flex: 1, gap: space.hair },
+  meta: { flexDirection: "row", alignItems: "center", gap: space.snug },
   origin: { flexShrink: 1 },
   browser: {
     height: 320,
@@ -640,9 +731,6 @@ const styles = StyleSheet.create({
     borderTopColor: ground.edge,
     backgroundColor: ground.surface,
   },
-  // The pinned clearance tray: a band of its own, the card's ochre carrying
-  // the meaning, on the surface colour so it reads as chrome rather than as
-  // one more row of the log it sits under.
   clearances: {
     paddingHorizontal: rhythm.gutter,
     paddingVertical: rhythm.rowGap,
@@ -651,10 +739,6 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.hair,
     borderTopColor: ground.line,
   },
-  // The three bands that stand in for the composer. They pay the screen
-  // gutter themselves rather than taking one from the band around them, so
-  // whichever of the four fills the slot, its first character starts at the
-  // same x as the header's back control and the readout's link chip.
   resume: {
     paddingHorizontal: rhythm.gutter,
     paddingVertical: rhythm.rowGap,
@@ -664,14 +748,96 @@ const styles = StyleSheet.create({
     borderTopColor: ground.edge,
   },
   resumeButton: {
-    minHeight: rhythm.minTarget,
+    minHeight: TOUCH_TARGET,
     alignSelf: "flex-start",
-    paddingHorizontal: rhythm.controlPad,
+    paddingHorizontal: space.step,
     flexDirection: "row",
     alignItems: "center",
-    gap: rhythm.glyphGap,
+    gap: space.tight,
     borderWidth: stroke.hair,
     borderColor: ground.line,
   },
   driver: { flex: 1 },
+  headCompact: {
+    paddingHorizontal: rhythm.gutter,
+    paddingVertical: space.snug,
+    backgroundColor: ground.surface,
+    borderBottomWidth: stroke.heavy,
+    gap: space.hair,
+  },
+  compactRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+  },
+  backCompact: {
+    minHeight: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    paddingHorizontal: space.tight,
+  },
+  titleAndState: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    minWidth: 0,
+  },
+  nameCompact: {
+    flexShrink: 1,
+  },
+  compactActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
+  headActionCompact: {
+    minHeight: 32,
+    minWidth: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: space.tight,
+  },
+  metaCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
+  originCompact: {
+    flexShrink: 1,
+  },
+  narrationLineCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingTop: space.hair,
+  },
+  narrationOnPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    paddingHorizontal: space.snug,
+    paddingVertical: space.hair,
+    backgroundColor: ground.active,
+    borderRadius: radius.control,
+  },
+  narrationNoticeCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: space.snug,
+    paddingVertical: space.tight,
+    paddingHorizontal: space.snug,
+    backgroundColor: ground.surface,
+    borderRadius: radius.control,
+    borderLeftWidth: stroke.heavy,
+    borderLeftColor: signal.cold,
+    marginTop: space.tight,
+  },
+  narrationNoticeText: { flex: 1 },
+  noticeClose: {
+    padding: space.tight,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });
