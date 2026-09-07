@@ -284,6 +284,9 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
                   input: null,
                   output: item.entry.output,
                   locations: item.entry.locations,
+                  // The tail carries the tool's text output only; edit diffs
+                  // reach the owned transcript over ACP, not the on-disk log.
+                  content: [],
                 }}
               />
             </View>
