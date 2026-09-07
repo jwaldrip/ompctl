@@ -52,6 +52,7 @@ import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
 import {
   countMessagesAsync,
   findSessionFileIter,
+  getSessionCost,
   MESSAGE_COUNT_SIZE_CEILING_BYTES,
   type RawSessionFile,
   scanSessionFilesIter,
@@ -373,6 +374,7 @@ export class SessionIndex {
         byteSize: file.sizeBytes,
         status,
         archived: isArchived,
+        cost: getSessionCost(file.id),
         ...(pid !== undefined ? { pid } : {}),
         ...(status === "live-ompd" && agentId !== undefined ? { agentId } : {}),
       });

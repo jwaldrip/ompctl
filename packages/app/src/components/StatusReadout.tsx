@@ -12,7 +12,7 @@ import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { StyleSheet, View } from "react-native";
 import { ProgressBar } from "react-native-paper";
-import { formatMoney, formatTokens } from "../design/format.ts";
+import { formatTokens } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { Data, Kicker, Label } from "../design/text.tsx";
@@ -44,6 +44,21 @@ export interface StatusReadoutProps {
   usage: Usage | null;
   /** Pending clearances across the whole fleet, not just the open session. */
   clearances: number;
+}
+
+function formatCostReading(amount: number, currency: string = "USD"): string {
+  if (!Number.isFinite(amount)) return "--";
+  const digits = amount > 0 && amount < 0.01 ? 4 : 2;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(amount);
+  } catch {
+    return `$${amount.toFixed(digits)}`;
+  }
 }
 
 /**
@@ -107,7 +122,7 @@ export function StatusReadout({ state, attempt, delayMs, usage, clearances }: St
             label="spend"
             tone={ink.bright}
             testID="status-spend"
-            value={usage === null ? null : formatMoney(usage.costAmount, usage.costCurrency)}
+            value={usage === null ? null : formatCostReading(usage.costAmount, usage.costCurrency)}
           />
           {clearances > 0 ? (
             <Meter

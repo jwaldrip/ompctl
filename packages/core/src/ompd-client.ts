@@ -43,6 +43,7 @@ import type {
   SessionDeleteResult,
   SessionHistoryEntry,
   SessionQuery,
+  SessionStats,
   SessionSummary,
   SkillSummary,
   SyncSettings,
@@ -224,6 +225,7 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // asks again the next time it opens. Reporting it would put an error in
   // front of an operator whose only remedy is the reconnect already running.
   session_tail: false,
+  session_stats: false,
   session_history: false,
   // A snapshot ask, same class as `session_tail`: nothing on the machine
   // changes, and the surface that asked asks again the next time it opens.
@@ -646,6 +648,11 @@ export interface TaskEvent {
 export interface AgentCreatedEvent {
   agent: Agent;
 }
+export interface SessionStatsEvent {
+  sessionId: string;
+  stats: SessionStats;
+}
+
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
@@ -683,6 +690,7 @@ export interface ClientEventMap {
   routine_secret: RoutineSecretEvent;
   session_tail: SessionTailEvent;
   session_history: SessionHistoryEvent;
+  session_stats: SessionStatsEvent;
   agent_config: AgentConfigEvent;
 }
 
@@ -1101,6 +1109,15 @@ export class OmpdClient {
       sessionId,
       ...(limit === undefined ? {} : { limit }),
       ...(cursor === undefined ? {} : { cursor }),
+    };
+    this.send(frame);
+  }
+
+  /** Request stats for one session. The answer arrives as the session_stats event. */
+  sessionStats(sessionId: string): void {
+    const frame: ClientFrame = {
+      t: "session_stats",
+      sessionId,
     };
     this.send(frame);
   }
@@ -1686,6 +1703,12 @@ export class OmpdClient {
           // which would be an offset a client could ask from.
           nextCursor: frame.nextCursor ?? null,
           ...(frame.cursor === undefined ? {} : { cursor: frame.cursor }),
+        });
+        return;
+      case "session_stats":
+        this.emit("session_stats", {
+          sessionId: frame.sessionId,
+          stats: frame.stats,
         });
         return;
       case "session_history":

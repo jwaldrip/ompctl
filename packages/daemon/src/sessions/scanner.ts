@@ -18,7 +18,7 @@
 
 import { closeSync, openSync, readdirSync, readSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 
 /** `<ISO-with-dashes-for-colons>_<uuid>.jsonl`, e.g. `2026-08-11T01-11-48-090Z_019fee60-2c7a-7000-9fd5-7439c7bf3dd2.jsonl`. Exported because the sessions-root watcher filters raw filesystem event names with the same scheme the scan trusts, and a second copy of the pattern is how the two would drift into disagreeing about what a session file is. */
@@ -243,6 +243,8 @@ export interface SessionTurnLine {
   content: unknown;
   /** The line's own ISO timestamp, or "" when it carried none. */
   at: string;
+  /** Usage payload if reported on this turn. */
+  usage?: unknown;
 }
 
 /**
@@ -259,7 +261,11 @@ export interface SessionTurnLine {
  */
 export function parseTurnLine(text: string): SessionTurnLine | null {
   if (text === "") return null; // Empty line, the old split-and-skip rule.
-  let parsed: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown } };
+  let parsed: {
+    type?: unknown;
+    timestamp?: unknown;
+    message?: { role?: unknown; content?: unknown; usage?: unknown };
+  };
   try {
     parsed = JSON.parse(text);
   } catch {
@@ -272,7 +278,23 @@ export function parseTurnLine(text: string): SessionTurnLine | null {
     role,
     content: parsed.message?.content,
     at: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
+    ...(parsed.message?.usage !== undefined ? { usage: parsed.message.usage } : {}),
   };
+}
+
+/** Running total cost (in USD) per session, accumulated across assistant usage turns. */
+const runningSessionCosts = new Map<string, number>();
+
+export function getSessionCost(sessionId: string): number | null {
+  return runningSessionCosts.get(sessionId) ?? null;
+}
+
+export function setSessionCost(sessionId: string, cost: number | null): void {
+  if (cost === null) {
+    runningSessionCosts.delete(sessionId);
+  } else {
+    runningSessionCosts.set(sessionId, cost);
+  }
 }
 
 /**
@@ -304,6 +326,12 @@ export function parseTurnLine(text: string): SessionTurnLine | null {
 class TurnCounter {
   #carry: Buffer[] = [];
   #count = 0;
+  #cost: number | null = null;
+  #sessionId?: string;
+
+  constructor(sessionId?: string) {
+    this.#sessionId = sessionId;
+  }
 
   push(chunk: Uint8Array): void {
     const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
@@ -315,7 +343,11 @@ class TurnCounter {
           ? Buffer.concat([...this.#carry, bytes.subarray(lineStart, i)]).toString("utf8")
           : bytes.toString("utf8", lineStart, i);
       this.#carry = [];
-      if (parseTurnLine(text) !== null) this.#count++;
+      const turn = parseTurnLine(text);
+      if (turn !== null) {
+        this.#count++;
+        this.#accumulateCost(turn);
+      }
       lineStart = i + 1;
     }
     if (lineStart < bytes.length) {
@@ -323,17 +355,44 @@ class TurnCounter {
     }
   }
 
+  #accumulateCost(turn: SessionTurnLine): void {
+    if (turn.role !== "assistant" || !turn.usage || typeof turn.usage !== "object") return;
+    const usage = turn.usage as {
+      cost?: { total?: unknown; input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown };
+    };
+    if (typeof usage.cost?.total === "number" && !Number.isNaN(usage.cost.total)) {
+      this.#cost = (this.#cost ?? 0) + usage.cost.total;
+    } else if (usage.cost && typeof usage.cost === "object") {
+      const c = usage.cost;
+      const sum =
+        (typeof c.input === "number" ? c.input : 0) +
+        (typeof c.output === "number" ? c.output : 0) +
+        (typeof c.cacheRead === "number" ? c.cacheRead : 0) +
+        (typeof c.cacheWrite === "number" ? c.cacheWrite : 0);
+      if (sum > 0) {
+        this.#cost = (this.#cost ?? 0) + sum;
+      }
+    }
+  }
+
   finish(): number {
-    if (this.#carry.length > 0 && parseTurnLine(Buffer.concat(this.#carry).toString("utf8")) !== null) {
-      this.#count++;
+    if (this.#carry.length > 0) {
+      const turn = parseTurnLine(Buffer.concat(this.#carry).toString("utf8"));
+      if (turn !== null) {
+        this.#count++;
+        this.#accumulateCost(turn);
+      }
+    }
+    if (this.#sessionId && this.#cost !== null) {
+      runningSessionCosts.set(this.#sessionId, Math.round(this.#cost * 1_000_000) / 1_000_000);
     }
     return this.#count;
   }
 }
 
-export function* countMessagesChunks(fd: number): Generator<void, number> {
+export function* countMessagesChunks(fd: number, sessionId?: string): Generator<void, number> {
   const chunk = Buffer.allocUnsafe(COUNT_CHUNK_BYTES);
-  const counter = new TurnCounter();
+  const counter = new TurnCounter(sessionId);
   let position = 0;
   for (;;) {
     let bytesRead: number;
@@ -371,7 +430,9 @@ function yieldToEventLoop(): Promise<void> {
  */
 export async function countMessagesAsync(path: string): Promise<number> {
   try {
-    const counter = new TurnCounter();
+    const match = SESSION_FILE_RE.exec(basename(path));
+    const sessionId = match ? match[2] : undefined;
+    const counter = new TurnCounter(sessionId);
     for await (const chunk of Bun.file(path).stream()) {
       for (let offset = 0; offset < chunk.byteLength; offset += COUNT_YIELD_INTERVAL_BYTES) {
         counter.push(chunk.subarray(offset, Math.min(offset + COUNT_YIELD_INTERVAL_BYTES, chunk.byteLength)));
@@ -399,8 +460,10 @@ export function countMessages(path: string): number {
   } catch {
     return 0;
   }
+  const match = SESSION_FILE_RE.exec(basename(path));
+  const sessionId = match ? match[2] : undefined;
   try {
-    const steps = countMessagesChunks(fd);
+    const steps = countMessagesChunks(fd, sessionId);
     let step = steps.next();
     while (!step.done) step = steps.next();
     return step.value;
