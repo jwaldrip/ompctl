@@ -1,26 +1,17 @@
 /**
  * One session, as a row in the browser.
  *
- * Open and archive are the everyday actions, and they must not read as the
- * same kind of thing. Open is the primary tap target, spans the row, and
- * reads as an affirmative "go here." Archive sits in a fixed corner, is
- * quieter than the row it sits in, and its glyph is a box, not a blade:
- * nothing about it should make a person hesitate the way a delete control
- * would.
+ * Tapping the row opens it. At rest, the trailing edge presents a single More
+ * control (ellipsis glyph) that opens a menu containing Archive/Unarchive and
+ * Delete.
  *
- * Delete is the third action and it is deliberately not one of those two. A
- * first press only arms the row: the row's content is replaced by a band
- * naming the session, and only a second press on that band's own control
- * destroys anything. That band puts the destructive control at the leading
- * edge, where the title was, and puts Keep at the trailing edge, under
- * exactly the corner a thumb reaching for archive lands on. So a mis-reach
- * arms at worst, and a second mis-reach cancels.
+ * Delete arms an inline confirmation band with Delete on the leading edge and
+ * Keep on the trailing edge. A second tap on Delete destroys the transcript;
+ * Keep disarms the row.
  *
- * `dormant`, `live-tui`, and `live-ompd` all take you into the session, but
- * they are not the same verb: a dormant session is resumed, a live-ompd one
- * is attached to, and a live terminal session is prompted, because that is
- * all a terminal can accept from here. The label and glyph say which, so the
- * affordance never pretends they are interchangeable.
+ * On compact screens (phones), the metrics line fits on one line by omitting
+ * size, displaying age, active time, messages, and spend when cost is reported.
+ * Full size readings display on tablets where width permits.
  */
 
 import type { JSX } from "react";
@@ -28,12 +19,18 @@ import { memo, useCallback, useState } from "react";
 import { Pressable, type PressableStateCallbackType, StyleSheet, View } from "react-native";
 import type { ScopeAccess } from "../console/state.ts";
 import { shortenPath } from "../design/format.ts";
-import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
-import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { BrowserSession, SessionStatus } from "../session/browser.ts";
 import { formatAge, formatBytes, SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
+
+/**
+ * Status tone bar width at the leading edge of each row.
+ * Thin enough to avoid visual clutter while providing immediate status recognition.
+ */
+const STATUS_BAR_WIDTH = 3;
 
 export interface SessionRowProps {
   session: BrowserSession;
@@ -50,22 +47,13 @@ export interface SessionRowProps {
   onDelete: (session: BrowserSession) => void;
   /**
    * Whether this pairing holds the manage scope deleting spends. `missing`
-   * disables the control and names the reason on it rather than hiding it: a
-   * control that vanished would leave an operator wondering whether this
-   * build can delete at all. `unknown` (an older pairing or daemon that
-   * never reported scopes) stays enabled, and the daemon's refusal is what
-   * corrects it.
+   * disables the control and names the reason on it rather than hiding it.
    */
   deleteAccess: ScopeAccess;
   now?: number;
+  /** Injected initial menu open state for tests */
+  defaultMenuOpen?: boolean;
 }
-
-const OPEN_GLYPH: Record<SessionStatus, GlyphName> = {
-  "live-tui": "send",
-  "live-ompd": "attach",
-  dormant: "resume",
-  archived: "restore",
-};
 
 const OPEN_LABEL: Record<SessionStatus, string> = {
   "live-tui": "Prompt",
@@ -75,17 +63,15 @@ const OPEN_LABEL: Record<SessionStatus, string> = {
 };
 
 /**
- * Memoised, and every closure it hands a `Pressable` is either hoisted to the
- * module or `useCallback`-stable.
- *
- * A row is the unit a list of 534 of them re-renders, so identity is not a
- * micro-optimisation here: the parent re-renders on every socket frame, and
- * without `memo` each frame walks every mounted row's subtree. `memo` only
- * earns that if the props hold still, which is why the three handlers are
- * required to be stable identities (see `FleetScreen`) and why the pressed
- * styles below are module constants rather than arrow functions built per
- * render.
+ * Format spend amount for the metrics line: $0.42 for typical costs,
+ * with up to four digits for sub-cent turns.
  */
+export function formatCostReading(cost: number): string {
+  if (!Number.isFinite(cost)) return "--";
+  const digits = cost > 0 && cost < 0.01 ? 4 : 2;
+  return `$${cost.toFixed(digits)}`;
+}
+
 export const SessionRow = memo(function SessionRow({
   session,
   showCwd = false,
@@ -95,49 +81,46 @@ export const SessionRow = memo(function SessionRow({
   onDelete,
   deleteAccess,
   now,
+  defaultMenuOpen = false,
 }: SessionRowProps): JSX.Element {
+  const isTablet = useIsTablet();
   const tone = signal[SESSION_STATUS_SIGNALS[session.status]];
   const archived = session.status === "archived";
   const name = session.title || "Untitled session";
-  /**
-   * Whether this row is asking to be confirmed. Local, and the one piece of
-   * state a row owns: it is one row's transient question, nothing outside the
-   * row consults it, and two rows armed at once harms nobody. It also cannot
-   * outlive the row, so a deleted session's armed band cannot land on
-   * whatever row takes its place.
-   */
+
   const [armed, setArmed] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(defaultMenuOpen);
 
   const open = useCallback(() => {
+    if (menuOpen) {
+      setMenuOpen(false);
+      return;
+    }
     onOpen(session);
-  }, [onOpen, session]);
+  }, [menuOpen, onOpen, session]);
+
   const archiveOrRestore = useCallback(() => {
+    setMenuOpen(false);
     if (session.status === "archived") {
       onUnarchive(session);
     } else {
       onArchive(session);
     }
   }, [onArchive, onUnarchive, session]);
+
   const arm = useCallback(() => {
+    setMenuOpen(false);
     setArmed(true);
   }, []);
+
   const keep = useCallback(() => {
     setArmed(false);
   }, []);
+
   const confirmDelete = useCallback(() => {
-    // Disarmed first, so the band cannot be pressed twice while the fleet
-    // waits for the daemon's answer and the row is still on screen.
     setArmed(false);
     onDelete(session);
   }, [onDelete, session]);
-  const openActionStyle = useCallback(
-    ({ pressed }: PressableStateCallbackType) => [
-      styles.openAction,
-      { backgroundColor: signalWash[SESSION_STATUS_SIGNALS[session.status]] },
-      pressed && styles.actionPressed,
-    ],
-    [session.status],
-  );
 
   if (armed) {
     return (
@@ -173,77 +156,111 @@ export const SessionRow = memo(function SessionRow({
       </View>
     );
   }
+
   return (
     <View testID={`session-row-${session.id}`} style={styles.row}>
-      <View style={[styles.bar, { backgroundColor: tone }]} />
+      <Pressable
+        testID={`session-open-${session.id}`}
+        accessibilityRole="button"
+        accessibilityLabel={`${OPEN_LABEL[session.status]} ${name}, ${STATUS_LABELS[session.status]}`}
+        onPress={open}
+        style={openTargetStyle}
+      >
+        <View style={[styles.bar, { backgroundColor: tone }]} />
 
-      <View style={styles.body}>
-        <View style={styles.headline}>
-          <Title numberOfLines={1} style={styles.title}>
-            {session.title || "Untitled session"}
-          </Title>
-          <Kicker color={tone} testID={`session-status-${session.id}`}>
-            {STATUS_LABELS[session.status]}
-          </Kicker>
-        </View>
-
-        {showCwd ? (
-          <View style={styles.cwdRow}>
-            <Glyph name="folder" size={10} color={ink.faint} />
-            <Label color={ink.muted} numberOfLines={1} style={styles.cwd}>
-              {shortenPath(session.cwd, 3)}
-            </Label>
+        <View style={styles.body}>
+          <View style={styles.headline}>
+            <Title numberOfLines={1} style={styles.title}>
+              {name}
+            </Title>
+            <Kicker color={tone} testID={`session-status-${session.id}`}>
+              {STATUS_LABELS[session.status]}
+            </Kicker>
           </View>
-        ) : null}
 
-        <View style={styles.readings} testID={`session-metrics-${session.id}`}>
-          <Reading testID={`session-age-${session.id}`} value={formatAge(session.createdAt, now)} label="age" />
-          <Reading
-            testID={`session-active-${session.id}`}
-            value={formatAge(session.lastActiveAt, now)}
-            label="active"
-          />
-          <Reading testID={`session-messages-${session.id}`} value={String(session.messageCount)} label="msgs" />
-          <Reading testID={`session-size-${session.id}`} value={formatBytes(session.sizeBytes)} label="size" />
+          {showCwd ? (
+            <View style={styles.cwdRow}>
+              <Glyph name="folder" size={10} color={ink.faint} />
+              <Label color={ink.muted} numberOfLines={1} style={styles.cwd}>
+                {shortenPath(session.cwd, 3)}
+              </Label>
+            </View>
+          ) : null}
+
+          <View style={styles.readings} testID={`session-metrics-${session.id}`}>
+            <Reading testID={`session-age-${session.id}`} value={formatAge(session.createdAt, now)} label="age" />
+            <Reading
+              testID={`session-active-${session.id}`}
+              value={formatAge(session.lastActiveAt, now)}
+              label="active"
+            />
+            <Reading testID={`session-messages-${session.id}`} value={String(session.messageCount)} label="msgs" />
+            {session.cost != null ? (
+              <Reading
+                testID={`session-spend-${session.id}`}
+                value={formatCostReading(session.cost)}
+                label="spend"
+              />
+            ) : null}
+            {isTablet ? (
+              <Reading testID={`session-size-${session.id}`} value={formatBytes(session.sizeBytes)} label="size" />
+            ) : null}
+          </View>
         </View>
-      </View>
+      </Pressable>
 
       <View style={styles.actions}>
-        <Pressable
-          testID={`session-open-${session.id}`}
-          accessibilityRole="button"
-          accessibilityLabel={`${OPEN_LABEL[session.status]} ${session.title}, ${STATUS_LABELS[session.status]}`}
-          onPress={open}
-          style={openActionStyle}
-        >
-          <Glyph name={OPEN_GLYPH[session.status]} size={13} color={tone} />
-        </Pressable>
+        {menuOpen ? (
+          <View style={styles.menuActions} testID={`session-menu-${session.id}`}>
+            <Pressable
+              testID={archived ? `session-unarchive-${session.id}` : `session-archive-${session.id}`}
+              accessibilityRole="button"
+              accessibilityLabel={archived ? `Unarchive ${name}` : `Archive ${name}`}
+              onPress={archiveOrRestore}
+              style={menuItemStyle}
+            >
+              <Glyph name={archived ? "restore" : "archive"} size={13} color={ink.plain} />
+              <Label color={ink.plain}>{archived ? "Restore" : "Archive"}</Label>
+            </Pressable>
 
-        <Pressable
-          testID={archived ? `session-unarchive-${session.id}` : `session-archive-${session.id}`}
-          accessibilityRole="button"
-          accessibilityLabel={archived ? `Unarchive ${session.title}` : `Archive ${session.title}`}
-          onPress={archiveOrRestore}
-          style={archiveActionStyle}
-        >
-          <Glyph name={archived ? "restore" : "archive"} size={13} color={ink.faint} />
-        </Pressable>
+            <Pressable
+              testID={`session-delete-${session.id}`}
+              accessibilityRole="button"
+              accessibilityLabel={
+                deleteAccess === "missing"
+                  ? `Delete ${name} unavailable: this pairing holds no manage scope`
+                  : `Delete ${name}`
+              }
+              accessibilityState={{ disabled: deleteAccess === "missing" }}
+              disabled={deleteAccess === "missing"}
+              onPress={arm}
+              style={menuItemStyle}
+            >
+              <Glyph name="delete" size={13} color={deleteAccess === "missing" ? ink.faint : signal.failed} />
+              <Label color={deleteAccess === "missing" ? ink.faint : signal.failed}>Delete</Label>
+            </Pressable>
 
-        <Pressable
-          testID={`session-delete-${session.id}`}
-          accessibilityRole="button"
-          accessibilityLabel={
-            deleteAccess === "missing"
-              ? `Delete ${name} unavailable: this pairing holds no manage scope`
-              : `Delete ${name}`
-          }
-          accessibilityState={{ disabled: deleteAccess === "missing" }}
-          disabled={deleteAccess === "missing"}
-          onPress={arm}
-          style={deleteActionStyle}
-        >
-          <Glyph name="activity" size={13} color={ink.faint} />
-        </Pressable>
+            <Pressable
+              testID={`session-more-${session.id}`}
+              accessibilityRole="button"
+              accessibilityLabel={`Close menu for ${name}`}
+              onPress={() => setMenuOpen(false)}
+              style={moreActionStyle}
+            >
+              <Glyph name="deny" size={11} color={ink.muted} />
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable
+            testID={`session-more-${session.id}`}
+            accessibilityRole="button"
+            accessibilityLabel={`More for ${name}`}
+            onPress={() => setMenuOpen(true)}
+            style={moreActionStyle}
+          >
+            <Glyph name="activity" size={13} color={ink.faint} />
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -262,6 +279,31 @@ function Reading({ value, label, testID }: { value: string; label: string; testI
   );
 }
 
+const openTargetStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.openTarget,
+  pressed && styles.actionPressed,
+];
+
+const confirmActionStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.confirmAction,
+  pressed && styles.actionPressed,
+];
+
+const keepActionStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.keepAction,
+  pressed && styles.actionPressed,
+];
+
+const moreActionStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.moreAction,
+  pressed && styles.actionPressed,
+];
+
+const menuItemStyle = ({ pressed }: PressableStateCallbackType) => [
+  styles.menuItem,
+  pressed && styles.actionPressed,
+];
+
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
@@ -269,61 +311,83 @@ const styles = StyleSheet.create({
     borderBottomWidth: stroke.hair,
     borderBottomColor: ground.line,
     minHeight: TOUCH_TARGET,
-    // Nothing in this row may paint outside its own box. The actions are
-    // siblings that reserve their width, so anything that overflows the body
-    // lands underneath them and is silently hidden: a size reading sliced in
-    // half by a button reads as a rendering fault, not as a narrow column.
     overflow: "hidden",
   },
-  bar: { width: 3 },
-  // `minWidth: 0` is what actually lets this shrink. A flex item's minimum is
-  // its content by default, so without it the readings below set a floor the
-  // body cannot go under, and the overflow is what collides with the actions.
-  body: { flex: 1, minWidth: 0, paddingVertical: space.snug, paddingHorizontal: space.wide, gap: space.tight },
-  headline: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: space.snug },
-  title: { flexShrink: 1 },
-  cwdRow: { flexDirection: "row", alignItems: "center", gap: space.tight },
-  cwd: { flex: 1, minWidth: 0 },
-  // Kept on one line: short facts with snug spacing and single-line labels
-  // that fit cleanly across a 390px phone without wrapping.
+  openTarget: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "stretch",
+    minWidth: 0,
+  },
+  bar: {
+    width: STATUS_BAR_WIDTH,
+  },
+  body: {
+    flex: 1,
+    minWidth: 0,
+    paddingVertical: space.snug,
+    paddingHorizontal: space.wide,
+    gap: space.tight,
+  },
+  headline: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: space.snug,
+  },
+  title: {
+    flexShrink: 1,
+  },
+  cwdRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
+  cwd: {
+    flex: 1,
+    minWidth: 0,
+  },
   readings: {
     flexDirection: "row",
     flexWrap: "nowrap",
     alignItems: "center",
     gap: space.snug,
     marginTop: space.hair,
+    overflow: "hidden",
   },
-  reading: { flexDirection: "row", alignItems: "baseline", gap: space.tight },
-  readingLabel: { textTransform: "none" },
+  reading: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: space.tight,
+  },
+  readingLabel: {
+    textTransform: "none",
+  },
   actions: {
     flexDirection: "row",
     alignItems: "stretch",
     borderLeftWidth: stroke.hair,
     borderLeftColor: ground.line,
   },
-  openAction: {
+  moreAction: {
     width: TOUCH_TARGET,
     alignItems: "center",
     justifyContent: "center",
+  },
+  menuActions: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    backgroundColor: ground.surface,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    paddingHorizontal: space.snug,
+    minHeight: TOUCH_TARGET,
     borderRightWidth: stroke.hair,
     borderRightColor: ground.line,
   },
-  archiveAction: {
-    width: TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  deleteAction: {
-    width: TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
-    borderLeftWidth: stroke.hair,
-    borderLeftColor: ground.line,
-  },
-  // The armed band's own controls. The destructive one sits at the leading
-  // edge, where the title was and where no control was before, so no muscle
-  // memory reaches it; Keep takes the trailing corner the everyday actions
-  // occupy.
   confirmAction: {
     flexDirection: "row",
     alignItems: "center",
@@ -333,9 +397,12 @@ const styles = StyleSheet.create({
     borderRightWidth: stroke.hair,
     borderRightColor: ground.line,
   },
-  // Shrinkable for the same reason `body` is: the prompt names the session,
-  // titles are long, and a name that overflowed would paint under Keep.
-  confirmBody: { flex: 1, minWidth: 0, paddingVertical: space.snug, paddingHorizontal: space.wide },
+  confirmBody: {
+    flex: 1,
+    minWidth: 0,
+    paddingVertical: space.snug,
+    paddingHorizontal: space.wide,
+  },
   keepAction: {
     alignItems: "center",
     justifyContent: "center",
@@ -344,25 +411,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: stroke.hair,
     borderLeftColor: ground.line,
   },
-  actionPressed: { backgroundColor: ground.active },
+  actionPressed: {
+    backgroundColor: ground.active,
+  },
 });
-
-// One closure each for the whole app rather than two per row per render. The
-// third pressed style is per-row on purpose: its fill is the session's own
-// status wash, so it cannot be hoisted without passing the status back in.
-const archiveActionStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.archiveAction,
-  pressed && styles.actionPressed,
-];
-const deleteActionStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.deleteAction,
-  pressed && styles.actionPressed,
-];
-const confirmActionStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.confirmAction,
-  pressed && styles.actionPressed,
-];
-const keepActionStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.keepAction,
-  pressed && styles.actionPressed,
-];

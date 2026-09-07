@@ -1609,6 +1609,7 @@ export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
       // harder than a zero.
       messageCount: summary.messageCount ?? 0,
       sizeBytes: summary.byteSize,
+      cost: summary.cost ?? null,
     });
   }
 
@@ -1647,6 +1648,7 @@ export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
       messageCount: 0,
       // Not knowable before the index sees the session file.
       sizeBytes: 0,
+      cost: null,
     });
   }
   rows.push(...synthesized.values());

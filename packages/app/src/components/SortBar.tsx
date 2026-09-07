@@ -15,7 +15,7 @@
 import type { JSX } from "react";
 import { Pressable, ScrollView, StyleSheet } from "react-native";
 import { Data, Kicker } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { brand, ground, ink, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { SortField, SortSpec } from "../session/browser.ts";
 import { SORT_LABELS } from "../session/browser.ts";
 
@@ -92,9 +92,9 @@ export function SortBar({ sort, onChange }: SortBarProps): JSX.Element {
               pressed && { backgroundColor: ground.active },
             ]}
           >
-            <Kicker color={active ? signal.working : ink.muted}>{SORT_LABELS[field]}</Kicker>
+            <Kicker color={active ? brand.azure : ink.muted}>{SORT_LABELS[field]}</Kicker>
             {active ? (
-              <Data color={signal.working} testID={`sort-direction-${field}`}>
+              <Data color={brand.azure} testID={`sort-direction-${field}`}>
                 {sort.direction === "asc" ? "\u2191" : "\u2193"}
               </Data>
             ) : null}
@@ -117,5 +117,5 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderBottomColor: "transparent",
   },
-  chipActive: { borderBottomColor: signal.working },
+  chipActive: { borderBottomColor: brand.azure },
 });

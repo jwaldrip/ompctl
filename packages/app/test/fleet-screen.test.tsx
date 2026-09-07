@@ -34,6 +34,7 @@ import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
 // "react-native" here would resolve before `./rnw.ts`'s `mock.module` call
 // could substitute it.
 const { FleetScreen } = await import("../src/screens/FleetScreen.tsx");
+const { SessionRow } = await import("../src/components/SessionRow.tsx");
 const { StyleSheet } = await import("react-native");
 
 /** Read off the screen rather than imported by name: see the note above the dynamic imports. */
@@ -238,29 +239,47 @@ describe("open and archive are visually distinct actions", () => {
     expect(html).toContain(`Prompt ${live.title}`);
   });
 
-  test("archive is a separate control from open, with its own testID and label", () => {
-    expect(html).toContain(`data-testid="session-archive-${dormant.id}"`);
-    expect(html).toContain(`Archive ${dormant.title}`);
-    // The open and archive actions are separate pressables with distinct
-    // canonical identities.
-    expect(html).not.toContain(`data-testid="session-archive-${dormant.id}"data-testid="session-open-${dormant.id}"`);
+  test("archive and delete are in the row's more menu, not persistent columns", () => {
+    // Persistent columns at rest are gone; the trailing action is the single More control
+    expect(html).toContain(`data-testid="session-more-${dormant.id}"`);
+    expect(html).toContain(`More for ${dormant.title}`);
+    expect(html).not.toContain(`data-testid="session-archive-${dormant.id}"`);
+    expect(html).not.toContain(`data-testid="session-delete-${dormant.id}"`);
   });
 
-  test("archive's label never says delete, remove, or destroy", () => {
-    const archiveButtonRegion = html.slice(
-      html.indexOf(`session-archive-${dormant.id}`) - 40,
-      html.indexOf(`session-archive-${dormant.id}`) + 120,
+  test("opening the more menu exposes archive and delete controls", () => {
+    const menuHtml = renderToStaticMarkup(
+      <SessionRow
+        session={dormant}
+        defaultMenuOpen
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        deleteAccess="granted"
+      />,
     );
-    expect(archiveButtonRegion.toLowerCase()).not.toContain("delete");
-    expect(archiveButtonRegion.toLowerCase()).not.toContain("destroy");
+    expect(menuHtml).toContain(`data-testid="session-archive-${dormant.id}"`);
+    expect(menuHtml).toContain(`Archive ${dormant.title}`);
+    expect(menuHtml).toContain(`data-testid="session-delete-${dormant.id}"`);
+    expect(menuHtml.toLowerCase()).not.toContain("destroy");
   });
 
-  test("an archived row's primary action reads Restore, not Resume or Attach", () => {
+  test("an archived row's menu action reads Restore, not Resume or Attach", () => {
     const archived = WINDOWED.find(s => s.status === "archived") as BrowserSession;
-    // Archived is hidden by default; show it to reach the row at all.
-    const withArchived = render(windowedState({ showArchived: true }));
-    expect(withArchived).toContain(`data-testid="session-unarchive-${archived.id}"`);
-    expect(withArchived).toContain(`Restore ${archived.title}`);
+    const menuHtml = renderToStaticMarkup(
+      <SessionRow
+        session={archived}
+        defaultMenuOpen
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        deleteAccess="granted"
+      />,
+    );
+    expect(menuHtml).toContain(`data-testid="session-unarchive-${archived.id}"`);
+    expect(menuHtml).toContain(`Restore ${archived.title}`);
   });
 });
 
@@ -319,13 +338,28 @@ describe("search and project filters, rendered", () => {
     expect(html).toContain('placeholder="Search sessions..."');
   });
 
-  test("renders project filter chips with All projects first", () => {
+  test("project filter uses a picker in the search row instead of a chip bar", () => {
     const html = render(browserState());
-    expect(html).toContain('data-testid="project-filter-bar"');
-    expect(html).toContain('data-testid="project-chip-all"');
+    expect(html).not.toContain('data-testid="project-filter-bar"');
+    expect(html).toContain('data-testid="project-picker-trigger"');
     expect(html).toContain("All projects");
-    // Checks basename chip for repo-0
-    expect(html).toContain('data-testid="project-chip-repo-0"');
+
+    // Selected project renders as a single removable chip with brand.azure
+    const selectedHtml = render(browserState({ project: "/Users/op/dev/src/github.com/op/repo-0" }));
+    expect(selectedHtml).toContain('data-testid="project-chip-selected"');
+    expect(selectedHtml).toContain("repo-0");
+    expect(selectedHtml).toContain('data-testid="project-chip-clear"');
+    // Selection uses brand.azure (#5b9dff), never amber signal.working
+    expect(selectedHtml).toContain("rgba(91,157,255,1");
+  });
+
+  test("active sort chip uses brand.azure, not amber signal.working", () => {
+    const html = render(browserState());
+    expect(html).toContain('data-testid="sort-direction-lastActive"');
+    const chipStart = html.indexOf('data-testid="sort-chip-lastActive"');
+    const chipRegion = html.slice(chipStart, chipStart + 350);
+    expect(chipRegion).toContain("rgba(91,157,255,1");
+    expect(chipRegion).not.toContain("rgba(255,176,32,1");
   });
 
   test("row metrics container has no-wrap style and single-line structure", () => {
@@ -335,6 +369,46 @@ describe("search and project filters, rendered", () => {
     expect(html).toContain(`data-testid="session-metrics-${target}"`);
     // Style sheet includes nowrap for flexWrap
     expect(html).toContain("flex-wrap:nowrap");
+  });
+
+  test("row metrics fit on one line and support spend reading", () => {
+    const sessionWithCost: BrowserSession = {
+      ...(WINDOWED[0] as BrowserSession),
+      cost: 0.42,
+    };
+    const htmlWithCost = renderToStaticMarkup(
+      <SessionRow
+        session={sessionWithCost}
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        deleteAccess="granted"
+      />,
+    );
+    expect(htmlWithCost).toContain(`data-testid="session-spend-${sessionWithCost.id}"`);
+    expect(htmlWithCost).toContain("$0.42");
+    expect(htmlWithCost).toContain("spend");
+    // On compact screens (phone width), size is dropped
+    expect(htmlWithCost).not.toContain(`data-testid="session-size-${sessionWithCost.id}"`);
+
+    // Null cost renders no spend reading, never a zero
+    const sessionNullCost: BrowserSession = {
+      ...(WINDOWED[0] as BrowserSession),
+      cost: null,
+    };
+    const htmlNullCost = renderToStaticMarkup(
+      <SessionRow
+        session={sessionNullCost}
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        deleteAccess="granted"
+      />,
+    );
+    expect(htmlNullCost).not.toContain(`data-testid="session-spend-${sessionNullCost.id}"`);
+    expect(htmlNullCost).not.toContain("spend");
   });
 });
 
@@ -460,11 +534,11 @@ describe("the header's controls sit at the trailing content edge", () => {
     // its own, so the column it forms is the screen's trailing edge itself.
     // If the rows ever gain a trailing inset, this fails instead of letting
     // the two edges drift apart in opposite directions.
-    const deleteTag = markup.match(/<[^>]*data-testid="session-delete-[^"]*"[^>]*>/)?.[0] ?? "";
-    const deleteRules = rulesDeclaring(css, classListOf(deleteTag));
-    expect(deleteTag).not.toBe("");
-    expect(deleteRules).not.toMatch(/padding-right/);
-    expect(deleteRules).not.toMatch(/margin-right/);
+    const moreTag = markup.match(/<[^>]*data-testid="session-more-[^"]*"[^>]*>/)?.[0] ?? "";
+    const moreRules = rulesDeclaring(css, classListOf(moreTag));
+    expect(moreTag).not.toBe("");
+    expect(moreRules).not.toMatch(/padding-right/);
+    expect(moreRules).not.toMatch(/margin-right/);
   });
 
   test("the title group flexes to absorb the slack, not a spacer's worth of it", () => {
