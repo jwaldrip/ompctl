@@ -5,13 +5,7 @@ import { elapsed } from "../design/format.ts";
 import { useIsTablet } from "../design/layout.ts";
 import { rhythm } from "../design/rhythm.ts";
 import { Body, Data, Kicker, Label } from "../design/text.tsx";
-import {
-  agentSignal,
-  radius,
-  space,
-  stroke,
-  TOUCH_TARGET,
-} from "../design/tokens.ts";
+import { agentSignal, radius, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import { SUBAGENT_UNOPENABLE, subagentOpenable } from "./AgentHub.tsx";
 
@@ -89,13 +83,9 @@ export const SubagentCard = memo(function SubagentCard({
   const status = agentSignal(agent.state);
   const openable = subagentOpenable(agent);
   const assignment =
-    agent.taskTitle !== undefined && agent.taskTitle.trim().length > 0
-      ? agent.taskTitle.trim()
-      : agent.name;
+    agent.taskTitle !== undefined && agent.taskTitle.trim().length > 0 ? agent.taskTitle.trim() : agent.name;
   const hasSeparateName =
-    agent.taskTitle !== undefined &&
-    agent.taskTitle.trim().length > 0 &&
-    agent.taskTitle.trim() !== agent.name;
+    agent.taskTitle !== undefined && agent.taskTitle.trim().length > 0 && agent.taskTitle.trim() !== agent.name;
 
   const costLabel =
     agent.metrics?.costAmount !== undefined && agent.metrics.costAmount !== null
@@ -114,11 +104,7 @@ export const SubagentCard = memo(function SubagentCard({
       </View>
 
       <View style={styles.assignmentBlock}>
-        <Body
-          color={theme.ink.bright}
-          numberOfLines={2}
-          testID={`${testIDPrefix}-assignment-${agent.id}`}
-        >
+        <Body color={theme.ink.bright} numberOfLines={2} testID={`${testIDPrefix}-assignment-${agent.id}`}>
           {assignment}
         </Body>
         {hasSeparateName ? (
@@ -235,22 +221,14 @@ export function SubagentBoard(props: SubagentBoardProps): JSX.Element | null {
         testID={`subagent-board-column-${col.id}`}
       >
         <View style={styles.columnHead}>
-          <Kicker color={col.id === "needsYou" ? theme.signal.holding : theme.ink.muted}>
-            {col.title}
-          </Kicker>
+          <Kicker color={col.id === "needsYou" ? theme.signal.holding : theme.ink.muted}>{col.title}</Kicker>
           <Data color={theme.ink.plain} testID={`subagent-board-count-${col.id}`}>
             {String(items.length)}
           </Data>
         </View>
         <View style={styles.columnCards}>
           {items.map(agent => (
-            <SubagentCard
-              agent={agent}
-              key={agent.id}
-              now={now}
-              onOpen={onOpenSubagent}
-              testIDPrefix="subagent-card"
-            />
+            <SubagentCard agent={agent} key={agent.id} now={now} onOpen={onOpenSubagent} testIDPrefix="subagent-card" />
           ))}
         </View>
       </View>

@@ -10,11 +10,7 @@ import { resetWindowSize, setWindowSize } from "./rnw.ts";
 // evaluates a file's whole static import graph before its body runs, so a
 // static import of anything that reaches `react-native` would pull the real
 // package in before `./rnw.ts` could substitute `react-native-web` for it.
-const {
-  AGENT_STATE_TO_COLUMN,
-  columnForAgent,
-  SubagentBoard,
-} = await import("../src/components/SubagentBoard.tsx");
+const { AGENT_STATE_TO_COLUMN, columnForAgent, SubagentBoard } = await import("../src/components/SubagentBoard.tsx");
 const { SUBAGENT_UNOPENABLE } = await import("../src/components/AgentHub.tsx");
 
 declare global {
@@ -135,13 +131,7 @@ describe("SubagentBoard", () => {
 
   test("a fixture with five subagents across states renders the right columns and counts", () => {
     const opened: Agent[] = [];
-    const view = mount(
-      <SubagentBoard
-        agents={fiveSubagents}
-        now={NOW}
-        onOpenSubagent={agent => opened.push(agent)}
-      />,
-    );
+    const view = mount(<SubagentBoard agents={fiveSubagents} now={NOW} onOpenSubagent={agent => opened.push(agent)} />);
     try {
       expect(view.el("subagent-board-column-needsYou")).not.toBeNull();
       expect(view.el("subagent-board-count-needsYou")?.textContent).toBe("2");
@@ -166,13 +156,7 @@ describe("SubagentBoard", () => {
   });
 
   test("a failed subagent shows its failure sentence", () => {
-    const view = mount(
-      <SubagentBoard
-        agents={fiveSubagents}
-        now={NOW}
-        onOpenSubagent={() => {}}
-      />,
-    );
+    const view = mount(<SubagentBoard agents={fiveSubagents} now={NOW} onOpenSubagent={() => {}} />);
     try {
       const failureEl = view.el("subagent-card-failure-agt_failed");
       expect(failureEl).not.toBeNull();
@@ -185,11 +169,7 @@ describe("SubagentBoard", () => {
   test("tap calls onOpenSubagent with the id", () => {
     const opened: string[] = [];
     const view = mount(
-      <SubagentBoard
-        agents={fiveSubagents}
-        now={NOW}
-        onOpenSubagent={agent => opened.push(agent.id)}
-      />,
+      <SubagentBoard agents={fiveSubagents} now={NOW} onOpenSubagent={agent => opened.push(agent.id)} />,
     );
     try {
       view.press("subagent-card-open-agt_busy");
@@ -208,13 +188,7 @@ describe("SubagentBoard", () => {
       subagent("agt_work", { state: "busy", taskTitle: "Doing work" }),
       subagent("agt_complete", { state: "stopped", taskTitle: "Work done" }),
     ];
-    const view = mount(
-      <SubagentBoard
-        agents={subset}
-        now={NOW}
-        onOpenSubagent={() => {}}
-      />,
-    );
+    const view = mount(<SubagentBoard agents={subset} now={NOW} onOpenSubagent={() => {}} />);
     try {
       expect(view.el("subagent-board-column-working")).not.toBeNull();
       expect(view.el("subagent-board-column-done")).not.toBeNull();
@@ -231,13 +205,7 @@ describe("SubagentBoard", () => {
   });
 
   test("cost only appears when metrics carry costAmount", () => {
-    const view = mount(
-      <SubagentBoard
-        agents={fiveSubagents}
-        now={NOW}
-        onOpenSubagent={() => {}}
-      />,
-    );
+    const view = mount(<SubagentBoard agents={fiveSubagents} now={NOW} onOpenSubagent={() => {}} />);
     try {
       expect(view.host.textContent).toContain("cost 0.0125");
       expect(view.host.textContent).not.toContain("cost 0.0000");
@@ -247,13 +215,7 @@ describe("SubagentBoard", () => {
   });
 
   test("shows model when known and elapsed since lastActiveAt", () => {
-    const view = mount(
-      <SubagentBoard
-        agents={fiveSubagents}
-        now={NOW}
-        onOpenSubagent={() => {}}
-      />,
-    );
+    const view = mount(<SubagentBoard agents={fiveSubagents} now={NOW} onOpenSubagent={() => {}} />);
     try {
       expect(view.host.textContent).toContain("anthropic/claude-sonnet-5");
       expect(view.host.textContent).toContain("2:00");
@@ -268,13 +230,7 @@ describe("SubagentBoard", () => {
       taskTitle: "Collab mirror without session",
       acpSessionId: undefined,
     });
-    const view = mount(
-      <SubagentBoard
-        agents={[unopenable]}
-        now={NOW}
-        onOpenSubagent={() => {}}
-      />,
-    );
+    const view = mount(<SubagentBoard agents={[unopenable]} now={NOW} onOpenSubagent={() => {}} />);
     try {
       expect(view.el("subagent-card-open-agt_mirror")).toBeNull();
       expect(view.el("subagent-card-row-agt_mirror")).not.toBeNull();
@@ -287,13 +243,7 @@ describe("SubagentBoard", () => {
   test("tablet renders a row of columns; phone renders a horizontal scroll", () => {
     // Phone layout
     setWindowSize(390, 844);
-    const phoneView = mount(
-      <SubagentBoard
-        agents={fiveSubagents}
-        now={NOW}
-        onOpenSubagent={() => {}}
-      />,
-    );
+    const phoneView = mount(<SubagentBoard agents={fiveSubagents} now={NOW} onOpenSubagent={() => {}} />);
     try {
       expect(phoneView.el("subagent-board-phone")).not.toBeNull();
       expect(phoneView.el("subagent-board-tablet")).toBeNull();
@@ -303,13 +253,7 @@ describe("SubagentBoard", () => {
 
     // Tablet layout
     setWindowSize(1024, 1366);
-    const tabletView = mount(
-      <SubagentBoard
-        agents={fiveSubagents}
-        now={NOW}
-        onOpenSubagent={() => {}}
-      />,
-    );
+    const tabletView = mount(<SubagentBoard agents={fiveSubagents} now={NOW} onOpenSubagent={() => {}} />);
     try {
       expect(tabletView.el("subagent-board-tablet")).not.toBeNull();
       expect(tabletView.el("subagent-board-phone")).toBeNull();

@@ -30,9 +30,9 @@ import type { Agent, ApprovalChoice, ApprovalScope } from "@ompd/core/contracts"
 import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { OmpEntryRowProps } from "../src/assistant/renderers.tsx";
-import type { Entry } from "../src/session/model.ts";
 // Pure data with no `react-native` in its graph, so this one can stay static.
 import { attributionWidthCompact } from "../src/design/rhythm.ts";
+import type { Entry } from "../src/session/model.ts";
 import { resetWindowSize, setWindowSize } from "./rnw.ts";
 import { advance } from "./type-metrics.ts";
 

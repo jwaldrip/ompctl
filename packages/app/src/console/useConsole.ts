@@ -909,6 +909,7 @@ export function useConsole(
       connection.scopes,
       leaveCollab,
       requestHistory,
+      requestStats,
       settleWebViewAction,
       selectAgent,
       voice,

@@ -196,11 +196,7 @@ export const SessionRow = memo(function SessionRow({
             />
             <Reading testID={`session-messages-${session.id}`} value={String(session.messageCount)} label="msgs" />
             {session.cost != null ? (
-              <Reading
-                testID={`session-spend-${session.id}`}
-                value={formatCostReading(session.cost)}
-                label="spend"
-              />
+              <Reading testID={`session-spend-${session.id}`} value={formatCostReading(session.cost)} label="spend" />
             ) : null}
             {isTablet ? (
               <Reading testID={`session-size-${session.id}`} value={formatBytes(session.sizeBytes)} label="size" />
@@ -299,10 +295,7 @@ const moreActionStyle = ({ pressed }: PressableStateCallbackType) => [
   pressed && styles.actionPressed,
 ];
 
-const menuItemStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.menuItem,
-  pressed && styles.actionPressed,
-];
+const menuItemStyle = ({ pressed }: PressableStateCallbackType) => [styles.menuItem, pressed && styles.actionPressed];
 
 const styles = StyleSheet.create({
   row: {

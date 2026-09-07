@@ -205,7 +205,10 @@ export type BrowserAction =
   | { t: "setView"; view: "list" | "board" }
   | { t: "setProject"; project: string | null }
   | { t: "setQuery"; query: string }
-  | { t: "hydratePrefs"; prefs: { sort?: SortSpec; grouped?: boolean; project?: string | null; view?: "list" | "board" } }
+  | {
+      t: "hydratePrefs";
+      prefs: { sort?: SortSpec; grouped?: boolean; project?: string | null; view?: "list" | "board" };
+    }
   | { t: "archive"; id: string }
   | { t: "unarchive"; id: string };
 export function browserReduce(state: BrowserState, action: BrowserAction): BrowserState {

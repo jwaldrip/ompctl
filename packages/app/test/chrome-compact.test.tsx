@@ -256,7 +256,7 @@ describe("compact chrome on phone vs tablet", () => {
 
   test("chrome height budget constants total under 200 px at 390 px width", () => {
     expect(attributionWidthCompact).toBe(28);
-      expect(attributionWidthTablet).toBe(72);
+    expect(attributionWidthTablet).toBe(72);
 
     expect(CHROME_HEADER_HEIGHT_COMPACT).toBe(48);
     expect(CHROME_STRIP_SUMMARY_HEIGHT).toBe(36);

@@ -161,10 +161,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
    */
   const subagentNodes = useMemo(() => subagentsOf(props.agents, agent.id), [props.agents, agent.id]);
   const subagents = useMemo(() => flattenSubagentNodes(subagentNodes), [subagentNodes]);
-  const needsYouCount = useMemo(
-    () => subagents.filter(sub => columnForAgent(sub) === "needsYou").length,
-    [subagents],
-  );
+  const needsYouCount = useMemo(() => subagents.filter(sub => columnForAgent(sub) === "needsYou").length, [subagents]);
   const phases = todoPhases(session.plan);
   const progress = todoProgress(session.plan);
   const rows = contextRows(props);
@@ -181,10 +178,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
         ? `${subagents.length} ${subagents.length === 1 ? "subagent" : "subagents"}, ${needsYouCount === 1 ? "1 needs you" : `${needsYouCount} need you`}`
         : `${subagents.length} ${subagents.length === 1 ? "subagent" : "subagents"}`;
 
-  const summary = [
-    session.plan.length === 0 ? null : `${progress.done}/${progress.total} todos`,
-    subagentSummary,
-  ]
+  const summary = [session.plan.length === 0 ? null : `${progress.done}/${progress.total} todos`, subagentSummary]
     .filter(part => part !== null)
     .join(" · ");
 
@@ -294,11 +288,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
                     {String(subagents.length)}
                   </Chip>
                 </View>
-                <SubagentBoard
-                  agents={subagents}
-                  now={props.now ?? Date.now()}
-                  onOpenSubagent={props.onOpenSubagent}
-                />
+                <SubagentBoard agents={subagents} now={props.now ?? Date.now()} onOpenSubagent={props.onOpenSubagent} />
               </View>
             )}
 

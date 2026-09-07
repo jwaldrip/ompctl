@@ -287,13 +287,7 @@ export const AgentHubBranch = memo(function AgentHubBranch({
   const { agent } = node;
   return (
     <View style={styles.branch} testID={`agent-hub-${agent.id}`}>
-      <SubagentCard
-        agent={agent}
-        depth={depth}
-        now={now}
-        onOpen={onOpen}
-        testIDPrefix="agent-hub"
-      />
+      <SubagentCard agent={agent} depth={depth} now={now} onOpen={onOpen} testIDPrefix="agent-hub" />
       {node.children.map(child => (
         <AgentHubBranch key={child.agent.id} node={child} depth={depth + 1} now={now} onOpen={onOpen} />
       ))}

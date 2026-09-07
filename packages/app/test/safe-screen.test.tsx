@@ -12,9 +12,9 @@
 import "./rnw.ts";
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { resetWindowSize, setWindowSize } from "./rnw.ts";
 import { act, type ComponentProps, createContext, type JSX, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
 // Known insets, set before SafeScreen is imported so the module sees them.
 // The shape mirrors ./rnw.ts's mock rather than stubbing two exports: this

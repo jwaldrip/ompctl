@@ -17,7 +17,7 @@ import { memo, useMemo } from "react";
 import { Pressable, type PressableStateCallbackType, ScrollView, StyleSheet, View } from "react-native";
 import { useIsTablet } from "../design/layout.ts";
 import { Body, Data, Kicker, Label, Title } from "../design/text.tsx";
-import { ground, ink, radius, signal, type SignalName, signalWash, space, stroke } from "../design/tokens.ts";
+import { ground, ink, radius, type SignalName, signal, signalWash, space, stroke } from "../design/tokens.ts";
 import type { BrowserSession } from "../session/browser.ts";
 import { formatAge } from "../session/browser.ts";
 import { formatCostReading } from "./SessionRow.tsx";
@@ -230,11 +230,7 @@ export const SessionBoard = memo(function SessionBoard({
       {isTablet ? (
         <View style={styles.tabletRow}>{boardContent}</View>
       ) : (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.phoneScrollContent}
-        >
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.phoneScrollContent}>
           {boardContent}
         </ScrollView>
       )}
@@ -242,10 +238,7 @@ export const SessionBoard = memo(function SessionBoard({
   );
 });
 
-const cardStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.card,
-  pressed && styles.cardPressed,
-];
+const cardStyle = ({ pressed }: PressableStateCallbackType) => [styles.card, pressed && styles.cardPressed];
 
 interface SessionCardProps {
   card: BoardSessionCard;
@@ -273,30 +266,19 @@ const SessionCard = memo(function SessionCard({ card, onOpen, now }: SessionCard
     >
       <View style={styles.cardHead}>
         <View style={styles.cardHeadLead}>
-          <View
-            testID={`session-card-signal-${session.id}`}
-            style={[styles.signalDot, { backgroundColor: tone }]}
-          />
+          <View testID={`session-card-signal-${session.id}`} style={[styles.signalDot, { backgroundColor: tone }]} />
           <Kicker color={ink.muted} numberOfLines={1} testID={`session-card-project-${session.id}`}>
             {project}
           </Kicker>
         </View>
       </View>
 
-      <Title
-        color={ink.bright}
-        numberOfLines={2}
-        style={styles.cardTitle}
-        testID={`session-card-title-${session.id}`}
-      >
+      <Title color={ink.bright} numberOfLines={2} style={styles.cardTitle} testID={`session-card-title-${session.id}`}>
         {title}
       </Title>
 
       {reason ? (
-        <View
-          testID={`session-card-reason-${session.id}`}
-          style={[styles.reasonChip, { backgroundColor: wash }]}
-        >
+        <View testID={`session-card-reason-${session.id}`} style={[styles.reasonChip, { backgroundColor: wash }]}>
           <Label color={tone} style={styles.reasonText}>
             {reason}
           </Label>

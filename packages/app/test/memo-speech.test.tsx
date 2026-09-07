@@ -14,7 +14,6 @@
 import "./rnw.ts";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { resetWindowSize, setWindowSize } from "./rnw.ts";
 import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act } from "react";
@@ -25,6 +24,7 @@ import type { Connection } from "../src/platform/connection.ts";
 import type { SessionVoice } from "../src/screens/SessionScreen.tsx";
 import { EMPTY_SESSION } from "../src/session/model.ts";
 import type { MemoVoice, OmpctlVoiceModule } from "../src/voice/memo.ts";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
 // These modules import React Native. Loading them after rnw.ts is what makes
 // this test exercise the web target instead of Bun trying to load native

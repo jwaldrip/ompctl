@@ -12,15 +12,7 @@
 
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
-import {
-  FlatList,
-  Modal,
-  Pressable,
-  type PressableStateCallbackType,
-  StyleSheet,
-  TextInput,
-  View,
-} from "react-native";
+import { FlatList, Modal, Pressable, type PressableStateCallbackType, StyleSheet, TextInput, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
 import { Body, Kicker, Label } from "../design/text.tsx";
@@ -110,20 +102,20 @@ export function ProjectPicker({
 
   const selectedSummary = useMemo(() => {
     if (selectedProject === null) return null;
-    return allProjects.find(p => p.cwd === selectedProject) ?? {
-      cwd: selectedProject,
-      basename: selectedProject.split("/").filter(Boolean).pop() ?? selectedProject,
-      sessionCount: 0,
-      lastActiveAt: "",
-    };
+    return (
+      allProjects.find(p => p.cwd === selectedProject) ?? {
+        cwd: selectedProject,
+        basename: selectedProject.split("/").filter(Boolean).pop() ?? selectedProject,
+        sessionCount: 0,
+        lastActiveAt: "",
+      }
+    );
   }, [allProjects, selectedProject]);
 
   const filteredProjects = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
     if (!trimmed) return allProjects;
-    return allProjects.filter(
-      p => p.basename.toLowerCase().includes(trimmed) || p.cwd.toLowerCase().includes(trimmed),
-    );
+    return allProjects.filter(p => p.basename.toLowerCase().includes(trimmed) || p.cwd.toLowerCase().includes(trimmed));
   }, [allProjects, query]);
 
   const handleSelect = (cwd: string | null) => {
@@ -172,12 +164,7 @@ export function ProjectPicker({
       )}
 
       {open ? (
-        <Modal
-          visible={open}
-          transparent
-          animationType="none"
-          onRequestClose={() => setOpen(false)}
-        >
+        <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
           <Pressable
             testID="project-picker-backdrop"
             accessibilityLabel="Close project picker"
@@ -248,15 +235,8 @@ export function ProjectPicker({
                 >
                   <View style={styles.rowMain}>
                     <View style={styles.rowNameGroup}>
-                      <Glyph
-                        name="folder"
-                        size={13}
-                        color={selectedProject === null ? brand.azure : ink.muted}
-                      />
-                      <Body
-                        color={selectedProject === null ? brand.azure : ink.bright}
-                        numberOfLines={1}
-                      >
+                      <Glyph name="folder" size={13} color={selectedProject === null ? brand.azure : ink.muted} />
+                      <Body color={selectedProject === null ? brand.azure : ink.bright} numberOfLines={1}>
                         All projects
                       </Body>
                     </View>
@@ -286,15 +266,8 @@ export function ProjectPicker({
                   >
                     <View style={styles.rowMain}>
                       <View style={styles.rowNameGroup}>
-                        <Glyph
-                          name="folder"
-                          size={13}
-                          color={isSelected ? brand.azure : ink.muted}
-                        />
-                        <Body
-                          color={isSelected ? brand.azure : ink.bright}
-                          numberOfLines={1}
-                        >
+                        <Glyph name="folder" size={13} color={isSelected ? brand.azure : ink.muted} />
+                        <Body color={isSelected ? brand.azure : ink.bright} numberOfLines={1}>
                           {item.basename}
                         </Body>
                       </View>
@@ -316,10 +289,7 @@ export function ProjectPicker({
   );
 }
 
-const triggerStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.trigger,
-  pressed && styles.triggerPressed,
-];
+const triggerStyle = ({ pressed }: PressableStateCallbackType) => [styles.trigger, pressed && styles.triggerPressed];
 
 const selectedMainStyle = ({ pressed }: PressableStateCallbackType) => [
   styles.selectedMain,
@@ -331,10 +301,7 @@ const selectedClearStyle = ({ pressed }: PressableStateCallbackType) => [
   pressed && styles.triggerPressed,
 ];
 
-const closeBtnStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.closeBtn,
-  pressed && styles.triggerPressed,
-];
+const closeBtnStyle = ({ pressed }: PressableStateCallbackType) => [styles.closeBtn, pressed && styles.triggerPressed];
 
 const styles = StyleSheet.create({
   container: {

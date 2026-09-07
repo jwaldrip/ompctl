@@ -12,10 +12,10 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
+import type { Agent } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { Agent } from "@ompd/core/contracts";
 import type { BrowserSession } from "../src/session/browser.ts";
 
 declare global {
@@ -125,7 +125,7 @@ const EIGHT_SESSIONS: BrowserSession[] = [
     lastActiveAt: new Date(NOW - 86400_000 * 2).toISOString(),
     messageCount: 220,
     sizeBytes: 12000,
-    cost: 2.10,
+    cost: 2.1,
   },
   // Extra: archived session (should be omitted)
   {
@@ -365,9 +365,7 @@ describe("SessionBoard component rendering and interactions", () => {
   });
 
   test("renders empty state when all columns are empty", () => {
-    const markup = renderToStaticMarkup(
-      <SessionBoard sessions={[]} onOpen={() => {}} now={NOW} />,
-    );
+    const markup = renderToStaticMarkup(<SessionBoard sessions={[]} onOpen={() => {}} now={NOW} />);
     expect(markup).toContain('data-testid="board-empty"');
     expect(markup).toContain("No sessions on the board.");
   });

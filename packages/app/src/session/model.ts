@@ -846,11 +846,7 @@ export function endTurn(state: SessionState): SessionState {
  * mid-turn usage updates can only add cost. Context window figures (used/size)
  * are preserved.
  */
-export function seedCost(
-  state: SessionState,
-  costAmount: number,
-  costCurrency = "USD",
-): SessionState {
+export function seedCost(state: SessionState, costAmount: number, costCurrency = "USD"): SessionState {
   if (!Number.isFinite(costAmount) || costAmount < 0) return state;
   const previous = state.usage;
   if (previous === null) {

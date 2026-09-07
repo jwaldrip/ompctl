@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import type { Entry, SessionState } from "../src/session/model.ts";
 import { EMPTY_SESSION, endTurn, reduce } from "../src/session/model.ts";
 import { resetWindowSize, setWindowSize } from "./rnw.ts";
+
 // These modules import React Native. Loading them after rnw.ts is what makes
 // this test exercise the web target instead of Bun trying to load native code.
 

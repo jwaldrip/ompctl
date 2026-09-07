@@ -56,7 +56,6 @@ afterEach(() => {
   resetWindowSize();
 });
 
-
 // ---------------------------------------------------------------------------
 // The store, and the composer standing on it
 // ---------------------------------------------------------------------------
@@ -942,9 +941,7 @@ describe("slash commands, file picker, and prompt queue", () => {
   });
 
   test("command names in the slash menu render in brand.azure", async () => {
-    const commands = [
-      { name: "commit", description: "Create a git commit", hint: "[message]" },
-    ];
+    const commands = [{ name: "commit", description: "Create a git commit", hint: "[message]" }];
     const m = open({}, { commands });
     try {
       const input = m.need("composer-input") as HTMLTextAreaElement;
@@ -967,27 +964,27 @@ describe("slash commands, file picker, and prompt queue", () => {
     const mockClient = {
       listDirectory(path?: string) {
         if (path === refusedPath) {
-          listeners["error"]?.forEach(cb =>
+          for (const cb of listeners.error ?? []) {
             cb({
               code: "out_of_roots",
               message: `${refusedPath} resolves outside this daemon's browsable directories`,
-            }),
-          );
+            });
+          }
         } else if (path === "" || path === undefined) {
-          listeners["fs_listing"]?.forEach(cb =>
+          for (const cb of listeners.fs_listing ?? []) {
             cb({
               path: "",
               parent: null,
               roots,
               entries: roots.map(r => ({ name: r, kind: "dir" as const })),
               bounded: false,
-            }),
-          );
+            });
+          }
         }
       },
-      on(event: string, listener: (arg: unknown) => void) {
+      on(event: string, listener: (...args: never[]) => void) {
         listeners[event] = listeners[event] ?? [];
-        listeners[event].push(listener);
+        listeners[event].push(listener as (arg: unknown) => void);
         return () => {
           const list = listeners[event];
           if (list) listeners[event] = list.filter(l => l !== listener);

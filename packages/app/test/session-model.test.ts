@@ -313,7 +313,6 @@ describe("tool content and diff extraction", () => {
   });
 });
 
-
 describe("seedCost", () => {
   test("seeds costAmount and costCurrency when usage is null", () => {
     expect(EMPTY_SESSION.usage).toBeNull();
@@ -331,7 +330,7 @@ describe("seedCost", () => {
       usage: {
         used: 12_000,
         size: 200_000,
-        costAmount: 0.10,
+        costAmount: 0.1,
         costCurrency: "USD",
       },
     };
@@ -348,13 +347,13 @@ describe("seedCost", () => {
       usage: {
         used: 12_000,
         size: 200_000,
-        costAmount: 1.50,
+        costAmount: 1.5,
         costCurrency: "USD",
       },
     };
-    const updated = seedCost(initial, 1.00);
+    const updated = seedCost(initial, 1.0);
     expect(updated).toBe(initial);
-    expect(updated.usage?.costAmount).toBe(1.50);
+    expect(updated.usage?.costAmount).toBe(1.5);
   });
 
   test("ignores invalid or negative costs", () => {

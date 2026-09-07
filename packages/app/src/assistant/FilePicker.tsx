@@ -20,7 +20,8 @@ export interface FilePickerErrorEvent {
 
 export interface FilePickerClient {
   listDirectory?(path?: string): void;
-  on?(event: string, listener: Function): () => void;
+  /** `fs_listing` delivers an FsListing; `error` delivers a FilePickerErrorEvent. */
+  on?(event: "fs_listing" | "error", listener: (...args: never[]) => void): () => void;
 }
 
 export interface FilePickerProps {
@@ -130,7 +131,7 @@ export function FilePicker({
       unsubListing?.();
       unsubError?.();
     };
-  }, [client, currentPath, normCwd]);
+  }, [client, currentPath]);
 
   const breadcrumbs = useMemo(() => breadcrumbSegments(normCwd, currentPath), [normCwd, currentPath]);
 
@@ -208,9 +209,7 @@ export function FilePicker({
           <View style={styles.refusal} testID="file-picker-refusal">
             <View style={styles.refusalHeader}>
               <Glyph name="warning" size={13} color={signal.holding} />
-              <Label style={[type.label, styles.refusalTitle]}>
-                Outside this daemon's browsable directories
-              </Label>
+              <Label style={[type.label, styles.refusalTitle]}>Outside this daemon's browsable directories</Label>
             </View>
             <Label style={[type.code, styles.refusalPath]} numberOfLines={2}>
               {refusal.path}

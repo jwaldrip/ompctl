@@ -25,6 +25,7 @@
  * above has already paid it, `useOwnedBottomInset` reads zero and nothing doubles.
  */
 
+import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useMemo } from "react";
@@ -37,7 +38,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import type { Agent, AgentId } from "@ompd/core/contracts";
 import { GroupHeader } from "../components/GroupHeader.tsx";
 import { ProjectPicker } from "../components/ProjectPicker.tsx";
 import { SessionBoard } from "../components/SessionBoard.tsx";

@@ -384,7 +384,11 @@ export function OmpComposer({
   const isRecording = voice.capturing;
   const isRefusalNotice =
     micNotice !== null &&
-    (isTablet || voice.access === "missing" || voice.busyElsewhere || isDisabled || micNotice === "no microphone in this test");
+    (isTablet ||
+      voice.access === "missing" ||
+      voice.busyElsewhere ||
+      isDisabled ||
+      micNotice === "no microphone in this test");
   const hasNotes = isRecording || isRefusalNotice || voice.dictation !== null || refusal !== undefined;
   const handleQueue = () => {
     if (queueHeld) return;
@@ -556,7 +560,10 @@ export function OmpComposer({
           composers, absent entirely while there is nothing to say -- so an
           ordinary empty composer is the field and the row.
         */}
-        <AttachmentsBar band={isTablet ? band : { ...band, status: band.unavailable ? "" : band.status }} prefix={prefix} />
+        <AttachmentsBar
+          band={isTablet ? band : { ...band, status: band.unavailable ? "" : band.status }}
+          prefix={prefix}
+        />
 
         {/* Transient capability notice row, revealed on press of disabled affordances */}
         {activeNotice !== null ? (
@@ -626,9 +633,7 @@ export function OmpComposer({
             testID={`${prefix}-actions-left`}
             onPress={() => {
               if (band.disabled) {
-                setActiveNotice(prev =>
-                  prev?.kind === "attach" ? null : { kind: "attach", text: band.status },
-                );
+                setActiveNotice(prev => (prev?.kind === "attach" ? null : { kind: "attach", text: band.status }));
               }
             }}
           >
@@ -641,9 +646,7 @@ export function OmpComposer({
             <IconButton
               testID={`${prefix}-attach`}
               disabled={band.disabled}
-              accessibilityLabel={
-                band.disabled && band.status !== "" ? band.status : "Attach an image to this prompt"
-              }
+              accessibilityLabel={band.disabled && band.status !== "" ? band.status : "Attach an image to this prompt"}
               accessibilityHint="Choose images from this device's photo library"
               accessibilityState={{ disabled: band.disabled }}
               onPress={band.pick}
@@ -652,11 +655,7 @@ export function OmpComposer({
                   name="attachment"
                   size={size}
                   color={
-                    band.disabled
-                      ? theme.ink.faint
-                      : band.images.length > 0
-                        ? theme.signal.ready
-                        : theme.ink.plain
+                    band.disabled ? theme.ink.faint : band.images.length > 0 ? theme.signal.ready : theme.ink.plain
                   }
                 />
               )}

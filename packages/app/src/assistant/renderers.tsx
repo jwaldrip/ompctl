@@ -106,7 +106,10 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
           <View
             style={[
               styles.gutter,
-              { width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact, borderLeftColor: signal.ready },
+              {
+                width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact,
+                borderLeftColor: signal.ready,
+              },
             ]}
             accessible
             accessibilityLabel="agent"
@@ -154,7 +157,10 @@ export function OmpEntryRow({ entry, canApprove, refusal, onDecide }: OmpEntryRo
             <View
               style={[
                 styles.gutter,
-                { width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact, borderLeftColor: signal.holding },
+                {
+                  width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact,
+                  borderLeftColor: signal.holding,
+                },
               ]}
               accessible
               accessibilityLabel="clearance"
@@ -224,7 +230,10 @@ function ThinkingRow({
       <View
         style={[
           styles.gutter,
-          { width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact, borderLeftColor: signal.reasoning },
+          {
+            width: isTablet ? attributionWidth(fontScale) : attributionWidthCompact,
+            borderLeftColor: signal.reasoning,
+          },
         ]}
         accessible
         accessibilityLabel="thinking"

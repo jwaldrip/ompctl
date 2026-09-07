@@ -68,10 +68,10 @@ import {
   faTerminal,
   faTrashCan,
   faTriangleExclamation,
+  faUser,
   faVolumeHigh,
   faWandMagicSparkles,
   faWindowMaximize,
-  faUser,
   faXmark,
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-native-fontawesome";

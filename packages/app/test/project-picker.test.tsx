@@ -70,11 +70,7 @@ describe("project picker rendered surface", () => {
 
   test("trigger renders 'All projects' when no project selected", () => {
     const html = renderToStaticMarkup(
-      <ProjectPicker
-        sessions={sessions}
-        selectedProject={null}
-        onSelectProject={() => {}}
-      />,
+      <ProjectPicker sessions={sessions} selectedProject={null} onSelectProject={() => {}} />,
     );
     expect(html).toContain('data-testid="project-picker-trigger"');
     expect(html).toContain("All projects");
@@ -82,11 +78,7 @@ describe("project picker rendered surface", () => {
 
   test("trigger renders single removable chip with brand.azure when project selected", () => {
     const html = renderToStaticMarkup(
-      <ProjectPicker
-        sessions={sessions}
-        selectedProject="/Users/op/dev/src/beta"
-        onSelectProject={() => {}}
-      />,
+      <ProjectPicker sessions={sessions} selectedProject="/Users/op/dev/src/beta" onSelectProject={() => {}} />,
     );
     expect(html).toContain('data-testid="project-chip-selected"');
     expect(html).toContain("beta");
@@ -102,13 +94,7 @@ describe("project picker rendered surface", () => {
 
     try {
       act(() => {
-        root.render(
-          <ProjectPicker
-            sessions={sessions}
-            selectedProject={null}
-            onSelectProject={() => {}}
-          />,
-        );
+        root.render(<ProjectPicker sessions={sessions} selectedProject={null} onSelectProject={() => {}} />);
       });
 
       // Initially closed: modal portal not mounted
@@ -146,12 +132,7 @@ describe("project picker rendered surface", () => {
     try {
       act(() => {
         root.render(
-          <ProjectPicker
-            sessions={sessions}
-            selectedProject={null}
-            onSelectProject={() => {}}
-            initialQuery="alp"
-          />,
+          <ProjectPicker sessions={sessions} selectedProject={null} onSelectProject={() => {}} initialQuery="alp" />,
         );
       });
 
