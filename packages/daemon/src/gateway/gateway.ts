@@ -83,6 +83,7 @@ import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
+import { StatsSubsystem } from "../stats/index.ts";
 import {
   AgentBusyError,
   createAgentId,
@@ -1210,6 +1211,7 @@ export interface GatewayOptions {
    * here" and "this daemon build has no catalogue wired in".
    */
   sessionIndex?: SessionIndex;
+  stats?: StatsSubsystem;
   /**
    * Reads live endpoint offers from config and identity. Absent, `GET
    * /v1/endpoints` reports an empty offer list rather than an error: unlike
@@ -1392,6 +1394,7 @@ export class Gateway {
   #syncConfig: SyncConfig | undefined;
   #tasks: TaskCatalog | undefined;
   #sessionIndex: SessionIndex | undefined;
+  #stats: StatsSubsystem;
   /**
    * The sessions-root watcher, running only while at least one socket has
    * asked for the index. Started lazily by the first `sessions` ask and
@@ -1499,6 +1502,8 @@ export class Gateway {
     this.#mcpAuth = opts.mcpAuth;
     this.#tasks = opts.tasks;
     this.#sessionIndex = opts.sessionIndex;
+    this.#stats = opts.stats ?? new StatsSubsystem();
+    this.#stats.start();
     this.#endpoints = opts.endpoints;
     this.#filesystem = opts.filesystem;
     this.#onWebViewResult = opts.onWebViewResult;
@@ -1521,7 +1526,9 @@ export class Gateway {
         for (const ws of this.#sockets) {
           if (ws.data.attached.size === 0) continue;
           if (ws.data.scopes.has(SCOPE_READ)) this.#send(ws, { t: "agents", agents });
+          if (ws.data.scopes.has(SCOPE_READ)) this.#send(ws, { t: "agents", agents });
         }
+        void this.#stats.sync().catch(() => {});
       },
       onApprovalNeeded: approval => {
         for (const ws of this.#sockets) {
@@ -1647,6 +1654,7 @@ export class Gateway {
     this.#unsubscribeSay = undefined;
     this.#unsubscribeRevoked?.();
     this.#unsubscribeRevoked = undefined;
+    this.#stats.stop();
     this.#disarmSessionWatcher();
     for (const ws of [...this.#sockets]) this.#close(ws);
     // Relay legs are not in `#sockets`; `stop(true)` tears them down with
@@ -3000,6 +3008,21 @@ export class Gateway {
       const parsed = parseSessionQuery(url);
       if ("error" in parsed) return Response.json({ error: parsed.error }, { status: 400 });
       return Response.json({ groups: await index.grouped(parsed.query) });
+    }
+
+    if (path === "/v1/stats" && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const stats = await this.#stats.getDashboardStats(url.searchParams.get("range"));
+      return Response.json(stats);
+    }
+
+    const sessionStatsRoute = /^\/v1\/sessions\/([^/]+)\/stats$/.exec(path);
+    if (sessionStatsRoute && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const sessionId = sessionStatsRoute[1] ?? "";
+      const stats = await this.#stats.getSessionStats(sessionId);
+      if (!stats) return Response.json({ error: "session_not_found" }, { status: 404 });
+      return Response.json(stats);
     }
 
     const sessionTakeoverRoute = /^\/v1\/sessions\/([^/]+)\/takeover$/.exec(path);
@@ -4432,6 +4455,28 @@ export class Gateway {
         // the file and reading its tail are async, and every socket must keep
         // being served while one client's transcript is read.
         void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit, frame.cursor);
+        return;
+      }
+
+      case "session_stats": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "session stats requires read scope",
+          });
+          return;
+        }
+        if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
+          this.#send(ws, {
+            t: "error",
+            code: "invalid_request",
+            message: "sessionId must be a non-empty string",
+          });
+          return;
+        }
+        void this.#serveSessionStatsFrame(ws, frame.sessionId);
         return;
       }
 
@@ -6078,6 +6123,29 @@ export class Gateway {
         sessionId,
         code: "session_tail_failed",
         message: err instanceof Error ? err.message : "session tail failed",
+      });
+    }
+  }
+
+  async #serveSessionStatsFrame(ws: GatewaySocket, sessionId: string): Promise<void> {
+    try {
+      const stats = await this.#stats.getSessionStats(sessionId);
+      if (!stats) {
+        this.#send(ws, {
+          t: "error",
+          sessionId,
+          code: "not_found",
+          message: "unknown_session",
+        });
+        return;
+      }
+      this.#send(ws, { t: "session_stats", sessionId, stats });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        sessionId,
+        code: "stats_failed",
+        message: err instanceof Error ? err.message : "failed to load session stats",
       });
     }
   }

@@ -1390,6 +1390,8 @@ export type ClientFrame =
       routineId?: string;
       labels?: Record<string, string>;
     }
+  /** Request per-session stats (cost, tokens, cache rate). Answered by session_stats to the asking socket only. */
+  | { t: "session_stats"; sessionId: string }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -1592,9 +1594,8 @@ export type ServerFrame =
    * asked for.
    */
   | { t: "agent_config"; agentId: AgentId; configOptions: AgentConfigOption[] }
+  | { t: "session_stats"; sessionId: string; stats: SessionStats }
   | { t: "pong" };
-
-// ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
 
@@ -2084,6 +2085,8 @@ export interface SessionSummary {
   byteSize: number;
   status: SessionLiveStatus;
   archived: boolean;
+  /** Total session cost in USD summed from assistant usage lines, or null when not reported. */
+  cost?: number | null;
   /** Present only when `status` is "live-tui". */
   pid?: number;
   /** Present only when `status` is "live-ompd". */
@@ -2298,3 +2301,108 @@ export type RemoteStartServerFrame =
   | { t: "clone_progress"; cloneId: CloneId; line: string }
   /** The clone finished and `path` now exists. The terminal frame; failures use `error`. */
   | { t: "clone_done"; cloneId: CloneId; path: string };
+
+// ---------------------------------------------------------------------------
+// Stats
+// ---------------------------------------------------------------------------
+
+export interface SessionStatsTokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface SessionStats {
+  cost: number;
+  tokens: SessionStatsTokens;
+  cacheRate: number;
+  calls: number;
+  errors: number;
+}
+
+export interface AggregatedStats {
+  totalRequests: number;
+  successfulRequests: number;
+  failedRequests: number;
+  errorRate: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheWriteTokens: number;
+  cacheRate: number;
+  totalCost: number;
+  totalPremiumRequests: number;
+  avgDuration: number | null;
+  avgTtft: number | null;
+  avgTokensPerSecond: number | null;
+  firstTimestamp: number;
+  lastTimestamp: number;
+}
+
+export interface ModelStats extends AggregatedStats {
+  model: string;
+  provider: string;
+}
+
+export interface FolderStats extends AggregatedStats {
+  folder: string;
+}
+
+export type StatsAgentType = "main" | "subagent" | "advisor";
+
+export interface AgentTypeStats {
+  agentType: StatsAgentType;
+  totalRequests: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheWriteTokens: number;
+  totalCost: number;
+}
+
+export interface TimeSeriesPoint {
+  timestamp: number;
+  requests: number;
+  errors: number;
+  tokens: number;
+  cost: number;
+}
+
+export interface ModelTimeSeriesPoint {
+  timestamp: number;
+  model: string;
+  provider: string;
+  requests: number;
+}
+
+export interface ModelPerformancePoint {
+  timestamp: number;
+  model: string;
+  provider: string;
+  requests: number;
+  avgTtft: number | null;
+  avgTokensPerSecond: number | null;
+}
+
+export interface CostTimeSeriesPoint {
+  timestamp: number;
+  model: string;
+  provider: string;
+  cost: number;
+  costInput: number;
+  costOutput: number;
+  costCacheRead: number;
+  costCacheWrite: number;
+}
+
+export interface DashboardStats {
+  overall: AggregatedStats;
+  byModel: ModelStats[];
+  byFolder: FolderStats[];
+  byAgentType: AgentTypeStats[];
+  timeSeries: TimeSeriesPoint[];
+  modelSeries: ModelTimeSeriesPoint[];
+  modelPerformanceSeries: ModelPerformancePoint[];
+  costSeries: CostTimeSeriesPoint[];
+}
