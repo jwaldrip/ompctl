@@ -180,6 +180,18 @@ export interface TunnelDaemonOptions {
    * keeps escalating.
    */
   stableAfterMs?: number;
+  /**
+   * The longest a dialed leg may go without hearing a frame from the hub
+   * before this daemon presumes it dead and dials again. See
+   * `DEFAULT_SILENCE_DEADLINE_MS` for the sizing.
+   */
+  silenceDeadlineMs?: number;
+  /**
+   * The timer the silence watchdog runs on. Separate from `schedule`, whose
+   * queue the reconnect tests read as "the dials this close caused"; a
+   * liveness timer in that queue would be counted as a dial.
+   */
+  watchdog?: (fn: () => void, ms: number) => { cancel(): void };
 }
 
 const DEFAULT_MIN_BACKOFF_MS = 500;
@@ -196,6 +208,21 @@ const DEFAULT_MAX_BACKOFF_MS = 30_000;
  * about an hour apart.
  */
 const DEFAULT_STABLE_AFTER_MS = 30_000;
+/**
+ * How long a leg may be silent before it is presumed dead.
+ *
+ * The hub pings every registered leg every 5s (`ACK_INTERVAL_MS`, hub.ts) and
+ * Bun closes a socket it has received no bytes on for 120s, so the hub's side
+ * of a dead link is gone within two minutes. This side had no such clock.
+ * Observed on Jason's daemon on 2026-09-06: the laptop slept, its TCP
+ * connection to the hub died with no FIN, and the daemon sat "registered" on
+ * a socket nothing would ever arrive on for 28 hours while the hub answered
+ * every phone with `daemon_offline`. Nothing here writes unless the hub
+ * speaks first, so a dead socket never even fails a send. Thirty seconds is
+ * six missed pings: well past any jitter a live hub shows, and a quarter of
+ * the hub's own patience, so this side always notices first.
+ */
+const DEFAULT_SILENCE_DEADLINE_MS = 30_000;
 
 interface Session {
   sessionId: string;
@@ -221,6 +248,8 @@ export class TunnelDaemon {
   readonly #random: () => number;
   readonly #now: () => number;
   readonly #stableAfterMs: number;
+  readonly #silenceDeadlineMs: number;
+  readonly #watchdog: (fn: () => void, ms: number) => { cancel(): void };
 
   readonly #sessions = new Map<string, Session>();
   #socket: DialSocket | null = null;
@@ -234,6 +263,8 @@ export class TunnelDaemon {
   #registeredAtMs: number | null = null;
   #stopped = true;
   #retry: { cancel(): void } | null = null;
+  /** The current leg's silence watchdog; re-armed by every frame the hub sends. */
+  #silence: { cancel(): void } | null = null;
   /**
    * Which dial the shared state below belongs to.
    *
@@ -263,10 +294,22 @@ export class TunnelDaemon {
     this.#random = opts.random ?? Math.random;
     this.#now = opts.now ?? Date.now;
     this.#stableAfterMs = opts.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
+    this.#silenceDeadlineMs = opts.silenceDeadlineMs ?? DEFAULT_SILENCE_DEADLINE_MS;
     this.#schedule =
       opts.schedule ??
       ((fn, ms) => {
         const handle = setTimeout(fn, ms);
+        return {
+          cancel: () => clearTimeout(handle),
+        };
+      });
+    this.#watchdog =
+      opts.watchdog ??
+      ((fn, ms) => {
+        // Unreferenced: a liveness timer must never be what keeps a process
+        // that has otherwise finished alive.
+        const handle = setTimeout(fn, ms);
+        handle.unref?.();
         return {
           cancel: () => clearTimeout(handle),
         };
@@ -295,6 +338,8 @@ export class TunnelDaemon {
     this.#stopped = true;
     this.#retry?.cancel();
     this.#retry = null;
+    this.#silence?.cancel();
+    this.#silence = null;
     this.#tearDownAll();
     // Retires the current leg's ownership before closing it, so the close
     // this provokes arrives as somebody else's and cannot reconnect.
@@ -315,6 +360,7 @@ export class TunnelDaemon {
     // none of them speak for the leg that replaced it.
     socket.onmessage = data => {
       if (generation !== this.#generation) return;
+      this.#armSilenceWatch(generation);
       void this.#onFrame(data);
     };
     socket.onerror = info => {
@@ -323,12 +369,49 @@ export class TunnelDaemon {
     };
     socket.onclose = info => this.#onClose(generation, info);
     socket.onopen = null;
+    // Armed from the dial, not the registration: a dial the hub never answers
+    // is a dead leg too, and the hub's first frame lands within a second of
+    // a live one.
+    this.#armSilenceWatch(generation);
+  }
+
+  #armSilenceWatch(generation: number): void {
+    this.#silence?.cancel();
+    this.#silence = this.#watchdog(() => this.#onSilence(generation), this.#silenceDeadlineMs);
+  }
+
+  /**
+   * The hub has said nothing for the whole deadline. The socket is presumed
+   * dead and replaced.
+   *
+   * The transport's own close is not waited for. A TCP connection that died
+   * without a FIN (the laptop slept, the network changed under it) reports
+   * its close only when the kernel gives up retransmitting, which can be
+   * minutes away; the leg is retired here so that late report lands as a
+   * superseded close and changes nothing.
+   */
+  #onSilence(generation: number): void {
+    if (generation !== this.#generation || this.#socket === null) return;
+    const socket = this.#socket;
+    this.#generation++;
+    try {
+      socket.close(4008, "hub silent");
+    } catch {
+      // A socket that cannot even be closed is exactly the case this exists
+      // for; the leg is being replaced regardless.
+    }
+    this.#legLost(generation, {
+      code: 4008,
+      reason: `no frame from the hub in ${this.#silenceDeadlineMs}ms; presumed dead`,
+    });
   }
 
   #onClose(generation: number, info: { code: number; reason: string }): void {
-    const at = new Date(this.#now()).toISOString();
-    const reason = JSON.stringify(info.reason);
+    // A leg the watchdog retired reports its close as somebody else's, and
+    // takes the same ignored path a superseded leg's late 4409 does.
     if (generation !== this.#generation) {
+      const at = new Date(this.#now()).toISOString();
+      const reason = JSON.stringify(info.reason);
       // The ordinary shape of a reconnect: this daemon dialed again, the hub
       // replaced the old leg and closed it 4409, and that close is landing
       // now. Acting on it would unseat the live leg and dial a third, which
@@ -338,7 +421,20 @@ export class TunnelDaemon {
       );
       return;
     }
+    this.#legLost(generation, info);
+  }
 
+  /**
+   * The current leg is gone, by its own close or by the watchdog's verdict.
+   * Tears its sessions and, unless stopped, schedules the next dial. Runs
+   * once per leg: the transport's close for a leg the watchdog already
+   * retired never reaches here.
+   */
+  #legLost(generation: number, info: { code: number; reason: string }): void {
+    const at = new Date(this.#now()).toISOString();
+    const reason = JSON.stringify(info.reason);
+    this.#silence?.cancel();
+    this.#silence = null;
     const registeredAt = this.#registeredAtMs;
     this.#registeredAtMs = null;
     this.#registered = false;
