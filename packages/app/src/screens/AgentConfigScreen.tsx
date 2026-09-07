@@ -66,6 +66,11 @@ function groupByCategory(options: readonly ConfigOption[]): Array<{ category: st
   return groups.toSorted((a, b) => rank(a.category) - rank(b.category));
 }
 
+/** A wire category id (`thought_level`) as the words an operator reads (`thought level`). */
+function categoryLabel(category: string): string {
+  return category.replace(/[_-]+/g, " ");
+}
+
 /** Cause and remedy for a refused read, in the operator's words rather than the wire's. */
 function describeLoadRefusal(code: string | undefined, message?: string): string {
   if (code === "unauthorized" || code === "forbidden") {
@@ -292,7 +297,7 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
             )}
             {groupByCategory(phase.options).map(group => (
               <View key={group.category} style={styles.group} testID={`agent-config-group-${group.category}`}>
-                <Kicker color={ink.muted}>{group.category}</Kicker>
+                <Kicker color={ink.muted}>{categoryLabel(group.category)}</Kicker>
                 {group.options.map(option => (
                   <ConfigOptionBlock
                     key={option.id}
