@@ -19,11 +19,11 @@ import {
   canInvite,
   emptyConsole,
   fleetClearances,
-  sessionFor,
-  stripStats,
   SESSION_STATS_MIN_INTERVAL_MS,
+  sessionFor,
   sessionTurnsEnded,
   shouldRequestSessionStats,
+  stripStats,
   tuiPageToAskFor,
   tuiSessionFor,
 } from "../src/console/state.ts";
@@ -700,6 +700,22 @@ describe("session stats", () => {
     ]);
     const session = sessionFor(state, "a1");
     expect(session.usage?.costAmount).toBe(1.5);
+  });
+
+  test("an older daemon that does not know session_stats raises no notice and is not asked again", () => {
+    // Observed 2026-09-07 against a daemon built from main while the phone ran
+    // this branch: every open put "unsupported frame type session_stats" in the
+    // notice band. Version skew is not the operator's fault; the readout keeps
+    // saying "not reported" and the console stops asking.
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1", { acpSessionId: "s1" })] } },
+      { t: "select", agentId: "a1" },
+      { t: "stats_request", sessionId: "s1", agentId: "a1" },
+      { t: "error", event: { code: "unknown_frame", message: "unsupported frame type session_stats" } },
+    ]);
+    expect(state.notice).toBeNull();
+    expect(state.statsUnsupported).toBe(true);
+    expect(sessionFor(state, "a1").usage).toBeNull();
   });
 
   test("shouldRequestSessionStats respects the interval", () => {

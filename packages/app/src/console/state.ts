@@ -57,11 +57,11 @@ import {
   EMPTY_SESSION,
   echoText,
   endTurn,
-  seedCost,
   mergeSessionHistory,
   reduce,
   resolveApproval,
   resolvePlanReview,
+  seedCost,
   setPlanReview,
 } from "../session/model.ts";
 
@@ -233,6 +233,13 @@ export interface ConsoleState {
   readonly historyLoading: ReadonlySet<AgentId>;
   /** The last time session stats were requested per session id, to respect SESSION_STATS_MIN_INTERVAL_MS. */
   readonly statsRequestedAt: ReadonlyMap<string, number>;
+  /**
+   * True once this daemon has refused `session_stats` as a frame it does not
+   * know. An older daemon behind a newer phone is version skew, not a fault
+   * the operator can act on: the readout keeps saying "not reported" and the
+   * console stops asking, instead of raising a notice on every open.
+   */
+  readonly statsUnsupported: boolean;
   readonly connection: ConnectionState;
   readonly attempt: number;
   readonly delayMs: number | undefined;
@@ -464,6 +471,7 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     historyBefore: new Map(),
     historyLoading: new Set(),
     statsRequestedAt: new Map(),
+    statsUnsupported: false,
     spoken: new Map(),
     connection: "connecting",
     attempt: 0,
@@ -677,6 +685,9 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "error": {
       const { code, message } = event.event;
+      if (code === "unknown_frame" && message.endsWith("session_stats")) {
+        return { ...state, statsUnsupported: true };
+      }
       const selectedTui = state.selectedTui;
       const promptPending = selectedTui !== null && (state.tuiSessions.get(selectedTui)?.sent ?? null) !== null;
       // Prompt errors carry no session id, but a local prompt echo means this
@@ -921,9 +932,7 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       }
       let current = state;
       for (const agentId of matched) {
-        current = withSession(current, agentId, session =>
-          seedCost(session, stats.cost),
-        );
+        current = withSession(current, agentId, session => seedCost(session, stats.cost));
       }
       return current;
     }
@@ -1362,10 +1371,7 @@ function applySessionTail(state: ConsoleState, event: SessionTailEvent): Console
  * so asks are rate-limited to avoid reading large files repeatedly on rapid
  * actions or quick turns.
  */
-export function shouldRequestSessionStats(
-  lastRequestedAt: number | undefined,
-  now: number = Date.now(),
-): boolean {
+export function shouldRequestSessionStats(lastRequestedAt: number | undefined, now: number = Date.now()): boolean {
   if (lastRequestedAt === undefined) return true;
   return now - lastRequestedAt >= SESSION_STATS_MIN_INTERVAL_MS;
 }

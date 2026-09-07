@@ -27,12 +27,12 @@ import {
   agentFor,
   apply,
   emptyConsole,
-  sessionTurnsEnded,
-  shouldRequestSessionStats,
   manageScopeAccess,
   promptScopeAccess,
   readScopeAccess,
   sessionDeleteNotice,
+  sessionTurnsEnded,
+  shouldRequestSessionStats,
   tuiPageToAskFor,
   tuiSessionFor,
 } from "./state.ts";
@@ -219,6 +219,7 @@ export function useConsole(
 
   const requestStats = useCallback(
     (sessionId: string, agentId?: AgentId): void => {
+      if (stateRef.current.statsUnsupported) return;
       const last = lastStatsRequest.current.get(sessionId);
       const now = Date.now();
       if (!shouldRequestSessionStats(last, now)) return;
@@ -398,11 +399,7 @@ export function useConsole(
         client.listSessions({ includeArchived: true });
       }),
       client.on("agents", event => {
-        const endedSessionIds = sessionTurnsEnded(
-          stateRef.current.agents,
-          event.agents,
-          stateRef.current.sessionIds,
-        );
+        const endedSessionIds = sessionTurnsEnded(stateRef.current.agents, event.agents, stateRef.current.sessionIds);
         for (const sessionId of endedSessionIds) {
           requestStats(sessionId);
         }
@@ -612,7 +609,17 @@ export function useConsole(
       loadDeadlines.current.clear();
       client.close();
     };
-  }, [askOlderTui, clearLoadDeadline, client, leaveCollab, reopenStalled, requestHistory, requestStats, settleWebViewAction, voice]);
+  }, [
+    askOlderTui,
+    clearLoadDeadline,
+    client,
+    leaveCollab,
+    reopenStalled,
+    requestHistory,
+    requestStats,
+    settleWebViewAction,
+    voice,
+  ]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
