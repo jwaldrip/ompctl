@@ -1372,7 +1372,7 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   const isExplicitGone =
     load?.error === "session_gone" ||
     load?.error === "That session closed." ||
-    (load?.error !== null && load?.error !== undefined && load.error.includes("unknown_session"));
+    (load?.error?.includes("unknown_session") ?? false);
   if (isExplicitGone && (session === undefined || session.entries.length === 0)) {
     return null;
   }

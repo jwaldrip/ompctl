@@ -27,13 +27,7 @@ export const DEFAULT_VIEW_PREFS: FleetViewPrefs = {
   hubDismissed: false,
 };
 
-const VALID_SORT_FIELDS: ReadonlySet<SortField> = new Set([
-  "status",
-  "age",
-  "lastActive",
-  "messageCount",
-  "size",
-]);
+const VALID_SORT_FIELDS: ReadonlySet<SortField> = new Set(["status", "age", "lastActive", "messageCount", "size"]);
 
 function coerceSort(value: unknown): SortSpec {
   if (typeof value !== "object" || value === null) return DEFAULT_SORT;

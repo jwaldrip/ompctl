@@ -10,7 +10,7 @@ import { type JSX, useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { Label } from "../design/text.tsx";
-import { ground, ink, radius, signal, space, stroke, type } from "../design/tokens.ts";
+import { brand, ground, ink, radius, signal, space, stroke, type } from "../design/tokens.ts";
 import type { SlashCommand } from "../session/model.ts";
 
 export interface CommandMenuProps {
@@ -148,7 +148,7 @@ const styles = StyleSheet.create({
     gap: space.snug,
   },
   commandName: {
-    color: signal.working,
+    color: brand.azure,
   },
   commandHint: {
     color: ink.faint,
