@@ -508,6 +508,8 @@ export interface Run {
   actions: ActionRun[];
   /** Event-level cause, used for singleton skips and daemon interruption. */
   error?: string;
+  /** Action index this run was requested to start from, when retried from an action. */
+  fromAction?: number;
 }
 
 /**
@@ -1284,7 +1286,7 @@ export type ClientFrame =
   /** Replace one complete routine definition. Requires manage scope. */
   | { t: "routine_write"; routine: RemoteRoutine }
   /** Run one enabled routine now. Requires manage and prompt scope. */
-  | { t: "routine_run"; routineId: string }
+  | { t: "routine_run"; routineId: string; fromAction?: number }
   /** Rotate a webhook routine's one-time secret. Requires manage scope. */
   | { t: "routine_secret_rotate"; routineId: string }
   /**
@@ -1541,6 +1543,24 @@ export type ServerFrame =
   | { t: "routines"; routines: RemoteRoutine[]; runs: Run[] }
   /** One routine event completed, with every action outcome in configured order. */
   | { t: "routine_ran"; run: Run }
+  | { t: "routine_run_started"; routineId: string; runId: string; at: string }
+  | {
+      t: "routine_action_started";
+      routineId: string;
+      runId: string;
+      actionIndex: number;
+      agentId?: AgentId;
+      at: string;
+    }
+  | {
+      t: "routine_action_finished";
+      routineId: string;
+      runId: string;
+      actionIndex: number;
+      outcome: ActionRunState;
+      at: string;
+    }
+  | { t: "routine_run_finished"; routineId: string; runId: string; outcome: RunState; at: string }
   /** One-time webhook secret returned only to the socket that rotated it. */
   | { t: "routine_secret"; routineId: string; secret: string }
   /**
@@ -2136,7 +2156,19 @@ export interface SessionSummary {
   pid?: number;
   /** Present only when `status` is "live-ompd". */
   agentId?: AgentId;
+  /** Origin metadata when this session was created by a routine action. */
+  origin?: SessionOrigin;
 }
+
+export interface SessionRoutineOrigin {
+  kind: "routine";
+  routineId: string;
+  routineName: string;
+  runId: string;
+  actionIndex: number;
+}
+
+export type SessionOrigin = SessionRoutineOrigin;
 
 export type SessionSortKey = "status" | "age" | "lastActivity" | "messageCount" | "size";
 export type SessionSortDir = "asc" | "desc";
@@ -2149,6 +2181,7 @@ export interface SessionQuery {
   includeArchived?: boolean;
   sort?: SessionSortKey;
   sortDir?: SessionSortDir;
+  origin?: "routine" | "operator";
 }
 
 export interface SessionGroup {

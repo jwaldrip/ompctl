@@ -23,6 +23,7 @@ import type {
   QueuedIntentStatus,
   Routine,
   Run,
+  SessionRoutineOrigin,
   Task,
   TaskState,
 } from "./contracts.ts";
@@ -38,7 +39,7 @@ const ROUTINES_TABLE = `CREATE TABLE IF NOT EXISTS routines (
 const RUNS_TABLE = `CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, state TEXT NOT NULL,
   started_at TEXT NOT NULL, finished_at TEXT, actions_json TEXT NOT NULL,
-  error TEXT
+  error TEXT, from_action INTEGER
 )`;
 
 const SCHEMA = `
@@ -299,6 +300,7 @@ export class Store {
     this.#migrateAgentHubMetadata();
     this.#migrateRoutineActions();
     this.#migrateRunActions();
+    this.#migrateRunFromAction();
   }
 
   close(): void {
@@ -418,6 +420,15 @@ export class Store {
       this.#db.run("DROP TABLE runs_one_action");
       this.#db.run("CREATE INDEX runs_routine ON runs(routine_id, started_at DESC)");
     })();
+  }
+
+  #migrateRunFromAction(): void {
+    const columns = new Set(
+      (this.#db.query("PRAGMA table_info(runs)").all() as Array<{ name: string }>).map(column => column.name),
+    );
+    if (!columns.has("from_action")) {
+      this.#db.run("ALTER TABLE runs ADD COLUMN from_action INTEGER");
+    }
   }
 
   upsertAgent(a: Agent): void {
@@ -820,8 +831,8 @@ export class Store {
   upsertRun(run: Run): void {
     this.#db
       .query(
-        `INSERT OR REPLACE INTO runs (id,routine_id,state,started_at,finished_at,actions_json,error)
-         VALUES (?,?,?,?,?,?,?)`,
+        `INSERT OR REPLACE INTO runs (id,routine_id,state,started_at,finished_at,actions_json,error,from_action)
+         VALUES (?,?,?,?,?,?,?,?)`,
       )
       .run(
         run.id,
@@ -831,6 +842,7 @@ export class Store {
         run.finishedAt ?? null,
         JSON.stringify(run.actions),
         run.error ?? null,
+        run.fromAction ?? null,
       );
   }
 
@@ -856,7 +868,7 @@ export class Store {
    */
   failInterruptedRuns(error: string): number {
     const rows = this.#db.query(`SELECT * FROM runs WHERE state IN ('queued','running')`).all() as Array<
-      Record<string, string | null>
+      Record<string, string | number | null>
     >;
     const finishedAt = new Date().toISOString();
     for (const row of rows) {
@@ -872,9 +884,10 @@ export class Store {
         routineId: row.routine_id as string,
         state: "failed",
         startedAt: row.started_at as string,
-        finishedAt: row.finished_at ?? finishedAt,
+        finishedAt: (row.finished_at as string | null) ?? finishedAt,
         actions,
-        error: row.error ?? error,
+        error: (row.error as string | null) ?? error,
+        fromAction: row.from_action === null ? undefined : (row.from_action as number),
       });
     }
     return rows.length;
@@ -883,16 +896,57 @@ export class Store {
   listRuns(routineId: string, limit = 50): Run[] {
     const rows = this.#db
       .query(`SELECT * FROM runs WHERE routine_id=? ORDER BY started_at DESC LIMIT ?`)
-      .all(routineId, limit) as Array<Record<string, string | null>>;
+      .all(routineId, limit) as Array<Record<string, string | number | null>>;
     return rows.map(row => ({
       id: row.id as string,
       routineId: row.routine_id as string,
       state: row.state as Run["state"],
       startedAt: row.started_at as string,
-      finishedAt: row.finished_at ?? undefined,
+      finishedAt: (row.finished_at as string | null) ?? undefined,
       actions: JSON.parse(row.actions_json as string),
-      error: row.error ?? undefined,
+      error: (row.error as string | null) ?? undefined,
+      fromAction: row.from_action === null ? undefined : (row.from_action as number),
     }));
+  }
+
+  /**
+   * Map every ACP session id created by a routine run action to its routine
+   * and run metadata, joined at query time so SessionSummary and SessionQuery
+   * can attribute routine-created sessions.
+   */
+  listRoutineSessionOrigins(): Map<string, SessionRoutineOrigin> {
+    const routines = new Map(this.listRoutines().map(r => [r.id, r.name]));
+    const rows = this.#db.query("SELECT id, routine_id, actions_json FROM runs").all() as Array<{
+      id: string;
+      routine_id: string;
+      actions_json: string;
+    }>;
+    const origins = new Map<string, SessionRoutineOrigin>();
+    for (const row of rows) {
+      const routineName = routines.get(row.routine_id) ?? row.routine_id;
+      let actions: Run["actions"];
+      try {
+        actions = JSON.parse(row.actions_json);
+      } catch {
+        continue;
+      }
+      for (const action of actions) {
+        let sessionId = action.sessionId;
+        if (!sessionId && action.agentId) {
+          sessionId = this.getAgent(action.agentId)?.acpSessionId;
+        }
+        if (sessionId) {
+          origins.set(sessionId, {
+            kind: "routine",
+            routineId: row.routine_id,
+            routineName,
+            runId: row.id,
+            actionIndex: action.index,
+          });
+        }
+      }
+    }
+    return origins;
   }
 
   // -- tasks -----------------------------------------------------------------
