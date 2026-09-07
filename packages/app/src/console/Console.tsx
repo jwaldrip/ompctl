@@ -504,17 +504,19 @@ export function Console({
     );
   };
 
-  // The config surface is stateless between visits: the daemon's config
-  // routes answer each request whole, so nothing here joins the console
-  // model. The scopes are the daemon's own last answer when it gives one,
-  // the stored pairing's claim otherwise, and the screen treats an old
-  // pairing's silence as optimistic until a refusal says otherwise.
+  // The config surface is stateless between visits: the daemon answers each
+  // `agent_config_read` whole, so nothing here joins the console model. It
+  // rides the console's own socket, which every pairing carries, direct or
+  // through the hub. The scopes are the daemon's own last answer when it
+  // gives one, the stored pairing's claim otherwise, and the screen treats an
+  // old pairing's silence as optimistic until a refusal says otherwise.
   const agentConfig = (agentId: AgentId, back: () => void): JSX.Element => (
     <AgentConfigScreen
       agentId={agentId}
       agentName={agentFor(state, agentId)?.name}
       connection={connection}
       grantedScopes={state.grantedScopes}
+      client={client}
       onBack={back}
     />
   );
