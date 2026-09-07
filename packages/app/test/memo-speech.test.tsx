@@ -13,7 +13,7 @@
 
 import "./rnw.ts";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act } from "react";
@@ -24,6 +24,7 @@ import type { Connection } from "../src/platform/connection.ts";
 import type { SessionVoice } from "../src/screens/SessionScreen.tsx";
 import { EMPTY_SESSION } from "../src/session/model.ts";
 import type { MemoVoice, OmpctlVoiceModule } from "../src/voice/memo.ts";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
 // These modules import React Native. Loading them after rnw.ts is what makes
 // this test exercise the web target instead of Bun trying to load native
@@ -34,6 +35,13 @@ const { createDeviceSpeechPlayback, createDeviceVoiceCapture, WIRE_SAMPLE_RATE }
 const { apply, emptyConsole, promptScopeAccess, tuiPromptAccess } = await import("../src/console/state.ts");
 const { useConsole } = await import("../src/console/useConsole.ts");
 const { SessionScreen } = await import("../src/screens/SessionScreen.tsx");
+
+beforeEach(() => {
+  setWindowSize(820, 1180);
+});
+afterEach(() => {
+  resetWindowSize();
+});
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -298,6 +306,7 @@ class CannedClient {
   decide(): void {}
   decidePlan(): void {}
   registerWebView(): void {}
+  sessionStats(): void {}
   unregisterWebView(): void {}
   webViewResult(): void {}
 
@@ -391,7 +400,8 @@ function mountConsole(voice: MemoVoice, connection: Connection = CONNECTION): Mo
   const playback = voice.playback as FakePlayback;
   let latest: [ConsoleState, ConsoleActions] | null = null;
   function Probe(props: { connection: Connection }): null {
-    latest = useConsole(props.connection, () => client as unknown as OmpdClient, voice);
+    const [state, actions] = useConsole(props.connection, () => client as unknown as OmpdClient, voice);
+    latest = [state, actions];
     return null;
   }
   const host = document.createElement("div");
@@ -571,6 +581,7 @@ function voiceProps(overrides: Partial<SessionVoice> = {}): SessionVoice {
 interface MountedSession {
   text: (testID: string) => string;
   attr: (testID: string, name: string) => string | null;
+  press: (testID: string) => void;
   unmount: () => void;
 }
 
@@ -602,6 +613,13 @@ function mountSession(voice: SessionVoice): MountedSession {
   return {
     text: testID => host.querySelector(`[data-testid="${testID}"]`)?.textContent ?? "",
     attr: (testID, name) => host.querySelector(`[data-testid="${testID}"]`)?.getAttribute(name) ?? null,
+    press: testID => {
+      act(() => {
+        const el = (host.querySelector(`[data-testid="${testID}-toggle"]`) ??
+          host.querySelector(`[data-testid="${testID}"]`)) as HTMLElement | null;
+        el?.click();
+      });
+    },
     unmount: () => {
       act(() => {
         root.unmount();
@@ -619,6 +637,9 @@ describe("the composer microphone control", () => {
       // this app refuses. A null attr means the node itself is gone, which
       // fails the assertion below because "true" is not null.
       expect(mounted.attr("composer-mic", "aria-disabled")).toBe("true");
+      expect(mounted.attr("composer-mic", "aria-label")).toContain("prompt scope");
+      expect(mounted.attr("composer-mic", "aria-label")).toContain("Pair it again");
+      mounted.press("composer-mic");
       expect(mounted.text("composer-mic-status")).toContain("prompt scope");
       expect(mounted.text("composer-mic-status")).toContain("Pair it again");
     } finally {
@@ -632,6 +653,8 @@ describe("the composer microphone control", () => {
     );
     try {
       expect(mounted.attr("composer-mic", "aria-disabled")).toBe("true");
+      expect(mounted.attr("composer-mic", "aria-label")).toContain("Voice input is unavailable on web: no module.");
+      mounted.press("composer-mic");
       expect(mounted.text("composer-mic-status")).toContain("Voice input is unavailable on web: no module.");
     } finally {
       mounted.unmount();
@@ -664,6 +687,8 @@ describe("the composer microphone control", () => {
       voiceProps({ speech: { available: false, reason: "Agent speech audio is unavailable on web." } }),
     );
     try {
+      expect(mounted.attr("composer-mic", "aria-label")).toContain("Agent speech audio is unavailable on web.");
+      mounted.press("composer-mic");
       expect(mounted.text("composer-mic-status")).toContain("Agent speech audio is unavailable on web.");
     } finally {
       mounted.unmount();

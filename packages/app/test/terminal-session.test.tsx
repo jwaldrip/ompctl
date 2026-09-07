@@ -624,8 +624,8 @@ describe("live hints continue the conversation rather than detaching from it", (
     expect(
       [...host.querySelectorAll('[data-testid^="terminal-turn-"]')].map(row => row.getAttribute("aria-label")),
     ).toEqual(["you: run the deploy checks", "agent: all four suites are green", "agent: migration applied"]);
-    // The boundary notice is not a turn, so it stays a band outside the log.
-    expect(log?.contains(host.querySelector('[data-testid="terminal-transcript-limit"]')!)).toBe(false);
+    // The boundary notice is removed because tool output and thinking now render directly.
+    expect(host.querySelector('[data-testid="terminal-transcript-limit"]')).toBeNull();
     unmountScreen(host, root);
   });
 
@@ -756,11 +756,12 @@ describe("a terminal turn renders its markdown as structure, not punctuation", (
       expect(painted.join("\n")).not.toContain("```");
       expect(painted.join("\n")).not.toContain("`session-body`");
       // The inline code and the fence land in the mono face, the prose does not.
-      const mono = [...row.querySelectorAll("*")].filter(
-        el => el.children.length === 0 && /Plex|mono/i.test(getComputedStyle(el).fontFamily),
-      );
-      expect(mono.map(el => el.textContent)).toContain("session-body");
-      expect(mono.some(el => /flex: 1, minHeight: 0/.test(el.textContent ?? ""))).toBe(true);
+      // A highlighted fence line is one mono node whose spans carry only colour,
+      // so the face is read from whichever element declares it, leaf or not.
+      const mono = [...row.querySelectorAll("*")].filter(el => /Plex|mono/i.test(getComputedStyle(el).fontFamily));
+      const monoText = mono.map(el => el.textContent ?? "");
+      expect(monoText).toContain("session-body");
+      expect(monoText.some(text => text.includes("flex: 1, minHeight: 0"))).toBe(true);
       expect(painted).toContain("Nothing");
     } finally {
       unmountScreen(host, root);
@@ -883,7 +884,7 @@ describe("the terminal and the agent log pay one gutter", () => {
       if (!(content instanceof HTMLElement)) throw new Error("the terminal log has no content container");
       expect(horizontalInset(byTestID(host, "terminal-head"))).toBe(rhythm.gutter);
       expect(horizontalInset(content)).toBe(rhythm.gutter);
-      expect(horizontalInset(byTestID(host, "terminal-transcript-limit").parentElement!)).toBe(rhythm.gutter);
+      expect(horizontalInset(byTestID(host, "terminal-hints"))).toBe(rhythm.gutter);
     } finally {
       unmountScreen(host, root);
     }
@@ -1011,5 +1012,61 @@ describe("the terminal and the agent log pay one gutter", () => {
     } finally {
       unmountScreen(host, root);
     }
+  });
+
+  test("renders a ToolCard for a tool entry and a thinking row for a thinking entry", () => {
+    const entries = [
+      {
+        kind: "thinking" as const,
+        text: "planning the next change",
+        at: "2026-08-13T00:00:01.000Z",
+      },
+      {
+        kind: "tool" as const,
+        id: "tool-42",
+        title: "read src/index.ts",
+        toolKind: "read" as const,
+        status: "completed" as const,
+        output: "export const answer = 42;",
+        locations: ["src/index.ts"],
+        at: "2026-08-13T00:00:02.000Z",
+        text: "export const answer = 42;",
+      },
+      {
+        kind: "text" as const,
+        role: "assistant" as const,
+        text: "found the answer",
+        at: "2026-08-13T00:00:03.000Z",
+      },
+    ];
+    const html = renderScreen(
+      drive([
+        {
+          t: "session_tail",
+          event: {
+            sessionId: SESSION,
+            entries,
+            messages: entries,
+            truncated: false,
+            nextCursor: null,
+          },
+        },
+      ]),
+    );
+
+    // ToolCard rendered for tool entry
+    expect(html).toContain('data-testid="tool-tool-42"');
+    expect(html).toContain('data-testid="tool-title-tool-42"');
+    expect(html).toContain("read src/index.ts");
+    expect(html).toContain('data-testid="tool-status-tool-42"');
+    expect(html).toContain("completed");
+
+    // Thinking row rendered for thinking entry
+    expect(html).toContain('data-testid="terminal-thinking"');
+    expect(html).toContain("planning the next change");
+    expect(html).toContain("thinking");
+
+    // Text row rendered
+    expect(html).toContain("found the answer");
   });
 });

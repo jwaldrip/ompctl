@@ -53,6 +53,7 @@ export type ShellParamList = {
   agentConfig: { agentId: AgentId };
   settings: undefined;
   routines: undefined;
+  stats: undefined;
 };
 
 /** Which detail surface the console model says is open. */
@@ -114,6 +115,7 @@ export interface ShellSurfaces {
    * never describe a session other than the one it was opened from.
    */
   agentConfig: (agentId: AgentId, back: () => void) => JSX.Element;
+  stats: (back: () => void) => JSX.Element;
 }
 
 export interface AppNavigatorProps {
@@ -165,7 +167,13 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
 
     if (selection.kind === "session") {
       const params = focused?.params as ShellParamList["session"] | undefined;
-      if (focused?.name === "session" && params?.agentId === selection.agentId) return;
+      // The config screen is the open session's own surface, keyed on the
+      // same agent: a roster frame arriving while it is up (the daemon
+      // re-announces the agent after a model change) rebuilds `selection`
+      // and must not pop the operator back to the log mid-choice.
+      if ((focused?.name === "session" || focused?.name === "agentConfig") && params?.agentId === selection.agentId) {
+        return;
+      }
       // Two detail surfaces never stack: the model holds one open session at a
       // time, so a switch replaces rather than buries the previous one.
       if (stackHasDetail) navigation.dispatch(StackActions.popToTop());
@@ -222,6 +230,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
           <Stack.Screen name="cowork" component={CoworkRoute} options={COWORK_OPTIONS} />
           <Stack.Screen name="settings" component={SettingsRoute} options={SETTINGS_OPTIONS} />
           <Stack.Screen name="routines" component={RoutinesRoute} options={ROUTINES_OPTIONS} />
+          <Stack.Screen name="stats" component={StatsRoute} options={STATS_OPTIONS} />
         </Stack.Navigator>
       </NavigationContainer>
     </SurfaceContext.Provider>
@@ -236,6 +245,7 @@ const NEW_SESSION_OPTIONS = { title: "New session" } as const;
 const COWORK_OPTIONS = { title: "Cowork" } as const;
 const SETTINGS_OPTIONS = { title: "Daemon settings" } as const;
 const ROUTINES_OPTIONS = { title: "Routines" } as const;
+const STATS_OPTIONS = { title: "Stats" } as const;
 
 function FleetRoute(): JSX.Element {
   return useSurfaces().fleet();
@@ -287,6 +297,9 @@ function CoworkRoute({ navigation }: NativeStackScreenProps<ShellParamList, "cow
   return useSurfaces().cowork(() => navigation.goBack());
 }
 
+function StatsRoute({ navigation }: NativeStackScreenProps<ShellParamList, "stats">): JSX.Element {
+  return useSurfaces().stats(() => navigation.goBack());
+}
 type MenuNavigation = NativeStackNavigationProp<ShellParamList, "menu">;
 
 interface MenuItem {
@@ -366,6 +379,16 @@ const MENU_ITEMS: readonly MenuItem[] = [
     go: navigation => {
       navigation.goBack();
       navigation.navigate("routines");
+    },
+  },
+  {
+    title: "Stats",
+    detail: "Tokens, spend, and model breakdown across all sessions",
+    glyph: "cost",
+    testID: "menu-stats",
+    go: navigation => {
+      navigation.goBack();
+      navigation.navigate("stats");
     },
   },
 ];

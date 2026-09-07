@@ -189,7 +189,7 @@ export function useImageAttachments({ picker, images, onImages, enabled }: UseIm
  */
 export function AttachmentControl({ band, prefix }: { band: AttachmentBand; prefix: string }): JSX.Element {
   const theme = useOmpTheme();
-  const tone = band.disabled ? theme.ink.faint : band.images.length > 0 ? theme.signal.sage : theme.ink.plain;
+  const tone = band.disabled ? theme.ink.faint : band.images.length > 0 ? theme.signal.ready : theme.ink.plain;
   return (
     <IconButton
       testID={`${prefix}-attach`}

@@ -3,10 +3,9 @@
  *
  * Two rules make this file worth having. Colour is meaning: a hue is only in
  * the palette because it says something an operator has to read at a glance,
- * and nothing here is decorative. And the ground is warm graphite rather than
- * the blue-black every component kit ships, because an operator stares at this
- * for hours and a cold ground under amber signals reads as a dashboard warning
- * light rather than a working surface.
+ * and nothing here is decorative. And the ground is near-black with bright
+ * accents drawn from the app icon, giving high-contrast legibility for long
+ * operational shifts where signals and status need immediate recognition.
  *
  * No gradients, no translucency, no rounded corners. A strip either is or is
  * not, and a soft edge on a failure state is a lie about how the run went.
@@ -20,22 +19,22 @@ import type { ToolStatus } from "../session/model.ts";
 // ---------------------------------------------------------------------------
 
 /**
- * Warm graphite, from deepest to lightest. Every step shares a hue so stacking
- * two of them reads as depth rather than as a different material.
+ * Near-black ground steps, from deepest to lightest. Every step shares a hue
+ * so stacking two of them reads as depth rather than as a different material.
  */
 export const ground = {
   /** Behind everything. The window itself. */
-  base: "#141310",
+  base: "#0a0c10",
   /** A panel sitting on the base: the bay, the composer, the readout. */
-  surface: "#1C1A16",
+  surface: "#11151c",
   /** A card sitting on a panel: a tool call, an approval. */
-  raised: "#24211B",
+  raised: "#181d26",
   /** Pressed, selected, or otherwise held. */
-  active: "#2E2A22",
+  active: "#1f2632",
   /** Hairlines. Structure, not decoration. */
-  line: "#332F27",
+  line: "#1c2230",
   /** A heavier rule where a section genuinely ends. */
-  edge: "#403A30",
+  edge: "#262d38",
 } as const;
 
 /**
@@ -44,16 +43,34 @@ export const ground = {
  */
 export const ink = {
   /** Primary reading text. */
-  bright: "#EDE7DA",
+  bright: "#f4f7fb",
   /** Labels, secondary prose. */
-  plain: "#B5AD9D",
+  plain: "#cfd7e2",
+  /** Primary reading text alias for plain. */
+  primary: "#cfd7e2",
   /** Units, timestamps, the quiet half of a data pair. */
-  muted: "#847C6D",
+  muted: "#8b96a6",
   /** Present but not to be read unless looked for. */
-  faint: "#5A5449",
-  /** On top of a filled signal swatch. */
-  inverse: "#141310",
+  faint: "#7a8595",
+  /** On top of a filled signal or brand swatch. */
+  inverse: "#0a0c10",
 } as const;
+
+// ---------------------------------------------------------------------------
+// Brand
+// ---------------------------------------------------------------------------
+
+/**
+ * Brand accent tokens from the app icon.
+ */
+export const brand = {
+  /** Actions, links, focus, selection, primary button fill with ink.inverse text. */
+  azure: "#5b9dff",
+  /** Brand amber accent. */
+  amber: "#ffb020",
+} as const;
+
+export type BrandName = keyof typeof brand;
 
 // ---------------------------------------------------------------------------
 // Signals
@@ -65,17 +82,17 @@ export const ink = {
  */
 export const signal = {
   /** Working. A turn is in flight and tokens are moving. */
-  amber: "#E0A33A",
+  working: "#ffb020",
   /** Ready. Idle, healthy, waiting on a person rather than on itself. */
-  sage: "#8FA97B",
+  ready: "#3ddc84",
   /** Holding. Blocked on something that is not an error: a clearance, a host. */
-  ochre: "#C1662F",
+  holding: "#ff7a45",
   /** Failed. A run that will not finish without someone. */
-  oxide: "#B4462F",
+  failed: "#ff4d4d",
   /** Cold. Stopped on purpose, transcript retained, nothing running. */
-  slate: "#7A828A",
+  cold: "#7d8794",
   /** Reasoning. Thought rather than reply; never the same weight as an answer. */
-  violet: "#8B7BC4",
+  reasoning: "#a78bfa",
 } as const;
 
 export type SignalName = keyof typeof signal;
@@ -86,12 +103,12 @@ export type SignalName = keyof typeof signal;
  * in the same material as the panel under it.
  */
 export const signalWash = {
-  amber: "#31281A",
-  sage: "#232A1F",
-  ochre: "#2D1F16",
-  oxide: "#2B1A16",
-  slate: "#20242A",
-  violet: "#231F30",
+  working: "#352c1d",
+  ready: "#18332c",
+  holding: "#352422",
+  failed: "#351d23",
+  cold: "#21262e",
+  reasoning: "#28273d",
 } as const satisfies Record<SignalName, string>;
 
 // ---------------------------------------------------------------------------
@@ -194,39 +211,39 @@ export const TOUCH_TARGET = 44;
  * and the two that need nothing (`stopped`) share the one that means so.
  */
 const AGENT_SIGNALS: Record<AgentState, SignalName> = {
-  provisioning: "ochre",
-  starting: "ochre",
-  idle: "sage",
-  busy: "amber",
-  waiting: "ochre",
-  stopped: "slate",
-  failed: "oxide",
+  provisioning: "holding",
+  starting: "holding",
+  idle: "ready",
+  busy: "working",
+  waiting: "holding",
+  stopped: "cold",
+  failed: "failed",
 };
 
 export function agentSignal(state: AgentState): SignalName {
-  return AGENT_SIGNALS[state] ?? "slate";
+  return AGENT_SIGNALS[state] ?? "cold";
 }
 
 const TOOL_SIGNALS: Record<ToolStatus, SignalName> = {
-  pending: "slate",
-  in_progress: "amber",
-  completed: "sage",
-  failed: "oxide",
+  pending: "cold",
+  in_progress: "working",
+  completed: "ready",
+  failed: "failed",
 };
 
 export function toolSignal(status: ToolStatus): SignalName {
-  return TOOL_SIGNALS[status] ?? "slate";
+  return TOOL_SIGNALS[status] ?? "cold";
 }
 
 /**
  * Context pressure. A window filling up is the single most useful number on
  * the board, and it earns a colour change rather than a percentage nobody
- * reads: sage while there is room, ochre once the end is in sight, oxide when
+ * reads: ready while there is room, holding once the end is in sight, failed when
  * the next turn may not fit.
  */
 export function pressureSignal(fraction: number): SignalName {
-  if (!Number.isFinite(fraction) || fraction <= 0) return "slate";
-  if (fraction >= 0.9) return "oxide";
-  if (fraction >= 0.7) return "ochre";
-  return "sage";
+  if (!Number.isFinite(fraction) || fraction <= 0) return "cold";
+  if (fraction >= 0.9) return "failed";
+  if (fraction >= 0.7) return "holding";
+  return "ready";
 }

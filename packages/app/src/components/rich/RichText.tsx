@@ -25,11 +25,13 @@ import type { JSX, ReactNode } from "react";
 import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { rhythm } from "../../design/rhythm.ts";
-import { Body, Code, Display, Kicker, Label, Title } from "../../design/text.tsx";
-import { face, ground, ink, space, stroke } from "../../design/tokens.ts";
+import { Body, Display, Kicker, Label, Title } from "../../design/text.tsx";
+import { face, ground, ink, space, stroke, type } from "../../design/tokens.ts";
 import { AttachmentBlock } from "./AttachmentBlock.tsx";
 import type { RichBlock, RichSpan } from "./blocks.ts";
 import { DiffBlock, isDiffText } from "./DiffBlock.tsx";
+import { highlight } from "./highlight.ts";
+import { tokenColor } from "./highlight-theme.ts";
 import { parseRich } from "./parse.ts";
 
 /** Flat inline runs. Nesting a `Text` per span lets RN inherit the block's size and colour. */
@@ -138,19 +140,43 @@ function BlockView({ block, muted }: { block: RichBlock; muted: boolean }): Reac
         </View>
       );
 
-    case "code":
+    case "code": {
       // A fence is the one shape that may be something else: whether a fenced
       // block IS a diff is the diff renderer's judgement at render time, never
       // the parser's guess (see `blocks.ts`).
       if (isDiffText(block.text, block.lang)) {
         return <DiffBlock text={block.text} />;
       }
+      const lines = highlight(block.text, block.lang);
+      let lineSeq = 0;
       return (
         <View style={styles.code}>
           {block.lang === null ? null : <Kicker color={ink.muted}>{block.lang}</Kicker>}
-          <Code>{block.text}</Code>
+          <View style={styles.codeLines}>
+            {lines.map(lineTokens => {
+              lineSeq += 1;
+              const lineKey = `l:${lineSeq}:${lineTokens
+                .map(t => t.text)
+                .join("")
+                .slice(0, 24)}`;
+              let tokSeq = 0;
+              return (
+                <Text key={lineKey} selectable style={type.code}>
+                  {lineTokens.map(token => {
+                    tokSeq += 1;
+                    return (
+                      <Text key={`t:${tokSeq}:${token.kind}`} style={{ color: tokenColor(token.kind) }}>
+                        {token.text || " "}
+                      </Text>
+                    );
+                  })}
+                </Text>
+              );
+            })}
+          </View>
         </View>
       );
+    }
 
     case "rule":
       return <View style={styles.rule} />;
@@ -229,5 +255,6 @@ const styles = StyleSheet.create({
     padding: rhythm.cardPad,
   },
   code: { backgroundColor: ground.surface, padding: rhythm.cardPad, gap: space.tight },
+  codeLines: { flexDirection: "column" },
   rule: { height: stroke.hair, backgroundColor: ground.edge, marginVertical: space.tight },
 });

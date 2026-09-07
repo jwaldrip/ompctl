@@ -186,7 +186,7 @@ export function InviteScreen({
                 style={[styles.scope, checked && styles.scopeChecked]}
                 testID={`invite-scope-${scope}`}
               >
-                <Label color={checked ? signal.sage : ink.plain}>{scope}</Label>
+                <Label color={checked ? signal.ready : ink.plain}>{scope}</Label>
               </Pressable>
             );
           })}
@@ -194,7 +194,7 @@ export function InviteScreen({
       </View>
 
       <Pressable accessibilityRole="button" onPress={generate} style={styles.generate} testID="invite-generate">
-        <Label color={signal.sage}>Generate</Label>
+        <Label color={signal.ready}>Generate</Label>
       </Pressable>
 
       <View style={styles.result} testID="invite-result">
@@ -204,7 +204,7 @@ export function InviteScreen({
           </View>
         ) : status.kind === "error" ? (
           <View style={styles.notice} testID="invite-error">
-            <Label color={signal.ochre} style={styles.noticeText}>
+            <Label color={signal.holding} style={styles.noticeText}>
               {status.message}
             </Label>
           </View>
@@ -244,7 +244,7 @@ const styles = StyleSheet.create({
     minHeight: TOUCH_TARGET,
     paddingHorizontal: space.step,
   },
-  scopeChecked: { borderColor: signal.sage },
+  scopeChecked: { borderColor: signal.ready },
   generate: {
     alignItems: "center",
     borderColor: ground.edge,
@@ -255,8 +255,8 @@ const styles = StyleSheet.create({
   result: { alignItems: "center", flex: 1, justifyContent: "center" },
   centered: { alignItems: "center", justifyContent: "center" },
   notice: {
-    backgroundColor: signalWash.ochre,
-    borderLeftColor: signal.ochre,
+    backgroundColor: signalWash.holding,
+    borderLeftColor: signal.holding,
     borderLeftWidth: stroke.heavy,
     padding: space.step,
   },

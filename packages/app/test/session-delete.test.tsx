@@ -91,6 +91,7 @@ class CannedClient {
   decide(): void {}
   decidePlan(): void {}
   registerWebView(): void {}
+  sessionStats(): void {}
   unregisterWebView(): void {}
   webViewResult(): void {}
   deleteSessions(sessionIds: readonly string[]): void {
@@ -192,10 +193,13 @@ describe("one press deletes nothing", () => {
   test("pressing delete arms the row and sends no frame", () => {
     const bay = mountBay(["read", "manage"]);
     try {
-      // The premise: the row is on screen with its own delete control.
-      expect(bay.el(`session-delete-${SESSION_ID}`)).not.toBeNull();
+      // The premise: the row is on screen with its more control, which opens the menu with delete.
+      expect(bay.el(`session-more-${SESSION_ID}`)).not.toBeNull();
+      expect(bay.el(`session-delete-${SESSION_ID}`)).toBeNull();
       expect(bay.el(`session-delete-confirm-${SESSION_ID}`)).toBeNull();
 
+      bay.press(`session-more-${SESSION_ID}`);
+      expect(bay.el(`session-delete-${SESSION_ID}`)).not.toBeNull();
       bay.press(`session-delete-${SESSION_ID}`);
 
       expect(bay.client.deleted).toEqual([]);
@@ -208,6 +212,7 @@ describe("one press deletes nothing", () => {
   test("the second press, on the confirmation's own control, is what sends the delete", () => {
     const bay = mountBay(["read", "manage"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       bay.press(`session-delete-${SESSION_ID}`);
       bay.press(`session-delete-confirm-${SESSION_ID}`);
 
@@ -220,12 +225,15 @@ describe("one press deletes nothing", () => {
   test("keeping the session disarms the row and sends nothing", () => {
     const bay = mountBay(["read", "manage"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       bay.press(`session-delete-${SESSION_ID}`);
       bay.press(`session-delete-cancel-${SESSION_ID}`);
 
       expect(bay.client.deleted).toEqual([]);
       expect(bay.el(`session-delete-confirm-${SESSION_ID}`)).toBeNull();
-      // Back to a normal row, with its everyday actions where they were.
+      // Back to a normal row, with its more control.
+      expect(bay.el(`session-more-${SESSION_ID}`)).not.toBeNull();
+      bay.press(`session-more-${SESSION_ID}`);
       expect(bay.el(`session-archive-${SESSION_ID}`)).not.toBeNull();
       expect(bay.el(`session-delete-${SESSION_ID}`)).not.toBeNull();
     } finally {
@@ -236,6 +244,7 @@ describe("one press deletes nothing", () => {
   test("the destructive control is not where archive was: arming removes archive and puts Keep in that corner", () => {
     const bay = mountBay(["read", "manage"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       bay.press(`session-delete-${SESSION_ID}`);
 
       // Nothing destructive is left in the trailing corner a thumb reaching
@@ -261,6 +270,7 @@ describe("the confirmation names the session", () => {
   test("the armed row quotes the session's own title and says what deletion costs", () => {
     const bay = mountBay(["read", "manage"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       bay.press(`session-delete-${SESSION_ID}`);
 
       const prompt = bay.require(`session-delete-prompt-${SESSION_ID}`).textContent ?? "";
@@ -275,6 +285,7 @@ describe("the confirmation names the session", () => {
     const bay = mountBay(["read", "manage"]);
     try {
       bay.frame("sessions", { sessions: [{ ...SESSION, title: "" }] });
+      bay.press(`session-more-${SESSION_ID}`);
       bay.press(`session-delete-${SESSION_ID}`);
 
       expect(bay.require(`session-delete-prompt-${SESSION_ID}`).textContent).toContain("Untitled session");
@@ -288,6 +299,7 @@ describe("a pairing without manage scope", () => {
   test("still shows the control, disabled, and names the missing scope on screen", () => {
     const bay = mountBay(["read"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       const control = bay.require(`session-delete-${SESSION_ID}`);
       expect(readsDisabled(control)).toBe(true);
       // Never hidden: the row's own control is there to be read.
@@ -301,6 +313,7 @@ describe("a pairing without manage scope", () => {
   test("pressing the disabled control arms nothing and sends nothing", () => {
     const bay = mountBay(["read"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       bay.press(`session-delete-${SESSION_ID}`);
 
       expect(bay.el(`session-delete-confirm-${SESSION_ID}`)).toBeNull();
@@ -315,6 +328,7 @@ describe("a pairing without manage scope", () => {
     // and the daemon's answer is the authority.
     const bay = mountBay(["read", "manage"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       expect(readsDisabled(bay.require(`session-delete-${SESSION_ID}`))).toBe(false);
 
       bay.frame("agents", { agents: [], deviceId: "dev_phone", scopes: ["read"] });
@@ -331,6 +345,7 @@ describe("what the daemon answers", () => {
   test("a refusal is said out loud, because nothing on screen changes when a delete is refused", () => {
     const bay = mountBay(["read", "manage"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       bay.press(`session-delete-${SESSION_ID}`);
       bay.press(`session-delete-confirm-${SESSION_ID}`);
       bay.frame("sessions_deleted", {
@@ -349,6 +364,7 @@ describe("what the daemon answers", () => {
   test("a success says nothing: the row leaving the fleet is the confirmation", () => {
     const bay = mountBay(["read", "manage"]);
     try {
+      bay.press(`session-more-${SESSION_ID}`);
       bay.press(`session-delete-${SESSION_ID}`);
       bay.press(`session-delete-confirm-${SESSION_ID}`);
       bay.frame("sessions_deleted", { results: [{ sessionId: SESSION_ID, deleted: true }] });

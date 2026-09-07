@@ -339,6 +339,7 @@ export interface HostRef {
 
 export type ApprovalChoice = "allow" | "deny";
 export type ApprovalScope = "once" | "always";
+export type ApprovalSettledBy = "operator" | "policy" | "timeout";
 
 /**
  * The only choices OMP offers when it asks an operator to review a plan.
@@ -507,6 +508,8 @@ export interface Run {
   actions: ActionRun[];
   /** Event-level cause, used for singleton skips and daemon interruption. */
   error?: string;
+  /** Action index this run was requested to start from, when retried from an action. */
+  fromAction?: number;
 }
 
 /**
@@ -969,12 +972,6 @@ export type TuiActivityKind = "assistant_text" | "turn_start" | "turn_end";
  * render. `at` is the line's own ISO timestamp, or "" for a file that carried
  * none.
  */
-export interface TranscriptTailMessage {
-  role: "user" | "assistant";
-  text: string;
-  at: string;
-}
-
 export type SessionHistoryToolKind =
   | "think"
   | "read"
@@ -986,6 +983,28 @@ export type SessionHistoryToolKind =
   | "delete"
   | "other";
 export type SessionHistoryToolStatus = "pending" | "in_progress" | "completed" | "failed";
+
+export type TranscriptTailEntry =
+  | { kind?: "text"; role: "user" | "assistant"; text: string; at: string }
+  | {
+      kind: "tool";
+      id: string;
+      title: string;
+      toolKind: SessionHistoryToolKind;
+      status: SessionHistoryToolStatus;
+      output: string | null;
+      locations: string[];
+      at: string;
+      text: string;
+      role?: undefined;
+    }
+  | { kind: "thinking"; text: string; at: string; role?: undefined };
+
+/**
+ * Prior name for TranscriptTailEntry, preserved as an alias for one release
+ * during the migration to first-class tool, thinking, and plan tail entries.
+ */
+export type TranscriptTailMessage = TranscriptTailEntry;
 
 /**
  * One durable transcript block recovered from an OMP session JSONL.
@@ -1090,6 +1109,12 @@ export interface PromptImage {
 /** At most this many images per prompt. */
 export const MAX_PROMPT_IMAGES = 4;
 
+/**
+ * Maximum prompts queued per agent while a turn is in flight.
+ * Rationale: an operator typing ahead, not a script.
+ */
+export const PROMPT_QUEUE_MAX = 8;
+
 /** One image's base64 may be at most this many characters (about 256 KiB decoded). */
 export const MAX_PROMPT_IMAGE_BASE64_CHARS = 350_000;
 
@@ -1146,7 +1171,7 @@ export function parsePromptImages(
 export type ClientFrame =
   | { t: "attach"; agentId: AgentId; sinceSeq?: number }
   | { t: "detach"; agentId: AgentId }
-  | { t: "prompt"; agentId: AgentId; text: string; images?: PromptImage[] }
+  | { t: "prompt"; agentId: AgentId; text: string; images?: PromptImage[]; deliverAs?: "followUp" }
   | { t: "cancel"; agentId: AgentId }
   | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice; scope?: ApprovalScope }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
@@ -1261,7 +1286,7 @@ export type ClientFrame =
   /** Replace one complete routine definition. Requires manage scope. */
   | { t: "routine_write"; routine: RemoteRoutine }
   /** Run one enabled routine now. Requires manage and prompt scope. */
-  | { t: "routine_run"; routineId: string }
+  | { t: "routine_run"; routineId: string; fromAction?: number }
   /** Rotate a webhook routine's one-time secret. Requires manage scope. */
   | { t: "routine_secret_rotate"; routineId: string }
   /**
@@ -1318,13 +1343,22 @@ export type ClientFrame =
    */
   | { t: "agent_config_read"; agentId: AgentId }
   /**
-   * Move one agent's session onto `modeId`. One-shot like the other
-   * instructions: never replayed after a reconnect, so the operator retaps
-   * rather than wonders. Answered by `agent_config` carrying what the daemon
-   * reads back after the session applied it, so a client renders confirmed
-   * state and never its own request.
+   * Set one config option on an agent's session (e.g. mode, model, thinking).
+   * One-shot like the other instructions: never replayed after a reconnect,
+   * so the operator retaps rather than wonders. Answered by `agent_config`
+   * carrying what the daemon reads back after the session applied it, so a
+   * client renders confirmed state and never its own request.
+   *
+   * Note: modeId is deprecated and kept for one release for backward
+   * compatibility with older clients; maps to `{ optionId: "mode", value: modeId }`.
    */
-  | { t: "agent_config_write"; agentId: AgentId; modeId: string }
+  | {
+      t: "agent_config_write";
+      agentId: AgentId;
+      optionId?: string;
+      value?: string;
+      modeId?: string;
+    }
   /**
    * The Cowork catalogue reads, sealed-socket versions of `GET /v1/skills`
    * and `GET /v1/connectors`. A hub-paired phone reaches these frames rather
@@ -1380,6 +1414,13 @@ export type ClientFrame =
       routineId?: string;
       labels?: Record<string, string>;
     }
+  /** Request per-session stats (cost, tokens, cache rate). Answered by session_stats to the asking socket only. */
+  | { t: "session_stats"; sessionId: string }
+  /**
+   * Read the cowork container state, including model broker readiness.
+   * Answered by `container_state`, to the asking socket only.
+   */
+  | { t: "container_state_read" }
   | { t: "ping" };
 
 export type ServerFrame =
@@ -1394,7 +1435,24 @@ export type ServerFrame =
   | { t: "hello"; deviceId: string; agents: Agent[]; scopes?: string[] }
   | { t: "agents"; agents: Agent[] }
   | { t: "update"; agentId: AgentId; seq: number; update: unknown }
-  | { t: "approval"; agentId: AgentId; requestId: string; title: string; tool: string; input: unknown }
+  | {
+      t: "approval";
+      agentId: AgentId;
+      requestId: string;
+      title: string;
+      tool: string;
+      input: unknown;
+      deadlineAt: string;
+    }
+  | {
+      t: "approval_settled";
+      agentId: AgentId;
+      requestId: string;
+      decision: ApprovalChoice;
+      scope: ApprovalScope;
+      by: ApprovalSettledBy;
+      at: string;
+    }
   | { t: "plan_review"; agentId: AgentId; requestId: string; message: string; choices: readonly PlanReviewChoice[] }
   /**
    * The speakable form of a turn's answer, as prose.
@@ -1485,6 +1543,24 @@ export type ServerFrame =
   | { t: "routines"; routines: RemoteRoutine[]; runs: Run[] }
   /** One routine event completed, with every action outcome in configured order. */
   | { t: "routine_ran"; run: Run }
+  | { t: "routine_run_started"; routineId: string; runId: string; at: string }
+  | {
+      t: "routine_action_started";
+      routineId: string;
+      runId: string;
+      actionIndex: number;
+      agentId?: AgentId;
+      at: string;
+    }
+  | {
+      t: "routine_action_finished";
+      routineId: string;
+      runId: string;
+      actionIndex: number;
+      outcome: ActionRunState;
+      at: string;
+    }
+  | { t: "routine_run_finished"; routineId: string; runId: string; outcome: RunState; at: string }
   /** One-time webhook secret returned only to the socket that rotated it. */
   | { t: "routine_secret"; routineId: string; secret: string }
   /**
@@ -1500,6 +1576,8 @@ export type ServerFrame =
   | { t: "task"; task: Task }
   /** The agent an `agent_create` made, sent only to the socket that asked. */
   | { t: "agent_created"; agent: Agent }
+  /** The cowork container state, carrying model broker readiness. */
+  | { t: "container_state"; modelBroker: ModelBrokerStatus }
   /**
    * What a `routine_delete` did, one result per id asked for, sent only to the
    * socket that asked. Beside `sessions_deleted` rather than an error frame,
@@ -1537,7 +1615,8 @@ export type ServerFrame =
   | {
       t: "session_tail";
       sessionId: string;
-      messages: TranscriptTailMessage[];
+      entries: TranscriptTailEntry[];
+      messages: TranscriptTailEntry[];
       truncated: boolean;
       nextCursor: number | null;
       cursor?: number;
@@ -1565,9 +1644,10 @@ export type ServerFrame =
    * asked for.
    */
   | { t: "agent_config"; agentId: AgentId; configOptions: AgentConfigOption[] }
+  | { t: "session_stats"; sessionId: string; stats: SessionStats }
+  /** A prompt submitted with `deliverAs: "followUp"` while a turn was in flight has been queued. */
+  | { t: "prompt_queued"; agentId: AgentId; queued: number }
   | { t: "pong" };
-
-// ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
 
@@ -1988,6 +2068,19 @@ export interface Task {
 }
 
 // ---------------------------------------------------------------------------
+// Cowork container state
+// ---------------------------------------------------------------------------
+
+export interface ModelBrokerStatus {
+  ready: boolean;
+  reason: string | null;
+}
+
+export interface ContainerState {
+  modelBroker: ModelBrokerStatus;
+}
+
+// ---------------------------------------------------------------------------
 // Sessions
 //
 // Every OMP session ever written to ~/.omp/agent/sessions/<flattened-cwd>/,
@@ -2057,11 +2150,25 @@ export interface SessionSummary {
   byteSize: number;
   status: SessionLiveStatus;
   archived: boolean;
+  /** Total session cost in USD summed from assistant usage lines, or null when not reported. */
+  cost?: number | null;
   /** Present only when `status` is "live-tui". */
   pid?: number;
   /** Present only when `status` is "live-ompd". */
   agentId?: AgentId;
+  /** Origin metadata when this session was created by a routine action. */
+  origin?: SessionOrigin;
 }
+
+export interface SessionRoutineOrigin {
+  kind: "routine";
+  routineId: string;
+  routineName: string;
+  runId: string;
+  actionIndex: number;
+}
+
+export type SessionOrigin = SessionRoutineOrigin;
 
 export type SessionSortKey = "status" | "age" | "lastActivity" | "messageCount" | "size";
 export type SessionSortDir = "asc" | "desc";
@@ -2074,6 +2181,7 @@ export interface SessionQuery {
   includeArchived?: boolean;
   sort?: SessionSortKey;
   sortDir?: SessionSortDir;
+  origin?: "routine" | "operator";
 }
 
 export interface SessionGroup {
@@ -2271,3 +2379,108 @@ export type RemoteStartServerFrame =
   | { t: "clone_progress"; cloneId: CloneId; line: string }
   /** The clone finished and `path` now exists. The terminal frame; failures use `error`. */
   | { t: "clone_done"; cloneId: CloneId; path: string };
+
+// ---------------------------------------------------------------------------
+// Stats
+// ---------------------------------------------------------------------------
+
+export interface SessionStatsTokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface SessionStats {
+  cost: number;
+  tokens: SessionStatsTokens;
+  cacheRate: number;
+  calls: number;
+  errors: number;
+}
+
+export interface AggregatedStats {
+  totalRequests: number;
+  successfulRequests: number;
+  failedRequests: number;
+  errorRate: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheWriteTokens: number;
+  cacheRate: number;
+  totalCost: number;
+  totalPremiumRequests: number;
+  avgDuration: number | null;
+  avgTtft: number | null;
+  avgTokensPerSecond: number | null;
+  firstTimestamp: number;
+  lastTimestamp: number;
+}
+
+export interface ModelStats extends AggregatedStats {
+  model: string;
+  provider: string;
+}
+
+export interface FolderStats extends AggregatedStats {
+  folder: string;
+}
+
+export type StatsAgentType = "main" | "subagent" | "advisor";
+
+export interface AgentTypeStats {
+  agentType: StatsAgentType;
+  totalRequests: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheWriteTokens: number;
+  totalCost: number;
+}
+
+export interface TimeSeriesPoint {
+  timestamp: number;
+  requests: number;
+  errors: number;
+  tokens: number;
+  cost: number;
+}
+
+export interface ModelTimeSeriesPoint {
+  timestamp: number;
+  model: string;
+  provider: string;
+  requests: number;
+}
+
+export interface ModelPerformancePoint {
+  timestamp: number;
+  model: string;
+  provider: string;
+  requests: number;
+  avgTtft: number | null;
+  avgTokensPerSecond: number | null;
+}
+
+export interface CostTimeSeriesPoint {
+  timestamp: number;
+  model: string;
+  provider: string;
+  cost: number;
+  costInput: number;
+  costOutput: number;
+  costCacheRead: number;
+  costCacheWrite: number;
+}
+
+export interface DashboardStats {
+  overall: AggregatedStats;
+  byModel: ModelStats[];
+  byFolder: FolderStats[];
+  byAgentType: AgentTypeStats[];
+  timeSeries: TimeSeriesPoint[];
+  modelSeries: ModelTimeSeriesPoint[];
+  modelPerformanceSeries: ModelPerformancePoint[];
+  costSeries: CostTimeSeriesPoint[];
+}

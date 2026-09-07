@@ -787,6 +787,19 @@ describe("frame handling", () => {
 // 5. Outbound Frames
 // ---------------------------------------------------------------------------
 
+test("a prompt_queued frame emits the prompt_queued event with agentId and count", () => {
+  const h = harness();
+  const queuedEvents: Array<{ agentId: string; queued: number }> = [];
+  h.client.on("prompt_queued", event => {
+    queuedEvents.push(event);
+  });
+  h.client.start();
+  const socket = bringUp(h);
+
+  socket.deliver({ t: "prompt_queued", agentId: AGENT, queued: 2 });
+  expect(queuedEvents).toEqual([{ agentId: AGENT, queued: 2 }]);
+});
+
 describe("outbound frames", () => {
   test("prompt, cancel, and decide are shaped as the contract says", () => {
     const h = harness();
@@ -796,6 +809,10 @@ describe("outbound frames", () => {
     const png: PromptImage = { data: "iVBORw0KGgo=", mimeType: "image/png" };
     h.client.prompt(AGENT, "ship it");
     h.client.prompt(AGENT, "look at this", [png]);
+    // Exactly how the console queues: no images, the option in the fourth
+    // slot. On 2026-09-07 a two-shape signature dropped the option on this
+    // call and every queued prompt left the phone as a plain one.
+    h.client.prompt(AGENT, "queued message", undefined, { deliverAs: "followUp" });
     h.client.sessionPrompt("s-tui", "steer this");
     h.client.sessionPrompt("s-tui", "with a picture", "followUp", [png]);
     h.client.cancel(AGENT);
@@ -805,6 +822,7 @@ describe("outbound frames", () => {
     expect(socket.sent).toEqual([
       { t: "prompt", agentId: AGENT, text: "ship it" },
       { t: "prompt", agentId: AGENT, text: "look at this", images: [png] },
+      { t: "prompt", agentId: AGENT, text: "queued message", deliverAs: "followUp" },
       { t: "session_prompt", sessionId: "s-tui", text: "steer this" },
       { t: "session_prompt", sessionId: "s-tui", text: "with a picture", deliverAs: "followUp", images: [png] },
       { t: "cancel", agentId: AGENT },
@@ -1642,8 +1660,8 @@ describe("session tail surface", () => {
     });
 
     expect(received).toEqual([
-      { sessionId: SESSION, messages, truncated: true, nextCursor: 8192 },
-      { sessionId: SESSION, messages: [], truncated: true, nextCursor: 4096, cursor: 8192 },
+      { sessionId: SESSION, entries: messages, messages, truncated: true, nextCursor: 8192 },
+      { sessionId: SESSION, entries: [], messages: [], truncated: true, nextCursor: 4096, cursor: 8192 },
     ]);
   });
 

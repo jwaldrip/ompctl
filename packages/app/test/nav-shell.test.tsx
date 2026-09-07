@@ -68,7 +68,7 @@ class CannedClient {
   readonly collabOpens: string[] = [];
   readonly attached: AgentId[] = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
-  readonly agentPrompts: Array<{ agentId: AgentId; text: string }> = [];
+  readonly agentPrompts: Array<{ agentId: AgentId; text: string; options?: { deliverAs?: "followUp" } }> = [];
   readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
@@ -127,13 +127,16 @@ class CannedClient {
   resumeSession(sessionId: string, cwd: string): void {
     this.resumes.push({ sessionId, cwd });
   }
-  prompt(agentId: AgentId, text: string): void {
-    this.agentPrompts.push({ agentId, text });
+  prompt(agentId: AgentId, text: string, _images?: unknown, options?: { deliverAs?: "followUp" }): void {
+    this.agentPrompts.push(options === undefined ? { agentId, text } : { agentId, text, options });
   }
   cancel(): void {}
   decide(): void {}
   decidePlan(): void {}
   registerWebView(): void {}
+  sessionStats(): void {}
+  readAgentConfig(): void {}
+  writeAgentConfig(): void {}
   unregisterWebView(): void {}
   webViewResult(): void {}
 }
@@ -272,6 +275,60 @@ describe("the stack opens on the fleet and comes back to it", () => {
       shell.press("terminal-back");
       expect(shell.el("terminal-session")).toBeNull();
       expect(shell.el("fleet-list")).not.toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("a roster frame arriving while a session's config screen is open leaves it open", () => {
+    // Observed 2026-09-07 on the live build: choosing a model made the daemon
+    // re-announce the agent, and the shell popped the config screen back to
+    // the log before the operator saw the answer.
+    const shell = mountShell();
+    try {
+      const scout = {
+        id: "agt_scout" as AgentId,
+        name: "Policy Scout",
+        host: { kind: "local" as const, id: "1", spec: { kind: "local" as const } },
+        cwd: "/workspace",
+        createdAt: "2026-02-01T00:01:00.000Z",
+        lastActiveAt: "2026-02-01T00:01:00.000Z",
+        parentAgentId: "agt_main" as AgentId,
+        acpSessionId: "sub-session",
+        labels: {},
+      };
+      const primary = {
+        id: "agt_main" as AgentId,
+        name: "Primary",
+        state: "busy" as const,
+        host: { kind: "local" as const, id: "1", spec: { kind: "local" as const } },
+        cwd: "/workspace",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        lastActiveAt: "2026-02-01T00:00:00.000Z",
+        labels: {},
+      };
+      act(() => {
+        shell.client.emit("agents", { t: "agents", agents: [primary, { ...scout, state: "idle" }] });
+      });
+      shell.press("agent-hub-open-agt_scout");
+      act(() => {
+        shell.client.emit("session_history", {
+          agentId: "agt_scout",
+          sessionId: "sub-session",
+          entries: [],
+          nextBefore: null,
+        });
+      });
+      shell.press("session-open-config");
+      expect(shell.el("agent-config")).not.toBeNull();
+
+      act(() => {
+        shell.client.emit("agents", {
+          t: "agents",
+          agents: [primary, { ...scout, state: "idle", model: "anthropic/claude-3-haiku-20240307" }],
+        });
+      });
+      expect(shell.el("agent-config")).not.toBeNull();
     } finally {
       shell.unmount();
     }
@@ -562,6 +619,81 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
         send.click();
       });
       expect(shell.client.agentPrompts).toEqual([{ agentId: "agt_scout", text: "Continue the subagent." }]);
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("queueing behind a running turn sends a followUp through the console's client, with no transcript echo", async () => {
+    // Observed 2026-09-07 on the live build: the composer's queue strip said
+    // "1 QUEUED" and the daemon never received a frame, because the screen
+    // handed the composer neither the client nor a queue action. The queue is
+    // real only when the frame leaves the device with `deliverAs: "followUp"`.
+    const shell = mountShell();
+    try {
+      const scout = {
+        id: "agt_scout" as AgentId,
+        name: "Policy Scout",
+        host: { kind: "local" as const, id: "1", spec: { kind: "local" as const } },
+        cwd: "/workspace",
+        createdAt: "2026-02-01T00:01:00.000Z",
+        lastActiveAt: "2026-02-01T00:01:00.000Z",
+        parentAgentId: "agt_main" as AgentId,
+        acpSessionId: "sub-session",
+        labels: {},
+      };
+      act(() => {
+        shell.client.emit("agents", {
+          t: "agents",
+          agents: [
+            {
+              id: "agt_main" as AgentId,
+              name: "Primary",
+              state: "busy",
+              host: { kind: "local", id: "1", spec: { kind: "local" } },
+              cwd: "/workspace",
+              createdAt: "2026-02-01T00:00:00.000Z",
+              lastActiveAt: "2026-02-01T00:00:00.000Z",
+              labels: {},
+            },
+            { ...scout, state: "busy" },
+          ],
+        });
+      });
+      shell.press("agent-hub-open-agt_scout");
+      // A turn in flight: the reply is streaming and has not settled.
+      act(() => {
+        shell.client.emit("update", {
+          t: "update",
+          agentId: "agt_scout",
+          seq: 1,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "m1",
+            content: { type: "text", text: "Working." },
+          },
+        });
+      });
+      const composer = shell.el("composer-input");
+      if (composer === null) throw new Error("composer did not render");
+      await act(async () => {
+        typeInto(composer, "And then this.");
+      });
+      const queue = shell.el("composer-queue");
+      if (queue === null) throw new Error("the queue control did not render while a turn was in flight");
+      await act(async () => {
+        queue.click();
+      });
+      expect(shell.client.agentPrompts).toEqual([
+        { agentId: "agt_scout", text: "And then this.", options: { deliverAs: "followUp" } },
+      ]);
+      // Not echoed into the log as a sent turn: the strip holds it until the
+      // daemon plays it.
+      const userLabels = [...shell.host.querySelectorAll('[data-testid="entry-user"]')].map(row =>
+        row.getAttribute("aria-label"),
+      );
+      expect(userLabels).not.toContain("you: And then this.");
+      expect(shell.el("composer-queued-strip")?.textContent).toContain("And then this.");
     } finally {
       shell.unmount();
     }

@@ -192,10 +192,14 @@ async function barrier(socket: Socket, label: string): Promise<void> {
   await socket.next(frame => frame.t === "pong", `pong barrier: ${label}`);
 }
 
-/** The mode selector out of a config frame, by the id the daemon keys it on. */
-function modeIn(frame: ServerFrame): string | undefined {
+/** An option selector out of a config frame, by the id the daemon keys it on. */
+function optionIn(frame: ServerFrame, optionId: string): string | undefined {
   if (frame.t !== "agent_config") throw new Error(`expected an agent_config frame, got ${frame.t}`);
-  return frame.configOptions.find(option => option.id === "mode")?.currentValue;
+  return frame.configOptions.find(option => option.id === optionId)?.currentValue;
+}
+
+function modeIn(frame: ServerFrame): string | undefined {
+  return optionIn(frame, "mode");
 }
 
 describe("the agent config websocket frames", () => {
@@ -303,6 +307,36 @@ describe("the agent config websocket frames", () => {
     const shapeRefusal = await prompter.next(frame => isRefusal(frame, "bad_frame"), "bad_frame error");
     expect(shapeRefusal.t).toBe("error");
     expect(target.fake.modeOf(agent.acpSessionId ?? "")).toBe("default");
+  });
+  test("a prompt-scoped phone changes the model and is answered with the read-back", async () => {
+    const target = await daemon();
+    const agent = await target.createAgent(await target.pair("laptop", [SCOPE_MANAGE]), "worker");
+    const prompter = await target.connect(await target.pair("prompter", [SCOPE_PROMPT]));
+
+    prompter.send({
+      t: "agent_config_write",
+      agentId: agent.id,
+      optionId: "model",
+      value: "openai/gpt-5.4",
+    } as unknown as ClientFrame);
+    const answer = await prompter.next(isAgentConfig, "agent_config frame after the write");
+    expect(optionIn(answer, "model")).toBe("openai/gpt-5.4");
+    expect(target.fake.modelOf(agent.acpSessionId ?? "")).toBe("openai/gpt-5.4");
+  });
+
+  test("an option id the session never offered is refused before it reaches the agent", async () => {
+    const target = await daemon();
+    const agent = await target.createAgent(await target.pair("laptop", [SCOPE_MANAGE]), "worker");
+    const prompter = await target.connect(await target.pair("prompter", [SCOPE_PROMPT]));
+
+    prompter.send({
+      t: "agent_config_write",
+      agentId: agent.id,
+      optionId: "speed",
+      value: "fast",
+    } as unknown as ClientFrame);
+    const refusal = await prompter.next(frame => isRefusal(frame, "unknown_option"), "unknown_option error");
+    expect(refusal.t).toBe("error");
   });
 
   test("the write is one-shot: a reconnect neither replays it nor applies it twice", async () => {

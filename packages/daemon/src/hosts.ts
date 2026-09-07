@@ -24,7 +24,14 @@
  * already sends on every change.
  */
 
-import { type AcpClient, type LocalHost, type SpawnLocalHostOptions, spawnLocalHost } from "@ompd/acp";
+import {
+  type AcpClient,
+  type AcpLoadSessionResponse,
+  type AcpNewSessionResponse,
+  type LocalHost,
+  type SpawnLocalHostOptions,
+  spawnLocalHost,
+} from "@ompd/acp";
 
 /** The config option id carrying the session mode. */
 export const MODE_OPTION_ID = "mode";
@@ -60,6 +67,8 @@ export interface SessionConfigOption {
  */
 export interface SessionConfig {
   configFor(sessionId: string): SessionConfigOption[] | undefined;
+  setConfigOption(sessionId: string, optionId: string, value: string): Promise<SessionConfigOption[]>;
+  /** @deprecated Use setConfigOption(sessionId, "mode", modeId) instead. */
   setMode(sessionId: string, modeId: string): Promise<SessionConfigOption[]>;
 }
 
@@ -138,19 +147,28 @@ export class HostRegistry implements SessionConfig {
   }
 
   /**
-   * Switch the session mode. Resolves with the config as it stands afterwards.
-   *
-   * The local cache is updated from the call's own success rather than from the
-   * `config_option_update` notification that follows it. The notification is a
-   * separate frame arriving on its own schedule, so a caller that read the
-   * cache the moment this resolved would otherwise see the previous mode.
+   * Set a session config option (e.g. mode, model, thinking).
+   * Resolves with the config as it stands afterwards.
    */
-  async setMode(sessionId: string, modeId: string): Promise<SessionConfigOption[]> {
+  async setConfigOption(sessionId: string, optionId: string, value: string): Promise<SessionConfigOption[]> {
     const client = this.#clients.get(sessionId);
     if (!client) throw new UnknownSessionError(sessionId);
-    await client.request("session/set_mode", { sessionId, modeId });
-    this.#setCurrent(sessionId, MODE_OPTION_ID, modeId);
+    const res = await client.setConfigOption(sessionId, optionId, value);
+    if (res?.configOptions && Array.isArray(res.configOptions)) {
+      const parsed = parseConfigOptions(res);
+      if (parsed) this.#config.set(sessionId, parsed);
+    } else {
+      this.#setCurrent(sessionId, optionId, value);
+    }
     return this.#config.get(sessionId) ?? [];
+  }
+
+  /**
+   * Switch the session mode. Resolves with the config as it stands afterwards.
+   * @deprecated Use setConfigOption(sessionId, "mode", modeId) instead.
+   */
+  async setMode(sessionId: string, modeId: string): Promise<SessionConfigOption[]> {
+    return await this.setConfigOption(sessionId, MODE_OPTION_ID, modeId);
   }
 
   #register(opts: SpawnLocalHostOptions): LocalHost {
@@ -174,21 +192,28 @@ export class HostRegistry implements SessionConfig {
     });
 
     const client = host.client;
-    // `AcpClient.newSession` keeps the session id and drops the rest of the
-    // response, and the dropped half is the config this registry exists to
-    // serve. This sends the identical `session/new` frame through the same
-    // public request path and simply keeps all of the answer.
-    client.newSession = async (cwd: string, mcpServers: unknown[] = []): Promise<string> => {
-      const raw = await client.request("session/new", { cwd, mcpServers });
-      if (raw === null || typeof raw !== "object" || !("sessionId" in raw)) {
-        throw new Error("session/new returned no sessionId");
-      }
-      const sessionId = String(raw.sessionId);
+    const originalNewSession = client.newSession.bind(client);
+    client.newSession = async (cwd: string, mcpServers: unknown[] = []): Promise<AcpNewSessionResponse> => {
+      const res = await originalNewSession(cwd, mcpServers);
+      owned.add(res.sessionId);
+      this.#clients.set(res.sessionId, client);
+      const options = parseConfigOptions(res);
+      if (options) this.#config.set(res.sessionId, options);
+      return res;
+    };
+
+    const originalLoadSession = client.loadSession.bind(client);
+    client.loadSession = async (
+      sessionId: string,
+      cwd: string,
+      mcpServers: unknown[] = [],
+    ): Promise<AcpLoadSessionResponse> => {
+      const res = await originalLoadSession(sessionId, cwd, mcpServers);
       owned.add(sessionId);
       this.#clients.set(sessionId, client);
-      const options = parseConfigOptions(raw);
+      const options = parseConfigOptions(res);
       if (options) this.#config.set(sessionId, options);
-      return sessionId;
+      return res;
     };
 
     return host;

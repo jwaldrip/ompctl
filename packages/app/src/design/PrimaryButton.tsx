@@ -52,7 +52,7 @@ export function PrimaryButton({
 const styles = StyleSheet.create({
   button: {
     alignItems: "center",
-    backgroundColor: signal.sage,
+    backgroundColor: signal.ready,
     justifyContent: "center",
     minHeight: TOUCH_TARGET,
     paddingHorizontal: space.wide,

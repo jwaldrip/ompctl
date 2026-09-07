@@ -19,11 +19,13 @@
  */
 
 import type {
+  ActionRunState,
   Agent,
   AgentConfigOption,
   AgentId,
   ApprovalChoice,
   ApprovalScope,
+  ApprovalSettledBy,
   ClientFrame,
   CloneId,
   CollabSignalFrame,
@@ -34,20 +36,23 @@ import type {
   CollabVoiceParticipant,
   ConnectorSummary,
   FsListing,
+  ModelBrokerStatus,
   PlanReviewChoice,
   PromptImage,
   RemoteRoutine,
   RoutineDeleteResult,
   Run,
+  RunState,
   ServerFrame,
   SessionDeleteResult,
   SessionHistoryEntry,
   SessionQuery,
+  SessionStats,
   SessionSummary,
   SkillSummary,
   SyncSettings,
   Task,
-  TranscriptTailMessage,
+  TranscriptTailEntry,
   TuiActivityKind,
   TuiSteerDelivery,
   WebViewAction,
@@ -224,6 +229,7 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // asks again the next time it opens. Reporting it would put an error in
   // front of an operator whose only remedy is the reconnect already running.
   session_tail: false,
+  session_stats: false,
   session_history: false,
   // A snapshot ask, same class as `session_tail`: nothing on the machine
   // changes, and the surface that asked asks again the next time it opens.
@@ -265,6 +271,7 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   task_create: true,
   task_cancel: true,
   agent_create: true,
+  container_state_read: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -353,8 +360,17 @@ export interface ApprovalEvent {
   title: string;
   tool: string;
   input: unknown;
+  deadlineAt: string;
 }
 
+export interface ApprovalSettledEvent {
+  agentId: AgentId;
+  requestId: string;
+  decision: ApprovalChoice;
+  scope: ApprovalScope;
+  by: ApprovalSettledBy;
+  at: string;
+}
 export interface PlanReviewEvent {
   agentId: AgentId;
   requestId: string;
@@ -547,7 +563,8 @@ export interface CloneDoneEvent {
  */
 export interface SessionTailEvent {
   sessionId: string;
-  messages: TranscriptTailMessage[];
+  entries?: TranscriptTailEntry[];
+  messages: TranscriptTailEntry[];
   truncated: boolean;
   nextCursor: number | null;
   cursor?: number;
@@ -583,6 +600,39 @@ export interface RoutinesEvent {
 /** One routine run recorded, carrying every action's outcome. */
 export interface RoutineRanEvent {
   run: Run;
+}
+
+/** Broadcast when a routine run starts execution. */
+export interface RoutineRunStartedEvent {
+  routineId: string;
+  runId: string;
+  at: string;
+}
+
+/** Broadcast when a specific action in a routine run begins. */
+export interface RoutineActionStartedEvent {
+  routineId: string;
+  runId: string;
+  actionIndex: number;
+  agentId?: AgentId;
+  at: string;
+}
+
+/** Broadcast when a specific action in a routine run completes. */
+export interface RoutineActionFinishedEvent {
+  routineId: string;
+  runId: string;
+  actionIndex: number;
+  outcome: ActionRunState;
+  at: string;
+}
+
+/** Broadcast when a routine run finishes. */
+export interface RoutineRunFinishedEvent {
+  routineId: string;
+  runId: string;
+  outcome: RunState;
+  at: string;
 }
 
 /**
@@ -646,11 +696,25 @@ export interface TaskEvent {
 export interface AgentCreatedEvent {
   agent: Agent;
 }
+export interface SessionStatsEvent {
+  sessionId: string;
+  stats: SessionStats;
+}
+
+/** The cowork container state, carrying model broker readiness. */
+export interface ContainerStateEvent {
+  modelBroker: ModelBrokerStatus;
+}
+export interface PromptQueuedEvent {
+  agentId: AgentId;
+  queued: number;
+}
 export interface ClientEventMap {
   status: StatusEvent;
   agents: AgentsEvent;
   update: UpdateEvent;
   approval: ApprovalEvent;
+  approval_settled: ApprovalSettledEvent;
   plan_review: PlanReviewEvent;
   error: ClientErrorEvent;
   say: SayEvent;
@@ -673,6 +737,7 @@ export interface ClientEventMap {
   tasks: TasksEvent;
   task: TaskEvent;
   agent_created: AgentCreatedEvent;
+  container_state: ContainerStateEvent;
   fs_listing: FsListingEvent;
   clone_progress: CloneProgressEvent;
   clone_done: CloneDoneEvent;
@@ -681,9 +746,15 @@ export interface ClientEventMap {
   routine_ran: RoutineRanEvent;
   routines_deleted: RoutinesDeletedEvent;
   routine_secret: RoutineSecretEvent;
+  routine_run_started: RoutineRunStartedEvent;
+  routine_action_started: RoutineActionStartedEvent;
+  routine_action_finished: RoutineActionFinishedEvent;
+  routine_run_finished: RoutineRunFinishedEvent;
   session_tail: SessionTailEvent;
   session_history: SessionHistoryEvent;
+  session_stats: SessionStatsEvent;
   agent_config: AgentConfigEvent;
+  prompt_queued: PromptQueuedEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -909,10 +980,19 @@ export class OmpdClient {
    * `parsePromptImages` are enforced again by the daemon, so this method
    * trusting its caller is not the boundary; it is a convenience that keeps
    * the empty-images case byte-identical to the frame every older peer sends.
+   *
+   * `deliverAs: "followUp"` asks the daemon to hold the prompt behind the
+   * turn in flight; the daemon answers `prompt_queued`.
    */
-  prompt(agentId: AgentId, text: string, images?: PromptImage[]): void {
-    const frame: ClientFrame =
-      images && images.length > 0 ? { t: "prompt", agentId, text, images } : { t: "prompt", agentId, text };
+  prompt(agentId: AgentId, text: string, images?: PromptImage[], options?: { deliverAs?: "followUp" }): void {
+    const deliverAs = options?.deliverAs;
+    const frame: ClientFrame = {
+      t: "prompt",
+      agentId,
+      text,
+      ...(images && images.length > 0 ? { images } : {}),
+      ...(deliverAs ? { deliverAs } : {}),
+    };
     this.send(frame);
   }
 
@@ -1105,6 +1185,15 @@ export class OmpdClient {
     this.send(frame);
   }
 
+  /** Request stats for one session. The answer arrives as the session_stats event. */
+  sessionStats(sessionId: string): void {
+    const frame: ClientFrame = {
+      t: "session_stats",
+      sessionId,
+    };
+    this.send(frame);
+  }
+
   /** Read one structured page of a root or subagent's durable transcript. */
   sessionHistory(agentId: AgentId, sessionId: string, before?: number, limit?: number): void {
     this.send({
@@ -1153,8 +1242,8 @@ export class OmpdClient {
   }
 
   /** Run one routine now. The completed per-action outcomes arrive as `routine_ran`. */
-  runRoutine(routineId: string): void {
-    this.send({ t: "routine_run", routineId });
+  runRoutine(routineId: string, fromAction?: number): void {
+    this.send({ t: "routine_run", routineId, ...(fromAction !== undefined ? { fromAction } : {}) });
   }
 
   /** Rotate a webhook secret. The plaintext arrives once as `routine_secret`. */
@@ -1261,6 +1350,14 @@ export class OmpdClient {
   }
 
   /**
+   * Read the cowork container state, including model broker readiness.
+   * Delivered as the `container_state` event.
+   */
+  readContainerState(): void {
+    this.send({ t: "container_state_read" });
+  }
+
+  /**
    * Ask what config options one agent's session holds, the mode among them.
    * The answer arrives as the `agent_config` event, or an `error` naming the
    * refusal: `unknown_agent` for an id this daemon holds no row for,
@@ -1275,17 +1372,32 @@ export class OmpdClient {
   }
 
   /**
-   * Move one agent's session onto `modeId`. The answer arrives as the
-   * `agent_config` event carrying what the daemon read back from the session,
-   * so a surface renders the confirmed mode rather than its own request; a
-   * scope, shape, or unknown-mode refusal arrives as an `error` naming it.
+   * Set one config option on an agent's session (e.g. mode, model, thinking).
+   * The answer arrives as the `agent_config` event carrying what the daemon
+   * read back from the session, so a surface renders confirmed state rather
+   * than its own request; a scope, shape, or unknown-option refusal arrives
+   * as an `error` naming it.
    *
-   * One-shot, like the other instructions: not replayed after a reconnect,
-   * because an operator who retaps is informed and one whose mode change is
-   * silently replayed later is not.
+   * One-shot, like the other instructions: not replayed after a reconnect.
    */
-  writeAgentConfig(agentId: AgentId, modeId: string): void {
-    this.send({ t: "agent_config_write", agentId, modeId });
+  writeAgentConfig(agentId: AgentId, optionId: string, value: string): void;
+  /**
+   * Move one agent's session onto `modeId`.
+   * @deprecated Use `writeAgentConfig(agentId, optionId, value)` instead.
+   */
+  writeAgentConfig(agentId: AgentId, modeId: string): void;
+  writeAgentConfig(agentId: AgentId, optionIdOrModeId: string, value?: string): void {
+    if (value !== undefined) {
+      this.send({ t: "agent_config_write", agentId, optionId: optionIdOrModeId, value });
+    } else {
+      this.send({
+        t: "agent_config_write",
+        agentId,
+        optionId: "mode",
+        value: optionIdOrModeId,
+        modeId: optionIdOrModeId,
+      });
+    }
   }
 
   /**
@@ -1676,16 +1788,25 @@ export class OmpdClient {
       case "clone_done":
         this.emit("clone_done", { cloneId: frame.cloneId, path: frame.path });
         return;
-      case "session_tail":
+      case "session_tail": {
+        const entries = frame.entries ?? frame.messages ?? [];
         this.emit("session_tail", {
           sessionId: frame.sessionId,
-          messages: frame.messages,
+          entries,
+          messages: entries,
           truncated: frame.truncated,
           // An older daemon sends neither cursor field. Absent `nextCursor`
           // has to read as "no older page reachable" rather than as zero,
           // which would be an offset a client could ask from.
           nextCursor: frame.nextCursor ?? null,
           ...(frame.cursor === undefined ? {} : { cursor: frame.cursor }),
+        });
+        return;
+      }
+      case "session_stats":
+        this.emit("session_stats", {
+          sessionId: frame.sessionId,
+          stats: frame.stats,
         });
         return;
       case "session_history":
@@ -1711,6 +1832,9 @@ export class OmpdClient {
       case "agent_created":
         this.emit("agent_created", { agent: frame.agent });
         return;
+      case "container_state":
+        this.emit("container_state", { modelBroker: frame.modelBroker });
+        return;
       case "settings":
         this.emit("settings", {
           settings: { policyMode: frame.policyMode, keepAwake: frame.keepAwake },
@@ -1722,6 +1846,35 @@ export class OmpdClient {
       case "routine_ran":
         this.emit("routine_ran", { run: frame.run });
         return;
+      case "routine_run_started":
+        this.emit("routine_run_started", { routineId: frame.routineId, runId: frame.runId, at: frame.at });
+        return;
+      case "routine_action_started":
+        this.emit("routine_action_started", {
+          routineId: frame.routineId,
+          runId: frame.runId,
+          actionIndex: frame.actionIndex,
+          agentId: frame.agentId,
+          at: frame.at,
+        });
+        return;
+      case "routine_action_finished":
+        this.emit("routine_action_finished", {
+          routineId: frame.routineId,
+          runId: frame.runId,
+          actionIndex: frame.actionIndex,
+          outcome: frame.outcome,
+          at: frame.at,
+        });
+        return;
+      case "routine_run_finished":
+        this.emit("routine_run_finished", {
+          routineId: frame.routineId,
+          runId: frame.runId,
+          outcome: frame.outcome,
+          at: frame.at,
+        });
+        return;
       case "routine_secret":
         this.emit("routine_secret", { routineId: frame.routineId, secret: frame.secret });
         return;
@@ -1732,6 +1885,12 @@ export class OmpdClient {
         this.emit("agent_config", {
           agentId: frame.agentId,
           configOptions: frame.configOptions,
+        });
+        return;
+      case "prompt_queued":
+        this.emit("prompt_queued", {
+          agentId: frame.agentId,
+          queued: frame.queued,
         });
         return;
       case "tui_activity":
@@ -1751,6 +1910,17 @@ export class OmpdClient {
           title: frame.title,
           tool: frame.tool,
           input: frame.input,
+          deadlineAt: frame.deadlineAt,
+        });
+        return;
+      case "approval_settled":
+        this.emit("approval_settled", {
+          agentId: frame.agentId,
+          requestId: frame.requestId,
+          decision: frame.decision,
+          scope: frame.scope,
+          by: frame.by,
+          at: frame.at,
         });
         return;
       case "room_participants":

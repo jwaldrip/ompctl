@@ -9,7 +9,7 @@
  */
 
 import type { Agent, AgentId } from "@ompd/core";
-import type { PendingApproval, PendingPlanReview, SupervisorEvents } from "../supervisor.ts";
+import type { PendingApproval, PendingPlanReview, SettledApproval, SupervisorEvents } from "../supervisor.ts";
 
 /**
  * A turn's answer as speakable prose.
@@ -51,8 +51,16 @@ export class GatewayEvents implements SupervisorEvents {
     for (const listener of this.#listeners) listener.onApprovalNeeded?.(approval);
   }
 
+  onApprovalSettled(settled: SettledApproval): void {
+    for (const listener of this.#listeners) listener.onApprovalSettled?.(settled);
+  }
+
   onPlanReviewNeeded(review: Omit<PendingPlanReview, "resolve">): void {
     for (const listener of this.#listeners) listener.onPlanReviewNeeded?.(review);
+  }
+
+  onPromptQueued(agentId: AgentId, queued: number): void {
+    for (const listener of this.#listeners) listener.onPromptQueued?.(agentId, queued);
   }
 
   /** Subscribe to spoken-form summaries. The returned function unsubscribes. */

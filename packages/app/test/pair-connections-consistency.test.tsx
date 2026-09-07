@@ -19,6 +19,7 @@ import { describe, expect, test } from "bun:test";
 import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { ConnectionList } from "../src/platform/connection.ts";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
 // Dynamic on purpose, the same way `pair-screen.test.tsx` loads its screen:
 // bun evaluates a file's whole static import graph before its body runs, so
@@ -177,8 +178,8 @@ describe("pair and connections draw from one design", () => {
       const addFill = declarationsFor(byTestID(switcher.host, "add-connection")).get("background-color");
       // The filled swatch the rest of the app already uses, not the ghost
       // outline that read as one more text field.
-      expect(submitFill).toBe(rgb(signal.sage));
-      expect(addFill).toBe(rgb(signal.sage));
+      expect(submitFill).toBe(rgb(signal.ready));
+      expect(addFill).toBe(rgb(signal.ready));
       expect(submitFill).toBe(addFill);
     } finally {
       pair.unmount();
@@ -212,6 +213,7 @@ describe("pair and connections draw from one design", () => {
   });
 
   test("an unknown metric says what is missing and why, and the row stays", () => {
+    setWindowSize(820, 1180);
     const readout = mount(<StatusReadout state="connected" attempt={0} usage={null} clearances={0} />);
     try {
       for (const testID of ["status-context", "status-spend"]) {
@@ -224,6 +226,7 @@ describe("pair and connections draw from one design", () => {
       expect(readout.host.textContent).toContain("spend");
     } finally {
       readout.unmount();
+      resetWindowSize();
     }
   });
 

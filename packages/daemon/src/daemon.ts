@@ -67,6 +67,7 @@ import { DaemonModelAccess } from "./model-broker/index.ts";
 import { ContainerBackend, HostProvisioner, KNOWN_RUNTIMES, LocalBackend } from "./provisioner/index.ts";
 import { Scheduler } from "./routines/index.ts";
 import { SessionIndex } from "./sessions/session-index.ts";
+import { StatsSubsystem } from "./stats/index.ts";
 import { Supervisor } from "./supervisor.ts";
 import { createTunnelDialer } from "./tunnel/dial.ts";
 import { identityPath, loadIdentity } from "./tunnel/identity.ts";
@@ -631,9 +632,11 @@ export class Ompd {
    * daemon that failed part-way through `start`.
    */
   #modelAccess: DaemonModelAccess;
+  #containerBackend: ContainerBackend;
   #scheduler: Scheduler;
   #tasks: TaskManager;
   #sessionIndex: SessionIndex;
+  #stats: StatsSubsystem;
   #evolution: EvolutionEngine;
   #gateway: Gateway;
   #queuedIntentDrainer: QueuedIntentDrainer | undefined;
@@ -752,6 +755,15 @@ export class Ompd {
     // defaults for one reason: they have to spawn through the registry above,
     // or a container agent's session would be the only kind the gateway could
     // not answer a mode query for.
+    this.#containerBackend = new ContainerBackend({
+      workspace: opts.repoRoot ?? process.cwd(),
+      home: this.#home,
+      spawn: this.#hosts.spawn,
+      // Not optional in the daemon, only in the type: every container this
+      // process provisions goes through the broker, or fails saying why.
+      modelAccess: this.#modelAccess,
+      ...containerBackendSettings(this.#config),
+    });
     this.#provisioner = new HostProvisioner({
       store: this.#store,
       workspace: opts.repoRoot ?? process.cwd(),
@@ -759,15 +771,7 @@ export class Ompd {
         local: new LocalBackend({ ompPath: this.#config.ompPath, spawn: this.#hosts.spawn }),
         // Runtime and image come from the validated config on disk, not from
         // the environment. See `containerBackendSettings`.
-        container: new ContainerBackend({
-          workspace: opts.repoRoot ?? process.cwd(),
-          home: this.#home,
-          spawn: this.#hosts.spawn,
-          // Not optional in the daemon, only in the type: every container this
-          // process provisions goes through the broker, or fails saying why.
-          modelAccess: this.#modelAccess,
-          ...containerBackendSettings(this.#config),
-        }),
+        container: this.#containerBackend,
       },
       onLog: this.#onLog,
     });
@@ -865,6 +869,9 @@ export class Ompd {
     });
     this.#tasks = new TaskManager({ store: this.#store, supervisor: this.#supervisor });
     this.#sessionIndex = new SessionIndex({ store: this.#store });
+    // Same default root as the index (omp's own sessions directory), which is
+    // the only tree `@oh-my-pi/omp-stats` can aggregate; see `available`.
+    this.#stats = new StatsSubsystem();
 
     // Constructed here rather than in `start`, because opening the vault is
     // what proves the master key is reachable, and a daemon that cannot read
@@ -893,6 +900,7 @@ export class Ompd {
       routines: this.#scheduler,
       sessions: this.#hosts,
       sessionIndex: this.#sessionIndex,
+      stats: this.#stats,
       endpoints: () => this.#reachableEndpoints(),
       // Read from the config the daemon booted with, so widening or narrowing
       // what a phone may browse is a config edit and a restart, never
@@ -905,6 +913,7 @@ export class Ompd {
       connectors: { list: listConnectorCatalog },
       mcpAuth: this.#mcpAuth,
       tasks: this.#tasks,
+      containerState: () => ({ modelBroker: this.#containerBackend.modelBrokerState() }),
       syncConfig: {
         read: () => {
           const config = loadConfig(this.#home);

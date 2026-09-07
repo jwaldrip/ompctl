@@ -135,7 +135,7 @@ const styles = StyleSheet.create({
   entryCopy: { flex: 1, gap: space.tight },
   endpoint: { ...type.code, color: ink.muted },
   status: { ...type.label },
-  statusActive: { color: signal.sage },
+  statusActive: { color: signal.ready },
   statusIdle: { color: ink.muted },
   settingsRow: {
     alignItems: "center",
@@ -151,5 +151,5 @@ const styles = StyleSheet.create({
   back: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET },
   backText: { ...type.label, color: ink.plain },
   invite: { alignItems: "flex-start", justifyContent: "center", minHeight: TOUCH_TARGET },
-  inviteText: { ...type.label, color: signal.sage },
+  inviteText: { ...type.label, color: signal.ready },
 });

@@ -17,7 +17,9 @@
  * is owed the truth that something happened, even when we cannot name it.
  */
 
-import type { ApprovalChoice, PlanReviewChoice, SessionHistoryEntry } from "@ompd/core/contracts";
+import type { ApprovalChoice, ApprovalSettledBy, PlanReviewChoice, SessionHistoryEntry } from "@ompd/core/contracts";
+
+export type { ApprovalSettledBy };
 
 // ---------------------------------------------------------------------------
 // State
@@ -89,6 +91,7 @@ export interface Approval {
   tool: string;
   title: string;
   input: unknown;
+  deadlineAt?: string | null;
 }
 
 /** Whatever the session has told us about itself. All of it optional. */
@@ -162,6 +165,10 @@ export interface AssistantEntry {
   thought: boolean;
 }
 
+export type ToolContentItem =
+  | { type: "diff"; path: string; oldText: string; newText: string }
+  | { type: "text"; text: string };
+
 export interface ToolEntry {
   kind: "tool";
   id: string;
@@ -172,6 +179,7 @@ export interface ToolEntry {
   output: string | null;
   /** Files the call touched, as ACP reports them. */
   locations: string[];
+  content: ToolContentItem[];
 }
 
 export interface ApprovalEntry {
@@ -183,6 +191,8 @@ export interface ApprovalEntry {
   input: unknown;
   /** Null until this device, or another one, settles it. */
   decision: ApprovalChoice | null;
+  settledBy?: ApprovalSettledBy | null;
+  deadlineAt?: string | null;
 }
 
 export interface UnknownEntry {
@@ -246,6 +256,7 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
               input: item.input,
               output: item.output,
               locations: item.locations,
+              content: [],
             };
     const key = transcriptRowKey(entry);
     if (existing.has(key)) continue;
@@ -519,6 +530,7 @@ function reduceToolCall(state: SessionState, payload: unknown): SessionState {
 
   const existing = indexOfTool(state.entries, toolCallId);
   const status = readStatus(payload) ?? "pending";
+  const content = extractToolContent(payload);
   const entry: ToolEntry = {
     kind: "tool",
     id: toolCallId,
@@ -528,15 +540,20 @@ function reduceToolCall(state: SessionState, payload: unknown): SessionState {
     input: readField(payload, "rawInput") ?? null,
     output: extractToolOutput(payload),
     locations: readLocations(payload),
+    content,
   };
 
   // A repeated announcement amends rather than duplicates. Agents retry.
   if (existing >= 0) {
     const before = state.entries[existing];
     if (before === undefined || before.kind !== "tool") return state;
+    const merged: ToolEntry = {
+      ...entry,
+      content: entry.content.length > 0 ? entry.content : before.content,
+    };
     return {
       ...state,
-      entries: replaceAt(state.entries, existing, entry),
+      entries: replaceAt(state.entries, existing, merged),
       activity: countActivity(state.activity, before.status, entry.status, false, before.toolKind, entry.toolKind),
     };
   }
@@ -569,6 +586,7 @@ function reduceToolCallUpdate(state: SessionState, payload: unknown): SessionSta
   const title = readString(payload, "title");
   const rawInput = readField(payload, "rawInput");
   const locations = readLocations(payload);
+  const content = extractToolContent(payload);
   const entry: ToolEntry = {
     kind: "tool",
     id: before.id,
@@ -580,6 +598,7 @@ function reduceToolCallUpdate(state: SessionState, payload: unknown): SessionSta
     // Output accumulates: a long command reports progress before it finishes.
     output: output === null ? before.output : output,
     locations: locations.length > 0 ? locations : before.locations,
+    content: content.length > 0 ? content : before.content,
   };
 
   return {
@@ -765,6 +784,8 @@ export function appendApproval(state: SessionState, approval: Approval): Session
     title: approval.title,
     input: approval.input,
     decision: null,
+    settledBy: null,
+    deadlineAt: approval.deadlineAt ?? null,
   };
   const rawEntries = [...closeStreams(state.entries), entry];
   const { entries, trimmed } = trimEntries(rawEntries);
@@ -788,7 +809,12 @@ export function resolvePlanReview(state: SessionState, requestId: string): Sessi
 }
 
 /** Settles a clearance. The card stays, showing what was decided. */
-export function resolveApproval(state: SessionState, requestId: string, decision: ApprovalChoice): SessionState {
+export function resolveApproval(
+  state: SessionState,
+  requestId: string,
+  decision: ApprovalChoice,
+  settledBy: ApprovalSettledBy = "operator",
+): SessionState {
   const index = state.entries.findIndex(entry => entry.kind === "approval" && entry.requestId === requestId);
   const pending = state.pendingApprovals.filter(approval => approval.requestId !== requestId);
   if (index < 0) {
@@ -799,7 +825,7 @@ export function resolveApproval(state: SessionState, requestId: string, decision
   if (before === undefined || before.kind !== "approval") return state;
   return {
     ...state,
-    entries: replaceAt(state.entries, index, { ...before, decision }),
+    entries: replaceAt(state.entries, index, { ...before, decision, settledBy }),
     pendingApprovals: pending,
   };
 }
@@ -809,6 +835,42 @@ export function endTurn(state: SessionState): SessionState {
   const entries = closeStreams(state.entries);
   if (entries === state.entries) return state;
   return { ...state, entries };
+}
+
+/**
+ * Seeds or updates the session's lifetime cost from daemon stats.
+ *
+ * When usage is not yet reported, usage is seeded with zero context tokens
+ * and the stats cost. When usage is already present, the cost updates only if
+ * the stats answer is higher than the reducer's running figure, because
+ * mid-turn usage updates can only add cost. Context window figures (used/size)
+ * are preserved.
+ */
+export function seedCost(state: SessionState, costAmount: number, costCurrency = "USD"): SessionState {
+  if (!Number.isFinite(costAmount) || costAmount < 0) return state;
+  const previous = state.usage;
+  if (previous === null) {
+    return {
+      ...state,
+      usage: {
+        used: 0,
+        size: 0,
+        costAmount,
+        costCurrency: costCurrency || "USD",
+      },
+    };
+  }
+  if (costAmount <= previous.costAmount) {
+    return state;
+  }
+  return {
+    ...state,
+    usage: {
+      ...previous,
+      costAmount,
+      costCurrency: costCurrency || previous.costCurrency || "USD",
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +947,56 @@ function extractToolOutput(payload: unknown): string | null {
   if (fromBlocks.length > 0) return fromBlocks;
   if (typeof raw === "string" && raw.length > 0) return raw;
   return null;
+}
+
+function extractToolContent(payload: unknown): ToolContentItem[] {
+  const raw = readField(payload, "rawOutput");
+  const rawContent = readField(raw, "content");
+  const blockContent = readField(payload, "content");
+  const items: ToolContentItem[] = [];
+  collectContentItems(rawContent, items);
+  collectContentItems(blockContent, items);
+  const unique: ToolContentItem[] = [];
+  for (const item of items) {
+    const exists = unique.some(u => {
+      if (u.type === "diff" && item.type === "diff") {
+        return u.path === item.path && u.oldText === item.oldText && u.newText === item.newText;
+      }
+      if (u.type === "text" && item.type === "text") {
+        return u.text === item.text;
+      }
+      return false;
+    });
+    if (!exists) unique.push(item);
+  }
+  return unique;
+}
+
+function collectContentItems(source: unknown, out: ToolContentItem[]): void {
+  if (!source) return;
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      collectContentItems(item, out);
+    }
+    return;
+  }
+  if (typeof source !== "object") return;
+  const type = readString(source, "type");
+  if (type === "diff") {
+    const path = readString(source, "path");
+    const oldText = readField(source, "oldText");
+    const newText = readField(source, "newText");
+    if (path !== null && typeof oldText === "string" && typeof newText === "string") {
+      out.push({ type: "diff", path, oldText, newText });
+    }
+  } else if (type === "text") {
+    const text = readField(source, "text");
+    if (typeof text === "string") {
+      out.push({ type: "text", text });
+    }
+  } else if (type === "content") {
+    collectContentItems(readField(source, "content"), out);
+  }
 }
 
 /** Flattens an ACP content block, a list of them, or a bare string, to text. */

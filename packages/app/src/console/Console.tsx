@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { StyleSheet, View } from "react-native";
 import { Divider } from "react-native-paper";
 import { AgentHub } from "../components/AgentHub.tsx";
+import { ResumeNudge, shouldNudgeResume } from "../components/ResumeNudge.tsx";
 import { Toast } from "../components/Toast.tsx";
 import { skillInvocation } from "../cowork/catalog.ts";
 import type { NewTaskInput } from "../cowork/tasks.ts";
@@ -39,6 +40,7 @@ import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
 import { AppNavigator } from "../nav/AppNavigator.tsx";
 import type { Connection, ConnectionList } from "../platform/connection.ts";
+import { loadViewPrefs, saveViewPrefs } from "../platform/view-prefs.ts";
 import { AgentConfigScreen } from "../screens/AgentConfigScreen.tsx";
 import { ConnectionSwitcherScreen } from "../screens/ConnectionSwitcherScreen.tsx";
 import { CoworkScreen } from "../screens/CoworkScreen.tsx";
@@ -48,6 +50,7 @@ import { RemoteStartScreen } from "../screens/RemoteStartScreen.tsx";
 import { RoutinesScreen } from "../screens/RoutinesScreen.tsx";
 import { SessionScreen } from "../screens/SessionScreen.tsx";
 import { SettingsScreen } from "../screens/SettingsScreen.tsx";
+import { StatsScreen } from "../screens/StatsScreen.tsx";
 import { TerminalSessionScreen } from "../screens/TerminalSessionScreen.tsx";
 import type { BrowserSession, SortField } from "../session/browser.ts";
 import { browserReduce, EMPTY_BROWSER } from "../session/browser.ts";
@@ -96,7 +99,7 @@ export function Console({
   onUnpair,
   createClient = createOmpdClient,
 }: ConsoleProps): JSX.Element {
-  const [state, actions] = useConsole(connection, createClient, deviceMemoVoice);
+  const [state, actions, client] = useConsole(connection, createClient, deviceMemoVoice);
   const split = useSplitLayout();
   // The bay's share of the window, clamped between a floor that fits its own
   // sort bar and a ceiling that keeps the log pane fed. A fixed 340 on every
@@ -104,7 +107,39 @@ export function Console({
   // their reasons live with the other layout rules in design/layout.ts.
   const bayWidth = useSplitBayWidth();
   const [browser, dispatchBrowser] = useReducer(browserReduce, EMPTY_BROWSER);
+  const [hubDismissed, setHubDismissed] = useState(false);
+  const [nudgedSession, setNudgedSession] = useState<BrowserSession | null>(null);
+  const resumedSessionIds = useRef<Set<string>>(new Set());
+  const prefsLoadedRef = useRef(false);
+  useEffect(() => {
+    let mounted = true;
+    void loadViewPrefs().then(prefs => {
+      if (!mounted) return;
+      prefsLoadedRef.current = true;
+      dispatchBrowser({ t: "hydratePrefs", prefs });
+      if (prefs.hubDismissed) {
+        setHubDismissed(true);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return;
+    void saveViewPrefs({
+      view: browser.view,
+      sort: browser.sort,
+      grouped: browser.grouped,
+      project: browser.project,
+      hubDismissed,
+    });
+  }, [browser.view, browser.sort, browser.grouped, browser.project, hubDismissed]);
+
+  const onToggleHubDismiss = useCallback(() => {
+    setHubDismissed(prev => !prev);
+  }, []);
   useEffect(() => {
     if (state.unauthorized === null) return;
     onUnpair(`${state.unauthorized} Pair this device again to carry on.`);
@@ -223,6 +258,12 @@ export function Console({
   const onToggleArchived = useCallback(() => {
     dispatchBrowser({ t: "toggleArchived" });
   }, []);
+  const onSetProject = useCallback((project: string | null) => {
+    dispatchBrowser({ t: "setProject", project });
+  }, []);
+  const onSetQuery = useCallback((query: string) => {
+    dispatchBrowser({ t: "setQuery", query });
+  }, []);
   const onArchive = useCallback((session: BrowserSession) => {
     dispatchBrowser({ t: "archive", id: session.id });
   }, []);
@@ -255,6 +296,10 @@ export function Console({
   }, []);
   const onOpen = useCallback(
     (session: BrowserSession) => {
+      if (shouldNudgeResume(session, resumedSessionIds.current)) {
+        setNudgedSession(session);
+        return;
+      }
       openSessionById(session.id);
     },
     [openSessionById],
@@ -299,6 +344,18 @@ export function Console({
   const onOpenAgent = useCallback((agent: Agent) => {
     latest.current.actions.select(agent.id);
   }, []);
+  const onSetView = useCallback((view: "list" | "board") => {
+    dispatchBrowser({ t: "setView", view });
+  }, []);
+
+  const agentClearances = useCallback(
+    (agentId: AgentId): number => {
+      const sess = state.sessions.get(agentId);
+      if (!sess) return 0;
+      return sess.pendingApprovals.length + (sess.planReview === null ? 0 : 1);
+    },
+    [state.sessions],
+  );
 
   const log = (agentId: AgentId, back: () => void, openConfig: () => void): JSX.Element => {
     // `agentFor`, not a raw roster lookup: a resumed session starts streaming
@@ -384,6 +441,10 @@ export function Console({
         // handler does: a one-parameter arrow here would still typecheck and
         // silently drop every image the operator attached.
         onSubmit={(text, images) => actions.prompt(agent.id, text, images)}
+        onQueue={(text, images) => actions.prompt(agent.id, text, images, { deliverAs: "followUp" })}
+        // The same client the fleet rides: the composer's directory picker
+        // browses with its `fs_list` frames and hears `prompt_queued` on it.
+        client={client}
         onCancel={() => {
           actions.cancel(agent.id);
         }}
@@ -443,17 +504,19 @@ export function Console({
     );
   };
 
-  // The config surface is stateless between visits: the daemon's config
-  // routes answer each request whole, so nothing here joins the console
-  // model. The scopes are the daemon's own last answer when it gives one,
-  // the stored pairing's claim otherwise, and the screen treats an old
-  // pairing's silence as optimistic until a refusal says otherwise.
+  // The config surface is stateless between visits: the daemon answers each
+  // `agent_config_read` whole, so nothing here joins the console model. It
+  // rides the console's own socket, which every pairing carries, direct or
+  // through the hub. The scopes are the daemon's own last answer when it
+  // gives one, the stored pairing's claim otherwise, and the screen treats an
+  // old pairing's silence as optimistic until a refusal says otherwise.
   const agentConfig = (agentId: AgentId, back: () => void): JSX.Element => (
     <AgentConfigScreen
       agentId={agentId}
       agentName={agentFor(state, agentId)?.name}
       connection={connection}
       grantedScopes={state.grantedScopes}
+      client={client}
       onBack={back}
     />
   );
@@ -488,7 +551,12 @@ export function Console({
       <SafeScreen testID="fleet-surface" edges={{ bottom: !split }}>
         <View style={split ? styles.splitLayout : styles.singleLayout}>
           <View style={split ? [styles.splitBay, { width: bayWidth }] : styles.bay}>
-            <AgentHub agents={state.agents} onOpen={onOpenAgent} />
+            <AgentHub
+              agents={state.agents}
+              onOpen={onOpenAgent}
+              collapsed={hubDismissed}
+              onToggleCollapse={onToggleHubDismiss}
+            />
             <FleetScreen
               browser={browser}
               onSort={onSort}
@@ -501,6 +569,12 @@ export function Console({
               onDelete={onDelete}
               deleteAccess={manageScopeAccess(state, connection.scopes)}
               link={fleetLink}
+              onSetProject={onSetProject}
+              onSetQuery={onSetQuery}
+              onSetView={onSetView}
+              agents={state.agents}
+              pendingClearances={agentClearances}
+              tuiSessions={state.tuiSessions}
             />
           </View>
           {/*
@@ -514,6 +588,25 @@ export function Console({
           {split ? <Divider style={styles.splitSeam} testID="split-seam" /> : null}
           {split ? <View style={styles.splitDetail}>{splitPane()}</View> : null}
         </View>
+        {nudgedSession !== null ? (
+          <ResumeNudge
+            session={nudgedSession}
+            onStartFresh={() => {
+              const cwd = nudgedSession.cwd;
+              setNudgedSession(null);
+              actions.createAgent({ cwd });
+            }}
+            onResumeAnyway={() => {
+              const id = nudgedSession.id;
+              resumedSessionIds.current.add(id);
+              setNudgedSession(null);
+              openSessionById(id);
+            }}
+            onClose={() => {
+              setNudgedSession(null);
+            }}
+          />
+        ) : null}
       </SafeScreen>
     ),
     session: log,
@@ -536,6 +629,7 @@ export function Console({
     // for the console's connection. The screen decides from the pairing's
     // scopes whether it may change anything or only read.
     settings: back => <SettingsScreen connection={connection} onBack={back} />,
+    stats: back => <StatsScreen connection={connection} onBack={back} />,
     // Owns its own socket, like the settings screen above. It receives the
     // console's `createClient` for the same reason Cowork does: it is the seam
     // a test drives this surface's socket through, and in the app it is the
@@ -734,7 +828,7 @@ function CoworkSurface({
     <SafeScreen testID="cowork-surface">
       {notice === null ? null : (
         <View style={styles.coworkNotice} testID="cowork-notice">
-          <Body color={signal.ochre}>{notice}</Body>
+          <Body color={signal.holding}>{notice}</Body>
         </View>
       )}
       <CoworkScreen

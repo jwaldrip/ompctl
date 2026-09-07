@@ -12,7 +12,8 @@
     "@ompd/core": "workspace:*",
     "@ompd/tunnel": "workspace:*",
     "@oh-my-pi/pi-coding-agent": "catalog:",
-    "@oh-my-pi/pi-utils": "catalog:"
+    "@oh-my-pi/pi-utils": "catalog:",
+    "@oh-my-pi/omp-stats": "catalog:"
   },
   "scripts": {
     "check": "bun ../../scripts/check-types.ts tsconfig.json"

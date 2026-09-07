@@ -121,6 +121,7 @@ class CannedClient {
   decide(): void {}
   decidePlan(): void {}
   registerWebView(): void {}
+  sessionStats(): void {}
   unregisterWebView(): void {}
   webViewResult(): void {}
   listDirectory(path?: string): void {

@@ -83,11 +83,14 @@ import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
+import { type StatsSubsystem, statsUnavailableReason } from "../stats/index.ts";
 import {
   AgentBusyError,
   createAgentId,
   type PendingApproval,
   type PendingPlanReview,
+  PromptQueueFullError,
+  type SettledApproval,
   type Supervisor,
   UnauthorizedError,
 } from "../supervisor.ts";
@@ -450,13 +453,14 @@ export interface WebhookFireAttempt {
 }
 
 export interface RoutineRunner {
-  runNow(routineId: string, actor: Actor): Promise<Run>;
+  runNow(routineId: string, actor: Actor, fromAction?: number): Promise<Run>;
   fireWebhook(routineId: string, presentedSecret: string): Promise<WebhookFireAttempt>;
   /**
    * Delete routines for good, with per-id results. On the runner rather than
    * the store because only the scheduler knows whether a run is in flight.
    */
   deleteRoutines(routineIds: readonly string[]): Promise<RoutineDeleteResult[]>;
+  onProgress?(listener: (frame: ServerFrame) => void): () => void;
 }
 
 /**
@@ -1209,6 +1213,7 @@ export interface GatewayOptions {
    * here" and "this daemon build has no catalogue wired in".
    */
   sessionIndex?: SessionIndex;
+  stats?: StatsSubsystem;
   /**
    * Reads live endpoint offers from config and identity. Absent, `GET
    * /v1/endpoints` reports an empty offer list rather than an error: unlike
@@ -1229,6 +1234,11 @@ export interface GatewayOptions {
    * filesystem".
    */
   filesystem?: FilesystemSurface;
+  /**
+   * Provides the cowork container state, notably model broker readiness.
+   * When absent, reports ready: true.
+   */
+  containerState?: () => { modelBroker: { ready: boolean; reason: string | null } };
   /** Embedded web assets map, for testing or overriding the compiled-in WEB_ASSETS. */
   embeddedAssets?: { assets: Record<string, string>; built: boolean };
 }
@@ -1392,6 +1402,13 @@ export class Gateway {
   #tasks: TaskCatalog | undefined;
   #sessionIndex: SessionIndex | undefined;
   /**
+   * Owned by the daemon and handed in, never built here: a gateway that
+   * constructed its own would index omp's real home from every test harness
+   * that builds a gateway, which is what crashed the suite under --parallel
+   * on 2026-09-07. Absent in harnesses that pass none; every use tolerates it.
+   */
+  #stats: StatsSubsystem | undefined;
+  /**
    * The sessions-root watcher, running only while at least one socket has
    * asked for the index. Started lazily by the first `sessions` ask and
    * stopped when the last watcher disconnects or the gateway closes, so a
@@ -1401,6 +1418,7 @@ export class Gateway {
   #sessionWatch: SessionWatch | undefined;
   #endpoints: (() => EndpointOffer[]) | undefined;
   #filesystem: FilesystemSurface | undefined;
+  #containerStateProvider: (() => { modelBroker: { ready: boolean; reason: string | null } }) | undefined;
   /**
    * Clones in flight, per socket.
    *
@@ -1439,6 +1457,7 @@ export class Gateway {
   #unsubscribeSay: (() => void) | undefined;
   #unsubscribeRevoked: (() => void) | undefined;
   #unsubscribe: (() => void) | undefined;
+  #unsubscribeRoutineProgress: (() => void) | undefined;
   #embeddedAssets?: { assets: Record<string, string>; built: boolean };
 
   constructor(opts: GatewayOptions) {
@@ -1498,8 +1517,11 @@ export class Gateway {
     this.#mcpAuth = opts.mcpAuth;
     this.#tasks = opts.tasks;
     this.#sessionIndex = opts.sessionIndex;
+    this.#stats = opts.stats;
+    this.#stats?.start();
     this.#endpoints = opts.endpoints;
     this.#filesystem = opts.filesystem;
+    this.#containerStateProvider = opts.containerState;
     this.#onWebViewResult = opts.onWebViewResult;
     this.#onWebViewUnavailable = opts.onWebViewUnavailable;
     // Resolved once so the traversal check below compares two absolute paths.
@@ -1521,6 +1543,7 @@ export class Gateway {
           if (ws.data.attached.size === 0) continue;
           if (ws.data.scopes.has(SCOPE_READ)) this.#send(ws, { t: "agents", agents });
         }
+        void this.#stats?.sync().catch(() => {});
       },
       onApprovalNeeded: approval => {
         for (const ws of this.#sockets) {
@@ -1528,10 +1551,23 @@ export class Gateway {
           this.#deliverApproval(ws, approval);
         }
       },
+      onApprovalSettled: settled => {
+        for (const ws of this.#sockets) {
+          if (!ws.data.attached.has(settled.agentId)) continue;
+          this.#deliverApprovalSettled(ws, settled);
+        }
+      },
       onPlanReviewNeeded: review => {
         for (const ws of this.#sockets) {
           if (!ws.data.attached.has(review.agentId)) continue;
           this.#deliverPlanReview(ws, review);
+        }
+      },
+      onPromptQueued: (agentId, queued) => {
+        for (const ws of this.#sockets) {
+          if (ws.data.attached.has(agentId)) {
+            this.#send(ws, { t: "prompt_queued", agentId, queued });
+          }
         }
       },
     });
@@ -1566,6 +1602,9 @@ export class Gateway {
         // ACP leg immediately so a removed device cannot keep owning a TUI.
         this.#close(ws);
       }
+    });
+    this.#unsubscribeRoutineProgress = this.#routines?.onProgress?.(frame => {
+      this.#broadcastRoutine(frame);
     });
   }
 
@@ -1640,6 +1679,9 @@ export class Gateway {
     this.#unsubscribeSay = undefined;
     this.#unsubscribeRevoked?.();
     this.#unsubscribeRevoked = undefined;
+    this.#stats?.stop();
+    this.#unsubscribeRoutineProgress?.();
+    this.#unsubscribeRoutineProgress = undefined;
     this.#disarmSessionWatcher();
     for (const ws of [...this.#sockets]) this.#close(ws);
     // Relay legs are not in `#sockets`; `stop(true)` tears them down with
@@ -1660,6 +1702,14 @@ export class Gateway {
     if (!this.#collabRelay.hasClosedLegs && !this.#hasClosedSockets) await stopping;
     this.#server = undefined;
     this.#startedAtMs = undefined;
+  }
+
+  #broadcastRoutine(frame: ServerFrame): void {
+    for (const ws of this.#sockets) {
+      if (!ws.data.scopes.has(SCOPE_READ)) continue;
+      if (ws.data.revoked) continue;
+      this.#send(ws, frame);
+    }
   }
 
   /**
@@ -2082,35 +2132,62 @@ export class Gateway {
         return Response.json({ agentId: agent.id, configOptions: options });
       }
 
-      let body: { modeId?: unknown };
+      let body: { modeId?: unknown; optionId?: unknown; value?: unknown };
       try {
         body = (await req.json()) as typeof body;
       } catch {
         return Response.json({ error: "bad_json" }, { status: 400 });
       }
-      if (typeof body.modeId !== "string") {
-        return Response.json({ error: "modeId is required" }, { status: 400 });
+
+      const optionId =
+        typeof body.optionId === "string" && body.optionId.length > 0
+          ? body.optionId
+          : typeof body.modeId === "string" && body.modeId.length > 0
+            ? MODE_OPTION_ID
+            : undefined;
+      const value =
+        typeof body.value === "string" && body.value.length > 0
+          ? body.value
+          : typeof body.modeId === "string" && body.modeId.length > 0
+            ? body.modeId
+            : undefined;
+
+      if (optionId === undefined || value === undefined) {
+        return Response.json({ error: "optionId and value are required" }, { status: 400 });
       }
 
-      // Checked against what this session actually offers. Forwarding an
-      // unknown mode would either be ignored or wedge the turn, and both look
-      // like the daemon losing the request.
-      const known = sessions.configFor(sessionId)?.find(option => option.id === MODE_OPTION_ID);
-      if (known && !known.options.some(choice => choice.value === body.modeId)) {
+      const advertised = sessions.configFor(sessionId);
+      const knownOption = advertised?.find(option => option.id === optionId);
+      if (!knownOption) {
         return Response.json(
-          { error: "unknown_mode", known: known.options.map(choice => choice.value) },
+          {
+            error: "unknown_option",
+            message: `agent ${agent.id} has no config option ${optionId}; it offers ${advertised?.map(o => o.id).join(", ") ?? "none"}`,
+          },
+          { status: 400 },
+        );
+      }
+
+      if (!knownOption.options.some(choice => choice.value === value)) {
+        const code = optionId === MODE_OPTION_ID ? "unknown_mode" : "unknown_value";
+        return Response.json(
+          {
+            error: code,
+            message: `option ${optionId} has no value ${value}; it offers ${knownOption.options.map(c => c.value).join(", ")}`,
+            known: knownOption.options.map(choice => choice.value),
+          },
           { status: 400 },
         );
       }
 
       try {
-        // Not audited: `AuditAction` is a frozen closed union with no member
-        // for a mode change, and recording this under a member that means
-        // something else would corrupt the audit log to fake coverage.
-        const options = await sessions.setMode(sessionId, body.modeId);
+        const options = await sessions.setConfigOption(sessionId, optionId, value);
         return Response.json({ agentId: agent.id, configOptions: options });
       } catch (err) {
-        return Response.json({ error: err instanceof Error ? err.message : "set_mode failed" }, { status: 502 });
+        return Response.json(
+          { error: err instanceof Error ? err.message : "set_config_option failed" },
+          { status: 502 },
+        );
       }
     }
 
@@ -2168,6 +2245,9 @@ export class Gateway {
         }
         if (err instanceof AgentBusyError) {
           return Response.json({ error: "agent_busy", message: err.message }, { status: 409 });
+        }
+        if (err instanceof PromptQueueFullError) {
+          return Response.json({ error: "prompt_queue_full", message: err.message }, { status: 429 });
         }
         return Response.json({ error: err instanceof Error ? err.message : "prompt failed" }, { status: 404 });
       }
@@ -2966,6 +3046,28 @@ export class Gateway {
       const parsed = parseSessionQuery(url);
       if ("error" in parsed) return Response.json({ error: parsed.error }, { status: 400 });
       return Response.json({ groups: await index.grouped(parsed.query) });
+    }
+
+    if (path === "/v1/stats" && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      if (this.#stats === undefined || !this.#stats.available) {
+        return Response.json(
+          { error: "stats_unavailable", reason: statsUnavailableReason(this.#stats) },
+          { status: 503 },
+        );
+      }
+      const stats = await this.#stats.getDashboardStats(url.searchParams.get("range"));
+      return Response.json(stats);
+    }
+
+    const sessionStatsRoute = /^\/v1\/sessions\/([^/]+)\/stats$/.exec(path);
+    if (sessionStatsRoute && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      if (this.#stats === undefined) return Response.json({ error: "stats_unavailable" }, { status: 503 });
+      const sessionId = sessionStatsRoute[1] ?? "";
+      const stats = await this.#stats.getSessionStats(sessionId);
+      if (!stats) return Response.json({ error: "session_not_found" }, { status: 404 });
+      return Response.json(stats);
     }
 
     const sessionTakeoverRoute = /^\/v1\/sessions\/([^/]+)\/takeover$/.exec(path);
@@ -4401,6 +4503,28 @@ export class Gateway {
         return;
       }
 
+      case "session_stats": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "session stats requires read scope",
+          });
+          return;
+        }
+        if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
+          this.#send(ws, {
+            t: "error",
+            code: "invalid_request",
+            message: "sessionId must be a non-empty string",
+          });
+          return;
+        }
+        void this.#serveSessionStatsFrame(ws, frame.sessionId);
+        return;
+      }
+
       case "session_history": {
         if (!ws.data.scopes.has(SCOPE_READ)) {
           this.#send(ws, {
@@ -4517,40 +4641,61 @@ export class Gateway {
         // The wire is not a place to assume anyone kept to the contract: the
         // same value checks the HTTP route runs on its body, on the two fields
         // this frame owns.
+        const optionId =
+          typeof frame.optionId === "string" && frame.optionId.length > 0
+            ? frame.optionId
+            : typeof frame.modeId === "string" && frame.modeId.length > 0
+              ? MODE_OPTION_ID
+              : undefined;
+        const value =
+          typeof frame.value === "string" && frame.value.length > 0
+            ? frame.value
+            : typeof frame.modeId === "string" && frame.modeId.length > 0
+              ? frame.modeId
+              : undefined;
+
         if (
           typeof frame.agentId !== "string" ||
           frame.agentId.length === 0 ||
-          typeof frame.modeId !== "string" ||
-          frame.modeId.length === 0
+          optionId === undefined ||
+          value === undefined
         ) {
           this.#send(ws, {
             t: "error",
             code: "bad_frame",
-            message: "agent_config_write needs an agentId and a non-empty modeId",
+            message: "agent_config_write needs an agentId and a non-empty optionId and value",
           });
           return;
         }
         const target = this.#resolveAgentSession(ws, frame.agentId);
         if (!target) return;
-        // Checked against what this session actually offers, exactly as the
-        // HTTP route does: forwarding an unknown mode would either be ignored
-        // or wedge the turn, and both look like the daemon losing the request.
-        const known = target.sessions.configFor(target.sessionId)?.find(option => option.id === MODE_OPTION_ID);
-        if (known && !known.options.some(choice => choice.value === frame.modeId)) {
+
+        const advertised = target.sessions.configFor(target.sessionId);
+        const knownOption = advertised?.find(option => option.id === optionId);
+        if (!knownOption) {
           this.#send(ws, {
             t: "error",
             agentId: frame.agentId,
-            code: "unknown_mode",
-            message: `agent ${frame.agentId} has no mode ${frame.modeId}; it offers ${known.options
+            code: "unknown_option",
+            message: `agent ${frame.agentId} has no config option ${optionId}; it offers ${advertised?.map(o => o.id).join(", ") ?? "none"}`,
+          });
+          return;
+        }
+
+        if (!knownOption.options.some(choice => choice.value === value)) {
+          const code = optionId === MODE_OPTION_ID ? "unknown_mode" : "unknown_value";
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code,
+            message: `agent ${frame.agentId} option ${optionId} has no value ${value}; it offers ${knownOption.options
               .map(choice => choice.value)
               .join(", ")}`,
           });
           return;
         }
-        // Detached like the session index reply, and for the same reason:
-        // `session/set_mode` is a round trip to the agent, and every socket
-        // must keep being served while one client's mode change lands.
-        void this.#serveAgentConfigWrite(ws, target.sessions, target.sessionId, frame.agentId, frame.modeId);
+
+        void this.#serveAgentConfigWrite(ws, target.sessions, target.sessionId, frame.agentId, optionId, value);
         return;
       }
 
@@ -4680,6 +4825,16 @@ export class Gateway {
         return;
       }
 
+      case "container_state_read": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "container_state_read requires read scope" });
+          return;
+        }
+        const state = this.#containerState();
+        this.#send(ws, { t: "container_state", modelBroker: state.modelBroker });
+        return;
+      }
+
       case "settings_read": {
         // The same read gate the HTTP route runs, because a hub-relayed
         // phone reaches this frame instead of that route and must not meet
@@ -4798,6 +4953,7 @@ export class Gateway {
         if (
           typeof frame.routineId !== "string" ||
           frame.routineId.length === 0 ||
+          (frame.fromAction !== undefined && !Number.isInteger(frame.fromAction)) ||
           !ws.data.scopes.has(SCOPE_MANAGE) ||
           !ws.data.scopes.has(SCOPE_PROMPT)
         ) {
@@ -4813,7 +4969,7 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "routines_unavailable", message: "no routine runner is wired in" });
           return;
         }
-        void runner.runNow(frame.routineId, this.#actorOf(ws)).then(
+        void runner.runNow(frame.routineId, this.#actorOf(ws), frame.fromAction).then(
           run => this.#send(ws, { t: "routine_ran", run }),
           err =>
             this.#send(ws, {
@@ -5279,8 +5435,26 @@ export class Gateway {
 
         // Deliberately not awaited: a turn outlives the frame that started it,
         // and the socket has to stay responsive to `cancel` while it runs.
+        const promptOptions = frame.deliverAs === "followUp" ? ({ deliverAs: "followUp" } as const) : undefined;
         void this.#sup
-          .prompt(frame.agentId, frame.text, this.#actorOf(ws), images.images.length > 0 ? images.images : undefined)
+          .prompt(
+            frame.agentId,
+            frame.text,
+            this.#actorOf(ws),
+            images.images.length > 0 ? images.images : undefined,
+            promptOptions,
+          )
+          .then(outcome => {
+            if (outcome && typeof outcome === "object" && "queued" in outcome && typeof outcome.queued === "number") {
+              if (!ws.data.attached.has(frame.agentId)) {
+                this.#send(ws, {
+                  t: "prompt_queued",
+                  agentId: frame.agentId,
+                  queued: outcome.queued,
+                });
+              }
+            }
+          })
           .catch((err: unknown) => {
             this.#send(ws, {
               t: "error",
@@ -5288,9 +5462,11 @@ export class Gateway {
               code:
                 err instanceof AgentBusyError
                   ? "agent_busy"
-                  : err instanceof UnauthorizedError
-                    ? "unauthorized"
-                    : "prompt_failed",
+                  : err instanceof PromptQueueFullError
+                    ? "prompt_queue_full"
+                    : err instanceof UnauthorizedError
+                      ? "unauthorized"
+                      : "prompt_failed",
               message: err instanceof Error ? err.message : "prompt failed",
             });
           });
@@ -5610,6 +5786,19 @@ export class Gateway {
       title: approval.title,
       tool: approval.tool,
       input: approval.input,
+      deadlineAt: approval.deadlineAt,
+    });
+  }
+
+  #deliverApprovalSettled(ws: GatewaySocket, settled: SettledApproval): void {
+    this.#send(ws, {
+      t: "approval_settled",
+      agentId: settled.agentId,
+      requestId: settled.requestId,
+      decision: settled.decision,
+      scope: settled.scope,
+      by: settled.by,
+      at: settled.at,
     });
   }
 
@@ -5993,7 +6182,8 @@ export class Gateway {
       this.#send(ws, {
         t: "session_tail",
         sessionId,
-        messages: tail.messages,
+        entries: tail.entries,
+        messages: tail.entries,
         truncated: tail.truncated,
         nextCursor: tail.nextCursor,
         // Echoed so the asking client can tell this page's place in the file
@@ -6010,6 +6200,33 @@ export class Gateway {
         sessionId,
         code: "session_tail_failed",
         message: err instanceof Error ? err.message : "session tail failed",
+      });
+    }
+  }
+
+  async #serveSessionStatsFrame(ws: GatewaySocket, sessionId: string): Promise<void> {
+    if (this.#stats === undefined) {
+      this.#send(ws, { t: "error", sessionId, code: "stats_unavailable", message: "this daemon keeps no stats" });
+      return;
+    }
+    try {
+      const stats = await this.#stats.getSessionStats(sessionId);
+      if (!stats) {
+        this.#send(ws, {
+          t: "error",
+          sessionId,
+          code: "not_found",
+          message: "unknown_session",
+        });
+        return;
+      }
+      this.#send(ws, { t: "session_stats", sessionId, stats });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        sessionId,
+        code: "stats_failed",
+        message: err instanceof Error ? err.message : "failed to load session stats",
       });
     }
   }
@@ -6140,34 +6357,28 @@ export class Gateway {
   }
 
   /**
-   * One socket `agent_config_write`: the mode asked of the session, then the
-   * daemon's read-back of what that session now holds. The reply carries the
-   * read-back rather than the request, so a client renders the mode the agent
-   * actually runs under even if the agent settled somewhere else.
+   * One socket agent_config_write: the option and value asked of the session,
+   * then the daemon's read-back of what that session now holds. The reply
+   * carries the read-back rather than the request, so a client renders the state
+   * the agent actually runs under even if the agent settled somewhere else.
    */
   async #serveAgentConfigWrite(
     ws: GatewaySocket,
     sessions: SessionConfig,
     sessionId: string,
     agentId: AgentId,
-    modeId: string,
+    optionId: string,
+    value: string,
   ): Promise<void> {
     try {
-      // Not audited, for the reason the HTTP route names: `AuditAction` is a
-      // frozen closed union with no member for a mode change, and recording
-      // this under a member that means something else would corrupt the audit
-      // log to fake coverage.
-      const options = await sessions.setMode(sessionId, modeId);
+      const options = await sessions.setConfigOption(sessionId, optionId, value);
       this.#send(ws, { t: "agent_config", agentId, configOptions: options });
     } catch (err) {
-      // Detached from `#handle`, so its last-line-of-defence try/catch no
-      // longer covers this: a mode change that cannot land must still cost the
-      // asking socket exactly one error frame, never a dropped one.
       this.#send(ws, {
         t: "error",
         agentId,
         code: "agent_config_failed",
-        message: err instanceof Error ? err.message : "set_mode failed",
+        message: err instanceof Error ? err.message : "set_config_option failed",
       });
     }
   }
@@ -6199,6 +6410,13 @@ export class Gateway {
       // The socket went away between an event firing and this send. `#close`
       // removes it from the registry; there is nothing to report to.
     }
+  }
+
+  #containerState(): { modelBroker: { ready: boolean; reason: string | null } } {
+    if (this.#containerStateProvider) {
+      return this.#containerStateProvider();
+    }
+    return { modelBroker: { ready: true, reason: null } };
   }
 }
 

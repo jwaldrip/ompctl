@@ -40,6 +40,7 @@ import {
   type PlanReviewRequest,
   type Policy,
   type PolicyDecision,
+  PROMPT_QUEUE_MAX,
   type PromptImage,
   resolveMountPath,
   SCOPE_APPROVE,
@@ -70,6 +71,17 @@ export class AgentBusyError extends Error {
   }
 }
 
+/** Thrown when an agent's prompt queue has reached PROMPT_QUEUE_MAX. */
+export class PromptQueueFullError extends Error {
+  readonly agentId: AgentId;
+  readonly code = "prompt_queue_full" as const;
+  constructor(agentId: AgentId, message = `agent ${agentId} prompt queue is full`) {
+    super(message);
+    this.name = "PromptQueueFullError";
+    this.agentId = agentId;
+  }
+}
+
 const TRANSCRIPT_UPDATE_KINDS: ReadonlySet<string> = new Set([
   "user_message_chunk",
   "agent_message_chunk",
@@ -90,7 +102,17 @@ export interface PendingApproval {
   tool: string;
   title: string;
   input: unknown;
+  deadlineAt: string;
   resolve: (choice: { choice: "allow" | "deny"; scope?: "once" | "always"; actor: Actor }) => void;
+}
+
+export interface SettledApproval {
+  agentId: AgentId;
+  requestId: string;
+  decision: "allow" | "deny";
+  scope: "once" | "always";
+  by: "operator" | "policy" | "timeout";
+  at: string;
 }
 
 export interface PendingPlanReview extends PlanReviewRequest {
@@ -106,7 +128,9 @@ export interface SupervisorEvents {
   onUpdate?: (agentId: AgentId, seq: number, update: unknown) => void;
   onAgentsChanged?: (agents: Agent[]) => void;
   onApprovalNeeded?: (p: Omit<PendingApproval, "resolve">) => void;
+  onApprovalSettled?: (settled: SettledApproval) => void;
   onPlanReviewNeeded?: (p: Omit<PendingPlanReview, "resolve">) => void;
+  onPromptQueued?: (agentId: AgentId, queued: number) => void;
 }
 
 export interface SupervisorOptions {
@@ -535,6 +559,7 @@ export class Supervisor {
   #pending = new Map<string, PendingApproval>();
   #pendingPlanReviews = new Map<string, PendingPlanReview>();
   #inFlightTurns = new Map<AgentId, number>();
+  #promptQueues = new Map<AgentId, Array<{ text: string; actor: Actor; images?: PromptImage[] }>>();
   #loadingSessions = new Set<string>();
 
   constructor(opts: SupervisorOptions) {
@@ -671,9 +696,13 @@ export class Supervisor {
       throw new Error(`host kind ${spec.kind} requires the provisioner`);
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
-    return await this.#bindAgentToSession(input, spec, entry, who, {}, (sessionEntry, agentId) =>
-      sessionEntry.host.client.newSession(input.cwd, this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? []),
-    );
+    return await this.#bindAgentToSession(input, spec, entry, who, {}, async (sessionEntry, agentId) => {
+      const res = await sessionEntry.host.client.newSession(
+        input.cwd,
+        this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
+      );
+      return res.sessionId;
+    });
   }
 
   /**
@@ -913,13 +942,44 @@ export class Supervisor {
    * audit log is not a transcript, which is why the prompt's text is likewise
    * only ever counted, never copied.
    */
-  async prompt(agentId: AgentId, text: string, actor: Actor, images?: PromptImage[]): Promise<{ stopReason: string }> {
+  async prompt(agentId: AgentId, text: string, actor: Actor, images?: PromptImage[]): Promise<{ stopReason: string }>;
+  async prompt(
+    agentId: AgentId,
+    text: string,
+    actor: Actor,
+    images?: PromptImage[],
+    options?: { deliverAs?: "followUp" },
+  ): Promise<{ stopReason: string } | { queued: number }>;
+  async prompt(
+    agentId: AgentId,
+    text: string,
+    actor: Actor,
+    images?: PromptImage[],
+    options?: { deliverAs?: "followUp" },
+  ): Promise<{ stopReason: string } | { queued: number }> {
     const who = this.#authorize(actor, SCOPE_PROMPT, "agent.prompt", agentId);
     const { agent, entry } = this.#resolve(agentId);
     if (!agent.acpSessionId) throw new Error(`agent ${agentId} has no session`);
 
     const inFlight = this.#inFlightTurns.get(agentId) ?? 0;
     if (inFlight > 0) {
+      if (options?.deliverAs === "followUp") {
+        let queue = this.#promptQueues.get(agentId);
+        if (!queue) {
+          queue = [];
+          this.#promptQueues.set(agentId, queue);
+        }
+        if (queue.length >= PROMPT_QUEUE_MAX) {
+          throw new PromptQueueFullError(
+            agentId,
+            `agent ${agentId} prompt queue is full (maximum ${PROMPT_QUEUE_MAX})`,
+          );
+        }
+        queue.push({ text, actor: who, images });
+        const queued = queue.length;
+        this.#events.onPromptQueued?.(agentId, queued);
+        return { queued };
+      }
       throw new AgentBusyError(agentId, `agent ${agentId} has a turn in flight`);
     }
 
@@ -965,12 +1025,33 @@ export class Supervisor {
         this.#inFlightTurns.delete(agentId);
         const current = this.#store.getAgent(agentId);
         if (current && !TERMINAL_AGENT_STATES.includes(current.state)) {
-          this.#setState(agentId, "idle");
+          const queue = this.#promptQueues.get(agentId);
+          const next = queue?.shift();
+          if (next) {
+            if (queue?.length === 0) this.#promptQueues.delete(agentId);
+            void this.#dispatchQueued(agentId, next);
+          } else {
+            this.#setState(agentId, "idle");
+          }
+        } else {
+          this.#promptQueues.delete(agentId);
         }
       } else {
         this.#inFlightTurns.set(agentId, remaining);
       }
     }
+  }
+
+  async #dispatchQueued(agentId: AgentId, item: { text: string; actor: Actor; images?: PromptImage[] }): Promise<void> {
+    try {
+      await this.prompt(agentId, item.text, item.actor, item.images);
+    } catch (err) {
+      this.#onLog?.(`agent ${agentId} queued prompt failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  getPromptQueue(agentId: AgentId): readonly { text: string; actor: Actor; images?: PromptImage[] }[] {
+    return this.#promptQueues.get(agentId) ?? [];
   }
 
   async cancel(agentId: AgentId, actor: Actor): Promise<void> {
@@ -991,6 +1072,7 @@ export class Supervisor {
       if (this.#sessionAgent.get(agent.acpSessionId) === agentId) this.#sessionAgent.delete(agent.acpSessionId);
     }
     this.#inFlightTurns.delete(agentId);
+    this.#promptQueues.delete(agentId);
     entry.agents.delete(agentId);
     this.#setState(agentId, "stopped");
     this.#store.audit({ action: "agent.stop", agentId, outcome: "ok" });
@@ -1016,6 +1098,7 @@ export class Supervisor {
       }
     }
     this.#inFlightTurns.clear();
+    this.#promptQueues.clear();
     this.#hosts.clear();
     for (const entry of entries) entry.host.kill();
     // Killing the local end of `docker exec` stops the remote `omp acp`, but
@@ -1295,6 +1378,7 @@ export class Supervisor {
     // idle as well as from inside a busy turn.
     const stateBeforeApproval = agent.state;
     this.#setState(agentId, "waiting");
+    const deadlineAt = new Date(Date.now() + this.#approvalTimeout).toISOString();
     const answer = await new Promise<{
       choice: "allow" | "deny";
       scope?: "once" | "always";
@@ -1311,6 +1395,7 @@ export class Supervisor {
         tool,
         title,
         input,
+        deadlineAt,
         resolve: v => {
           clearTimeout(timer);
           this.#pending.delete(requestId);
@@ -1318,7 +1403,7 @@ export class Supervisor {
         },
       });
 
-      this.#events.onApprovalNeeded?.({ requestId, agentId, tool, title, input });
+      this.#events.onApprovalNeeded?.({ requestId, agentId, tool, title, input, deadlineAt });
     });
     if (this.#store.getAgent(agentId)?.state === "waiting") {
       this.#setState(agentId, stateBeforeApproval);
@@ -1326,19 +1411,26 @@ export class Supervisor {
 
     const option = toAcpOption(decision, answer ? { choice: answer.choice, scope: answer.scope } : undefined);
     const allowed = option.startsWith("allow");
-    this.#store.resolveApproval(
-      requestId,
-      allowed ? "allow" : "deny",
-      answer?.scope ?? "once",
-      answer ? "operator" : "timeout",
-      answer?.actor.deviceId ?? null,
-    );
+    const by: "operator" | "timeout" = answer ? "operator" : "timeout";
+    const decisionChoice: "allow" | "deny" = allowed ? "allow" : "deny";
+    const scope: "once" | "always" = answer?.scope ?? "once";
+    const settledAt = new Date().toISOString();
+
+    this.#store.resolveApproval(requestId, decisionChoice, scope, by, answer?.actor.deviceId ?? null);
     this.#store.audit({
       action: "approval.decide",
       agentId,
       actorDeviceId: answer?.actor.deviceId ?? null,
       outcome: allowed ? "ok" : "denied",
       detail: { requestId, tool, rule: decision.rule, timedOut: answer === null },
+    });
+    this.#events.onApprovalSettled?.({
+      agentId,
+      requestId,
+      decision: decisionChoice,
+      scope,
+      by,
+      at: settledAt,
     });
     return {
       option,
@@ -1367,6 +1459,14 @@ export class Supervisor {
       agentId,
       outcome: outcome === "allow" ? "ok" : "denied",
       detail: { requestId, tool, rule, reason, automatic: true },
+    });
+    this.#events.onApprovalSettled?.({
+      agentId,
+      requestId,
+      decision: outcome,
+      scope: "once",
+      by: "policy",
+      at: new Date().toISOString(),
     });
   }
 

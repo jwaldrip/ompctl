@@ -20,12 +20,12 @@ import { face, ground, ink, signal, type } from "../design/tokens.ts";
 export const SHELL_THEME: Theme = {
   dark: true,
   colors: {
-    primary: signal.amber,
+    primary: signal.working,
     background: ground.base,
     card: ground.raised,
     text: ink.bright,
     border: ground.edge,
-    notification: signal.oxide,
+    notification: signal.failed,
   },
   fonts: {
     regular: { fontFamily: face.regular, fontWeight: "400" },

@@ -9,11 +9,17 @@ import {
   webhookPath,
 } from "@ompd/core/contracts";
 import { CronError, nextFireTime } from "@ompd/core/cron";
-import type { OmpdClient } from "@ompd/core/ompd-client";
+import type {
+  OmpdClient,
+  RoutineActionFinishedEvent,
+  RoutineActionStartedEvent,
+  RoutineRunFinishedEvent,
+  RoutineRunStartedEvent,
+} from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
-import { RUNS_PER_PAGE, RunHistory } from "../components/RunHistory.tsx";
+import { RunHistory } from "../components/RunHistory.tsx";
 import { scopeAccessOf } from "../console/state.ts";
 import { createOmpdClient } from "../console/useConsole.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -209,7 +215,7 @@ export function RoutinesScreen({
    * The caller resolves the transport, so this screen never decides between an
    * owned log, a co-driven terminal, and a resume claim.
    */
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession?: (sessionId: string) => void;
   createClient?: (connection: Connection) => OmpdClient;
 }): JSX.Element {
   /**
@@ -252,7 +258,21 @@ export function RoutinesScreen({
    */
   const [actionError, setActionError] = useState<string | null>(null);
   const [secret, setSecret] = useState<{ routineId: string; value: string } | null>(null);
-  /** Which routine's copy control last fired, so its label can say what happened. */
+  const [rotatingSecret, setRotatingSecret] = useState<string | null>(null);
+  const [activeRuns, setActiveRuns] = useState<
+    Map<
+      string,
+      {
+        routineId: string;
+        runId: string;
+        startedAt: string;
+        runningActionIndex?: number;
+        actionStartedAt?: string;
+        agentId?: string;
+      }
+    >
+  >(new Map());
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [copied, setCopied] = useState<string | null>(null);
   /**
    * How many runs each routine's history is showing, by routine id. Absent is
@@ -282,6 +302,12 @@ export function RoutinesScreen({
    */
   const statusRef = useRef(status);
   statusRef.current = status;
+
+  useEffect(() => {
+    if (activeRuns.size === 0) return;
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [activeRuns.size]);
 
   useEffect(() => {
     const offs = [
@@ -344,6 +370,56 @@ export function RoutinesScreen({
           client.readRoutines();
         }
       }),
+      client.on("routine_run_started", (event: RoutineRunStartedEvent) => {
+        setActiveRuns(current => {
+          const next = new Map(current);
+          next.set(event.runId, {
+            routineId: event.routineId,
+            runId: event.runId,
+            startedAt: event.at,
+          });
+          return next;
+        });
+      }),
+      client.on("routine_action_started", (event: RoutineActionStartedEvent) => {
+        setActiveRuns(current => {
+          const next = new Map(current);
+          const existing = next.get(event.runId) ?? {
+            routineId: event.routineId,
+            runId: event.runId,
+            startedAt: event.at,
+          };
+          next.set(event.runId, {
+            ...existing,
+            runningActionIndex: event.actionIndex,
+            actionStartedAt: event.at,
+            agentId: event.agentId,
+          });
+          return next;
+        });
+      }),
+      client.on("routine_action_finished", (event: RoutineActionFinishedEvent) => {
+        setActiveRuns(current => {
+          const next = new Map(current);
+          const existing = next.get(event.runId);
+          if (existing && existing.runningActionIndex === event.actionIndex) {
+            next.set(event.runId, {
+              ...existing,
+              runningActionIndex: undefined,
+              actionStartedAt: undefined,
+            });
+          }
+          return next;
+        });
+      }),
+      client.on("routine_run_finished", (event: RoutineRunFinishedEvent) => {
+        setActiveRuns(current => {
+          const next = new Map(current);
+          next.delete(event.runId);
+          return next;
+        });
+        setPending(null);
+      }),
       client.on("error", event => {
         setPending(null);
         // A load that never arrived owns the whole screen. Anything after one
@@ -377,7 +453,7 @@ export function RoutinesScreen({
   );
 
   const showMoreRuns = useCallback((routineId: string) => {
-    setRunsShown(current => ({ ...current, [routineId]: (current[routineId] ?? RUNS_PER_PAGE) + RUNS_PER_PAGE }));
+    setRunsShown(current => ({ ...current, [routineId]: (current[routineId] ?? 1) + 10 }));
   }, []);
 
   const toggleRun = useCallback((runId: string) => {
@@ -556,13 +632,13 @@ export function RoutinesScreen({
 
       {!canManage ? (
         <View style={styles.notice} testID="routines-readonly-notice">
-          <Label color={signal.ochre}>
+          <Label color={signal.holding}>
             This pairing can read routines but not change or run them: it holds no manage scope.
           </Label>
         </View>
       ) : !canRun ? (
         <View style={styles.notice} testID="routines-run-disabled-notice">
-          <Label color={signal.ochre}>
+          <Label color={signal.holding}>
             This pairing can edit routines but cannot run them: it holds no prompt scope.
           </Label>
         </View>
@@ -570,7 +646,7 @@ export function RoutinesScreen({
 
       {actionError !== null ? (
         <View style={styles.notice} testID="routines-action-error">
-          <Label color={signal.oxide}>The daemon refused that: {actionError}</Label>
+          <Label color={signal.failed}>The daemon refused that: {actionError}</Label>
           <Pressable
             accessibilityRole="button"
             onPress={() => setActionError(null)}
@@ -588,9 +664,9 @@ export function RoutinesScreen({
         </View>
       ) : status.kind === "failed" ? (
         <View style={styles.notice} testID="routines-read-error">
-          <Label color={signal.oxide}>Could not read routines: {status.message}</Label>
+          <Label color={signal.failed}>Could not read routines: {status.message}</Label>
           <Pressable accessibilityRole="button" onPress={retry} style={styles.smallButton} testID="routines-retry">
-            <Label color={signal.sage}>Try again</Label>
+            <Label color={signal.ready}>Try again</Label>
           </Pressable>
         </View>
       ) : (
@@ -604,6 +680,8 @@ export function RoutinesScreen({
             const runs = runsByRoutine[routine.id] ?? NO_RUNS;
             const latest = runs[0];
             const armed = nextFirePreview(routine.trigger, new Date());
+            const activeRun = [...activeRuns.values()].find(r => r.routineId === routine.id);
+            const isRunning = activeRun !== undefined || pending === `run:${routine.id}`;
             return (
               <View key={routine.id} style={styles.card} testID={`routine-${routine.id}`}>
                 <View style={styles.cardHeader}>
@@ -611,12 +689,25 @@ export function RoutinesScreen({
                     <Title>{routine.name}</Title>
                     <Label color={ink.muted}>{describeTrigger(routine.trigger)}</Label>
                   </View>
-                  <Label color={routine.enabled ? signal.sage : ink.faint}>{routine.enabled ? "On" : "Off"}</Label>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Routine is ${routine.enabled ? "On" : "Off"}. Toggle to ${routine.enabled ? "disable" : "enable"}.`}
+                    accessibilityState={{ disabled: !canManage }}
+                    disabled={!canManage}
+                    onPress={() => {
+                      client.writeRoutine({ ...routine, enabled: !routine.enabled });
+                    }}
+                    style={styles.toggleButton}
+                    testID={`routine-${routine.id}-toggle`}
+                  >
+                    <Label color={routine.enabled ? signal.ready : ink.faint}>{routine.enabled ? "On" : "Off"}</Label>
+                    {!routine.enabled ? <Label color={ink.muted}> · Will not fire</Label> : null}
+                  </Pressable>
                 </View>
 
                 {armed !== null ? (
                   armed.error !== undefined ? (
-                    <Label color={signal.oxide}>Schedule unreadable: {armed.error}</Label>
+                    <Label color={signal.failed}>Schedule unreadable: {armed.error}</Label>
                   ) : (
                     <Body color={ink.muted} testID={`routine-${routine.id}-next-fire`}>
                       {`Next fire ${formatFireTime(armed.fire, armed.zone)}${armed.suffix}`}
@@ -627,17 +718,64 @@ export function RoutinesScreen({
                 {routine.actions.map((action, index) => {
                   const outcome = latest?.actions.find(candidate => candidate.actionId === action.id);
                   const failure = outcome?.refusal?.reason ?? outcome?.error;
+                  const sessionId = outcome?.sessionId ?? outcome?.agentId;
+                  const isActionRunning = activeRun?.runningActionIndex === index;
+                  const actionElapsed =
+                    isActionRunning && activeRun?.actionStartedAt
+                      ? `${Math.max(0, Math.round((nowMs - Date.parse(activeRun.actionStartedAt)) / 1000))}s`
+                      : null;
+
                   return (
                     <View key={action.id} style={styles.action} testID={`routine-${routine.id}-action-${action.id}`}>
                       <View style={styles.actionOrder}>
-                        <Label color={ink.muted}>{index + 1}</Label>
+                        <Label color={isActionRunning ? signal.working : ink.muted}>{index + 1}</Label>
                       </View>
                       <View style={styles.copy}>
                         <Label color={ink.plain}>{action.name}</Label>
-                        <Body color={failure === undefined ? ink.muted : signal.oxide}>
-                          {failure ?? outcome?.state ?? "Not run yet"}
-                        </Body>
+                        {isActionRunning ? (
+                          <View
+                            style={styles.liveActionRow}
+                            testID={`routine-${routine.id}-action-${action.id}-running`}
+                          >
+                            <View style={[styles.signalDot, { backgroundColor: signal.working }]} />
+                            <Body color={signal.working}>Running{actionElapsed ? ` · ${actionElapsed}` : ""}</Body>
+                          </View>
+                        ) : (
+                          <Body color={failure === undefined ? ink.muted : signal.failed}>
+                            {failure ?? outcome?.state ?? "Not run yet"}
+                          </Body>
+                        )}
                       </View>
+                      {failure !== undefined && canRun ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Retry routine from ${action.name}`}
+                          accessibilityState={{ disabled: isRunning }}
+                          disabled={isRunning}
+                          onPress={() => {
+                            setActionError(null);
+                            setPending(`run:${routine.id}`);
+                            client.runRoutine(routine.id, index);
+                          }}
+                          style={styles.smallButton}
+                          testID={`routine-${routine.id}-action-${action.id}-retry`}
+                        >
+                          <Glyph name="resume" size={12} color={signal.ready} />
+                          <Label color={signal.ready}>Retry from here</Label>
+                        </Pressable>
+                      ) : null}
+                      {sessionId && onOpenSession ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Open session for ${action.name}`}
+                          onPress={() => onOpenSession(sessionId)}
+                          style={styles.smallButton}
+                          testID={`routine-${routine.id}-action-${action.id}-session`}
+                        >
+                          <Glyph name="attach" size={12} color={signal.ready} />
+                          <Label color={signal.ready}>Session</Label>
+                        </Pressable>
+                      ) : null}
                     </View>
                   );
                 })}
@@ -645,11 +783,16 @@ export function RoutinesScreen({
                 <RunHistory
                   routineId={routine.id}
                   runs={runs}
-                  shown={runsShown[routine.id] ?? RUNS_PER_PAGE}
+                  shown={runsShown[routine.id] ?? 1}
                   onShowMore={showMoreRuns}
                   openRunId={openRunId}
                   onToggleRun={toggleRun}
                   onOpenSession={onOpenSession}
+                  onRetryAction={(routineId, actionIndex) => {
+                    setActionError(null);
+                    setPending(`run:${routineId}`);
+                    client.runRoutine(routineId, actionIndex);
+                  }}
                 />
 
                 {routine.trigger.kind === "webhook" ? (
@@ -659,20 +802,57 @@ export function RoutinesScreen({
                       {`POST ${webhookUrl(routine.id, connection)}`}
                     </Code>
                     <Body color={ink.muted} testID={`routine-${routine.id}-webhook-how`}>
-                      POST with the secret in the x-webhook-secret header, or as ?token= in the query. The request body
-                      is ignored: the routine runs its configured prompt, not anything the caller sends.
+                      POST with the secret in the x-webhook-secret header or as ?token= query parameter; body is
+                      ignored.
                     </Body>
-                    {connection.transport === "hub" ? (
-                      <Body color={ink.muted}>
-                        That address is the hub's and it works: the hub relays the fire down this daemon's sealed
-                        socket, so no caller needs a route to the daemon's own network. The secret is shown once when
-                        rotated and cannot be read back; the daemon keeps only its hash.
-                      </Body>
-                    ) : (
-                      <Body color={ink.muted}>
-                        The secret is shown once when rotated and cannot be read back; the daemon keeps only its hash.
-                      </Body>
-                    )}
+                    <View style={styles.secretSection} testID={`routine-${routine.id}-secret-section`}>
+                      {rotatingSecret === routine.id ? (
+                        <View style={styles.confirmRotate} testID={`routine-${routine.id}-confirm-rotate-box`}>
+                          <Label color={signal.holding}>
+                            Callers holding the old secret get 403 until they are updated.
+                          </Label>
+                          <View style={styles.controls}>
+                            <Pressable
+                              accessibilityRole="button"
+                              onPress={() => setRotatingSecret(null)}
+                              style={styles.smallButton}
+                              testID={`routine-${routine.id}-rotate-cancel`}
+                            >
+                              <Label color={ink.plain}>Keep current</Label>
+                            </Pressable>
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityState={{ disabled: !canManage || pending !== null }}
+                              disabled={!canManage || pending !== null}
+                              onPress={() => {
+                                setRotatingSecret(null);
+                                setActionError(null);
+                                setPending(`secret:${routine.id}`);
+                                setSecret(null);
+                                client.rotateRoutineSecret(routine.id);
+                              }}
+                              style={styles.smallButton}
+                              testID={`routine-${routine.id}-confirm-rotate`}
+                            >
+                              <Glyph name="link" size={13} color={canManage ? signal.holding : ink.faint} />
+                              <Label color={canManage ? signal.holding : ink.faint}>Rotate secret</Label>
+                            </Pressable>
+                          </View>
+                        </View>
+                      ) : (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: !canManage || pending !== null }}
+                          disabled={!canManage || pending !== null}
+                          onPress={() => setRotatingSecret(routine.id)}
+                          style={styles.smallButton}
+                          testID={`routine-${routine.id}-rotate-secret`}
+                        >
+                          <Glyph name="link" size={13} color={canManage ? ink.plain : ink.faint} />
+                          <Label color={canManage ? ink.plain : ink.faint}>Rotate secret</Label>
+                        </Pressable>
+                      )}
+                    </View>
                   </View>
                 ) : null}
                 <View style={styles.controls}>
@@ -689,8 +869,8 @@ export function RoutinesScreen({
                   </Pressable>
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !canRun || pending !== null }}
-                    disabled={!canRun || pending !== null}
+                    accessibilityState={{ disabled: !canRun || isRunning, busy: isRunning }}
+                    disabled={!canRun || isRunning}
                     onPress={() => {
                       setActionError(null);
                       setPending(`run:${routine.id}`);
@@ -699,32 +879,20 @@ export function RoutinesScreen({
                     style={styles.smallButton}
                     testID={`routine-${routine.id}-run`}
                   >
-                    <Glyph name="resume" size={13} color={canRun ? signal.sage : ink.faint} />
-                    <Label color={canRun ? signal.sage : ink.faint}>Run</Label>
+                    {isRunning ? (
+                      <ActivityIndicator size="small" color={signal.working} style={{ width: 13, height: 13 }} />
+                    ) : (
+                      <Glyph name="resume" size={13} color={canRun ? signal.ready : ink.faint} />
+                    )}
+                    <Label color={isRunning ? signal.working : canRun ? signal.ready : ink.faint}>
+                      {isRunning ? "Running..." : "Run"}
+                    </Label>
                   </Pressable>
-                  {routine.trigger.kind === "webhook" ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ disabled: !canManage || pending !== null }}
-                      disabled={!canManage || pending !== null}
-                      onPress={() => {
-                        setActionError(null);
-                        setPending(`secret:${routine.id}`);
-                        setSecret(null);
-                        client.rotateRoutineSecret(routine.id);
-                      }}
-                      style={styles.smallButton}
-                      testID={`routine-${routine.id}-rotate-secret`}
-                    >
-                      <Glyph name="link" size={13} color={canManage ? ink.plain : ink.faint} />
-                      <Label color={canManage ? ink.plain : ink.faint}>Rotate secret</Label>
-                    </Pressable>
-                  ) : null}
                 </View>
 
                 {secret?.routineId === routine.id ? (
                   <View style={styles.secret}>
-                    <Kicker color={signal.ochre}>Shown once</Kicker>
+                    <Kicker color={signal.holding}>Shown once</Kicker>
                     <Code color={ink.plain} selectable testID="routine-secret-value">
                       {secret.value}
                     </Code>
@@ -757,7 +925,7 @@ export function RoutinesScreen({
                 <View style={styles.danger}>
                   {arming === routine.id ? (
                     <View style={styles.confirmDelete} testID={`routine-${routine.id}-confirm-delete`}>
-                      <Label color={signal.oxide}>
+                      <Label color={signal.failed}>
                         {`Delete "${routine.name}" for good? Its runs and its webhook secret go with it.`}
                       </Label>
                       <View style={styles.controls}>
@@ -777,8 +945,8 @@ export function RoutinesScreen({
                           style={styles.smallButton}
                           testID={`routine-${routine.id}-confirm-yes`}
                         >
-                          <Glyph name="delete" size={13} color={canManage ? signal.oxide : ink.faint} />
-                          <Label color={canManage ? signal.oxide : ink.faint}>Delete for good</Label>
+                          <Glyph name="delete" size={13} color={canManage ? signal.failed : ink.faint} />
+                          <Label color={canManage ? signal.failed : ink.faint}>Delete for good</Label>
                         </Pressable>
                       </View>
                     </View>
@@ -799,7 +967,7 @@ export function RoutinesScreen({
                     </Pressable>
                   )}
                   {refusal?.routineId === routine.id ? (
-                    <Label color={signal.oxide} testID={`routine-${routine.id}-delete-refused`}>
+                    <Label color={signal.failed} testID={`routine-${routine.id}-delete-refused`}>
                       {refusal.reason}
                     </Label>
                   ) : null}
@@ -834,6 +1002,17 @@ export function RoutinesScreen({
             testID="routine-editor-name"
             value={draft.name}
           />
+          <Kicker color={ink.muted}>State</Kicker>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Routine is ${draft.enabled ? "On" : "Off"}. Toggle to ${draft.enabled ? "disable" : "enable"}.`}
+            onPress={() => setDraft(current => (current === null ? null : { ...current, enabled: !current.enabled }))}
+            style={styles.option}
+            testID="routine-editor-enabled"
+          >
+            <Glyph name={draft.enabled ? "allow" : "deny"} size={13} color={draft.enabled ? signal.ready : ink.muted} />
+            <Label color={draft.enabled ? signal.ready : ink.muted}>{draft.enabled ? "Enabled" : "Disabled"}</Label>
+          </Pressable>
 
           <Kicker color={ink.muted}>Trigger</Kicker>
           <View style={styles.optionRow}>
@@ -856,8 +1035,8 @@ export function RoutinesScreen({
                   style={[styles.option, selected ? styles.optionSelected : null]}
                   testID={option.testID}
                 >
-                  <Glyph name={option.glyph} size={13} color={selected ? signal.sage : ink.muted} />
-                  <Label color={selected ? signal.sage : ink.muted}>{option.label}</Label>
+                  <Glyph name={option.glyph} size={13} color={selected ? signal.ready : ink.muted} />
+                  <Label color={selected ? signal.ready : ink.muted}>{option.label}</Label>
                 </Pressable>
               );
             })}
@@ -873,7 +1052,7 @@ export function RoutinesScreen({
                   style={[styles.option, draft.trigger.kind === "cron" ? styles.optionSelected : null]}
                   testID="routine-schedule-cron"
                 >
-                  <Label color={draft.trigger.kind === "cron" ? signal.sage : ink.muted}>At times</Label>
+                  <Label color={draft.trigger.kind === "cron" ? signal.ready : ink.muted}>At times</Label>
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
@@ -882,7 +1061,7 @@ export function RoutinesScreen({
                   style={[styles.option, draft.trigger.kind === "interval" ? styles.optionSelected : null]}
                   testID="routine-schedule-interval"
                 >
-                  <Label color={draft.trigger.kind === "interval" ? signal.sage : ink.muted}>Every</Label>
+                  <Label color={draft.trigger.kind === "interval" ? signal.ready : ink.muted}>Every</Label>
                 </Pressable>
               </View>
 
@@ -955,7 +1134,7 @@ export function RoutinesScreen({
                         style={[styles.option, intervalEdit.unit === unit ? styles.optionSelected : null]}
                         testID={`routine-interval-unit-${unit}`}
                       >
-                        <Label color={intervalEdit.unit === unit ? signal.sage : ink.muted}>
+                        <Label color={intervalEdit.unit === unit ? signal.ready : ink.muted}>
                           {INTERVAL_LABELS[unit]}
                         </Label>
                       </Pressable>
@@ -980,34 +1159,25 @@ export function RoutinesScreen({
               </Code>
               {connection.transport === "hub" ? (
                 <Body color={ink.muted} testID="routine-webhook-hub-notice">
-                  That address is the hub's, and it works: the hub relays the fire down this daemon's sealed socket and
-                  answers with the daemon's own reply, so nothing has to reach the daemon's network and the daemon needs
-                  no open port. Any caller holding the current secret can POST there. The hub reads that secret in order
-                  to forward it, so it is the one credential this routine hands out; rotate it from this routine's card
-                  after saving.
+                  That address is the hub's and it works: the hub relays calls holding the current secret to this daemon
+                  over its secure connection.
                 </Body>
               ) : (
-                <Body color={ink.muted}>
-                  Any caller that can reach this daemon's address and holds the current secret can POST here. Rotate the
-                  secret from this routine's card after saving.
-                </Body>
+                <Body color={ink.muted}>Any caller holding the current secret can POST to this endpoint.</Body>
               )}
             </View>
           ) : null}
 
           {draft.trigger.kind === "manual" ? (
             <View style={styles.triggerSection} testID="routine-manual-editor">
-              <Body color={ink.muted}>
-                Nothing on a clock arms this routine: it runs only when started by hand, from this screen's Run control
-                or the CLI.
-              </Body>
+              <Body color={ink.muted}>Runs only when started manually from the app or CLI.</Body>
             </View>
           ) : null}
 
           {triggerCheck.error !== null ? (
             <View style={styles.triggerError} testID="routine-trigger-error">
-              <Glyph name="warning" size={13} color={signal.oxide} />
-              <Label color={signal.oxide}>{triggerCheck.error}</Label>
+              <Glyph name="warning" size={13} color={signal.failed} />
+              <Label color={signal.failed}>{triggerCheck.error}</Label>
             </View>
           ) : null}
 
@@ -1045,7 +1215,7 @@ export function RoutinesScreen({
                 value={action.cwd}
               />
               {action.cwd.trim() === "" ? (
-                <Label color={signal.oxide} testID={`routine-action-${index}-cwd-error`}>
+                <Label color={signal.failed} testID={`routine-action-${index}-cwd-error`}>
                   A working directory is required: the daemon cannot run an action that has none.
                 </Label>
               ) : null}
@@ -1066,8 +1236,8 @@ export function RoutinesScreen({
                 style={styles.smallButton}
                 testID={`routine-action-${index}-remove`}
               >
-                <Glyph name="delete" size={13} color={draft.actions.length === 1 ? ink.faint : signal.oxide} />
-                <Label color={draft.actions.length === 1 ? ink.faint : signal.oxide}>Remove</Label>
+                <Glyph name="delete" size={13} color={draft.actions.length === 1 ? ink.faint : signal.failed} />
+                <Label color={draft.actions.length === 1 ? ink.faint : signal.failed}>Remove</Label>
               </Pressable>
             </View>
           ))}
@@ -1096,8 +1266,8 @@ export function RoutinesScreen({
               style={styles.smallButton}
               testID="routine-add-action"
             >
-              <Glyph name="newTask" size={13} color={signal.sage} />
-              <Label color={signal.sage}>Add action</Label>
+              <Glyph name="newTask" size={13} color={signal.ready} />
+              <Label color={signal.ready}>Add action</Label>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -1115,8 +1285,8 @@ export function RoutinesScreen({
               style={styles.smallButton}
               testID="routine-save"
             >
-              <Glyph name="allow" size={13} color={!canManage || saveBlocked ? ink.faint : signal.sage} />
-              <Label color={!canManage || saveBlocked ? ink.faint : signal.sage}>Save</Label>
+              <Glyph name="allow" size={13} color={!canManage || saveBlocked ? ink.faint : signal.ready} />
+              <Label color={!canManage || saveBlocked ? ink.faint : signal.ready}>Save</Label>
             </Pressable>
           </View>
         </ScrollView>
@@ -1177,7 +1347,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: space.hair,
-    backgroundColor: signal.sage,
+    backgroundColor: signal.ready,
   },
   webhookBlock: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },
   /** Its own row at the card's bottom edge, so a thumb reaching for Edit or
@@ -1189,7 +1359,7 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.hair,
     borderTopColor: ground.edge,
   },
-  confirmDelete: { gap: space.hair, padding: space.step, backgroundColor: signalWash.oxide },
+  confirmDelete: { gap: space.hair, padding: space.step, backgroundColor: signalWash.failed },
   secret: { gap: space.hair, padding: space.step, backgroundColor: ground.active },
   editor: { gap: space.step, paddingHorizontal: space.wide, paddingBottom: space.wide },
   editorAction: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },
@@ -1205,14 +1375,14 @@ const styles = StyleSheet.create({
     borderColor: ground.line,
     backgroundColor: ground.active,
   },
-  optionSelected: { borderColor: signal.sage, backgroundColor: signalWash.sage },
+  optionSelected: { borderColor: signal.ready, backgroundColor: signalWash.ready },
   triggerSection: { gap: space.hair, padding: space.step, borderWidth: stroke.hair, borderColor: ground.line },
   triggerError: {
     flexDirection: "row",
     alignItems: "center",
     gap: space.hair,
     padding: space.step,
-    backgroundColor: signalWash.oxide,
+    backgroundColor: signalWash.failed,
   },
   input: {
     minHeight: TOUCH_TARGET,
@@ -1231,4 +1401,9 @@ const styles = StyleSheet.create({
     borderTopWidth: stroke.hair,
     borderTopColor: ground.edge,
   },
+  toggleButton: { flexDirection: "row", alignItems: "center", minHeight: TOUCH_TARGET, paddingHorizontal: space.hair },
+  liveActionRow: { flexDirection: "row", alignItems: "center", gap: space.hair },
+  signalDot: { width: 8, height: 8, borderRadius: 4 },
+  secretSection: { marginTop: space.hair },
+  confirmRotate: { gap: space.hair, padding: space.step, backgroundColor: signalWash.holding },
 });

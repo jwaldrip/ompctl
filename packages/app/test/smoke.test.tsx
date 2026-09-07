@@ -80,6 +80,7 @@ function board(): ConsoleState {
         tool: "shell",
         title: "rm -rf ./dist",
         input: { command: "rm -rf ./dist" },
+        deadlineAt: "2026-01-01T00:02:00.000Z",
       },
     },
     {
@@ -403,5 +404,31 @@ describe("the approval card is wired to a decision", () => {
     );
     expect(html).toContain("rejected");
     expect(html).not.toContain("Allow");
+  });
+
+  test("a pending card with deadlineAt renders a live countdown", () => {
+    const deadlineAt = new Date(Date.now() + 92_000).toISOString();
+    const html = renderToStaticMarkup(<ApprovalCard entry={{ ...entry, deadlineAt }} canApprove onDecide={() => {}} />);
+    expect(html).toContain("Times out in 1:32");
+  });
+
+  test("a timeout-settled card displays the timeout refusal copy", () => {
+    const html = renderToStaticMarkup(
+      <ApprovalCard entry={{ ...entry, decision: "deny", settledBy: "timeout" }} canApprove onDecide={() => {}} />,
+    );
+    expect(html).toContain("Denied: no answer in time");
+    expect(html).not.toContain("Allow");
+  });
+
+  test("a policy-settled card displays policy copy", () => {
+    const allowed = renderToStaticMarkup(
+      <ApprovalCard entry={{ ...entry, decision: "allow", settledBy: "policy" }} canApprove onDecide={() => {}} />,
+    );
+    expect(allowed).toContain("Allowed by policy");
+
+    const denied = renderToStaticMarkup(
+      <ApprovalCard entry={{ ...entry, decision: "deny", settledBy: "policy" }} canApprove onDecide={() => {}} />,
+    );
+    expect(denied).toContain("Denied by policy");
   });
 });

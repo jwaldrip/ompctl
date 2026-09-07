@@ -285,14 +285,14 @@ export function CollabSessionScreen({
         <Body color={ink.bright} style={type.code} testID="collab-room-id">
           {roomId}
         </Body>
-        <Label color={connectionState === "connected" ? signal.sage : ink.muted} testID="collab-connection-state">
+        <Label color={connectionState === "connected" ? signal.ready : ink.muted} testID="collab-connection-state">
           {connectionState === "connected" ? "Connected" : "Connecting to the daemon"}
         </Label>
       </View>
 
       {notice === null ? null : (
         <View style={styles.notice} accessibilityLiveRegion="polite" testID="collab-notice">
-          <Body color={signal.ochre}>{notice}</Body>
+          <Body color={signal.holding}>{notice}</Body>
         </View>
       )}
 
@@ -318,7 +318,7 @@ export function CollabSessionScreen({
           voiceNotes.map(note => (
             <View key={note.noteId} style={styles.row}>
               <View style={styles.noteMeta}>
-                <Label color={note.participant.kind === "agent" ? signal.sage : ink.bright}>
+                <Label color={note.participant.kind === "agent" ? signal.ready : ink.bright}>
                   #{note.sequence} {note.participant.displayName}
                 </Label>
                 <Label color={ink.muted}>{note.durationMs ? `${note.durationMs}ms` : "audio"}</Label>
@@ -332,19 +332,19 @@ export function CollabSessionScreen({
         <Kicker color={ink.muted}>Speak</Kicker>
         {recordGate === "unavailable" ? (
           <View style={styles.recordState} testID="collab-record-unavailable">
-            <Glyph color={signal.ochre} name="warning" size={16} />
+            <Glyph color={signal.holding} name="warning" size={16} />
             <Body color={ink.plain}>This build cannot record voice notes: it has no microphone module yet.</Body>
           </View>
         ) : null}
         {recordGate === "scope" ? (
           <View style={styles.recordState} testID="collab-record-scope-missing">
-            <Glyph color={signal.ochre} name="warning" size={16} />
+            <Glyph color={signal.holding} name="warning" size={16} />
             <Body color={ink.plain}>This pairing cannot speak here: it is missing the prompt scope.</Body>
           </View>
         ) : null}
         {recordGate === "denied" ? (
           <View style={styles.recordState} testID="collab-record-permission-denied">
-            <Glyph color={signal.ochre} name="warning" size={16} />
+            <Glyph color={signal.holding} name="warning" size={16} />
             <Body color={ink.plain}>
               Microphone access is off. Allow it for this app in system settings, then reopen this room.
             </Body>
@@ -374,7 +374,7 @@ export function CollabSessionScreen({
             >
               {phase.kind === "holding" ? (
                 <View style={styles.holdLive}>
-                  <Label color={signal.amber}>Recording</Label>
+                  <Label color={signal.working}>Recording</Label>
                   <Data color={ink.bright} testID="collab-record-elapsed">{`${Math.floor(elapsedMs / 1000)}s`}</Data>
                   <Label color={ink.muted}>Release to review</Label>
                 </View>
@@ -414,7 +414,7 @@ export function CollabSessionScreen({
         ) : null}
         {sendFailure === null ? null : (
           <View style={styles.notice} accessibilityLiveRegion="polite" testID="collab-record-error">
-            <Body color={signal.ochre}>{sendFailure}</Body>
+            <Body color={signal.holding}>{sendFailure}</Body>
           </View>
         )}
       </View>
@@ -435,7 +435,7 @@ const styles = StyleSheet.create({
   },
   closePressed: { backgroundColor: ground.active },
   room: { backgroundColor: ground.surface, gap: space.tight, padding: space.step },
-  notice: { backgroundColor: signalWash.ochre, padding: space.step },
+  notice: { backgroundColor: signalWash.holding, padding: space.step },
   section: { gap: space.tight },
   row: {
     alignItems: "center",

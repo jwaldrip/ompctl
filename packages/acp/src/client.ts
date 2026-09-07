@@ -39,6 +39,35 @@ export interface AcpPromptImage {
   data: string;
   mimeType: string;
 }
+export interface AcpSessionConfigChoice {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+export interface AcpSessionConfigOption {
+  id: string;
+  name: string;
+  category?: string;
+  type?: string;
+  currentValue: string;
+  options: AcpSessionConfigChoice[];
+}
+
+export interface AcpNewSessionResponse {
+  sessionId: string;
+  configOptions?: AcpSessionConfigOption[];
+  modes?: unknown;
+}
+
+export interface AcpLoadSessionResponse {
+  configOptions?: AcpSessionConfigOption[];
+  modes?: unknown;
+}
+
+export interface AcpSetConfigOptionResponse {
+  configOptions?: AcpSessionConfigOption[];
+}
 
 export type AcpOptionId = "allow_once" | "allow_always" | "reject_once" | "reject_always";
 
@@ -514,9 +543,8 @@ export class AcpClient {
     return this.#initialized;
   }
 
-  async newSession(cwd: string, mcpServers: unknown[] = []): Promise<string> {
-    const r = await this.request<{ sessionId: string }>("session/new", { cwd, mcpServers });
-    return r.sessionId;
+  async newSession(cwd: string, mcpServers: unknown[] = []): Promise<AcpNewSessionResponse> {
+    return await this.request<AcpNewSessionResponse>("session/new", { cwd, mcpServers });
   }
 
   async listSessions(): Promise<AcpSessionSummary[]> {
@@ -524,8 +552,16 @@ export class AcpClient {
     return r.sessions ?? [];
   }
 
-  async loadSession(sessionId: string, cwd: string, mcpServers: unknown[] = []): Promise<void> {
-    await this.request("session/load", { sessionId, cwd, mcpServers });
+  async loadSession(sessionId: string, cwd: string, mcpServers: unknown[] = []): Promise<AcpLoadSessionResponse> {
+    return await this.request<AcpLoadSessionResponse>("session/load", { sessionId, cwd, mcpServers });
+  }
+
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<AcpSetConfigOptionResponse> {
+    return await this.request<AcpSetConfigOptionResponse>("session/set_config_option", {
+      sessionId,
+      configId,
+      value,
+    });
   }
 
   /**

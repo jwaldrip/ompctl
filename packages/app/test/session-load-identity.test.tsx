@@ -155,6 +155,7 @@ class CannedClient {
   decide(): void {}
   decidePlan(): void {}
   registerWebView(): void {}
+  sessionStats(): void {}
   unregisterWebView(): void {}
   webViewResult(): void {}
   startVoice(): void {}
@@ -320,7 +321,7 @@ describe("a link lost mid-open never leaves a pane spinning", () => {
       shell.emit("session_tail", { sessionId: "sess_tui", messages: [], truncated: false });
       expect(shell.el("session-loading")).toBeNull();
       expect(shell.el("session-load-stalled")).toBeNull();
-      expect(shell.el("terminal-transcript-limit")).not.toBeNull();
+      expect(shell.el("terminal-hints")).not.toBeNull();
     } finally {
       shell.unmount();
     }

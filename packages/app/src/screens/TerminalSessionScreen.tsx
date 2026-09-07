@@ -45,7 +45,7 @@
  * points between them were an accident.
  */
 
-import type { PromptImage, SessionLiveStatus, TranscriptTailMessage } from "@ompd/core/contracts";
+import type { PromptImage, SessionLiveStatus, TranscriptTailEntry } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback } from "react";
@@ -55,6 +55,7 @@ import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { RichText } from "../components/rich/RichText.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
+import { ToolCard } from "../components/ToolCard.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
@@ -157,10 +158,9 @@ function notLiveGuidance(status: SessionLiveStatus | null): string {
  * are keyed by what they are: there is at most one of each.
  */
 type LogRow =
-  | { kind: "turn"; key: string; message: TranscriptTailMessage }
+  | { kind: "turn"; key: string; entry: TranscriptTailEntry }
   | { kind: "sent"; key: string; text: string }
   | { kind: "reply"; key: string; text: string };
-
 /**
  * The conversation the log renders: the served tail, then this device's live
  * hints continuing below it as they arrive.
@@ -175,16 +175,22 @@ type LogRow =
  */
 function logRows(tui: TuiSessionState): LogRow[] {
   const newest = tui.history.length - 1;
-  const rows: LogRow[] = tui.history.map((message, index) => ({
+  const rows: LogRow[] = tui.history.map((entry, index) => ({
     kind: "turn",
     key: `turn:${newest - index}`,
-    message,
+    entry,
   }));
   const tailEnd = tui.history.at(-1);
-  if (tui.sent !== null && !(tailEnd?.role === "user" && tailEnd.text === tui.sent)) {
+  if (
+    tui.sent !== null &&
+    !(tailEnd && "role" in tailEnd && tailEnd.role === "user" && "text" in tailEnd && tailEnd.text === tui.sent)
+  ) {
     rows.push({ kind: "sent", key: "sent", text: tui.sent });
   }
-  if (tui.reply !== null && !(tailEnd?.role === "assistant" && tailEnd.text === tui.reply)) {
+  if (
+    tui.reply !== null &&
+    !(tailEnd && "role" in tailEnd && tailEnd.role === "assistant" && "text" in tailEnd && tailEnd.text === tui.reply)
+  ) {
     rows.push({ kind: "reply", key: "reply", text: tui.reply });
   }
   return rows;
@@ -208,7 +214,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   // refused adds no row here. "Not live" and a refusal already have bands of
   // their own below that say more than a word and can be acted on.
   const activity = conversationActivity(tuiActivity(tui, connection, load, liveTerminal));
-  const tone = status === null ? theme.signal.oxide : theme.signal[SESSION_STATUS_SIGNALS[status]];
+  const tone = status === null ? theme.signal.failed : theme.signal[SESSION_STATUS_SIGNALS[status]];
   const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
   const ownedBottom = useOwnedBottomInset();
   // The same mechanism the agent log uses: KeyboardAvoidingView is inert on an
@@ -264,39 +270,72 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
 
   const renderRow = useCallback(
     ({ item, index }: ListRenderItemInfo<LogRow>): JSX.Element => {
-      const mine = item.kind === "turn" ? item.message.role === "user" : item.kind === "sent";
-      const words = item.kind === "turn" ? item.message.text : item.text;
-      // A live hint continues the conversation where a served turn shows its
-      // timestamp, so the gutter's second line names which one this row is.
+      if (item.kind === "turn") {
+        if (item.entry.kind === "tool") {
+          return (
+            <View style={styles.cardRow} testID={`terminal-turn-${index}`}>
+              <ToolCard
+                entry={{
+                  kind: "tool",
+                  id: item.entry.id,
+                  toolKind: item.entry.toolKind,
+                  title: item.entry.title,
+                  status: item.entry.status,
+                  input: null,
+                  output: item.entry.output,
+                  locations: item.entry.locations,
+                  // The tail carries the tool's text output only; edit diffs
+                  // reach the owned transcript over ACP, not the on-disk log.
+                  content: [],
+                }}
+              />
+            </View>
+          );
+        }
+
+        if (item.entry.kind === "thinking") {
+          const under = item.entry.at === "" ? null : <Kicker color={theme.ink.faint}>{elapsed(item.entry.at)}</Kicker>;
+          return (
+            <View
+              style={styles.turn}
+              testID="terminal-thinking"
+              accessible
+              accessibilityLabel={`thinking: ${item.entry.text}`}
+            >
+              <View
+                style={[styles.gutter, { width: attributionWidth(fontScale), borderLeftColor: theme.signal.reasoning }]}
+              >
+                <Kicker color={theme.signal.reasoning} numberOfLines={1}>
+                  thinking
+                </Kicker>
+                {under}
+              </View>
+              <RichText muted text={item.entry.text} />
+            </View>
+          );
+        }
+      }
+
+      const mine =
+        item.kind === "turn" ? ("role" in item.entry ? item.entry.role === "user" : false) : item.kind === "sent";
+      const words = item.kind === "turn" ? (typeof item.entry.text === "string" ? item.entry.text : "") : item.text;
       const under =
         item.kind === "turn" ? (
-          item.message.at === "" ? null : (
-            <Kicker color={theme.ink.faint}>{elapsed(item.message.at)}</Kicker>
+          item.entry.at === "" ? null : (
+            <Kicker color={theme.ink.faint}>{elapsed(item.entry.at)}</Kicker>
           )
         ) : (
           <Kicker color={theme.ink.faint}>{item.kind === "sent" ? HINT_WORDS.sent : HINT_WORDS.reply}</Kicker>
         );
-      // Gutter attribution rather than alternating bubbles, the same call
-      // `Transcript` made: there are only ever two speakers and bubbles halve
-      // the usable width on a phone.
-      //
-      // The words go through `RichText`, the renderer the owned transcript
-      // uses, because a terminal reply is the same markdown an owned one is:
-      // headings, lists, fences, inline code. Drawn as a bare `Body` it came
-      // out as punctuation ("a `session-body` testID", "**Problem**") and the
-      // operator re-parsed it by eye, which is what "markdown rendered as
-      // markup" reported on 2026-09-06. The accessibility label on the row
-      // keeps the raw words, so the round-trip gate reads exactly what was
-      // said.
       const row = (
         <>
           <View
             style={[
               styles.gutter,
-              { width: attributionWidth(fontScale), borderLeftColor: mine ? theme.ink.faint : theme.signal.sage },
+              { width: attributionWidth(fontScale), borderLeftColor: mine ? theme.ink.faint : theme.signal.ready },
             ]}
           >
-            <Kicker color={mine ? theme.ink.muted : theme.signal.sage}>{mine ? "you" : "agent"}</Kicker>
+            <Kicker color={mine ? theme.ink.muted : theme.signal.ready}>{mine ? "you" : "agent"}</Kicker>
             {under}
           </View>
           <RichText text={words} />
@@ -306,16 +345,12 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         <View
           style={styles.turn}
           testID={`terminal-turn-${index}`}
-          // A nested Body is often invisible to an accessibility query even
-          // when it is on screen, so the row carries the words itself.
           accessible
           accessibilityLabel={`${mine ? "you" : "agent"}: ${words}`}
         >
           {item.kind === "turn" ? (
             row
           ) : (
-            // The hint's own id sits one level in: the row is a row of this
-            // log like any other, and the hint identity is what queries read.
             <View testID={item.kind === "sent" ? "terminal-sent" : "terminal-reply"} style={styles.hintSkin}>
               {row}
             </View>
@@ -323,9 +358,6 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </View>
       );
     },
-    // `fontScale` as well as the theme: the attribution column's width is
-    // derived from it, so a row memoised without it keeps the old column when
-    // an operator changes their text size mid-session.
     [theme, fontScale],
   );
 
@@ -463,14 +495,14 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         pane has none, and a "not a live terminal session" band over a session
         that simply has not arrived would be a diagnosis of the wrong thing.
       */}
-      <View style={[styles.hints, rows.length === 0 && styles.hintsFill]}>
+      <View style={[styles.hints, rows.length === 0 && styles.hintsFill]} testID="terminal-hints">
         {load.phase !== "ready" ? null : (
           <>
             {liveTerminal ? null : (
               <View testID="terminal-not-live-tui" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
-                  <Label color={theme.signal.oxide}>Not a live terminal session</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.failed} />
+                  <Label color={theme.signal.failed}>Not a live terminal session</Label>
                 </View>
                 <Body color={theme.ink.bright}>{notLiveGuidance(status)}</Body>
               </View>
@@ -479,8 +511,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {promptAccess === "missing" || tui.refusalKind === "scope" ? (
               <View testID="terminal-scope-refusal" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
-                  <Label color={theme.signal.oxide}>Prompt scope required</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.failed} />
+                  <Label color={theme.signal.failed}>Prompt scope required</Label>
                 </View>
                 <Body color={theme.ink.bright}>
                   {tui.refusalKind === "scope" && tui.refusal !== null
@@ -493,8 +525,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {tui.refusalKind === "owner-gone" && tui.refusal !== null ? (
               <View testID="terminal-owner-gone" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={theme.signal.oxide} />
-                  <Label color={theme.signal.oxide}>Owning terminal is unreachable</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.failed} />
+                  <Label color={theme.signal.failed}>Owning terminal is unreachable</Label>
                 </View>
                 <Body color={theme.ink.bright}>{tui.refusal}</Body>
               </View>
@@ -503,8 +535,8 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             {tui.replyUnavailable ? (
               <View testID="terminal-reply-unavailable" style={styles.refusal}>
                 <View style={styles.refusalHead}>
-                  <Glyph name="warning" size={13} color={theme.signal.ochre} />
-                  <Label color={theme.signal.ochre}>Reply stayed in the terminal</Label>
+                  <Glyph name="warning" size={13} color={theme.signal.holding} />
+                  <Label color={theme.signal.holding}>Reply stayed in the terminal</Label>
                 </View>
                 <Body color={theme.ink.bright}>
                   This turn ended without readable assistant text. Its full transcript and tool output remain in the
@@ -525,11 +557,6 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
                 live progress returns here.
               </Body>
             ) : null}
-
-            <Label color={theme.ink.faint} testID="terminal-transcript-limit" style={styles.boundary}>
-              Only recent text and live assistant replies appear here. The full transcript and tool output stay in the
-              terminal.
-            </Label>
           </>
         )}
       </View>
@@ -670,7 +697,8 @@ const styles = StyleSheet.create({
   // crushing it against the composer.
   hints: { gap: rhythm.rowGap, padding: rhythm.gutter },
   hintsFill: { flex: 1 },
-  refusal: { gap: rhythm.cardGap, borderWidth: stroke.hair, borderColor: signal.oxide, padding: rhythm.cardPad },
+  refusal: { gap: rhythm.cardGap, borderWidth: stroke.hair, borderColor: signal.failed, padding: rhythm.cardPad },
   refusalHead: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
   boundary: { marginTop: "auto", paddingTop: rhythm.rowGapTight },
+  cardRow: { marginTop: rhythm.cardStack },
 });

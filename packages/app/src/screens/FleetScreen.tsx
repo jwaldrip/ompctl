@@ -25,21 +25,31 @@
  * above has already paid it, `useOwnedBottomInset` reads zero and nothing doubles.
  */
 
+import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useMemo } from "react";
-import { FlatList, Pressable, type PressableStateCallbackType, SectionList, StyleSheet, View } from "react-native";
+import {
+  FlatList,
+  Pressable,
+  type PressableStateCallbackType,
+  SectionList,
+  StyleSheet,
+  TextInput,
+  View,
+} from "react-native";
 import { GroupHeader } from "../components/GroupHeader.tsx";
+import { ProjectPicker } from "../components/ProjectPicker.tsx";
+import { SessionBoard } from "../components/SessionBoard.tsx";
 import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
-import type { ScopeAccess } from "../console/state.ts";
+import type { ScopeAccess, TuiSessionState } from "../console/state.ts";
 import { Glyph } from "../design/icons.tsx";
 import { useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { brand, ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
 import { browserView } from "../session/browser.ts";
-
 /**
  * What the bay may honestly claim about the daemon.
  *
@@ -79,6 +89,12 @@ export interface FleetScreenProps {
   link: FleetLink;
   /** Injected so a test can pin the row clocks instead of racing the wall. */
   now?: number;
+  onSetProject?: (project: string | null) => void;
+  onSetQuery?: (query: string) => void;
+  onSetView?: (view: "list" | "board") => void;
+  agents?: readonly Agent[];
+  pendingClearances?: (agentId: AgentId) => number;
+  tuiSessions?: ReadonlyMap<string, TuiSessionState>;
 }
 
 /**
@@ -124,6 +140,12 @@ export function FleetScreen({
   deleteAccess,
   link,
   now,
+  onSetProject,
+  onSetQuery,
+  onSetView,
+  agents,
+  pendingClearances,
+  tuiSessions,
 }: FleetScreenProps): JSX.Element {
   // The list is the bottom-most surface in the bay, with no composer beneath
   // it, so it owns the home-indicator inset itself. Paying it as content
@@ -137,6 +159,7 @@ export function FleetScreen({
   // identity per render would re-render the whole mounted window.
   const ownedBottom = useOwnedBottomInset();
   const listContentStyle = useMemo(() => ({ paddingBottom: ownedBottom }), [ownedBottom]);
+  const activeView = browser.view ?? "list";
   const view = useMemo(() => browserView(browser), [browser]);
   // The sections array, both row renderers, and the section header renderer
   // are memoised because each is a prop the virtualizer compares. A new
@@ -217,10 +240,32 @@ export function FleetScreen({
             // The count is a claim about the daemon, and with the link down
             // there is nobody to have made it. The slot says what the link is
             // doing instead, so a stale list is legible as stale.
-            <Kicker color={signal.ochre} testID="fleet-link">
+            <Kicker color={signal.holding} testID="fleet-link">
               {LINK_WORD[link.connection]}
             </Kicker>
           )}
+        </View>
+        <View style={styles.viewToggle} testID="fleet-view-toggle">
+          <Pressable
+            testID="view-toggle-list"
+            accessibilityRole="button"
+            accessibilityState={{ selected: activeView === "list" }}
+            accessibilityLabel="List view"
+            onPress={() => onSetView?.("list")}
+            style={[styles.viewToggleBtn, activeView === "list" && styles.viewToggleBtnActive]}
+          >
+            <Glyph name="list" size={12} color={activeView === "list" ? brand.azure : ink.faint} />
+          </Pressable>
+          <Pressable
+            testID="view-toggle-board"
+            accessibilityRole="button"
+            accessibilityState={{ selected: activeView === "board" }}
+            accessibilityLabel="Board view"
+            onPress={() => onSetView?.("board")}
+            style={[styles.viewToggleBtn, activeView === "board" && styles.viewToggleBtnActive]}
+          >
+            <Glyph name="board" size={12} color={activeView === "board" ? brand.azure : ink.faint} />
+          </Pressable>
         </View>
         <Pressable
           testID="grouped-toggle"
@@ -230,7 +275,7 @@ export function FleetScreen({
           onPress={onToggleGrouped}
           style={toggleStyle}
         >
-          <Glyph name="folder" size={12} color={browser.grouped ? signal.amber : ink.faint} />
+          <Glyph name="folder" size={12} color={browser.grouped ? signal.working : ink.faint} />
         </Pressable>
         <Pressable
           testID="archived-toggle"
@@ -244,7 +289,7 @@ export function FleetScreen({
           onPress={onToggleArchived}
           style={toggleStyle}
         >
-          <Glyph name="archive" size={12} color={browser.showArchived ? signal.amber : ink.faint} />
+          <Glyph name="archive" size={12} color={browser.showArchived ? signal.working : ink.faint} />
           {!browser.showArchived && view.hiddenArchived > 0 ? (
             <Label color={ink.faint} testID="archived-hidden-count">
               {view.hiddenArchived}
@@ -252,49 +297,93 @@ export function FleetScreen({
           ) : null}
         </Pressable>
       </View>
+      <View style={styles.searchBar} testID="fleet-search-bar">
+        <Glyph name="search" size={12} color={ink.faint} />
+        <TextInput
+          testID="fleet-search"
+          style={styles.searchInput}
+          placeholder="Search sessions..."
+          placeholderTextColor={ink.faint}
+          value={browser.query}
+          onChangeText={text => onSetQuery?.(text)}
+          accessibilityLabel="Search sessions"
+          returnKeyType="search"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {browser.query.length > 0 ? (
+          <Pressable
+            testID="fleet-search-clear"
+            onPress={() => onSetQuery?.("")}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+            style={styles.searchClear}
+          >
+            <Glyph name="deny" size={10} color={ink.faint} />
+          </Pressable>
+        ) : null}
+        <ProjectPicker
+          sessions={browser.sessions}
+          selectedProject={browser.project}
+          onSelectProject={onSetProject ?? (() => {})}
+        />
+      </View>
 
       {deleteAccess === "missing" ? (
         // A band in the column, never a layer over it: see
         // `test/no-hidden-content.test.ts` for why nothing here floats.
         <View style={styles.scopeNotice} testID="fleet-delete-scope-notice">
-          <Glyph name="warning" size={12} color={signal.ochre} />
-          <Label color={signal.ochre} style={styles.scopeNoticeText}>
+          <Glyph name="warning" size={12} color={signal.holding} />
+          <Label color={signal.holding} style={styles.scopeNoticeText}>
             This pairing can archive but not delete: it holds no manage scope. Grant manage when minting this
             device&rsquo;s credential, from the daemon or from a device that can invite.
           </Label>
         </View>
       ) : null}
 
-      <SortBar sort={browser.sort} onChange={onSort} />
-
-      {browser.grouped ? (
-        <SectionList
-          testID="fleet-list"
-          sections={sections}
-          keyExtractor={keyOf}
-          renderSectionHeader={renderSectionHeader}
-          renderItem={renderGrouped}
-          contentContainerStyle={listContentStyle}
-          stickySectionHeadersEnabled
-          initialNumToRender={FIRST_WINDOW}
-          maxToRenderPerBatch={FIRST_WINDOW}
-          windowSize={WINDOW_SIZE}
-          updateCellsBatchingPeriod={BATCH_PERIOD_MS}
-          ListEmptyComponent={empty}
+      {activeView === "board" ? (
+        <SessionBoard
+          sessions={view.flatSessions as BrowserSession[]}
+          onOpen={onOpen}
+          agents={agents}
+          pendingClearances={pendingClearances}
+          tuiSessions={tuiSessions}
+          now={now}
+          empty={empty}
         />
       ) : (
-        <FlatList
-          testID="fleet-list"
-          data={view.flatSessions as BrowserSession[]}
-          keyExtractor={keyOf}
-          renderItem={renderFlat}
-          contentContainerStyle={listContentStyle}
-          initialNumToRender={FIRST_WINDOW}
-          maxToRenderPerBatch={FIRST_WINDOW}
-          windowSize={WINDOW_SIZE}
-          updateCellsBatchingPeriod={BATCH_PERIOD_MS}
-          ListEmptyComponent={empty}
-        />
+        <>
+          <SortBar sort={browser.sort} onChange={onSort} />
+          {browser.grouped ? (
+            <SectionList
+              testID="fleet-list"
+              sections={sections}
+              keyExtractor={keyOf}
+              renderSectionHeader={renderSectionHeader}
+              renderItem={renderGrouped}
+              contentContainerStyle={listContentStyle}
+              stickySectionHeadersEnabled
+              initialNumToRender={FIRST_WINDOW}
+              maxToRenderPerBatch={FIRST_WINDOW}
+              windowSize={WINDOW_SIZE}
+              updateCellsBatchingPeriod={BATCH_PERIOD_MS}
+              ListEmptyComponent={empty}
+            />
+          ) : (
+            <FlatList
+              testID="fleet-list"
+              data={view.flatSessions as BrowserSession[]}
+              keyExtractor={keyOf}
+              renderItem={renderFlat}
+              contentContainerStyle={listContentStyle}
+              initialNumToRender={FIRST_WINDOW}
+              maxToRenderPerBatch={FIRST_WINDOW}
+              windowSize={WINDOW_SIZE}
+              updateCellsBatchingPeriod={BATCH_PERIOD_MS}
+              ListEmptyComponent={empty}
+            />
+          )}
+        </>
       )}
     </View>
   );
@@ -308,7 +397,7 @@ function Empty({ link }: { link: FleetLink }): JSX.Element {
   if (link.connection !== "connected") {
     return (
       <View style={styles.empty} testID="fleet-unreachable">
-        <Glyph name="warning" size={26} color={signal.ochre} />
+        <Glyph name="warning" size={26} color={signal.holding} />
         <Body color={ink.plain}>Not connected to the daemon.</Body>
         <Label color={ink.muted}>
           {link.connection === "connecting"
@@ -392,4 +481,49 @@ const styles = StyleSheet.create({
   // of it and under whatever draws next.
   scopeNoticeText: { flex: 1, minWidth: 0 },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },
+  searchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    paddingHorizontal: space.wide,
+    paddingVertical: space.tight,
+    backgroundColor: ground.surface,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+  },
+  searchInput: {
+    flex: 1,
+    height: 32,
+    color: ink.plain,
+    fontSize: 13,
+    paddingHorizontal: space.tight,
+    paddingVertical: 0,
+  },
+  searchClear: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  viewToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: ground.raised,
+    borderRadius: radius.control,
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+    padding: space.hair,
+  },
+  viewToggleBtn: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.control - 2,
+  },
+  viewToggleBtnActive: {
+    backgroundColor: ground.active,
+    borderWidth: stroke.hair,
+    borderColor: brand.azure,
+  },
 });

@@ -24,14 +24,16 @@
 
 import "./rnw.ts";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ExternalStoreAdapter } from "@assistant-ui/core";
 import type { Agent, ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { OmpEntryRowProps } from "../src/assistant/renderers.tsx";
-import type { Entry } from "../src/session/model.ts";
 // Pure data with no `react-native` in its graph, so this one can stay static.
+import { attributionWidthCompact } from "../src/design/rhythm.ts";
+import type { Entry } from "../src/session/model.ts";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 import { advance } from "./type-metrics.ts";
 
 // Dynamic on purpose, the same way `pair-connections-consistency.test.tsx`
@@ -51,6 +53,13 @@ const { EMPTY_SESSION, appendApproval, endTurn, reduce, resolveApproval } = awai
 const { READY_LOAD } = await import("../src/console/state.ts");
 const { WithOmpTheme } = await import("./theme.tsx");
 const { StyleSheet } = await import("react-native");
+
+beforeEach(() => {
+  setWindowSize(820, 1180);
+});
+afterEach(() => {
+  resetWindowSize();
+});
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -172,7 +181,9 @@ function press(el: HTMLElement): void {
   if (key === undefined) throw new Error("no React props on the rendered pressable");
   const props = Reflect.get(el, key) as { onClick?: unknown };
   if (typeof props.onClick !== "function") throw new Error("the rendered pressable has no click handler");
-  el.click();
+  act(() => {
+    el.click();
+  });
 }
 
 /**
@@ -273,7 +284,7 @@ describe("every entry kind renders the component the transcript already draws", 
     try {
       const el = byTestID(mounted.host, "entry-assistant");
       expect(el.getAttribute("aria-label")).toBe("agent: pineapple-agent-nonce");
-      expect(declarationsFor(el.firstElementChild!).get("border-left-color")).toBe(rgb(signal.sage));
+      expect(declarationsFor(el.firstElementChild!).get("border-left-color")).toBe(rgb(signal.ready));
     } finally {
       mounted.unmount();
     }
@@ -302,6 +313,50 @@ describe("every entry kind renders the component the transcript already draws", 
       expect(byTestID(mounted.host, `tool-status-${entry.id}`).textContent).toBe("in progress");
       // Not the generic row: a tool has no gutter and no speaker.
       expect(mounted.host.querySelector('[data-testid="entry-assistant"]')).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a tool card with a diff entry contains the path and the added line", () => {
+    const session = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "tc_diff",
+      kind: "edit",
+      title: "edit src/config.ts",
+      status: "completed",
+      rawOutput: {
+        content: [
+          {
+            type: "diff",
+            path: "src/config.ts",
+            oldText: "const port = 8080;\n",
+            newText: 'const port = 9090;\nconst host = "0.0.0.0";\n',
+          },
+        ],
+      },
+    });
+    const entry = session.entries[0];
+    if (entry === undefined || entry.kind !== "tool") throw new Error("the reducer produced no tool entry");
+    const mounted = themed(<ToolCard entry={entry} />);
+    try {
+      expect(byTestID(mounted.host, `tool-${entry.id}`)).toBeDefined();
+      expect(mounted.host.textContent).toContain("src/config.ts");
+      expect(mounted.host.textContent).toContain('const host = "0.0.0.0";');
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  test("a tool card with output renders a one-line summary above clamped output", () => {
+    const entry = {
+      ...toolEntry("bun test"),
+      output: "bun test v1.3.14\n15 pass\n0 fail\nRan 15 tests across 1 file.\nLine 5\nLine 6\nLine 7\n",
+    };
+    const mounted = themed(<ToolCard entry={entry} />);
+    try {
+      const summary = byTestID(mounted.host, `tool-summary-${entry.id}`);
+      expect(summary.textContent).toBe("bun test v1.3.14");
     } finally {
       mounted.unmount();
     }
@@ -629,8 +684,8 @@ describe("attribution survives the move into assistant-ui", () => {
       const replyGutter = replyRow.firstElementChild;
       if (thoughtGutter === null || replyGutter === null) throw new Error("a row rendered without its gutter");
 
-      expect(declarationsFor(thoughtGutter).get("border-left-color")).toBe(rgb(signal.violet));
-      expect(declarationsFor(replyGutter).get("border-left-color")).toBe(rgb(signal.sage));
+      expect(declarationsFor(thoughtGutter).get("border-left-color")).toBe(rgb(signal.reasoning));
+      expect(declarationsFor(replyGutter).get("border-left-color")).toBe(rgb(signal.ready));
 
       const thoughtKicker = thoughtGutter.firstElementChild;
       const replyKicker = replyGutter.firstElementChild;
@@ -638,8 +693,8 @@ describe("attribution survives the move into assistant-ui", () => {
 
       expect(thoughtKicker.textContent).toBe("thinking");
       expect(replyKicker.textContent).toBe("agent");
-      expect(declarationsFor(thoughtKicker).get("color")).toBe(rgb(signal.violet));
-      expect(declarationsFor(replyKicker).get("color")).toBe(rgb(signal.sage));
+      expect(declarationsFor(thoughtKicker).get("color")).toBe(rgb(signal.reasoning));
+      expect(declarationsFor(replyKicker).get("color")).toBe(rgb(signal.ready));
       // The gutter caps at 1.5x dynamic type, so its label must ellipsise
       // rather than wrap and make an activity row unexpectedly taller.
       for (const kicker of [thoughtKicker, replyKicker]) {
@@ -649,7 +704,9 @@ describe("attribution survives the move into assistant-ui", () => {
 
       // Muted is not a decoration: `RichText muted` drops prose from
       // `ink.bright` to `ink.plain`, and the same string must therefore render
-      // at two different colours in the two rows.
+      // at two different colours in the two rows. Tapping the collapsed thought
+      // reveals its prose.
+      press(byTestID(thoughtRow, "thinking-toggle-m1"));
       const thoughtProse = colourOfProse(thoughtRow, "weighing it");
       const replyProse = colourOfProse(replyRow, "weighing it");
       expect(thoughtProse).toBe(rgb(ink.plain));
@@ -670,6 +727,45 @@ describe("attribution survives the move into assistant-ui", () => {
     } finally {
       live.unmount();
       done.unmount();
+    }
+  });
+
+  test("a settled thought renders collapsed to one line with the line count", () => {
+    const thought = row(assistantEntry("line one\nline two\nline three", { thought: true }));
+    try {
+      const thoughtRow = byTestID(thought.host, "entry-assistant");
+      const summary = byTestID(thoughtRow, "thinking-summary-m1");
+      expect(summary.textContent).toBe("Thinking, 3 lines");
+      expect(declarationsFor(summary).get("color")).toBe(rgb(signal.reasoning));
+      expect(colourOfProse(thoughtRow, "line one")).toBeUndefined();
+    } finally {
+      thought.unmount();
+    }
+  });
+
+  test("a streaming thought stays expanded so the operator sees live reasoning", () => {
+    const thought = row(assistantEntry("reasoning in progress", { thought: true, streaming: true }));
+    try {
+      const thoughtRow = byTestID(thought.host, "entry-assistant");
+      expect(colourOfProse(thoughtRow, "reasoning in progress")).toBe(rgb(ink.plain));
+      const summary = byTestID(thoughtRow, "thinking-summary-m1");
+      expect(summary.textContent).toBe("Thinking, 1 line");
+    } finally {
+      thought.unmount();
+    }
+  });
+
+  test("tapping a collapsed thought expands and collapses it", () => {
+    const thought = row(assistantEntry("hidden reason", { thought: true }));
+    try {
+      const thoughtRow = byTestID(thought.host, "entry-assistant");
+      expect(colourOfProse(thoughtRow, "hidden reason")).toBeUndefined();
+      press(byTestID(thoughtRow, "thinking-toggle-m1"));
+      expect(colourOfProse(thoughtRow, "hidden reason")).toBe(rgb(ink.plain));
+      press(byTestID(thoughtRow, "thinking-toggle-m1"));
+      expect(colourOfProse(thoughtRow, "hidden reason")).toBeUndefined();
+    } finally {
+      thought.unmount();
     }
   });
 });
@@ -769,6 +865,20 @@ describe("the attribution column costs what the rhythm says and not a point more
       mounted.unmount();
     }
   });
+
+  test("on compact widths the gutter is attributionWidthCompact and glyph only", () => {
+    setWindowSize(390, 844);
+    const mounted = row(userEntry("compact turn"));
+    try {
+      const gutter = byTestID(mounted.host, "entry-user").firstElementChild as HTMLElement | null;
+      if (gutter === null) throw new Error("the row rendered without its gutter");
+      expect(pixels(gutter, "width")).toBe(attributionWidthCompact);
+      expect(gutter.getAttribute("aria-label")).toBe("you");
+      expect(gutter.textContent).toBe("");
+    } finally {
+      mounted.unmount();
+    }
+  });
 });
 
 describe("a card spends the card's own steps, never a number of its own", () => {
@@ -839,11 +949,11 @@ describe("a clearance's three answers are three different weights", () => {
       const deny = surfaceOf("approval-deny-r1");
       const always = surfaceOf("approval-always-r1");
 
-      expect(declarationsFor(allow).get("background-color")).toBe(rgb(signal.sage));
+      expect(declarationsFor(allow).get("background-color")).toBe(rgb(signal.ready));
       expect(pixels(allow, "border-width")).toBe(0);
 
       expect(declarationsFor(deny).get("background-color")).toBe(NO_FILL);
-      expect(declarationsFor(deny).get("border-color")).toBe(rgb(signal.oxide));
+      expect(declarationsFor(deny).get("border-color")).toBe(rgb(signal.failed));
       expect(pixels(deny, "border-width")).toBeGreaterThan(0);
 
       expect(declarationsFor(always).get("background-color")).toBe(NO_FILL);

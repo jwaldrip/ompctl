@@ -328,36 +328,55 @@ describe("the panel renders what the session actually reported", () => {
       expect(view.host.textContent).toContain("Policy Scout");
       expect(view.host.textContent).toContain("Inspect the permission path");
 
-      view.press("agent-hub-open-agt_scout");
+      view.press("subagent-card-open-agt_scout");
       expect(opened.map(next => next.id)).toEqual(["agt_scout"]);
 
       // The unreachable one is text, not a button that lands on a blank log.
-      expect(view.el("agent-hub-open-agt_mirror")).toBeNull();
-      expect(view.el("agent-hub-row-agt_mirror")).not.toBeNull();
-      expect(view.el("agent-hub-unopenable-agt_mirror")?.textContent).toBe(SUBAGENT_UNOPENABLE);
+      expect(view.el("subagent-card-open-agt_mirror")).toBeNull();
+      expect(view.el("subagent-card-row-agt_mirror")).not.toBeNull();
+      expect(view.el("subagent-card-unopenable-agt_mirror")?.textContent).toBe(SUBAGENT_UNOPENABLE);
     } finally {
       view.unmount();
     }
   });
 
-  test("a sub of a sub nests under its own parent rather than flattening onto the session", () => {
+  test("subagents under the session render on the board in their columns", () => {
     const main = agent("agt_main");
     const view = mount(
       panel({
         subject: main,
         agents: [
           main,
-          agent("agt_scout", { parentAgentId: "agt_main", acpSessionId: "s1" }),
-          agent("agt_reviewer", { parentAgentId: "agt_scout", acpSessionId: "s2" }),
+          agent("agt_scout", { parentAgentId: "agt_main", acpSessionId: "s1", state: "idle" }),
+          agent("agt_reviewer", { parentAgentId: "agt_scout", acpSessionId: "s2", state: "busy" }),
         ],
       }),
     );
     try {
-      const scout = view.el("agent-hub-agt_scout");
-      expect(scout).not.toBeNull();
-      // Containment is the claim: a flattened list would put both rows as
-      // siblings and the operator would lose who delegated to whom.
-      expect(scout?.querySelector('[data-testid="agent-hub-agt_reviewer"]')).not.toBeNull();
+      expect(view.el("subagent-board-column-idle")).not.toBeNull();
+      expect(view.el("subagent-board-column-working")).not.toBeNull();
+      expect(view.el("subagent-card-agt_scout")).not.toBeNull();
+      expect(view.el("subagent-card-agt_reviewer")).not.toBeNull();
+    } finally {
+      view.unmount();
+    }
+  });
+
+  test("the strip's summary row counts subagents and those needing attention", () => {
+    const main = agent("agt_main");
+    const view = mount(
+      panel({
+        subject: main,
+        agents: [
+          main,
+          agent("agt_1", { parentAgentId: "agt_main", state: "waiting", acpSessionId: "s1" }),
+          agent("agt_2", { parentAgentId: "agt_main", state: "busy", acpSessionId: "s2" }),
+          agent("agt_3", { parentAgentId: "agt_main", state: "idle", acpSessionId: "s3" }),
+        ],
+      }),
+    );
+    try {
+      expect(view.el("session-context-summary")?.textContent).toBe("3 subagents, 1 needs you");
     } finally {
       view.unmount();
     }
@@ -567,56 +586,7 @@ describe("the collapse default follows the screen class", () => {
 // The rhythm, read off the rendered surface
 // ---------------------------------------------------------------------------
 
-describe("the panel spends one step per level of nesting and nothing else", () => {
-  /** A chain four deep under the open session, every link openable. */
-  const chain = [
-    agent("agt_main"),
-    agent("agt_a", { parentAgentId: "agt_main", acpSessionId: "s_a" }),
-    agent("agt_b", { parentAgentId: "agt_a", acpSessionId: "s_b" }),
-    agent("agt_c", { parentAgentId: "agt_b", acpSessionId: "s_c" }),
-    agent("agt_d", { parentAgentId: "agt_c", acpSessionId: "s_d" }),
-  ];
-
-  test("three levels deep is three steps of rhythm.indent, not an ad-hoc ramp", () => {
-    const view = mount(panel({ subject: chain[0] as Agent, agents: chain }));
-    try {
-      // Read off the row itself rather than summed up the tree: the branch
-      // boxes nest, so an offset paid by them compounds invisibly and the step
-      // a row sits at stops being anything a reader -- or this test -- can
-      // check. `marginLeft: space.wide` plus `paddingLeft: space.snug` plus a
-      // rail is what used to add up to one step by accident; it reads as zero
-      // here, at every depth, which is the failure this asserts.
-      const indentOf = (id: string): number => {
-        const row = view.el(`agent-hub-open-${id}`);
-        if (row === null) throw new Error(`no row rendered for ${id}`);
-        return points(row, "padding-left") ?? 0;
-      };
-      expect(indentOf("agt_a")).toBe(0);
-      expect(indentOf("agt_b")).toBe(rhythm.indent);
-      expect(indentOf("agt_c")).toBe(2 * rhythm.indent);
-      expect(indentOf("agt_d")).toBe(3 * rhythm.indent);
-      // The multiplication, stated as the rule rather than as three numbers: a
-      // second per-level inset anywhere in the tree breaks this even if each
-      // row's own value still looked plausible.
-      expect(indentOf("agt_d") - indentOf("agt_c")).toBe(rhythm.indent);
-    } finally {
-      view.unmount();
-    }
-  });
-
-  test("a nested row is still a finger target, sized by a floor rather than a height", () => {
-    const view = mount(panel({ subject: chain[0] as Agent, agents: chain }));
-    try {
-      const row = view.el("agent-hub-open-agt_d");
-      if (row === null) throw new Error("no deepest row rendered");
-      expect(points(row, "min-height")).toBe(rhythm.minTarget);
-      // A fixed height is what clips a row at a larger type size.
-      expect(points(row, "height")).toBeNull();
-    } finally {
-      view.unmount();
-    }
-  });
-
+describe("context row formatting", () => {
   test("a directory as long as the machine says it is truncates in its row, never widens it", () => {
     const deep = "/Users/op/dev/src/github.com/op/alpha/packages/app/src/components/really/deep";
     const view = mount(
@@ -750,6 +720,7 @@ class CannedClient {
   decide(): void {}
   decidePlan(): void {}
   registerWebView(): void {}
+  sessionStats(): void {}
   unregisterWebView(): void {}
   webViewResult(): void {}
   startVoice(): void {}
@@ -1082,13 +1053,11 @@ describe("a row press commits its own session before the daemon answers", () => 
       // None of the hints, because each is a claim about a session this pane
       // does not have yet.
       expect(shell.el("terminal-explainer")).toBeNull();
-      expect(shell.el("terminal-transcript-limit")).toBeNull();
 
       // The canned daemon has no collab API, so the open falls back to the
       // steer surface and the tail is what answers.
       shell.emit("session_tail", { sessionId: "sess_tui", messages: [], truncated: false });
-      expect(shell.el("session-loading")).toBeNull();
-      expect(shell.el("terminal-transcript-limit")).not.toBeNull();
+      expect(shell.el("terminal-explainer")).not.toBeNull();
     } finally {
       shell.unmount();
     }

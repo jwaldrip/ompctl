@@ -25,6 +25,7 @@ import "./rnw.ts";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ScopeAccess } from "../src/console/state.ts";
+import { signal } from "../src/design/tokens.ts";
 import type { BrowserSession, BrowserState } from "../src/session/browser.ts";
 import { EMPTY_BROWSER } from "../src/session/browser.ts";
 import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
@@ -33,6 +34,7 @@ import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
 // "react-native" here would resolve before `./rnw.ts`'s `mock.module` call
 // could substitute it.
 const { FleetScreen } = await import("../src/screens/FleetScreen.tsx");
+const { SessionRow } = await import("../src/components/SessionRow.tsx");
 const { StyleSheet } = await import("react-native");
 
 /** Read off the screen rather than imported by name: see the note above the dynamic imports. */
@@ -53,6 +55,12 @@ function browserState(overrides: Partial<BrowserState> = {}): BrowserState {
 
 function windowedState(overrides: Partial<BrowserState> = {}): BrowserState {
   return { ...EMPTY_BROWSER, sessions: WINDOWED, ...overrides };
+}
+
+/** A `#rrggbb` token as react-native-web writes it into a class rule. */
+function rgbaOf(hex: string): string {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},1.00)`;
 }
 
 const NOOP_SESSION = (_session: BrowserSession) => {};
@@ -127,8 +135,8 @@ describe("RNW style rule scoping", () => {
 describe("the session browser renders a realistic corpus", () => {
   const html = render(browserState());
 
-  test("every group in the mounted window carries its directory name and count", () => {
-    const windowed = render(windowedState());
+  test("every group carries its directory name and count when grouping is enabled", () => {
+    const windowed = render(windowedState({ grouped: true }));
     for (let d = 0; d < 3; d++) {
       expect(windowed).toContain(`repo-${d}`);
       expect(windowed).toContain(`data-testid="group-count-/Users/op/dev/src/github.com/op/repo-${d}"`);
@@ -148,9 +156,9 @@ describe("the session browser renders a realistic corpus", () => {
     expect(html).toContain(`>${archivedCount}<`);
   });
 
-  test("the active sort is nameable: the default status chip is marked active", () => {
-    expect(html).toContain(`data-testid="sort-chip-status"`);
-    expect(html).toContain(`data-testid="sort-direction-status"`);
+  test("the active sort is nameable: the default recency activity chip is marked active", () => {
+    expect(html).toContain(`data-testid="sort-chip-lastActive"`);
+    expect(html).toContain(`data-testid="sort-direction-lastActive"`);
   });
 
   test("nothing renders an emoji where an icon belongs", () => {
@@ -231,43 +239,63 @@ describe("open and archive are visually distinct actions", () => {
     expect(html).toContain(`Prompt ${live.title}`);
   });
 
-  test("archive is a separate control from open, with its own testID and label", () => {
-    expect(html).toContain(`data-testid="session-archive-${dormant.id}"`);
-    expect(html).toContain(`Archive ${dormant.title}`);
-    // The open and archive actions are separate pressables with distinct
-    // canonical identities.
-    expect(html).not.toContain(`data-testid="session-archive-${dormant.id}"data-testid="session-open-${dormant.id}"`);
+  test("archive and delete are in the row's more menu, not persistent columns", () => {
+    // Persistent columns at rest are gone; the trailing action is the single More control
+    expect(html).toContain(`data-testid="session-more-${dormant.id}"`);
+    expect(html).toContain(`More for ${dormant.title}`);
+    expect(html).not.toContain(`data-testid="session-archive-${dormant.id}"`);
+    expect(html).not.toContain(`data-testid="session-delete-${dormant.id}"`);
   });
 
-  test("archive's label never says delete, remove, or destroy", () => {
-    const archiveButtonRegion = html.slice(
-      html.indexOf(`session-archive-${dormant.id}`) - 40,
-      html.indexOf(`session-archive-${dormant.id}`) + 120,
+  test("opening the more menu exposes archive and delete controls", () => {
+    const menuHtml = renderToStaticMarkup(
+      <SessionRow
+        session={dormant}
+        defaultMenuOpen
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        deleteAccess="granted"
+      />,
     );
-    expect(archiveButtonRegion.toLowerCase()).not.toContain("delete");
-    expect(archiveButtonRegion.toLowerCase()).not.toContain("destroy");
+    expect(menuHtml).toContain(`data-testid="session-archive-${dormant.id}"`);
+    expect(menuHtml).toContain(`Archive ${dormant.title}`);
+    expect(menuHtml).toContain(`data-testid="session-delete-${dormant.id}"`);
+    expect(menuHtml.toLowerCase()).not.toContain("destroy");
   });
 
-  test("an archived row's primary action reads Restore, not Resume or Attach", () => {
+  test("an archived row's menu action reads Restore, not Resume or Attach", () => {
     const archived = WINDOWED.find(s => s.status === "archived") as BrowserSession;
-    // Archived is hidden by default; show it to reach the row at all.
-    const withArchived = render(windowedState({ showArchived: true }));
-    expect(withArchived).toContain(`data-testid="session-unarchive-${archived.id}"`);
-    expect(withArchived).toContain(`Restore ${archived.title}`);
+    const menuHtml = renderToStaticMarkup(
+      <SessionRow
+        session={archived}
+        defaultMenuOpen
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        deleteAccess="granted"
+      />,
+    );
+    expect(menuHtml).toContain(`data-testid="session-unarchive-${archived.id}"`);
+    expect(menuHtml).toContain(`Restore ${archived.title}`);
   });
 });
 
 describe("collapsed group status precedence, rendered", () => {
   test("a collapsed group still shows its count and worst-status colour", () => {
     const dir = "/Users/op/dev/src/github.com/op/repo-0"; // 1 session, live-tui (d=0,i=0 -> statuses[0])
-    const collapsed: BrowserState = windowedState({ collapsedGroups: new Set([dir]) });
+    const collapsed: BrowserState = windowedState({ grouped: true, collapsedGroups: new Set([dir]) });
     const html = render(collapsed);
     expect(html).toContain(`data-testid="group-header-${dir}"`);
     expect(html).toContain(`data-testid="group-count-${dir}"`);
     // amber is live-tui's signal colour; the collapsed header still carries it.
+    // react-native-web writes the token out as rgba, so the assertion reads it
+    // from the token rather than pinning a hex that a retheme would change.
     const headerStart = html.indexOf(`group-header-${dir}`);
     const headerRegion = html.slice(Math.max(0, headerStart - 300), headerStart + 400);
-    expect(headerRegion).toContain("rgba(224,163,58,1.00)");
+    expect(headerRegion).toContain(rgbaOf(signal.working));
   });
 
   test("collapsing a group removes its rows from the list but not its header", () => {
@@ -275,8 +303,8 @@ describe("collapsed group status precedence, rendered", () => {
     // Show archived too, so every session in the group is accounted for
     // regardless of status; the point here is collapse, not visibility.
     const group = WINDOWED.filter(s => s.cwd === dir);
-    const expanded = render(windowedState({ showArchived: true }));
-    const collapsed = render(windowedState({ showArchived: true, collapsedGroups: new Set([dir]) }));
+    const expanded = render(windowedState({ grouped: true, showArchived: true }));
+    const collapsed = render(windowedState({ grouped: true, showArchived: true, collapsedGroups: new Set([dir]) }));
 
     expect(group.length).toBeGreaterThan(1);
     for (const session of group) {
@@ -289,13 +317,98 @@ describe("collapsed group status precedence, rendered", () => {
 });
 
 describe("grouping toggle", () => {
-  test("turning grouping off renders a flat list with cwd shown per row", () => {
-    const html = render(windowedState({ grouped: false }));
+  test("default is a flat list without group headers", () => {
+    const html = render(windowedState());
     expect(html).not.toContain('data-testid="group-header-');
-    // Every row of the small corpus, from three different directories.
     for (const session of WINDOWED.filter(s => s.status !== "archived")) {
       expect(html).toContain(`data-testid="session-row-${session.id}"`);
     }
+  });
+
+  test("turning grouping on renders group headers", () => {
+    const html = render(windowedState({ grouped: true }));
+    expect(html).toContain('data-testid="group-header-');
+  });
+});
+
+describe("search and project filters, rendered", () => {
+  test("renders search input with placeholder", () => {
+    const html = render(browserState());
+    expect(html).toContain('data-testid="fleet-search"');
+    expect(html).toContain('placeholder="Search sessions..."');
+  });
+
+  test("project filter uses a picker in the search row instead of a chip bar", () => {
+    const html = render(browserState());
+    expect(html).not.toContain('data-testid="project-filter-bar"');
+    expect(html).toContain('data-testid="project-picker-trigger"');
+    expect(html).toContain("All projects");
+
+    // Selected project renders as a single removable chip with brand.azure
+    const selectedHtml = render(browserState({ project: "/Users/op/dev/src/github.com/op/repo-0" }));
+    expect(selectedHtml).toContain('data-testid="project-chip-selected"');
+    expect(selectedHtml).toContain("repo-0");
+    expect(selectedHtml).toContain('data-testid="project-chip-clear"');
+    // Selection uses brand.azure (#5b9dff), never amber signal.working
+    expect(selectedHtml).toContain("rgba(91,157,255,1");
+  });
+
+  test("active sort chip uses brand.azure, not amber signal.working", () => {
+    const html = render(browserState());
+    expect(html).toContain('data-testid="sort-direction-lastActive"');
+    const chipStart = html.indexOf('data-testid="sort-chip-lastActive"');
+    const chipRegion = html.slice(chipStart, chipStart + 350);
+    expect(chipRegion).toContain("rgba(91,157,255,1");
+    expect(chipRegion).not.toContain("rgba(255,176,32,1");
+  });
+
+  test("row metrics container has no-wrap style and single-line structure", () => {
+    const html = render(windowedState());
+    // Check each session has its metrics container
+    const target = WINDOWED[0]?.id as string;
+    expect(html).toContain(`data-testid="session-metrics-${target}"`);
+    // Style sheet includes nowrap for flexWrap
+    expect(html).toContain("flex-wrap:nowrap");
+  });
+
+  test("row metrics fit on one line and support spend reading", () => {
+    const sessionWithCost: BrowserSession = {
+      ...(WINDOWED[0] as BrowserSession),
+      cost: 0.42,
+    };
+    const htmlWithCost = renderToStaticMarkup(
+      <SessionRow
+        session={sessionWithCost}
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        deleteAccess="granted"
+      />,
+    );
+    expect(htmlWithCost).toContain(`data-testid="session-spend-${sessionWithCost.id}"`);
+    expect(htmlWithCost).toContain("$0.42");
+    expect(htmlWithCost).toContain("spend");
+    // On compact screens (phone width), size is dropped
+    expect(htmlWithCost).not.toContain(`data-testid="session-size-${sessionWithCost.id}"`);
+
+    // Null cost renders no spend reading, never a zero
+    const sessionNullCost: BrowserSession = {
+      ...(WINDOWED[0] as BrowserSession),
+      cost: null,
+    };
+    const htmlNullCost = renderToStaticMarkup(
+      <SessionRow
+        session={sessionNullCost}
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        deleteAccess="granted"
+      />,
+    );
+    expect(htmlNullCost).not.toContain(`data-testid="session-spend-${sessionNullCost.id}"`);
+    expect(htmlNullCost).not.toContain("spend");
   });
 });
 
@@ -421,11 +534,11 @@ describe("the header's controls sit at the trailing content edge", () => {
     // its own, so the column it forms is the screen's trailing edge itself.
     // If the rows ever gain a trailing inset, this fails instead of letting
     // the two edges drift apart in opposite directions.
-    const deleteTag = markup.match(/<[^>]*data-testid="session-delete-[^"]*"[^>]*>/)?.[0] ?? "";
-    const deleteRules = rulesDeclaring(css, classListOf(deleteTag));
-    expect(deleteTag).not.toBe("");
-    expect(deleteRules).not.toMatch(/padding-right/);
-    expect(deleteRules).not.toMatch(/margin-right/);
+    const moreTag = markup.match(/<[^>]*data-testid="session-more-[^"]*"[^>]*>/)?.[0] ?? "";
+    const moreRules = rulesDeclaring(css, classListOf(moreTag));
+    expect(moreTag).not.toBe("");
+    expect(moreRules).not.toMatch(/padding-right/);
+    expect(moreRules).not.toMatch(/margin-right/);
   });
 
   test("the title group flexes to absorb the slack, not a spacer's worth of it", () => {
@@ -453,5 +566,24 @@ describe("the header's controls sit at the trailing content edge", () => {
       expect(classes.length).toBeGreaterThan(0);
       expect(rulesDeclaring(css, classes)).not.toMatch(/margin-left/);
     }
+  });
+});
+
+describe("the fleet header List/Board view toggle", () => {
+  test("renders list and board toggle buttons in the fleet header", () => {
+    const markup = render(browserState({ view: "list" }));
+    expect(markup).toContain('data-testid="fleet-view-toggle"');
+    expect(markup).toContain('data-testid="view-toggle-list"');
+    expect(markup).toContain('data-testid="view-toggle-board"');
+  });
+
+  test("renders the board when view is 'board' and list when view is 'list'", () => {
+    const listMarkup = render(browserState({ view: "list" }));
+    expect(listMarkup).toContain('data-testid="fleet-list"');
+    expect(listMarkup).not.toContain('data-testid="session-board"');
+
+    const boardMarkup = render(browserState({ view: "board" }));
+    expect(boardMarkup).toContain('data-testid="session-board"');
+    expect(boardMarkup).not.toContain('data-testid="fleet-list"');
   });
 });

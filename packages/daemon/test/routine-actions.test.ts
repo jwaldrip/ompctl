@@ -260,3 +260,53 @@ describe("routine run session identity", () => {
     expect("sessionId" in (persisted?.actions[0] ?? {})).toBe(false);
   });
 });
+
+describe("routine action retries and progress frames", () => {
+  test("fromAction: 2 skips actions 0 and 1", async () => {
+    const h = harness();
+    h.store.upsertRoutine(
+      routine([action("act-0", "prompt 0"), action("act-1", "prompt 1"), action("act-2", "prompt 2")]),
+    );
+    const run = await h.scheduler.runNow("rtn_fanout", h.actor, 2);
+    expect(run.fromAction).toBe(2);
+    expect(run.actions[0]?.state).toBe("skipped");
+    expect(run.actions[1]?.state).toBe("skipped");
+    expect(run.actions[2]?.state).toBe("succeeded");
+    expect(h.fake.prompts.map(p => p.text)).toEqual(["prompt 2"]);
+  });
+
+  test("manual run emits the four frames in order", async () => {
+    const h = harness();
+    h.store.upsertRoutine(routine([action("act-0", "single prompt")]));
+    const frames: Array<{ t: string }> = [];
+    h.scheduler.onProgress((frame: { t: string }) => frames.push(frame));
+
+    await h.scheduler.runNow("rtn_fanout", h.actor);
+
+    expect(frames.map(f => f.t)).toEqual([
+      "routine_run_started",
+      "routine_action_started",
+      "routine_action_finished",
+      "routine_run_finished",
+    ]);
+  });
+
+  test("a routine-created session's summary carries origin", async () => {
+    const h = harness();
+    h.store.upsertRoutine(routine([action("act-0", "prompt")]));
+    const run = await h.scheduler.runNow("rtn_fanout", h.actor);
+    const firstAction = run.actions[0];
+    expect(firstAction).toBeDefined();
+    const sessionId = firstAction?.sessionId;
+    expect(sessionId).toBeDefined();
+    const origins = h.store.listRoutineSessionOrigins();
+    const origin = origins.get(sessionId ?? "");
+    expect(origin).toEqual({
+      kind: "routine",
+      routineId: "rtn_fanout",
+      routineName: "Fan out",
+      runId: run.id,
+      actionIndex: 0,
+    });
+  });
+});

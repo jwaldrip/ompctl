@@ -1,70 +1,49 @@
 /**
  * One agent's config: what this session offers and what it runs now.
  *
- * The daemon serves this over HTTP (`GET` and `POST` on
- * `/v1/agents/:id/config`), which fixes two honest limits the screen states
- * rather than hides:
+ * Config reads and writes ride the daemon's websocket directly, through
+ * `agent_config_read` and `agent_config_write` frames answered by
+ * `agent_config` events. One transport carries every pairing: direct and hub
+ * connections both speak the socket, so a device paired over the relay
+ * configures a session without needing HTTP routes or CORS headers. The
+ * pairing token rides the socket handshake; it never leaves this device as
+ * an HTTP bearer header.
  *
- *  - The hub tunnels exactly one request shape today, a webhook fire, and no
- *    tunnel is wired for `/v1/agents/:id/config`, so from behind the relay
- *    these routes are unreachable. Generalising that tunnel is the thing not
- *    being done: a proxied config read would carry this device's bearer token
- *    through the hub, making the hub a credential path rather than a carrier
- *    of opaque sealed traffic. The screen says so instead of guessing at a
- *    root, the same fail-closed rule Cowork's fetches follow.
- *  - The POST changes exactly one option, the session mode, and the daemon
- *    validates the value against that option's own choices. Every other
- *    option, the model included, reads back its live current value while its
- *    choices carry the reason they cannot be set from here, because a control
- *    that vanishes teaches the operator the feature does not exist.
+ * Every option the daemon advertises (mode, model, thinking) renders as a
+ * picker. The model picker includes a filter field so an operator can find
+ * a model without scrolling through hundreds of choices.
  *
  * No optimistic updates anywhere: the rows show what the daemon last
- * confirmed, a pending marker while a POST is out, and the daemon's own
- * words when it refuses. A wrong model label on a phone is worse than a
- * slow one.
+ * confirmed, a pending marker while a write is in flight, and the daemon's
+ * own words beside the option when it refuses. A wrong model label on a
+ * phone is worse than a slow one.
  */
 
-import type { AgentId } from "@ompd/core/contracts";
+import type { AgentConfigChoice, AgentConfigOption, AgentId } from "@ompd/core/contracts";
 import { SCOPE_PROMPT, SCOPE_READ } from "@ompd/core/contracts";
-import { type JSX, useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import type { AgentConfigEvent, ClientErrorEvent } from "@ompd/core/ompd-client";
+import { type JSX, useCallback, useEffect, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { brand, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
-import { restRoot } from "../platform/rest-root.ts";
 
-/**
- * The one option the daemon's POST accepts. Mirrors the gateway's
- * `MODE_OPTION_ID`, which the app cannot import across the daemon's package
- * edge; if the route ever grows a field for another option, this is the
- * single place that learns it.
- */
-const SETTABLE_OPTION_ID = "mode";
+export type ConfigChoice = AgentConfigChoice;
+export type ConfigOption = AgentConfigOption;
 
-/** One choice inside an option, as the daemon reports it. Mirrors the daemon's `SessionConfigChoice` behind its package edge. */
-interface ConfigChoice {
-  value: string;
-  name: string;
-  description?: string;
-}
-
-/** One config option, as `GET /v1/agents/:id/config` reports it. Mirrors the daemon's `SessionConfigOption`. */
-interface ConfigOption {
-  id: string;
-  name: string;
-  /** Groups related options, e.g. `mode` or `model`. */
-  category: string;
-  currentValue: string;
-  options: ConfigChoice[];
+/** The slice of the console's client this screen rides; `OmpdClient` satisfies it as is. */
+export interface AgentConfigClient {
+  readAgentConfig(agentId: AgentId): void;
+  writeAgentConfig(agentId: AgentId, optionId: string, value: string): void;
+  on(event: "agent_config", listener: (event: AgentConfigEvent) => void): () => void;
+  on(event: "error", listener: (event: ClientErrorEvent) => void): () => void;
 }
 
 /**
- * Groups options by category, the model first. The model is what the operator
- * came to check, so it leads; the mode, the one option this route can set,
- * follows; anything else keeps its wire order behind them. A stable sort, so
- * equal ranks never shuffle what the daemon sent.
+ * Groups options by category: the model first, then the mode, then thinking,
+ * then anything else keeping wire order. A stable sort.
  */
 function groupByCategory(options: readonly ConfigOption[]): Array<{ category: string; options: ConfigOption[] }> {
   const groups: Array<{ category: string; options: ConfigOption[] }> = [];
@@ -76,107 +55,60 @@ function groupByCategory(options: readonly ConfigOption[]): Array<{ category: st
       existing.options.push(option);
     }
   }
-  const rank = (category: string): number => (category === "model" ? 0 : category === SETTABLE_OPTION_ID ? 1 : 2);
+  const rank = (category: string): number =>
+    category === "model"
+      ? 0
+      : category === "mode"
+        ? 1
+        : category === "thought_level" || category === "thinking"
+          ? 2
+          : 3;
   return groups.toSorted((a, b) => rank(a.category) - rank(b.category));
 }
 
-/**
- * Read one config body off the wire, or say it is not one. The daemon builds
- * this shape itself, but a daemon this app has not met yet might not, and a
- * screen that rendered a half-parsed option would show controls that lie
- * about what they can do.
- */
-function parseConfig(raw: unknown): ConfigOption[] | null {
-  if (raw === null || typeof raw !== "object") return null;
-  const body = raw as { configOptions?: unknown };
-  if (!Array.isArray(body.configOptions)) return null;
-  const options: ConfigOption[] = [];
-  for (const entry of body.configOptions) {
-    if (entry === null || typeof entry !== "object") return null;
-    const option = entry as Record<string, unknown>;
-    if (
-      typeof option.id !== "string" ||
-      typeof option.name !== "string" ||
-      typeof option.category !== "string" ||
-      typeof option.currentValue !== "string" ||
-      !Array.isArray(option.options)
-    ) {
-      return null;
-    }
-    const choices: ConfigChoice[] = [];
-    for (const rawChoice of option.options) {
-      if (rawChoice === null || typeof rawChoice !== "object") return null;
-      const choice = rawChoice as Record<string, unknown>;
-      if (typeof choice.value !== "string" || typeof choice.name !== "string") return null;
-      choices.push({
-        value: choice.value,
-        name: choice.name,
-        description: typeof choice.description === "string" ? choice.description : undefined,
-      });
-    }
-    options.push({
-      id: option.id,
-      name: option.name,
-      category: option.category,
-      currentValue: option.currentValue,
-      options: choices,
-    });
-  }
-  return options;
-}
-
-/** The daemon's own `error` code, when its refusal carried one. */
-async function errorCode(response: Response): Promise<string | null> {
-  try {
-    const body = (await response.json()) as { error?: unknown };
-    return typeof body.error === "string" ? body.error : null;
-  } catch {
-    return null;
-  }
+/** A wire category id (`thought_level`) as the words an operator reads (`thought level`). */
+function categoryLabel(category: string): string {
+  return category.replace(/[_-]+/g, " ");
 }
 
 /** Cause and remedy for a refused read, in the operator's words rather than the wire's. */
-function describeLoadRefusal(status: number): string {
-  if (status === 403) {
+function describeLoadRefusal(code: string | undefined, message?: string): string {
+  if (code === "unauthorized" || code === "forbidden") {
     return "This device's pairing lacks the read scope, so the daemon will not serve this screen. Pair it again with read to configure sessions from here.";
   }
-  if (status === 404) {
+  if (code === "unknown_agent") {
     return "The daemon no longer knows this agent. Close this screen and reopen the session.";
   }
-  if (status === 409) {
+  if (code === "no_session") {
     return "This agent has no live session behind it, so there is no config to read.";
   }
-  if (status === 503) {
+  if (code === "config_unavailable") {
     return "The daemon has no config surface for this session right now. Retry once it has one.";
   }
-  return `The daemon refused to read the config (HTTP ${status}).`;
+  if (message !== undefined && message.length > 0) {
+    return message;
+  }
+  return "The daemon refused to read the config.";
 }
 
 /** Cause and remedy for a refused change, same rule as the read. */
-function describePostRefusal(status: number, code: string | null): string {
-  if (status === 403) {
-    return "This device's pairing lacks the prompt scope, so the daemon refuses to change this session's mode. Pair it again with prompt to set it from here.";
+function describePostRefusal(code: string | null | undefined, message: string): string {
+  if (code === "unauthorized") {
+    return "This device's pairing lacks the prompt scope, so the daemon refuses to change this session's configuration. Pair it again with prompt to set it from here.";
   }
-  if (code === "unknown_mode") {
-    return "That mode is not one this session offers. The list changed under this screen; reload it and pick again.";
+  if (code === "unknown_mode" || code === "unknown_option" || code === "unknown_value") {
+    return "That choice is not one this session offers. The list changed under this screen; reload it and pick again.";
   }
-  if (status === 404) {
-    return "The daemon no longer knows this agent, so the mode was not changed.";
+  if (code === "unknown_agent") {
+    return "The daemon no longer knows this agent, so the setting was not changed.";
   }
-  if (status === 409) {
-    return "This agent has no live session behind it, so the mode was not changed.";
+  if (code === "no_session") {
+    return "This agent has no live session behind it, so the setting was not changed.";
   }
-  if (status === 503) {
-    return "The daemon has no config surface for this session right now, so the mode was not changed.";
+  if (code === "config_unavailable") {
+    return "The daemon has no config surface for this session right now, so the setting was not changed.";
   }
-  if (status === 502) {
-    return code === null ? "The agent refused to change its mode." : `The agent refused to change its mode: ${code}.`;
-  }
-  return `The daemon refused with HTTP ${status}${code === null ? "" : ` (${code})`}; the mode was not changed.`;
-}
-
-function describeCause(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
+  return message;
 }
 
 type Phase = { kind: "loading" } | { kind: "refused"; reason: string } | { kind: "ready"; options: ConfigOption[] };
@@ -194,6 +126,11 @@ export interface AgentConfigScreenProps {
    * have its controls vanish against a daemon that would allow them.
    */
   grantedScopes?: readonly string[];
+  /**
+   * The console's socket client, so this screen opens no second link: the
+   * frames it needs ride the one the session already holds.
+   */
+  client: AgentConfigClient;
   onBack: () => void;
 }
 
@@ -204,117 +141,95 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
   const canRead = effectiveScopes === undefined ? true : effectiveScopes.includes(SCOPE_READ);
   const canSet = effectiveScopes === undefined ? true : effectiveScopes.includes(SCOPE_PROMPT);
 
-  // The config routes are plain REST on the socket url's origin, and only a
-  // direct pairing has one: the hub carries no tunnel for these routes, so
-  // this fails closed rather than guessing at a root.
-  const root = connection.transport === "direct" ? restRoot(connection.url) : null;
-  const unreachable =
-    connection.transport === "hub"
-      ? "Config is served by the daemon's own HTTP routes, and this pairing reaches the daemon through the hub, which carries no route for them. Pair this device directly, on the daemon's network, to configure a session."
-      : root === null
-        ? "This pairing's url is not a socket address, so there is no HTTP root to read the daemon's config from."
-        : canRead
-          ? null
-          : "This device's pairing holds no read scope, so the daemon will not serve this screen its config. Pair it again with read to configure a session from here.";
+  const unreachable = canRead
+    ? null
+    : "This device's pairing holds no read scope, so the daemon will not serve this screen its config. Pair it again with read to configure a session from here.";
 
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
-  /** The choice value a POST is carrying, null when none is out. */
-  const [pending, setPending] = useState<string | null>(null);
+  /** The option and choice value a write is carrying, null when none is out. */
+  const [pending, setPending] = useState<{ optionId: string; value: string } | null>(null);
   const [postRefusal, setPostRefusal] = useState<string | null>(null);
-  /** The last attempted change, so its retry re-sends the same body. */
-  const [lastAttempt, setLastAttempt] = useState<{ value: string; name: string } | null>(null);
+  const [optionErrors, setOptionErrors] = useState<Record<string, string>>({});
+  const [lastAttempt, setLastAttempt] = useState<{ optionId: string; value: string; name: string } | null>(null);
 
-  // Answers are matched to the ask that produced them. A retry or a unmount
-  // between request and response would otherwise let a slow refusal clobber
-  // the state a newer answer already replaced.
-  const loadSeq = useRef(0);
-  const postSeq = useRef(0);
+  const client = props.client;
 
-  const load = useCallback((): void => {
-    if (root === null || !canRead) return;
-    loadSeq.current += 1;
-    const seq = loadSeq.current;
+  const load = useCallback(() => {
+    if (!canRead) return;
     setPhase({ kind: "loading" });
-    void (async () => {
-      try {
-        const response = await fetch(`${root}/v1/agents/${agentId}/config`, {
-          headers: { Authorization: `Bearer ${connection.token}` },
-        });
-        if (!response.ok) {
-          if (seq !== loadSeq.current) return;
-          setPhase({ kind: "refused", reason: describeLoadRefusal(response.status) });
-          return;
-        }
-        const options = parseConfig(await response.json());
-        if (seq !== loadSeq.current) return;
-        if (options === null) {
-          setPhase({ kind: "refused", reason: "The daemon's answer was not a config this screen can read." });
-          return;
-        }
-        setPhase({ kind: "ready", options });
-      } catch (cause) {
-        if (seq !== loadSeq.current) return;
-        setPhase({ kind: "refused", reason: `The config could not be read: ${describeCause(cause)}` });
-      }
-    })();
-  }, [root, canRead, agentId, connection.token]);
+    client.readAgentConfig(agentId);
+  }, [agentId, canRead, client]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const choose = useCallback(
-    (value: string, name: string): void => {
-      if (root === null || !canRead || !canSet) return;
-      if (pending !== null || phase.kind !== "ready") return;
-      const mode = phase.options.find(option => option.id === SETTABLE_OPTION_ID);
-      // The active row is already the daemon's answer; re-sending it would be
-      // a POST that cannot change anything but can still fail.
-      if (mode === undefined || mode.currentValue === value) return;
-
-      postSeq.current += 1;
-      const seq = postSeq.current;
-      setPending(value);
-      setLastAttempt({ value, name });
+  useEffect(() => {
+    const unsubConfig = client.on("agent_config", event => {
+      if (event.agentId !== agentId) return;
+      setPhase({ kind: "ready", options: event.configOptions });
+      setPending(null);
       setPostRefusal(null);
-      void (async () => {
-        try {
-          const response = await fetch(`${root}/v1/agents/${agentId}/config`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${connection.token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ modeId: value }),
-          });
-          if (!response.ok) {
-            const code = await errorCode(response);
-            if (seq !== postSeq.current) return;
-            setPostRefusal(describePostRefusal(response.status, code));
-            setPending(null);
-            return;
-          }
-          const options = parseConfig(await response.json());
-          if (seq !== postSeq.current) return;
-          setPending(null);
-          if (options === null) {
-            setPostRefusal(
-              "The daemon changed the mode but its answer was not a config this screen can read. Reload it.",
-            );
-            return;
-          }
-          setPhase({ kind: "ready", options });
-        } catch (cause) {
-          if (seq !== postSeq.current) return;
-          setPostRefusal(`The mode was not changed: ${describeCause(cause)}`);
-          setPending(null);
+      setOptionErrors({});
+    });
+
+    const unsubError = client.on("error", event => {
+      if (event.agentId !== undefined && event.agentId !== agentId) return;
+
+      setPhase(current => {
+        if (current.kind === "loading") {
+          return {
+            kind: "refused",
+            reason: describeLoadRefusal(event.code, event.message),
+          };
         }
-      })();
+        return current;
+      });
+
+      setPending(currentPending => {
+        if (currentPending !== null) {
+          const refused = describePostRefusal(event.code, event.message);
+          setPostRefusal(refused);
+          setOptionErrors(prev => ({
+            ...prev,
+            [currentPending.optionId]: event.message,
+          }));
+        }
+        return null;
+      });
+    });
+
+    return () => {
+      unsubConfig();
+      unsubError();
+    };
+  }, [agentId, client]);
+
+  const choose = useCallback(
+    (optionId: string, value: string, name: string): void => {
+      if (!canRead || !canSet) return;
+      if (pending !== null || phase.kind !== "ready") return;
+      const option = phase.options.find(opt => opt.id === optionId);
+      if (option === undefined || option.currentValue === value) return;
+
+      setPending({ optionId, value });
+      setLastAttempt({ optionId, value, name });
+      setPostRefusal(null);
+      setOptionErrors(prev => {
+        const next = { ...prev };
+        delete next[optionId];
+        return next;
+      });
+
+      client.writeAgentConfig(agentId, optionId, value);
     },
-    [root, canRead, canSet, pending, phase, agentId, connection.token],
+    [agentId, canRead, canSet, client, pending, phase],
   );
 
-  const retryLast = useCallback((): void => {
+  const retryLast = useCallback(() => {
     if (lastAttempt === null) return;
-    choose(lastAttempt.value, lastAttempt.name);
-  }, [lastAttempt, choose]);
+    choose(lastAttempt.optionId, lastAttempt.value, lastAttempt.name);
+  }, [choose, lastAttempt]);
 
   return (
     <SafeScreen edges={{ top: true, bottom: false, left: true, right: true }} testID="agent-config">
@@ -336,11 +251,10 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
             {props.agentName ?? "Session config"}
           </Title>
           <Label color={ink.muted} numberOfLines={1}>
-            Mode and model
+            Mode, model and thinking
           </Label>
         </View>
       </View>
-
       <ScrollView contentContainerStyle={styles.body}>
         {unreachable !== null ? (
           <View style={styles.state} testID="agent-config-unreachable">
@@ -353,7 +267,7 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
           </View>
         ) : phase.kind === "refused" ? (
           <View style={styles.state} testID="agent-config-load-failure">
-            <Glyph name="warning" size={16} color={signal.oxide} />
+            <Glyph name="warning" size={16} color={signal.failed} />
             <Label color={ink.bright}>{phase.reason}</Label>
             <Pressable
               testID="agent-config-load-retry"
@@ -383,13 +297,14 @@ export function AgentConfigScreen(props: AgentConfigScreenProps): JSX.Element {
             )}
             {groupByCategory(phase.options).map(group => (
               <View key={group.category} style={styles.group} testID={`agent-config-group-${group.category}`}>
-                <Kicker color={ink.muted}>{group.category}</Kicker>
+                <Kicker color={ink.muted}>{categoryLabel(group.category)}</Kicker>
                 {group.options.map(option => (
                   <ConfigOptionBlock
                     key={option.id}
                     canSet={canSet}
                     option={option}
                     pending={pending}
+                    error={optionErrors[option.id]}
                     onChoose={choose}
                   />
                 ))}
@@ -411,22 +326,32 @@ function ConfigOptionBlock({
   option,
   canSet,
   pending,
+  error,
   onChoose,
 }: {
   option: ConfigOption;
   canSet: boolean;
-  pending: string | null;
-  onChoose: (value: string, name: string) => void;
+  pending: { optionId: string; value: string } | null;
+  error?: string;
+  onChoose: (optionId: string, value: string, name: string) => void;
 }): JSX.Element {
-  const settable = option.id === SETTABLE_OPTION_ID;
+  const [filter, setFilter] = useState("");
   const current = option.options.find(choice => choice.value === option.currentValue) ?? null;
 
   let reason: string | null = null;
-  if (!settable) {
-    reason = "This remote changes the session mode only. Set this from the agent itself.";
-  } else if (!canSet) {
-    reason = "Changing the mode needs the prompt scope, which this device's pairing does not hold.";
+  if (!canSet) {
+    reason = "Changing this setting needs the prompt scope, which this device's pairing does not hold.";
   }
+
+  const normalizedFilter = filter.trim().toLowerCase();
+  const visibleChoices =
+    option.id === "model" && normalizedFilter.length > 0
+      ? option.options.filter(
+          choice =>
+            choice.name.toLowerCase().includes(normalizedFilter) ||
+            choice.value.toLowerCase().includes(normalizedFilter),
+        )
+      : option.options;
 
   return (
     <View style={styles.option} testID={`agent-config-option-${option.id}`}>
@@ -434,12 +359,23 @@ function ConfigOptionBlock({
         <Title numberOfLines={1}>{option.name}</Title>
         <Data color={ink.muted}>{current?.name ?? option.currentValue}</Data>
       </View>
-      {option.options.map(choice => {
+      {option.id === "model" ? (
+        <TextInput
+          testID="agent-config-filter-model"
+          accessibilityLabel="Filter models"
+          placeholder="Filter models"
+          placeholderTextColor={ink.faint}
+          value={filter}
+          onChangeText={setFilter}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={styles.filterInput}
+        />
+      ) : null}
+      {visibleChoices.map(choice => {
         const active = choice.value === option.currentValue;
-        // Scoped to the settable option: a value that happens to match on
-        // another option's row is a coincidence of strings, not this change.
-        const applying = settable && pending !== null && choice.value === pending;
-        const enabled = settable && canSet && pending === null && !active;
+        const applying = pending !== null && pending.optionId === option.id && pending.value === choice.value;
+        const enabled = canSet && pending === null && !active;
         return (
           <Pressable
             key={choice.value}
@@ -449,7 +385,7 @@ function ConfigOptionBlock({
             accessibilityState={{ disabled: !enabled, selected: active }}
             disabled={!enabled}
             onPress={() => {
-              onChoose(choice.value, choice.name);
+              onChoose(option.id, choice.value, choice.name);
             }}
             style={({ pressed }) => [styles.choice, pressed && enabled && { backgroundColor: ground.active }]}
           >
@@ -459,24 +395,30 @@ function ConfigOptionBlock({
             </View>
             {active ? (
               <View style={styles.marker}>
-                <Glyph name="allow" size={12} color={ink.bright} />
-                <Kicker color={ink.bright} testID={`agent-config-current-${option.id}`}>
+                <Glyph name="allow" size={12} color={brand.azure} />
+                <Kicker color={brand.azure} testID={`agent-config-current-${option.id}`}>
                   Current
                 </Kicker>
               </View>
             ) : applying ? (
-              <Kicker color={ink.muted} testID="agent-config-pending">
+              <Kicker color={signal.working} testID="agent-config-pending">
                 Applying
               </Kicker>
             ) : null}
           </Pressable>
         );
       })}
-      {reason === null ? null : (
+      {error !== undefined ? (
+        <View testID={`agent-config-option-${option.id}-error`}>
+          <Label color={signal.failed} style={styles.reason} testID={`agent-config-option-${option.id}-reason`}>
+            {error}
+          </Label>
+        </View>
+      ) : reason !== null ? (
         <Label color={ink.muted} style={styles.reason} testID={`agent-config-option-${option.id}-reason`}>
           {reason}
         </Label>
-      )}
+      ) : null}
     </View>
   );
 }
@@ -489,11 +431,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.step,
     paddingVertical: space.snug,
     backgroundColor: ground.surface,
-    borderBottomWidth: stroke.heavy,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
   },
-  // Labeled on purpose, the same rule the session header's back follows: an
-  // icon alone under a thumb is how an operator ends up somewhere they did
-  // not mean to go.
   back: {
     minHeight: TOUCH_TARGET,
     minWidth: TOUCH_TARGET,
@@ -502,16 +442,36 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.tight,
   },
-  ident: { flex: 1, gap: space.hair },
-  body: { padding: space.step, gap: space.step },
-  group: { gap: space.snug },
-  option: { borderTopWidth: stroke.hair, borderTopColor: ground.line },
+  ident: {
+    flex: 1,
+    gap: space.hair,
+  },
+  body: {
+    padding: space.step,
+    gap: space.step,
+  },
+  group: {
+    gap: space.snug,
+  },
+  option: {
+    borderTopWidth: stroke.hair,
+    borderTopColor: ground.line,
+  },
   optionHead: {
     flexDirection: "row",
     alignItems: "baseline",
     justifyContent: "space-between",
     gap: space.snug,
     paddingVertical: space.snug,
+  },
+  filterInput: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.step,
+    color: ink.bright,
+    backgroundColor: ground.surface,
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+    marginBottom: space.snug,
   },
   choice: {
     flexDirection: "row",
@@ -520,13 +480,25 @@ const styles = StyleSheet.create({
     minHeight: TOUCH_TARGET,
     paddingVertical: space.tight,
   },
-  choiceText: { flex: 1, gap: space.hair },
-  marker: { flexDirection: "row", alignItems: "center", gap: space.tight },
-  reason: { paddingVertical: space.tight },
-  state: { padding: space.wide, gap: space.snug },
+  choiceText: {
+    flex: 1,
+    gap: space.hair,
+  },
+  marker: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
+  reason: {
+    paddingVertical: space.tight,
+  },
+  state: {
+    padding: space.wide,
+    gap: space.snug,
+  },
   banner: {
     borderWidth: stroke.hair,
-    borderColor: signal.oxide,
+    borderColor: signal.failed,
     padding: space.step,
     gap: space.snug,
   },

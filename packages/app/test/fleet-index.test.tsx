@@ -32,6 +32,7 @@ import {
   emptyConsole,
   loadFor,
   openSessionTarget,
+  sessionFor,
   tuiSessionFor,
 } from "../src/console/state.ts";
 import type { ConsoleActions } from "../src/console/useConsole.ts";
@@ -138,9 +139,11 @@ describe("an index with zero agents renders the fleet", () => {
     expect(html).toContain('data-testid="session-row-s-b1"');
   });
 
-  test("the rows are grouped under both directories", () => {
-    expect(html).toContain(`data-testid="group-header-${DIR_A}"`);
-    expect(html).toContain(`data-testid="group-header-${DIR_B}"`);
+  test("the rows are ungrouped by default and grouped when enabled", () => {
+    expect(html).not.toContain(`data-testid="group-header-${DIR_A}"`);
+    const groupedHtml = renderFleet({ ...browser, grouped: true });
+    expect(groupedHtml).toContain(`data-testid="group-header-${DIR_A}"`);
+    expect(groupedHtml).toContain(`data-testid="group-header-${DIR_B}"`);
   });
 
   test("the empty state does not appear while the index holds sessions", () => {
@@ -338,6 +341,7 @@ class CannedClient {
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly tails: Array<{ sessionId: string; limit: number | undefined; cursor?: number }> = [];
   readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
+  readonly statsRequests: string[] = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   emit(name: string, event: unknown): void {
@@ -384,6 +388,9 @@ class CannedClient {
   sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
     this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
   }
+  sessionStats(sessionId: string): void {
+    this.statsRequests.push(sessionId);
+  }
   prompt(): void {}
   cancel(): void {}
   decide(): void {}
@@ -413,7 +420,8 @@ function mountConsole(connection: Connection = CONNECTION): Mounted {
   const client = new CannedClient();
   let latest: [ConsoleState, ConsoleActions] | null = null;
   function Probe(props: { connection: Connection }): null {
-    latest = useConsole(props.connection, () => client as unknown as OmpdClient);
+    const [state, actions] = useConsole(props.connection, () => client as unknown as OmpdClient);
+    latest = [state, actions];
     return null;
   }
   const host = document.createElement("div");
@@ -503,6 +511,20 @@ describe("useConsole opens a row through its holder or a claim on the socket", (
       });
       expect(mounted.client.attached).toEqual([{ agentId: "agt_here", options: { sinceSeq: 0 } }]);
       expect(mounted.state().selected).toBe("agt_here");
+      expect(mounted.client.statsRequests).toEqual(["s-held"]);
+      act(() => {
+        mounted.client.emit("session_stats", {
+          sessionId: "s-held",
+          stats: {
+            cost: 0.042,
+            tokens: { input: 80, output: 20, cacheRead: 0, cacheWrite: 0 },
+            cacheRate: 0,
+            calls: 1,
+            errors: 0,
+          },
+        });
+      });
+      expect(sessionFor(mounted.state(), "agt_here").usage?.costAmount).toBe(0.042);
     } finally {
       mounted.unmount();
     }

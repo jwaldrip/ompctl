@@ -31,6 +31,8 @@ import {
   promptScopeAccess,
   readScopeAccess,
   sessionDeleteNotice,
+  sessionTurnsEnded,
+  shouldRequestSessionStats,
   tuiPageToAskFor,
   tuiSessionFor,
 } from "./state.ts";
@@ -41,7 +43,13 @@ export type { WebViewTarget } from "./webview.ts";
 export interface ConsoleActions {
   select: (agentId: AgentId) => void;
   back: () => void;
-  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => boolean;
+  /**
+   * Send one prompt. With `deliverAs: "followUp"` the daemon holds it until
+   * the turn in flight ends (answered by `prompt_queued`), so the transcript
+   * gets no local echo for it: the composer's queue strip is its place until
+   * the daemon plays it as a user turn.
+   */
+  prompt: (agentId: AgentId, text: string, images?: PromptImage[], options?: { deliverAs?: "followUp" }) => boolean;
   cancel: (agentId: AgentId) => void;
   decide: (agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   decidePlan: (agentId: AgentId, requestId: string, choice: PlanReviewChoice) => void;
@@ -80,6 +88,10 @@ export interface ConsoleActions {
    * confirmation: this sends the frame, it does not ask.
    */
   deleteSession: (sessionId: string) => void;
+  /**
+   * Start a new agent session in a working directory.
+   */
+  createAgent: (request: { cwd: string; name?: string }) => void;
   /** Register this selected screen as the agent's live WebView target. */
   mountWebView: (agentId: AgentId) => void;
   /** Withdraw the selected screen's target. Safe to call after a failed mount. */
@@ -125,11 +137,17 @@ export function createOmpdClient(connection: Connection): OmpdClient {
   });
 }
 
+/**
+ * The console's state, its actions, and the one client both ride. The client
+ * is returned so a screen that needs frames the actions do not model (the
+ * composer's directory listings and queue acknowledgements) uses this link
+ * rather than opening a second one.
+ */
 export function useConsole(
   connection: Connection,
   createClient: (connection: Connection) => OmpdClient = createOmpdClient,
   voice: MemoVoice = deviceMemoVoice,
-): [ConsoleState, ConsoleActions] {
+): [ConsoleState, ConsoleActions, OmpdClient] {
   const [state, dispatch] = useReducer(apply, connection.scopes, emptyConsole);
 
   // The client outlives every render and must never be rebuilt by one: a new
@@ -208,6 +226,21 @@ export function useConsole(
     clearTimeout(timer);
     loadDeadlines.current.delete(subject);
   }, []);
+
+  const lastStatsRequest = useRef(new Map<string, number>());
+
+  const requestStats = useCallback(
+    (sessionId: string, agentId?: AgentId): void => {
+      if (stateRef.current.statsUnsupported) return;
+      const last = lastStatsRequest.current.get(sessionId);
+      const now = Date.now();
+      if (!shouldRequestSessionStats(last, now)) return;
+      lastStatsRequest.current.set(sessionId, now);
+      dispatch({ t: "stats_request", sessionId, agentId, at: now });
+      client.sessionStats(sessionId);
+    },
+    [client],
+  );
 
   const requestHistory = useCallback(
     (agentId: AgentId, sessionId: string, before?: number): void => {
@@ -292,8 +325,12 @@ export function useConsole(
       if (agent?.acpSessionId !== undefined && fetchingHistory) {
         requestHistory(agentId, agent.acpSessionId);
       }
+      const statsSessionId = agent?.acpSessionId ?? current.sessionIds.get(agentId);
+      if (statsSessionId !== undefined) {
+        requestStats(statsSessionId, agentId);
+      }
     },
-    [client, leaveCollab, requestHistory],
+    [client, leaveCollab, requestHistory, requestStats],
   );
 
   /**
@@ -374,6 +411,10 @@ export function useConsole(
         client.listSessions({ includeArchived: true });
       }),
       client.on("agents", event => {
+        const endedSessionIds = sessionTurnsEnded(stateRef.current.agents, event.agents, stateRef.current.sessionIds);
+        for (const sessionId of endedSessionIds) {
+          requestStats(sessionId);
+        }
         dispatch({ t: "agents", event });
       }),
       client.on("session_opened", event => {
@@ -393,6 +434,20 @@ export function useConsole(
         dispatch({ t: "select", agentId: event.agentId, awaiting: true });
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
+        requestStats(event.sessionId, event.agentId);
+      }),
+      client.on("agent_created", event => {
+        const current = stateRef.current;
+        if (current.selected !== null && current.selected !== event.agent.id) {
+          client.detach?.(current.selected);
+        }
+        client.selectTerminalSession?.(null);
+        dispatch({ t: "select", agentId: event.agent.id, awaiting: true });
+        client.attach(event.agent.id, stateRef.current.watermarks.has(event.agent.id) ? {} : { sinceSeq: 0 });
+        if (event.agent.acpSessionId !== undefined) {
+          requestHistory(event.agent.id, event.agent.acpSessionId);
+          requestStats(event.agent.acpSessionId, event.agent.id);
+        }
       }),
       client.on("collab_opened", event => {
         // The join's answer lands exactly like a resume's: it may arrive
@@ -415,6 +470,7 @@ export function useConsole(
         if (fetchingHistory) {
           requestHistory(event.agentId, event.sessionId);
         }
+        requestStats(event.sessionId, event.agentId);
       }),
       client.on("sessions", event => {
         dispatch({ t: "sessions", event });
@@ -431,11 +487,17 @@ export function useConsole(
         clearLoadDeadline(event.agentId);
         dispatch({ t: "session_history", event });
       }),
+      client.on("session_stats", event => {
+        dispatch({ t: "session_stats", event });
+      }),
       client.on("update", event => {
         dispatch({ t: "update", event });
       }),
       client.on("approval", event => {
         dispatch({ t: "approval", event });
+      }),
+      client.on("approval_settled", event => {
+        dispatch({ t: "approval_settled", event });
       }),
       client.on("plan_review", event => {
         dispatch({ t: "plan_review", event });
@@ -464,6 +526,7 @@ export function useConsole(
           // to no change, so the wait survives the fallback rather than
           // restarting under it.
           dispatch({ t: "tui_select", sessionId: event.sessionId, awaiting: true });
+          requestStats(event.sessionId);
           client.sessionTail(event.sessionId);
           return;
         }
@@ -514,6 +577,9 @@ export function useConsole(
           });
       }),
       client.on("tui_activity", event => {
+        if (event.kind === "turn_end") {
+          requestStats(event.sessionId);
+        }
         dispatch({ t: "tui_activity", event });
       }),
       client.on("session_tail", event => {
@@ -555,7 +621,17 @@ export function useConsole(
       loadDeadlines.current.clear();
       client.close();
     };
-  }, [askOlderTui, clearLoadDeadline, client, leaveCollab, reopenStalled, requestHistory, settleWebViewAction, voice]);
+  }, [
+    askOlderTui,
+    clearLoadDeadline,
+    client,
+    leaveCollab,
+    reopenStalled,
+    requestHistory,
+    requestStats,
+    settleWebViewAction,
+    voice,
+  ]);
 
   // Phones suspend timers in the background, so a pending backoff may be hours
   // stale by the time the app is looked at again.
@@ -583,7 +659,7 @@ export function useConsole(
         client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: null });
       },
-      prompt(agentId, text, images) {
+      prompt(agentId, text, images, options) {
         // The three-way rule, the same one the microphone follows: a pairing
         // that provably holds no prompt scope gets the reason stated rather
         // than a frame the daemon must refuse, and an unknown one sends
@@ -610,8 +686,10 @@ export function useConsole(
           });
           return false;
         }
-        client.prompt(agentId, text, images);
-        dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
+        client.prompt(agentId, text, images, options);
+        if (options?.deliverAs === undefined) {
+          dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
+        }
         return true;
       },
       cancel(agentId) {
@@ -664,6 +742,7 @@ export function useConsole(
         // (see the error handler), so no omp build is left without a way in.
         switch (target.kind) {
           case "agent":
+            requestStats(target.sessionId, target.agentId);
             selectAgent(target.agentId);
             return;
           case "live-tui": {
@@ -682,6 +761,7 @@ export function useConsole(
             // below -- lands on a pane that is already this session's rather
             // than on the session the operator was reading a moment ago.
             dispatch({ t: "tui_select", sessionId: target.sessionId, awaiting: true });
+            requestStats(target.sessionId);
             // Watching spends the read scope, so a pairing that provably
             // lacks it gets the reason stated rather than a frame the daemon
             // must refuse; an unknown one asks optimistically, and the
@@ -735,6 +815,7 @@ export function useConsole(
       retryTui(sessionId) {
         dispatch({ t: "load_rearm", subject: sessionId });
         const tui = tuiSessionFor(stateRef.current, sessionId);
+        requestStats(sessionId);
         if (tui.refusalKind !== null) {
           client.sessionTail(sessionId);
         } else {
@@ -756,6 +837,18 @@ export function useConsole(
           return;
         }
         client.deleteSessions([sessionId]);
+      },
+      createAgent(request) {
+        const name = request.name || request.cwd.split("/").filter(Boolean).pop() || "session";
+        const anyClient = client as unknown as {
+          createAgent?: (req: { name: string; cwd: string }) => void;
+          createSession?: (cwd: string, name?: string) => void;
+        };
+        if (typeof anyClient.createAgent === "function") {
+          anyClient.createAgent({ name, cwd: request.cwd });
+        } else if (typeof anyClient.createSession === "function") {
+          anyClient.createSession(request.cwd, name);
+        }
       },
       startVoice(agentId) {
         const current = stateRef.current;
@@ -830,11 +923,12 @@ export function useConsole(
       connection.scopes,
       leaveCollab,
       requestHistory,
+      requestStats,
       settleWebViewAction,
       selectAgent,
       voice,
     ],
   );
 
-  return [state, actions];
+  return [state, actions, client];
 }

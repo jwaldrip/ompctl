@@ -20,10 +20,11 @@ import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/toke
 export interface TaskDetailProps {
   task: Task;
   onOpenSession: (agentId: string) => void;
+  onRetry?: () => void;
   now?: number;
 }
 
-export function TaskDetail({ task, onOpenSession, now }: TaskDetailProps): JSX.Element {
+export function TaskDetail({ task, onOpenSession, onRetry, now }: TaskDetailProps): JSX.Element {
   const tone = signal[TASK_STATE_SIGNALS[task.state]];
 
   return (
@@ -50,10 +51,26 @@ export function TaskDetail({ task, onOpenSession, now }: TaskDetailProps): JSX.E
       </View>
 
       {task.result !== undefined ? (
-        <View style={styles.section}>
-          <Kicker color={ink.muted}>Result</Kicker>
-          <Body color={ink.plain}>{task.result}</Body>
+        <View style={styles.section} testID={task.state === "failed" ? "task-detail-failed" : "task-detail-result"}>
+          <Kicker color={task.state === "failed" ? signal.failed : ink.muted}>
+            {task.state === "failed" ? "Failed" : "Result"}
+          </Kicker>
+          <Body color={task.state === "failed" ? signal.failed : ink.plain}>{task.result}</Body>
         </View>
+      ) : null}
+
+      {task.state === "failed" && onRetry !== undefined ? (
+        <Pressable
+          testID="task-detail-retry"
+          accessibilityRole="button"
+          accessibilityLabel="Retry this failed task"
+          onPress={onRetry}
+          style={({ pressed }) => [styles.retryAction, pressed && { backgroundColor: ground.active }]}
+        >
+          {/* Client-side resubmit: triggers the existing task creation flow with the same prompt. */}
+          <Glyph name="restore" size={13} color={signal.failed} />
+          <Label color={signal.failed}>Retry</Label>
+        </Pressable>
       ) : null}
 
       <View style={styles.meta}>
@@ -68,8 +85,8 @@ export function TaskDetail({ task, onOpenSession, now }: TaskDetailProps): JSX.E
         onPress={() => onOpenSession(task.agentId)}
         style={({ pressed }) => [styles.action, pressed && { backgroundColor: ground.active }]}
       >
-        <Glyph name="link" size={13} color={signal.sage} />
-        <Label color={signal.sage}>Open session</Label>
+        <Glyph name="link" size={13} color={signal.ready} />
+        <Label color={signal.ready}>Open session</Label>
       </Pressable>
     </ScrollView>
   );
@@ -88,7 +105,18 @@ const styles = StyleSheet.create({
     gap: space.tight,
     minHeight: TOUCH_TARGET,
     borderWidth: stroke.hair,
-    borderColor: signal.sage,
+    borderColor: signal.ready,
+    alignSelf: "flex-start",
+    paddingHorizontal: space.wide,
+  },
+  retryAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.tight,
+    minHeight: TOUCH_TARGET,
+    borderWidth: stroke.hair,
+    borderColor: signal.failed,
     alignSelf: "flex-start",
     paddingHorizontal: space.wide,
   },

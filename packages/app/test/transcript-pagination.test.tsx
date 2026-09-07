@@ -964,7 +964,7 @@ describe("the log's rhythm, as rendered", () => {
       // catches it. Measured: this line then fails with sage where muted should
       // be.
       //
-      // There was a `not.toContain(rgba(signal.sage))` here and I deleted it,
+      // There was a `not.toContain(rgba(signal.ready))` here and I deleted it,
       // because it could not be made to fail while this line passed. Every state
       // I could reach either loses muted entirely (textColor removed, so this
       // line fails first) or gains a background (a filled mode, so claim one

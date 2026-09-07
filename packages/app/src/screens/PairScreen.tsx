@@ -89,8 +89,8 @@ export function PairScreen({
 
           {notice === undefined ? null : (
             <View style={styles.notice} accessibilityLiveRegion="assertive" testID="pair-notice">
-              <Glyph name="unpair" size={12} color={signal.ochre} />
-              <Label color={signal.ochre} style={styles.noticeText}>
+              <Glyph name="unpair" size={12} color={signal.holding} />
+              <Label color={signal.holding} style={styles.noticeText}>
                 {notice}
               </Label>
             </View>
@@ -108,7 +108,7 @@ export function PairScreen({
 
           <Field label="Hub" value={raw} onChange={setRaw} testID="pair-endpoint" />
           {raw.trim().length === 0 ? null : (
-            <Label color={target === null ? signal.ochre : ink.muted} testID="pair-endpoint-kind">
+            <Label color={target === null ? signal.holding : ink.muted} testID="pair-endpoint-kind">
               {target === null
                 ? (targetRefusal ?? "Not a hub address")
                 : // A hub base and a daemon's own socket read alike, so the
@@ -124,7 +124,7 @@ export function PairScreen({
             reach and which would stop an unattended run. */}
           <Field label="Token" value={token} onChange={setToken} secure={!E2E_PLAINTEXT_TOKEN} testID="pair-token" />
           {token.trim().length === 0 || target?.transport === "direct" ? null : (
-            <Label color={credential === null ? signal.ochre : ink.muted} testID="pair-token-kind">
+            <Label color={credential === null ? signal.holding : ink.muted} testID="pair-token-kind">
               {credential === null ? "Not a device token" : `Daemon ${credential.daemonId.slice(0, 11)}...`}
             </Label>
           )}
@@ -206,9 +206,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: space.snug,
     padding: space.step,
-    backgroundColor: signalWash.ochre,
+    backgroundColor: signalWash.holding,
     borderLeftWidth: stroke.heavy,
-    borderLeftColor: signal.ochre,
+    borderLeftColor: signal.holding,
   },
   noticeText: { flex: 1 },
   field: { gap: space.tight },

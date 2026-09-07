@@ -29,6 +29,7 @@
 
 import type { ApprovalChoice, ApprovalScope } from "@ompd/core/contracts";
 import type { JSX } from "react";
+import { useEffect, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { Button, Surface } from "react-native-paper";
 import { Glyph, type GlyphName } from "../design/icons.tsx";
@@ -65,12 +66,46 @@ function decisionGlyph(name: GlyphName, color: string): ({ size }: { size: numbe
   return ({ size }) => <Glyph name={name} size={size} color={color} />;
 }
 
+function formatCountdown(deadlineAt: string, now: number): string {
+  const deadline = new Date(deadlineAt).getTime();
+  if (Number.isNaN(deadline)) return "clearance";
+  const diffMs = deadline - now;
+  const totalSeconds = Math.max(0, Math.ceil(diffMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `Times out in ${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function settledStateLabel(entry: ApprovalEntry): string {
+  if (entry.settledBy === "timeout") {
+    return "Denied: no answer in time";
+  }
+  if (entry.settledBy === "policy") {
+    return entry.decision === "allow" ? "Allowed by policy" : "Denied by policy";
+  }
+  return entry.decision === "allow" ? "allowed" : "rejected";
+}
+
 export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalCardProps): JSX.Element {
   const { ground, ink, signal, signalWash } = useOmpTheme();
   const settled = entry.decision !== null;
-  const tone = settled ? (entry.decision === "allow" ? signal.sage : signal.oxide) : signal.ochre;
+  const tone = settled ? (entry.decision === "allow" ? signal.ready : signal.failed) : signal.holding;
   const preview = describeInput(entry.input);
+  const [now, setNow] = useState(() => Date.now());
 
+  useEffect(() => {
+    if (settled || !entry.deadlineAt) return;
+    const interval = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [settled, entry.deadlineAt]);
+
+  const stateLabel = settled
+    ? settledStateLabel(entry)
+    : entry.deadlineAt
+      ? formatCountdown(entry.deadlineAt, now)
+      : "clearance";
   return (
     <Surface
       mode="flat"
@@ -79,10 +114,10 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
       style={[styles.card, { backgroundColor: ground.surface, borderColor: tone }]}
       testID={`approval-${entry.requestId}`}
     >
-      <View style={[styles.head, { backgroundColor: settled ? ground.raised : signalWash.ochre }]}>
+      <View style={[styles.head, { backgroundColor: settled ? ground.raised : signalWash.holding }]}>
         <Glyph name="clearance" size={13} color={tone} />
         <Kicker color={tone} testID={`approval-state-${entry.requestId}`}>
-          {settled ? (entry.decision === "allow" ? "allowed" : "rejected") : "clearance"}
+          {stateLabel}
         </Kicker>
         <Label color={ink.muted} numberOfLines={1} style={styles.tool}>
           {entry.tool}
@@ -112,7 +147,7 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
             accessibilityLabel="Allow"
             style={styles.decision}
             contentStyle={styles.decisionContent}
-            buttonColor={signal.sage}
+            buttonColor={signal.ready}
             textColor={ink.inverse}
             onPress={() => {
               onDecide(entry.requestId, "allow", "once");
@@ -123,12 +158,12 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
           <Button
             compact
             mode="outlined"
-            icon={decisionGlyph("deny", signal.oxide)}
+            icon={decisionGlyph("deny", signal.failed)}
             testID={`approval-deny-${entry.requestId}`}
             accessibilityLabel="Reject"
-            style={[styles.decision, { borderColor: signal.oxide }]}
+            style={[styles.decision, { borderColor: signal.failed }]}
             contentStyle={styles.decisionContent}
-            textColor={signal.oxide}
+            textColor={signal.failed}
             onPress={() => {
               onDecide(entry.requestId, "deny", "once");
             }}

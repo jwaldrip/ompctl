@@ -24,13 +24,14 @@
 
 import "./rnw.ts";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AppendMessage, ExternalStoreAdapter } from "@assistant-ui/core";
 import { MAX_PROMPT_IMAGES, type PromptImage } from "@ompd/core/contracts";
 import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ImageAttachmentPicker, PickedAttachments } from "../src/platform/attachments.ts";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
 // Dynamic on purpose, the same reason every rendering test here does it: these
 // modules import "react-native", and a static import is hoisted above
@@ -39,7 +40,7 @@ import type { ImageAttachmentPicker, PickedAttachments } from "../src/platform/a
 const { AssistantRuntimeProvider } = await import("@assistant-ui/react-native");
 const { useOmpRuntime } = await import("../src/assistant/runtime.ts");
 const { OmpComposer } = await import("../src/assistant/OmpComposer.tsx");
-const { ground, radius, signal } = await import("../src/design/tokens.ts");
+const { brand, ground, radius, signal } = await import("../src/design/tokens.ts");
 const { rhythm } = await import("../src/design/rhythm.ts");
 const { WithOmpTheme } = await import("./theme.tsx");
 const { StyleSheet } = await import("react-native");
@@ -48,6 +49,12 @@ declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+beforeEach(() => {
+  setWindowSize(820, 1180);
+});
+afterEach(() => {
+  resetWindowSize();
+});
 
 // ---------------------------------------------------------------------------
 // The store, and the composer standing on it
@@ -427,7 +434,7 @@ describe("one filled control, three ghosts", () => {
         // fills that would make a ghost compete with send, not for the absence
         // of the property.
         expect(control).not.toContain(`background-color:${rgba(ground.active)}`);
-        expect(control).not.toContain(`background-color:${rgba(signal.sage)}`);
+        expect(control).not.toContain(`background-color:${rgba(signal.ready)}`);
       }
     } finally {
       m.unmount();
@@ -453,8 +460,8 @@ describe("one filled control, three ghosts", () => {
       act(() => {
         typeInto(m.need("composer-input"), "ready to go");
       });
-      expect(renderedStyle(m.need("composer-send"))).toContain(`background-color:${rgba(signal.sage)}`);
-      expect(renderedStyle(m.need("composer-attach"))).not.toContain(`background-color:${rgba(signal.sage)}`);
+      expect(renderedStyle(m.need("composer-send"))).toContain(`background-color:${rgba(signal.ready)}`);
+      expect(renderedStyle(m.need("composer-attach"))).not.toContain(`background-color:${rgba(signal.ready)}`);
     } finally {
       m.unmount();
     }
@@ -491,7 +498,7 @@ describe("the action is send or interrupt, and the runtime decides which", () =>
       expect(geometry).toContain(`border-top-left-radius:${radius.pill}px`);
       expect(geometry).toContain("width:44px");
       // Filled in the failure colour rather than boxed in it.
-      expect(geometry).toContain(`background-color:${rgba(signal.oxide)}`);
+      expect(geometry).toContain(`background-color:${rgba(signal.failed)}`);
       // And it really is wired to the store's cancel.
       m.press("composer-cancel");
       expect(cancels.count).toBe(1);
@@ -821,6 +828,218 @@ describe("nothing sits on this surface permanently to explain a control", () => 
     try {
       expect(m.need("session-model-label").textContent).toBe("Config");
       expect(m.need("session-open-config").getAttribute("aria-label")).toBe("Open this session's mode and model");
+    } finally {
+      m.unmount();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gaps: Slash Commands, @file, and Prompt Queue
+// ---------------------------------------------------------------------------
+
+describe("slash commands, file picker, and prompt queue", () => {
+  test("'/' shows commands from state and tap inserts command", async () => {
+    const commands = [
+      { name: "commit", description: "Create a git commit", hint: "[message]" },
+      { name: "help", description: "Show available commands", hint: "" },
+    ];
+    const m = open({}, { commands });
+    try {
+      expect(m.find("command-menu")).toBeNull();
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "/co");
+      });
+      expect(m.find("command-menu")).not.toBeNull();
+      expect(m.find("command-item-commit")).not.toBeNull();
+      expect(m.find("command-item-help")).toBeNull();
+
+      m.press("command-item-commit");
+      expect(input.value).toBe("/commit ");
+      expect(m.find("command-menu")).toBeNull();
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("'@' lists fs entries from a fixture and tap inserts relative path", async () => {
+    const fixtureListing = {
+      path: "/Users/test/repo",
+      parent: "/Users/test",
+      roots: ["/Users/test/repo"],
+      bounded: false,
+      entries: [
+        { name: "src", kind: "dir" as const },
+        { name: "package.json", kind: "file" as const },
+      ],
+    };
+    const m = open(
+      {},
+      {
+        cwd: "/Users/test/repo",
+        fsListing: fixtureListing,
+      },
+    );
+    try {
+      expect(m.find("file-picker")).toBeNull();
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "Look at @");
+      });
+      expect(m.find("file-picker")).not.toBeNull();
+      expect(m.find("file-picker-entry-package.json")).not.toBeNull();
+
+      m.press("file-picker-entry-package.json");
+      expect(input.value).toBe("Look at package.json ");
+      expect(m.find("file-picker")).toBeNull();
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a turn in flight shows Queue control with badge and separate interrupt control", () => {
+    const cancels = { count: 0 };
+    const m = open({ running: true, cancels });
+    try {
+      expect(m.find("composer-cancel")).not.toBeNull();
+      expect(m.find("composer-queue")).not.toBeNull();
+      expect(m.find("composer-queue-badge")).not.toBeNull();
+      expect(m.find("composer-send")).toBeNull();
+
+      m.press("composer-cancel");
+      expect(cancels.count).toBe(1);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("queued prompts strip lists pending prompts with remove", () => {
+    let removedId: string | null = null;
+    const m = open(
+      {},
+      {
+        queuedPrompts: [
+          { id: "q1", text: "fix the build" },
+          { id: "q2", text: "run tests" },
+        ],
+        onRemoveQueued: id => {
+          removedId = id;
+        },
+      },
+    );
+    try {
+      expect(m.find("composer-queued-strip")).not.toBeNull();
+      expect(m.need("composer-queued-item-0").textContent).toContain("fix the build");
+      expect(m.need("composer-queued-item-1").textContent).toContain("run tests");
+
+      m.press("composer-queued-remove-0");
+      expect(removedId ?? "").toBe("q1");
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("command names in the slash menu render in brand.azure", async () => {
+    const commands = [{ name: "commit", description: "Create a git commit", hint: "[message]" }];
+    const m = open({}, { commands });
+    try {
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "/");
+      });
+      expect(m.find("command-menu")).not.toBeNull();
+      const name = m.need("command-name");
+      expect(renderedStyle(name)).toContain(`color:${rgba(brand.azure)}`);
+      expect(renderedStyle(name)).not.toContain(`color:${rgba(signal.working)}`);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("out_of_roots refusal renders refusal text with path and lists known roots", async () => {
+    const refusedPath = "/private/tmp/ompctl-rel/playground";
+    const roots = ["/Users/test/repo"];
+    const listeners: Record<string, ((arg: unknown) => void)[]> = {};
+    const mockClient = {
+      listDirectory(path?: string) {
+        if (path === refusedPath) {
+          for (const cb of listeners.error ?? []) {
+            cb({
+              code: "out_of_roots",
+              message: `${refusedPath} resolves outside this daemon's browsable directories`,
+            });
+          }
+        } else if (path === "" || path === undefined) {
+          for (const cb of listeners.fs_listing ?? []) {
+            cb({
+              path: "",
+              parent: null,
+              roots,
+              entries: roots.map(r => ({ name: r, kind: "dir" as const })),
+              bounded: false,
+            });
+          }
+        }
+      },
+      on(event: string, listener: (...args: never[]) => void) {
+        listeners[event] = listeners[event] ?? [];
+        listeners[event].push(listener as (arg: unknown) => void);
+        return () => {
+          const list = listeners[event];
+          if (list) listeners[event] = list.filter(l => l !== listener);
+        };
+      },
+    };
+
+    const m = open(
+      {},
+      {
+        cwd: refusedPath,
+        client: mockClient,
+      },
+    );
+    try {
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "Look at @");
+      });
+      expect(m.find("file-picker")).not.toBeNull();
+      const pickerText = m.need("file-picker").textContent ?? "";
+      expect(pickerText).toContain("Outside this daemon's browsable directories");
+      expect(pickerText).toContain(refusedPath);
+      expect(pickerText).toContain("/Users/test/repo");
+      expect(m.find("file-picker-root-/Users/test/repo")).not.toBeNull();
+      expect(pickerText).not.toContain("No entries");
+    } finally {
+      m.unmount();
+    }
+  });
+
+  test("a genuinely empty fs listing renders 'No entries'", async () => {
+    const emptyListing = {
+      path: "/Users/test/empty-dir",
+      parent: "/Users/test",
+      roots: ["/Users/test"],
+      bounded: false,
+      entries: [],
+    };
+    const m = open(
+      {},
+      {
+        cwd: "/Users/test/empty-dir",
+        fsListing: emptyListing,
+      },
+    );
+    try {
+      const input = m.need("composer-input") as HTMLTextAreaElement;
+      act(() => {
+        typeInto(input, "Look at @");
+      });
+      expect(m.find("file-picker")).not.toBeNull();
+      const pickerText = m.need("file-picker").textContent ?? "";
+      expect(pickerText).toContain("No entries");
+      expect(pickerText).not.toContain("Outside this daemon's browsable directories");
     } finally {
       m.unmount();
     }

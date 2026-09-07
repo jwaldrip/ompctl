@@ -19,6 +19,7 @@ import {
   reduce,
   reduceAll,
   resolveApproval,
+  seedCost,
   transcriptRowKey,
 } from "../src/session/model.ts";
 
@@ -174,6 +175,36 @@ describe("locally originated state", () => {
     expect(settled.entries[0]).toMatchObject({ kind: "approval", decision: "deny" });
   });
 
+  test("a clearance carries deadlineAt and settles with settledBy attribution", () => {
+    const asked = appendApproval(EMPTY_SESSION, {
+      requestId: "req-timeout",
+      tool: "bash",
+      title: "rm -rf /",
+      input: {},
+      deadlineAt: "2026-01-01T00:02:00.000Z",
+    });
+    expect(asked.entries[0]).toMatchObject({
+      kind: "approval",
+      deadlineAt: "2026-01-01T00:02:00.000Z",
+      decision: null,
+      settledBy: null,
+    });
+
+    const timeoutSettled = resolveApproval(asked, "req-timeout", "deny", "timeout");
+    expect(timeoutSettled.entries[0]).toMatchObject({
+      kind: "approval",
+      decision: "deny",
+      settledBy: "timeout",
+    });
+
+    const policySettled = resolveApproval(asked, "req-timeout", "allow", "policy");
+    expect(policySettled.entries[0]).toMatchObject({
+      kind: "approval",
+      decision: "allow",
+      settledBy: "policy",
+    });
+  });
+
   test("the same clearance asked twice is one card", () => {
     const approval = { requestId: "req-1", tool: "shell", title: "ls", input: null };
     const once = appendApproval(EMPTY_SESSION, approval);
@@ -191,5 +222,143 @@ describe("payloads this build has never seen", () => {
   test("a malformed update does not throw", () => {
     expect(reduce(EMPTY_SESSION, null).entries[0]).toMatchObject({ kind: "unknown" });
     expect(reduce(EMPTY_SESSION, { nope: true }).entries[0]).toMatchObject({ kind: "unknown" });
+  });
+});
+
+describe("tool content and diff extraction", () => {
+  test("reducer keeps a diff item from tool call content", () => {
+    const session = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      kind: "edit",
+      title: "edit file.ts",
+      status: "completed",
+      rawOutput: {
+        content: [
+          {
+            type: "diff",
+            path: "file.ts",
+            oldText: "line1\n",
+            newText: "line1 modified\n",
+          },
+        ],
+      },
+    });
+    const entry = session.entries[0];
+    expect(entry).toBeDefined();
+    if (entry?.kind !== "tool") throw new Error("expected tool entry");
+    expect(entry.content).toEqual([
+      {
+        type: "diff",
+        path: "file.ts",
+        oldText: "line1\n",
+        newText: "line1 modified\n",
+      },
+    ]);
+  });
+
+  test("reducer keeps diff item through tool_call_update", () => {
+    let session = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      kind: "edit",
+      title: "edit file.ts",
+      status: "in_progress",
+    });
+    session = reduce(session, {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "t1",
+      status: "completed",
+      rawOutput: {
+        content: [
+          {
+            type: "diff",
+            path: "file.ts",
+            oldText: "a\n",
+            newText: "b\n",
+          },
+        ],
+      },
+    });
+    const entry = session.entries[0];
+    expect(entry).toBeDefined();
+    if (entry?.kind !== "tool") throw new Error("expected tool entry");
+    expect(entry.content).toEqual([
+      {
+        type: "diff",
+        path: "file.ts",
+        oldText: "a\n",
+        newText: "b\n",
+      },
+    ]);
+  });
+
+  test("reducer keeps both diff and text items and deduplicates identical blocks", () => {
+    const diff = { type: "diff" as const, path: "file.ts", oldText: "a\n", newText: "b\n" };
+    const text = { type: "text" as const, text: "applied edit" };
+    const session = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      kind: "edit",
+      title: "edit file.ts",
+      status: "completed",
+      rawOutput: {
+        content: [diff, text],
+      },
+      content: [diff],
+    });
+    const entry = session.entries[0];
+    if (entry?.kind !== "tool") throw new Error("expected tool entry");
+    expect(entry.content).toEqual([diff, text]);
+  });
+});
+
+describe("seedCost", () => {
+  test("seeds costAmount and costCurrency when usage is null", () => {
+    expect(EMPTY_SESSION.usage).toBeNull();
+    const seeded = seedCost(EMPTY_SESSION, 0.042);
+    expect(seeded.usage).not.toBeNull();
+    expect(seeded.usage?.costAmount).toBe(0.042);
+    expect(seeded.usage?.costCurrency).toBe("USD");
+    expect(seeded.usage?.used).toBe(0);
+    expect(seeded.usage?.size).toBe(0);
+  });
+
+  test("updates costAmount when incoming cost is higher and preserves context tokens", () => {
+    const initial = {
+      ...EMPTY_SESSION,
+      usage: {
+        used: 12_000,
+        size: 200_000,
+        costAmount: 0.1,
+        costCurrency: "USD",
+      },
+    };
+    const updated = seedCost(initial, 0.25);
+    expect(updated.usage?.costAmount).toBe(0.25);
+    expect(updated.usage?.used).toBe(12_000);
+    expect(updated.usage?.size).toBe(200_000);
+    expect(updated.usage?.costCurrency).toBe("USD");
+  });
+
+  test("a lower stats answer does not lower a higher running figure", () => {
+    const initial = {
+      ...EMPTY_SESSION,
+      usage: {
+        used: 12_000,
+        size: 200_000,
+        costAmount: 1.5,
+        costCurrency: "USD",
+      },
+    };
+    const updated = seedCost(initial, 1.0);
+    expect(updated).toBe(initial);
+    expect(updated.usage?.costAmount).toBe(1.5);
+  });
+
+  test("ignores invalid or negative costs", () => {
+    expect(seedCost(EMPTY_SESSION, -5)).toBe(EMPTY_SESSION);
+    expect(seedCost(EMPTY_SESSION, Number.NaN)).toBe(EMPTY_SESSION);
+    expect(seedCost(EMPTY_SESSION, Number.POSITIVE_INFINITY)).toBe(EMPTY_SESSION);
   });
 });

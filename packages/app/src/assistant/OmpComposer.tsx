@@ -97,18 +97,27 @@
 
 import type { Attachment, CreateAttachment } from "@assistant-ui/core";
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react-native";
-import type { PromptImage } from "@ompd/core/contracts";
-import { type JSX, useMemo } from "react";
-import { StyleSheet, useWindowDimensions, View } from "react-native";
+import type { AgentId, FsListing, PromptImage } from "@ompd/core/contracts";
+import { type JSX, useEffect, useMemo, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { IconButton, Surface, TouchableRipple } from "react-native-paper";
-import { AttachmentControl, AttachmentsBar, useImageAttachments } from "../components/AttachmentsBar.tsx";
+import { AttachmentsBar, useImageAttachments } from "../components/AttachmentsBar.tsx";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { rhythm } from "../design/rhythm.ts";
 import { Label } from "../design/text.tsx";
 import { radius, space, stroke, type } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { ImageAttachmentPicker } from "../platform/attachments.ts";
 import type { SessionVoice } from "../screens/SessionScreen.tsx";
+import type { SlashCommand } from "../session/model.ts";
+import { CommandMenu, cleanCommandName } from "./CommandMenu.tsx";
+import { FilePicker, type FilePickerClient } from "./FilePicker.tsx";
+
+export interface QueuedPromptItem {
+  id: string;
+  text: string;
+}
 
 export interface OmpComposerProps {
   /**
@@ -142,6 +151,25 @@ export interface OmpComposerProps {
    * waiting. The field stays usable and this states why the words will not go.
    */
   refusal?: string;
+  /** Available slash commands from state.commands. */
+  commands?: readonly SlashCommand[] | readonly string[];
+  commandDetails?: ReadonlyMap<string, SlashCommand>;
+  /** Session working directory for the @ file picker. */
+  cwd?: string;
+  /** Optional file listing fixture for tests. */
+  fsListing?: FsListing | null;
+  /** Optional client for listing directories and prompt queueing. */
+  client?: FilePickerClient & {
+    prompt?(agentId: AgentId, text: string, images?: PromptImage[], options?: { deliverAs?: "followUp" }): void;
+    on?(name: string, listener: (...args: any[]) => void): () => void;
+  };
+  agentId?: AgentId;
+  /** External queued prompts list (mirror of daemon queue). */
+  queuedPrompts?: QueuedPromptItem[];
+  /** Callback when a prompt is queued. */
+  onQueue?: (text: string, images?: PromptImage[]) => void;
+  /** Callback when a prompt is removed from the queue strip. */
+  onRemoveQueued?: (id: string) => void;
 }
 
 /**
@@ -195,9 +223,19 @@ export function OmpComposer({
   model,
   onOpenConfig,
   refusal,
+  commands,
+  commandDetails,
+  cwd,
+  fsListing,
+  client,
+  agentId,
+  queuedPrompts,
+  onQueue,
+  onRemoveQueued,
 }: OmpComposerProps): JSX.Element {
   const aui = useAui();
   const theme = useOmpTheme();
+  const isTablet = useIsTablet();
   const { fontScale } = useWindowDimensions();
   // A larger face owns more vertical room per line, so a fixed pixel ceiling
   // buries the action row behind the keyboard at accessibility sizes. Keep the
@@ -216,9 +254,53 @@ export function OmpComposer({
    * AND this surface can stop it.
    */
   const isDisabled = useAuiState(s => s.thread.isDisabled);
+  const isRunning = useAuiState(s => s.thread.isRunning);
   const canSend = useAuiState(s => s.composer.canSend);
   const canCancel = useAuiState(s => s.composer.canCancel);
   const held = useAuiState(s => s.composer.attachments);
+  const text = useAuiState(s => s.composer.text) ?? "";
+
+  const [activeNotice, setActiveNotice] = useState<{ kind: "attach" | "mic"; text: string } | null>(null);
+  const [localQueued, setLocalQueued] = useState<QueuedPromptItem[]>([]);
+  const [filePickerDismissed, setFilePickerDismissed] = useState(false);
+  const [commandMenuDismissed, setCommandMenuDismissed] = useState(false);
+
+  const queuedItems = queuedPrompts ?? localQueued;
+
+  useEffect(() => {
+    if (!text.includes("@") && filePickerDismissed) {
+      setFilePickerDismissed(false);
+    }
+  }, [text, filePickerDismissed]);
+
+  useEffect(() => {
+    if (!text.startsWith("/") && commandMenuDismissed) {
+      setCommandMenuDismissed(false);
+    }
+  }, [text, commandMenuDismissed]);
+
+  useEffect(() => {
+    if (!client?.on || !agentId) return;
+    const unsub = client.on("prompt_queued", (event: unknown) => {
+      if (typeof event === "object" && event !== null && "agentId" in event && "queued" in event) {
+        const queuedEvent = event as { agentId: string; queued: number };
+        if (queuedEvent.agentId === agentId) {
+          setLocalQueued(prev => {
+            if (queuedEvent.queued === 0) return [];
+            if (prev.length > queuedEvent.queued) return prev.slice(-queuedEvent.queued);
+            return prev;
+          });
+        }
+      }
+    });
+    return unsub;
+  }, [client, agentId]);
+
+  useEffect(() => {
+    if (!isRunning && localQueued.length > 0 && !queuedPrompts) {
+      setLocalQueued([]);
+    }
+  }, [isRunning, localQueued.length, queuedPrompts]);
 
   /**
    * The prompt's images, both directions, over the runtime's own attachment
@@ -290,7 +372,7 @@ export function OmpComposer({
    * message box. It is the microphone's accessibility hint now.
    */
   const micNotice = micGate === "ready" && !voice.capturing && voice.speech.available ? null : micStatus;
-  const micTone = voice.capturing ? theme.signal.amber : micDisabled ? theme.ink.faint : theme.ink.plain;
+  const micTone = voice.capturing ? theme.signal.working : micDisabled ? theme.ink.faint : theme.ink.plain;
 
   /**
    * Send is held whenever the runtime says the composer cannot send, or when
@@ -298,7 +380,57 @@ export function OmpComposer({
    * `composer.canSend` does not include `isDisabled`.
    */
   const sendHeld = isDisabled || !canSend;
-  const hasNotes = micNotice !== null || voice.dictation !== null || refusal !== undefined;
+  const queueHeld = isDisabled || (text.trim().length === 0 && images.length === 0);
+  const isRecording = voice.capturing;
+  const isRefusalNotice =
+    micNotice !== null &&
+    (isTablet ||
+      voice.access === "missing" ||
+      voice.busyElsewhere ||
+      isDisabled ||
+      micNotice === "no microphone in this test");
+  const hasNotes = isRecording || isRefusalNotice || voice.dictation !== null || refusal !== undefined;
+  const handleQueue = () => {
+    if (queueHeld) return;
+    const promptText = text.trim();
+    const promptImages = images.length > 0 ? images : undefined;
+    if (promptText.length === 0 && (!promptImages || promptImages.length === 0)) return;
+
+    const id = `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setLocalQueued(prev => [...prev, { id, text: promptText }]);
+
+    if (onQueue) {
+      onQueue(promptText, promptImages);
+    } else if (client?.prompt && agentId) {
+      client.prompt(agentId, promptText, promptImages, { deliverAs: "followUp" });
+    }
+
+    aui.composer.setText("");
+    void aui.composer.clearAttachments();
+  };
+
+  const handleRemoveQueued = (id: string) => {
+    setLocalQueued(prev => prev.filter(item => item.id !== id));
+    onRemoveQueued?.(id);
+  };
+
+  const handleSelectCommand = (cmd: SlashCommand) => {
+    const clean = cleanCommandName(cmd.name);
+    aui.composer.setText(`/${clean} `);
+    setCommandMenuDismissed(true);
+  };
+
+  const handleSelectFile = (relPath: string) => {
+    const atIndex = text.lastIndexOf("@");
+    const head = atIndex >= 0 ? text.slice(0, atIndex) : text;
+    aui.composer.setText(`${head}${relPath} `);
+    setFilePickerDismissed(true);
+  };
+
+  const showCommandMenu =
+    text.startsWith("/") && !commandMenuDismissed && commands !== undefined && commands.length > 0;
+
+  const showFilePicker = text.includes("@") && !filePickerDismissed;
 
   return (
     // The dock pays the margin around the surface and paints nothing: the band
@@ -310,6 +442,70 @@ export function OmpComposer({
     // alternate bands the shell draws in this slot share the composer's left
     // edge; the shell's own wrapper pays nothing horizontally.
     <View style={styles.dock} testID={`${prefix}-dock`}>
+      {/* Queued prompts strip above the composer */}
+      {queuedItems.length > 0 ? (
+        <View
+          style={[styles.queuedStrip, { backgroundColor: theme.ground.surface, borderColor: theme.ground.edge }]}
+          testID={`${prefix}-queued-strip`}
+        >
+          <View style={styles.queuedHeader}>
+            <View style={[styles.queuedBadge, { backgroundColor: theme.signal.working }]}>
+              <Label style={[type.kicker, { color: theme.ink.inverse, fontSize: 10, fontWeight: "700" }]}>
+                {queuedItems.length} QUEUED
+              </Label>
+            </View>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.queuedList}>
+            {queuedItems.map((item, index) => (
+              <View
+                key={item.id}
+                style={[styles.queuedCard, { backgroundColor: theme.ground.raised, borderColor: theme.ground.line }]}
+                testID={`${prefix}-queued-item-${index}`}
+              >
+                <Label style={[type.code, { color: theme.ink.bright, fontSize: 12 }]} numberOfLines={1}>
+                  {item.text}
+                </Label>
+                <Pressable
+                  testID={`${prefix}-queued-remove-${index}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove queued prompt ${index + 1}`}
+                  onPress={() => handleRemoveQueued(item.id)}
+                  style={({ pressed }) => [styles.queuedRemove, pressed && styles.pressedDim]}
+                >
+                  <Glyph name="deny" size={10} color={theme.ink.muted} />
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+
+      {/* Slash command menu */}
+      {showCommandMenu ? (
+        <CommandMenu
+          prefix="command-menu"
+          query={text}
+          commands={commands ?? []}
+          commandDetails={commandDetails}
+          onSelect={handleSelectCommand}
+          onClose={() => setCommandMenuDismissed(true)}
+          testID="command-menu"
+        />
+      ) : null}
+
+      {/* File picker */}
+      {showFilePicker ? (
+        <FilePicker
+          prefix="file-picker"
+          cwd={cwd ?? ""}
+          listing={fsListing}
+          client={client}
+          onSelect={handleSelectFile}
+          onClose={() => setFilePickerDismissed(true)}
+          testID="file-picker"
+        />
+      ) : null}
+
       <Surface
         mode="flat"
         elevation={0}
@@ -335,15 +531,26 @@ export function OmpComposer({
           submitBehavior="submit"
           onKeyPress={event => {
             const native = event.nativeEvent;
-            // React Native's `TextInputKeyPressEventData` carries only `key`.
-            // react-native-web hands the DOM keyboard event straight through,
-            // which is where `shiftKey` comes from and the only target where
-            // the primitive's Enter path exists to be cancelled.
             const shift = "shiftKey" in native && native.shiftKey === true;
-            if (native.key === "Enter" && !shift && sendHeld) event.preventDefault();
+            if (native.key === "Enter" && !shift) {
+              if (canCancel) {
+                if (queueHeld) {
+                  event.preventDefault();
+                } else {
+                  event.preventDefault();
+                  handleQueue();
+                }
+              } else if (sendHeld) {
+                event.preventDefault();
+              }
+            }
           }}
           onSubmitEditing={() => {
-            if (!sendHeld) aui.composer.send();
+            if (canCancel) {
+              if (!queueHeld) handleQueue();
+            } else if (!sendHeld) {
+              aui.composer.send();
+            }
           }}
         />
 
@@ -353,8 +560,38 @@ export function OmpComposer({
           composers, absent entirely while there is nothing to say -- so an
           ordinary empty composer is the field and the row.
         */}
-        <AttachmentsBar band={band} prefix={prefix} />
+        <AttachmentsBar
+          band={isTablet ? band : { ...band, status: band.unavailable ? "" : band.status }}
+          prefix={prefix}
+        />
 
+        {/* Transient capability notice row, revealed on press of disabled affordances */}
+        {activeNotice !== null ? (
+          <View
+            style={[
+              styles.transientBand,
+              { backgroundColor: theme.ground.surface, borderLeftColor: theme.signal.holding },
+            ]}
+            testID={`${prefix}-${activeNotice.kind}-notice`}
+          >
+            <Label
+              color={theme.ink.plain}
+              testID={`${prefix}-${activeNotice.kind}-status`}
+              style={styles.transientText}
+            >
+              {activeNotice.text}
+            </Label>
+            <IconButton
+              testID={`${prefix}-notice-dismiss`}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss notice"
+              onPress={() => setActiveNotice(null)}
+              icon={({ size }) => <Glyph name="deny" size={size} color={theme.ink.muted} />}
+              size={12}
+              style={styles.transientDismiss}
+            />
+          </View>
+        ) : null}
         {/*
           Prose in the column, never a layer over it, and never permanently: a
           refusal or a live dictation occupies real space between the words and
@@ -368,11 +605,15 @@ export function OmpComposer({
                 {refusal}
               </Label>
             )}
-            {micNotice === null ? null : (
+            {isRecording ? (
+              <Label color={theme.ink.plain} testID={`${prefix}-mic-status`}>
+                Recording
+              </Label>
+            ) : isRefusalNotice ? (
               <Label color={theme.ink.plain} testID={`${prefix}-mic-status`}>
                 {micNotice}
               </Label>
-            )}
+            ) : null}
             {voice.dictation === null ? null : (
               <Label color={theme.ink.bright} testID={`${prefix}-dictation`}>
                 {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
@@ -387,15 +628,44 @@ export function OmpComposer({
           so neither end can drift when the other grows.
         */}
         <View style={styles.actions} testID={`${prefix}-actions`}>
-          <View style={styles.group} testID={`${prefix}-actions-left`}>
+          <Pressable
+            style={styles.group}
+            testID={`${prefix}-actions-left`}
+            onPress={() => {
+              if (band.disabled) {
+                setActiveNotice(prev => (prev?.kind === "attach" ? null : { kind: "attach", text: band.status }));
+              }
+            }}
+          >
             {/*
               The paperclip, from the same file that owns the chips, so the two
               halves of one band cannot end up with two arrangements. It carries
               no visible label on purpose: the row is a row of gestures and the
               band above explains this one. Assistive technology hears both.
             */}
-            <AttachmentControl band={band} prefix={prefix} />
-          </View>
+            <IconButton
+              testID={`${prefix}-attach`}
+              disabled={band.disabled}
+              accessibilityLabel={band.disabled && band.status !== "" ? band.status : "Attach an image to this prompt"}
+              accessibilityHint="Choose images from this device's photo library"
+              accessibilityState={{ disabled: band.disabled }}
+              onPress={band.pick}
+              icon={({ size }) => (
+                <Glyph
+                  name="attachment"
+                  size={size}
+                  color={
+                    band.disabled ? theme.ink.faint : band.images.length > 0 ? theme.signal.ready : theme.ink.plain
+                  }
+                />
+              )}
+              size={14}
+              containerColor="transparent"
+              rippleColor={theme.ground.active}
+              style={[styles.iconTarget, styles.noMargin]}
+              contentStyle={styles.iconTarget}
+            />
+          </Pressable>
 
           <View style={styles.group} testID={`${prefix}-actions-right`}>
             {/*
@@ -426,27 +696,26 @@ export function OmpComposer({
                 </View>
               </TouchableRipple>
             )}
-
             <IconButton
               testID={`${prefix}-mic`}
-              accessibilityLabel={voice.capturing ? "Stop the microphone and send" : "Speak to this agent"}
-              // The sentence that used to sit permanently under the field. It
-              // costs nothing here and it is the whole of what a screen reader
-              // needs.
-              accessibilityHint={micStatus}
-              accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
               disabled={micDisabled}
+              accessibilityLabel={
+                voice.capturing
+                  ? "Stop the microphone and send"
+                  : micNotice !== null
+                    ? micNotice
+                    : "Speak to this agent"
+              }
+              accessibilityHint={micStatus ?? undefined}
+              accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
               onPress={voice.onToggle}
               icon={({ size }) => <Glyph name="mic" size={size} color={micTone} />}
               size={MIC_GLYPH}
-              // Held on is a wash rather than a border, so turning the
-              // microphone on does not change the row's silhouette.
               containerColor={voice.capturing ? theme.ground.active : "transparent"}
               rippleColor={theme.ground.active}
               style={[styles.iconTarget, styles.noMargin]}
               contentStyle={styles.iconTarget}
             />
-
             {/*
               The one emphasised control, in one slot, wearing one geometry.
               Which of the two it is comes from `canCancel`, which is the
@@ -471,12 +740,38 @@ export function OmpComposer({
                 accessibilityLabel="Interrupt this turn"
                 style={({ pressed }) => [
                   styles.emphasis,
-                  { backgroundColor: theme.signal.oxide },
+                  { backgroundColor: theme.signal.failed },
                   pressed && styles.pressedDim,
                 ]}
               >
                 <Glyph name="interrupt" size={ACTION_GLYPH} color={theme.ink.inverse} />
               </ComposerPrimitive.Cancel>
+            ) : null}
+
+            {canCancel ? (
+              <Pressable
+                testID={`${prefix}-queue`}
+                accessibilityRole="button"
+                accessibilityLabel="Queue prompt"
+                accessibilityState={{ disabled: queueHeld }}
+                disabled={queueHeld}
+                onPress={handleQueue}
+                style={({ pressed }) => [
+                  styles.emphasis,
+                  { backgroundColor: queueHeld ? theme.ground.active : theme.signal.ready },
+                  pressed && !queueHeld && styles.pressedDim,
+                ]}
+              >
+                <View style={styles.queueInner}>
+                  <Glyph name="send" size={ACTION_GLYPH} color={queueHeld ? theme.ink.faint : theme.ink.inverse} />
+                  <View
+                    style={[styles.queueBadge, { backgroundColor: theme.signal.working }]}
+                    testID={`${prefix}-queue-badge`}
+                  >
+                    <Label style={[styles.queueBadgeText, { color: theme.ink.inverse }]}>Q</Label>
+                  </View>
+                </View>
+              </Pressable>
             ) : (
               <ComposerPrimitive.Send
                 testID={`${prefix}-send`}
@@ -489,7 +784,7 @@ export function OmpComposer({
                   // quiet disc rather than a vanished control, because an
                   // operator has to see where send lives before they have
                   // typed anything.
-                  { backgroundColor: sendHeld ? theme.ground.active : theme.signal.sage },
+                  { backgroundColor: sendHeld ? theme.ground.active : theme.signal.ready },
                   pressed && !sendHeld && styles.pressedDim,
                 ]}
               >
@@ -584,4 +879,74 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   pressedDim: { opacity: 0.72 },
+  queueInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  queueBadge: {
+    position: "absolute",
+    top: -6,
+    right: -8,
+    width: 12,
+    height: 12,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  queueBadgeText: {
+    fontSize: 8,
+    fontWeight: "bold",
+    lineHeight: 10,
+  },
+  queuedStrip: {
+    marginBottom: space.snug,
+    borderRadius: radius.control,
+    borderWidth: stroke.hair,
+    padding: space.snug,
+  },
+  queuedHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  queuedBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radius.pill,
+  },
+  queuedList: {
+    flexDirection: "row",
+    gap: space.snug,
+  },
+  queuedCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    paddingHorizontal: space.snug,
+    paddingVertical: 4,
+    borderRadius: radius.control,
+    borderWidth: stroke.hair,
+    maxWidth: 200,
+  },
+  queuedRemove: {
+    padding: 2,
+  },
+  transientBand: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: space.snug,
+    paddingVertical: space.tight,
+    paddingHorizontal: space.snug,
+    borderRadius: radius.control,
+    borderLeftWidth: stroke.heavy,
+  },
+  transientText: { flex: 1 },
+  transientDismiss: {
+    margin: 0,
+    width: 24,
+    height: 24,
+  },
 });

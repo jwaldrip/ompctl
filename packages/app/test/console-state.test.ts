@@ -19,7 +19,10 @@ import {
   canInvite,
   emptyConsole,
   fleetClearances,
+  SESSION_STATS_MIN_INTERVAL_MS,
   sessionFor,
+  sessionTurnsEnded,
+  shouldRequestSessionStats,
   stripStats,
   tuiPageToAskFor,
   tuiSessionFor,
@@ -110,8 +113,28 @@ describe("clearances", () => {
   const asked: ConsoleEvent[] = [
     { t: "agents", event: { agents: [agent("a1"), agent("a2")] } },
     { t: "select", agentId: "a1" },
-    { t: "approval", event: { agentId: "a1", requestId: "r1", tool: "shell", title: "rm -rf /", input: {} } },
-    { t: "approval", event: { agentId: "a2", requestId: "r2", tool: "shell", title: "ls", input: {} } },
+    {
+      t: "approval",
+      event: {
+        agentId: "a1",
+        requestId: "r1",
+        tool: "shell",
+        title: "rm -rf /",
+        input: {},
+        deadlineAt: "2026-01-01T00:02:00.000Z",
+      },
+    },
+    {
+      t: "approval",
+      event: {
+        agentId: "a2",
+        requestId: "r2",
+        tool: "shell",
+        title: "ls",
+        input: {},
+        deadlineAt: "2026-01-01T00:02:00.000Z",
+      },
+    },
   ];
 
   test("are counted across the fleet, not just the open strip", () => {
@@ -132,6 +155,46 @@ describe("clearances", () => {
     expect(stripStats(sessionFor(state, "a1")).clearances).toBe(0);
     const card = sessionFor(state, "a1").entries.find(entry => entry.kind === "approval");
     expect(card).toMatchObject({ decision: "deny" });
+  });
+
+  test("approval_settled frame from daemon settles with timeout attribution", () => {
+    const state = drive([
+      ...asked,
+      {
+        t: "approval_settled",
+        event: {
+          agentId: "a1",
+          requestId: "r1",
+          decision: "deny",
+          scope: "once",
+          by: "timeout",
+          at: "2026-01-01T00:02:00.000Z",
+        },
+      },
+    ]);
+    expect(stripStats(sessionFor(state, "a1")).clearances).toBe(0);
+    const card = sessionFor(state, "a1").entries.find(entry => entry.kind === "approval");
+    expect(card).toMatchObject({ decision: "deny", settledBy: "timeout" });
+  });
+
+  test("approval_settled frame from daemon settles with policy attribution", () => {
+    const state = drive([
+      ...asked,
+      {
+        t: "approval_settled",
+        event: {
+          agentId: "a1",
+          requestId: "r1",
+          decision: "allow",
+          scope: "once",
+          by: "policy",
+          at: "2026-01-01T00:02:00.000Z",
+        },
+      },
+    ]);
+    expect(stripStats(sessionFor(state, "a1")).clearances).toBe(0);
+    const card = sessionFor(state, "a1").entries.find(entry => entry.kind === "approval");
+    expect(card).toMatchObject({ decision: "allow", settledBy: "policy" });
   });
 });
 
@@ -570,5 +633,109 @@ describe("connection", () => {
     });
     expect(state.unauthorized).toContain("rejected");
     expect(state.connection).toBe("offline");
+  });
+});
+
+describe("session stats", () => {
+  test("opening a session issues session_stats and that the answer seeds usage.costAmount", () => {
+    expect(shouldRequestSessionStats(undefined)).toBe(true);
+
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1", { acpSessionId: "s1" })] } },
+      { t: "select", agentId: "a1" },
+      { t: "stats_request", sessionId: "s1", agentId: "a1" },
+      {
+        t: "session_stats",
+        event: {
+          sessionId: "s1",
+          stats: {
+            cost: 0.042,
+            tokens: { input: 800, output: 200, cacheRead: 0, cacheWrite: 0 },
+            cacheRate: 0,
+            calls: 5,
+            errors: 0,
+          },
+        },
+      },
+    ]);
+    const session = sessionFor(state, "a1");
+    expect(session.usage).not.toBeNull();
+    expect(session.usage?.costAmount).toBe(0.042);
+    expect(session.usage?.costCurrency).toBe("USD");
+    expect(session.usage?.used).toBe(0);
+    expect(session.usage?.size).toBe(0);
+    expect(stripStats(session).costAmount).toBe(0.042);
+  });
+
+  test("a lower stats answer does not lower a higher running figure", () => {
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1", { acpSessionId: "s1" })] } },
+      { t: "select", agentId: "a1" },
+      {
+        t: "session_stats",
+        event: {
+          sessionId: "s1",
+          stats: {
+            cost: 1.5,
+            tokens: { input: 800, output: 200, cacheRead: 0, cacheWrite: 0 },
+            cacheRate: 0,
+            calls: 5,
+            errors: 0,
+          },
+        },
+      },
+      {
+        t: "session_stats",
+        event: {
+          sessionId: "s1",
+          stats: {
+            cost: 1.0,
+            tokens: { input: 800, output: 200, cacheRead: 0, cacheWrite: 0 },
+            cacheRate: 0,
+            calls: 5,
+            errors: 0,
+          },
+        },
+      },
+    ]);
+    const session = sessionFor(state, "a1");
+    expect(session.usage?.costAmount).toBe(1.5);
+  });
+
+  test("an older daemon that does not know session_stats raises no notice and is not asked again", () => {
+    // Observed 2026-09-07 against a daemon built from main while the phone ran
+    // this branch: every open put "unsupported frame type session_stats" in the
+    // notice band. Version skew is not the operator's fault; the readout keeps
+    // saying "not reported" and the console stops asking.
+    const state = drive([
+      { t: "agents", event: { agents: [agent("a1", { acpSessionId: "s1" })] } },
+      { t: "select", agentId: "a1" },
+      { t: "stats_request", sessionId: "s1", agentId: "a1" },
+      { t: "error", event: { code: "unknown_frame", message: "unsupported frame type session_stats" } },
+    ]);
+    expect(state.notice).toBeNull();
+    expect(state.statsUnsupported).toBe(true);
+    expect(sessionFor(state, "a1").usage).toBeNull();
+  });
+
+  test("shouldRequestSessionStats respects the interval", () => {
+    const t0 = 1_000_000;
+    expect(shouldRequestSessionStats(undefined, t0)).toBe(true);
+    expect(shouldRequestSessionStats(t0, t0 + 1000)).toBe(false);
+    expect(shouldRequestSessionStats(t0, t0 + SESSION_STATS_MIN_INTERVAL_MS - 1)).toBe(false);
+    expect(shouldRequestSessionStats(t0, t0 + SESSION_STATS_MIN_INTERVAL_MS)).toBe(true);
+    expect(shouldRequestSessionStats(t0, t0 + SESSION_STATS_MIN_INTERVAL_MS + 1000)).toBe(true);
+  });
+
+  test("sessionTurnsEnded identifies sessions transitioning from busy to idle", () => {
+    const before = [
+      agent("a1", { state: "busy", acpSessionId: "s1" }),
+      agent("a2", { state: "idle", acpSessionId: "s2" }),
+    ];
+    const after = [
+      agent("a1", { state: "idle", acpSessionId: "s1" }),
+      agent("a2", { state: "idle", acpSessionId: "s2" }),
+    ];
+    expect(sessionTurnsEnded(before, after)).toEqual(["s1"]);
   });
 });

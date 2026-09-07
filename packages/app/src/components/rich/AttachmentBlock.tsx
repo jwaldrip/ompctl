@@ -156,10 +156,10 @@ export function AttachmentBlock({ ref }: { ref: AttachmentRef }): JSX.Element {
   if (failed) {
     return (
       <View style={[styles.card, styles.row]} testID="attachment-failed">
-        <Glyph name="warning" size={13} color={signal.oxide} />
+        <Glyph name="warning" size={13} color={signal.failed} />
         <View style={styles.fileBody}>
           <Body numberOfLines={2}>{ref.name}</Body>
-          <Kicker color={signal.oxide}>Could not load</Kicker>
+          <Kicker color={signal.failed}>Could not load</Kicker>
           <Meta mime={mime} bytes={ref.bytes} />
         </View>
         <Pressable

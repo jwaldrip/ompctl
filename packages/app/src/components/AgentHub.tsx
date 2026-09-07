@@ -1,12 +1,13 @@
-import { type Agent, type AgentState, COLLAB_GUEST_AGENT_SOURCE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
+import { type Agent, COLLAB_GUEST_AGENT_SOURCE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import { type JSX, memo, useMemo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Surface } from "react-native-paper";
+import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
-import { Body, Kicker, Label } from "../design/text.tsx";
-import { type SignalName, space, stroke } from "../design/tokens.ts";
+import { Kicker, Label } from "../design/text.tsx";
+import { space, stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
-
+import { SubagentCard } from "./SubagentBoard.tsx";
 export interface AgentHubNode {
   agent: Agent;
   children: AgentHubNode[];
@@ -56,6 +57,21 @@ export function subagentsOf(agents: readonly Agent[], parentId: string): AgentHu
   return found?.children ?? [];
 }
 
+/**
+ * Collects all descendant agents from an AgentHubNode forest into a flat array.
+ */
+export function flattenSubagentNodes(nodes: readonly AgentHubNode[]): Agent[] {
+  const agents: Agent[] = [];
+  function walk(list: readonly AgentHubNode[]) {
+    for (const node of list) {
+      agents.push(node.agent);
+      if (node.children.length > 0) walk(node.children);
+    }
+  }
+  walk(nodes);
+  return agents;
+}
+
 function findNode(nodes: readonly AgentHubNode[], id: string): AgentHubNode | undefined {
   for (const node of nodes) {
     if (node.agent.id === id) return node;
@@ -91,9 +107,10 @@ export interface AgentHubProps {
   agents: readonly Agent[];
   /** Open this exact root or nested agent's durable transcript. */
   onOpen: (agent: Agent) => void;
-  /** A fixed clock makes runtime output deterministic for callers and tests. */
   now?: number;
   testID?: string;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 /**
@@ -163,6 +180,8 @@ export function AgentHub({
   onOpen,
   now = Date.now(),
   testID = "agent-hub",
+  collapsed = false,
+  onToggleCollapse,
 }: AgentHubProps): JSX.Element | null {
   const theme = useOmpTheme();
   /**
@@ -182,10 +201,40 @@ export function AgentHub({
   if (tree.length === 0) {
     const reason = agentHubEmptyReason(agents);
     if (reason === null) return null;
+    if (collapsed) {
+      return (
+        <Surface elevation={0} mode="flat" style={panel} testID={testID} accessibilityLabel="Agent hierarchy">
+          <Pressable
+            testID={`${testID}-toggle`}
+            onPress={onToggleCollapse}
+            style={styles.collapsedHint}
+            accessibilityRole="button"
+            accessibilityLabel="Expand Agent Hub hint"
+          >
+            <Kicker color={theme.ink.muted}>AGENT HUB</Kicker>
+            <Label color={theme.ink.faint} style={styles.collapsedLabel}>
+              Hint
+            </Label>
+            <Glyph name="chevron" size={10} color={theme.ink.muted} />
+          </Pressable>
+        </Surface>
+      );
+    }
     return (
       <Surface elevation={0} mode="flat" style={panel} testID={testID} accessibilityLabel="Agent hierarchy">
         <View style={styles.heading}>
           <Kicker color={theme.ink.muted}>AGENT HUB</Kicker>
+          {onToggleCollapse ? (
+            <Pressable
+              testID={`${testID}-dismiss`}
+              onPress={onToggleCollapse}
+              accessibilityRole="button"
+              accessibilityLabel="Collapse Agent Hub hint"
+              style={styles.dismissButton}
+            >
+              <Glyph name="deny" size={10} color={theme.ink.muted} />
+            </Pressable>
+          ) : null}
         </View>
         <Label testID={`${testID}-empty`} color={theme.ink.muted}>
           {AGENT_HUB_EMPTY_COPY[reason]}
@@ -235,93 +284,16 @@ export const AgentHubBranch = memo(function AgentHubBranch({
   now: number;
   onOpen: (agent: Agent) => void;
 }): JSX.Element {
-  const theme = useOmpTheme();
   const { agent } = node;
-  const metrics = agent.metrics;
-  const runtimeMs = metrics?.durationMs ?? Math.max(0, now - Date.parse(agent.createdAt));
-  const status = statusSignal(agent.state);
-  const metricsLabel =
-    metrics === undefined
-      ? `runtime ${formatRuntime(runtimeMs)}`
-      : `${metrics.usedTokens.toLocaleString()} tokens · ${formatRuntime(runtimeMs)}`;
-  const costLabel = metrics?.costAmount === undefined ? null : `cost ${metrics.costAmount.toFixed(4)}`;
-  const openable = subagentOpenable(agent);
-  /**
-   * One step of nesting per level, and nothing else.
-   *
-   * The offset is paid by the ROW, not by the branch box around it, and that
-   * is what makes the depth readable: the boxes nest, so an inset on them
-   * compounds and the step a row actually sits at becomes a sum nobody can
-   * see. Here it is one multiplication -- three levels deep is three steps of
-   * `rhythm.indent` -- which is exactly what replaced the `marginLeft` plus
-   * `paddingLeft` plus rail that used to add up to one step by accident.
-   */
-  const indent = depth === 0 ? null : { paddingLeft: depth * rhythm.indent };
-  const body = (
-    <>
-      <View style={[styles.status, { backgroundColor: theme.signalWash[status] }]}>
-        <Label color={theme.signal[status]}>{agent.state}</Label>
-      </View>
-      <View style={styles.details}>
-        <Body color={theme.ink.bright}>{agent.name}</Body>
-        {agent.taskTitle === undefined ? null : <Label color={theme.ink.plain}>{agent.taskTitle}</Label>}
-        <View style={styles.meta}>
-          {agent.model === undefined ? null : <Kicker color={theme.ink.muted}>{agent.model}</Kicker>}
-          <Kicker color={theme.ink.muted}>{metricsLabel}</Kicker>
-          {costLabel === null ? null : <Kicker color={theme.ink.muted}>{costLabel}</Kicker>}
-          {openable ? null : (
-            <Kicker color={theme.ink.faint} testID={`agent-hub-unopenable-${agent.id}`}>
-              {SUBAGENT_UNOPENABLE}
-            </Kicker>
-          )}
-        </View>
-      </View>
-    </>
-  );
-
   return (
     <View style={styles.branch} testID={`agent-hub-${agent.id}`}>
-      {openable ? (
-        <Pressable
-          testID={`agent-hub-open-${agent.id}`}
-          accessibilityRole="button"
-          accessibilityLabel={`Open ${agent.name} session`}
-          onPress={() => onOpen(agent)}
-          style={({ pressed }) => [styles.row, indent, pressed && { backgroundColor: theme.ground.active }]}
-        >
-          {body}
-        </Pressable>
-      ) : (
-        <View
-          accessible
-          accessibilityLabel={`${agent.name}, ${agent.state}. ${SUBAGENT_UNOPENABLE}`}
-          style={[styles.row, indent]}
-          testID={`agent-hub-row-${agent.id}`}
-        >
-          {body}
-        </View>
-      )}
+      <SubagentCard agent={agent} depth={depth} now={now} onOpen={onOpen} testIDPrefix="agent-hub" />
       {node.children.map(child => (
         <AgentHubBranch key={child.agent.id} node={child} depth={depth + 1} now={now} onOpen={onOpen} />
       ))}
     </View>
   );
 });
-
-function statusSignal(state: AgentState): SignalName {
-  if (state === "busy") return "amber";
-  if (state === "idle") return "sage";
-  if (state === "waiting" || state === "provisioning" || state === "starting") return "ochre";
-  if (state === "failed") return "oxide";
-  return "slate";
-}
-
-function formatRuntime(durationMs: number): string {
-  const seconds = Math.floor(durationMs / 1_000);
-  const minutes = Math.floor(seconds / 60);
-  if (minutes > 0) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-  return `${seconds}s`;
-}
 
 const styles = StyleSheet.create({
   hub: {
@@ -338,4 +310,12 @@ const styles = StyleSheet.create({
   status: { minWidth: 64, paddingHorizontal: space.tight, paddingVertical: space.hair, alignItems: "center" },
   details: { flex: 1, gap: rhythm.pairGap },
   meta: { flexDirection: "row", flexWrap: "wrap", columnGap: rhythm.cardGap, rowGap: rhythm.pairGap },
+  collapsedHint: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: rhythm.rowGapTight,
+  },
+  collapsedLabel: { flex: 1, minWidth: 0 },
+  dismissButton: { padding: space.hair },
 });

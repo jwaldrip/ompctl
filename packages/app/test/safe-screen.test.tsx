@@ -11,9 +11,10 @@
 
 import "./rnw.ts";
 
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, type ComponentProps, createContext, type JSX, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
 // Known insets, set before SafeScreen is imported so the module sees them.
 // The shape mirrors ./rnw.ts's mock rather than stubbing two exports: this
@@ -39,6 +40,7 @@ const { EMPTY_SESSION } = await import("../src/session/model.ts");
 // react-native-paper, which reaches react-native. A static import would pull the
 // real one in before `./rnw.ts` substitutes react-native-web for it.
 const { rhythm } = await import("../src/design/rhythm.ts");
+const { ground } = await import("../src/design/tokens.ts");
 const { WithOmpTheme } = await import("./theme.tsx");
 
 declare global {
@@ -339,7 +341,9 @@ describe("SafeScreen", () => {
     // inline style, so the payer's colour is read from the rules its own
     // classes select: ground.surface, which is the composer's surface.
     const rules = sheetRulesFor([...(payer?.classList ?? [])]);
-    expect(rules).toMatch(/background-color:\s*rgba\(28,\s*26,\s*22,/);
+    const surface = Number.parseInt(ground.surface.slice(1), 16);
+    const channels = [(surface >> 16) & 255, (surface >> 8) & 255, surface & 255].join(",\\s*");
+    expect(rules).toMatch(new RegExp(`background-color:\\s*rgba\\(${channels},`));
 
     act(() => {
       root.unmount();
@@ -369,6 +373,13 @@ describe("SafeScreen", () => {
  * here rather than reading fine in the file.
  */
 describe("one gutter, every band of the session shell", () => {
+  beforeEach(() => {
+    setWindowSize(820, 1180);
+  });
+  afterEach(() => {
+    resetWindowSize();
+  });
+
   const AGENT = {
     id: "agt_test",
     name: "probe",

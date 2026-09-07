@@ -54,6 +54,8 @@ export interface BrowserSession {
   readonly messageCount: number;
   /** Bytes on disk. */
   readonly sizeBytes: number;
+  /** Total session cost in USD, or null when not reported. */
+  readonly cost?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,33 +173,44 @@ function worstStatusOf(sessions: readonly BrowserSession[]): SessionStatus {
 // ---------------------------------------------------------------------------
 
 export interface BrowserState {
+  readonly view: "list" | "board";
   readonly sessions: readonly BrowserSession[];
   readonly sort: SortSpec;
   readonly showArchived: boolean;
   readonly collapsedGroups: ReadonlySet<string>;
-  /** Grouping is the default organiser; a person can flatten the list. */
   readonly grouped: boolean;
+  readonly project: string | null;
+  readonly query: string;
 }
 
-export const DEFAULT_SORT: SortSpec = { field: "status", direction: "asc" };
+export const DEFAULT_SORT: SortSpec = { field: "lastActive", direction: "desc" };
+export const DEFAULT_VIEW = "list" as const;
 
 export const EMPTY_BROWSER: BrowserState = {
+  view: DEFAULT_VIEW,
   sessions: [],
   sort: DEFAULT_SORT,
   showArchived: false,
   collapsedGroups: new Set(),
-  grouped: true,
+  grouped: false,
+  project: null,
+  query: "",
 };
-
 export type BrowserAction =
   | { t: "load"; sessions: readonly BrowserSession[] }
   | { t: "sort"; field: SortField }
   | { t: "toggleArchived" }
   | { t: "toggleGroup"; cwd: string }
   | { t: "toggleGrouped" }
+  | { t: "setView"; view: "list" | "board" }
+  | { t: "setProject"; project: string | null }
+  | { t: "setQuery"; query: string }
+  | {
+      t: "hydratePrefs";
+      prefs: { sort?: SortSpec; grouped?: boolean; project?: string | null; view?: "list" | "board" };
+    }
   | { t: "archive"; id: string }
   | { t: "unarchive"; id: string };
-
 export function browserReduce(state: BrowserState, action: BrowserAction): BrowserState {
   switch (action.t) {
     case "load":
@@ -244,7 +257,23 @@ export function browserReduce(state: BrowserState, action: BrowserAction): Brows
       }
       return { ...state, collapsedGroups: next };
     }
+    case "setProject":
+      return { ...state, project: action.project };
 
+    case "setQuery":
+      return { ...state, query: action.query };
+
+    case "setView":
+      return { ...state, view: action.view };
+
+    case "hydratePrefs":
+      return {
+        ...state,
+        view: action.prefs.view ?? state.view,
+        sort: action.prefs.sort ?? state.sort,
+        grouped: action.prefs.grouped ?? state.grouped,
+        project: action.prefs.project !== undefined ? action.prefs.project : state.project,
+      };
     case "archive":
       return {
         ...state,
@@ -277,12 +306,21 @@ export interface BrowserView {
 }
 
 export function browserView(state: BrowserState): BrowserView {
-  const { sessions, sort, showArchived } = state;
-  const visible = showArchived ? sessions : sessions.filter(s => s.status !== "archived");
+  const { sessions, sort, showArchived, project, query } = state;
+  const q = query.trim().toLowerCase();
+  const visible = sessions.filter(s => {
+    if (!showArchived && s.status === "archived") return false;
+    if (project !== null && s.cwd !== project) return false;
+    if (q.length > 0) {
+      const matchTitle = s.title.toLowerCase().includes(q);
+      const matchCwd = s.cwd.toLowerCase().includes(q);
+      if (!matchTitle && !matchCwd) return false;
+    }
+    return true;
+  });
   const groups = groupByCwd(visible, sort);
   const flatSessions = [...visible].sort((a, b) => compareSessions(a, b, sort));
   const hiddenArchived = showArchived ? 0 : sessions.filter(s => s.status === "archived").length;
-
   return {
     groups,
     flatSessions,
@@ -296,13 +334,13 @@ export function browserView(state: BrowserState): BrowserView {
 // Status signal mapping
 // ---------------------------------------------------------------------------
 
-export type SignalName = "amber" | "sage" | "ochre" | "oxide" | "slate" | "violet";
+export type SignalName = "working" | "ready" | "holding" | "failed" | "cold" | "reasoning";
 
 export const SESSION_STATUS_SIGNALS: Record<SessionStatus, SignalName> = {
-  "live-tui": "amber",
-  "live-ompd": "sage",
-  dormant: "slate",
-  archived: "slate",
+  "live-tui": "working",
+  "live-ompd": "ready",
+  dormant: "cold",
+  archived: "cold",
 };
 
 /** Human-readable status label. */

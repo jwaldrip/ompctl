@@ -1068,6 +1068,26 @@ OMPD_URL=http://127.0.0.1:54321 OMPD_TOKEN=$(cat ~/.ompd/token) ompd agents
 `OMPD_HOME` moves the whole state directory, which is how a second daemon runs
 on the same machine without colliding with the first.
 
+### What it costs
+
+The daemon aggregates omp's own session logs through `@oh-my-pi/omp-stats`, the
+same tables `omp stats` reads, and serves them to a paired device:
+
+```bash
+TOKEN=$(cat ~/.ompd/token)
+curl -H "authorization: Bearer $TOKEN" 'http://127.0.0.1:7777/v1/stats?range=7d'
+curl -H "authorization: Bearer $TOKEN" 'http://127.0.0.1:7777/v1/sessions/<sessionId>/stats'
+```
+
+The first is the dashboard (requests, tokens, API-equivalent cost, cache hit
+rate, per-model rows); the second is one session's lifetime figures read from
+its own log, which is also what the app's readout and fleet rows show. The
+dashboard is omp's own home's to serve: a daemon whose sessions root is
+anything else (a scratch `OMPD_HOME` pointed elsewhere, a test harness) answers
+`503 stats_unavailable` with the reason, and never syncs, because the package
+indexes exactly one tree and syncing another home into it would be a lie in
+both directions. Per-session figures stay available on any root.
+
 ## Stopping it
 
 `SIGINT` or `SIGTERM`. The daemon stops the scheduler, closes the gateway so no
