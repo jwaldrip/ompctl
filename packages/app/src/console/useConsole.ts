@@ -43,7 +43,13 @@ export type { WebViewTarget } from "./webview.ts";
 export interface ConsoleActions {
   select: (agentId: AgentId) => void;
   back: () => void;
-  prompt: (agentId: AgentId, text: string, images?: PromptImage[]) => boolean;
+  /**
+   * Send one prompt. With `deliverAs: "followUp"` the daemon holds it until
+   * the turn in flight ends (answered by `prompt_queued`), so the transcript
+   * gets no local echo for it: the composer's queue strip is its place until
+   * the daemon plays it as a user turn.
+   */
+  prompt: (agentId: AgentId, text: string, images?: PromptImage[], options?: { deliverAs?: "followUp" }) => boolean;
   cancel: (agentId: AgentId) => void;
   decide: (agentId: AgentId, requestId: string, choice: ApprovalChoice, scope?: ApprovalScope) => void;
   decidePlan: (agentId: AgentId, requestId: string, choice: PlanReviewChoice) => void;
@@ -131,11 +137,17 @@ export function createOmpdClient(connection: Connection): OmpdClient {
   });
 }
 
+/**
+ * The console's state, its actions, and the one client both ride. The client
+ * is returned so a screen that needs frames the actions do not model (the
+ * composer's directory listings and queue acknowledgements) uses this link
+ * rather than opening a second one.
+ */
 export function useConsole(
   connection: Connection,
   createClient: (connection: Connection) => OmpdClient = createOmpdClient,
   voice: MemoVoice = deviceMemoVoice,
-): [ConsoleState, ConsoleActions] {
+): [ConsoleState, ConsoleActions, OmpdClient] {
   const [state, dispatch] = useReducer(apply, connection.scopes, emptyConsole);
 
   // The client outlives every render and must never be rebuilt by one: a new
@@ -647,7 +659,7 @@ export function useConsole(
         client.selectTerminalSession?.(null);
         dispatch({ t: "select", agentId: null });
       },
-      prompt(agentId, text, images) {
+      prompt(agentId, text, images, options) {
         // The three-way rule, the same one the microphone follows: a pairing
         // that provably holds no prompt scope gets the reason stated rather
         // than a frame the daemon must refuse, and an unknown one sends
@@ -674,8 +686,10 @@ export function useConsole(
           });
           return false;
         }
-        client.prompt(agentId, text, images);
-        dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
+        client.prompt(agentId, text, images, options);
+        if (options?.deliverAs === undefined) {
+          dispatch({ t: "prompt", agentId, text, imageCount: images?.length ?? 0 });
+        }
         return true;
       },
       cancel(agentId) {
@@ -916,5 +930,5 @@ export function useConsole(
     ],
   );
 
-  return [state, actions];
+  return [state, actions, client];
 }

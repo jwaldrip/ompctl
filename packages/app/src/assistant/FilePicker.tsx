@@ -20,8 +20,11 @@ export interface FilePickerErrorEvent {
 
 export interface FilePickerClient {
   listDirectory?(path?: string): void;
-  /** `fs_listing` delivers an FsListing; `error` delivers a FilePickerErrorEvent. */
-  on?(event: "fs_listing" | "error", listener: (...args: never[]) => void): () => void;
+  /**
+   * `fs_listing` delivers an FsListing; `error` delivers a FilePickerErrorEvent.
+   * Typed as the console client's own `on`, so that client is handed in as is.
+   */
+  on?(event: string, listener: (...args: any[]) => void): () => void;
 }
 
 export interface FilePickerProps {

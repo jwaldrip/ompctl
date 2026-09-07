@@ -99,7 +99,7 @@ export function Console({
   onUnpair,
   createClient = createOmpdClient,
 }: ConsoleProps): JSX.Element {
-  const [state, actions] = useConsole(connection, createClient, deviceMemoVoice);
+  const [state, actions, client] = useConsole(connection, createClient, deviceMemoVoice);
   const split = useSplitLayout();
   // The bay's share of the window, clamped between a floor that fits its own
   // sort bar and a ceiling that keeps the log pane fed. A fixed 340 on every
@@ -441,6 +441,10 @@ export function Console({
         // handler does: a one-parameter arrow here would still typecheck and
         // silently drop every image the operator attached.
         onSubmit={(text, images) => actions.prompt(agent.id, text, images)}
+        onQueue={(text, images) => actions.prompt(agent.id, text, images, { deliverAs: "followUp" })}
+        // The same client the fleet rides: the composer's directory picker
+        // browses with its `fs_list` frames and hears `prompt_queued` on it.
+        client={client}
         onCancel={() => {
           actions.cancel(agent.id);
         }}

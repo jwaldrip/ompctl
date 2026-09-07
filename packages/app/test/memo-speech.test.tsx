@@ -400,7 +400,8 @@ function mountConsole(voice: MemoVoice, connection: Connection = CONNECTION): Mo
   const playback = voice.playback as FakePlayback;
   let latest: [ConsoleState, ConsoleActions] | null = null;
   function Probe(props: { connection: Connection }): null {
-    latest = useConsole(props.connection, () => client as unknown as OmpdClient, voice);
+    const [state, actions] = useConsole(props.connection, () => client as unknown as OmpdClient, voice);
+    latest = [state, actions];
     return null;
   }
   const host = document.createElement("div");

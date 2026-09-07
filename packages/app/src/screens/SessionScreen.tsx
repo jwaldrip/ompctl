@@ -18,7 +18,7 @@ import {
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import { type JSX, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import { OmpComposer } from "../assistant/OmpComposer.tsx";
+import { OmpComposer, type OmpComposerProps } from "../assistant/OmpComposer.tsx";
 import { OmpThreadList, OmpThreadProvider } from "../assistant/OmpThread.tsx";
 import { webViewCapability } from "../browser";
 import { ActivityRow } from "../components/ActivityRow.tsx";
@@ -43,6 +43,9 @@ import { agentActivity, conversationActivity } from "../session/activity.ts";
 import type { ApprovalEntry, SessionState } from "../session/model.ts";
 import type { VoiceAvailability } from "../voice/memo.ts";
 import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
+
+/** The composer's own client shape, so the screen forwards it without restating it. */
+type ComposerClient = NonNullable<OmpComposerProps["client"]>;
 
 export interface SessionScreenProps {
   agent: Agent;
@@ -79,6 +82,10 @@ export interface SessionScreenProps {
   /** Open this agent's config surface: the mode it runs and the model it names. */
   onOpenConfig?: () => void;
   onSubmit: (text: string, images?: PromptImage[]) => void;
+  /** Hold a prompt behind the turn in flight; the daemon plays it when the turn ends. */
+  onQueue?: (text: string, images?: PromptImage[]) => void;
+  /** The console's client, for the composer's directory picker and the daemon's queue acknowledgements. */
+  client?: ComposerClient;
   onCancel: () => void;
   /** Wake this exact durable session under a new live agent. */
   onResume?: () => void;
@@ -658,6 +665,12 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
                   model={model}
                   onOpenConfig={props.onOpenConfig}
                   refusal={sendRefusal}
+                  commands={session.commands}
+                  commandDetails={session.commandDetails}
+                  cwd={agent.cwd}
+                  agentId={agent.id}
+                  client={props.client}
+                  onQueue={props.onQueue}
                 />
               </View>
             )}

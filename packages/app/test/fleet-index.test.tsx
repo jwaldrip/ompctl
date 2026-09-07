@@ -420,7 +420,8 @@ function mountConsole(connection: Connection = CONNECTION): Mounted {
   const client = new CannedClient();
   let latest: [ConsoleState, ConsoleActions] | null = null;
   function Probe(props: { connection: Connection }): null {
-    latest = useConsole(props.connection, () => client as unknown as OmpdClient);
+    const [state, actions] = useConsole(props.connection, () => client as unknown as OmpdClient);
+    latest = [state, actions];
     return null;
   }
   const host = document.createElement("div");
