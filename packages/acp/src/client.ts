@@ -544,11 +544,7 @@ export class AcpClient {
   }
 
   async newSession(cwd: string, mcpServers: unknown[] = []): Promise<AcpNewSessionResponse> {
-    const r = await this.request<AcpNewSessionResponse>("session/new", { cwd, mcpServers });
-    if (r.configOptions && this.#opts.onUpdate) {
-      this.#opts.onUpdate(r.sessionId, { sessionUpdate: "config_option_update", configOptions: r.configOptions });
-    }
-    return r;
+    return await this.request<AcpNewSessionResponse>("session/new", { cwd, mcpServers });
   }
 
   async listSessions(): Promise<AcpSessionSummary[]> {
@@ -557,23 +553,15 @@ export class AcpClient {
   }
 
   async loadSession(sessionId: string, cwd: string, mcpServers: unknown[] = []): Promise<AcpLoadSessionResponse> {
-    const r = await this.request<AcpLoadSessionResponse>("session/load", { sessionId, cwd, mcpServers });
-    if (r.configOptions && this.#opts.onUpdate) {
-      this.#opts.onUpdate(sessionId, { sessionUpdate: "config_option_update", configOptions: r.configOptions });
-    }
-    return r;
+    return await this.request<AcpLoadSessionResponse>("session/load", { sessionId, cwd, mcpServers });
   }
 
   async setConfigOption(sessionId: string, configId: string, value: string): Promise<AcpSetConfigOptionResponse> {
-    const r = await this.request<AcpSetConfigOptionResponse>("session/set_config_option", {
+    return await this.request<AcpSetConfigOptionResponse>("session/set_config_option", {
       sessionId,
       configId,
       value,
     });
-    if (r.configOptions && this.#opts.onUpdate) {
-      this.#opts.onUpdate(sessionId, { sessionUpdate: "config_option_update", configOptions: r.configOptions });
-    }
-    return r;
   }
 
   /**

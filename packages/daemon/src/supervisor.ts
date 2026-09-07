@@ -696,11 +696,13 @@ export class Supervisor {
       throw new Error(`host kind ${spec.kind} requires the provisioner`);
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
-    return await this.#bindAgentToSession(input, spec, entry, who, {}, (sessionEntry, agentId) =>
-      sessionEntry.host.client
-        .newSession(input.cwd, this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [])
-        .then(r => (typeof r === "string" ? r : r.sessionId)),
-    );
+    return await this.#bindAgentToSession(input, spec, entry, who, {}, async (sessionEntry, agentId) => {
+      const res = await sessionEntry.host.client.newSession(
+        input.cwd,
+        this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
+      );
+      return res.sessionId;
+    });
   }
 
   /**

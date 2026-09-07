@@ -24,7 +24,14 @@
  * already sends on every change.
  */
 
-import { type AcpClient, type LocalHost, type SpawnLocalHostOptions, spawnLocalHost } from "@ompd/acp";
+import {
+  type AcpClient,
+  type AcpLoadSessionResponse,
+  type AcpNewSessionResponse,
+  type LocalHost,
+  type SpawnLocalHostOptions,
+  spawnLocalHost,
+} from "@ompd/acp";
 
 /** The config option id carrying the session mode. */
 export const MODE_OPTION_ID = "mode";
@@ -186,18 +193,21 @@ export class HostRegistry implements SessionConfig {
 
     const client = host.client;
     const originalNewSession = client.newSession.bind(client);
-    client.newSession = async (cwd: string, mcpServers: unknown[] = []): Promise<any> => {
+    client.newSession = async (cwd: string, mcpServers: unknown[] = []): Promise<AcpNewSessionResponse> => {
       const res = await originalNewSession(cwd, mcpServers);
-      const sessionId = typeof res === "string" ? res : res.sessionId;
-      owned.add(sessionId);
-      this.#clients.set(sessionId, client);
+      owned.add(res.sessionId);
+      this.#clients.set(res.sessionId, client);
       const options = parseConfigOptions(res);
-      if (options) this.#config.set(sessionId, options);
-      return sessionId;
+      if (options) this.#config.set(res.sessionId, options);
+      return res;
     };
 
     const originalLoadSession = client.loadSession.bind(client);
-    client.loadSession = async (sessionId: string, cwd: string, mcpServers: unknown[] = []) => {
+    client.loadSession = async (
+      sessionId: string,
+      cwd: string,
+      mcpServers: unknown[] = [],
+    ): Promise<AcpLoadSessionResponse> => {
       const res = await originalLoadSession(sessionId, cwd, mcpServers);
       owned.add(sessionId);
       this.#clients.set(sessionId, client);
