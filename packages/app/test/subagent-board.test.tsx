@@ -223,7 +223,8 @@ describe("SubagentBoard", () => {
       expect(view.el("subagent-board-column-idle")).toBeNull();
       expect(view.host.textContent).not.toContain("Needs you");
       expect(view.host.textContent).not.toContain("Idle");
-      expect(view.host.textContent).not.toContain("0");
+      expect(view.el("subagent-board-count-needsYou")).toBeNull();
+      expect(view.el("subagent-board-count-idle")).toBeNull();
     } finally {
       view.unmount();
     }

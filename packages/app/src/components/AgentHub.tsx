@@ -1,13 +1,13 @@
-import { type Agent, type AgentState, COLLAB_GUEST_AGENT_SOURCE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
+import { type Agent, COLLAB_GUEST_AGENT_SOURCE, TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
 import { type JSX, memo, useMemo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Surface } from "react-native-paper";
 import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
-import { Body, Kicker, Label } from "../design/text.tsx";
-import { type SignalName, space, stroke } from "../design/tokens.ts";
+import { Kicker, Label } from "../design/text.tsx";
+import { space, stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
-
+import { SubagentCard } from "./SubagentBoard.tsx";
 export interface AgentHubNode {
   agent: Agent;
   children: AgentHubNode[];
@@ -55,6 +55,21 @@ export function agentHubTree(agents: readonly Agent[]): AgentHubNode[] {
 export function subagentsOf(agents: readonly Agent[], parentId: string): AgentHubNode[] {
   const found = findNode(agentHubTree(agents), parentId);
   return found?.children ?? [];
+}
+
+/**
+ * Collects all descendant agents from an AgentHubNode forest into a flat array.
+ */
+export function flattenSubagentNodes(nodes: readonly AgentHubNode[]): Agent[] {
+  const agents: Agent[] = [];
+  function walk(list: readonly AgentHubNode[]) {
+    for (const node of list) {
+      agents.push(node.agent);
+      if (node.children.length > 0) walk(node.children);
+    }
+  }
+  walk(nodes);
+  return agents;
 }
 
 function findNode(nodes: readonly AgentHubNode[], id: string): AgentHubNode | undefined {
@@ -269,93 +284,22 @@ export const AgentHubBranch = memo(function AgentHubBranch({
   now: number;
   onOpen: (agent: Agent) => void;
 }): JSX.Element {
-  const theme = useOmpTheme();
   const { agent } = node;
-  const metrics = agent.metrics;
-  const runtimeMs = metrics?.durationMs ?? Math.max(0, now - Date.parse(agent.createdAt));
-  const status = statusSignal(agent.state);
-  const metricsLabel =
-    metrics === undefined
-      ? `runtime ${formatRuntime(runtimeMs)}`
-      : `${metrics.usedTokens.toLocaleString()} tokens · ${formatRuntime(runtimeMs)}`;
-  const costLabel = metrics?.costAmount === undefined ? null : `cost ${metrics.costAmount.toFixed(4)}`;
-  const openable = subagentOpenable(agent);
-  /**
-   * One step of nesting per level, and nothing else.
-   *
-   * The offset is paid by the ROW, not by the branch box around it, and that
-   * is what makes the depth readable: the boxes nest, so an inset on them
-   * compounds and the step a row actually sits at becomes a sum nobody can
-   * see. Here it is one multiplication -- three levels deep is three steps of
-   * `rhythm.indent` -- which is exactly what replaced the `marginLeft` plus
-   * `paddingLeft` plus rail that used to add up to one step by accident.
-   */
-  const indent = depth === 0 ? null : { paddingLeft: depth * rhythm.indent };
-  const body = (
-    <>
-      <View style={[styles.status, { backgroundColor: theme.signalWash[status] }]}>
-        <Label color={theme.signal[status]}>{agent.state}</Label>
-      </View>
-      <View style={styles.details}>
-        <Body color={theme.ink.bright}>{agent.name}</Body>
-        {agent.taskTitle === undefined ? null : <Label color={theme.ink.plain}>{agent.taskTitle}</Label>}
-        <View style={styles.meta}>
-          {agent.model === undefined ? null : <Kicker color={theme.ink.muted}>{agent.model}</Kicker>}
-          <Kicker color={theme.ink.muted}>{metricsLabel}</Kicker>
-          {costLabel === null ? null : <Kicker color={theme.ink.muted}>{costLabel}</Kicker>}
-          {openable ? null : (
-            <Kicker color={theme.ink.faint} testID={`agent-hub-unopenable-${agent.id}`}>
-              {SUBAGENT_UNOPENABLE}
-            </Kicker>
-          )}
-        </View>
-      </View>
-    </>
-  );
-
   return (
     <View style={styles.branch} testID={`agent-hub-${agent.id}`}>
-      {openable ? (
-        <Pressable
-          testID={`agent-hub-open-${agent.id}`}
-          accessibilityRole="button"
-          accessibilityLabel={`Open ${agent.name} session`}
-          onPress={() => onOpen(agent)}
-          style={({ pressed }) => [styles.row, indent, pressed && { backgroundColor: theme.ground.active }]}
-        >
-          {body}
-        </Pressable>
-      ) : (
-        <View
-          accessible
-          accessibilityLabel={`${agent.name}, ${agent.state}. ${SUBAGENT_UNOPENABLE}`}
-          style={[styles.row, indent]}
-          testID={`agent-hub-row-${agent.id}`}
-        >
-          {body}
-        </View>
-      )}
+      <SubagentCard
+        agent={agent}
+        depth={depth}
+        now={now}
+        onOpen={onOpen}
+        testIDPrefix="agent-hub"
+      />
       {node.children.map(child => (
         <AgentHubBranch key={child.agent.id} node={child} depth={depth + 1} now={now} onOpen={onOpen} />
       ))}
     </View>
   );
 });
-
-function statusSignal(state: AgentState): SignalName {
-  if (state === "busy") return "working";
-  if (state === "idle") return "ready";
-  if (state === "waiting" || state === "provisioning" || state === "starting") return "holding";
-  if (state === "failed") return "failed";
-  return "cold";
-}
-
-function formatRuntime(durationMs: number): string {
-  const seconds = Math.floor(durationMs / 1_000);
-  const minutes = Math.floor(seconds / 60);
-  if (minutes > 0) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-  return `${seconds}s`;
-}
 
 const styles = StyleSheet.create({
   hub: {
