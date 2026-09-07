@@ -193,3 +193,91 @@ describe("payloads this build has never seen", () => {
     expect(reduce(EMPTY_SESSION, { nope: true }).entries[0]).toMatchObject({ kind: "unknown" });
   });
 });
+
+describe("tool content and diff extraction", () => {
+  test("reducer keeps a diff item from tool call content", () => {
+    const session = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      kind: "edit",
+      title: "edit file.ts",
+      status: "completed",
+      rawOutput: {
+        content: [
+          {
+            type: "diff",
+            path: "file.ts",
+            oldText: "line1\n",
+            newText: "line1 modified\n",
+          },
+        ],
+      },
+    });
+    const entry = session.entries[0];
+    expect(entry).toBeDefined();
+    if (entry?.kind !== "tool") throw new Error("expected tool entry");
+    expect(entry.content).toEqual([
+      {
+        type: "diff",
+        path: "file.ts",
+        oldText: "line1\n",
+        newText: "line1 modified\n",
+      },
+    ]);
+  });
+
+  test("reducer keeps diff item through tool_call_update", () => {
+    let session = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      kind: "edit",
+      title: "edit file.ts",
+      status: "in_progress",
+    });
+    session = reduce(session, {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "t1",
+      status: "completed",
+      rawOutput: {
+        content: [
+          {
+            type: "diff",
+            path: "file.ts",
+            oldText: "a\n",
+            newText: "b\n",
+          },
+        ],
+      },
+    });
+    const entry = session.entries[0];
+    expect(entry).toBeDefined();
+    if (entry?.kind !== "tool") throw new Error("expected tool entry");
+    expect(entry.content).toEqual([
+      {
+        type: "diff",
+        path: "file.ts",
+        oldText: "a\n",
+        newText: "b\n",
+      },
+    ]);
+  });
+
+  test("reducer keeps both diff and text items and deduplicates identical blocks", () => {
+    const diff = { type: "diff" as const, path: "file.ts", oldText: "a\n", newText: "b\n" };
+    const text = { type: "text" as const, text: "applied edit" };
+    const session = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      kind: "edit",
+      title: "edit file.ts",
+      status: "completed",
+      rawOutput: {
+        content: [diff, text],
+      },
+      content: [diff],
+    });
+    const entry = session.entries[0];
+    if (entry?.kind !== "tool") throw new Error("expected tool entry");
+    expect(entry.content).toEqual([diff, text]);
+  });
+});

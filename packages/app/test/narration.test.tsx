@@ -146,6 +146,7 @@ describe("session narration", () => {
         input: null,
         output: "done",
         locations: [],
+        content: [],
       },
       { kind: "unknown", id: "system", label: "system notice", payload: { text: "Do not say this." } },
       { kind: "user", id: "user", text: "Do not echo me." },
