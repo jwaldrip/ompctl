@@ -173,6 +173,7 @@ function worstStatusOf(sessions: readonly BrowserSession[]): SessionStatus {
 // ---------------------------------------------------------------------------
 
 export interface BrowserState {
+  readonly view: "list" | "board";
   readonly sessions: readonly BrowserSession[];
   readonly sort: SortSpec;
   readonly showArchived: boolean;
@@ -183,8 +184,10 @@ export interface BrowserState {
 }
 
 export const DEFAULT_SORT: SortSpec = { field: "lastActive", direction: "desc" };
+export const DEFAULT_VIEW = "list" as const;
 
 export const EMPTY_BROWSER: BrowserState = {
+  view: DEFAULT_VIEW,
   sessions: [],
   sort: DEFAULT_SORT,
   showArchived: false,
@@ -193,16 +196,16 @@ export const EMPTY_BROWSER: BrowserState = {
   project: null,
   query: "",
 };
-
 export type BrowserAction =
   | { t: "load"; sessions: readonly BrowserSession[] }
   | { t: "sort"; field: SortField }
   | { t: "toggleArchived" }
   | { t: "toggleGroup"; cwd: string }
   | { t: "toggleGrouped" }
+  | { t: "setView"; view: "list" | "board" }
   | { t: "setProject"; project: string | null }
   | { t: "setQuery"; query: string }
-  | { t: "hydratePrefs"; prefs: { sort?: SortSpec; grouped?: boolean; project?: string | null } }
+  | { t: "hydratePrefs"; prefs: { sort?: SortSpec; grouped?: boolean; project?: string | null; view?: "list" | "board" } }
   | { t: "archive"; id: string }
   | { t: "unarchive"; id: string };
 export function browserReduce(state: BrowserState, action: BrowserAction): BrowserState {
@@ -257,14 +260,17 @@ export function browserReduce(state: BrowserState, action: BrowserAction): Brows
     case "setQuery":
       return { ...state, query: action.query };
 
+    case "setView":
+      return { ...state, view: action.view };
+
     case "hydratePrefs":
       return {
         ...state,
+        view: action.prefs.view ?? state.view,
         sort: action.prefs.sort ?? state.sort,
         grouped: action.prefs.grouped ?? state.grouped,
         project: action.prefs.project !== undefined ? action.prefs.project : state.project,
       };
-
     case "archive":
       return {
         ...state,

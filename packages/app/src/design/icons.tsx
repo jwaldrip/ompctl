@@ -45,6 +45,7 @@ import {
   faHand,
   faLayerGroup,
   faLink,
+  faList,
   faListCheck,
   faMagnifyingGlass,
   faMicrophone,
@@ -63,6 +64,7 @@ import {
   faSignal,
   faSliders,
   faStore,
+  faTableColumns,
   faTerminal,
   faTrashCan,
   faTriangleExclamation,
@@ -135,7 +137,9 @@ export type GlyphName =
   | "unknown"
   | "copy"
   | "agent"
-  | "operator";
+  | "operator"
+  | "list"
+  | "board";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
@@ -245,12 +249,13 @@ export const GLYPHS: Record<GlyphName, IconDefinition> = {
   attachment: faPaperclip,
   unknown: faCircleQuestion,
   // Two sheets of paper, one lifted off the other: the one shape every
-  // platform's users already read as "duplicate this exactly".
   copy: faCopy,
   // The two speakers in conversation attribution: the agent, drawn with the
   // robot glyph, and the operator, drawn with the user glyph.
   agent: faRobot,
   operator: faUser,
+  list: faList,
+  board: faTableColumns,
 };
 
 export interface GlyphProps {

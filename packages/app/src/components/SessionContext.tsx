@@ -32,7 +32,8 @@ import { Body, Data, Kicker, Label } from "../design/text.tsx";
 import { radius, type SignalName, space, stroke, type as typeScale } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { PlanEntry, PlanStatus, SessionState } from "../session/model.ts";
-import { AgentHubBranch, type AgentHubNode, subagentsOf } from "./AgentHub.tsx";
+import { flattenSubagentNodes, subagentsOf } from "./AgentHub.tsx";
+import { columnForAgent, SubagentBoard } from "./SubagentBoard.tsx";
 
 /**
  * How this device reaches the open session, when that is not simply "the
@@ -158,7 +159,12 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
    * at a time while a turn streams tokens, so this is the ordinary case
    * rather than a large-fleet edge one.
    */
-  const subagents = useMemo(() => subagentsOf(props.agents, agent.id), [props.agents, agent.id]);
+  const subagentNodes = useMemo(() => subagentsOf(props.agents, agent.id), [props.agents, agent.id]);
+  const subagents = useMemo(() => flattenSubagentNodes(subagentNodes), [subagentNodes]);
+  const needsYouCount = useMemo(
+    () => subagents.filter(sub => columnForAgent(sub) === "needsYou").length,
+    [subagents],
+  );
   const phases = todoPhases(session.plan);
   const progress = todoProgress(session.plan);
   const rows = contextRows(props);
@@ -168,9 +174,16 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
 
   if (session.plan.length === 0 && subagents.length === 0 && rows.length === 0 && !explainMissingTodos) return null;
 
+  const subagentSummary =
+    subagents.length === 0
+      ? null
+      : needsYouCount > 0
+        ? `${subagents.length} ${subagents.length === 1 ? "subagent" : "subagents"}, ${needsYouCount === 1 ? "1 needs you" : `${needsYouCount} need you`}`
+        : `${subagents.length} ${subagents.length === 1 ? "subagent" : "subagents"}`;
+
   const summary = [
     session.plan.length === 0 ? null : `${progress.done}/${progress.total} todos`,
-    subagents.length === 0 ? null : `${subagents.length} ${subagents.length === 1 ? "subagent" : "subagents"}`,
+    subagentSummary,
   ]
     .filter(part => part !== null)
     .join(" · ");
@@ -281,15 +294,11 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
                     {String(subagents.length)}
                   </Chip>
                 </View>
-                {subagents.map((node: AgentHubNode) => (
-                  <AgentHubBranch
-                    key={node.agent.id}
-                    node={node}
-                    depth={0}
-                    now={props.now ?? Date.now()}
-                    onOpen={props.onOpenSubagent}
-                  />
-                ))}
+                <SubagentBoard
+                  agents={subagents}
+                  now={props.now ?? Date.now()}
+                  onOpenSubagent={props.onOpenSubagent}
+                />
               </View>
             )}
 
