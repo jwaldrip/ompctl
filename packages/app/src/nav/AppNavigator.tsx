@@ -167,7 +167,13 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
 
     if (selection.kind === "session") {
       const params = focused?.params as ShellParamList["session"] | undefined;
-      if (focused?.name === "session" && params?.agentId === selection.agentId) return;
+      // The config screen is the open session's own surface, keyed on the
+      // same agent: a roster frame arriving while it is up (the daemon
+      // re-announces the agent after a model change) rebuilds `selection`
+      // and must not pop the operator back to the log mid-choice.
+      if ((focused?.name === "session" || focused?.name === "agentConfig") && params?.agentId === selection.agentId) {
+        return;
+      }
       // Two detail surfaces never stack: the model holds one open session at a
       // time, so a switch replaces rather than buries the previous one.
       if (stackHasDetail) navigation.dispatch(StackActions.popToTop());

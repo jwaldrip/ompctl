@@ -135,6 +135,8 @@ class CannedClient {
   decidePlan(): void {}
   registerWebView(): void {}
   sessionStats(): void {}
+  readAgentConfig(): void {}
+  writeAgentConfig(): void {}
   unregisterWebView(): void {}
   webViewResult(): void {}
 }
@@ -273,6 +275,60 @@ describe("the stack opens on the fleet and comes back to it", () => {
       shell.press("terminal-back");
       expect(shell.el("terminal-session")).toBeNull();
       expect(shell.el("fleet-list")).not.toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("a roster frame arriving while a session's config screen is open leaves it open", () => {
+    // Observed 2026-09-07 on the live build: choosing a model made the daemon
+    // re-announce the agent, and the shell popped the config screen back to
+    // the log before the operator saw the answer.
+    const shell = mountShell();
+    try {
+      const scout = {
+        id: "agt_scout" as AgentId,
+        name: "Policy Scout",
+        host: { kind: "local" as const, id: "1", spec: { kind: "local" as const } },
+        cwd: "/workspace",
+        createdAt: "2026-02-01T00:01:00.000Z",
+        lastActiveAt: "2026-02-01T00:01:00.000Z",
+        parentAgentId: "agt_main" as AgentId,
+        acpSessionId: "sub-session",
+        labels: {},
+      };
+      const primary = {
+        id: "agt_main" as AgentId,
+        name: "Primary",
+        state: "busy" as const,
+        host: { kind: "local" as const, id: "1", spec: { kind: "local" as const } },
+        cwd: "/workspace",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        lastActiveAt: "2026-02-01T00:00:00.000Z",
+        labels: {},
+      };
+      act(() => {
+        shell.client.emit("agents", { t: "agents", agents: [primary, { ...scout, state: "idle" }] });
+      });
+      shell.press("agent-hub-open-agt_scout");
+      act(() => {
+        shell.client.emit("session_history", {
+          agentId: "agt_scout",
+          sessionId: "sub-session",
+          entries: [],
+          nextBefore: null,
+        });
+      });
+      shell.press("session-open-config");
+      expect(shell.el("agent-config")).not.toBeNull();
+
+      act(() => {
+        shell.client.emit("agents", {
+          t: "agents",
+          agents: [primary, { ...scout, state: "idle", model: "anthropic/claude-3-haiku-20240307" }],
+        });
+      });
+      expect(shell.el("agent-config")).not.toBeNull();
     } finally {
       shell.unmount();
     }
