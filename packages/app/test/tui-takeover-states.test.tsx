@@ -129,8 +129,6 @@ describe("terminal takeover states", () => {
     expect(html).toContain('data-testid="session-activity"');
     expect(html).toContain('data-testid="terminal-reply"');
     expect(html).toContain("checking now");
-    expect(html).toContain('data-testid="terminal-transcript-limit"');
-    expect(html).toContain("full transcript and tool output stay in the terminal");
   });
 
   test("renders a named not live TUI state and leaves the disabled control visible", () => {

@@ -970,12 +970,6 @@ export type TuiActivityKind = "assistant_text" | "turn_start" | "turn_end";
  * render. `at` is the line's own ISO timestamp, or "" for a file that carried
  * none.
  */
-export interface TranscriptTailMessage {
-  role: "user" | "assistant";
-  text: string;
-  at: string;
-}
-
 export type SessionHistoryToolKind =
   | "think"
   | "read"
@@ -987,6 +981,28 @@ export type SessionHistoryToolKind =
   | "delete"
   | "other";
 export type SessionHistoryToolStatus = "pending" | "in_progress" | "completed" | "failed";
+
+export type TranscriptTailEntry =
+  | { kind?: "text"; role: "user" | "assistant"; text: string; at: string }
+  | {
+      kind: "tool";
+      id: string;
+      title: string;
+      toolKind: SessionHistoryToolKind;
+      status: SessionHistoryToolStatus;
+      output: string | null;
+      locations: string[];
+      at: string;
+      text: string;
+      role?: undefined;
+    }
+  | { kind: "thinking"; text: string; at: string; role?: undefined };
+
+/**
+ * Prior name for TranscriptTailEntry, preserved as an alias for one release
+ * during the migration to first-class tool, thinking, and plan tail entries.
+ */
+export type TranscriptTailMessage = TranscriptTailEntry;
 
 /**
  * One durable transcript block recovered from an OMP session JSONL.
@@ -1579,7 +1595,8 @@ export type ServerFrame =
   | {
       t: "session_tail";
       sessionId: string;
-      messages: TranscriptTailMessage[];
+      entries: TranscriptTailEntry[];
+      messages: TranscriptTailEntry[];
       truncated: boolean;
       nextCursor: number | null;
       cursor?: number;

@@ -299,13 +299,22 @@ describe("the session tail websocket frame", () => {
     if (!isTailFrame(reply)) throw new Error("expected a session_tail frame");
 
     expect(reply.sessionId).toBe(SESSION);
-    // Only words, and only from the two speakers: the tool result carried a
-    // text block and the last assistant turn carried thinking plus a tool
-    // call, and neither is anybody's words.
     expect(reply.messages).toEqual([
-      { role: "user", text: "one", at: "2026-08-13T00:00:01.000Z" },
-      { role: "assistant", text: "two", at: "2026-08-13T00:00:02.000Z" },
-      { role: "user", text: "three", at: "2026-08-13T00:00:05.000Z" },
+      { kind: "text", role: "user", text: "one", at: "2026-08-13T00:00:01.000Z" },
+      { kind: "text", role: "assistant", text: "two", at: "2026-08-13T00:00:02.000Z" },
+      { kind: "thinking", text: "not words", at: "2026-08-13T00:00:04.000Z" },
+      {
+        kind: "tool",
+        id: "tool-1",
+        title: "bash",
+        toolKind: "execute",
+        status: "pending",
+        output: null,
+        locations: [],
+        at: "2026-08-13T00:00:04.000Z",
+        text: "bash",
+      },
+      { kind: "text", role: "user", text: "three", at: "2026-08-13T00:00:05.000Z" },
     ]);
     expect(reply.truncated).toBe(false);
     socket.close();
@@ -335,7 +344,9 @@ describe("the session tail websocket frame", () => {
     const reply = await socket.next(isTailFrame, "session tail frame");
     if (!isTailFrame(reply)) throw new Error("expected a session_tail frame");
 
-    expect(reply.messages).toEqual([{ role: "assistant", text: "the last word", at: "2026-08-13T09:00:00.000Z" }]);
+    expect(reply.messages).toEqual([
+      { kind: "text", role: "assistant", text: "the last word", at: "2026-08-13T09:00:00.000Z" },
+    ]);
     expect(reply.truncated).toBe(true);
     socket.close();
   });
@@ -452,7 +463,7 @@ describe("the session tail websocket frame", () => {
 
     // Newest first by page, oldest first within each, and every turn of the
     // file arrives exactly once.
-    expect(texts).toEqual(["three", "two", "one"]);
+    expect(texts).toEqual(["three", "bash", "two", "one"]);
     expect(cursors.at(-1)).toBeNull();
     socket.close();
   });

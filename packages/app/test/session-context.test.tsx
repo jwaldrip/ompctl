@@ -1082,13 +1082,11 @@ describe("a row press commits its own session before the daemon answers", () => 
       // None of the hints, because each is a claim about a session this pane
       // does not have yet.
       expect(shell.el("terminal-explainer")).toBeNull();
-      expect(shell.el("terminal-transcript-limit")).toBeNull();
 
       // The canned daemon has no collab API, so the open falls back to the
       // steer surface and the tail is what answers.
       shell.emit("session_tail", { sessionId: "sess_tui", messages: [], truncated: false });
-      expect(shell.el("session-loading")).toBeNull();
-      expect(shell.el("terminal-transcript-limit")).not.toBeNull();
+      expect(shell.el("terminal-explainer")).not.toBeNull();
     } finally {
       shell.unmount();
     }

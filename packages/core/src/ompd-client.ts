@@ -50,7 +50,7 @@ import type {
   SkillSummary,
   SyncSettings,
   Task,
-  TranscriptTailMessage,
+  TranscriptTailEntry,
   TuiActivityKind,
   TuiSteerDelivery,
   WebViewAction,
@@ -561,7 +561,8 @@ export interface CloneDoneEvent {
  */
 export interface SessionTailEvent {
   sessionId: string;
-  messages: TranscriptTailMessage[];
+  entries?: TranscriptTailEntry[];
+  messages: TranscriptTailEntry[];
   truncated: boolean;
   nextCursor: number | null;
   cursor?: number;
@@ -1758,10 +1759,12 @@ export class OmpdClient {
       case "clone_done":
         this.emit("clone_done", { cloneId: frame.cloneId, path: frame.path });
         return;
-      case "session_tail":
+      case "session_tail": {
+        const entries = frame.entries ?? frame.messages ?? [];
         this.emit("session_tail", {
           sessionId: frame.sessionId,
-          messages: frame.messages,
+          entries,
+          messages: entries,
           truncated: frame.truncated,
           // An older daemon sends neither cursor field. Absent `nextCursor`
           // has to read as "no older page reachable" rather than as zero,
@@ -1770,6 +1773,7 @@ export class OmpdClient {
           ...(frame.cursor === undefined ? {} : { cursor: frame.cursor }),
         });
         return;
+      }
       case "session_stats":
         this.emit("session_stats", {
           sessionId: frame.sessionId,

@@ -116,7 +116,7 @@ describe("readSessionTail", () => {
     expect(tail.truncated).toBe(false);
   });
 
-  test("tool calls, thinking, and tool results never surface as words", async () => {
+  test("tool calls, thinking, and text blocks surface as entries while tool results update tool status", async () => {
     const path = sessionFile([
       ...PREAMBLE,
       {
@@ -127,20 +127,17 @@ describe("readSessionTail", () => {
           role: "assistant",
           content: [
             { type: "thinking", text: "the operator probably wants the deploy status" },
-            { type: "toolCall", toolName: "bash", input: { command: "git status" } },
+            { type: "toolCall", id: "x", toolName: "bash", input: { command: "git status" } },
             { type: "text", text: "checking now" },
           ],
         },
       },
-      // An assistant turn that only reached for a tool said nothing at all.
       {
         type: "message",
         id: "b",
         timestamp: "2026-08-13T00:00:02.000Z",
-        message: { role: "assistant", content: [{ type: "toolCall", toolName: "bash", input: {} }] },
+        message: { role: "assistant", content: [{ type: "toolCall", id: "y", toolName: "bash", input: {} }] },
       },
-      // A tool result is not a speaker: it carries a text block, and a reader
-      // keyed on block type alone would attribute it to the agent.
       {
         type: "message",
         id: "c",
@@ -157,7 +154,32 @@ describe("readSessionTail", () => {
 
     const tail = await readSessionTail(path);
 
-    expect(tail.messages).toEqual([{ role: "assistant", text: "checking now", at: "2026-08-13T00:00:01.000Z" }]);
+    expect(tail.entries).toEqual([
+      { kind: "thinking", text: "the operator probably wants the deploy status", at: "2026-08-13T00:00:01.000Z" },
+      {
+        kind: "tool",
+        id: "x",
+        title: "bash",
+        toolKind: "execute",
+        status: "completed",
+        output: "nothing to commit, working tree clean",
+        locations: [],
+        at: "2026-08-13T00:00:01.000Z",
+        text: "nothing to commit, working tree clean",
+      },
+      { kind: "text", role: "assistant", text: "checking now", at: "2026-08-13T00:00:01.000Z" },
+      {
+        kind: "tool",
+        id: "y",
+        title: "bash",
+        toolKind: "execute",
+        status: "pending",
+        output: null,
+        locations: [],
+        at: "2026-08-13T00:00:02.000Z",
+        text: "bash",
+      },
+    ]);
   });
 
   test("a user turn whose content is a bare string is a turn, not a dropped row", async () => {
@@ -179,9 +201,9 @@ describe("readSessionTail", () => {
     const tail = await readSessionTail(path);
 
     expect(tail.messages).toEqual([
-      { role: "user", text: "yes", at: "2026-08-13T00:00:01.000Z" },
-      { role: "assistant", text: "on it", at: "2026-08-13T00:00:02.000Z" },
-      { role: "user", text: "and the other thing", at: "2026-08-13T00:00:03.000Z" },
+      { kind: "text", role: "user", text: "yes", at: "2026-08-13T00:00:01.000Z" },
+      { kind: "text", role: "assistant", text: "on it", at: "2026-08-13T00:00:02.000Z" },
+      { kind: "text", role: "user", text: "and the other thing", at: "2026-08-13T00:00:03.000Z" },
     ]);
   });
 
@@ -199,7 +221,9 @@ describe("readSessionTail", () => {
     const tail = await readSessionTail(path, { limit: 1 });
     const took = performance.now() - started;
 
-    expect(tail.messages).toEqual([{ role: "assistant", text: "the last word", at: "2026-08-13T00:00:00.000Z" }]);
+    expect(tail.messages).toEqual([
+      { kind: "text", role: "assistant", text: "the last word", at: "2026-08-13T00:00:00.000Z" },
+    ]);
     expect(tail.truncated).toBe(true);
     // The two-leg guarantee: one budget looking for words, one collecting
     // them, and never the file's size. A forward reader would have paid for
@@ -330,7 +354,7 @@ describe("readSessionTail", () => {
   test("a missing file answers with an empty tail instead of throwing", async () => {
     const tail = await readSessionTail("/no/such/session.jsonl");
 
-    expect(tail).toEqual({ messages: [], truncated: false, bytesRead: 0, nextCursor: null });
+    expect(tail).toEqual({ entries: [], messages: [], truncated: false, bytesRead: 0, nextCursor: null });
   });
 
   test("an empty file answers with an empty tail", async () => {
@@ -399,8 +423,8 @@ describe("readSessionTail", () => {
     const tail = await readSessionTail(path);
 
     expect(tail.messages).toEqual([
-      { role: "user", text: "no stamp", at: "" },
-      { role: "assistant", text: "stamped", at: "2026-08-13T12:34:56.789Z" },
+      { kind: "text", role: "user", text: "no stamp", at: "" },
+      { kind: "text", role: "assistant", text: "stamped", at: "2026-08-13T12:34:56.789Z" },
     ]);
   });
 
@@ -538,7 +562,7 @@ describe("readSessionTail", () => {
       // The file's start is an answer, not a spinner: asking past it costs
       // nothing and says so plainly.
       const past = await readSessionTail(path, { limit: 1, cursor: 0 });
-      expect(past).toEqual({ messages: [], truncated: false, bytesRead: 0, nextCursor: null });
+      expect(past).toEqual({ entries: [], messages: [], truncated: false, bytesRead: 0, nextCursor: null });
     });
 
     test("a cursor at or past the end of file answers exhausted rather than re-serving the newest turns", async () => {
@@ -546,6 +570,7 @@ describe("readSessionTail", () => {
       const size = statSync(path).size;
 
       expect(await readSessionTail(path, { cursor: size })).toEqual({
+        entries: [],
         messages: [],
         truncated: false,
         bytesRead: 0,
@@ -553,6 +578,7 @@ describe("readSessionTail", () => {
       });
       // Past the end can only mean the file shrank under a stale cursor.
       expect(await readSessionTail(path, { cursor: size * 10 })).toEqual({
+        entries: [],
         messages: [],
         truncated: false,
         bytesRead: 0,
@@ -580,6 +606,56 @@ describe("readSessionTail", () => {
       expect(second.messages.map(m => m.text)).toEqual(["old one"]);
       expect(second.nextCursor).toBeNull();
     });
+  });
+
+  test("a fixture JSONL containing a tool-call turn yields a tool entry", async () => {
+    const path = sessionFile([
+      ...PREAMBLE,
+      {
+        type: "message",
+        id: "call-turn",
+        timestamp: "2026-08-13T00:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call_1",
+              name: "read",
+              arguments: { path: "src/index.ts" },
+            },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "result-turn",
+        timestamp: "2026-08-13T00:00:02.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call_1",
+          toolName: "read",
+          content: [{ type: "text", text: "export const answer = 42;" }],
+          isError: false,
+        },
+      },
+    ]);
+
+    const tail = await readSessionTail(path);
+
+    expect(tail.entries).toEqual([
+      {
+        kind: "tool",
+        id: "call_1",
+        title: "read",
+        toolKind: "read",
+        status: "completed",
+        output: "export const answer = 42;",
+        locations: ["src/index.ts"],
+        at: "2026-08-13T00:00:01.000Z",
+        text: "export const answer = 42;",
+      },
+    ]);
   });
 });
 
