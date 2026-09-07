@@ -25,7 +25,6 @@ import "./rnw.ts";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ScopeAccess } from "../src/console/state.ts";
-import type { FleetLink } from "../src/screens/FleetScreen.tsx";
 import type { BrowserSession, BrowserState } from "../src/session/browser.ts";
 import { EMPTY_BROWSER } from "../src/session/browser.ts";
 import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
@@ -35,6 +34,9 @@ import { makeSessionCorpus } from "./fixtures/session-corpus.ts";
 // could substitute it.
 const { FleetScreen } = await import("../src/screens/FleetScreen.tsx");
 const { StyleSheet } = await import("react-native");
+
+/** Read off the screen rather than imported by name: see the note above the dynamic imports. */
+type FleetLink = Parameters<typeof FleetScreen>[0]["link"];
 
 const NOW = Date.parse("2026-03-01T00:00:00.000Z");
 const CORPUS = makeSessionCorpus(12);

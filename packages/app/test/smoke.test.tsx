@@ -174,6 +174,57 @@ describe("the transcript renders from canned frames", () => {
     expect(html).toContain("Always");
   });
 
+  test("a pending clearance is pinned above the readout as well as logged, until it settles", () => {
+    // The log's copy can be scrolled out of sight behind a context strip and a
+    // screenful of tool cards; on 2026-09-06 two clearances timed out into
+    // refusals on a phone whose operator never saw a card. The tray sits
+    // between the transcript and the readout, so it is on screen whatever the
+    // log is doing, and carries the same card with the same decisions.
+    const tray = html.indexOf('data-testid="session-clearances"');
+    const readout = html.indexOf('data-testid="status-readout"');
+    const list = html.indexOf('data-testid="aui-messages"');
+    expect(tray).toBeGreaterThan(-1);
+    expect(list).toBeLessThan(tray);
+    expect(tray).toBeLessThan(readout);
+    const trayMarkup = html.slice(tray, readout);
+    expect(trayMarkup).toContain("rm -rf ./dist");
+    expect(trayMarkup).toContain("Allow");
+    expect(trayMarkup).toContain("Reject");
+
+    // Settled, it leaves the tray and stays in the log as the record.
+    const settled = apply(STATE, { t: "decide", agentId: OPEN.id, requestId: "req_42", choice: "allow" });
+    const after = renderToStaticMarkup(
+      <SessionScreen
+        agent={OPEN}
+        session={sessionFor(settled, OPEN.id)}
+        load={{ phase: "ready", generation: 0, error: null }}
+        context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
+        connection={settled.connection}
+        attempt={settled.attempt}
+        canApprove
+        voice={{
+          access: "unknown",
+          mic: { available: false, reason: "no microphone in this test" },
+          speech: { available: false, reason: "no playback in this test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        }}
+        spoken={null}
+        fleetClearances={fleetClearances(settled)}
+        onBack={() => {}}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+        onDecide={() => {}}
+        onDecidePlan={() => {}}
+        now={NOW}
+      />,
+    );
+    expect(after).not.toContain('data-testid="session-clearances"');
+    expect(after).toContain("rm -rf ./dist");
+  });
+
   test("the daemon's spoken summary is shown, because this build has no voice", () => {
     expect(html).toContain("Four calls ran and the notes file is written.");
   });
