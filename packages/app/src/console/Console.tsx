@@ -39,6 +39,7 @@ import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
 import { AppNavigator } from "../nav/AppNavigator.tsx";
 import type { Connection, ConnectionList } from "../platform/connection.ts";
+import { loadViewPrefs, saveViewPrefs } from "../platform/view-prefs.ts";
 import { AgentConfigScreen } from "../screens/AgentConfigScreen.tsx";
 import { ConnectionSwitcherScreen } from "../screens/ConnectionSwitcherScreen.tsx";
 import { CoworkScreen } from "../screens/CoworkScreen.tsx";
@@ -104,7 +105,37 @@ export function Console({
   // their reasons live with the other layout rules in design/layout.ts.
   const bayWidth = useSplitBayWidth();
   const [browser, dispatchBrowser] = useReducer(browserReduce, EMPTY_BROWSER);
+  const [hubDismissed, setHubDismissed] = useState(false);
+  const prefsLoadedRef = useRef(false);
 
+  useEffect(() => {
+    let mounted = true;
+    void loadViewPrefs().then(prefs => {
+      if (!mounted) return;
+      prefsLoadedRef.current = true;
+      dispatchBrowser({ t: "hydratePrefs", prefs });
+      if (prefs.hubDismissed) {
+        setHubDismissed(true);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return;
+    void saveViewPrefs({
+      sort: browser.sort,
+      grouped: browser.grouped,
+      project: browser.project,
+      hubDismissed,
+    });
+  }, [browser.sort, browser.grouped, browser.project, hubDismissed]);
+
+  const onToggleHubDismiss = useCallback(() => {
+    setHubDismissed(prev => !prev);
+  }, []);
   useEffect(() => {
     if (state.unauthorized === null) return;
     onUnpair(`${state.unauthorized} Pair this device again to carry on.`);
@@ -222,6 +253,12 @@ export function Console({
   }, []);
   const onToggleArchived = useCallback(() => {
     dispatchBrowser({ t: "toggleArchived" });
+  }, []);
+  const onSetProject = useCallback((project: string | null) => {
+    dispatchBrowser({ t: "setProject", project });
+  }, []);
+  const onSetQuery = useCallback((query: string) => {
+    dispatchBrowser({ t: "setQuery", query });
   }, []);
   const onArchive = useCallback((session: BrowserSession) => {
     dispatchBrowser({ t: "archive", id: session.id });
@@ -488,7 +525,12 @@ export function Console({
       <SafeScreen testID="fleet-surface" edges={{ bottom: !split }}>
         <View style={split ? styles.splitLayout : styles.singleLayout}>
           <View style={split ? [styles.splitBay, { width: bayWidth }] : styles.bay}>
-            <AgentHub agents={state.agents} onOpen={onOpenAgent} />
+            <AgentHub
+              agents={state.agents}
+              onOpen={onOpenAgent}
+              collapsed={hubDismissed}
+              onToggleCollapse={onToggleHubDismiss}
+            />
             <FleetScreen
               browser={browser}
               onSort={onSort}
@@ -501,6 +543,8 @@ export function Console({
               onDelete={onDelete}
               deleteAccess={manageScopeAccess(state, connection.scopes)}
               link={fleetLink}
+              onSetProject={onSetProject}
+              onSetQuery={onSetQuery}
             />
           </View>
           {/*

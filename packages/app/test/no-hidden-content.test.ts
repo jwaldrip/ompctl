@@ -75,13 +75,12 @@ function styleBlock(text: string, name: string): string {
 }
 
 describe("a session row cannot paint under its own actions", () => {
-  test("the row clips, the body can shrink, and the readings wrap", async () => {
+  test("the row clips and the body can shrink", async () => {
     const text = await source("src/components/SessionRow.tsx");
     expect(styleBlock(text, "row")).toContain('overflow: "hidden"');
     // Without this the readings set a floor the body cannot go under, and the
     // overflow lands beneath the actions.
     expect(styleBlock(text, "body")).toContain("minWidth: 0");
-    expect(styleBlock(text, "readings")).toContain('flexWrap: "wrap"');
   });
 });
 

@@ -127,8 +127,8 @@ describe("RNW style rule scoping", () => {
 describe("the session browser renders a realistic corpus", () => {
   const html = render(browserState());
 
-  test("every group in the mounted window carries its directory name and count", () => {
-    const windowed = render(windowedState());
+  test("every group carries its directory name and count when grouping is enabled", () => {
+    const windowed = render(windowedState({ grouped: true }));
     for (let d = 0; d < 3; d++) {
       expect(windowed).toContain(`repo-${d}`);
       expect(windowed).toContain(`data-testid="group-count-/Users/op/dev/src/github.com/op/repo-${d}"`);
@@ -148,9 +148,9 @@ describe("the session browser renders a realistic corpus", () => {
     expect(html).toContain(`>${archivedCount}<`);
   });
 
-  test("the active sort is nameable: the default status chip is marked active", () => {
-    expect(html).toContain(`data-testid="sort-chip-status"`);
-    expect(html).toContain(`data-testid="sort-direction-status"`);
+  test("the active sort is nameable: the default recency activity chip is marked active", () => {
+    expect(html).toContain(`data-testid="sort-chip-lastActive"`);
+    expect(html).toContain(`data-testid="sort-direction-lastActive"`);
   });
 
   test("nothing renders an emoji where an icon belongs", () => {
@@ -260,7 +260,7 @@ describe("open and archive are visually distinct actions", () => {
 describe("collapsed group status precedence, rendered", () => {
   test("a collapsed group still shows its count and worst-status colour", () => {
     const dir = "/Users/op/dev/src/github.com/op/repo-0"; // 1 session, live-tui (d=0,i=0 -> statuses[0])
-    const collapsed: BrowserState = windowedState({ collapsedGroups: new Set([dir]) });
+    const collapsed: BrowserState = windowedState({ grouped: true, collapsedGroups: new Set([dir]) });
     const html = render(collapsed);
     expect(html).toContain(`data-testid="group-header-${dir}"`);
     expect(html).toContain(`data-testid="group-count-${dir}"`);
@@ -275,8 +275,8 @@ describe("collapsed group status precedence, rendered", () => {
     // Show archived too, so every session in the group is accounted for
     // regardless of status; the point here is collapse, not visibility.
     const group = WINDOWED.filter(s => s.cwd === dir);
-    const expanded = render(windowedState({ showArchived: true }));
-    const collapsed = render(windowedState({ showArchived: true, collapsedGroups: new Set([dir]) }));
+    const expanded = render(windowedState({ grouped: true, showArchived: true }));
+    const collapsed = render(windowedState({ grouped: true, showArchived: true, collapsedGroups: new Set([dir]) }));
 
     expect(group.length).toBeGreaterThan(1);
     for (const session of group) {
@@ -289,13 +289,43 @@ describe("collapsed group status precedence, rendered", () => {
 });
 
 describe("grouping toggle", () => {
-  test("turning grouping off renders a flat list with cwd shown per row", () => {
-    const html = render(windowedState({ grouped: false }));
+  test("default is a flat list without group headers", () => {
+    const html = render(windowedState());
     expect(html).not.toContain('data-testid="group-header-');
-    // Every row of the small corpus, from three different directories.
     for (const session of WINDOWED.filter(s => s.status !== "archived")) {
       expect(html).toContain(`data-testid="session-row-${session.id}"`);
     }
+  });
+
+  test("turning grouping on renders group headers", () => {
+    const html = render(windowedState({ grouped: true }));
+    expect(html).toContain('data-testid="group-header-');
+  });
+});
+
+describe("search and project filters, rendered", () => {
+  test("renders search input with placeholder", () => {
+    const html = render(browserState());
+    expect(html).toContain('data-testid="fleet-search"');
+    expect(html).toContain('placeholder="Search sessions..."');
+  });
+
+  test("renders project filter chips with All projects first", () => {
+    const html = render(browserState());
+    expect(html).toContain('data-testid="project-filter-bar"');
+    expect(html).toContain('data-testid="project-chip-all"');
+    expect(html).toContain("All projects");
+    // Checks basename chip for repo-0
+    expect(html).toContain('data-testid="project-chip-repo-0"');
+  });
+
+  test("row metrics container has no-wrap style and single-line structure", () => {
+    const html = render(windowedState());
+    // Check each session has its metrics container
+    const target = WINDOWED[0]?.id as string;
+    expect(html).toContain(`data-testid="session-metrics-${target}"`);
+    // Style sheet includes nowrap for flexWrap
+    expect(html).toContain("flex-wrap:nowrap");
   });
 });
 

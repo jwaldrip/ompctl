@@ -196,7 +196,7 @@ export const SessionRow = memo(function SessionRow({
           </View>
         ) : null}
 
-        <View style={styles.readings}>
+        <View style={styles.readings} testID={`session-metrics-${session.id}`}>
           <Reading testID={`session-age-${session.id}`} value={formatAge(session.createdAt, now)} label="age" />
           <Reading
             testID={`session-active-${session.id}`}
@@ -242,7 +242,7 @@ export const SessionRow = memo(function SessionRow({
           onPress={arm}
           style={deleteActionStyle}
         >
-          <Glyph name="delete" size={13} color={deleteAccess === "missing" ? ink.faint : signal.oxide} />
+          <Glyph name="activity" size={13} color={ink.faint} />
         </Pressable>
       </View>
     </View>
@@ -252,10 +252,10 @@ export const SessionRow = memo(function SessionRow({
 function Reading({ value, label, testID }: { value: string; label: string; testID: string }): JSX.Element {
   return (
     <View style={styles.reading}>
-      <Data color={ink.plain} testID={testID}>
+      <Data color={ink.plain} testID={testID} numberOfLines={1}>
         {value}
       </Data>
-      <Label color={ink.faint} style={styles.readingLabel}>
+      <Label color={ink.faint} style={styles.readingLabel} numberOfLines={1}>
         {label}
       </Label>
     </View>
@@ -284,13 +284,13 @@ const styles = StyleSheet.create({
   title: { flexShrink: 1 },
   cwdRow: { flexDirection: "row", alignItems: "center", gap: space.tight },
   cwd: { flex: 1, minWidth: 0 },
-  // Wrapping rather than truncating: these are four short facts, and a
-  // narrow pane should cost a second line, not a severed number.
+  // Kept on one line: short facts with snug spacing and single-line labels
+  // that fit cleanly across a 390px phone without wrapping.
   readings: {
     flexDirection: "row",
-    flexWrap: "wrap",
+    flexWrap: "nowrap",
     alignItems: "center",
-    gap: space.wide,
+    gap: space.snug,
     marginTop: space.hair,
   },
   reading: { flexDirection: "row", alignItems: "baseline", gap: space.tight },
@@ -313,15 +313,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  // Separated from archive by a heavier rule than the hairlines elsewhere in
-  // this row, because the two controls beside each other are the reversible
-  // action and the irreversible one, and the eye needs to be told.
   deleteAction: {
     width: TOUCH_TARGET,
     alignItems: "center",
     justifyContent: "center",
-    borderLeftWidth: stroke.heavy,
-    borderLeftColor: ground.edge,
+    borderLeftWidth: stroke.hair,
+    borderLeftColor: ground.line,
   },
   // The armed band's own controls. The destructive one sits at the leading
   // edge, where the title was and where no control was before, so no muscle
