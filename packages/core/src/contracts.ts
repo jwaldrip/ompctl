@@ -1319,13 +1319,22 @@ export type ClientFrame =
    */
   | { t: "agent_config_read"; agentId: AgentId }
   /**
-   * Move one agent's session onto `modeId`. One-shot like the other
-   * instructions: never replayed after a reconnect, so the operator retaps
-   * rather than wonders. Answered by `agent_config` carrying what the daemon
-   * reads back after the session applied it, so a client renders confirmed
-   * state and never its own request.
+   * Set one config option on an agent's session (e.g. mode, model, thinking).
+   * One-shot like the other instructions: never replayed after a reconnect,
+   * so the operator retaps rather than wonders. Answered by `agent_config`
+   * carrying what the daemon reads back after the session applied it, so a
+   * client renders confirmed state and never its own request.
+   *
+   * Note: modeId is deprecated and kept for one release for backward
+   * compatibility with older clients; maps to `{ optionId: "mode", value: modeId }`.
    */
-  | { t: "agent_config_write"; agentId: AgentId; modeId: string }
+  | {
+      t: "agent_config_write";
+      agentId: AgentId;
+      optionId?: string;
+      value?: string;
+      modeId?: string;
+    }
   /**
    * The Cowork catalogue reads, sealed-socket versions of `GET /v1/skills`
    * and `GET /v1/connectors`. A hub-paired phone reaches these frames rather

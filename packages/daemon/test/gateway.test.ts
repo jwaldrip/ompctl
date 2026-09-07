@@ -2143,6 +2143,36 @@ describe("session modes", () => {
     expect(res.status).toBe(400);
     expect(h.fake.modeOf(agent.acpSessionId ?? "")).toBe("default");
   });
+  test("setting the model reaches the agent and is reflected back", async () => {
+    const h = await harness();
+    const operator = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT]);
+    const agent = await createAgent(h, operator, "worker");
+
+    const res = await h.http(
+      `/v1/agents/${agent.id}/config`,
+      { method: "POST", body: JSON.stringify({ optionId: "model", value: "openai/gpt-5.4" }) },
+      operator,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { configOptions: Array<{ id: string; currentValue: string }> };
+    expect(body.configOptions.find(option => option.id === "model")?.currentValue).toBe("openai/gpt-5.4");
+    expect(h.fake.modelOf(agent.acpSessionId ?? "")).toBe("openai/gpt-5.4");
+  });
+
+  test("an option id the session never offered is refused before it reaches the agent over HTTP", async () => {
+    const h = await harness();
+    const operator = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE, SCOPE_PROMPT]);
+    const agent = await createAgent(h, operator, "worker");
+
+    const res = await h.http(
+      `/v1/agents/${agent.id}/config`,
+      { method: "POST", body: JSON.stringify({ optionId: "speed", value: "fast" }) },
+      operator,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("unknown_option");
+  });
 
   test("reading the mode needs read and setting it needs prompt", async () => {
     const h = await harness();

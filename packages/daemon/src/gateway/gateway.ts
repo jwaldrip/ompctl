@@ -2089,35 +2089,62 @@ export class Gateway {
         return Response.json({ agentId: agent.id, configOptions: options });
       }
 
-      let body: { modeId?: unknown };
+      let body: { modeId?: unknown; optionId?: unknown; value?: unknown };
       try {
         body = (await req.json()) as typeof body;
       } catch {
         return Response.json({ error: "bad_json" }, { status: 400 });
       }
-      if (typeof body.modeId !== "string") {
-        return Response.json({ error: "modeId is required" }, { status: 400 });
+
+      const optionId =
+        typeof body.optionId === "string" && body.optionId.length > 0
+          ? body.optionId
+          : typeof body.modeId === "string" && body.modeId.length > 0
+            ? MODE_OPTION_ID
+            : undefined;
+      const value =
+        typeof body.value === "string" && body.value.length > 0
+          ? body.value
+          : typeof body.modeId === "string" && body.modeId.length > 0
+            ? body.modeId
+            : undefined;
+
+      if (optionId === undefined || value === undefined) {
+        return Response.json({ error: "optionId and value are required" }, { status: 400 });
       }
 
-      // Checked against what this session actually offers. Forwarding an
-      // unknown mode would either be ignored or wedge the turn, and both look
-      // like the daemon losing the request.
-      const known = sessions.configFor(sessionId)?.find(option => option.id === MODE_OPTION_ID);
-      if (known && !known.options.some(choice => choice.value === body.modeId)) {
+      const advertised = sessions.configFor(sessionId);
+      const knownOption = advertised?.find(option => option.id === optionId);
+      if (!knownOption) {
         return Response.json(
-          { error: "unknown_mode", known: known.options.map(choice => choice.value) },
+          {
+            error: "unknown_option",
+            message: `agent ${agent.id} has no config option ${optionId}; it offers ${advertised?.map(o => o.id).join(", ") ?? "none"}`,
+          },
+          { status: 400 },
+        );
+      }
+
+      if (!knownOption.options.some(choice => choice.value === value)) {
+        const code = optionId === MODE_OPTION_ID ? "unknown_mode" : "unknown_value";
+        return Response.json(
+          {
+            error: code,
+            message: `option ${optionId} has no value ${value}; it offers ${knownOption.options.map(c => c.value).join(", ")}`,
+            known: knownOption.options.map(choice => choice.value),
+          },
           { status: 400 },
         );
       }
 
       try {
-        // Not audited: `AuditAction` is a frozen closed union with no member
-        // for a mode change, and recording this under a member that means
-        // something else would corrupt the audit log to fake coverage.
-        const options = await sessions.setMode(sessionId, body.modeId);
+        const options = await sessions.setConfigOption(sessionId, optionId, value);
         return Response.json({ agentId: agent.id, configOptions: options });
       } catch (err) {
-        return Response.json({ error: err instanceof Error ? err.message : "set_mode failed" }, { status: 502 });
+        return Response.json(
+          { error: err instanceof Error ? err.message : "set_config_option failed" },
+          { status: 502 },
+        );
       }
     }
 
@@ -4524,40 +4551,61 @@ export class Gateway {
         // The wire is not a place to assume anyone kept to the contract: the
         // same value checks the HTTP route runs on its body, on the two fields
         // this frame owns.
+        const optionId =
+          typeof frame.optionId === "string" && frame.optionId.length > 0
+            ? frame.optionId
+            : typeof frame.modeId === "string" && frame.modeId.length > 0
+              ? MODE_OPTION_ID
+              : undefined;
+        const value =
+          typeof frame.value === "string" && frame.value.length > 0
+            ? frame.value
+            : typeof frame.modeId === "string" && frame.modeId.length > 0
+              ? frame.modeId
+              : undefined;
+
         if (
           typeof frame.agentId !== "string" ||
           frame.agentId.length === 0 ||
-          typeof frame.modeId !== "string" ||
-          frame.modeId.length === 0
+          optionId === undefined ||
+          value === undefined
         ) {
           this.#send(ws, {
             t: "error",
             code: "bad_frame",
-            message: "agent_config_write needs an agentId and a non-empty modeId",
+            message: "agent_config_write needs an agentId and a non-empty optionId and value",
           });
           return;
         }
         const target = this.#resolveAgentSession(ws, frame.agentId);
         if (!target) return;
-        // Checked against what this session actually offers, exactly as the
-        // HTTP route does: forwarding an unknown mode would either be ignored
-        // or wedge the turn, and both look like the daemon losing the request.
-        const known = target.sessions.configFor(target.sessionId)?.find(option => option.id === MODE_OPTION_ID);
-        if (known && !known.options.some(choice => choice.value === frame.modeId)) {
+
+        const advertised = target.sessions.configFor(target.sessionId);
+        const knownOption = advertised?.find(option => option.id === optionId);
+        if (!knownOption) {
           this.#send(ws, {
             t: "error",
             agentId: frame.agentId,
-            code: "unknown_mode",
-            message: `agent ${frame.agentId} has no mode ${frame.modeId}; it offers ${known.options
+            code: "unknown_option",
+            message: `agent ${frame.agentId} has no config option ${optionId}; it offers ${advertised?.map(o => o.id).join(", ") ?? "none"}`,
+          });
+          return;
+        }
+
+        if (!knownOption.options.some(choice => choice.value === value)) {
+          const code = optionId === MODE_OPTION_ID ? "unknown_mode" : "unknown_value";
+          this.#send(ws, {
+            t: "error",
+            agentId: frame.agentId,
+            code,
+            message: `agent ${frame.agentId} option ${optionId} has no value ${value}; it offers ${knownOption.options
               .map(choice => choice.value)
               .join(", ")}`,
           });
           return;
         }
-        // Detached like the session index reply, and for the same reason:
-        // `session/set_mode` is a round trip to the agent, and every socket
-        // must keep being served while one client's mode change lands.
-        void this.#serveAgentConfigWrite(ws, target.sessions, target.sessionId, frame.agentId, frame.modeId);
+
+        void this.#serveAgentConfigWrite(ws, target.sessions, target.sessionId, frame.agentId, optionId, value);
         return;
       }
 
@@ -6160,34 +6208,28 @@ export class Gateway {
   }
 
   /**
-   * One socket `agent_config_write`: the mode asked of the session, then the
-   * daemon's read-back of what that session now holds. The reply carries the
-   * read-back rather than the request, so a client renders the mode the agent
-   * actually runs under even if the agent settled somewhere else.
+   * One socket agent_config_write: the option and value asked of the session,
+   * then the daemon's read-back of what that session now holds. The reply
+   * carries the read-back rather than the request, so a client renders the state
+   * the agent actually runs under even if the agent settled somewhere else.
    */
   async #serveAgentConfigWrite(
     ws: GatewaySocket,
     sessions: SessionConfig,
     sessionId: string,
     agentId: AgentId,
-    modeId: string,
+    optionId: string,
+    value: string,
   ): Promise<void> {
     try {
-      // Not audited, for the reason the HTTP route names: `AuditAction` is a
-      // frozen closed union with no member for a mode change, and recording
-      // this under a member that means something else would corrupt the audit
-      // log to fake coverage.
-      const options = await sessions.setMode(sessionId, modeId);
+      const options = await sessions.setConfigOption(sessionId, optionId, value);
       this.#send(ws, { t: "agent_config", agentId, configOptions: options });
     } catch (err) {
-      // Detached from `#handle`, so its last-line-of-defence try/catch no
-      // longer covers this: a mode change that cannot land must still cost the
-      // asking socket exactly one error frame, never a dropped one.
       this.#send(ws, {
         t: "error",
         agentId,
         code: "agent_config_failed",
-        message: err instanceof Error ? err.message : "set_mode failed",
+        message: err instanceof Error ? err.message : "set_config_option failed",
       });
     }
   }

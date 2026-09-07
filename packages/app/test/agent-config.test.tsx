@@ -52,7 +52,7 @@ const CONFIG_URL = "http://127.0.0.1:7777/v1/agents/agt_probe/config";
  * what the daemon's own fake host reports `omp acp` sends: a mode the route
  * can set, and a model it can only read back.
  */
-function config(modeValue: string): unknown {
+function config(modeValue = "default", modelValue = "anthropic/claude-opus-5"): unknown {
   return {
     agentId: "agt_probe",
     configOptions: [
@@ -72,10 +72,11 @@ function config(modeValue: string): unknown {
         name: "Model",
         category: "model",
         type: "select",
-        currentValue: "anthropic/claude-opus-5",
+        currentValue: modelValue,
         options: [
           { value: "anthropic/claude-opus-5", name: "Claude Opus 5" },
           { value: "openai/gpt-5.4", name: "GPT-5.4" },
+          { value: "google/gemini-3.8-flash", name: "Gemini 3.8 Flash" },
         ],
       },
     ],
@@ -207,16 +208,33 @@ describe("the options a session offers", () => {
     m.unmount();
   });
 
-  test("a model choice reads as inert beside the reason this route cannot set it", async () => {
-    serve(() => Response.json(config("default")));
+  test("renders a model picker from a fixture with three options and allows changing model", async () => {
+    const calls = serve(call =>
+      call.method === "POST"
+        ? Response.json(config("default", "openai/gpt-5.4"))
+        : Response.json(config("default", "anthropic/claude-opus-5")),
+    );
     const m = mountConfig(DIRECT);
     await settle();
 
-    const other = m.el("agent-config-choice-model-openai/gpt-5.4");
-    expect(readsDisabled(other)).toBe(true);
-    // Present and named, not hidden: the operator learns what the screen
-    // will not do from the screen itself.
-    expect(m.el("agent-config-option-model-reason")?.textContent).toContain("mode only");
+    // Three model options are rendered
+    expect(m.el("agent-config-choice-model-anthropic/claude-opus-5")).not.toBeNull();
+    expect(m.el("agent-config-choice-model-openai/gpt-5.4")).not.toBeNull();
+    expect(m.el("agent-config-choice-model-google/gemini-3.8-flash")).not.toBeNull();
+
+    // It is not disabled when prompt scope is held, and there is no "mode only" reason
+    const gpt = m.el("agent-config-choice-model-openai/gpt-5.4");
+    expect(readsDisabled(gpt)).toBe(false);
+    expect(m.el("agent-config-option-model-reason")).toBeNull();
+
+    // Selecting a model POSTs the change
+    m.press("agent-config-choice-model-openai/gpt-5.4");
+    await settle();
+
+    const post = calls.find(call => call.method === "POST");
+    expect(post).toBeDefined();
+    expect(JSON.parse(post?.body ?? "{}")).toEqual({ optionId: "model", value: "openai/gpt-5.4" });
+    expect(currentRow(m, "model")).toBe("agent-config-choice-model-openai/gpt-5.4");
     m.unmount();
   });
 });
@@ -240,7 +258,7 @@ describe("changing the mode", () => {
     expect(post).toBeDefined();
     expect(post?.url).toBe(CONFIG_URL);
     expect(post?.authorization).toBe("Bearer tok_config");
-    expect(JSON.parse(post?.body ?? "{}")).toEqual({ modeId: "plan" });
+    expect(JSON.parse(post?.body ?? "{}")).toEqual({ optionId: "mode", value: "plan", modeId: "plan" });
 
     // The daemon's answer, not the tap, moved the marker.
     expect(currentRow(m, "mode")).toBe("agent-config-choice-mode-plan");
@@ -277,7 +295,7 @@ describe("changing the mode", () => {
     expect(currentRow(m, "mode")).toBe("agent-config-choice-mode-plan");
     // The retry re-sent the same body, not a fresh read.
     expect(calls.filter(call => call.method === "POST")).toHaveLength(2);
-    expect(JSON.parse(calls[1]?.body ?? "{}")).toEqual({ modeId: "plan" });
+    expect(JSON.parse(calls[1]?.body ?? "{}")).toEqual({ optionId: "mode", value: "plan", modeId: "plan" });
     m.unmount();
   });
 
