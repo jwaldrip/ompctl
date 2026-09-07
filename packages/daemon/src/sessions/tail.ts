@@ -30,8 +30,8 @@
  */
 
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import type { TranscriptTailMessage } from "@ompd/core/contracts";
-import { COUNT_CHUNK_BYTES, parseTurnLine } from "./scanner.ts";
+import type { SessionHistoryToolKind, SessionHistoryToolStatus, TranscriptTailEntry } from "@ompd/core/contracts";
+import { COUNT_CHUNK_BYTES, parseToolResultLine, parseTurnLine, type SessionTurnLine } from "./scanner.ts";
 
 /**
  * Turns returned when a caller names no limit. Around a screenful on a
@@ -75,7 +75,9 @@ export const TAIL_TEXT_CUT_MARK = "\u2026";
 
 export interface SessionTailResult {
   /** Oldest first, so a client appends live activity below without reordering. */
-  messages: TranscriptTailMessage[];
+  entries: TranscriptTailEntry[];
+  /** Kept for one release alongside entries for backward compatibility. */
+  messages: TranscriptTailEntry[];
   /** True when older turns exist past these, or a byte budget ended the read with file behind it. */
   truncated: boolean;
   /** Bytes actually read. The measurable proof a big file did not cost its size. */
@@ -140,6 +142,185 @@ export function tailText(content: unknown): string {
     parts.push(candidate.text);
   }
   return parts.join("\n");
+}
+
+export function toolKind(name: string): SessionHistoryToolKind {
+  const lower = name.toLowerCase();
+  if (lower === "bash" || lower === "exec" || lower === "execute" || lower === "eval") return "execute";
+  if (lower === "read" || lower === "read_file" || lower === "view") return "read";
+  if (lower === "write" || lower === "edit" || lower === "patch") return "edit";
+  if (lower === "glob" || lower === "grep" || lower === "search" || lower === "find") return "search";
+  if (lower === "fetch" || lower === "curl" || lower === "download") return "fetch";
+  if (lower === "mv" || lower === "move") return "move";
+  if (lower === "rm" || lower === "delete") return "delete";
+  if (lower === "think" || lower === "reason") return "think";
+  for (const kind of ["think", "read", "execute", "search", "edit", "fetch", "move", "delete"] as const) {
+    if (lower.includes(kind)) return kind;
+  }
+  return "other";
+}
+
+export function locationsOf(input: unknown): string[] {
+  if (typeof input !== "object" || input === null) return [];
+  const row = input as Record<string, unknown>;
+  const values = [row.path, row.file_path, row.file, row.cwd];
+  const paths: string[] = [];
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) paths.push(value);
+  }
+  if (Array.isArray(row.paths)) {
+    for (const item of row.paths) {
+      if (typeof item === "string" && item.length > 0) paths.push(item);
+    }
+  }
+  if (Array.isArray(row.files)) {
+    for (const item of row.files) {
+      if (typeof item === "string" && item.length > 0) paths.push(item);
+    }
+  }
+  return paths;
+}
+
+function locationsFromDetails(details: unknown): string[] {
+  if (typeof details !== "object" || details === null) return [];
+  const row = details as Record<string, unknown>;
+  const paths: string[] = [];
+  if (typeof row.path === "string" && row.path.length > 0) paths.push(row.path);
+  if (typeof row.resolvedPath === "string" && row.resolvedPath.length > 0) paths.push(row.resolvedPath);
+  if (Array.isArray(row.files)) {
+    for (const item of row.files) {
+      if (typeof item === "string" && item.length > 0) paths.push(item);
+    }
+  }
+  if (Array.isArray(row.locations)) {
+    for (const item of row.locations) {
+      if (typeof item === "string" && item.length > 0) paths.push(item);
+      else if (typeof item === "object" && item !== null && typeof (item as { path?: unknown }).path === "string") {
+        paths.push((item as { path: string }).path);
+      }
+    }
+  }
+  return paths;
+}
+
+function extractToolOutput(content: unknown, details: unknown): string | null {
+  if (typeof content === "string" && content.length > 0) return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (typeof block === "string" && block.length > 0) {
+        parts.push(block);
+      } else if (typeof block === "object" && block !== null) {
+        const item = block as Record<string, unknown>;
+        if (typeof item.text === "string" && item.text.length > 0) {
+          parts.push(item.text);
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join("\n");
+  }
+  if (typeof details === "object" && details !== null) {
+    const row = details as Record<string, unknown>;
+    if (typeof row.displayContent === "string" && row.displayContent.length > 0) {
+      return row.displayContent;
+    }
+    if (typeof row.output === "string" && row.output.length > 0) {
+      return row.output;
+    }
+  }
+  return null;
+}
+
+interface PendingToolResult {
+  status: SessionHistoryToolStatus;
+  output: string | null;
+  locations: string[];
+}
+
+function extractTurnEntries(
+  turn: SessionTurnLine,
+  pendingToolResults: Map<string, PendingToolResult>,
+): TranscriptTailEntry[] {
+  const at = turn.at;
+  if (turn.role === "user") {
+    const text = tailText(turn.content);
+    if (text === "") return [];
+    return [{ kind: "text", role: "user", text: capText(text, TAIL_MAX_TEXT_BYTES), at }];
+  }
+
+  if (typeof turn.content === "string") {
+    if (turn.content.length === 0) return [];
+    return [{ kind: "text", role: "assistant", text: capText(turn.content, TAIL_MAX_TEXT_BYTES), at }];
+  }
+
+  if (!Array.isArray(turn.content)) return [];
+
+  const entries: TranscriptTailEntry[] = [];
+  const textParts: string[] = [];
+
+  const flushText = () => {
+    if (textParts.length > 0) {
+      const text = textParts.join("\n");
+      textParts.length = 0;
+      if (text.length > 0) {
+        entries.push({ kind: "text", role: "assistant", text: capText(text, TAIL_MAX_TEXT_BYTES), at });
+      }
+    }
+  };
+
+  for (const block of turn.content) {
+    if (block === null || typeof block !== "object") continue;
+    const item = block as Record<string, unknown>;
+    const type = typeof item.type === "string" ? item.type : "";
+
+    if (type === "text") {
+      if (typeof item.text === "string" && item.text.length > 0) {
+        textParts.push(item.text);
+      }
+      continue;
+    }
+
+    flushText();
+
+    if (type === "thinking") {
+      const rawThinking =
+        typeof item.thinking === "string" ? item.thinking : typeof item.text === "string" ? item.text : "";
+      if (rawThinking.length > 0) {
+        entries.push({ kind: "thinking", text: capText(rawThinking, TAIL_MAX_TEXT_BYTES), at });
+      }
+      continue;
+    }
+
+    if (type === "toolCall") {
+      const id =
+        (typeof item.id === "string" && item.id.length > 0 ? item.id : "") ||
+        (typeof item.toolCallId === "string" && item.toolCallId.length > 0 ? item.toolCallId : "");
+      const name =
+        (typeof item.name === "string" && item.name.length > 0 ? item.name : "") ||
+        (typeof item.toolName === "string" && item.toolName.length > 0 ? item.toolName : id);
+      const tKind = toolKind(name);
+      const callLocations = locationsOf(item.arguments ?? item.input);
+      const result = id ? pendingToolResults.get(id) : undefined;
+      if (id) pendingToolResults.delete(id);
+      const status: SessionHistoryToolStatus = result?.status ?? "pending";
+      const output = result?.output ?? null;
+      const combinedLocations = Array.from(new Set([...callLocations, ...(result?.locations ?? [])]));
+      entries.push({
+        kind: "tool",
+        id: id || `tool-${entries.length}`,
+        title: name || id,
+        toolKind: tKind,
+        status,
+        output,
+        locations: combinedLocations,
+        at,
+        text: output ?? name ?? id,
+      });
+    }
+  }
+
+  flushText();
+  return entries;
 }
 
 /** Hand the event loop to whatever else is waiting, exactly as the index's cooperative counting does. Microtasks do not qualify. */
@@ -282,73 +463,68 @@ export async function readSessionTail(path: string, opts: SessionTailOptions = {
   try {
     fd = openSync(path, "r");
   } catch {
-    return { messages: [], truncated: false, bytesRead: 0, nextCursor: null };
+    return { entries: [], messages: [], truncated: false, bytesRead: 0, nextCursor: null };
   }
   try {
     const size = fstatSync(fd).size;
-    // A cursor at or past the end names nothing behind it that this reader
-    // has not already served. Equality is the normal last page; past it can
-    // only happen if the file shrank under a stale cursor, and the honest
-    // answer either way is exhaustion rather than a re-read of the newest
-    // turns onto the front of a paged history. Without a cursor the walk
-    // starts at the end by design, which is every default tail ever served,
-    // so only an explicit cursor can take this branch.
     const start = opts.cursor === undefined ? size : Math.min(Math.max(Math.trunc(opts.cursor), 0), size);
     if (opts.cursor !== undefined && start >= size) {
-      return { messages: [], truncated: false, bytesRead: 0, nextCursor: null };
+      return { entries: [], messages: [], truncated: false, bytesRead: 0, nextCursor: null };
     }
     const progress: TailProgress = { read: 0, unread: 0 };
-    const newestFirst: TranscriptTailMessage[] = [];
-    // The walk continues one turn past the limit deliberately: seeing that
-    // turn exist is what makes `truncated` a fact rather than a guess about
-    // the bytes behind the tail, and it costs one extra line at most. Its
-    // content is read and discarded, never sent.
+    const newestFirst: TranscriptTailEntry[] = [];
+    const pendingToolResults = new Map<string, PendingToolResult>();
     let older = false;
-    // Set when the first turn lands: the byte count at which the collecting
-    // leg gives up. Null while the reader is still looking, which is the only
-    // state allowed to spend more than one soft budget.
     let stopAt: number | null = null;
-    // The boundary beneath the oldest turn sent so far, captured at each
-    // push because that is where the next page must resume when the limit
-    // ends this one. Initialised to the walk's own start so a page that never
-    // fills still has a truthful, non-losing fallback cursor.
     let pageBoundary = start;
 
     for (const line of linesFromEnd(fd, start, hardMaxBytes, progress)) {
       if (line === null) {
         await yieldToEventLoop();
-        // Chunk granularity, checked here rather than per line: a chunk is the
-        // unit of real I/O, so stopping between lines would save nothing. Only
-        // the collecting leg has a stop; the looking leg runs to the hard
-        // ceiling, which is the whole point of having two budgets.
         if (stopAt !== null && progress.read >= stopAt) break;
         continue;
       }
+
+      const toolResult = parseToolResultLine(line);
+      if (toolResult !== null && toolResult.toolCallId.length > 0) {
+        const rawOutput = extractToolOutput(toolResult.content, toolResult.details);
+        const output = rawOutput !== null ? capText(rawOutput, TAIL_MAX_TEXT_BYTES) : null;
+        const status: SessionHistoryToolStatus = toolResult.isError ? "failed" : "completed";
+        const locations = locationsFromDetails(toolResult.details);
+        pendingToolResults.set(toolResult.toolCallId, { status, output, locations });
+        continue;
+      }
+
       const turn = parseTurnLine(line);
       if (turn === null) continue;
-      const text = tailText(turn.content);
-      // A turn that said nothing -- an assistant turn that only called a
-      // tool, say -- is not a message. Rendering it as an empty bubble is how
-      // a transcript ends up looking broken.
-      if (text === "") continue;
-      if (newestFirst.length === limit) {
-        older = true; // The turn beyond the limit; its content is never sent.
+
+      const turnEntries = extractTurnEntries(turn, pendingToolResults);
+      if (turnEntries.length === 0) continue;
+
+      if (newestFirst.length >= limit) {
+        older = true;
         break;
       }
-      newestFirst.push({ role: turn.role, text: capText(text, TAIL_MAX_TEXT_BYTES), at: turn.at });
-      // `unread` is already the newline that closed this line, which is the
-      // exact offset the next page resumes from to re-read this turn's older
-      // neighbour without ever repeating this one.
+
+      for (let i = turnEntries.length - 1; i >= 0; i--) {
+        if (newestFirst.length === limit) {
+          older = true;
+          break;
+        }
+        newestFirst.push(turnEntries[i]!);
+      }
+
       pageBoundary = progress.unread;
-      // The looking leg is over. Whatever it cost, the collecting leg gets one
-      // soft budget of its own, so words found deep in a file arrive with the
-      // turns around them rather than alone.
       stopAt ??= progress.read + softMaxBytes;
+
+      if (older) break;
     }
 
     const nextCursor = older ? pageBoundary : progress.unread > 0 ? progress.unread : null;
+    const entries = newestFirst.reverse();
     return {
-      messages: newestFirst.reverse(),
+      entries,
+      messages: entries,
       truncated: older || progress.unread > 0,
       bytesRead: progress.read,
       nextCursor,

@@ -1642,8 +1642,8 @@ describe("session tail surface", () => {
     });
 
     expect(received).toEqual([
-      { sessionId: SESSION, messages, truncated: true, nextCursor: 8192 },
-      { sessionId: SESSION, messages: [], truncated: true, nextCursor: 4096, cursor: 8192 },
+      { sessionId: SESSION, entries: messages, messages, truncated: true, nextCursor: 8192 },
+      { sessionId: SESSION, entries: [], messages: [], truncated: true, nextCursor: 4096, cursor: 8192 },
     ]);
   });
 

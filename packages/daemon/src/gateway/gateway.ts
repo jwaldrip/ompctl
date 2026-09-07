@@ -5993,7 +5993,8 @@ export class Gateway {
       this.#send(ws, {
         t: "session_tail",
         sessionId,
-        messages: tail.messages,
+        entries: tail.entries,
+        messages: tail.entries,
         truncated: tail.truncated,
         nextCursor: tail.nextCursor,
         // Echoed so the asking client can tell this page's place in the file

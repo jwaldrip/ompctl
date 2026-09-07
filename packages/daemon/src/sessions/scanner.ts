@@ -245,6 +245,15 @@ export interface SessionTurnLine {
   at: string;
 }
 
+export interface SessionToolResultLine {
+  toolCallId: string;
+  toolName: string;
+  content: unknown;
+  isError: boolean;
+  details?: unknown;
+  at: string;
+}
+
 /**
  * The one place a session file line becomes a turn, shared by the counter
  * here and by `readSessionTail`.
@@ -272,6 +281,55 @@ export function parseTurnLine(text: string): SessionTurnLine | null {
     role,
     content: parsed.message?.content,
     at: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
+  };
+}
+
+/**
+ * Parses a tool result line from an OMP session file.
+ *
+ * Tool results are written as `type: "message"` with `message.role: "toolResult"`.
+ * They carry the `toolCallId` correlating to the assistant's `toolCall`, the toolName,
+ * the output in `content`, whether the tool execution failed in `isError`, and
+ * optional metadata in `details`.
+ */
+export function parseToolResultLine(text: string): SessionToolResultLine | null {
+  if (text === "") return null;
+  let parsed: {
+    type?: unknown;
+    timestamp?: unknown;
+    toolCallId?: unknown;
+    message?: {
+      role?: unknown;
+      toolCallId?: unknown;
+      toolName?: unknown;
+      content?: unknown;
+      details?: unknown;
+      isError?: unknown;
+    };
+  };
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (parsed.type !== "message") return null;
+  if (parsed.message?.role !== "toolResult") return null;
+  const toolCallId =
+    (typeof parsed.message.toolCallId === "string" && parsed.message.toolCallId.length > 0
+      ? parsed.message.toolCallId
+      : typeof parsed.toolCallId === "string" && parsed.toolCallId.length > 0
+        ? parsed.toolCallId
+        : "") || "";
+  const toolName = typeof parsed.message.toolName === "string" ? parsed.message.toolName : "";
+  const isError = parsed.message.isError === true;
+  const at = typeof parsed.timestamp === "string" ? parsed.timestamp : "";
+  return {
+    toolCallId,
+    toolName,
+    content: parsed.message.content,
+    isError,
+    details: parsed.message.details,
+    at,
   };
 }
 
