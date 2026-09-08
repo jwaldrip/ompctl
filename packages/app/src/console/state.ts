@@ -1781,32 +1781,22 @@ export type SessionOpenTarget =
 
 export function openSessionTarget(state: ConsoleState, rowId: string): SessionOpenTarget {
   const summary = state.sessionIndex.find(row => row.id === rowId);
-  // The roster is fresher than the index for a live holder. A terminal holder
-  // is different: Fleet labels its row Resume, so attaching to the dead agent
-  // id would open history but leave interaction impossible. Agent Hub opens
-  // that durable history explicitly; Fleet wakes the same ACP session.
   const holder = state.agents.find(agent => agent.acpSessionId === rowId || agent.id === rowId);
-  if (holder !== undefined) {
-    if (TERMINAL_AGENT_STATES.includes(holder.state)) {
-      // The index owns the canonical cwd the daemon verifies. Agent rows may
-      // hold a filesystem alias (`/tmp`) for the same directory the scanner
-      // reports as `/private/tmp`; echoing the agent's copy is a guaranteed
-      // cwd_mismatch.
-      if (holder.acpSessionId === undefined || summary?.cwd == null) {
-        return { kind: "unopenable", sessionId: rowId };
-      }
-      return { kind: "dormant", sessionId: holder.acpSessionId, cwd: summary.cwd };
-    }
+  // The roster is fresher than the index for a live holder.
+  if (holder !== undefined && !TERMINAL_AGENT_STATES.includes(holder.state)) {
     return { kind: "agent", sessionId: rowId, agentId: holder.id };
   }
-
-  // A stale row: a newer index dropped it, and the roster never held it.
-  if (summary === undefined) {
-    return { kind: "unopenable", sessionId: rowId };
-  }
-  // The roster has not admitted this agent yet, but the daemon's index named
-  // it as holding the session, so the id it named is the one to attach to.
-  if (summary.status === "live-ompd" && summary.agentId !== undefined) {
+  // The index outranks a dead holder. An agent that once held this session
+  // and stopped says nothing about who holds it now; a terminal may have
+  // picked it up since, and the index is what saw that. Observed 2026-09-08:
+  // a stopped agent left by an earlier phone open made a row the index and
+  // the row itself both called live-tui resolve to a resume claim, which the
+  // daemon refused as not_dormant, so the tap did nothing but toast.
+  //
+  // The roster has not admitted a live-ompd holder yet, but the daemon's
+  // index named it as holding the session, so the id it named is the one to
+  // attach to.
+  if (summary?.status === "live-ompd" && summary.agentId !== undefined) {
     return { kind: "agent", sessionId: rowId, agentId: summary.agentId };
   }
   // A live terminal session is prompted, never taken over: the terminal
@@ -1815,8 +1805,25 @@ export function openSessionTarget(state: ConsoleState, rowId: string): SessionOp
   // claim that ever crosses the wire. Nothing is echoed, so an undecodable
   // directory or a missing pid costs nothing here; the screen falls back to
   // the flattened name the index always carries.
-  if (summary.status === "live-tui") {
+  if (summary?.status === "live-tui") {
     return { kind: "live-tui", sessionId: rowId };
+  }
+  // A terminal holder: Fleet labels its row Resume, so attaching to the dead
+  // agent id would open history but leave interaction impossible. Agent Hub
+  // opens that durable history explicitly; Fleet wakes the same ACP session.
+  if (holder !== undefined) {
+    // The index owns the canonical cwd the daemon verifies. Agent rows may
+    // hold a filesystem alias (`/tmp`) for the same directory the scanner
+    // reports as `/private/tmp`; echoing the agent's copy is a guaranteed
+    // cwd_mismatch.
+    if (holder.acpSessionId === undefined || summary?.cwd == null) {
+      return { kind: "unopenable", sessionId: rowId };
+    }
+    return { kind: "dormant", sessionId: holder.acpSessionId, cwd: summary.cwd };
+  }
+  // A stale row: a newer index dropped it, and the roster never held it.
+  if (summary === undefined) {
+    return { kind: "unopenable", sessionId: rowId };
   }
   // The daemon verifies the echoed `cwd` against an index row it rebuilds
   // itself, so a claim can only carry what this row actually reported. A
