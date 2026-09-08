@@ -563,6 +563,38 @@ describe("the roster is the authority", () => {
     expect(standIn?.acpSessionId).toBe("sess_resumed");
   });
 
+  test("a route-resumed stand-in for an untitled session says so, in the list's words", () => {
+    // The row a tap came from prints "Untitled session" for an empty title;
+    // the header it opened must not print nothing in the same place.
+    const state = drive([
+      {
+        t: "sessions",
+        event: {
+          sessions: [
+            {
+              id: "sess_untitled",
+              cwd: "/Users/op/dev/src/github.com/op/alpha",
+              cwdScope: "abs",
+              flattenedDir: "-Users-op-dev-src-github-com-op-alpha",
+              title: "",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              lastActivityAt: "2026-01-02T00:00:00.000Z",
+              messageCount: 7,
+              byteSize: 4096,
+              status: "dormant",
+              archived: false,
+            },
+          ],
+        },
+      },
+      { t: "agents", event: { agents: [agent("a1")] } },
+      { t: "select", agentId: "a2", awaiting: true },
+      { t: "session_history", event: { agentId: "a2", sessionId: "sess_untitled", entries: [], nextBefore: null } },
+    ]);
+
+    expect(agentFor(state, "a2")?.name).toBe("Untitled session");
+  });
+
   test("a turn that stopped leaves nothing streaming", () => {
     const state = drive([
       { t: "agents", event: { agents: [agent("a1", { state: "busy" })] } },

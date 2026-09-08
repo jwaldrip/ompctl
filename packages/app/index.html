@@ -83,6 +83,33 @@
       ::-webkit-scrollbar-corner {
         background: transparent;
       }
+
+      /*
+       * Hover is a pointer asking "does this respond?", and the answer has
+       * to arrive before the click. React Native has no hover state, so the
+       * app's pressables paint their `ground.active` only while held, and on
+       * a desktop every session row and button sat inert under the mouse
+       * until it was already pressed. This lays a translucent wash over any
+       * pressable the pointer rests on. It is an overlay rather than a
+       * background so it composes with whatever the control already paints
+       * (a row, an azure button, a chip) instead of replacing it, and it
+       * follows the control's own corners. Only a hovering pointer gets it:
+       * a touch screen has no hover, and a finger must not leave a wash
+       * behind on the row it just tapped.
+       */
+      @media (hover: hover) and (pointer: fine) {
+        [role="button"]:not([aria-disabled="true"]):hover::after,
+        [role="switch"]:not([aria-disabled="true"]):hover::after,
+        [role="checkbox"]:not([aria-disabled="true"]):hover::after,
+        [role="radio"]:not([aria-disabled="true"]):hover::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          background: rgba(255, 255, 255, 0.05);
+          pointer-events: none;
+        }
+      }
     </style>
   </head>
   <body>

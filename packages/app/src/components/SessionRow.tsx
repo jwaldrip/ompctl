@@ -342,11 +342,14 @@ const styles = StyleSheet.create({
   },
   readings: {
     flexDirection: "row",
-    flexWrap: "nowrap",
+    // Wrap rather than clip: the spend reading took the room the size
+    // reading had on a tablet's list pane, and a clipped "16.4" read as a
+    // broken number rather than a hidden one.
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: space.snug,
+    columnGap: space.snug,
+    rowGap: space.hair,
     marginTop: space.hair,
-    overflow: "hidden",
   },
   reading: {
     flexDirection: "row",
