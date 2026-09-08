@@ -1480,7 +1480,11 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
     return null;
   }
 
-  const summary = state.sessionIndex.find(s => s.agentId === agentId || s.id === agentId);
+  // A route-resumed session's agent id is new to the index, so the index is
+  // read through the association `session_history` recorded (see that case),
+  // and only then by the older agent-id and session-id coincidences.
+  const openedSessionId = state.sessionIds.get(agentId);
+  const summary = state.sessionIndex.find(s => s.id === openedSessionId || s.agentId === agentId || s.id === agentId);
   const gone = rosterMisses >= 2;
   return {
     id: agentId,

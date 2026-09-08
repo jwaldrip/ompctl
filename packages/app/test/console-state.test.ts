@@ -525,6 +525,44 @@ describe("the roster is the authority", () => {
     expect(agentFor(failedState, "a2")).toBeNull();
   });
 
+  test("a route-resumed stand-in names the session's title and directory through the history association", () => {
+    // Observed 2026-09-07 on app.ompctl.ai: a dormant open over the hub drew
+    // the header as "Session" over "· 15:26:43" until a roster frame happened
+    // to list the new agent, because the stand-in searched the index by the
+    // new agent's id, which no summary carries yet. The `session_history`
+    // answer records the agent-to-session association exactly for this.
+    const state = drive([
+      {
+        t: "sessions",
+        event: {
+          sessions: [
+            {
+              id: "sess_resumed",
+              cwd: "/Users/op/dev/src/github.com/op/alpha",
+              cwdScope: "abs",
+              flattenedDir: "-Users-op-dev-src-github-com-op-alpha",
+              title: "Alpha redesign",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              lastActivityAt: "2026-01-02T00:00:00.000Z",
+              messageCount: 7,
+              byteSize: 4096,
+              status: "dormant",
+              archived: false,
+            },
+          ],
+        },
+      },
+      { t: "agents", event: { agents: [agent("a1")] } },
+      { t: "select", agentId: "a2", awaiting: true },
+      { t: "session_history", event: { agentId: "a2", sessionId: "sess_resumed", entries: [], nextBefore: null } },
+    ]);
+
+    const standIn = agentFor(state, "a2");
+    expect(standIn?.name).toBe("Alpha redesign");
+    expect(standIn?.cwd).toBe("/Users/op/dev/src/github.com/op/alpha");
+    expect(standIn?.acpSessionId).toBe("sess_resumed");
+  });
+
   test("a turn that stopped leaves nothing streaming", () => {
     const state = drive([
       { t: "agents", event: { agents: [agent("a1", { state: "busy" })] } },
