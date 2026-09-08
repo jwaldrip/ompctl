@@ -411,10 +411,14 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
           </View>
 
           <View style={styles.metaCompact}>
-            <Label color={ink.muted} numberOfLines={1} style={styles.originCompact}>
-              {shortenPath(agent.cwd, 3)}
-            </Label>
-            <Data color={ink.faint}>·</Data>
+            {agent.cwd === "" ? null : (
+              <>
+                <Label color={ink.muted} numberOfLines={1} style={styles.originCompact}>
+                  {shortenPath(agent.cwd, 3)}
+                </Label>
+                <Data color={ink.faint}>·</Data>
+              </>
+            )}
             <Data color={ink.faint}>{elapsed(agent.lastActiveAt, props.now)}</Data>
           </View>
 
