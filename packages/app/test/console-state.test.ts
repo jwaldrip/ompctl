@@ -826,6 +826,7 @@ describe("subagent transcripts and tails", () => {
             updatedAt: "2026-09-08T00:00:00.000Z",
             byteSize: 1024,
             hasReport: true,
+            state: "done",
           },
         ],
       },
@@ -845,6 +846,7 @@ describe("subagent transcripts and tails", () => {
             updatedAt: "2026-09-08T01:00:00.000Z",
             byteSize: 2048,
             hasReport: false,
+            state: "done",
           },
           {
             name: "WorkerC",
@@ -852,6 +854,7 @@ describe("subagent transcripts and tails", () => {
             updatedAt: "2026-09-08T02:00:00.000Z",
             byteSize: 4096,
             hasReport: true,
+            state: "done",
           },
         ],
       },

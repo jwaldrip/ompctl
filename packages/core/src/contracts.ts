@@ -1001,12 +1001,34 @@ export type TranscriptTailEntry =
   | { kind: "thinking"; text: string; at: string; role?: undefined };
 
 /**
+ * What a subagent transcript's own tail proves about its writer. Measured
+ * on 2026-09-08 across 37 finished transcripts and one watched live:
+ *
+ * - `done`: a `session_exit` record is present. OMP writes it when the
+ *   agent is disposed, which is when the parent session closes or the
+ *   harness reaps the job, not when the agent yields.
+ * - `idle`: no exit record, and the last tool call is `yield`. The harness
+ *   takes a yield's result and writes nothing after it, so that call being
+ *   last is the parked state itself. A parked agent is revivable (a
+ *   parent's `hub send` wakes it; one transcript here carried 846KB of
+ *   further work after its first yield), so the state is read from the
+ *   tail, not from whether a yield exists anywhere.
+ * - `running`: neither, and the file was written within the last two
+ *   minutes.
+ * - `stalled`: neither, and it was not. The writer may be gone with the
+ *   parent, killed by the harness, or waiting on a slow tool; a file
+ *   cannot tell those apart, so the word claims only that it stopped
+ *   writing.
+ */
+export type SubagentTranscriptState = "running" | "idle" | "done" | "stalled";
+
+/**
  * One subagent transcript on disk, as `session_subagents` lists them. The
  * name is the file's stem, which is the name the parent gave the subagent
  * (`GapChrome`, `RebaseCollabPr`) and the only handle `session_tail` takes
- * for it. Nothing here claims a state: a transcript on disk cannot say
- * whether its writer is still running, so a client shows when it last
- * wrote and lets the operator read it, and never a green dot.
+ * for it. The state is what the file's own records prove, per
+ * `SubagentTranscriptState`; the roster is not consulted, because for a
+ * terminal session there is none.
  */
 export interface SubagentTranscript {
   /** The transcript's stem, unique within its session's directory. */
@@ -1018,6 +1040,7 @@ export interface SubagentTranscript {
   byteSize: number;
   /** Whether a `<name>.md` report sits beside the transcript: the subagent's final answer to its parent. */
   hasReport: boolean;
+  state: SubagentTranscriptState;
 }
 
 /**
