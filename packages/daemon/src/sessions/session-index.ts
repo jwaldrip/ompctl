@@ -48,7 +48,9 @@ import type {
   SessionSummary,
 } from "@ompd/core/contracts";
 import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
+import type { ClientPresenceRecord } from "./liveness.ts";
 import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
+import { type OpenSessionFilesLookup, openSessionFiles } from "./open-session-files.ts";
 import {
   countMessagesAsync,
   findSessionFileIter,
@@ -72,6 +74,14 @@ export interface SessionIndexOptions {
    * request to join it, instead of racing real mtimes.
    */
   scan?: (sessionsRoot?: string) => AsyncIterable<RawSessionFile> | Iterable<RawSessionFile>;
+  /**
+   * Test seam over the descriptor-table read that names each terminal's
+   * open transcript; the default is the platform's (see
+   * `open-session-files.ts`).
+   */
+  openSessionFiles?: OpenSessionFilesLookup;
+  /** How long one reading of a terminal's open transcript stands before the next build re-reads it. */
+  openFilesTtlMs?: number;
 }
 
 /** `queryWithWarm`'s answer: first paint now, upgraded rows when they exist. */
@@ -172,6 +182,21 @@ function cacheMatches(cached: SessionScanCacheEntry | null, file: RawSessionFile
   return cached !== null && Math.abs(cached.mtimeMs - file.mtimeMs) < 0.001 && cached.sizeBytes === file.sizeBytes;
 }
 
+/**
+ * How long one reading of a terminal's descriptor table stands. A terminal
+ * changes transcript only on `/new` or `/resume`, so a reading is wrong for
+ * at most this long after one; the reading costs one batched `lsof` on
+ * macOS (418ms for 18 terminals, measured), and it is only scheduled from a
+ * build, so an idle daemon with no phone attached reads nothing.
+ */
+const OPEN_FILES_TTL_MS = 20_000;
+
+function samePaths(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 export class SessionIndex {
   #store: Store;
   #sessionsRoot: string | undefined;
@@ -216,6 +241,24 @@ export class SessionIndex {
    */
   #warmInFlight: Promise<void> | null = null;
 
+  /**
+   * What each live terminal holds open, by pid, as last read from its
+   * descriptor table. A build reads this and never waits on it: a pid this
+   * map has not seen, or saw longer ago than `#openFilesTtlMs`, is refreshed
+   * in the background, and a refresh that changes an answer notifies the
+   * watch listeners so the gateway pushes the corrected catalogue. The first
+   * build after a terminal appears therefore still answers from the mtime
+   * inference, and the one after the read (well under a second later)
+   * answers from the terminal itself. Pruned to the live pids on every
+   * build, so a reused pid is re-read rather than trusted.
+   */
+  #openByPid: Map<number, { readonly paths: readonly string[]; readonly readAtMs: number }> = new Map();
+  #openRefreshInFlight: Promise<void> | null = null;
+  #openSessionFiles: OpenSessionFilesLookup;
+  #openFilesTtlMs: number;
+  /** Every `watch` caller, told about catalogue changes the filesystem watcher cannot see. */
+  #changeListeners: Set<() => void> = new Set();
+
   constructor(opts: SessionIndexOptions) {
     this.#store = opts.store;
     this.#sessionsRoot = opts.sessionsRoot;
@@ -223,6 +266,59 @@ export class SessionIndex {
     this.#homeDir = opts.homeDir;
     this.#tmpDir = opts.tmpDir;
     this.#scan = opts.scan ?? scanSessionFilesIter;
+    this.#openSessionFiles = opts.openSessionFiles ?? openSessionFiles;
+    this.#openFilesTtlMs = opts.openFilesTtlMs ?? OPEN_FILES_TTL_MS;
+  }
+
+  /**
+   * The transcripts each of `clients` holds open, from the last reading, and
+   * a background re-read for any client whose reading is missing or past
+   * the TTL. Clients whose presence already names a session are not read:
+   * the registry answered.
+   */
+  #openTranscriptsFor(clients: readonly ClientPresenceRecord[]): ReadonlyMap<number, readonly string[]> {
+    const now = Date.now();
+    const live = new Set<number>();
+    const stale: number[] = [];
+    const out = new Map<number, readonly string[]>();
+    for (const client of clients) {
+      live.add(client.pid);
+      if (client.sessionId) continue;
+      const known = this.#openByPid.get(client.pid);
+      if (known !== undefined) out.set(client.pid, known.paths);
+      if (known === undefined || now - known.readAtMs >= this.#openFilesTtlMs) stale.push(client.pid);
+    }
+    for (const pid of this.#openByPid.keys()) {
+      if (!live.has(pid)) this.#openByPid.delete(pid);
+    }
+    if (stale.length > 0) this.#refreshOpenTranscripts(stale);
+    return out;
+  }
+
+  #refreshOpenTranscripts(pids: readonly number[]): void {
+    // One reading at a time. A build that finds one in flight leaves it
+    // alone; the next build after it lands schedules whatever is still stale.
+    if (this.#openRefreshInFlight !== null) return;
+    const run = (async () => {
+      const readAtMs = Date.now();
+      const read = await this.#openSessionFiles(pids);
+      let changed = false;
+      for (const pid of pids) {
+        const paths = read.get(pid) ?? [];
+        const before = this.#openByPid.get(pid);
+        if (before === undefined || !samePaths(before.paths, paths)) changed = true;
+        this.#openByPid.set(pid, { paths, readAtMs });
+      }
+      if (changed) {
+        for (const listener of this.#changeListeners) listener();
+      }
+    })();
+    this.#openRefreshInFlight = run;
+    void run
+      .catch(() => {})
+      .finally(() => {
+        if (this.#openRefreshInFlight === run) this.#openRefreshInFlight = null;
+      });
   }
 
   /**
@@ -304,13 +400,41 @@ export class SessionIndex {
       }
     }
 
-    // A bare `omp` TUI run by an omp build that predates presence carrying
-    // `sessionId` leaves its client record without one. Infer its session
-    // from the one unclaimed file in its project directory written since it
-    // registered; two or more candidates leave every one of them `dormant`
-    // rather than guess between them.
+    // A bare `omp` terminal's presence carries no session id (upstream's
+    // registry never has; see `open-session-files.ts`). The terminal's own
+    // descriptor table does: the one catalogued transcript it holds open is
+    // its session, and that reading outranks any guess from mtimes. It is
+    // matched by resolved path against what the scan just listed, so a
+    // nested subagent transcript the terminal also holds never matches.
+    const openByPid = this.#openTranscriptsFor(liveClients);
+    const idByPath = new Map<string, string>();
+    for (const file of files) idByPath.set(resolve(file.path), file.id);
+    const readFromTerminal = new Set<number>();
+    for (const client of liveClients) {
+      if (client.sessionId) continue;
+      const open = openByPid.get(client.pid);
+      if (open === undefined) continue;
+      const ids: string[] = [];
+      for (const path of open) {
+        const id = idByPath.get(path);
+        if (id !== undefined && !liveClientBySessionId.has(id)) ids.push(id);
+      }
+      if (ids.length !== 1) continue;
+      const only = ids[0];
+      if (only === undefined) continue;
+      liveClientBySessionId.set(only, { ...client, sessionId: only });
+      readFromTerminal.add(client.pid);
+    }
+
+    // A terminal whose table has not been read yet (its first build, or a
+    // platform with no reading), or that holds no catalogued transcript,
+    // still gets the inference: the one unclaimed file in its project
+    // directory written since it registered; two or more candidates leave
+    // every one of them `dormant` rather than guess between them.
     const inferredClientByFileId = new Map<string, (typeof liveClients)[number]>();
-    const clientsWithoutSessionId = liveClients.filter(client => !client.sessionId);
+    const clientsWithoutSessionId = liveClients.filter(
+      client => !client.sessionId && !readFromTerminal.has(client.pid),
+    );
     if (clientsWithoutSessionId.length > 0) {
       for (const client of clientsWithoutSessionId) {
         const candidates = files.filter(file => {
@@ -631,12 +755,14 @@ export class SessionIndex {
   }
 
   /**
-   * Watch the sessions root for the filesystem events that change this
-   * catalog: a session file appearing, changing, or going away, folded into
-   * debounced single notifications. The gateway uses this to push refreshed
-   * `sessions` frames at sockets that already asked for the index, so a
-   * session created by any local `omp` run reaches the phone without a
-   * manual refresh.
+   * Watch for the changes to this catalog: the filesystem events (a session
+   * file appearing, changing, or going away, folded into debounced single
+   * notifications) and the readings of a terminal's descriptor table that
+   * name its session, which no filesystem event carries. The gateway uses
+   * this to push refreshed `sessions` frames at sockets that already asked
+   * for the index, so a session created by any local `omp` run reaches the
+   * phone without a manual refresh, and so does the moment it is known to
+   * be that terminal's.
    *
    * Returns null when the root does not exist yet; see `watchSessionFiles`
    * for why that is a retry rather than a standing error. The root resolved
@@ -644,7 +770,15 @@ export class SessionIndex {
    * tree the catalog does not read.
    */
   watch(onChange: () => void, opts?: SessionWatchOptions): SessionWatch | null {
-    return watchSessionFiles(this.#sessionsRoot ?? getSessionsDir(), onChange, opts);
+    const files = watchSessionFiles(this.#sessionsRoot ?? getSessionsDir(), onChange, opts);
+    if (files === null) return null;
+    this.#changeListeners.add(onChange);
+    return {
+      stop: () => {
+        this.#changeListeners.delete(onChange);
+        files.stop();
+      },
+    };
   }
 }
 
