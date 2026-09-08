@@ -45,16 +45,25 @@
  * points between them were an accident.
  */
 
-import type { PromptImage, SessionLiveStatus, TranscriptTailEntry } from "@ompd/core/contracts";
+import type { PromptImage, SessionLiveStatus, SubagentTranscript, TranscriptTailEntry } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback } from "react";
-import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import { useCallback, useState } from "react";
+import {
+  FlatList,
+  type ListRenderItemInfo,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { Button } from "react-native-paper";
 import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { RichText } from "../components/rich/RichText.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
+import { SubagentTranscriptRow } from "../components/SubagentBoard.tsx";
 import { ToolCard } from "../components/ToolCard.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
@@ -98,6 +107,19 @@ export interface TerminalSessionScreenProps {
   onLoadEarlier: () => void;
   onSubmit: (text: string, images?: PromptImage[]) => void;
   onRetry?: () => void;
+  /**
+   * True when viewing a read-only transcript, such as a subagent's.
+   * Suppresses the composer and terminal liveness/scope warnings.
+   */
+  readOnly?: boolean;
+  /**
+   * The session's subagent transcripts on disk, newest first. A terminal
+   * session is what an operator actually runs, and its subagents exist only
+   * as these files, so this screen is where they have to be reachable; the
+   * band above the tail lists them and `onOpenSubagent` opens one read-only.
+   */
+  subagentTranscripts?: readonly SubagentTranscript[];
+  onOpenSubagent?: (transcript: SubagentTranscript) => void;
 }
 
 /**
@@ -196,13 +218,22 @@ function logRows(tui: TuiSessionState): LogRow[] {
   return rows;
 }
 
+/** The share of the window the open subagent list may take before it scrolls; the tail keeps the rest. */
+const SUBAGENTS_WINDOW_SHARE = 0.4;
+
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
   // The attribution column grows with the text rather than the text being
   // capped to fit it: at the default size 72 leaves 66 points for a 61.974
   // point "thinking", which is 1.065x of headroom, so any accessibility size
   // at all broke the word while a default-size-only gate kept passing.
-  const { fontScale } = useWindowDimensions();
+  const { fontScale, height: windowHeight } = useWindowDimensions();
   const { tui, connection, status, promptAccess, load } = props;
+  const transcripts = props.subagentTranscripts ?? [];
+  // Closed by default on every width: the tail is what this screen is for,
+  // and a list of transcripts open above it would take the room a phone has.
+  const [subagentsOpen, setSubagentsOpen] = useState(false);
+  const now = Date.now();
+  const onOpenSubagent = props.onOpenSubagent ?? (() => {});
   // Colour and geometry that can change under the app: the light theme swaps
   // `ground` and `ink` wholesale. Spacing is read from `rhythm` directly, at
   // the `StyleSheet` where the measurement belongs.
@@ -214,8 +245,14 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   // refused adds no row here. "Not live" and a refusal already have bands of
   // their own below that say more than a word and can be acted on.
   const activity = conversationActivity(tuiActivity(tui, connection, load, liveTerminal));
-  const tone = status === null ? theme.signal.failed : theme.signal[SESSION_STATUS_SIGNALS[status]];
-  const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
+  // A read-only transcript has no liveness to report: it is a file, and
+  // "Unavailable" in the failed tone would say the daemon lost something.
+  const tone = props.readOnly
+    ? theme.ink.faint
+    : status === null
+      ? theme.signal.failed
+      : theme.signal[SESSION_STATUS_SIGNALS[status]];
+  const statusLabel = props.readOnly ? "Transcript" : status === null ? "Unavailable" : STATUS_LABELS[status];
   const ownedBottom = useOwnedBottomInset();
   // The same mechanism the agent log uses: KeyboardAvoidingView is inert on an
   // iPad, so the keyboard's measured height is paid as padding instead.
@@ -411,13 +448,13 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         <Pressable
           testID="terminal-back"
           accessibilityRole="button"
-          accessibilityLabel="Back to sessions"
+          accessibilityLabel={props.readOnly ? "Back to the session" : "Back to sessions"}
           onPress={props.onBack}
           style={({ pressed }) => [styles.back, pressed && { backgroundColor: theme.ground.active }]}
         >
           <Glyph name="back" size={14} color={theme.ink.plain} />
           <Label color={theme.ink.plain} testID="terminal-back-label">
-            Sessions
+            {props.readOnly ? "Session" : "Sessions"}
           </Label>
         </Pressable>
 
@@ -425,18 +462,61 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           <Title heading numberOfLines={1} testID="terminal-title">
             {props.title || "Untitled session"}
           </Title>
-          <View style={styles.meta}>
-            <Glyph name="folder" size={10} color={theme.ink.faint} />
-            <Label color={theme.ink.muted} numberOfLines={1} style={styles.origin}>
-              {shortenPath(props.cwd, 3)}
-            </Label>
-          </View>
+          {props.cwd === "" ? null : (
+            <View style={styles.meta}>
+              <Glyph name="folder" size={10} color={theme.ink.faint} />
+              <Label color={theme.ink.muted} numberOfLines={1} style={styles.origin}>
+                {shortenPath(props.cwd, 3)}
+              </Label>
+            </View>
+          )}
         </View>
 
         <Kicker color={tone} testID="terminal-state">
           {statusLabel}
         </Kicker>
       </View>
+
+      {transcripts.length === 0 || props.onOpenSubagent === undefined ? null : (
+        <View
+          style={[styles.subagents, { backgroundColor: theme.ground.surface, borderBottomColor: theme.ground.line }]}
+          testID="terminal-subagents"
+        >
+          <Pressable
+            accessibilityLabel={`${subagentsOpen ? "Hide" : "Show"} this session's ${transcripts.length} ${transcripts.length === 1 ? "subagent" : "subagents"}`}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: subagentsOpen }}
+            onPress={() => setSubagentsOpen(current => !current)}
+            style={({ pressed }) => [styles.subagentsHead, pressed && { backgroundColor: theme.ground.active }]}
+            testID="terminal-subagents-toggle"
+          >
+            <Glyph name="agent" size={12} color={theme.ink.muted} />
+            <Kicker color={theme.ink.muted}>
+              {transcripts.length} {transcripts.length === 1 ? "subagent" : "subagents"}
+            </Kicker>
+            <View style={[styles.chevron, !subagentsOpen && styles.chevronClosed]}>
+              <Glyph name="chevron" size={12} color={theme.ink.faint} />
+            </View>
+          </Pressable>
+          {subagentsOpen ? (
+            // Bounded: a session that fanned out thirty-seven subagents must not
+            // push its own tail off the screen when the operator opens the list.
+            <ScrollView
+              style={{ maxHeight: Math.round(windowHeight * SUBAGENTS_WINDOW_SHARE) }}
+              testID="terminal-subagents-list"
+            >
+              {transcripts.map(transcript => (
+                <SubagentTranscriptRow
+                  key={transcript.name}
+                  transcript={transcript}
+                  now={now}
+                  onOpen={onOpenSubagent}
+                />
+              ))}
+            </ScrollView>
+          ) : null}
+        </View>
+      )}
 
       {load.phase === "loading" ? (
         <SessionLoading title={props.title || "Untitled session"} />
@@ -496,7 +576,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         that simply has not arrived would be a diagnosis of the wrong thing.
       */}
       <View style={[styles.hints, rows.length === 0 && styles.hintsFill]} testID="terminal-hints">
-        {load.phase !== "ready" ? null : (
+        {load.phase !== "ready" || props.readOnly ? null : (
           <>
             {liveTerminal ? null : (
               <View testID="terminal-not-live-tui" style={styles.refusal}>
@@ -573,27 +653,29 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         is how the shell's base colour ends up showing between the message
         box and the screen edge.
       */}
-      <View
-        style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
-        testID="terminal-composer-safe"
-      >
-        {/*
-          The same control the agent log uses, with no interrupt: a terminal's
-          turn cannot be cancelled from here, so `onCancel` is absent and the
-          send stays Send even mid-turn, which is the steer the daemon itself
-          defaults to. Everything else about the surface is shared, because
-          two arrangements of one composer is two conventions.
-        */}
-        <Composer
-          prefix="terminal-composer"
-          picker={imageAttachmentPicker}
-          enabled={composerEnabled}
-          placeholder={placeholder}
-          sendLabel="Send to this terminal"
-          busy={tui.busy}
-          onSubmit={props.onSubmit}
-        />
-      </View>
+      {props.readOnly ? null : (
+        <View
+          style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
+          testID="terminal-composer-safe"
+        >
+          {/*
+            The same control the agent log uses, with no interrupt: a terminal's
+            turn cannot be cancelled from here, so `onCancel` is absent and the
+            send stays Send even mid-turn, which is the steer the daemon itself
+            defaults to. Everything else about the surface is shared, because
+            two arrangements of one composer is two conventions.
+          */}
+          <Composer
+            prefix="terminal-composer"
+            picker={imageAttachmentPicker}
+            enabled={composerEnabled}
+            placeholder={placeholder}
+            sendLabel="Send to this terminal"
+            busy={tui.busy}
+            onSubmit={props.onSubmit}
+          />
+        </View>
+      )}
     </SafeScreen>
   );
 }
@@ -621,6 +703,16 @@ const styles = StyleSheet.create({
   // chosen, and `rhythm.dockPad` is spent inside `Composer` where the surface
   // it separates from this edge actually lives.
   composerSafe: { backgroundColor: ground.surface },
+  subagents: { borderBottomWidth: stroke.hair },
+  subagentsHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: rhythm.rowGap,
+    paddingHorizontal: rhythm.gutter,
+    minHeight: rhythm.minTarget,
+  },
+  chevron: { marginLeft: "auto", transform: [{ rotate: "0deg" }] },
+  chevronClosed: { transform: [{ rotate: "-90deg" }] },
   head: {
     flexDirection: "row",
     alignItems: "center",

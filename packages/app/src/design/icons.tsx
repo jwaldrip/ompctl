@@ -39,6 +39,7 @@ import {
   faCopy,
   faEllipsis,
   faFileLines,
+  faFileSignature,
   faFolder,
   faGaugeHigh,
   faGlobe,
@@ -139,12 +140,16 @@ export type GlyphName =
   | "agent"
   | "operator"
   | "list"
-  | "board";
+  | "board"
+  | "report";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
   think: faBrain,
   read: faFileLines,
+  // A subagent's final report to its parent: a signed-off document, not the
+  // plain page `read` draws, so the two never look like one thing.
+  report: faFileSignature,
   // Pro draws `fa-square-terminal`; free has the bare prompt.
   execute: faTerminal,
   search: faMagnifyingGlass,

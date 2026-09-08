@@ -20,7 +20,7 @@
  * already follows.
  */
 
-import type { Agent } from "@ompd/core/contracts";
+import type { Agent, SubagentTranscript } from "@ompd/core/contracts";
 import { type JSX, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Chip, Divider, Surface } from "react-native-paper";
@@ -33,7 +33,7 @@ import { radius, type SignalName, space, stroke, type as typeScale } from "../de
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { PlanEntry, PlanStatus, SessionState } from "../session/model.ts";
 import { flattenSubagentNodes, subagentsOf } from "./AgentHub.tsx";
-import { columnForAgent, SubagentBoard } from "./SubagentBoard.tsx";
+import { columnForAgent, SubagentBoard, SubagentTranscriptRow } from "./SubagentBoard.tsx";
 
 /**
  * How this device reaches the open session, when that is not simply "the
@@ -52,8 +52,10 @@ export interface SessionContextSource {
   /** The whole roster, so a sub whose parent is itself a sub still resolves. */
   readonly agents: readonly Agent[];
   readonly origin: SessionOrigin;
+  /** The subagent transcripts on disk for the open session, newest first; the console selects them by session id. */
+  readonly subagentTranscripts?: readonly SubagentTranscript[];
   /** Open a subagent's transcript. Called only for a row that has one. */
-  readonly onOpenSubagent: (agent: Agent) => void;
+  readonly onOpenSubagent: (target: Agent | SubagentTranscript) => void;
 }
 
 export interface SessionContextProps extends SessionContextSource {
@@ -162,6 +164,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
   const subagentNodes = useMemo(() => subagentsOf(props.agents, agent.id), [props.agents, agent.id]);
   const subagents = useMemo(() => flattenSubagentNodes(subagentNodes), [subagentNodes]);
   const needsYouCount = useMemo(() => subagents.filter(sub => columnForAgent(sub) === "needsYou").length, [subagents]);
+  const transcripts: readonly SubagentTranscript[] = props.subagentTranscripts ?? [];
   const phases = todoPhases(session.plan);
   const progress = todoProgress(session.plan);
   const rows = contextRows(props);
@@ -169,11 +172,20 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
   // is not, and neither is a stopped one.
   const explainMissingTodos = session.plan.length === 0 && agent.state === "busy";
 
-  if (session.plan.length === 0 && subagents.length === 0 && rows.length === 0 && !explainMissingTodos) return null;
+  if (
+    session.plan.length === 0 &&
+    subagents.length === 0 &&
+    transcripts.length === 0 &&
+    rows.length === 0 &&
+    !explainMissingTodos
+  )
+    return null;
 
   const subagentSummary =
     subagents.length === 0
-      ? null
+      ? transcripts.length === 0
+        ? null
+        : `${transcripts.length} ${transcripts.length === 1 ? "subagent" : "subagents"}`
       : needsYouCount > 0
         ? `${subagents.length} ${subagents.length === 1 ? "subagent" : "subagents"}, ${needsYouCount === 1 ? "1 needs you" : `${needsYouCount} need you`}`
         : `${subagents.length} ${subagents.length === 1 ? "subagent" : "subagents"}`;
@@ -274,7 +286,30 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
               </View>
             )}
 
-            {subagents.length === 0 ? null : (
+            {subagents.length === 0 && transcripts.length === 0 ? null : subagents.length === 0 ? (
+              <View style={styles.section} testID="session-context-subagents">
+                <View style={styles.sectionHead}>
+                  <Kicker color={theme.ink.muted}>Subagents</Kicker>
+                  <Chip
+                    accessibilityRole="text"
+                    compact
+                    style={[styles.countChip, { backgroundColor: theme.ground.raised }]}
+                    testID="session-context-subagent-count"
+                    textStyle={[typeScale.data, { color: theme.ink.plain }]}
+                  >
+                    {String(transcripts.length)}
+                  </Chip>
+                </View>
+                {transcripts.map(transcript => (
+                  <SubagentTranscriptRow
+                    key={transcript.name}
+                    transcript={transcript}
+                    now={props.now ?? Date.now()}
+                    onOpen={props.onOpenSubagent}
+                  />
+                ))}
+              </View>
+            ) : (
               <View style={styles.section} testID="session-context-subagents">
                 <View style={styles.sectionHead}>
                   <Kicker color={theme.ink.muted}>Subagents</Kicker>
@@ -289,6 +324,19 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
                   </Chip>
                 </View>
                 <SubagentBoard agents={subagents} now={props.now ?? Date.now()} onOpenSubagent={props.onOpenSubagent} />
+                {transcripts.length === 0 ? null : (
+                  <View style={styles.section} testID="session-context-transcripts">
+                    <Kicker color={theme.ink.muted}>Transcripts</Kicker>
+                    {transcripts.map(transcript => (
+                      <SubagentTranscriptRow
+                        key={transcript.name}
+                        transcript={transcript}
+                        now={props.now ?? Date.now()}
+                        onOpen={props.onOpenSubagent}
+                      />
+                    ))}
+                  </View>
+                )}
               </View>
             )}
 

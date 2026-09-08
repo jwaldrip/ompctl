@@ -33,6 +33,7 @@ import {
   sessionDeleteNotice,
   sessionTurnsEnded,
   shouldRequestSessionStats,
+  subagentTailFor,
   tuiPageToAskFor,
   tuiSessionFor,
 } from "./state.ts";
@@ -74,6 +75,18 @@ export interface ConsoleActions {
    * already in flight, so a double tap cannot ask twice.
    */
   loadEarlierTui: (sessionId: string) => void;
+  /**
+   * Open a subagent transcript read-only.
+   */
+  openSubagent: (sessionId: string, name: string) => void;
+  /**
+   * Close the currently open subagent transcript.
+   */
+  closeSubagent: () => void;
+  /**
+   * Ask for older turns in a subagent's transcript.
+   */
+  loadEarlierSubagent: (sessionId: string, name: string) => void;
   /**
    * Re-arm a failed terminal session load and repeat the initial open.
    */
@@ -241,6 +254,27 @@ export function useConsole(
     },
     [client],
   );
+  const lastSubagentsRequest = useRef(new Map<string, number>());
+
+  const requestSubagents = useCallback(
+    (sessionId: string): void => {
+      if (typeof client.sessionSubagents !== "function") return;
+      const last = lastSubagentsRequest.current.get(sessionId);
+      const now = Date.now();
+      if (!shouldRequestSessionStats(last, now)) return;
+      lastSubagentsRequest.current.set(sessionId, now);
+      client.sessionSubagents(sessionId);
+    },
+    [client],
+  );
+
+  const askOlderSubagent = useCallback(
+    (sessionId: string, name: string, cursor: number): void => {
+      dispatch({ t: "subagent_history_request", sessionId, name });
+      client.sessionTail(sessionId, undefined, cursor, name);
+    },
+    [client],
+  );
 
   const requestHistory = useCallback(
     (agentId: AgentId, sessionId: string, before?: number): void => {
@@ -328,9 +362,10 @@ export function useConsole(
       const statsSessionId = agent?.acpSessionId ?? current.sessionIds.get(agentId);
       if (statsSessionId !== undefined) {
         requestStats(statsSessionId, agentId);
+        requestSubagents(statsSessionId);
       }
     },
-    [client, leaveCollab, requestHistory, requestStats],
+    [client, leaveCollab, requestHistory, requestStats, requestSubagents],
   );
 
   /**
@@ -414,6 +449,7 @@ export function useConsole(
         const endedSessionIds = sessionTurnsEnded(stateRef.current.agents, event.agents, stateRef.current.sessionIds);
         for (const sessionId of endedSessionIds) {
           requestStats(sessionId);
+          requestSubagents(sessionId);
         }
         dispatch({ t: "agents", event });
       }),
@@ -435,6 +471,7 @@ export function useConsole(
         client.attach(event.agentId, stateRef.current.watermarks.has(event.agentId) ? {} : { sinceSeq: 0 });
         requestHistory(event.agentId, event.sessionId);
         requestStats(event.sessionId, event.agentId);
+        requestSubagents(event.sessionId);
       }),
       client.on("agent_created", event => {
         const current = stateRef.current;
@@ -447,6 +484,7 @@ export function useConsole(
         if (event.agent.acpSessionId !== undefined) {
           requestHistory(event.agent.id, event.agent.acpSessionId);
           requestStats(event.agent.acpSessionId, event.agent.id);
+          requestSubagents(event.agent.acpSessionId);
         }
       }),
       client.on("collab_opened", event => {
@@ -471,9 +509,13 @@ export function useConsole(
           requestHistory(event.agentId, event.sessionId);
         }
         requestStats(event.sessionId, event.agentId);
+        requestSubagents(event.sessionId);
       }),
       client.on("sessions", event => {
         dispatch({ t: "sessions", event });
+      }),
+      client.on("session_subagents", event => {
+        dispatch({ t: "session_subagents", event });
       }),
       client.on("sessions_deleted", event => {
         // Only refusals reach the operator; the deleted rows leaving the
@@ -485,12 +527,19 @@ export function useConsole(
       }),
       client.on("session_history", event => {
         clearLoadDeadline(event.agentId);
+        requestSubagents(event.sessionId);
         dispatch({ t: "session_history", event });
       }),
       client.on("session_stats", event => {
         dispatch({ t: "session_stats", event });
       }),
       client.on("update", event => {
+        const current = stateRef.current;
+        const sessionId =
+          current.agents.find(a => a.id === event.agentId)?.acpSessionId ?? current.sessionIds.get(event.agentId);
+        if (sessionId !== undefined) {
+          requestSubagents(sessionId);
+        }
         dispatch({ t: "update", event });
       }),
       client.on("approval", event => {
@@ -527,6 +576,7 @@ export function useConsole(
           // restarting under it.
           dispatch({ t: "tui_select", sessionId: event.sessionId, awaiting: true });
           requestStats(event.sessionId);
+          requestSubagents(event.sessionId);
           client.sessionTail(event.sessionId);
           return;
         }
@@ -579,15 +629,18 @@ export function useConsole(
       client.on("tui_activity", event => {
         if (event.kind === "turn_end") {
           requestStats(event.sessionId);
+          requestSubagents(event.sessionId);
         }
         dispatch({ t: "tui_activity", event });
       }),
       client.on("session_tail", event => {
         dispatch({ t: "session_tail", event });
-        // A page of pure tool traffic carries no turns while the file still
-        // holds plenty behind it, and the operator tapped for earlier words
-        // rather than earlier bytes. Asking on from the page's own cursor is
-        // what keeps that tap from ending on an unchanged screen.
+        requestSubagents(event.sessionId);
+        if (event.subagent !== undefined) {
+          const next = tuiPageToAskFor(event);
+          if (next !== null) askOlderSubagent(event.sessionId, event.subagent, next);
+          return;
+        }
         const next = tuiPageToAskFor(event);
         if (next !== null) askOlderTui(event.sessionId, next);
       }),
@@ -629,6 +682,8 @@ export function useConsole(
     reopenStalled,
     requestHistory,
     requestStats,
+    askOlderSubagent,
+    requestSubagents,
     settleWebViewAction,
     voice,
   ]);
@@ -652,6 +707,10 @@ export function useConsole(
       },
       back() {
         const current = stateRef.current;
+        if (current.selectedSubagent !== null) {
+          dispatch({ t: "subagent_close" });
+          return;
+        }
         if (current.selected !== null) {
           client.detach?.(current.selected);
         }
@@ -762,6 +821,7 @@ export function useConsole(
             // than on the session the operator was reading a moment ago.
             dispatch({ t: "tui_select", sessionId: target.sessionId, awaiting: true });
             requestStats(target.sessionId);
+            requestSubagents(target.sessionId);
             // Watching spends the read scope, so a pairing that provably
             // lacks it gets the reason stated rather than a frame the daemon
             // must refuse; an unknown one asks optimistically, and the
@@ -786,6 +846,7 @@ export function useConsole(
             return;
           }
           case "dormant":
+            requestSubagents(target.sessionId);
             client.resumeSession(target.sessionId, target.cwd);
             return;
           case "unopenable":
@@ -811,6 +872,18 @@ export function useConsole(
         // request on the wire for the same page.
         if (tui.historyCursor === null || tui.historyLoadingEarlier) return;
         askOlderTui(sessionId, tui.historyCursor);
+      },
+      openSubagent(sessionId, name) {
+        dispatch({ t: "subagent_select", sessionId, name, awaiting: true });
+        client.sessionTail(sessionId, undefined, undefined, name);
+      },
+      closeSubagent() {
+        dispatch({ t: "subagent_close" });
+      },
+      loadEarlierSubagent(sessionId, name) {
+        const sub = subagentTailFor(stateRef.current, sessionId, name);
+        if (sub.historyCursor === null || sub.historyLoadingEarlier) return;
+        askOlderSubagent(sessionId, name, sub.historyCursor);
       },
       retryTui(sessionId) {
         dispatch({ t: "load_rearm", subject: sessionId });
@@ -918,12 +991,14 @@ export function useConsole(
     }),
     [
       armLoadDeadline,
+      askOlderSubagent,
       askOlderTui,
       client,
       connection.scopes,
       leaveCollab,
       requestHistory,
       requestStats,
+      requestSubagents,
       settleWebViewAction,
       selectAgent,
       voice,

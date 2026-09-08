@@ -81,6 +81,7 @@ import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
 import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
+import { listSubagentTranscripts, subagentTranscriptPath } from "../sessions/subagents.ts";
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
 import { type StatsSubsystem, statsUnavailableReason } from "../stats/index.ts";
@@ -4475,7 +4476,8 @@ export class Gateway {
           typeof frame.sessionId !== "string" ||
           frame.sessionId.length === 0 ||
           (frame.limit !== undefined && (!Number.isSafeInteger(frame.limit) || frame.limit <= 0)) ||
-          (frame.cursor !== undefined && (!Number.isSafeInteger(frame.cursor) || frame.cursor < 0))
+          (frame.cursor !== undefined && (!Number.isSafeInteger(frame.cursor) || frame.cursor < 0)) ||
+          (frame.subagent !== undefined && typeof frame.subagent !== "string")
         ) {
           this.#send(ws, {
             t: "error",
@@ -4499,7 +4501,43 @@ export class Gateway {
         // Detached like the index reply, and for the same reason: resolving
         // the file and reading its tail are async, and every socket must keep
         // being served while one client's transcript is read.
-        void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit, frame.cursor);
+        void this.#serveSessionTailFrame(ws, tailIndex, frame.sessionId, frame.limit, frame.cursor, frame.subagent);
+        return;
+      }
+
+      case "session_subagents": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "session subagents requires read scope",
+          });
+          return;
+        }
+        if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "bad_frame",
+            message: "session subagents needs a sessionId",
+          });
+          return;
+        }
+        const subagentsIndex = this.#sessionIndex;
+        if (!subagentsIndex) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: frame.sessionId,
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        // Detached like session_tail: reading the session directory and the
+        // bounded transcript headers are async, and every socket must keep
+        // being served while one client inspects subagents.
+        void this.#serveSessionSubagentsFrame(ws, subagentsIndex, frame.sessionId);
         return;
       }
 
@@ -6163,6 +6201,7 @@ export class Gateway {
     sessionId: string,
     limit: number | undefined,
     cursor: number | undefined,
+    subagent?: string,
   ): Promise<void> {
     try {
       const path = await index.pathFor(sessionId);
@@ -6175,13 +6214,28 @@ export class Gateway {
         });
         return;
       }
-      const tail = await readSessionTail(path, {
+      let targetPath = path;
+      if (typeof subagent === "string") {
+        const resolved = subagentTranscriptPath(path, subagent);
+        if (!resolved.ok) {
+          this.#send(ws, {
+            t: "error",
+            sessionId,
+            code: resolved.code,
+            message: resolved.message,
+          });
+          return;
+        }
+        targetPath = resolved.path;
+      }
+      const tail = await readSessionTail(targetPath, {
         ...(limit === undefined ? {} : { limit: Math.min(limit, TAIL_MAX_MESSAGES) }),
         ...(cursor === undefined ? {} : { cursor }),
       });
       this.#send(ws, {
         t: "session_tail",
         sessionId,
+        ...(typeof subagent === "string" ? { subagent } : {}),
         entries: tail.entries,
         messages: tail.entries,
         truncated: tail.truncated,
@@ -6200,6 +6254,34 @@ export class Gateway {
         sessionId,
         code: "session_tail_failed",
         message: err instanceof Error ? err.message : "session tail failed",
+      });
+    }
+  }
+
+  async #serveSessionSubagentsFrame(ws: GatewaySocket, index: SessionIndex, sessionId: string): Promise<void> {
+    try {
+      const path = await index.pathFor(sessionId);
+      if (path === undefined) {
+        this.#send(ws, {
+          t: "error",
+          sessionId,
+          code: "unknown_session",
+          message: `no session ${sessionId} on this machine`,
+        });
+        return;
+      }
+      const subagents = await listSubagentTranscripts(path);
+      this.#send(ws, {
+        t: "session_subagents",
+        sessionId,
+        subagents,
+      });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        sessionId,
+        code: "session_subagents_failed",
+        message: err instanceof Error ? err.message : "session subagents failed",
       });
     }
   }
