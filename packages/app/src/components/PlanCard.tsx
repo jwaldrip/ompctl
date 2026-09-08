@@ -1,15 +1,24 @@
 /**
  * The operator's checkpoint between planning and execution.
  *
- * A plan update can arrive just before ACP asks for its answer, so the card
- * becomes visible for either fact. Its controls stay disabled until the
- * elicitation supplies a request id: a button that looks live but cannot reach
- * ACP would teach an operator that their decision landed when it did not.
+ * Drawn only while ACP is waiting for the operator's answer. The plan's own
+ * progress (the todo list, steps done against steps left) is the context
+ * band's to show; this card showing for every pending todo made a session
+ * that was merely working carry a disabled "plan review" above its
+ * transcript for the whole run, which is what "aggressive" meant on
+ * 2026-09-08. The steps arrive on a separate ACP update from the question,
+ * and either can land first, so the card renders the question with
+ * whatever steps it has and fills the rest in as they come.
+ *
+ * The steps scroll inside a bounded height and the question and the
+ * decision do not, so a long plan never pushes the decision below the fold
+ * or takes the transcript's room: a card that could grow without limit sat
+ * over most of a phone's screen with nothing to scroll.
  */
 
 import type { PlanReviewChoice } from "@ompd/core/contracts";
 import type { JSX } from "react";
-import { StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Button, Surface } from "react-native-paper";
 import { rhythm } from "../design/rhythm.ts";
 import { Body, Kicker, Label } from "../design/text.tsx";
@@ -25,14 +34,21 @@ export interface PlanCardProps {
   onRespond: (requestId: string, choice: PlanReviewChoice) => void;
 }
 
+/**
+ * The share of the window the steps may take before they scroll. A quarter
+ * leaves the question, the decision, the context band, the composer and a
+ * useful run of transcript on an 844-point phone; on a tablet it is a
+ * generous list.
+ */
+const STEPS_WINDOW_SHARE = 0.25;
+
 export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanCardProps): JSX.Element | null {
   const theme = useOmpTheme();
-  const hasPendingPlan = review !== null || plan.some(entry => entry.status === "pending");
-  if (!hasPendingPlan) return null;
+  const { height: windowHeight } = useWindowDimensions();
+  if (review === null) return null;
 
-  const canRespond = review !== null && canApprove;
+  const canRespond = canApprove;
   const respond = (choice: PlanReviewChoice): void => {
-    if (review === null) return;
     onRespond(review.requestId, choice);
   };
 
@@ -45,11 +61,15 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
     >
       <View style={styles.head}>
         <Kicker color={theme.signal.holding}>plan review</Kicker>
-        <Label color={theme.ink.muted}>{review === null ? "waiting for plan details" : "approval required"}</Label>
+        <Label color={theme.ink.muted}>approval required</Label>
       </View>
-      {review === null ? null : <Body color={theme.ink.plain}>{review.message}</Body>}
+      <Body color={theme.ink.plain}>{review.message}</Body>
       {plan.length === 0 ? null : (
-        <View style={[styles.steps, { borderLeftColor: theme.ground.edge }]}>
+        <ScrollView
+          style={{ maxHeight: Math.round(windowHeight * STEPS_WINDOW_SHARE) }}
+          contentContainerStyle={[styles.steps, { borderLeftColor: theme.ground.edge }]}
+          testID="plan-review-steps"
+        >
           {plan.map((entry, index) => (
             <Label
               color={entry.status === "completed" ? theme.ink.muted : theme.ink.plain}
@@ -59,7 +79,7 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
               {entry.status === "completed" ? "Done" : "Plan"} {entry.content}
             </Label>
           ))}
-        </View>
+        </ScrollView>
       )}
       {/*
        * Contained then outlined, the approval card's order and its geometry:
