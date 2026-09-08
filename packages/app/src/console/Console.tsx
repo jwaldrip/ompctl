@@ -21,7 +21,7 @@
  * is the same cost as never having windowed the list.
  */
 
-import type { Agent, AgentId } from "@ompd/core/contracts";
+import type { Agent, AgentId, SubagentTranscript } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -67,6 +67,8 @@ import {
   openSessionTarget,
   promptScopeAccess,
   sessionFor,
+  subagentKey,
+  subagentTailFor,
   tuiPromptAccess,
   tuiSessionFor,
 } from "./state.ts";
@@ -406,7 +408,18 @@ export function Console({
           // agent's labels for this would be holding a second copy of a fact
           // the console already knows.
           origin: collabJoin === undefined ? "owned" : collabJoin.readOnly ? "watching" : "co-driven",
-          onOpenSubagent: onOpenAgent,
+          subagentTranscripts:
+            agent.acpSessionId !== undefined ? state.subagentTranscripts.get(agent.acpSessionId) : undefined,
+          onOpenSubagent: (target: Agent | SubagentTranscript) => {
+            if ("state" in target) {
+              onOpenAgent(target);
+            } else {
+              const sid = agent.acpSessionId ?? state.sessionIds.get(agent.id);
+              if (sid !== undefined) {
+                actions.openSubagent(sid, target.name);
+              }
+            }
+          },
         }}
         connection={state.connection}
         attempt={state.attempt}
@@ -504,6 +517,30 @@ export function Console({
     );
   };
 
+  const subagent = (sessionId: string, name: string, back: () => void): JSX.Element => {
+    return (
+      <TerminalSessionScreen
+        key={`${sessionId}/${name}`}
+        title={name}
+        cwd=""
+        status={null}
+        promptAccess="missing"
+        readOnly
+        load={loadFor(state, subagentKey(sessionId, name))}
+        tui={subagentTailFor(state, sessionId, name)}
+        connection={state.connection}
+        onBack={() => {
+          actions.closeSubagent();
+          back();
+        }}
+        onLoadEarlier={() => {
+          actions.loadEarlierSubagent(sessionId, name);
+        }}
+        onSubmit={() => {}}
+      />
+    );
+  };
+
   // The config surface is stateless between visits: the daemon answers each
   // `agent_config_read` whole, so nothing here joins the console model. It
   // rides the console's own socket, which every pairing carries, direct or
@@ -533,7 +570,7 @@ export function Console({
     if (selected !== null && configPane === selected) {
       return agentConfig(selected, () => setConfigPane(null));
     }
-    return splitDetail(state, log, terminal, actions.back, setConfigPane);
+    return splitDetail(state, log, terminal, subagent, actions.back, setConfigPane);
   };
 
   const surfaces: ShellSurfaces = {
@@ -611,6 +648,7 @@ export function Console({
     ),
     session: log,
     terminal,
+    subagent,
     agentConfig,
     connections: (back, invite, settings) => (
       <ConnectionSwitcherScreen
@@ -719,6 +757,9 @@ export function Console({
 }
 
 function selectionOf(state: ConsoleState): ShellSelection | null {
+  if (state.selectedSubagent !== null) {
+    return { kind: "subagent", sessionId: state.selectedSubagent.sessionId, name: state.selectedSubagent.name };
+  }
   if (state.selected !== null) return { kind: "session", agentId: state.selected };
   if (state.selectedTui !== null) return { kind: "terminal", sessionId: state.selectedTui };
   return null;
@@ -732,9 +773,13 @@ function splitDetail(
   state: ConsoleState,
   log: (agentId: AgentId, back: () => void, openConfig: () => void) => JSX.Element,
   terminal: (sessionId: string, back: () => void) => JSX.Element,
+  subagent: (sessionId: string, name: string, back: () => void) => JSX.Element,
   back: () => void,
   openConfig: (agentId: AgentId) => void,
 ): JSX.Element | null {
+  if (state.selectedSubagent !== null) {
+    return subagent(state.selectedSubagent.sessionId, state.selectedSubagent.name, back);
+  }
   const selected = state.selected;
   if (selected !== null) return log(selected, back, () => openConfig(selected));
   if (state.selectedTui !== null) return terminal(state.selectedTui, back);
