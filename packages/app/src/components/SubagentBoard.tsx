@@ -1,12 +1,14 @@
-import type { Agent, AgentState } from "@ompd/core/contracts";
+import type { Agent, AgentState, SubagentTranscript } from "@ompd/core/contracts";
 import { type JSX, memo, useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { elapsed } from "../design/format.ts";
+import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
 import { rhythm } from "../design/rhythm.ts";
 import { Body, Data, Kicker, Label } from "../design/text.tsx";
 import { agentSignal, radius, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
+import { formatBytes } from "../session/browser.ts";
 import { SUBAGENT_UNOPENABLE, subagentOpenable } from "./AgentHub.tsx";
 
 export type SubagentBoardColumnId = "needsYou" | "working" | "idle" | "done";
@@ -266,6 +268,44 @@ export function SubagentBoard(props: SubagentBoardProps): JSX.Element | null {
 const PHONE_COLUMN_WIDTH = 260;
 const TABLET_COLUMN_MIN_WIDTH = 140;
 
+export interface SubagentTranscriptRowProps {
+  readonly transcript: SubagentTranscript;
+  readonly now?: number;
+  readonly onOpen: (transcript: SubagentTranscript) => void;
+}
+
+export function SubagentTranscriptRow({
+  transcript,
+  now = Date.now(),
+  onOpen,
+}: SubagentTranscriptRowProps): JSX.Element {
+  const theme = useOmpTheme();
+  return (
+    <Pressable
+      accessibilityLabel={`${transcript.name}, ${elapsed(transcript.updatedAt, now)}, ${formatBytes(transcript.byteSize)}${transcript.hasReport ? ", has report" : ""}`}
+      accessibilityRole="button"
+      onPress={() => onOpen(transcript)}
+      style={({ pressed }) => [styles.transcriptRow, pressed && { backgroundColor: theme.ground.active }]}
+      testID={`subagent-transcript-${transcript.name}`}
+    >
+      <View style={styles.transcriptMain}>
+        <Label color={theme.ink.bright} numberOfLines={1} style={styles.transcriptName}>
+          {transcript.name}
+        </Label>
+        {transcript.hasReport ? (
+          <View style={styles.transcriptReport} testID={`subagent-transcript-report-${transcript.name}`}>
+            <Glyph name="report" size={12} color={theme.ink.muted} />
+          </View>
+        ) : null}
+      </View>
+      <View style={styles.transcriptMeta}>
+        <Data color={theme.ink.muted}>{elapsed(transcript.updatedAt, now)}</Data>
+        <Data color={theme.ink.muted}>{formatBytes(transcript.byteSize)}</Data>
+      </View>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   columnsScroll: {
     flexDirection: "row",
@@ -330,5 +370,33 @@ const styles = StyleSheet.create({
     columnGap: space.snug,
     rowGap: space.hair,
     alignItems: "center",
+  },
+  transcriptRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: rhythm.minTarget,
+    paddingHorizontal: space.snug,
+    paddingVertical: space.snug,
+    borderRadius: radius.control,
+    gap: space.snug,
+  },
+  transcriptMain: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: rhythm.glyphGap,
+    flexShrink: 1,
+  },
+  transcriptName: {
+    flexShrink: 1,
+  },
+  transcriptReport: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  transcriptMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: rhythm.pairGap,
   },
 });

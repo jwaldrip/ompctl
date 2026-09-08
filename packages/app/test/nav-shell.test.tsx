@@ -15,7 +15,7 @@
 import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { AgentId, SessionSummary } from "@ompd/core/contracts";
+import type { Agent, AgentId, SessionSummary } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -64,7 +64,8 @@ const CONNECTIONS: ConnectionList = {
  */
 class CannedClient {
   readonly prompts: Array<{ sessionId: string; text: string }> = [];
-  readonly tails: Array<{ sessionId: string; limit?: number }> = [];
+  readonly tails: Array<{ sessionId: string; limit?: number; cursor?: number; subagent?: string }> = [];
+  readonly subagentAsks: string[] = [];
   readonly collabOpens: string[] = [];
   readonly attached: AgentId[] = [];
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
@@ -115,8 +116,11 @@ class CannedClient {
    * navigation test into a TypeError about the client instead of a failure
    * about the stack.
    */
-  sessionTail(sessionId: string, limit?: number): void {
-    this.tails.push({ sessionId, limit });
+  sessionTail(sessionId: string, limit?: number, cursor?: number, subagent?: string): void {
+    this.tails.push({ sessionId, limit, cursor, subagent });
+  }
+  sessionSubagents(sessionId: string): void {
+    this.subagentAsks.push(sessionId);
   }
   sessionHistory(agentId: AgentId, sessionId: string, before?: number): void {
     this.histories.push({ agentId, sessionId, ...(before === undefined ? {} : { before }) });
@@ -928,6 +932,112 @@ describe("the menu carries what is not a session", () => {
     const shell = mountShell();
     try {
       expect(shell.host.textContent).toContain("Studio Mac");
+    } finally {
+      shell.unmount();
+    }
+  });
+});
+
+describe("subagent transcripts in session context", () => {
+  test("a session with no roster subagents and two transcripts shows '2 subagents' in the band and two subagent-transcript-* rows; pressing one records a session_tail ask carrying subagent on the canned client and renders the read-only screen with the name as title", () => {
+    const sessionId = "sess_subagents_demo";
+    const agentId = "agt_parent" as AgentId;
+    const parentAgent: Agent = {
+      id: agentId,
+      name: "ParentAgent",
+      host: { kind: "local" as const, id: "1", spec: { kind: "local" as const } },
+      cwd: "/Users/op/dev/src/github.com/op/alpha",
+      state: "idle",
+      acpSessionId: sessionId,
+      createdAt: "2026-09-08T00:00:00.000Z",
+      lastActiveAt: "2026-09-08T00:00:00.000Z",
+      labels: {},
+    };
+
+    const shell = mountShell([summary(sessionId, { agentId, status: "live-ompd" })]);
+    try {
+      act(() => {
+        shell.client.emit("agents", { t: "agents", agents: [parentAgent] });
+      });
+
+      // Open the agent session via fleet row
+      shell.press(`session-open-${sessionId}`);
+
+      // Deliver history so load settles to ready
+      act(() => {
+        shell.client.emit("session_history", {
+          agentId,
+          sessionId,
+          entries: [],
+          nextBefore: null,
+        });
+      });
+
+      expect(shell.el("session-name")?.textContent).toBe("ParentAgent");
+
+      // Deliver two transcripts on disk for this session
+      act(() => {
+        shell.client.emit("session_subagents", {
+          sessionId,
+          subagents: [
+            {
+              name: "RebaseCollabPr",
+              id: "sub-1",
+              updatedAt: "2026-09-08T00:00:00.000Z",
+              byteSize: 2048,
+              hasReport: true,
+            },
+            {
+              name: "GapChrome",
+              id: "sub-2",
+              updatedAt: "2026-09-08T00:00:00.000Z",
+              byteSize: 4096,
+              hasReport: false,
+            },
+          ],
+        });
+      });
+
+      // Summary band shows "2 subagents"
+      const summaryEl = shell.el("session-context-summary");
+      expect(summaryEl?.textContent).toContain("2 subagents");
+
+      // Expand context panel if closed
+      if (shell.el("subagent-transcript-RebaseCollabPr") === null) {
+        shell.press("session-context-toggle");
+      }
+
+      // Shows two subagent-transcript-* rows
+      expect(shell.el("subagent-transcript-RebaseCollabPr")).not.toBeNull();
+      expect(shell.el("subagent-transcript-GapChrome")).not.toBeNull();
+
+      // Pressing one records a session_tail ask carrying subagent on the canned client
+      shell.press("subagent-transcript-RebaseCollabPr");
+
+      const tailAsk = shell.client.tails.find(t => t.subagent === "RebaseCollabPr");
+      expect(tailAsk).toBeDefined();
+      expect(tailAsk?.sessionId).toBe(sessionId);
+      expect(tailAsk?.subagent).toBe("RebaseCollabPr");
+
+      // Deliver the tail for this subagent
+      act(() => {
+        shell.client.emit("session_tail", {
+          sessionId,
+          subagent: "RebaseCollabPr",
+          messages: [
+            { role: "user", text: "please rebase branch", at: "2026-09-08T00:00:01.000Z" },
+            { role: "assistant", text: "branch rebased cleanly", at: "2026-09-08T00:00:02.000Z" },
+          ],
+          truncated: false,
+          nextCursor: null,
+        });
+      });
+
+      // Renders the read-only screen with the name as title
+      expect(shell.el("terminal-session")).not.toBeNull();
+      expect(shell.el("terminal-title")?.textContent).toBe("RebaseCollabPr");
+      // Read-only screen has no composer
+      expect(shell.el("terminal-composer-safe")).toBeNull();
     } finally {
       shell.unmount();
     }

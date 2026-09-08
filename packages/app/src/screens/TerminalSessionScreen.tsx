@@ -98,6 +98,11 @@ export interface TerminalSessionScreenProps {
   onLoadEarlier: () => void;
   onSubmit: (text: string, images?: PromptImage[]) => void;
   onRetry?: () => void;
+  /**
+   * True when viewing a read-only transcript, such as a subagent's.
+   * Suppresses the composer and terminal liveness/scope warnings.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -496,7 +501,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         that simply has not arrived would be a diagnosis of the wrong thing.
       */}
       <View style={[styles.hints, rows.length === 0 && styles.hintsFill]} testID="terminal-hints">
-        {load.phase !== "ready" ? null : (
+        {load.phase !== "ready" || props.readOnly ? null : (
           <>
             {liveTerminal ? null : (
               <View testID="terminal-not-live-tui" style={styles.refusal}>
@@ -573,27 +578,29 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         is how the shell's base colour ends up showing between the message
         box and the screen edge.
       */}
-      <View
-        style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
-        testID="terminal-composer-safe"
-      >
-        {/*
-          The same control the agent log uses, with no interrupt: a terminal's
-          turn cannot be cancelled from here, so `onCancel` is absent and the
-          send stays Send even mid-turn, which is the steer the daemon itself
-          defaults to. Everything else about the surface is shared, because
-          two arrangements of one composer is two conventions.
-        */}
-        <Composer
-          prefix="terminal-composer"
-          picker={imageAttachmentPicker}
-          enabled={composerEnabled}
-          placeholder={placeholder}
-          sendLabel="Send to this terminal"
-          busy={tui.busy}
-          onSubmit={props.onSubmit}
-        />
-      </View>
+      {props.readOnly ? null : (
+        <View
+          style={[styles.composerSafe, { paddingBottom: bottomInsetFor(keyboardInset, ownedBottom) }]}
+          testID="terminal-composer-safe"
+        >
+          {/*
+            The same control the agent log uses, with no interrupt: a terminal's
+            turn cannot be cancelled from here, so `onCancel` is absent and the
+            send stays Send even mid-turn, which is the steer the daemon itself
+            defaults to. Everything else about the surface is shared, because
+            two arrangements of one composer is two conventions.
+          */}
+          <Composer
+            prefix="terminal-composer"
+            picker={imageAttachmentPicker}
+            enabled={composerEnabled}
+            placeholder={placeholder}
+            sendLabel="Send to this terminal"
+            busy={tui.busy}
+            onSubmit={props.onSubmit}
+          />
+        </View>
+      )}
     </SafeScreen>
   );
 }

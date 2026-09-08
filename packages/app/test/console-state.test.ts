@@ -24,6 +24,8 @@ import {
   sessionTurnsEnded,
   shouldRequestSessionStats,
   stripStats,
+  subagentKey,
+  subagentTailFor,
   tuiPageToAskFor,
   tuiSessionFor,
 } from "../src/console/state.ts";
@@ -807,5 +809,86 @@ describe("session stats", () => {
       agent("a2", { state: "idle", acpSessionId: "s2" }),
     ];
     expect(sessionTurnsEnded(before, after)).toEqual(["s1"]);
+  });
+});
+
+describe("subagent transcripts and tails", () => {
+  test("a session_subagents event fills the map for its session id and a later one replaces it", () => {
+    const sessionId = "sess-sub-1";
+    const firstEvent: ConsoleEvent = {
+      t: "session_subagents",
+      event: {
+        sessionId,
+        subagents: [
+          {
+            name: "WorkerA",
+            id: "sub-1",
+            updatedAt: "2026-09-08T00:00:00.000Z",
+            byteSize: 1024,
+            hasReport: true,
+          },
+        ],
+      },
+    };
+
+    const firstState = apply(emptyConsole([]), firstEvent);
+    expect(firstState.subagentTranscripts.get(sessionId)?.map(s => s.name)).toEqual(["WorkerA"]);
+
+    const laterEvent: ConsoleEvent = {
+      t: "session_subagents",
+      event: {
+        sessionId,
+        subagents: [
+          {
+            name: "WorkerB",
+            id: "sub-2",
+            updatedAt: "2026-09-08T01:00:00.000Z",
+            byteSize: 2048,
+            hasReport: false,
+          },
+          {
+            name: "WorkerC",
+            id: "sub-3",
+            updatedAt: "2026-09-08T02:00:00.000Z",
+            byteSize: 4096,
+            hasReport: true,
+          },
+        ],
+      },
+    };
+
+    const replacedState = apply(firstState, laterEvent);
+    expect(replacedState.subagentTranscripts.get(sessionId)?.map(s => s.name)).toEqual(["WorkerB", "WorkerC"]);
+  });
+
+  test("a session_tail with subagent fills subagentTails under the composite key and leaves tuiSessions untouched", () => {
+    const sessionId = "sess-parent";
+    const subagentName = "RebaseCollabPr";
+    const key = subagentKey(sessionId, subagentName);
+
+    const tailEvent: ConsoleEvent = {
+      t: "session_tail",
+      event: {
+        sessionId,
+        subagent: subagentName,
+        messages: [
+          { role: "user", text: "check worktree status", at: "2026-09-08T00:00:01.000Z" },
+          { role: "assistant", text: "all rebased cleanly", at: "2026-09-08T00:00:02.000Z" },
+        ],
+        truncated: false,
+        nextCursor: null,
+      },
+    };
+
+    const state = apply(emptyConsole([]), tailEvent);
+
+    // subagentTails under composite key has the messages
+    const subTail = subagentTailFor(state, sessionId, subagentName);
+    expect(subTail.history.map(m => m.text)).toEqual(["check worktree status", "all rebased cleanly"]);
+    expect(state.subagentTails.has(key)).toBe(true);
+
+    // tuiSessions for the parent session must be untouched (empty)
+    expect(tuiSessionFor(state, sessionId).history).toEqual([]);
+    expect(state.tuiSessions.has(sessionId)).toBe(false);
   });
 });

@@ -20,6 +20,7 @@ import type {
   PlanReviewChoice,
   SessionDeleteResult,
   SessionSummary,
+  SubagentTranscript,
   TranscriptTailMessage,
   WebViewAction,
 } from "@ompd/core/contracts";
@@ -42,6 +43,7 @@ import type {
   SayEvent,
   SessionHistoryEvent,
   SessionStatsEvent,
+  SessionSubagentsEvent,
   SessionTailEvent,
   StatusEvent,
   TranscriptEvent,
@@ -255,6 +257,12 @@ export interface ConsoleState {
   readonly selectedTui: string | null;
   /** Hints about terminal sessions this device has prompted. Keyed by session id. */
   readonly tuiSessions: ReadonlyMap<string, TuiSessionState>;
+  /** Subagent transcripts on disk, keyed by session id. */
+  readonly subagentTranscripts: ReadonlyMap<string, readonly SubagentTranscript[]>;
+  /** Subagent transcript tail states, keyed by composite key `${sessionId}/${name}`. */
+  readonly subagentTails: ReadonlyMap<string, TuiSessionState>;
+  /** The currently open subagent transcript, if any. */
+  readonly selectedSubagent: { readonly sessionId: string; readonly name: string } | null;
   /**
    * The live terminal sessions this device co-drives, keyed by the agent the
    * daemon presented for each join.
@@ -479,6 +487,9 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     selected: null,
     selectedTui: null,
     tuiSessions: new Map(),
+    subagentTranscripts: new Map(),
+    subagentTails: new Map(),
+    selectedSubagent: null,
     collabAgents: new Map(),
     pendingWebViewActions: new Map(),
     // A pairing that did not declare its scopes stays optimistic; the daemon's
@@ -514,6 +525,10 @@ export type ConsoleEvent =
   | { t: "tui_activity"; event: TuiActivityEvent }
   /** Daemon: one page of a terminal session's transcript, answering this device's ask. */
   | { t: "session_tail"; event: SessionTailEvent }
+  | { t: "session_subagents"; event: SessionSubagentsEvent }
+  | { t: "subagent_select"; sessionId: string; name: string; awaiting?: boolean }
+  | { t: "subagent_close" }
+  | { t: "subagent_history_request"; sessionId: string; name: string }
   | { t: "session_history"; event: SessionHistoryEvent }
   | { t: "history_request"; agentId: AgentId }
   /** Daemon: lifetime session stats answering this device's ask. */
@@ -880,9 +895,37 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // tail page has not landed yet.
       return settleLoad(applyTuiActivity(state, event.event), event.event.sessionId);
 
-    case "session_tail":
+    case "session_tail": {
+      if (event.event.subagent !== undefined) {
+        const key = subagentKey(event.event.sessionId, event.event.subagent);
+        return settleLoad(applySubagentTail(state, event.event, event.event.subagent), key);
+      }
       return settleLoad(applySessionTail(state, event.event), event.event.sessionId);
+    }
 
+    case "session_subagents": {
+      const subagentTranscripts = new Map(state.subagentTranscripts);
+      subagentTranscripts.set(event.event.sessionId, event.event.subagents);
+      return { ...state, subagentTranscripts };
+    }
+
+    case "subagent_select": {
+      const key = subagentKey(event.sessionId, event.name);
+      return {
+        ...armLoad(state, key, event.awaiting === true),
+        selectedSubagent: { sessionId: event.sessionId, name: event.name },
+      };
+    }
+
+    case "subagent_close": {
+      if (state.selectedSubagent === null) return state;
+      return { ...state, selectedSubagent: null };
+    }
+
+    case "subagent_history_request":
+      return withSubagentTail(state, event.sessionId, event.name, tail =>
+        tail.historyLoadingEarlier ? tail : { ...tail, historyLoadingEarlier: true },
+      );
     case "tui_history_request":
       return withTuiSession(state, event.sessionId, tui =>
         tui.historyLoadingEarlier ? tui : { ...tui, historyLoadingEarlier: true },
@@ -1415,6 +1458,49 @@ function withTuiSession(
   const tuiSessions = new Map(state.tuiSessions);
   tuiSessions.set(sessionId, after);
   return { ...state, tuiSessions };
+}
+
+export function subagentKey(sessionId: string, name: string): string {
+  return `${sessionId}/${name}`;
+}
+
+export function subagentTailFor(state: ConsoleState, sessionId: string, name: string): TuiSessionState {
+  return state.subagentTails.get(subagentKey(sessionId, name)) ?? EMPTY_TUI_SESSION;
+}
+
+function withSubagentTail(
+  state: ConsoleState,
+  sessionId: string,
+  name: string,
+  change: (tui: TuiSessionState) => TuiSessionState,
+): ConsoleState {
+  const key = subagentKey(sessionId, name);
+  const before = state.subagentTails.get(key) ?? EMPTY_TUI_SESSION;
+  const after = change(before);
+  if (after === before) return state;
+  const subagentTails = new Map(state.subagentTails);
+  subagentTails.set(key, after);
+  return { ...state, subagentTails };
+}
+
+function applySubagentTail(state: ConsoleState, event: SessionTailEvent, name: string): ConsoleState {
+  return withSubagentTail(state, event.sessionId, name, tail => {
+    if (event.cursor === undefined) {
+      return {
+        ...tail,
+        history: event.messages,
+        historyCursor: event.nextCursor,
+        historyLoadingEarlier: false,
+      };
+    }
+    if (tail.historyCursor !== event.cursor) return tail;
+    return {
+      ...tail,
+      history: event.messages.length === 0 ? tail.history : [...event.messages, ...tail.history],
+      historyCursor: event.nextCursor,
+      historyLoadingEarlier: false,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

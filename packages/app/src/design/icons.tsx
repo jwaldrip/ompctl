@@ -139,12 +139,14 @@ export type GlyphName =
   | "agent"
   | "operator"
   | "list"
-  | "board";
+  | "board"
+  | "report";
 
 export const GLYPHS: Record<GlyphName, IconDefinition> = {
   // `fa-brain-circuit` is Pro; the free brain carries the same meaning.
   think: faBrain,
   read: faFileLines,
+  report: faFileLines,
   // Pro draws `fa-square-terminal`; free has the bare prompt.
   execute: faTerminal,
   search: faMagnifyingGlass,
