@@ -1096,9 +1096,26 @@ describe("subagent transcripts in session context", () => {
           nextCursor: null,
         });
       });
-      expect(shell.el("terminal-title")?.textContent).toBe("GapChrome");
-      expect(shell.el("terminal-composer-safe")).toBeNull();
+      // The transcript stacks on the session, so both screens are mounted;
+      // the topmost is the last in document order.
+      const top = (testID: string): Element | null => {
+        const all = shell.host.querySelectorAll(`[data-testid="${testID}"]`);
+        return all.length === 0 ? null : (all[all.length - 1] ?? null);
+      };
+      expect(top("terminal-title")?.textContent).toBe("GapChrome");
+      expect(top("terminal-state")?.textContent).toBe("Transcript");
+      expect(shell.host.querySelectorAll(`[data-testid="terminal-composer-safe"]`).length).toBe(1);
       expect(shell.host.textContent).toContain("chrome measured");
+
+      // Back returns to the session the transcript belongs to, with the band
+      // still there, not to the fleet with the session left.
+      const backs = shell.host.querySelectorAll(`[data-testid="terminal-back"]`);
+      act(() => {
+        (backs[backs.length - 1] as HTMLElement).click();
+      });
+      expect(shell.host.querySelectorAll(`[data-testid="terminal-title"]`).length).toBe(1);
+      expect(top("terminal-title")?.textContent).toBe("session sess_live");
+      expect(shell.el("terminal-subagents-toggle")).not.toBeNull();
     } finally {
       shell.unmount();
     }

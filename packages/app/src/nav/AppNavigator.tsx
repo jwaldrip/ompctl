@@ -203,7 +203,12 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
       ) {
         return;
       }
-      if (stackHasDetail) navigation.dispatch(StackActions.popToTop());
+      // A transcript is opened from the session it belongs to and stacks on
+      // it rather than replacing it, so back returns to that session. Popping
+      // to the top first left the stack with no detail route under it, and
+      // the back press then read as leaving the session altogether.
+      const onParent = focused?.name === "terminal" || focused?.name === "session";
+      if (stackHasDetail && !onParent) navigation.dispatch(StackActions.popToTop());
       navigation.navigate("subagent", { sessionId: selection.sessionId, name: selection.name });
       return;
     }
