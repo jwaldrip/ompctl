@@ -45,16 +45,17 @@
  * points between them were an accident.
  */
 
-import type { PromptImage, SessionLiveStatus, TranscriptTailEntry } from "@ompd/core/contracts";
+import type { PromptImage, SessionLiveStatus, SubagentTranscript, TranscriptTailEntry } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Button } from "react-native-paper";
 import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { RichText } from "../components/rich/RichText.tsx";
 import { SessionLoadFailed, SessionLoading, SessionLoadStalled } from "../components/SessionLoad.tsx";
+import { SubagentTranscriptRow } from "../components/SubagentBoard.tsx";
 import { ToolCard } from "../components/ToolCard.tsx";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
@@ -103,6 +104,14 @@ export interface TerminalSessionScreenProps {
    * Suppresses the composer and terminal liveness/scope warnings.
    */
   readOnly?: boolean;
+  /**
+   * The session's subagent transcripts on disk, newest first. A terminal
+   * session is what an operator actually runs, and its subagents exist only
+   * as these files, so this screen is where they have to be reachable; the
+   * band above the tail lists them and `onOpenSubagent` opens one read-only.
+   */
+  subagentTranscripts?: readonly SubagentTranscript[];
+  onOpenSubagent?: (transcript: SubagentTranscript) => void;
 }
 
 /**
@@ -208,6 +217,12 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   // at all broke the word while a default-size-only gate kept passing.
   const { fontScale } = useWindowDimensions();
   const { tui, connection, status, promptAccess, load } = props;
+  const transcripts = props.subagentTranscripts ?? [];
+  // Closed by default on every width: the tail is what this screen is for,
+  // and a list of transcripts open above it would take the room a phone has.
+  const [subagentsOpen, setSubagentsOpen] = useState(false);
+  const now = Date.now();
+  const onOpenSubagent = props.onOpenSubagent ?? (() => {});
   // Colour and geometry that can change under the app: the light theme swaps
   // `ground` and `ink` wholesale. Spacing is read from `rhythm` directly, at
   // the `StyleSheet` where the measurement belongs.
@@ -443,6 +458,42 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         </Kicker>
       </View>
 
+      {transcripts.length === 0 || props.onOpenSubagent === undefined ? null : (
+        <View
+          style={[styles.subagents, { backgroundColor: theme.ground.surface, borderBottomColor: theme.ground.line }]}
+          testID="terminal-subagents"
+        >
+          <Pressable
+            accessibilityLabel={`${subagentsOpen ? "Hide" : "Show"} this session's ${transcripts.length} ${transcripts.length === 1 ? "subagent" : "subagents"}`}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: subagentsOpen }}
+            onPress={() => setSubagentsOpen(current => !current)}
+            style={({ pressed }) => [styles.subagentsHead, pressed && { backgroundColor: theme.ground.active }]}
+            testID="terminal-subagents-toggle"
+          >
+            <Glyph name="agent" size={12} color={theme.ink.muted} />
+            <Kicker color={theme.ink.muted}>
+              {transcripts.length} {transcripts.length === 1 ? "subagent" : "subagents"}
+            </Kicker>
+            <View style={[styles.chevron, !subagentsOpen && styles.chevronClosed]}>
+              <Glyph name="chevron" size={12} color={theme.ink.faint} />
+            </View>
+          </Pressable>
+          {subagentsOpen ? (
+            <View testID="terminal-subagents-list">
+              {transcripts.map(transcript => (
+                <SubagentTranscriptRow
+                  key={transcript.name}
+                  transcript={transcript}
+                  now={now}
+                  onOpen={onOpenSubagent}
+                />
+              ))}
+            </View>
+          ) : null}
+        </View>
+      )}
+
       {load.phase === "loading" ? (
         <SessionLoading title={props.title || "Untitled session"} />
       ) : load.phase === "stalled" ? (
@@ -628,6 +679,16 @@ const styles = StyleSheet.create({
   // chosen, and `rhythm.dockPad` is spent inside `Composer` where the surface
   // it separates from this edge actually lives.
   composerSafe: { backgroundColor: ground.surface },
+  subagents: { borderBottomWidth: stroke.hair },
+  subagentsHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: rhythm.rowGap,
+    paddingHorizontal: rhythm.gutter,
+    minHeight: rhythm.minTarget,
+  },
+  chevron: { marginLeft: "auto", transform: [{ rotate: "0deg" }] },
+  chevronClosed: { transform: [{ rotate: "-90deg" }] },
   head: {
     flexDirection: "row",
     alignItems: "center",

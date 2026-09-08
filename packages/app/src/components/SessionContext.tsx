@@ -52,8 +52,8 @@ export interface SessionContextSource {
   /** The whole roster, so a sub whose parent is itself a sub still resolves. */
   readonly agents: readonly Agent[];
   readonly origin: SessionOrigin;
-  /** Transcripts on disk for the open session. */
-  readonly subagentTranscripts?: readonly SubagentTranscript[] | ReadonlyMap<string, readonly SubagentTranscript[]>;
+  /** The subagent transcripts on disk for the open session, newest first; the console selects them by session id. */
+  readonly subagentTranscripts?: readonly SubagentTranscript[];
   /** Open a subagent's transcript. Called only for a row that has one. */
   readonly onOpenSubagent: (target: Agent | SubagentTranscript) => void;
 }
@@ -164,13 +164,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
   const subagentNodes = useMemo(() => subagentsOf(props.agents, agent.id), [props.agents, agent.id]);
   const subagents = useMemo(() => flattenSubagentNodes(subagentNodes), [subagentNodes]);
   const needsYouCount = useMemo(() => subagents.filter(sub => columnForAgent(sub) === "needsYou").length, [subagents]);
-  const transcripts: readonly SubagentTranscript[] = useMemo(() => {
-    if (!props.subagentTranscripts) return [];
-    if (Array.isArray(props.subagentTranscripts)) return props.subagentTranscripts;
-    const sid = agent.acpSessionId;
-    if (!sid) return [];
-    return (props.subagentTranscripts as ReadonlyMap<string, readonly SubagentTranscript[]>).get(sid) ?? [];
-  }, [props.subagentTranscripts, agent.acpSessionId]);
+  const transcripts: readonly SubagentTranscript[] = props.subagentTranscripts ?? [];
   const phases = todoPhases(session.plan);
   const progress = todoProgress(session.plan);
   const rows = contextRows(props);

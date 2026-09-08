@@ -1042,4 +1042,65 @@ describe("subagent transcripts in session context", () => {
       shell.unmount();
     }
   });
+
+  test("a live terminal session lists its transcripts above the tail, and a row opens one read-only", () => {
+    // A terminal session is what an operator actually runs, and its
+    // subagents exist only as files, so the band has to be on this screen
+    // and not only in the agent session's context panel.
+    const shell = mountShell([summary("sess_live", { status: "live-tui" })]);
+    try {
+      shell.press("session-open-sess_live");
+      act(() => {
+        shell.client.emit("session_tail", {
+          sessionId: "sess_live",
+          messages: [{ role: "assistant", text: "working", at: "2026-09-08T00:00:01.000Z" }],
+          truncated: false,
+          nextCursor: null,
+        });
+      });
+      expect(shell.el("terminal-session")).not.toBeNull();
+      expect(shell.el("terminal-subagents")).toBeNull();
+
+      act(() => {
+        shell.client.emit("session_subagents", {
+          sessionId: "sess_live",
+          subagents: [
+            {
+              name: "RebaseCollabPr",
+              id: "sub-1",
+              updatedAt: "2026-09-08T00:00:00.000Z",
+              byteSize: 2048,
+              hasReport: true,
+            },
+            { name: "GapChrome", id: "sub-2", updatedAt: "2026-09-08T00:00:00.000Z", byteSize: 4096, hasReport: false },
+          ],
+        });
+      });
+      expect(shell.el("terminal-subagents-toggle")?.textContent).toContain("2 subagents");
+      // Closed by default: the tail keeps its room until asked.
+      expect(shell.el("terminal-subagents-list")).toBeNull();
+      shell.press("terminal-subagents-toggle");
+      expect(shell.el("subagent-transcript-RebaseCollabPr")).not.toBeNull();
+      expect(shell.el("subagent-transcript-report-RebaseCollabPr")).not.toBeNull();
+      expect(shell.el("subagent-transcript-report-GapChrome")).toBeNull();
+
+      shell.press("subagent-transcript-GapChrome");
+      const tailAsk = shell.client.tails.find(t => t.subagent === "GapChrome");
+      expect(tailAsk?.sessionId).toBe("sess_live");
+      act(() => {
+        shell.client.emit("session_tail", {
+          sessionId: "sess_live",
+          subagent: "GapChrome",
+          messages: [{ role: "assistant", text: "chrome measured", at: "2026-09-08T00:00:02.000Z" }],
+          truncated: false,
+          nextCursor: null,
+        });
+      });
+      expect(shell.el("terminal-title")?.textContent).toBe("GapChrome");
+      expect(shell.el("terminal-composer-safe")).toBeNull();
+      expect(shell.host.textContent).toContain("chrome measured");
+    } finally {
+      shell.unmount();
+    }
+  });
 });

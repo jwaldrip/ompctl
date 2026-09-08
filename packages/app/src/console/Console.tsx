@@ -513,6 +513,10 @@ export function Console({
         onRetry={() => {
           actions.retryTui(sessionId);
         }}
+        subagentTranscripts={state.subagentTranscripts.get(sessionId)}
+        onOpenSubagent={transcript => {
+          actions.openSubagent(sessionId, transcript.name);
+        }}
       />
     );
   };
