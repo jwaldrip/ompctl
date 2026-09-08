@@ -50,6 +50,7 @@ import type {
   SessionStats,
   SessionSummary,
   SkillSummary,
+  SubagentTranscript,
   SyncSettings,
   Task,
   TranscriptTailEntry,
@@ -229,6 +230,7 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // asks again the next time it opens. Reporting it would put an error in
   // front of an operator whose only remedy is the reconnect already running.
   session_tail: false,
+  session_subagents: false,
   session_stats: false,
   session_history: false,
   // A snapshot ask, same class as `session_tail`: nothing on the machine
@@ -563,11 +565,19 @@ export interface CloneDoneEvent {
  */
 export interface SessionTailEvent {
   sessionId: string;
+  /** Set when this page is a subagent's transcript rather than the session's own. */
+  subagent?: string;
   entries?: TranscriptTailEntry[];
   messages: TranscriptTailEntry[];
   truncated: boolean;
   nextCursor: number | null;
   cursor?: number;
+}
+
+/** The subagent transcripts on disk for one session, answering `sessionSubagents`. */
+export interface SessionSubagentsEvent {
+  sessionId: string;
+  subagents: SubagentTranscript[];
 }
 
 /** One structured page of durable session history. */
@@ -751,6 +761,7 @@ export interface ClientEventMap {
   routine_action_finished: RoutineActionFinishedEvent;
   routine_run_finished: RoutineRunFinishedEvent;
   session_tail: SessionTailEvent;
+  session_subagents: SessionSubagentsEvent;
   session_history: SessionHistoryEvent;
   session_stats: SessionStatsEvent;
   agent_config: AgentConfigEvent;
@@ -1172,17 +1183,29 @@ export class OmpdClient {
     this.selectedTerminalSession = sessionId;
   }
 
-  sessionTail(sessionId: string, limit?: number, cursor?: number): void {
-    if (cursor === undefined) {
+  /**
+   * Read the newest page of a session's transcript, or of one of its
+   * subagents' when `subagent` names one. A subagent's tail never becomes
+   * the selected terminal session: that selection is what a reconnect
+   * re-asks for, and it is the session's own.
+   */
+  sessionTail(sessionId: string, limit?: number, cursor?: number, subagent?: string): void {
+    if (cursor === undefined && subagent === undefined) {
       this.selectedTerminalSession = sessionId;
     }
     const frame: ClientFrame = {
       t: "session_tail",
       sessionId,
+      ...(subagent === undefined ? {} : { subagent }),
       ...(limit === undefined ? {} : { limit }),
       ...(cursor === undefined ? {} : { cursor }),
     };
     this.send(frame);
+  }
+
+  /** List a session's subagent transcripts on disk. The answer arrives as the session_subagents event. */
+  sessionSubagents(sessionId: string): void {
+    this.send({ t: "session_subagents", sessionId });
   }
 
   /** Request stats for one session. The answer arrives as the session_stats event. */
@@ -1792,6 +1815,7 @@ export class OmpdClient {
         const entries = frame.entries ?? frame.messages ?? [];
         this.emit("session_tail", {
           sessionId: frame.sessionId,
+          ...(frame.subagent === undefined ? {} : { subagent: frame.subagent }),
           entries,
           messages: entries,
           truncated: frame.truncated,
@@ -1803,6 +1827,9 @@ export class OmpdClient {
         });
         return;
       }
+      case "session_subagents":
+        this.emit("session_subagents", { sessionId: frame.sessionId, subagents: frame.subagents });
+        return;
       case "session_stats":
         this.emit("session_stats", {
           sessionId: frame.sessionId,

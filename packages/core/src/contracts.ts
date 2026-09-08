@@ -1001,6 +1001,26 @@ export type TranscriptTailEntry =
   | { kind: "thinking"; text: string; at: string; role?: undefined };
 
 /**
+ * One subagent transcript on disk, as `session_subagents` lists them. The
+ * name is the file's stem, which is the name the parent gave the subagent
+ * (`GapChrome`, `RebaseCollabPr`) and the only handle `session_tail` takes
+ * for it. Nothing here claims a state: a transcript on disk cannot say
+ * whether its writer is still running, so a client shows when it last
+ * wrote and lets the operator read it, and never a green dot.
+ */
+export interface SubagentTranscript {
+  /** The transcript's stem, unique within its session's directory. */
+  name: string;
+  /** The subagent's own session id, from the transcript's `session` record; null when the file has none yet. */
+  id: string | null;
+  /** The transcript's mtime, ISO. */
+  updatedAt: string;
+  byteSize: number;
+  /** Whether a `<name>.md` report sits beside the transcript: the subagent's final answer to its parent. */
+  hasReport: boolean;
+}
+
+/**
  * Prior name for TranscriptTailEntry, preserved as an alias for one release
  * during the migration to first-class tool, thinking, and plan tail entries.
  */
@@ -1317,8 +1337,19 @@ export type ClientFrame =
    * stream cannot reach it. Without this frame, tapping a session with a
    * thousand messages in it shows a composer and nothing else.
    */
-  | { t: "session_tail"; sessionId: string; limit?: number; cursor?: number }
+  | { t: "session_tail"; sessionId: string; subagent?: string; limit?: number; cursor?: number }
   | { t: "session_history"; agentId: AgentId; sessionId: string; before?: number; limit?: number }
+  /**
+   * The subagent transcripts a session has on disk, listed from the
+   * directory OMP keeps beside its transcript (`<stamp>_<id>/<Name>.jsonl`,
+   * with the subagent's final report as `<Name>.md` beside it). This is
+   * the only record of subagents for a terminal session or a dormant one:
+   * the roster carries subagents only for agents this daemon spawned, so
+   * without this frame every session an operator actually runs shows no
+   * subagents at all. Read scope. Answered by `session_subagents` to the
+   * asking socket only; read one with `session_tail` naming `subagent`.
+   */
+  | { t: "session_subagents"; sessionId: string }
   /**
    * Ask what the daemon's two persisted settings hold right now. The hub
    * tunnels only a webhook fire and no tunnel is wired for
@@ -1615,12 +1646,15 @@ export type ServerFrame =
   | {
       t: "session_tail";
       sessionId: string;
+      /** Echoed from the ask: this page is that subagent's transcript, not the session's own. */
+      subagent?: string;
       entries: TranscriptTailEntry[];
       messages: TranscriptTailEntry[];
       truncated: boolean;
       nextCursor: number | null;
       cursor?: number;
     }
+  | { t: "session_subagents"; sessionId: string; subagents: SubagentTranscript[] }
   | {
       t: "session_history";
       agentId: AgentId;
