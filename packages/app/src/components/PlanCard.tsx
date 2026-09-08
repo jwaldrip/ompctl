@@ -10,10 +10,14 @@
  * and either can land first, so the card renders the question with
  * whatever steps it has and fills the rest in as they come.
  *
- * The steps scroll inside a bounded height and the question and the
+ * The plan scrolls inside a bounded height and the question and the
  * decision do not, so a long plan never pushes the decision below the fold
- * or takes the transcript's room: a card that could grow without limit sat
- * over most of a phone's screen with nothing to scroll.
+ * or takes the transcript's room. Measured on 2026-09-08 against a real
+ * review: OMP's message is the whole plan as markdown ("Approve plan ...?"
+ * then headings, paragraphs and bullets), 810 points tall on a phone with
+ * the buttons past the bottom edge and nothing to scroll. The first
+ * paragraph is the question; the rest is the plan, rendered as the
+ * transcript renders markdown, in the scrolling region with the steps.
  */
 
 import type { PlanReviewChoice } from "@ompd/core/contracts";
@@ -25,6 +29,7 @@ import { Body, Kicker, Label } from "../design/text.tsx";
 import { radius, stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { PlanEntry, PlanReview } from "../session/model.ts";
+import { RichText } from "./rich/RichText.tsx";
 
 export interface PlanCardProps {
   plan: readonly PlanEntry[];
@@ -35,18 +40,29 @@ export interface PlanCardProps {
 }
 
 /**
- * The share of the window the steps may take before they scroll. A quarter
+ * The share of the window the plan may take before it scrolls. A third
+ * reads a plan's opening screen at a glance on an 844-point phone and still
  * leaves the question, the decision, the context band, the composer and a
- * useful run of transcript on an 844-point phone; on a tablet it is a
- * generous list.
+ * run of transcript; on a tablet it is a generous page.
  */
-const STEPS_WINDOW_SHARE = 0.25;
+const PLAN_WINDOW_SHARE = 0.34;
+
+/**
+ * OMP's review message is the question and then the plan, separated by
+ * the first blank line. Without one, the whole message is the question.
+ */
+export function splitPlanMessage(message: string): { question: string; plan: string } {
+  const cut = message.search(/\n[ \t]*\n/);
+  if (cut < 0) return { question: message.trim(), plan: "" };
+  return { question: message.slice(0, cut).trim(), plan: message.slice(cut).trim() };
+}
 
 export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanCardProps): JSX.Element | null {
   const theme = useOmpTheme();
   const { height: windowHeight } = useWindowDimensions();
   if (review === null) return null;
 
+  const { question, plan: planText } = splitPlanMessage(review.message);
   const canRespond = canApprove;
   const respond = (choice: PlanReviewChoice): void => {
     onRespond(review.requestId, choice);
@@ -63,22 +79,27 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
         <Kicker color={theme.signal.holding}>plan review</Kicker>
         <Label color={theme.ink.muted}>approval required</Label>
       </View>
-      <Body color={theme.ink.plain}>{review.message}</Body>
-      {plan.length === 0 ? null : (
+      <Body color={theme.ink.plain}>{question}</Body>
+      {planText.length === 0 && plan.length === 0 ? null : (
         <ScrollView
-          style={{ maxHeight: Math.round(windowHeight * STEPS_WINDOW_SHARE) }}
-          contentContainerStyle={[styles.steps, { borderLeftColor: theme.ground.edge }]}
-          testID="plan-review-steps"
+          style={{ maxHeight: Math.round(windowHeight * PLAN_WINDOW_SHARE) }}
+          contentContainerStyle={styles.planBody}
+          testID="plan-review-plan"
         >
-          {plan.map((entry, index) => (
-            <Label
-              color={entry.status === "completed" ? theme.ink.muted : theme.ink.plain}
-              // biome-ignore lint/suspicious/noArrayIndexKey: PlanEntry carries no stable id; the plan list is replaced wholesale, never reordered.
-              key={`${index}-${entry.content}`}
-            >
-              {entry.status === "completed" ? "Done" : "Plan"} {entry.content}
-            </Label>
-          ))}
+          {planText.length === 0 ? null : <RichText text={planText} />}
+          {plan.length === 0 ? null : (
+            <View style={[styles.steps, { borderLeftColor: theme.ground.edge }]} testID="plan-review-steps">
+              {plan.map((entry, index) => (
+                <Label
+                  color={entry.status === "completed" ? theme.ink.muted : theme.ink.plain}
+                  // biome-ignore lint/suspicious/noArrayIndexKey: PlanEntry carries no stable id; the plan list is replaced wholesale, never reordered.
+                  key={`${index}-${entry.content}`}
+                >
+                  {entry.status === "completed" ? "Done" : "Plan"} {entry.content}
+                </Label>
+              ))}
+            </View>
+          )}
         </ScrollView>
       )}
       {/*
@@ -147,6 +168,7 @@ const styles = StyleSheet.create({
     padding: rhythm.cardPad,
   },
   head: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  planBody: { gap: rhythm.cardGap },
   steps: { borderLeftWidth: stroke.hair, gap: rhythm.cardGap, paddingLeft: rhythm.indent },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: rhythm.cardGap },
   // Paper's own button is 36 tall at md3, which is not a finger target. A floor

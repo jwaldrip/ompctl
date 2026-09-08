@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { resetWindowSize, setWindowSize } from "./rnw.ts";
 
-const { PlanCard } = await import("../src/components/PlanCard.tsx");
+const { PlanCard, splitPlanMessage } = await import("../src/components/PlanCard.tsx");
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -86,42 +86,50 @@ describe("PlanCard", () => {
     host.remove();
   });
 
-  test("a long plan scrolls inside a quarter of the window, the question and the decision outside it", () => {
+  test("the plan scrolls inside a third of the window, the question and the decision outside it", () => {
+    // The shape OMP sends, measured 2026-09-08: the question, a blank line,
+    // then the whole plan as markdown. Rendered raw and unbounded it stood
+    // 810 points tall on a phone with the buttons past the bottom edge.
     setWindowSize(390, 844);
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
-    const plan = Array.from({ length: 40 }, (_, i) => ({
-      content: `Step ${i + 1}`,
-      priority: "medium" as const,
-      status: "pending" as const,
-    }));
+    const body = Array.from({ length: 30 }, (_, i) => `- Step ${i + 1}: do the thing`).join("\n");
+    const message = `Approve plan "readme" and start implementation?\n\n# Add a README\n\n## Context\n\nThe directory holds \`package.json\`.\n\n${body}`;
+    const plan = [{ content: "Write README.md", priority: "medium" as const, status: "pending" as const }];
     act(() => {
       root.render(
         <PlanCard
           canApprove
           onRespond={() => {}}
           plan={plan}
-          review={{
-            requestId: "pln_long",
-            message: "Approve this plan?",
-            choices: ["Approve and execute", "Refine plan"],
-          }}
+          review={{ requestId: "pln_long", message, choices: ["Approve and execute", "Refine plan"] }}
         />,
       );
     });
-    const steps = host.querySelector('[data-testid="plan-review-steps"]') as HTMLElement;
-    expect(steps).not.toBeNull();
-    expect(steps.textContent).toContain("Step 40");
-    // The step list is the scrolling region, capped at a quarter of the window.
-    expect(steps.style.maxHeight).toBe(`${Math.round(844 * 0.25)}px`);
-    expect(getComputedStyle(steps).overflowY).toBe("auto");
-    // The decision is outside that region, so it is never scrolled away.
+    const region = host.querySelector('[data-testid="plan-review-plan"]') as HTMLElement;
+    expect(region).not.toBeNull();
+    // The plan is in the region, rendered as markdown rather than raw text,
+    // and the steps sit under it in the same region.
+    expect(region.textContent).toContain("Step 30: do the thing");
+    expect(region.textContent).not.toContain("# Add a README");
+    expect(region.textContent).toContain("Add a README");
+    expect(region.querySelector('[data-testid="plan-review-steps"]')?.textContent).toContain("Write README.md");
+    // The region is what scrolls, capped at a third of the window.
+    expect(region.style.maxHeight).toBe(`${Math.round(844 * 0.34)}px`);
+    expect(getComputedStyle(region).overflowY).toBe("auto");
+    // The question and the decision are outside it, so neither scrolls away.
+    expect(region.textContent).not.toContain("start implementation?");
+    expect(host.textContent).toContain('Approve plan "readme" and start implementation?');
     const approve = host.querySelector('[data-testid="plan-approve"]') as HTMLElement;
-    expect(steps.contains(approve)).toBe(false);
-    expect(host.textContent).toContain("Approve this plan?");
+    expect(region.contains(approve)).toBe(false);
     act(() => root.unmount());
     host.remove();
     resetWindowSize();
+  });
+
+  test("a message with no blank line is all question", () => {
+    expect(splitPlanMessage("Approve this plan?")).toEqual({ question: "Approve this plan?", plan: "" });
+    expect(splitPlanMessage("Approve?\n\n# Plan\n\nbody")).toEqual({ question: "Approve?", plan: "# Plan\n\nbody" });
   });
 });
