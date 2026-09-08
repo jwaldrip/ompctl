@@ -313,6 +313,17 @@ describe("opening a row resolves to a holder, a claim, or the terminal prompt su
     });
   });
 
+  test("a stopped roster holder does not outrank an index that says a terminal holds the session now", () => {
+    // Observed 2026-09-08 on app.ompctl.ai: an agent left stopped by an
+    // earlier phone open of this session made a row labelled Live (TUI)
+    // resolve to a resume claim, which the daemon refused as not_dormant.
+    const state = drive([
+      { t: "sessions", event: { sessions: INDEX } },
+      { t: "agents", event: { agents: [agent("agt_stopped", { state: "stopped", acpSessionId: "s-tui" })] } },
+    ]);
+    expect(openSessionTarget(state, "s-tui")).toEqual({ kind: "live-tui", sessionId: "s-tui" });
+  });
+
   test("a row the index dropped, or whose cwd it could not decode, is unopenable", () => {
     const state = drive([{ t: "sessions", event: { sessions: INDEX } }]);
     // A stale row a newer index dropped: no echo exists, so no claim does.
