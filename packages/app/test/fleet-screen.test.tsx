@@ -362,15 +362,6 @@ describe("search and project filters, rendered", () => {
     expect(chipRegion).not.toContain("rgba(255,176,32,1");
   });
 
-  test("row metrics container has no-wrap style and single-line structure", () => {
-    const html = render(windowedState());
-    // Check each session has its metrics container
-    const target = WINDOWED[0]?.id as string;
-    expect(html).toContain(`data-testid="session-metrics-${target}"`);
-    // Style sheet includes nowrap for flexWrap
-    expect(html).toContain("flex-wrap:nowrap");
-  });
-
   test("row metrics fit on one line and support spend reading", () => {
     const sessionWithCost: BrowserSession = {
       ...(WINDOWED[0] as BrowserSession),

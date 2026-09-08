@@ -1488,7 +1488,9 @@ export function agentFor(state: ConsoleState, agentId: AgentId): Agent | null {
   const gone = rosterMisses >= 2;
   return {
     id: agentId,
-    name: session?.info.title ?? summary?.title ?? "Session",
+    // The words the list uses for an empty title, so the header and the row
+    // a tap came from agree until the roster names the agent.
+    name: session?.info.title || summary?.title || "Untitled session",
     // One missing roster may race a resume replay. Two means the host is gone:
     // keep the transcript selected, but do not offer controls that send to it.
     state: gone ? "stopped" : "idle",
