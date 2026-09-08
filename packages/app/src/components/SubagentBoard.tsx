@@ -391,7 +391,6 @@ const styles = StyleSheet.create({
   transcriptRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     minHeight: rhythm.minTarget,
     paddingHorizontal: space.snug,
     paddingVertical: space.snug,
@@ -405,7 +404,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: rhythm.glyphGap,
-    flexShrink: 1,
+    // The name takes the slack and gives it up first: the readings on the
+    // trailing edge keep their width, and a long name ellipsises.
+    flex: 1,
+    minWidth: 0,
   },
   transcriptName: {
     flexShrink: 1,
