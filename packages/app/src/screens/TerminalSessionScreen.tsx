@@ -49,7 +49,15 @@ import type { PromptImage, SessionLiveStatus, SubagentTranscript, TranscriptTail
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useState } from "react";
-import { FlatList, type ListRenderItemInfo, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import {
+  FlatList,
+  type ListRenderItemInfo,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { Button } from "react-native-paper";
 import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
@@ -210,12 +218,15 @@ function logRows(tui: TuiSessionState): LogRow[] {
   return rows;
 }
 
+/** The share of the window the open subagent list may take before it scrolls; the tail keeps the rest. */
+const SUBAGENTS_WINDOW_SHARE = 0.4;
+
 export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.Element {
   // The attribution column grows with the text rather than the text being
   // capped to fit it: at the default size 72 leaves 66 points for a 61.974
   // point "thinking", which is 1.065x of headroom, so any accessibility size
   // at all broke the word while a default-size-only gate kept passing.
-  const { fontScale } = useWindowDimensions();
+  const { fontScale, height: windowHeight } = useWindowDimensions();
   const { tui, connection, status, promptAccess, load } = props;
   const transcripts = props.subagentTranscripts ?? [];
   // Closed by default on every width: the tail is what this screen is for,
@@ -234,8 +245,14 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   // refused adds no row here. "Not live" and a refusal already have bands of
   // their own below that say more than a word and can be acted on.
   const activity = conversationActivity(tuiActivity(tui, connection, load, liveTerminal));
-  const tone = status === null ? theme.signal.failed : theme.signal[SESSION_STATUS_SIGNALS[status]];
-  const statusLabel = status === null ? "Unavailable" : STATUS_LABELS[status];
+  // A read-only transcript has no liveness to report: it is a file, and
+  // "Unavailable" in the failed tone would say the daemon lost something.
+  const tone = props.readOnly
+    ? theme.ink.faint
+    : status === null
+      ? theme.signal.failed
+      : theme.signal[SESSION_STATUS_SIGNALS[status]];
+  const statusLabel = props.readOnly ? "Transcript" : status === null ? "Unavailable" : STATUS_LABELS[status];
   const ownedBottom = useOwnedBottomInset();
   // The same mechanism the agent log uses: KeyboardAvoidingView is inert on an
   // iPad, so the keyboard's measured height is paid as padding instead.
@@ -431,13 +448,13 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         <Pressable
           testID="terminal-back"
           accessibilityRole="button"
-          accessibilityLabel="Back to sessions"
+          accessibilityLabel={props.readOnly ? "Back to the session" : "Back to sessions"}
           onPress={props.onBack}
           style={({ pressed }) => [styles.back, pressed && { backgroundColor: theme.ground.active }]}
         >
           <Glyph name="back" size={14} color={theme.ink.plain} />
           <Label color={theme.ink.plain} testID="terminal-back-label">
-            Sessions
+            {props.readOnly ? "Session" : "Sessions"}
           </Label>
         </Pressable>
 
@@ -445,12 +462,14 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           <Title heading numberOfLines={1} testID="terminal-title">
             {props.title || "Untitled session"}
           </Title>
-          <View style={styles.meta}>
-            <Glyph name="folder" size={10} color={theme.ink.faint} />
-            <Label color={theme.ink.muted} numberOfLines={1} style={styles.origin}>
-              {shortenPath(props.cwd, 3)}
-            </Label>
-          </View>
+          {props.cwd === "" ? null : (
+            <View style={styles.meta}>
+              <Glyph name="folder" size={10} color={theme.ink.faint} />
+              <Label color={theme.ink.muted} numberOfLines={1} style={styles.origin}>
+                {shortenPath(props.cwd, 3)}
+              </Label>
+            </View>
+          )}
         </View>
 
         <Kicker color={tone} testID="terminal-state">
@@ -480,7 +499,12 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             </View>
           </Pressable>
           {subagentsOpen ? (
-            <View testID="terminal-subagents-list">
+            // Bounded: a session that fanned out thirty-seven subagents must not
+            // push its own tail off the screen when the operator opens the list.
+            <ScrollView
+              style={{ maxHeight: Math.round(windowHeight * SUBAGENTS_WINDOW_SHARE) }}
+              testID="terminal-subagents-list"
+            >
               {transcripts.map(transcript => (
                 <SubagentTranscriptRow
                   key={transcript.name}
@@ -489,7 +513,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
                   onOpen={onOpenSubagent}
                 />
               ))}
-            </View>
+            </ScrollView>
           ) : null}
         </View>
       )}

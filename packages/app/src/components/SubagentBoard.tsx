@@ -397,6 +397,8 @@ const styles = StyleSheet.create({
   transcriptMeta: {
     flexDirection: "row",
     alignItems: "center",
-    gap: rhythm.pairGap,
+    // Two readings, elapsed and size, and a pair gap ran them together as
+    // one number ("2:522.2M" on the live build); a snug gap keeps them two.
+    gap: space.snug,
   },
 });
