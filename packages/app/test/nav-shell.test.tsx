@@ -986,6 +986,7 @@ describe("subagent transcripts in session context", () => {
               updatedAt: "2026-09-08T00:00:00.000Z",
               byteSize: 2048,
               hasReport: true,
+              state: "done",
             },
             {
               name: "GapChrome",
@@ -993,6 +994,7 @@ describe("subagent transcripts in session context", () => {
               updatedAt: "2026-09-08T00:00:00.000Z",
               byteSize: 4096,
               hasReport: false,
+              state: "done",
             },
           ],
         });
@@ -1071,8 +1073,16 @@ describe("subagent transcripts in session context", () => {
               updatedAt: "2026-09-08T00:00:00.000Z",
               byteSize: 2048,
               hasReport: true,
+              state: "done",
             },
-            { name: "GapChrome", id: "sub-2", updatedAt: "2026-09-08T00:00:00.000Z", byteSize: 4096, hasReport: false },
+            {
+              name: "GapChrome",
+              id: "sub-2",
+              updatedAt: "2026-09-08T00:00:00.000Z",
+              byteSize: 4096,
+              hasReport: false,
+              state: "running",
+            },
           ],
         });
       });
@@ -1083,6 +1093,9 @@ describe("subagent transcripts in session context", () => {
       expect(shell.el("subagent-transcript-RebaseCollabPr")).not.toBeNull();
       expect(shell.el("subagent-transcript-report-RebaseCollabPr")).not.toBeNull();
       expect(shell.el("subagent-transcript-report-GapChrome")).toBeNull();
+      // Each row reads the state its own file proves, in the file's words.
+      expect(shell.el("subagent-transcript-state-RebaseCollabPr")?.textContent).toBe("done");
+      expect(shell.el("subagent-transcript-state-GapChrome")?.textContent).toBe("running");
 
       shell.press("subagent-transcript-GapChrome");
       const tailAsk = shell.client.tails.find(t => t.subagent === "GapChrome");

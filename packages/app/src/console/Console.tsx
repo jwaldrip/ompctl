@@ -411,7 +411,8 @@ export function Console({
           subagentTranscripts:
             agent.acpSessionId !== undefined ? state.subagentTranscripts.get(agent.acpSessionId) : undefined,
           onOpenSubagent: (target: Agent | SubagentTranscript) => {
-            if ("state" in target) {
+            // A roster agent has a host; a transcript on disk has a size.
+            if ("host" in target) {
               onOpenAgent(target);
             } else {
               const sid = agent.acpSessionId ?? state.sessionIds.get(agent.id);

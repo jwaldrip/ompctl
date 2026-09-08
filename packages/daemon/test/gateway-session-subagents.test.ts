@@ -284,6 +284,58 @@ describe("subagent transcripts on disk", () => {
     const list = await listSubagentTranscripts(h.emptyFilePath);
     expect(list).toEqual([]);
   });
+
+  test("(f) a transcript's state is what its tail records prove: done, idle, running, stalled", async () => {
+    // Record shapes as OMP writes them, measured on 2026-09-08: the exit
+    // record is `{type:"custom",customType:"session_exit"}`; a yield is an
+    // assistant `toolCall` named `yield` that no `toolResult` follows; a
+    // working tool call is answered by a `toolResult` with its `toolCallId`.
+    const sessionsRoot = tempDir("sub-state-");
+    const parent = writeSessionFile(sessionsRoot, "-x", SESSION, [turn("user", "hi")]);
+    const dir = subagentDirFor(parent);
+    mkdirSync(dir, { recursive: true });
+    const header = [
+      { type: "title", v: 1, title: "", updatedAt: "2026-09-08T00:00:00.000Z" },
+      { type: "session", version: 3, id: "sub-id", timestamp: "t", cwd: "/x" },
+    ];
+    const call = (name: string, id: string): unknown => ({
+      type: "message",
+      id: `a-${id}`,
+      timestamp: "2026-09-08T00:00:01.000Z",
+      message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: {} }] },
+    });
+    const answer = (id: string): unknown => ({
+      type: "message",
+      id: `r-${id}`,
+      timestamp: "2026-09-08T00:00:02.000Z",
+      message: { role: "toolResult", toolCallId: id, toolName: "x", content: [{ type: "text", text: "ok" }] },
+    });
+    const exit = { type: "custom", customType: "session_exit", data: { reason: "dispose", kind: "normal" } };
+    const now = Date.parse("2026-09-08T12:00:00.000Z");
+    const write = (name: string, records: unknown[], mtimeMs: number): void => {
+      const path = join(dir, `${name}.jsonl`);
+      writeFileSync(path, `${records.map(r => JSON.stringify(r)).join("\n")}\n`);
+      utimesSync(path, new Date(mtimeMs), new Date(mtimeMs));
+    };
+    // Done: exited after yielding, the ordinary end of a reaped subagent.
+    write("Done", [...header, call("yield", "c1"), exit], now - 3_600_000);
+    // Idle: the yield call is the last record, not exited, however long
+    // ago; a parked agent is revivable, so its age proves nothing.
+    write("Idle", [...header, call("bash", "c1"), answer("c1"), call("yield", "c2")], now - 3_600_000);
+    // Sent back to work after a yield: the last call is no longer yield.
+    write("Revived", [...header, call("yield", "c1"), answer("c1"), call("edit", "c2"), answer("c2")], now - 10_000);
+    // Running: mid-tool, written seconds ago.
+    write("Running", [...header, call("bash", "c1")], now - 10_000);
+    // Stalled: mid-tool and silent for longer than the stall window.
+    write("Stalled", [...header, call("bash", "c1")], now - 10 * 60_000);
+
+    const byName = new Map((await listSubagentTranscripts(parent, now)).map(t => [t.name, t.state]));
+    expect(byName.get("Done")).toBe("done");
+    expect(byName.get("Idle")).toBe("idle");
+    expect(byName.get("Revived")).toBe("running");
+    expect(byName.get("Running")).toBe("running");
+    expect(byName.get("Stalled")).toBe("stalled");
+  });
 });
 
 describe("subagent transcripts over websocket", () => {

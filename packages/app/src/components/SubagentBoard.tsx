@@ -1,4 +1,4 @@
-import type { Agent, AgentState, SubagentTranscript } from "@ompd/core/contracts";
+import type { Agent, AgentState, SubagentTranscript, SubagentTranscriptState } from "@ompd/core/contracts";
 import { type JSX, memo, useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { elapsed } from "../design/format.ts";
@@ -274,20 +274,34 @@ export interface SubagentTranscriptRowProps {
   readonly onOpen: (transcript: SubagentTranscript) => void;
 }
 
+/**
+ * The palette's word for each state a transcript's tail can prove. `stalled`
+ * is `holding`, not `failed`: the file says the writer stopped, not why,
+ * and a slow tool looks the same as a dead parent from here.
+ */
+const TRANSCRIPT_STATE_SIGNAL: Readonly<Record<SubagentTranscriptState, "working" | "ready" | "cold" | "holding">> = {
+  running: "working",
+  idle: "ready",
+  done: "cold",
+  stalled: "holding",
+};
+
 export function SubagentTranscriptRow({
   transcript,
   now = Date.now(),
   onOpen,
 }: SubagentTranscriptRowProps): JSX.Element {
   const theme = useOmpTheme();
+  const tone = theme.signal[TRANSCRIPT_STATE_SIGNAL[transcript.state]];
   return (
     <Pressable
-      accessibilityLabel={`${transcript.name}, ${elapsed(transcript.updatedAt, now)}, ${formatBytes(transcript.byteSize)}${transcript.hasReport ? ", has report" : ""}`}
+      accessibilityLabel={`${transcript.name}, ${transcript.state}, ${elapsed(transcript.updatedAt, now)}, ${formatBytes(transcript.byteSize)}${transcript.hasReport ? ", has report" : ""}`}
       accessibilityRole="button"
       onPress={() => onOpen(transcript)}
       style={({ pressed }) => [styles.transcriptRow, pressed && { backgroundColor: theme.ground.active }]}
       testID={`subagent-transcript-${transcript.name}`}
     >
+      <View style={[styles.transcriptSignal, { backgroundColor: tone }]} />
       <View style={styles.transcriptMain}>
         <Label color={theme.ink.bright} numberOfLines={1} style={styles.transcriptName}>
           {transcript.name}
@@ -299,6 +313,9 @@ export function SubagentTranscriptRow({
         ) : null}
       </View>
       <View style={styles.transcriptMeta}>
+        <Kicker color={tone} testID={`subagent-transcript-state-${transcript.name}`}>
+          {transcript.state}
+        </Kicker>
         <Data color={theme.ink.muted}>{elapsed(transcript.updatedAt, now)}</Data>
         <Data color={theme.ink.muted}>{formatBytes(transcript.byteSize)}</Data>
       </View>
@@ -374,18 +391,23 @@ const styles = StyleSheet.create({
   transcriptRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     minHeight: rhythm.minTarget,
     paddingHorizontal: space.snug,
     paddingVertical: space.snug,
     borderRadius: radius.control,
     gap: space.snug,
   },
+  // The same rule the session row draws: a state is a colour on the leading
+  // edge before it is a word, and the width the fleet already uses.
+  transcriptSignal: { alignSelf: "stretch", width: 3, borderRadius: 2 },
   transcriptMain: {
     flexDirection: "row",
     alignItems: "center",
     gap: rhythm.glyphGap,
-    flexShrink: 1,
+    // The name takes the slack and gives it up first: the readings on the
+    // trailing edge keep their width, and a long name ellipsises.
+    flex: 1,
+    minWidth: 0,
   },
   transcriptName: {
     flexShrink: 1,

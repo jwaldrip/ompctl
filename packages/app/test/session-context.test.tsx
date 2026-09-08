@@ -128,7 +128,7 @@ function panel(options: {
       defaultOpen={options.defaultOpen ?? true}
       now={NOW}
       onOpenSubagent={next => {
-        if ("state" in next) opened.push(next);
+        if ("host" in next) opened.push(next);
       }}
       origin={options.origin ?? "owned"}
       session={options.session ?? EMPTY_SESSION}
