@@ -4379,7 +4379,10 @@ export class Gateway {
         }
         if (frame.sinceSeq !== undefined) {
           for (const record of this.#store.updatesSince(frame.agentId, frame.sinceSeq)) {
-            this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload);
+            // Marked as replay: these are this daemon's own log, not the agent
+            // speaking now. A client reading them as live cannot tell that the
+            // turn they describe is over.
+            this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload, true);
           }
         }
 
@@ -5888,13 +5891,17 @@ export class Gateway {
     this.#send(ws, { t: "error", sessionId, code: "collab_unavailable", message: outcome.unavailable });
   }
 
-  #deliverUpdate(ws: GatewaySocket, agentId: AgentId, seq: number, update: unknown): void {
+  #deliverUpdate(ws: GatewaySocket, agentId: AgentId, seq: number, update: unknown, replay = false): void {
     // The single choke point replay and live traffic share, so a frame the
     // socket already has can never be sent twice.
     const delivered = ws.data.delivered.get(agentId) ?? 0;
     if (seq <= delivered) return;
     ws.data.delivered.set(agentId, seq);
-    this.#send(ws, { t: "update", agentId, seq, update });
+    // The flag rides the frame rather than arriving as a separate marker,
+    // because this is the only place that knows: `updatesSince` and a live
+    // push both reach here as the same shape, and a client left to infer which
+    // is which infers it wrong. Omitted when live, so the wire keeps its shape.
+    this.#send(ws, { t: "update", agentId, seq, update, ...(replay ? { replay: true } : {}) });
   }
 
   /**

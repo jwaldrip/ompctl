@@ -778,6 +778,92 @@ describe("a session joined after its turn ended", () => {
       shell.unmount();
     }
   });
+
+  /**
+   * The half the two cases above leave open, reported from a phone on
+   * 2026-09-09: the composer offers a QUEUE instead of a send on a session
+   * whose turn is long over, so every prompt goes to the daemon as
+   * `deliverAs: "followUp"` and waits for a turn that already ended.
+   *
+   * Both fixes above settle on a frame that happens to arrive AFTER the last
+   * chunk: a non-chunk update, or another roster snapshot. Neither is
+   * guaranteed. A turn's last update IS a chunk, a settled agent pushes no
+   * further roster, and the sibling case above had to append a `usage_update`
+   * of its own to make the stream close. Neither could settle on the chunk
+   * itself, because a live chunk's open row is how the next chunk finds what it
+   * continues when the wire rotates the message id mid-reply.
+   *
+   * So the daemon says which frames are its own log, and a replayed chunk is
+   * written as settled text instead of an open row. Nothing is left needing a
+   * frame that never comes.
+   */
+  test("a replayed transcript ending on a chunk offers send, not a queue", () => {
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      shell.emit("agents", { agents: ROSTER });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      userTurn(shell, 1, "what did you find?");
+      // What an attach replays, flagged as the daemon's own log. Nothing
+      // follows it: the turn ended before this device arrived, so there is no
+      // trailing usage frame and no roster push coming.
+      shell.emit("update", {
+        agentId: "agt_a",
+        seq: 2,
+        replay: true,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "The mount policy imports node:path." },
+          messageId: "m1",
+        },
+      });
+
+      expect(shell.el("composer-send")).not.toBeNull();
+      expect(shell.el("composer-queue")).toBeNull();
+      expect(shell.el("composer-cancel")).toBeNull();
+      expect(shell.rowLabel()).toBeNull();
+      expect(shell.rowCount()).toBe(0);
+      // And the reply is one row with all of its text, not a fragment.
+      expect(shell.el("entry-assistant")?.textContent).toContain("The mount policy imports node:path.");
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  /**
+   * The rotating message id, on the replay path. Captured from this daemon:
+   * one reply arrived as chunks with ids `c7be8049`, `febf0117`, `febf0117`.
+   * Live, the open row absorbs them all. A replayed row is closed, so what
+   * holds them together is the row being the newest of its channel, and this is
+   * the case that fails if that rule is dropped: three rows reading "The ",
+   * "mount policy " and "imports node:path.".
+   */
+  test("a replay coalesces rotating ids into one row, and stops at a tool call", () => {
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      shell.emit("agents", { agents: ROSTER });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      for (const [seq, id, text] of [
+        [1, "c7be8049", "The "],
+        [2, "febf0117", "mount policy "],
+        [3, "febf0117", "imports node:path."],
+      ] as const) {
+        shell.emit("update", {
+          agentId: "agt_a",
+          seq,
+          replay: true,
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text }, messageId: id },
+        });
+      }
+
+      expect(shell.el("entry-assistant")?.textContent).toContain("The mount policy imports node:path.");
+      expect(shell.el("composer-send")).not.toBeNull();
+      expect(shell.rowLabel()).toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
 });
 
 describe("the turn underway sits after the operator's prompt and above the composer", () => {
