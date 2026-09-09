@@ -1,79 +1,24 @@
-/*
- * The site is cut from the app's own material.
- *
- * Every value below is lifted from `packages/app/src/design/tokens.ts` rather
- * than picked to look nice here: the ground steps, the four ink levels, the six
- * signals and their washes, the four-point grid, and `radius: 0`. A visitor who
- * installs the thing should recognise the surface they already saw on the site,
- * and a token change in the app should be a search-and-replace here rather than
- * a redesign.
- *
- * The signals are used for what they MEAN in the product -- sage is ready, amber
- * is working, ochre is holding, oxide is failed -- never as decoration. That is
- * the rule inside the app and it is the reason there are six of them.
+/* The app's dark ground, square plates and bright status signals stay the material.
+ * The tour spends space on the session, not on repeating the same setup form.
  */
-
-/*
- * Contrast, computed rather than eyeballed.
- *
- * Several of the app's own pairings fail WCAG AA for small text on this surface:
- * `ink.muted` on `ground.base` is 4.50, `ink.faint` is 2.48, and every signal on
- * its own wash lands between 3.06 and 4.37. Those are fine on a phone where the
- * same label is a glanceable status next to a large one, and not fine as body
- * copy on a marketing page, so this sheet uses the brighter step of each pair and
- * draws chips as signal-on-ground with a hairline instead of signal-on-wash.
- *
- * Ratios against `--ground-base` #0a0c10: ink-plain 13.49, sage 10.97, amber 10.70,
- * ochre 7.57, violet 7.19, azure 7.19. Against `--ground-surface` #11151c: ink-plain 12.61.
- * All well above the 4.5 needed for text this size.
- */
-
 :root {
-  /* Near-black ground and bright accents from the logo palette. */
   --ground-base: #0a0c10;
   --ground-surface: #11151c;
-  --ground-raised: #181d26;
-  --ground-active: #1f2632;
   --ground-line: #1c2230;
   --ground-edge: #262d38;
-
   --ink-bright: #f4f7fb;
   --ink-plain: #cfd7e2;
   --ink-muted: #8b96a6;
-  --ink-faint: #7a8595;
   --ink-inverse: #0a0c10;
-
   --brand-azure: #5b9dff;
-  --brand-amber: #ffb020;
-
   --signal-amber: #ffb020;
   --signal-sage: #3ddc84;
-  --signal-ochre: #ff7a45;
-  --signal-oxide: #ff4d4d;
-  --signal-slate: #7d8794;
-  --signal-violet: #a78bfa;
-
-  --wash-amber: #352c1d;
-  --wash-sage: #18332c;
-  --wash-ochre: #352422;
-  --wash-oxide: #351d23;
-  --wash-slate: #21262e;
-  --wash-violet: #28273d;
-
-  /* The app's four-point grid, same names. */
-  --hair: 2px;
-  --tight: 4px;
-  --snug: 8px;
-  --step: 12px;
-  --wide: 16px;
-  --loose: 24px;
-  --gulf: 32px;
-
-  /* Square, everywhere. Named so the rule is visible. */
-  --radius: 0;
-
-  --face-body: Archivo, "Helvetica Neue", Arial, sans-serif;
-  --face-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --face-body: "Helvetica Neue", Arial, sans-serif;
+  --face-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* Plain/base 13.49:1; muted/base 6.53:1; amber/base 10.70:1.
+   * On surface: plain 12.61:1; muted 6.11:1; azure 6.72:1; sage 10.25:1.
+   * The primary button uses inverse/azure at 7.19:1.
+   */
 }
 
 *,
@@ -81,45 +26,10 @@
 *::after {
   box-sizing: border-box;
 }
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--ground-edge) transparent;
-}
-
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--ground-edge);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--ink-faint);
-}
-
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
 
 html {
   scroll-behavior: smooth;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
-  * {
-    animation: none !important;
-    transition: none !important;
-  }
+  scroll-padding-top: 24px;
 }
 
 body {
@@ -132,440 +42,656 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Skip link: keyboard users should not have to walk the nav to reach content. */
+:focus-visible {
+  outline: 2px solid var(--signal-amber);
+  outline-offset: 4px;
+}
+
+a {
+  color: var(--brand-azure);
+  text-underline-offset: 4px;
+}
+
+a:hover {
+  color: var(--ink-bright);
+}
+
 .skip {
   position: absolute;
   left: -9999px;
+  padding: 8px 16px;
   background: var(--signal-sage);
   color: var(--ink-inverse);
-  padding: var(--snug) var(--step);
   font-family: var(--face-mono);
   z-index: 10;
 }
+
 .skip:focus {
-  left: var(--step);
-  top: var(--step);
+  left: 16px;
+  top: 16px;
 }
-
-:focus-visible {
-  outline: var(--hair) solid var(--signal-amber);
-  outline-offset: 2px;
-}
-
-/* --- structure -------------------------------------------------------- */
 
 .shell {
   max-width: 1180px;
   margin: 0 auto;
-  padding: 0 var(--loose);
+  padding: 0 24px;
 }
 
 .masthead {
   display: flex;
-  align-items: baseline;
-  gap: var(--wide);
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  padding: 16px 0;
   border-bottom: 1px solid var(--ground-line);
-  padding: var(--loose) 0;
 }
 
 .wordmark {
-  font-family: var(--face-mono);
-  font-size: 15px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
   color: var(--ink-bright);
-  margin: 0;
+  font: 500 19px var(--face-mono);
+  letter-spacing: 0.1em;
+  text-decoration: none;
 }
 
-.masthead nav {
-  margin-left: auto;
+.masthead nav,
+.footer nav {
   display: flex;
-  gap: var(--loose);
+  flex-wrap: wrap;
+  gap: 8px 24px;
 }
 
 .masthead nav a,
-.footer a {
+.footer nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   color: var(--ink-plain);
-  text-decoration: none;
-  font-family: var(--face-mono);
-  font-size: 13px;
-  letter-spacing: 0.06em;
+  font: 12px var(--face-mono);
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  border-bottom: 1px solid transparent;
-}
-.masthead nav a:hover,
-.footer a:hover {
-  color: var(--ink-bright);
-  border-bottom-color: var(--signal-amber);
+  text-decoration: none;
 }
 
-/*
- * The kicker is the app's own section marker: a small mono label above a
- * heading. It replaces the emoji-as-section-header habit outright.
- */
-.kicker {
-  font-family: var(--face-mono);
-  font-size: 12px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--ink-plain);
-  margin: 0 0 var(--snug);
+.masthead nav a:hover,
+.footer nav a:hover {
+  color: var(--brand-azure);
 }
 
 h1,
 h2,
 h3 {
+  margin: 0 0 16px;
   color: var(--ink-bright);
   font-weight: 600;
-  letter-spacing: -0.02em;
   line-height: 1.1;
-  margin: 0 0 var(--step);
+  letter-spacing: -0.025em;
 }
 
 h1 {
-  font-size: clamp(38px, 6vw, 68px);
+  max-width: 15ch;
+  font-size: clamp(38px, 5.5vw, 64px);
 }
+
+h1 span {
+  color: var(--signal-amber);
+}
+
 h2 {
+  max-width: 24ch;
   font-size: clamp(28px, 3.4vw, 40px);
 }
+
 h3 {
-  font-size: 20px;
-  letter-spacing: -0.01em;
+  font-size: 21px;
 }
 
 p {
-  max-width: 68ch;
-  margin: 0 0 var(--wide);
+  max-width: 66ch;
+  margin: 0 0 20px;
 }
 
-code,
-kbd {
-  font-family: var(--face-mono);
-  font-size: 0.92em;
+code {
   color: var(--signal-amber);
+  font: 0.9em var(--face-mono);
+  overflow-wrap: anywhere;
 }
 
-/*
- * Asymmetric on purpose: the lede sits left against a plate on the right.
- * A centred hero over a gradient is the single most recognisable machine-made
- * layout, so this is a two-column split that collapses honestly.
- */
+.kicker,
+.route-label {
+  margin-bottom: 16px;
+  color: var(--ink-muted);
+  font: 12px/1.5 var(--face-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
 .hero {
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
-  gap: var(--gulf);
-  align-items: end;
-  padding: clamp(var(--gulf), 7vw, 96px) 0 var(--gulf);
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.65fr);
+  align-items: center;
+  gap: 64px;
+  padding: 48px 0 64px;
   border-bottom: 1px solid var(--ground-line);
 }
 
-.hero p.lede {
-  font-size: 21px;
-  color: var(--ink-plain);
+.hero-copy,
+.setup > *,
+.steps > li > div {
+  min-width: 0;
 }
 
-.state-row {
+.lede {
+  max-width: 42ch;
+  font-size: 20px;
+  line-height: 1.5;
+  margin: 24px 0;
+}
+
+.actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--snug);
-  padding: 0;
-  margin: var(--loose) 0 0;
-  list-style: none;
+  align-items: center;
+  gap: 8px 24px;
+  margin-top: 24px;
 }
 
-/*
- * A signal chip, exactly as the app draws one: signal text on its own wash,
- * square, hairline-free. The colour is the meaning, not the styling.
- */
-.chip {
-  font-family: var(--face-mono);
-  font-size: 12px;
-  letter-spacing: 0.08em;
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 48px;
+  padding: 12px 16px;
+  background: var(--brand-azure);
+  color: var(--ink-inverse);
+  font: 500 14px/1.5 var(--face-mono);
+  text-decoration: none;
+}
+
+.button:hover {
+  background: var(--ink-bright);
+  color: var(--ink-inverse);
+}
+
+.text-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 15px;
+}
+
+.hero-note,
+.setup-note,
+.scope-tools {
+  color: var(--ink-muted);
+  font-size: 14px;
+}
+
+.hero-note {
+  max-width: 45ch;
+  margin: 20px 0 0;
+}
+
+.hero-shot {
+  width: min(100%, 260px);
+  margin: 0 auto;
+  border: 1px solid var(--ground-edge);
+  background: var(--ground-surface);
+}
+
+.frame-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  font: 11px/1.5 var(--face-mono);
   text-transform: uppercase;
-  padding: var(--tight) var(--snug);
-  border-radius: var(--radius);
+  letter-spacing: 0.04em;
 }
-.chip.ready {
+
+.signal-ready {
   color: var(--signal-sage);
-  border: 1px solid var(--signal-sage);
-}
-.chip.working {
-  color: var(--signal-amber);
-  border: 1px solid var(--signal-amber);
-}
-.chip.holding {
-  color: var(--signal-ochre);
-  border: 1px solid var(--signal-ochre);
-}
-.chip.thinking {
-  color: var(--signal-violet);
-  border: 1px solid var(--signal-violet);
 }
 
 .section {
-  padding: clamp(var(--gulf), 6vw, 88px) 0;
+  padding: 64px 0;
   border-bottom: 1px solid var(--ground-line);
 }
 
-/* --- plates ----------------------------------------------------------- */
-
-/*
- * Screenshots are the spine of this page, not decoration, so they are called
- * plates and they carry real captions. Each is a genuine capture from the
- * Cucumber suite against a live daemon; none is a mockup.
- */
-.plates {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--loose);
-  margin: var(--loose) 0 0;
+.section-heading {
+  margin-bottom: 28px;
 }
 
 .plate {
+  min-width: 0;
   margin: 0;
+  border: 1px solid var(--ground-edge);
   background: var(--ground-surface);
-  border: 1px solid var(--ground-line);
-  border-radius: var(--radius);
 }
 
-.plate img {
+.shot-link {
   display: block;
+}
+
+img {
+  display: block;
+  max-width: 100%;
   width: 100%;
   height: auto;
-  border-bottom: 1px solid var(--ground-line);
 }
 
-/*
- * Phone captures are 1080x2400. At full column width that renders about 1265px
- * tall, which pushed the headline clean off the first screen: the hero showed a
- * giant screenshot and no words. Capping the height makes a phone read as a
- * device held next to the copy rather than as a poster behind it. The wide
- * console captures are 2360x1640 and want the opposite, so they keep the
- * full-bleed treatment.
- */
-.plate--phone img {
-  width: auto;
-  max-height: 62vh;
-  margin: 0 auto;
-  border-bottom: none;
-  border-left: 1px solid var(--ground-line);
-  border-right: 1px solid var(--ground-line);
-}
-
-.plates .plate--phone img {
-  max-height: 440px;
-}
-
-.plate figcaption {
-  padding: var(--step) var(--wide);
-  font-family: var(--face-mono);
-  font-size: 12.5px;
-  line-height: 1.5;
+figcaption {
+  padding: 12px 16px;
+  border-top: 1px solid var(--ground-edge);
   color: var(--ink-plain);
+  font: 12px/1.5 var(--face-mono);
 }
-.plate figcaption b {
-  color: var(--ink-plain);
+
+figcaption b {
+  color: var(--ink-bright);
   font-weight: 500;
 }
 
-/* The console is a wide surface; it gets a full-bleed plate of its own. */
-.plate-wide {
-  grid-column: 1 / -1;
+figcaption span {
+  color: var(--ink-muted);
 }
 
-/* --- steps ------------------------------------------------------------ */
+.overview {
+  max-width: 100%;
+}
 
-/*
- * Numbered as an ordered list because it IS one: these steps only work in
- * order. Oversized numerals give the page scale contrast without a hero blob.
- */
-.steps {
-  counter-reset: step;
-  list-style: none;
-  padding: 0;
-  margin: var(--loose) 0 0;
+.tour-chapters {
+  margin-top: 32px;
+}
+
+.tour-chapters details {
+  border-top: 1px solid var(--ground-edge);
+}
+
+.tour-chapters details:last-child {
+  border-bottom: 1px solid var(--ground-edge);
+}
+
+.tour-chapters summary {
   display: grid;
-  gap: var(--loose);
+  grid-template-columns: 32px minmax(0, 1fr) 16px;
+  gap: 16px;
+  align-items: baseline;
+  padding: 20px 0;
+  color: var(--ink-bright);
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.3;
+  list-style: none;
+  cursor: pointer;
+}
+
+.tour-chapters summary::-webkit-details-marker {
+  display: none;
+}
+
+.tour-chapters summary::after {
+  content: "+";
+  color: var(--brand-azure);
+  font-family: var(--face-mono);
+}
+
+.tour-chapters details[open] > summary::after {
+  content: "\2212";
+}
+
+.tour-chapters summary:hover {
+  color: var(--brand-azure);
+}
+
+.chapter-number {
+  color: var(--ink-muted);
+  font: 13px var(--face-mono);
+}
+
+.chapter-body {
+  padding: 0 0 24px 48px;
+}
+
+.chapter-body > p {
+  max-width: 64ch;
+  margin-bottom: 24px;
+}
+
+/* Exclusive native disclosures keep the tour inspectable without a carousel.
+ * Both surface captures remain ordinary links to their full-resolution files.
+ */
+.shot-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 0.36fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.phone-plate {
+  width: min(100%, 230px);
+  justify-self: center;
+}
+
+.route {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 32px;
+}
+
+.route > div {
+  padding: 0 24px;
+  border-left: 1px solid var(--ground-edge);
+}
+
+.route > div:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.route p:last-child {
+  margin: 0;
+  font-size: 16px;
+}
+
+.setup {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 48px;
+  align-items: start;
+  margin-top: 32px;
+}
+
+.steps {
+  display: grid;
+  gap: 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
 }
 
 .steps > li {
-  counter-increment: step;
   display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: var(--loose);
-  align-items: start;
-  border-top: 1px solid var(--ground-line);
-  padding-top: var(--loose);
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--ground-edge);
+  counter-increment: step;
 }
 
 .steps > li::before {
   content: counter(step, decimal-leading-zero);
-  font-family: var(--face-mono);
-  font-size: 40px;
-  line-height: 1;
   color: var(--ink-muted);
+  font: 28px/1 var(--face-mono);
 }
 
+.steps h3 {
+  font-size: 18px;
+}
+
+.steps p {
+  margin-bottom: 0;
+  font-size: 14px;
+}
+
+/* Zero-minimum tracks let a long command shrink with the page. Commands wrap
+ * at spaces, then within a long argument if necessary; copying keeps one line.
+ */
 pre {
-  margin: var(--step) 0 0;
-  padding: var(--step) var(--wide);
+  min-width: 0;
+  margin: 16px 0;
+  padding: 16px;
+  border-left: 2px solid var(--ground-edge);
   background: var(--ground-surface);
-  border-left: var(--hair) solid var(--ground-edge);
-  border-radius: var(--radius);
-  overflow-x: auto;
-  font-family: var(--face-mono);
-  font-size: 13.5px;
-  line-height: 1.7;
   color: var(--ink-bright);
-}
-pre .prompt {
-  color: var(--ink-plain);
-  user-select: none;
-}
-pre .out {
-  color: var(--ink-plain);
+  font: 13px/1.7 var(--face-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-/* --- scopes table ----------------------------------------------------- */
+pre code {
+  color: inherit;
+  font: inherit;
+}
+
+.pairing .shot-pair {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.pairing .phone-plate {
+  max-width: 156px;
+}
+
+.setup-note {
+  margin: 20px 0 0;
+}
 
 table {
   width: 100%;
   border-collapse: collapse;
-  margin: var(--loose) 0 0;
-  font-size: 15px;
+  table-layout: fixed;
+  margin: 28px 0 20px;
+  font-size: 16px;
 }
+
 caption {
+  padding-bottom: 12px;
+  color: var(--ink-muted);
+  font: 12px/1.5 var(--face-mono);
   text-align: left;
-  color: var(--ink-plain);
-  font-family: var(--face-mono);
-  font-size: 12.5px;
-  padding-bottom: var(--snug);
 }
+
 th,
 td {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--ground-edge);
   text-align: left;
-  padding: var(--step) var(--wide) var(--step) 0;
-  border-bottom: 1px solid var(--ground-line);
   vertical-align: top;
 }
-th {
+
+th:first-child {
+  width: 24%;
+  padding-right: 16px;
+}
+
+thead th {
   color: var(--ink-bright);
-  font-family: var(--face-mono);
-  font-size: 12px;
-  letter-spacing: 0.1em;
+  font: 12px/1.5 var(--face-mono);
   text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+tbody th code {
+  color: var(--signal-sage);
+  font-weight: 400;
+}
+
+.limits dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px 48px;
+  margin: 32px 0;
+}
+
+.limits dt {
+  margin-bottom: 8px;
+  color: var(--ink-bright);
   font-weight: 500;
 }
-td code {
-  color: var(--signal-sage);
+
+.limits dd {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 15px;
 }
 
 .footer {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--loose);
-  align-items: baseline;
-  padding: var(--loose) 0 var(--gulf);
-  color: var(--ink-plain);
-  font-family: var(--face-mono);
-  font-size: 12.5px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding: 24px 0;
+  color: var(--ink-muted);
+  font: 12px/1.5 var(--face-mono);
 }
-.footer nav {
-  margin-left: auto;
-  display: flex;
-  gap: var(--loose);
+
+.footer p {
+  margin: 0;
 }
 
 @media (max-width: 860px) {
   .hero {
-    grid-template-columns: 1fr;
-    align-items: start;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.6fr);
+    gap: 32px;
   }
-  .masthead {
-    flex-wrap: wrap;
+
+  .hero-shot {
+    max-width: 220px;
   }
-  .masthead nav {
-    margin-left: 0;
-    width: 100%;
+
+  .setup {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
   }
-  .steps > li {
-    grid-template-columns: 48px 1fr;
-    gap: var(--step);
-  }
-  .steps > li::before {
-    font-size: 28px;
+
+  .pairing .shot-pair {
+    grid-template-columns: minmax(0, 0.36fr) minmax(0, 1fr);
   }
 }
 
-/* Print: the getting-started steps are the part anyone would print. */
+@media (max-width: 600px) {
+  .shell {
+    padding: 0 20px;
+  }
+
+  .masthead {
+    gap: 8px;
+    padding: 16px 0 8px;
+  }
+
+  .masthead nav {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+    padding: 32px 0 40px;
+  }
+
+  h1 {
+    font-size: clamp(36px, 10vw, 44px);
+  }
+
+  .lede {
+    font-size: 18px;
+    margin: 20px 0;
+  }
+
+  .hero-shot {
+    max-width: 230px;
+  }
+
+  .section {
+    padding: 40px 0;
+  }
+
+  .chapter-body {
+    padding-left: 0;
+  }
+
+  .tour-chapters summary {
+    grid-template-columns: 24px minmax(0, 1fr) 16px;
+    gap: 12px;
+    font-size: 18px;
+  }
+
+  .shot-pair,
+  .pairing .shot-pair,
+  .route,
+  .limits dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .phone-plate {
+    max-width: 190px;
+  }
+
+
+  .route {
+    gap: 24px;
+  }
+
+  .route > div {
+    padding: 20px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--ground-edge);
+  }
+
+  .steps > li {
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .steps > li::before {
+    font-size: 24px;
+  }
+
+  th:first-child {
+    width: 29%;
+    padding-right: 12px;
+  }
+
+  .limits dl {
+    gap: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
 @media print {
   body {
     background: #fff;
     color: #000;
   }
+
+  h1,
+  h2,
+  h3,
+  h1 span,
+  p,
+  code {
+    color: #000;
+  }
+
   .masthead nav,
-  .plates,
+  .hero-shot,
+  .tour,
+  .pairing,
+  .actions,
   .footer nav {
     display: none;
   }
+
+  .hero,
+  .setup {
+    display: block;
+  }
+
   pre {
-    border-left-color: #666;
     color: #000;
     background: #f4f4f4;
-  }
-}
-
-/* --- screen pairs ------------------------------------------------------ */
-
-/*
- * Each screen shown twice, phone beside desktop. The point is the layout
- * decision, so the two frames sit in one row and are captioned individually
- * rather than stacked into an undifferentiated grid.
- */
-.pairs {
-  display: grid;
-  gap: var(--gulf);
-  margin: var(--loose) 0 0;
-}
-
-.pair {
-  border-top: 1px solid var(--ground-line);
-  padding-top: var(--loose);
-}
-
-.pair h3 {
-  font-family: var(--face-mono);
-  font-size: 13px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--ink-plain);
-  margin-bottom: var(--wide);
-}
-
-/*
- * A phone frame is portrait and a desktop frame is landscape, so equal columns
- * would waste half the row. The phone takes what it needs and the console takes
- * the rest.
- */
-.pair-shots {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.42fr) 1fr;
-  gap: var(--loose);
-  align-items: start;
-}
-
-/* A pair with only one frame should not leave a hole where the other would be. */
-.pair-shots:has(> :only-child) {
-  grid-template-columns: minmax(220px, 0.5fr);
-}
-
-.pairs .plate--phone img {
-  max-height: 520px;
-}
-
-@media (max-width: 860px) {
-  .pair-shots,
-  .pair-shots:has(> :only-child) {
-    grid-template-columns: 1fr;
+    border-left-color: #666;
   }
 }

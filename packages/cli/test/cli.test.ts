@@ -1692,6 +1692,39 @@ describe("doctor", () => {
     expect(h.stdout()).not.toContain("FAIL");
   });
 
+  test("reports the resolved omp and its origin", async () => {
+    const h = harness({ routes: healthy(), onExec: reportsVersion() });
+    installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+
+    expect(await run(["doctor"], h.ctx)).toBe(0);
+    expect(h.stdout()).toContain("ok   omp");
+  });
+
+  test("configured ompPath wins and is reported as configured", async () => {
+    const h = harness({ routes: healthy(), onExec: reportsVersion() });
+    const target = installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+    writeFileSync(join(h.home, "config.json"), JSON.stringify({ ompPath: target }));
+
+    expect(await run(["doctor"], h.ctx)).toBe(0);
+    expect(h.stdout()).toContain("ok   omp");
+    expect(h.stdout()).toContain(target);
+    expect(h.stdout()).toContain("configured");
+  });
+
+  test("a missing configured ompPath fails doctor with advice", async () => {
+    const h = harness({ routes: healthy(), onExec: reportsVersion() });
+    installedBinary(h);
+    chmodSync(join(h.home, "token"), 0o600);
+    writeFileSync(join(h.home, "config.json"), JSON.stringify({ ompPath: "/nonexistent/omp/path" }));
+
+    expect(await run(["doctor"], h.ctx)).toBe(1);
+    expect(h.stdout()).toContain("FAIL omp");
+    expect(h.stdout()).toContain('configured ompPath "/nonexistent/omp/path" does not exist');
+    expect(h.stdout()).toContain("check `ompPath` in ~/.ompd/config.json");
+  });
+
   test("a version skew between the daemon and the binary is called out", async () => {
     const h = harness({
       routes: {

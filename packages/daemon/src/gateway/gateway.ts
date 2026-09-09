@@ -51,8 +51,10 @@ import {
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   SCOPE_READ,
+  SESSION_ARCHIVE_REFUSAL_REASONS,
   SESSION_DELETE_REFUSAL_REASONS,
   type ServerFrame,
+  type SessionArchiveResult,
   type SessionDeleteResult,
   type SessionLiveStatus,
   type SessionQuery,
@@ -3151,8 +3153,16 @@ export class Gateway {
       if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
       const index = this.#sessionIndex;
       if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
-      index.archive(sessionArchiveRoute[1] ?? "");
-      return Response.json({ ok: true });
+      const sessionId = sessionArchiveRoute[1] ?? "";
+      const results = await this.#archiveSessions(index, [sessionId], false, actor.deviceId);
+      const result = results[0];
+      if (result && !result.ok) {
+        return Response.json(
+          { error: result.refusal, reason: SESSION_ARCHIVE_REFUSAL_REASONS[result.refusal] },
+          { status: result.refusal === "live" ? 409 : 404 },
+        );
+      }
+      return Response.json({ ok: true, result });
     }
 
     const sessionUnarchiveRoute = /^\/v1\/sessions\/([^/]+)\/unarchive$/.exec(path);
@@ -3160,8 +3170,60 @@ export class Gateway {
       if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
       const index = this.#sessionIndex;
       if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
-      index.unarchive(sessionUnarchiveRoute[1] ?? "");
-      return Response.json({ ok: true });
+      const sessionId = sessionUnarchiveRoute[1] ?? "";
+      const results = await this.#archiveSessions(index, [sessionId], true, actor.deviceId);
+      const result = results[0];
+      if (result && !result.ok) {
+        return Response.json(
+          { error: result.refusal, reason: SESSION_ARCHIVE_REFUSAL_REASONS[result.refusal] },
+          { status: 404 },
+        );
+      }
+      return Response.json({ ok: true, result });
+    }
+
+    if (path === "/v1/sessions/archive" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+      let body: { sessionIds?: unknown; unarchive?: unknown };
+      try {
+        body = (await req.json()) as { sessionIds?: unknown; unarchive?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const ids = body.sessionIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || id.length === 0)) {
+        return Response.json({ error: "sessionIds must be a non-empty array of session ids" }, { status: 400 });
+      }
+      const results = await this.#archiveSessions(index, ids as string[], Boolean(body.unarchive), actor.deviceId);
+      return Response.json({ results });
+    }
+
+    if (path === "/v1/sessions/unarchive" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+      let body: { sessionIds?: unknown };
+      try {
+        body = (await req.json()) as { sessionIds?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const ids = body.sessionIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || id.length === 0)) {
+        return Response.json({ error: "sessionIds must be a non-empty array of session ids" }, { status: 400 });
+      }
+      const results = await this.#archiveSessions(index, ids as string[], true, actor.deviceId);
+      return Response.json({ results });
+    }
+
+    if (path === "/v1/sessions/suggest-ephemeral" && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+      const sessionIds = await index.suggestEphemeral();
+      return Response.json({ sessionIds });
     }
 
     // A POST with a body rather than `DELETE /v1/sessions/:id`, because the
@@ -5429,6 +5491,145 @@ export class Gateway {
         return;
       }
 
+      case "session_archive": {
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#store.audit({
+            action: frame.unarchive ? "session.unarchive" : "session.archive",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "unauthorized" },
+          });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "session_archive requires manage scope" });
+          return;
+        }
+        const index = this.#sessionIndex;
+        if (!index) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        if (
+          !Array.isArray(frame.sessionIds) ||
+          frame.sessionIds.length === 0 ||
+          frame.sessionIds.some(id => typeof id !== "string" || id.length === 0)
+        ) {
+          this.#store.audit({
+            action: frame.unarchive ? "session.unarchive" : "session.archive",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "session_archive needs at least one non-empty session id",
+          });
+          return;
+        }
+        void this.#archiveSessions(index, frame.sessionIds, Boolean(frame.unarchive), ws.data.deviceId).then(
+          results => {
+            this.#send(ws, { t: "sessions_archived", results });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "session_archive_failed",
+              message: err instanceof Error ? err.message : "session archive failed",
+            });
+          },
+        );
+        return;
+      }
+
+      case "session_unarchive": {
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#store.audit({
+            action: "session.unarchive",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "unauthorized" },
+          });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "session_unarchive requires manage scope" });
+          return;
+        }
+        const index = this.#sessionIndex;
+        if (!index) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        if (
+          !Array.isArray(frame.sessionIds) ||
+          frame.sessionIds.length === 0 ||
+          frame.sessionIds.some(id => typeof id !== "string" || id.length === 0)
+        ) {
+          this.#store.audit({
+            action: "session.unarchive",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "session_unarchive needs at least one non-empty session id",
+          });
+          return;
+        }
+        void this.#archiveSessions(index, frame.sessionIds, true, ws.data.deviceId).then(
+          results => {
+            this.#send(ws, { t: "sessions_archived", results });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "session_unarchive_failed",
+              message: err instanceof Error ? err.message : "session unarchive failed",
+            });
+          },
+        );
+        return;
+      }
+
+      case "session_suggest_ephemeral": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "session_suggest_ephemeral requires read scope",
+          });
+          return;
+        }
+        const index = this.#sessionIndex;
+        if (!index) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        void index.suggestEphemeral().then(
+          sessionIds => {
+            this.#send(ws, { t: "sessions_suggested_ephemeral", sessionIds });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "session_suggest_ephemeral_failed",
+              message: err instanceof Error ? err.message : "ephemeral suggestion failed",
+            });
+          },
+        );
+        return;
+      }
+
       case "fs_list": {
         // Audited at every exit, refusals included, for the reason
         // `session_prompt` is: this is a device reading the operator's own
@@ -6127,6 +6328,36 @@ export class Gateway {
               sessionId: result.sessionId,
               refusal: result.refusal,
               reason: SESSION_DELETE_REFUSAL_REASONS[result.refusal],
+            },
+      });
+    }
+    return results;
+  }
+
+  /**
+   * The one place a session archive/unarchive happens, for both doors: the HTTP route
+   * and the socket frame.
+   *
+   * Audited per id, matching `#deleteSessions`.
+   */
+  async #archiveSessions(
+    index: SessionIndex,
+    sessionIds: readonly string[],
+    unarchive: boolean,
+    actorDeviceId: string,
+  ): Promise<SessionArchiveResult[]> {
+    const results = unarchive ? await index.unarchive(sessionIds) : await index.archive(sessionIds);
+    for (const result of results) {
+      this.#store.audit({
+        action: unarchive ? "session.unarchive" : "session.archive",
+        actorDeviceId,
+        outcome: result.ok ? "ok" : "denied",
+        detail: result.ok
+          ? { sessionId: result.sessionId, archived: result.archived }
+          : {
+              sessionId: result.sessionId,
+              refusal: result.refusal,
+              reason: SESSION_ARCHIVE_REFUSAL_REASONS[result.refusal],
             },
       });
     }

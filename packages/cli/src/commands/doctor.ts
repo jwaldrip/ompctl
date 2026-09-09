@@ -15,18 +15,20 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   KNOWN_RUNTIMES,
   loadConfig,
   OMPD_VERSION,
   probeRuntime,
+  type ResolvedOmp,
   type RuntimeCapability,
   type RuntimeUnavailable,
+  resolveOmp,
   runtimeOrder,
 } from "@ompd/daemon";
 import { type CliContext, resolveBaseUrl, resolveToken } from "../client.ts";
-import { BINARY_NAME, findOnPath } from "../install.ts";
+import { BINARY_NAME, findCheckoutRoot, findOnPath } from "../install.ts";
 import { PLIST_MARKER, plistPath, plistProgram } from "./service.ts";
 
 type Severity = "ok" | "warn" | "fail";
@@ -56,6 +58,7 @@ export async function doctorCommand(ctx: CliContext): Promise<number> {
   checks.push(await tokenCheck(ctx, daemon.reachable));
   checks.push(loginAgentCheck(ctx));
   checks.push(stateCheck(ctx));
+  checks.push(await ompCheck(ctx));
   checks.push(await runtimeCheck(ctx));
   checks.push(awakeCheck(ctx));
 
@@ -363,6 +366,84 @@ function stateCheck(ctx: CliContext): Check {
     return { label: "state dir", severity: "fail", detail: `${modes} (too permissive)`, advice: problems };
   }
   return { label: "state dir", severity: "ok", detail: modes };
+}
+
+/**
+ * Which omp binary the daemon will actually use, where it came from, and its version.
+ *
+ * This is the single most load-bearing fact about whether this daemon can do
+ * anything. Follows the exact resolution order:
+ *   1. Operator's configured ompPath in config.json
+ *   2. Real omp on PATH
+ *   3. Bundled copy (beside binary or in checkout)
+ *
+ * If ~/.omp exists and was written by an incompatible major version, refuses
+ * the bundled copy and reports the conflict.
+ */
+async function ompCheck(ctx: CliContext): Promise<Check> {
+  let configuredPath: string | undefined;
+  try {
+    const config = loadConfig(ctx.home);
+    if (config.ompPath && config.ompPath !== "omp") {
+      configuredPath = config.ompPath;
+    }
+  } catch {
+    // If config.json fails to load, runtimeCheck will report it
+  }
+
+  const repoRoot = findCheckoutRoot(ctx.cwd) ?? findCheckoutRoot(import.meta.dir) ?? undefined;
+  let resolved: ResolvedOmp;
+  try {
+    resolved = resolveOmp({
+      configuredPath,
+      envPath: ctx.env.PATH,
+      execDir: dirname(process.execPath),
+      repoRoot,
+      ompHome: join(ctx.home, ".omp"),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const advice: string[] = [];
+    if (message.includes("configured ompPath")) {
+      advice.push("check `ompPath` in ~/.ompd/config.json, or reset it with: ompd config set ompPath omp");
+    } else if (message.includes("refusing to use bundled omp")) {
+      advice.push("install a matching omp version on PATH, or set ompPath in config.json");
+    } else {
+      advice.push("install omp on PATH (e.g. `npm install -g @oh-my-pi/pi-coding-agent`), or configure ompPath");
+    }
+    return {
+      label: "omp",
+      severity: "fail",
+      detail: message,
+      advice,
+    };
+  }
+
+  let version = resolved.version;
+  try {
+    const result = await ctx.exec([resolved.path, "--version"]);
+    if (result.code === 0 && result.stdout.trim().length > 0) {
+      const match = result.stdout.match(/(?:omp\/)?([0-9]+\.[0-9]+(?:\.[0-9]+)?)/i);
+      if (match?.[1]) {
+        version = match[1];
+      } else {
+        version = result.stdout.trim();
+      }
+    }
+  } catch {
+    // Keep resolved.version
+  }
+
+  const sourceLabel =
+    resolved.source === "configured" ? "configured" : resolved.source === "path" ? "on PATH" : "bundled";
+
+  const versionText = version ? ` (${version}, ${sourceLabel})` : ` (${sourceLabel})`;
+
+  return {
+    label: "omp",
+    severity: "ok",
+    detail: `${resolved.path}${versionText}`,
+  };
 }
 
 /**
