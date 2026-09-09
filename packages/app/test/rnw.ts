@@ -25,6 +25,7 @@
  * components that need them are loaded.
  */
 
+import type { CameraViewfinderProps, VisionCameraExports } from "../src/platform/camera.ts";
 import { mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { ReactNode } from "react";
@@ -195,17 +196,13 @@ export function resetCameraMock(): void {
   cameraDeviceAvailable = true;
 }
 
-mock.module("react-native-vision-camera", () => ({
+export const mockVisionCamera: VisionCameraExports = {
   Camera: ({
     codeScanner,
     isActive,
     testID,
-  }: {
-    codeScanner?: MockCodeScanner;
-    isActive?: boolean;
-    testID?: string;
-  }) => {
-    activeCodeScanner = isActive === true ? (codeScanner ?? null) : null;
+  }: CameraViewfinderProps) => {
+    activeCodeScanner = isActive === true ? ((codeScanner as MockCodeScanner) ?? null) : null;
     return createElement("div", { "data-testid": testID });
   },
   useCameraDevice: () => (cameraDeviceAvailable ? { id: "mock-back-camera", position: "back" } : undefined),
@@ -216,8 +213,12 @@ mock.module("react-native-vision-camera", () => ({
       return Promise.resolve(true);
     },
   }),
-  useCodeScanner: (config: MockCodeScanner) => config,
-}));
+  useCodeScanner: ((config: unknown) => config) as VisionCameraExports["useCodeScanner"],
+};
+const { createCameraSeam } = await import("../src/platform/camera.ts");
+export const mockCameraSeam = createCameraSeam(mockVisionCamera);
+
+mock.module("react-native-vision-camera", () => mockVisionCamera);
 
 // The native module cannot load under Bun. The stub exposes the requested
 // source so a regression test can hold the URL contract without pretending to

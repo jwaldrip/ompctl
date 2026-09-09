@@ -15,10 +15,10 @@
 
 import { parsePairingBundle } from "@ompd/core/pairing";
 import type { JSX } from "react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import type { Code } from "react-native-vision-camera";
-import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from "react-native-vision-camera";
+import type { CameraSeam, Code } from "../platform/camera.ts";
+import { cameraSeam, createCameraSeam } from "../platform/camera.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
@@ -28,12 +28,87 @@ import type { Connection } from "../platform/connection.ts";
 export function ScanScreen({
   onCancel,
   onScanned,
+  camera = cameraSeam,
 }: {
   onCancel: () => void;
   onScanned: (connection: Connection, label: string) => void;
+  camera?: CameraSeam;
 }): JSX.Element {
-  const { hasPermission, requestPermission } = useCameraPermission();
-  const device = useCameraDevice("back");
+  const [loadedCamera, setLoadedCamera] = useState<CameraSeam | null>(() => {
+    if (camera.Camera !== undefined && camera.hooks !== undefined) return camera;
+    return null;
+  });
+
+  useEffect(() => {
+    if (!camera.availability.available || loadedCamera !== null) return;
+    let active = true;
+    if (camera.loadModule) {
+      void camera.loadModule().then(rawModule => {
+        if (active && rawModule) {
+          setLoadedCamera(createCameraSeam(rawModule));
+        }
+      });
+    }
+    return () => {
+      active = false;
+    };
+  }, [camera, loadedCamera]);
+
+  if (!camera.availability.available) {
+    return (
+      <SafeScreen style={styles.screen} testID="scan">
+        <View style={styles.header}>
+          <Kicker color={ink.faint}>ompctl</Kicker>
+          <Display color={ink.bright} heading>
+            Scan to pair
+          </Display>
+        </View>
+
+        <View style={styles.centered} testID="scan-no-device">
+          <Glyph color={signal.holding} name="unpair" size={12} />
+          <Body color={ink.bright}>{camera.availability.reason}</Body>
+          <Label color={ink.muted}>Paste the endpoint and token instead.</Label>
+        </View>
+
+        <Pressable accessibilityRole="button" onPress={onCancel} style={styles.cancel} testID="scan-cancel">
+          <Label color={ink.plain}>Back to manual entry</Label>
+        </Pressable>
+      </SafeScreen>
+    );
+  }
+
+  const activeCamera = loadedCamera ?? (camera.Camera !== undefined && camera.hooks !== undefined ? camera : null);
+  if (activeCamera === null || activeCamera.Camera === undefined || activeCamera.hooks === undefined) {
+    return (
+      <SafeScreen style={styles.screen} testID="scan">
+        <View />
+      </SafeScreen>
+    );
+  }
+
+  return (
+    <LiveScanScreen
+      Camera={activeCamera.Camera}
+      hooks={activeCamera.hooks}
+      onCancel={onCancel}
+      onScanned={onScanned}
+    />
+  );
+}
+
+function LiveScanScreen({
+  Camera,
+  hooks,
+  onCancel,
+  onScanned,
+}: {
+  Camera: NonNullable<CameraSeam["Camera"]>;
+  hooks: NonNullable<CameraSeam["hooks"]>;
+  onCancel: () => void;
+  onScanned: (connection: Connection, label: string) => void;
+}): JSX.Element {
+  const { hasPermission, requestPermission } = hooks.useCameraPermission();
+  const device = hooks.useCameraDevice("back");
   const [invalid, setInvalid] = useState(false);
   // Set once a decode parses, cleared on cancel: the camera keeps running
   // underneath so declining a mistaken scan costs nothing.
@@ -51,11 +126,10 @@ export function ScanScreen({
     setPending({ connection: bundle.connection, label: bundle.label });
   }, []);
 
-  const codeScanner = useCodeScanner({
+  const codeScanner = hooks.useCodeScanner({
     codeTypes: ["qr"],
     onCodeScanned: handleCode,
   });
-
   return (
     <SafeScreen style={styles.screen} testID="scan">
       <View style={styles.header}>
