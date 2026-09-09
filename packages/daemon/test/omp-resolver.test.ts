@@ -8,12 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  BUNDLED_OMP_MAJOR_VERSION,
-  BUNDLED_OMP_VERSION,
-  OmpResolutionError,
-  resolveOmp,
-} from "../src/omp-resolver.ts";
+import { BUNDLED_OMP_MAJOR_VERSION, BUNDLED_OMP_VERSION, OmpResolutionError, resolveOmp } from "../src/omp-resolver.ts";
 
 describe("omp-resolver", () => {
   const BUNDLED_PATH = "/mock/repo/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js";
@@ -24,11 +19,7 @@ describe("omp-resolver", () => {
       envPath: "/usr/local/bin:/usr/bin",
       execDir: "/mock/bin",
       repoRoot: "/mock/repo",
-      existsSync: (path: string) => [
-        "/custom/bin/omp",
-        "/usr/local/bin/omp",
-        BUNDLED_PATH,
-      ].includes(path),
+      existsSync: (path: string) => ["/custom/bin/omp", "/usr/local/bin/omp", BUNDLED_PATH].includes(path),
       isExecutable: () => true,
       readVersion: (path: string) => (path === "/custom/bin/omp" ? "19.0.0" : "18.1.13"),
       readOmpMajorVersion: () => null,
@@ -47,10 +38,7 @@ describe("omp-resolver", () => {
       envPath: "/usr/local/bin:/usr/bin",
       execDir: "/mock/bin",
       repoRoot: "/mock/repo",
-      existsSync: (path: string) => [
-        "/usr/local/bin/omp",
-        BUNDLED_PATH,
-      ].includes(path),
+      existsSync: (path: string) => ["/usr/local/bin/omp", BUNDLED_PATH].includes(path),
       isExecutable: () => true,
       readVersion: (path: string) => (path === "/usr/local/bin/omp" ? "18.1.13" : BUNDLED_OMP_VERSION),
       readOmpMajorVersion: () => null,
@@ -69,10 +57,7 @@ describe("omp-resolver", () => {
       envPath: "/usr/local/bin:/usr/bin",
       execDir: "/mock/bin",
       repoRoot: "/mock/repo",
-      existsSync: (path: string) => [
-        "/usr/local/bin/omp",
-        BUNDLED_PATH,
-      ].includes(path),
+      existsSync: (path: string) => ["/usr/local/bin/omp", BUNDLED_PATH].includes(path),
       isExecutable: () => true,
       readVersion: (path: string) => (path === "/usr/local/bin/omp" ? "18.1.13" : BUNDLED_OMP_VERSION),
       readOmpMajorVersion: () => null,
