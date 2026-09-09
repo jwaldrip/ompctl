@@ -1361,6 +1361,22 @@ export type ClientFrame =
    */
   | { t: "session_delete"; sessionIds: string[] }
   /**
+   * Archive or unarchive sessions. Unlike deletion, archiving is reversible
+   * and preserves the transcript file and all cached records.
+   *
+   * Requires manage scope. A session a process currently holds is refused
+   * by name rather than archived: see `SessionArchiveRefusal`.
+   *
+   * Answered by `sessions_archived`, one result per id, to the asking socket only.
+   */
+  | { t: "session_archive"; sessionIds: string[]; unarchive?: boolean }
+  | { t: "session_unarchive"; sessionIds: string[] }
+  /**
+   * Suggest ephemeral or abandoned sessions suitable for archiving.
+   * Read scope. Answered by `sessions_suggested_ephemeral`.
+   */
+  | { t: "session_suggest_ephemeral" }
+  /**
    * Mint a new device's credential over this socket, in one authenticated
    * request. The two HTTP steps this replaces -- an unauthenticated
    * `POST /v1/pair` that records an intent, then an approve-scoped
@@ -1668,6 +1684,16 @@ export type ServerFrame =
    * error frame cannot say which ids it covers.
    */
   | { t: "sessions_deleted"; results: SessionDeleteResult[] }
+  /**
+   * What a `session_archive` or `session_unarchive` did, one result per id asked for,
+   * sent only to the socket that asked.
+   */
+  | { t: "sessions_archived"; results: SessionArchiveResult[] }
+  /**
+   * Suggested ephemeral session ids answering `session_suggest_ephemeral`, sent only
+   * to the socket that asked.
+   */
+  | { t: "sessions_suggested_ephemeral"; sessionIds: string[] }
   /** Current routine definitions and recent event outcomes, only for the asking socket. */
   | { t: "routines"; routines: RemoteRoutine[]; runs: Run[] }
   /** One routine event completed, with every action outcome in configured order. */
@@ -1897,6 +1923,8 @@ export type AuditAction =
    * and, on a refusal, which refusal it was.
    */
   | "session.delete"
+  | "session.archive"
+  | "session.unarchive"
   /**
    * A device deleted one routine and its runs and webhook credential, or was
    * refused. One record per id, whichever way it went, for the same reason as
@@ -2370,6 +2398,30 @@ export const SESSION_DELETE_REFUSAL_REASONS: Record<SessionDeleteRefusal, string
   live: "a process is holding this session; stop it or take it over first",
   not_found: "this machine has no session with that id",
   failed: "the transcript could not be removed from disk",
+};
+
+/**
+ * Why one id in an archive request was refused.
+ *
+ * - `live`: a process holds this session right now (`live-ompd` or `live-tui`).
+ *   Archiving a session currently in use is refused.
+ * - `not_found`: this machine has no session file with that id.
+ */
+export type SessionArchiveRefusal = "live" | "not_found";
+
+/**
+ * One id's outcome for an archive or unarchive request.
+ */
+export type SessionArchiveResult =
+  | { sessionId: string; ok: true; archived: boolean }
+  | { sessionId: string; ok: false; refusal: SessionArchiveRefusal };
+
+/**
+ * The wording for each archive refusal.
+ */
+export const SESSION_ARCHIVE_REFUSAL_REASONS: Record<SessionArchiveRefusal, string> = {
+  live: "a process is holding this session; stop it or take it over first",
+  not_found: "this machine has no session with that id",
 };
 
 /**
