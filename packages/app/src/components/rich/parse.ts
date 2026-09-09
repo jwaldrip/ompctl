@@ -18,15 +18,47 @@
  * it returns.
  */
 
-import type { AttachmentRef, ParseRich, RichBlock, RichSpan } from "./blocks.ts";
+import type { AttachmentRef, RichSpan } from "./blocks.ts";
+
+export type TableAlign = "left" | "center" | "right" | null;
+
+export interface TableRow {
+  cells: RichSpan[][];
+}
+
+export interface ListItem {
+  spans: RichSpan[];
+  children?: RichBlock[];
+}
+
+export type RichBlock =
+  | { kind: "prose"; spans: RichSpan[] }
+  | { kind: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; spans: RichSpan[] }
+  | { kind: "list"; ordered: boolean; items: ListItem[] }
+  | { kind: "quote"; spans: RichSpan[] }
+  | { kind: "code"; lang: string | null; text: string }
+  | { kind: "rule" }
+  | { kind: "attachment"; ref: AttachmentRef }
+  | {
+      kind: "table";
+      alignments: TableAlign[];
+      header: TableRow;
+      rows: TableRow[];
+    };
+
+export type ParseRich = (text: string) => RichBlock[];
 
 // -- line matchers -------------------------------------------------------------
 //
-// Everything is anchored to a single line on purpose: a block that can be
-// decided per line can be decided in one pass, and a construct this file
-// cannot decide per line (tables, nested lists) is a construct it declines.
+// Markdown allows 0 to 3 spaces before a top-level block marker.
+// Indentation rule for nested lists:
+// CommonMark and GFM require nested list items and continuations to be indented
+// by at least two spaces beyond the enclosing list item's indentation (indent >= baseIndent + 2),
+// matching the visual column of an unordered marker ("- ") or compact number. Lines indented
+// at or above that floor become nested lists (if starting with a list marker) or continuation
+// prose paragraphs (if continuing the item's thought).
 
-/** Leading indentation markdown actually allows before a block marker. */
+/** Leading indentation markdown allows before a top-level block marker. */
 const INDENT = /^[ \t]{0,3}/;
 
 const FENCE = /^[ \t]{0,3}(`{3,}|~{3,})(.*)$/;
@@ -35,6 +67,274 @@ const QUOTE = /^[ \t]{0,3}>[ \t]?/;
 const UNORDERED = /^[ \t]{0,3}[-+*][ \t]+(.*)$/;
 const ORDERED = /^[ \t]{0,3}\d{1,9}[.)][ \t]+(.*)$/;
 const IMAGE = /^[ \t]{0,3}!\[([^\]]*)\]\(([^()[\]\s]+)\)[ \t]*$/;
+
+const UNORDERED_MARKER = /^[ \t]*[-+*][ \t]+(.*)$/;
+const ORDERED_MARKER = /^[ \t]*\d{1,9}[.)][ \t]+(.*)$/;
+const DELIMITER_CELL = /^[ \t]*:?-+:?[ \t]*$/;
+
+function measureIndent(line: string): number {
+  let indent = 0;
+  for (let j = 0; j < line.length; j += 1) {
+    const ch = line[j];
+    if (ch === " ") {
+      indent += 1;
+    } else if (ch === "\t") {
+      indent += 4 - (indent % 4);
+    } else {
+      break;
+    }
+  }
+  return indent;
+}
+
+interface MarkerMatch {
+  ordered: boolean;
+  indent: number;
+  text: string;
+}
+
+function parseListItemMarker(line: string): MarkerMatch | null {
+  const unordered = UNORDERED_MARKER.exec(line);
+  if (unordered !== null) {
+    return { ordered: false, indent: measureIndent(line), text: unordered[1] as string };
+  }
+  const ordered = ORDERED_MARKER.exec(line);
+  if (ordered !== null) {
+    return { ordered: true, indent: measureIndent(line), text: ordered[1] as string };
+  }
+  return null;
+}
+
+function stripIndent(line: string, count: number): string {
+  let stripped = 0;
+  let j = 0;
+  while (j < line.length && stripped < count) {
+    const ch = line[j];
+    if (ch === " ") {
+      stripped += 1;
+      j += 1;
+    } else if (ch === "\t") {
+      const tabWidth = 4 - (stripped % 4);
+      stripped += tabWidth;
+      j += 1;
+    } else {
+      break;
+    }
+  }
+  return line.slice(j);
+}
+
+function splitTableCells(line: string): string[] {
+  let content = line.trim();
+  if (content.startsWith("|")) {
+    content = content.slice(1);
+  }
+  if (content.endsWith("|")) {
+    let backslashes = 0;
+    let idx = content.length - 2;
+    while (idx >= 0 && content[idx] === "\\") {
+      backslashes += 1;
+      idx -= 1;
+    }
+    if (backslashes % 2 === 0) {
+      content = content.slice(0, -1);
+    }
+  }
+
+  const cells: string[] = [];
+  let current = "";
+  let inBackslash = false;
+
+  for (let idx = 0; idx < content.length; idx += 1) {
+    const ch = content[idx] as string;
+    if (inBackslash) {
+      current += ch;
+      inBackslash = false;
+      continue;
+    }
+    if (ch === "\\") {
+      current += ch;
+      inBackslash = true;
+      continue;
+    }
+    if (ch === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseAlignments(delimiterLine: string): TableAlign[] | null {
+  const trimmed = delimiterLine.trim();
+  if (!trimmed.includes("-") || !trimmed.includes("|")) {
+    return null;
+  }
+
+  const cells = splitTableCells(delimiterLine);
+  if (cells.length === 0) {
+    return null;
+  }
+
+  if (!trimmed.startsWith("|") && !trimmed.endsWith("|") && cells.length < 2) {
+    return null;
+  }
+
+  const alignments: TableAlign[] = [];
+  for (const cell of cells) {
+    if (!DELIMITER_CELL.test(cell) || !cell.includes("-")) {
+      return null;
+    }
+    const clean = cell.trim();
+    const left = clean.startsWith(":");
+    const right = clean.endsWith(":");
+    if (left && right) {
+      alignments.push("center");
+    } else if (left) {
+      alignments.push("left");
+    } else if (right) {
+      alignments.push("right");
+    } else {
+      alignments.push(null);
+    }
+  }
+
+  return alignments;
+}
+
+function isTableStart(lines: readonly string[], index: number): boolean {
+  if (index + 1 >= lines.length) {
+    return false;
+  }
+  const current = (lines[index] as string).trim();
+  const next = (lines[index + 1] as string).trim();
+  if (!current.includes("|")) {
+    return false;
+  }
+  return parseAlignments(next) !== null;
+}
+
+function parseList(
+  lines: readonly string[],
+  startIdx: number,
+  baseIndent: number,
+  ordered: boolean,
+): { block: RichBlock; nextIdx: number } {
+  const items: ListItem[] = [];
+  let idx = startIdx;
+
+  while (idx < lines.length) {
+    const line = lines[idx] as string;
+
+    if (line.trim().length === 0) {
+      let peek = idx + 1;
+      while (peek < lines.length && (lines[peek] as string).trim().length === 0) {
+        peek += 1;
+      }
+      if (peek >= lines.length) {
+        idx = peek;
+        break;
+      }
+      const peekLine = lines[peek] as string;
+      const peekIndent = measureIndent(peekLine);
+      if (peekIndent < baseIndent) {
+        idx = peek;
+        break;
+      }
+      if (peekIndent === baseIndent) {
+        const peekMarker = parseListItemMarker(peekLine);
+        if (peekMarker === null || peekMarker.ordered !== ordered) {
+          idx = peek;
+          break;
+        }
+      }
+      idx = peek;
+      continue;
+    }
+
+    const currentIndent = measureIndent(line);
+
+    if (currentIndent < baseIndent) {
+      break;
+    }
+
+    if (currentIndent === baseIndent) {
+      const marker = parseListItemMarker(line);
+      if (marker !== null && marker.ordered === ordered) {
+        const item: ListItem = { spans: parseSpans(marker.text) };
+        items.push(item);
+        idx += 1;
+        continue;
+      }
+      break;
+    }
+
+    if (currentIndent >= baseIndent + 2 && items.length > 0) {
+      const lastItem = items[items.length - 1] as ListItem;
+      const marker = parseListItemMarker(line);
+      if (marker !== null) {
+        const nested = parseList(lines, idx, currentIndent, marker.ordered);
+        if (!lastItem.children) {
+          lastItem.children = [];
+        }
+        lastItem.children.push(nested.block);
+        idx = nested.nextIdx;
+        continue;
+      }
+
+      const proseLines: string[] = [];
+      while (idx < lines.length) {
+        const pLine = lines[idx] as string;
+        if (pLine.trim().length === 0) {
+          let peek = idx + 1;
+          while (peek < lines.length && (lines[peek] as string).trim().length === 0) {
+            peek += 1;
+          }
+          if (
+            peek < lines.length &&
+            measureIndent(lines[peek] as string) >= baseIndent + 2 &&
+            parseListItemMarker(lines[peek] as string) === null &&
+            !opensBlock(lines[peek] as string)
+          ) {
+            proseLines.push("");
+            idx += 1;
+            continue;
+          }
+          break;
+        }
+        if (measureIndent(pLine) < baseIndent + 2) {
+          break;
+        }
+        if (parseListItemMarker(pLine) !== null) {
+          break;
+        }
+        if (opensBlock(pLine)) {
+          break;
+        }
+
+        proseLines.push(stripIndent(pLine, baseIndent + 2));
+        idx += 1;
+      }
+      if (proseLines.length > 0) {
+        if (!lastItem.children) {
+          lastItem.children = [];
+        }
+        lastItem.children.push({ kind: "prose", spans: parseSpans(proseLines.join("\n")) });
+      }
+      continue;
+    }
+
+    break;
+  }
+
+  return {
+    block: { kind: "list", ordered, items },
+    nextIdx: idx,
+  };
+}
 
 /**
  * A thematic break: three or more of one marker character, spaces allowed.
@@ -309,21 +609,53 @@ export const parseRich: ParseRich = text => {
       continue;
     }
 
-    // One block per kind: the contract has a single `ordered` flag, so a
-    // switch between `-` and `1.` starts a second list beside the first.
-    const listOrdered = ORDERED.exec(line) !== null;
-    const listItem = listOrdered ? ORDERED : UNORDERED;
-    if (listOrdered || UNORDERED.exec(line) !== null) {
-      const items: RichSpan[][] = [];
-      while (i < lines.length) {
-        const item = listItem.exec(lines[i] as string);
-        if (item === null) {
-          break;
+    if (isTableStart(lines, i)) {
+      const alignments = parseAlignments(lines[i + 1] as string);
+      if (alignments !== null) {
+        const colCount = alignments.length;
+        const rawHeaderCells = splitTableCells(lines[i] as string);
+        const headerCells: RichSpan[][] = [];
+        for (let c = 0; c < colCount; c += 1) {
+          const raw = rawHeaderCells[c] ?? "";
+          headerCells.push(parseSpans(raw.replaceAll("\\|", "|")));
         }
-        items.push(parseSpans(item[1] as string));
-        i += 1;
+        const rows: TableRow[] = [];
+        i += 2;
+        while (i < lines.length) {
+          const tableLine = lines[i] as string;
+          if (tableLine.trim().length === 0) {
+            break;
+          }
+          if (!tableLine.includes("|")) {
+            break;
+          }
+          if (FENCE.test(tableLine) || HEADING.test(tableLine.replace(INDENT, "")) || isRule(tableLine)) {
+            break;
+          }
+          const rawCells = splitTableCells(tableLine);
+          const rowCells: RichSpan[][] = [];
+          for (let c = 0; c < colCount; c += 1) {
+            const raw = rawCells[c] ?? "";
+            rowCells.push(parseSpans(raw.replaceAll("\\|", "|")));
+          }
+          rows.push({ cells: rowCells });
+          i += 1;
+        }
+        blocks.push({
+          kind: "table",
+          alignments,
+          header: { cells: headerCells },
+          rows,
+        });
+        continue;
       }
-      blocks.push({ kind: "list", ordered: listOrdered, items });
+    }
+
+    const listMarker = parseListItemMarker(line);
+    if (listMarker !== null && listMarker.indent <= 3) {
+      const result = parseList(lines, i, listMarker.indent, listMarker.ordered);
+      blocks.push(result.block);
+      i = result.nextIdx;
       continue;
     }
 
@@ -331,7 +663,12 @@ export const parseRich: ParseRich = text => {
     // newlines survive inside text spans so a soft-wrapped reply keeps the
     // line breaks it had under the raw renderer.
     const prose: string[] = [];
-    while (i < lines.length && (lines[i] as string).trim().length > 0 && !opensBlock(lines[i] as string)) {
+    while (
+      i < lines.length &&
+      (lines[i] as string).trim().length > 0 &&
+      !opensBlock(lines[i] as string) &&
+      !isTableStart(lines, i)
+    ) {
       prose.push(lines[i] as string);
       i += 1;
     }
