@@ -128,11 +128,7 @@ export function ArtifactFileTray({
                 </View>
 
                 <View style={styles.itemMain}>
-                  <Label
-                    color={isSelected ? ink.bright : ink.plain}
-                    numberOfLines={1}
-                    style={styles.itemName}
-                  >
+                  <Label color={isSelected ? ink.bright : ink.plain} numberOfLines={1} style={styles.itemName}>
                     {item.name}
                   </Label>
                   <View style={styles.badgeRow}>
@@ -157,15 +153,7 @@ export function ArtifactFileTray({
   );
 }
 
-function FilterPill({
-  label,
-  active,
-  onPress,
-}: {
-  label: string;
-  active: boolean;
-  onPress: () => void;
-}): JSX.Element {
+function FilterPill({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }): JSX.Element {
   return (
     <Pressable
       accessibilityLabel={`Filter by ${label}`}

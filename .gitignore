@@ -38,7 +38,16 @@ coverage/
 
 # e2e run output. Screenshots are artifacts of a run, not sources; the site
 # build consumes them from the run rather than from version control.
-artifacts/
+#
+# Anchored to the directory that actually produces them. Bare `artifacts/`
+# matched at every depth, so it also caught `packages/app/src/artifacts/`,
+# which is real source. Git kept those files because they were already
+# tracked, which hid the problem locally: the only consumer that noticed was
+# `gcloud builds submit`, which falls back to `.gitignore` when no
+# `.gcloudignore` exists and therefore uploaded a source tree with the
+# artifact viewers cut out of it. Two production deploys failed on
+# `Could not resolve "../artifacts/index.ts"` before anyone read the build log.
+packages/e2e/artifacts/
 
 # Site build output. Assembled by `bun run --cwd packages/site build`.
 packages/site/dist/
