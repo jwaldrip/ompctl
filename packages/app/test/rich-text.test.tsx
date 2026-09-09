@@ -64,11 +64,19 @@ describe("parseRich", () => {
 
   test("consecutive marker lines become one list per kind", () => {
     expect(parseRich("- one\n- two")).toEqual([
-      { kind: "list", ordered: false, items: [[{ kind: "text", text: "one" }], [{ kind: "text", text: "two" }]] },
+      {
+        kind: "list",
+        ordered: false,
+        items: [{ spans: [{ kind: "text", text: "one" }] }, { spans: [{ kind: "text", text: "two" }] }],
+      },
     ]);
     // Both ordered terminators count, because agents mix them mid-list.
     expect(parseRich("1. a\n2) b")).toEqual([
-      { kind: "list", ordered: true, items: [[{ kind: "text", text: "a" }], [{ kind: "text", text: "b" }]] },
+      {
+        kind: "list",
+        ordered: true,
+        items: [{ spans: [{ kind: "text", text: "a" }] }, { spans: [{ kind: "text", text: "b" }] }],
+      },
     ]);
   });
 
@@ -171,7 +179,7 @@ describe("parseRich", () => {
   });
 
   test("unrecognised shapes degrade to prose, byte for byte", () => {
-    const raw = "| a | b |\n|---|---|\n| 1 | 2 |";
+    const raw = "| lonely pipe with no delimiter";
     expect(parseRich(raw)).toEqual([{ kind: "prose", spans: [{ kind: "text", text: raw }] }]);
     expect(parseRich("")).toEqual([]);
   });
