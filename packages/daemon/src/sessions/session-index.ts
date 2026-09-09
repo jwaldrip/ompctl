@@ -39,6 +39,7 @@ import type { SessionScanCacheEntry, Store } from "@ompd/core";
 import type {
   AgentId,
   SessionCwdScope,
+  SessionArchiveResult,
   SessionDeleteResult,
   SessionGroup,
   SessionLiveStatus,
@@ -48,6 +49,8 @@ import type {
   SessionSummary,
 } from "@ompd/core/contracts";
 import { TERMINAL_AGENT_STATES } from "@ompd/core/contracts";
+import type { EphemeralCriteria } from "./ephemeral.ts";
+import { hasSubagentReport, isEphemeralCandidate } from "./ephemeral.ts";
 import type { ClientPresenceRecord } from "./liveness.ts";
 import { listLiveClientPresences, runDaemonsRoot } from "./liveness.ts";
 import { type OpenSessionFilesLookup, openSessionFiles } from "./open-session-files.ts";
@@ -732,12 +735,103 @@ export class SessionIndex {
     return out;
   }
 
-  archive(sessionId: string): void {
-    this.#store.archiveSession(sessionId);
+  /**
+   * Mark a single session as archived in the store. Synchronous for test setup
+   * and store-direct operations.
+   */
+  archive(sessionId: string): void;
+  /**
+   * Archive a set of sessions with live-process protection and per-id outcome reporting.
+   */
+  archive(sessionIds: readonly string[]): Promise<SessionArchiveResult[]>;
+  archive(sessionIds: string | readonly string[]): void | Promise<SessionArchiveResult[]> {
+    if (typeof sessionIds === "string") {
+      this.#store.archiveSession(sessionIds);
+      for (const listener of this.#changeListeners) listener();
+      return;
+    }
+    return this.#setArchived(sessionIds, false);
   }
 
-  unarchive(sessionId: string): void {
-    this.#store.unarchiveSession(sessionId);
+  /**
+   * Clear an archive mark in the store for a single session.
+   */
+  unarchive(sessionId: string): void;
+  /**
+   * Unarchive a set of sessions with per-id outcome reporting.
+   */
+  unarchive(sessionIds: readonly string[]): Promise<SessionArchiveResult[]>;
+  unarchive(sessionIds: string | readonly string[]): void | Promise<SessionArchiveResult[]> {
+    if (typeof sessionIds === "string") {
+      this.#store.unarchiveSession(sessionIds);
+      for (const listener of this.#changeListeners) listener();
+      return;
+    }
+    return this.#setArchived(sessionIds, true);
+  }
+
+  async #setArchived(sessionIds: readonly string[], unarchive: boolean): Promise<SessionArchiveResult[]> {
+    if (sessionIds.length === 0) return [];
+    const { held } = await this.#buildShared();
+    const results: SessionArchiveResult[] = [];
+    let changed = false;
+
+    for (const sessionId of sessionIds) {
+      if (!unarchive && held.has(sessionId)) {
+        results.push({ sessionId, ok: false, refusal: "live" });
+        continue;
+      }
+      const path = await this.pathFor(sessionId);
+      if (path === undefined) {
+        results.push({ sessionId, ok: false, refusal: "not_found" });
+        continue;
+      }
+      if (unarchive) {
+        this.#store.unarchiveSession(sessionId);
+        results.push({ sessionId, ok: true, archived: false });
+      } else {
+        this.#store.archiveSession(sessionId);
+        results.push({ sessionId, ok: true, archived: true });
+      }
+      changed = true;
+    }
+
+    if (changed) {
+      for (const listener of this.#changeListeners) listener();
+    }
+
+    return results;
+  }
+
+  /**
+   * Suggest ephemeral or abandoned sessions suitable for archiving.
+   *
+   * Combines live status (only dormant rows), message count (< 3), age (> 1h),
+   * byte size (<= 100KB), and whether a subagent <Name>.md report sits beside
+   * the session transcript.
+   *
+   * Sparing guarantee: Live sessions (live-tui, live-ompd), archived sessions,
+   * fresh sessions, and sessions that produced reports are NEVER suggested.
+   * Never archives anything automatically.
+   */
+  async suggestEphemeral(criteria?: EphemeralCriteria): Promise<string[]> {
+    const outcome = await this.#buildShared();
+    if (outcome.warm) await outcome.warm;
+    const rows = outcome.warm ? (await this.#buildShared()).rows : outcome.rows;
+    const candidates: string[] = [];
+
+    for (const row of rows) {
+      if (row.status !== "dormant" || row.archived) continue;
+
+      const path = await this.pathFor(row.id);
+      const hasReport = path !== undefined ? await hasSubagentReport(path) : false;
+
+      if (isEphemeralCandidate(row, hasReport, criteria)) {
+        candidates.push(row.id);
+      }
+    }
+
+    return candidates;
   }
 
   /**

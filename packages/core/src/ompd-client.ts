@@ -214,6 +214,9 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // hear that rather than believe a transcript is gone; re-sending it on a
   // reconnect would be worse, because by then they may have decided not to.
   session_delete: true,
+  session_archive: true,
+  session_unarchive: true,
+  session_suggest_ephemeral: false,
   // Same failure class as the one-shot session frames, with more at stake:
   // an invite that never left is a credential the operator believes they
   // handed over and did not, and the new device's user is left scanning a
@@ -1165,6 +1168,18 @@ export class OmpdClient {
    */
   deleteSessions(sessionIds: readonly string[]): void {
     this.send({ t: "session_delete", sessionIds: [...sessionIds] });
+  }
+
+  archiveSessions(sessionIds: readonly string[], unarchive = false): void {
+    this.send({ t: "session_archive", sessionIds: [...sessionIds], ...(unarchive ? { unarchive: true } : {}) });
+  }
+
+  unarchiveSessions(sessionIds: readonly string[]): void {
+    this.send({ t: "session_unarchive", sessionIds: [...sessionIds] });
+  }
+
+  suggestEphemeralSessions(): void {
+    this.send({ t: "session_suggest_ephemeral" });
   }
 
   /**
