@@ -86,6 +86,14 @@ import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
 import { type StatsSubsystem, statsUnavailableReason } from "../stats/index.ts";
 import {
+  ArtifactRefusal,
+  getDefaultSessionsDir,
+  listSessionArtifacts,
+  resolveAllowedRoots,
+  serveArtifactFile,
+  verifyArtifactPath,
+} from "../artifacts/index.ts";
+import {
   AgentBusyError,
   createAgentId,
   type PendingApproval,
@@ -1253,6 +1261,21 @@ export interface GatewayOptions {
   containerState?: () => { modelBroker: { ready: boolean; reason: string | null } };
   /** Embedded web assets map, for testing or overriding the compiled-in WEB_ASSETS. */
   embeddedAssets?: { assets: Record<string, string>; built: boolean };
+  /**
+   * Explicit roots allowed for artifact bytes serving. When omitted, defaults
+   * to the filesystem subsystem's browse roots and the sessions root.
+   */
+  artifactRoots?: readonly string[];
+  /**
+   * Explicit sessions root directory. When omitted, defaults to sessionIndex's
+   * root or OMP's default sessions directory.
+   */
+  sessionsRoot?: string;
+  /**
+   * Byte ceiling for artifact files. Files larger than this refuse with
+   * file_too_large.
+   */
+  artifactByteCeiling?: number;
 }
 
 interface LiveTuiSocket {
@@ -1431,6 +1454,9 @@ export class Gateway {
   #endpoints: (() => EndpointOffer[]) | undefined;
   #filesystem: FilesystemSurface | undefined;
   #containerStateProvider: (() => { modelBroker: { ready: boolean; reason: string | null } }) | undefined;
+  #artifactRoots: readonly string[] | undefined;
+  #sessionsRoot: string | undefined;
+  #artifactByteCeiling: number | undefined;
   /**
    * Clones in flight, per socket.
    *
@@ -1536,6 +1562,9 @@ export class Gateway {
     this.#containerStateProvider = opts.containerState;
     this.#onWebViewResult = opts.onWebViewResult;
     this.#onWebViewUnavailable = opts.onWebViewUnavailable;
+    this.#artifactRoots = opts.artifactRoots;
+    this.#sessionsRoot = opts.sessionsRoot;
+    this.#artifactByteCeiling = opts.artifactByteCeiling;
     // Resolved once so the traversal check below compares two absolute paths.
     this.#staticRoot = opts.staticRoot === undefined ? undefined : resolve(opts.staticRoot);
     this.#onError = opts.onError;
@@ -2080,6 +2109,33 @@ export class Gateway {
     if (path === "/v1/agents" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
       return Response.json({ agents: this.#sup.listAgents() });
+    }
+
+    if (path === "/v1/artifacts/bytes" && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const targetPath = url.searchParams.get("path") ?? url.searchParams.get("id");
+      if (!targetPath) {
+        return Response.json(
+          { error: "bad_path", message: "path or id query parameter is required" },
+          { status: 400 },
+        );
+      }
+      try {
+        const allowedRoots = await this.#getAllowedArtifactRoots();
+        const realPath = await verifyArtifactPath(targetPath, allowedRoots);
+        const range = req.headers.get("range");
+        return await serveArtifactFile(realPath, range, {
+          ...(this.#artifactByteCeiling !== undefined ? { byteCeiling: this.#artifactByteCeiling } : {}),
+        });
+      } catch (err) {
+        if (err instanceof ArtifactRefusal) {
+          return Response.json({ error: err.code, message: err.message }, { status: err.status });
+        }
+        return Response.json(
+          { error: "server_error", message: err instanceof Error ? err.message : "failed to serve artifact" },
+          { status: 500 },
+        );
+      }
     }
 
     if (path === "/v1/agents" && req.method === "POST") {
@@ -4552,6 +4608,39 @@ export class Gateway {
         return;
       }
 
+      case "session_artifacts": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "unauthorized",
+            message: "session artifacts requires read scope",
+          });
+          return;
+        }
+        if (typeof frame.sessionId !== "string" || frame.sessionId.length === 0) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: typeof frame.sessionId === "string" ? frame.sessionId : undefined,
+            code: "bad_frame",
+            message: "session artifacts needs a sessionId",
+          });
+          return;
+        }
+        const artifactsIndex = this.#sessionIndex;
+        if (!artifactsIndex) {
+          this.#send(ws, {
+            t: "error",
+            sessionId: frame.sessionId,
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        void this.#serveSessionArtifactsFrame(ws, artifactsIndex, frame.sessionId);
+        return;
+      }
+
       case "session_stats": {
         if (!ws.data.scopes.has(SCOPE_READ)) {
           this.#send(ws, {
@@ -6293,6 +6382,57 @@ export class Gateway {
         sessionId,
         code: "session_subagents_failed",
         message: err instanceof Error ? err.message : "session subagents failed",
+      });
+    }
+  }
+
+  async #getAllowedArtifactRoots(): Promise<string[]> {
+    const configured: string[] = [];
+    if (this.#artifactRoots !== undefined) {
+      configured.push(...this.#artifactRoots);
+    } else if (this.#filesystem !== undefined) {
+      try {
+        const listing = await this.#filesystem.list(undefined);
+        if (listing.roots && listing.roots.length > 0) {
+          configured.push(...listing.roots);
+        }
+      } catch {
+        // No browse roots available.
+      }
+    }
+
+    const sessionsDir = this.#sessionsRoot ?? getDefaultSessionsDir();
+    if (sessionsDir) {
+      configured.push(sessionsDir);
+    }
+
+    return await resolveAllowedRoots(configured);
+  }
+
+  async #serveSessionArtifactsFrame(ws: GatewaySocket, index: SessionIndex, sessionId: string): Promise<void> {
+    try {
+      const path = await index.pathFor(sessionId);
+      if (path === undefined) {
+        this.#send(ws, {
+          t: "error",
+          sessionId,
+          code: "unknown_session",
+          message: `no session ${sessionId} on this machine`,
+        });
+        return;
+      }
+      const artifacts = await listSessionArtifacts(path, sessionId);
+      this.#send(ws, {
+        t: "session_artifacts",
+        sessionId,
+        artifacts,
+      });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        sessionId,
+        code: "session_artifacts_failed",
+        message: err instanceof Error ? err.message : "session artifacts failed",
       });
     }
   }
