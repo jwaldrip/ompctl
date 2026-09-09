@@ -10,7 +10,7 @@
  *  - no image is referenced that is not shipped, and no image is shipped that
  *    nothing references, because a stale 300KB capture is dead weight a reviewer
  *    will not notice;
- *  - every internal anchor points at an id that exists in the document.
+ *  - every internal anchor points at a unique id in the document.
  *
  * A build that only copied files would exit 0 on a site with a missing hero
  * image, which makes its exit code worthless as a gate.
@@ -51,8 +51,13 @@ if (existsSync(shotsDir)) {
   }
 }
 
-// Internal anchors must land somewhere real.
-const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1] ?? ""));
+// An anchor must have exactly one destination.
+const ids = new Set<string>();
+for (const m of html.matchAll(/id="([^"]+)"/g)) {
+  const id = m[1] ?? "";
+  if (ids.has(id)) problems.push(`duplicate id: #${id}`);
+  ids.add(id);
+}
 for (const m of html.matchAll(/href="#([^"]+)"/g)) {
   const id = m[1] ?? "";
   if (id.length > 0 && !ids.has(id)) problems.push(`anchor points at no such id: #${id}`);
