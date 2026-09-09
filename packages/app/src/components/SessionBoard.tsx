@@ -16,6 +16,7 @@ import type { JSX } from "react";
 import { memo, useMemo } from "react";
 import { Pressable, type PressableStateCallbackType, ScrollView, StyleSheet, View } from "react-native";
 import { useIsTablet } from "../design/layout.ts";
+import { useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Data, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, radius, type SignalName, signal, signalWash, space, stroke } from "../design/tokens.ts";
 import type { BrowserSession } from "../session/browser.ts";
@@ -180,6 +181,15 @@ export const SessionBoard = memo(function SessionBoard({
   empty,
 }: SessionBoardProps): JSX.Element {
   const isTablet = useIsTablet();
+  const ownedBottom = useOwnedBottomInset();
+  const cardListContentStyle = useMemo(
+    () => [styles.cardListContent, ownedBottom > 0 && { paddingBottom: space.step + ownedBottom }],
+    [ownedBottom],
+  );
+  const phoneScrollContentStyle = useMemo(
+    () => [styles.phoneScrollContent, ownedBottom > 0 && { paddingBottom: space.step + ownedBottom }],
+    [ownedBottom],
+  );
   const columns = useMemo(
     () => deriveBoardColumns(sessions, agents, pendingClearances, tuiSessions),
     [sessions, agents, pendingClearances, tuiSessions],
@@ -215,7 +225,7 @@ export const SessionBoard = memo(function SessionBoard({
       </View>
       <ScrollView
         style={styles.cardList}
-        contentContainerStyle={styles.cardListContent}
+        contentContainerStyle={cardListContentStyle}
         showsVerticalScrollIndicator={false}
       >
         {col.cards.map(card => (
@@ -230,7 +240,7 @@ export const SessionBoard = memo(function SessionBoard({
       {isTablet ? (
         <View style={styles.tabletRow}>{boardContent}</View>
       ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.phoneScrollContent}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={phoneScrollContentStyle}>
           {boardContent}
         </ScrollView>
       )}

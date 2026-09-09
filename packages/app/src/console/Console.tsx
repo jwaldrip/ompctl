@@ -584,13 +584,14 @@ export function Console({
     fleet: () => (
       // One inset owner per column, not one per screen. The shell always
       // owns the top edge, so the agent hub and the list sit inside the safe
-      // area rather than under the status bar. In the split the detail pane
-      // holds screens whose composers own the bottom edge, and a child
-      // cannot paint a parent's padding, so the shell declines the bottom
-      // edge there and each pane pays for itself: the bay below, the
-      // composer in the pane beside it. On a phone the surface is one column
-      // with no composer under it, so the shell pays as usual.
-      <SafeScreen testID="fleet-surface" edges={{ bottom: !split }}>
+      // area rather than under the status bar. The fleet list is a scrollable
+      // surface whose rows should run through the home indicator without
+      // stopping an inset short, so the shell declines the bottom edge
+      // everywhere: the list pays the bottom inset as content padding so
+      // rows clear the home indicator while the list itself runs to the
+      // screen edge. In the split, the detail pane's composer owns its own
+      // bottom edge beside it.
+      <SafeScreen testID="fleet-surface" edges={{ bottom: false }}>
         <View style={split ? styles.splitLayout : styles.singleLayout}>
           <View style={split ? [styles.splitBay, { width: bayWidth }] : styles.bay}>
             <AgentHub

@@ -11,19 +11,21 @@
 
 import "./rnw.ts";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { Agent } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BrowserSession } from "../src/session/browser.ts";
-
+import { resetSafeAreaInsets, setSafeAreaInsets } from "./rnw.ts";
 declare global {
   // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { SessionBoard, deriveBoardColumns } = await import("../src/components/SessionBoard.tsx");
+
+afterEach(resetSafeAreaInsets);
 
 const NOW = Date.parse("2026-09-07T12:00:00.000Z");
 const LOCAL_HOST = {
@@ -368,5 +370,39 @@ describe("SessionBoard component rendering and interactions", () => {
     const markup = renderToStaticMarkup(<SessionBoard sessions={[]} onOpen={() => {}} now={NOW} />);
     expect(markup).toContain('data-testid="board-empty"');
     expect(markup).toContain("No sessions on the board.");
+  });
+
+  test("card lists and phone container carry bottom inset as padding when unconsumed by shell", () => {
+    setSafeAreaInsets({ top: 0, right: 0, bottom: 34, left: 0 });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    try {
+      act(() => {
+        root.render(
+          <SessionBoard
+            sessions={EIGHT_SESSIONS}
+            onOpen={() => {}}
+            agents={AGENTS}
+            pendingClearances={agentId => PENDING_CLEARANCES.get(agentId) ?? 0}
+            tuiSessions={TUI_SESSIONS}
+            now={NOW}
+          />,
+        );
+      });
+
+      const listContents = host.querySelectorAll<HTMLElement>('[data-testid^="board-column-"] [class*="r-gap-"]');
+      expect(listContents.length).toBeGreaterThan(0);
+      // Check that padding bottom includes the 34px inset (space.step is 12, so 12 + 34 = 46px)
+      for (const el of listContents) {
+        if (el.style.paddingBottom) {
+          expect(el.style.paddingBottom).toBe("46px");
+        }
+      }
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+    }
   });
 });
