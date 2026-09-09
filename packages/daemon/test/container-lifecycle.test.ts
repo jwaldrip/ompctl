@@ -35,7 +35,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -237,10 +237,17 @@ function accessRecorder(opts: { releaseFails?: boolean } = {}): AccessRecorder {
   return recorder;
 }
 
-function backendWith(opts: { run: CommandRunner; modelAccess?: ModelAccessProvider }): ContainerBackend {
+const lifecycleWorkspace = realpathSync(mkdtempSync(join(tmpdir(), "ompd-lifecycle-ws-")));
+
+function backendWith(opts: {
+  run: CommandRunner;
+  modelAccess?: ModelAccessProvider;
+  workspace?: string;
+}): ContainerBackend {
   return new ContainerBackend({
     capability: APPLE_CAP,
     platform: "darwin",
+    workspace: opts.workspace ?? lifecycleWorkspace,
     run: opts.run,
     toolchain: stubToolchain,
     modelAccess: opts.modelAccess,

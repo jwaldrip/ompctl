@@ -179,12 +179,12 @@ async function harness(): Promise<Harness> {
   const oldPath = join(subDir, "OldAgent.jsonl");
   writeFileSync(
     oldPath,
-    [
+    `${[
       JSON.stringify({ type: "title", v: 1, title: "old subagent" }),
       JSON.stringify({ type: "session", version: 3, id: "sub-old-id", timestamp: "t", cwd: "/work" }),
       JSON.stringify(turn("user", "old task", "2026-08-11T00:00:01.000Z")),
       JSON.stringify(turn("assistant", "old answer", "2026-08-11T00:00:02.000Z")),
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
   const oldMtime = new Date("2026-08-11T12:00:00.000Z");
   utimesSync(oldPath, oldMtime, oldMtime);
@@ -193,12 +193,12 @@ async function harness(): Promise<Harness> {
   const newPath = join(subDir, "NewAgent.jsonl");
   writeFileSync(
     newPath,
-    [
+    `${[
       JSON.stringify({ type: "title", v: 1, title: "new subagent" }),
       JSON.stringify({ type: "session", version: 3, id: "sub-new-id", timestamp: "t", cwd: "/work" }),
       JSON.stringify(turn("user", "new task", "2026-08-12T00:00:01.000Z")),
       JSON.stringify(turn("assistant", "new answer", "2026-08-12T00:00:02.000Z")),
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
   const newMtime = new Date("2026-08-12T12:00:00.000Z");
   utimesSync(newPath, newMtime, newMtime);
