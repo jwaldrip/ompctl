@@ -63,8 +63,8 @@ export function FallbackViewer({ artifact, style }: FallbackViewerProps): JSX.El
         </View>
 
         <Body color={ink.faint} style={styles.description}>
-          This file format cannot be rendered inline in ompctl. You can open it in an
-          external system app or share it to another device.
+          This file format cannot be rendered inline in ompctl. You can open it in an external system app or share it to
+          another device.
         </Body>
 
         <View style={styles.actionRow}>
