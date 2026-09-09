@@ -391,6 +391,7 @@ function thread(session: SessionState, extra: ThreadOverrides = {}) {
         refusal={store.refusal}
         onDecide={store.onDecide}
         entries={store.session.entries}
+        // biome-ignore lint/complexity/noUselessFragments: the fragment narrows ReactNode to ReactElement, which is what the prop takes
         footer={footer === undefined ? null : <>{footer}</>}
         canLoadEarlier={canLoadEarlier}
         loadingEarlier={loadingEarlier}

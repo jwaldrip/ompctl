@@ -65,13 +65,7 @@ export function sniffContentType(bytes: Uint8Array): string {
     return "image/webp";
   }
 
-  if (
-    len >= 12 &&
-    bytes[4] === 0x66 &&
-    bytes[5] === 0x74 &&
-    bytes[6] === 0x79 &&
-    bytes[7] === 0x70
-  ) {
+  if (len >= 12 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
     const brand = String.fromCharCode(bytes[8]!, bytes[9]!, bytes[10]!, bytes[11]!);
     if (brand === "avif" || brand === "avis") return "image/avif";
   }
@@ -93,13 +87,7 @@ export function sniffContentType(bytes: Uint8Array): string {
   }
 
   // 2. Video formats.
-  if (
-    len >= 12 &&
-    bytes[4] === 0x66 &&
-    bytes[5] === 0x74 &&
-    bytes[6] === 0x79 &&
-    bytes[7] === 0x70
-  ) {
+  if (len >= 12 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
     const brand = String.fromCharCode(bytes[8]!, bytes[9]!, bytes[10]!, bytes[11]!);
     if (brand.startsWith("qt")) return "video/quicktime";
     return "video/mp4";
