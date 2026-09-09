@@ -323,6 +323,17 @@ async function verifySessionClaim(
           message: `session ${sessionId} is held by an agent with no id in the index`,
         };
   }
+  // The resume path must never act on an unverified liveness reading: if a live terminal
+  // is registered in this project directory but its open transcript could not be read
+  // (e.g. openSessionFiles failed or returned no paths, and multiple candidate files exist),
+  // refusing with liveness_unknown is the honest answer that prevents a second writer.
+  if (want === "dormant" && index.isLivenessUnknown(sessionId)) {
+    return {
+      verdict: "refuse",
+      code: "liveness_unknown",
+      message: `session ${sessionId} liveness is unknown: a live terminal is running in ${row.cwd} whose open session could not be verified`,
+    };
+  }
   if (row.status !== want) {
     const wanted = want === "live-tui" ? "a live TUI" : "dormant";
     return {

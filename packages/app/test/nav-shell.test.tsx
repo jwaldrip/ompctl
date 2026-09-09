@@ -198,7 +198,7 @@ function mountShell(rows: readonly SessionSummary[] = [summary("sess_live")]): S
   });
 
   const el = (testID: string): HTMLElement | null => {
-    const found = host.querySelector(`[data-testid="${testID}"]`);
+    const found = host.querySelector(`[data-testid="${testID}"]`) ?? document.querySelector(`[data-testid="${testID}"]`);
     return found instanceof HTMLElement ? found : null;
   };
 
@@ -352,6 +352,52 @@ describe("the stack opens on the fleet and comes back to it", () => {
       // (the effect would see no change and never push).
       shell.press("session-open-sess_live");
       expect(shell.el("terminal-session")).not.toBeNull();
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("the config route does not issue a resume for a session with no agent", () => {
+    const shell = mountShell([summary("sess_tui", { status: "live-tui", cwd: "/work" })]);
+    try {
+      // Roster has no agents
+      expect(shell.client.resumes).toEqual([]);
+
+      // Opening a non-agent session into terminal view
+      shell.press("session-open-sess_tui");
+      expect(shell.el("terminal-session")).not.toBeNull();
+
+      // Config route must never be triggered to resume a session without an agent
+      expect(shell.client.resumes).toEqual([]);
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("confirmed takeover action on a live-tui session requires confirmation before resuming", () => {
+    const shell = mountShell([summary("sess_live", { status: "live-tui", cwd: "/work" })]);
+    try {
+      shell.press("session-open-sess_live");
+      expect(shell.el("terminal-session")).not.toBeNull();
+
+      // Trigger takeover on the live terminal session
+      shell.press("terminal-takeover-button");
+      expect(shell.el("takeover-dialog")).not.toBeNull();
+      expect(shell.el("takeover-warning")).not.toBeNull();
+
+      // Before confirmation, no resume has been issued:
+      expect(shell.client.resumes).toEqual([]);
+
+      // Confirm takeover:
+      shell.press("takeover-confirm");
+      expect(shell.client.resumes).toEqual([{ sessionId: "sess_live", cwd: "/work" }]);
+
+      // Cancelling takeover closes the dialog without issuing another resume:
+      shell.press("terminal-takeover-button");
+      expect(shell.el("takeover-dialog")).not.toBeNull();
+      shell.press("takeover-cancel");
+      expect(shell.el("takeover-dialog")).toBeNull();
+      expect(shell.client.resumes).toEqual([{ sessionId: "sess_live", cwd: "/work" }]);
     } finally {
       shell.unmount();
     }

@@ -258,6 +258,7 @@ export class SessionIndex {
   #openFilesTtlMs: number;
   /** Every `watch` caller, told about catalogue changes the filesystem watcher cannot see. */
   #changeListeners: Set<() => void> = new Set();
+  #unverifiedLivenessSessionIds: Set<string> = new Set();
 
   constructor(opts: SessionIndexOptions) {
     this.#store = opts.store;
@@ -276,7 +277,10 @@ export class SessionIndex {
    * the TTL. Clients whose presence already names a session are not read:
    * the registry answered.
    */
-  #openTranscriptsFor(clients: readonly ClientPresenceRecord[]): ReadonlyMap<number, readonly string[]> {
+  async #openTranscriptsFor(
+    clients: readonly ClientPresenceRecord[],
+    synchronous = false,
+  ): Promise<ReadonlyMap<number, readonly string[]>> {
     const now = Date.now();
     const live = new Set<number>();
     const stale: number[] = [];
@@ -285,13 +289,43 @@ export class SessionIndex {
       live.add(client.pid);
       if (client.sessionId) continue;
       const known = this.#openByPid.get(client.pid);
-      if (known !== undefined) out.set(client.pid, known.paths);
-      if (known === undefined || now - known.readAtMs >= this.#openFilesTtlMs) stale.push(client.pid);
+      if (known !== undefined && (!synchronous || now - known.readAtMs < this.#openFilesTtlMs)) {
+        out.set(client.pid, known.paths);
+      }
+      if (known === undefined || now - known.readAtMs >= this.#openFilesTtlMs) {
+        stale.push(client.pid);
+      }
     }
     for (const pid of this.#openByPid.keys()) {
       if (!live.has(pid)) this.#openByPid.delete(pid);
     }
-    if (stale.length > 0) this.#refreshOpenTranscripts(stale);
+    if (stale.length > 0) {
+      if (synchronous) {
+        if (this.#openRefreshInFlight !== null) {
+          await this.#openRefreshInFlight;
+        }
+        const stillStale = stale.filter(pid => {
+          const known = this.#openByPid.get(pid);
+          return known === undefined || Date.now() - known.readAtMs >= this.#openFilesTtlMs;
+        });
+        if (stillStale.length > 0) {
+          const readAtMs = Date.now();
+          const read = await this.#openSessionFiles(stillStale);
+          for (const pid of stillStale) {
+            const paths = read.get(pid) ?? [];
+            this.#openByPid.set(pid, { paths, readAtMs });
+            out.set(pid, paths);
+          }
+        } else {
+          for (const pid of stale) {
+            const known = this.#openByPid.get(pid);
+            if (known !== undefined) out.set(pid, known.paths);
+          }
+        }
+      } else {
+        this.#refreshOpenTranscripts(stale);
+      }
+    }
     return out;
   }
 
@@ -362,7 +396,7 @@ export class SessionIndex {
    * started here and handed back so callers that can push an upgraded frame
    * can await it.
    */
-  async #buildNow(): Promise<BuildOutcome> {
+  async #buildNow(synchronousLiveness = false): Promise<BuildOutcome> {
     const files: RawSessionFile[] = [];
     // Built beside the live one, never into it. The swap below is what makes
     // this visible, all at once, to anything that asks after the build.
@@ -406,7 +440,7 @@ export class SessionIndex {
     // its session, and that reading outranks any guess from mtimes. It is
     // matched by resolved path against what the scan just listed, so a
     // nested subagent transcript the terminal also holds never matches.
-    const openByPid = this.#openTranscriptsFor(liveClients);
+    const openByPid = await this.#openTranscriptsFor(liveClients, synchronousLiveness);
     const idByPath = new Map<string, string>();
     for (const file of files) idByPath.set(resolve(file.path), file.id);
     const readFromTerminal = new Set<number>();
@@ -435,6 +469,7 @@ export class SessionIndex {
     const clientsWithoutSessionId = liveClients.filter(
       client => !client.sessionId && !readFromTerminal.has(client.pid),
     );
+    const unverifiedLiveness = new Set<string>();
     if (clientsWithoutSessionId.length > 0) {
       for (const client of clientsWithoutSessionId) {
         const candidates = files.filter(file => {
@@ -446,9 +481,14 @@ export class SessionIndex {
         if (candidates.length === 1) {
           const only = candidates[0];
           if (only) inferredClientByFileId.set(only.id, client);
+        } else if (candidates.length > 1) {
+          for (const cand of candidates) {
+            unverifiedLiveness.add(cand.id);
+          }
         }
       }
     }
+    this.#unverifiedLivenessSessionIds = unverifiedLiveness;
     const routineOrigins = this.#store.listRoutineSessionOrigins();
     const summaries: SessionSummary[] = [];
     for (const file of files) {
@@ -594,9 +634,28 @@ export class SessionIndex {
    * changes. Waiting for counts here would make opening a session pay for
    * arithmetic it does not consult.
    */
-  async get(sessionId: string): Promise<SessionSummary | undefined> {
-    const { rows } = await this.#buildShared();
+  /**
+   * One row by session id, or undefined. Sees archived rows too: a caller
+   * verifying a session-open request against the index needs the row's true
+   * status, and "archived" and "not in the catalog" are different answers.
+   *
+   * By default, performs synchronous liveness reading so verification paths
+   * never act on stale or unread open-transcript state.
+   */
+  async get(sessionId: string, opts?: { freshLiveness?: boolean }): Promise<SessionSummary | undefined> {
+    const fresh = opts?.freshLiveness ?? true;
+    const { rows } = fresh ? await this.#buildNow(true) : await this.#buildShared();
     return rows.find(row => row.id === sessionId);
+  }
+
+  /**
+   * Whether a live terminal is running in this session's project directory
+   * but its open transcript could not be definitively verified. The resume
+   * verification path refuses claims for these sessions rather than guessing
+   * dormant.
+   */
+  isLivenessUnknown(sessionId: string): boolean {
+    return this.#unverifiedLivenessSessionIds.has(sessionId);
   }
 
   /**
