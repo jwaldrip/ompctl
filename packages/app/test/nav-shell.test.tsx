@@ -198,7 +198,8 @@ function mountShell(rows: readonly SessionSummary[] = [summary("sess_live")]): S
   });
 
   const el = (testID: string): HTMLElement | null => {
-    const found = host.querySelector(`[data-testid="${testID}"]`) ?? document.querySelector(`[data-testid="${testID}"]`);
+    const found =
+      host.querySelector(`[data-testid="${testID}"]`) ?? document.querySelector(`[data-testid="${testID}"]`);
     return found instanceof HTMLElement ? found : null;
   };
 

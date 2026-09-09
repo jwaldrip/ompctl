@@ -9,11 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "@ompd/core";
-import {
-  countMessagesAsync,
-  getSessionModel,
-  getSessionRole,
-} from "../../src/sessions/scanner.ts";
+import { countMessagesAsync, getSessionModel, getSessionRole } from "../../src/sessions/scanner.ts";
 import { SessionIndex } from "../../src/sessions/session-index.ts";
 
 const scratch: string[] = [];

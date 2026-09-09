@@ -32,7 +32,7 @@ import type { RichSpan } from "./blocks.ts";
 import { DiffBlock, isDiffText } from "./DiffBlock.tsx";
 import { highlight } from "./highlight.ts";
 import { tokenColor } from "./highlight-theme.ts";
-import { type RichBlock, parseRich } from "./parse.ts";
+import { parseRich, type RichBlock } from "./parse.ts";
 
 /** Flat inline runs. Nesting a `Text` per span lets RN inherit the block's size and colour. */
 function Spans({ spans }: { spans: readonly RichSpan[] }): JSX.Element {
@@ -134,11 +134,7 @@ function BlockView({ block, muted }: { block: RichBlock; muted: boolean }): Reac
                       if (child.kind === "list") {
                         return (
                           // biome-ignore lint/suspicious/noArrayIndexKey: child position is stable
-                          <View
-                            key={`child-list:${childIdx}`}
-                            testID="nested-list"
-                            style={styles.nestedList}
-                          >
+                          <View key={`child-list:${childIdx}`} testID="nested-list" style={styles.nestedList}>
                             <BlockView block={child} muted={muted} />
                           </View>
                         );
@@ -231,8 +227,8 @@ function BlockView({ block, muted }: { block: RichBlock; muted: boolean }): Reac
                       ? styles.textAlignPropsRight
                       : styles.textAlignPropsLeft;
                 return (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: column position is the header cell identity
                   <View
+                    // biome-ignore lint/suspicious/noArrayIndexKey: column position is the header cell identity
                     key={`th:${colIdx}`}
                     testID={`table-header-cell-${align ?? "left"}`}
                     accessibilityRole="header"
@@ -260,11 +256,7 @@ function BlockView({ block, muted }: { block: RichBlock; muted: boolean }): Reac
                         : styles.textAlignPropsLeft;
                   return (
                     // biome-ignore lint/suspicious/noArrayIndexKey: cell position in row is the identity
-                    <View
-                      key={`td:${rowIdx}:${colIdx}`}
-                      testID="table-cell"
-                      style={[styles.tableCell, alignStyle]}
-                    >
+                    <View key={`td:${rowIdx}:${colIdx}`} testID="table-cell" style={[styles.tableCell, alignStyle]}>
                       <Body color={muted ? ink.plain : ink.bright} style={textStyle}>
                         <Spans spans={cell} />
                       </Body>

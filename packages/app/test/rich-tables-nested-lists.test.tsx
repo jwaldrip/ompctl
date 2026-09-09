@@ -140,10 +140,7 @@ describe("parseRich: nested lists", () => {
               {
                 kind: "list",
                 ordered: false,
-                items: [
-                  { spans: [{ kind: "text", text: "child 1" }] },
-                  { spans: [{ kind: "text", text: "child 2" }] },
-                ],
+                items: [{ spans: [{ kind: "text", text: "child 1" }] }, { spans: [{ kind: "text", text: "child 2" }] }],
               },
             ],
           },
@@ -168,10 +165,7 @@ describe("parseRich: nested lists", () => {
               {
                 kind: "list",
                 ordered: true,
-                items: [
-                  { spans: [{ kind: "text", text: "sub one" }] },
-                  { spans: [{ kind: "text", text: "sub two" }] },
-                ],
+                items: [{ spans: [{ kind: "text", text: "sub one" }] }, { spans: [{ kind: "text", text: "sub two" }] }],
               },
             ],
           },

@@ -53,9 +53,9 @@ const scratchDirs: string[] = [];
 const SIGNAL_DEADLINE_MS = 3000;
 
 const SESSION_LIVE = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
- const SESSION_DORMANT = "019feebf-6449-7000-9474-a2ae1f871930";
+const SESSION_DORMANT = "019feebf-6449-7000-9474-a2ae1f871930";
 const SESSION_OTHER = "019fee60-2c7a-7000-9fd5-7439c7bf3dd3";
- const SESSION_UNKNOWN = "019fff0f-0000-7000-0000-00000000dead";
+const SESSION_UNKNOWN = "019fff0f-0000-7000-0000-00000000dead";
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   scratchDirs.push(dir);
@@ -214,26 +214,28 @@ async function registerTui(h: Harness, sessionId: string, cwd: string, pid: numb
   return { requested, deliver };
 }
 
- interface Harness {
-   port: number;
-   gateway: Gateway;
-   store: Store;
-   fake: FakeHostController;
-   /** Real temp directory the live session's flattened name decodes back to. */
-   liveDir: string;
-   /** Real temp directory the dormant session's flattened name decodes back to. */
-   dormantDir: string;
+interface Harness {
+  port: number;
+  gateway: Gateway;
+  store: Store;
+  fake: FakeHostController;
+  /** Real temp directory the live session's flattened name decodes back to. */
+  liveDir: string;
+  /** Real temp directory the dormant session's flattened name decodes back to. */
+  dormantDir: string;
   sessionsRoot: string;
-   pair(scopes: string[]): Promise<string>;
-   connect(token: string): Promise<SocketClient>;
- }
- 
-async function harness(opts: {
-  takeoverAckTimeoutMs?: number;
-  openSessionFiles?: OpenSessionFilesLookup;
-  omitPresenceSessionId?: boolean;
-  extraLiveSession?: boolean;
-} = {}): Promise<Harness> {
+  pair(scopes: string[]): Promise<string>;
+  connect(token: string): Promise<SocketClient>;
+}
+
+async function harness(
+  opts: {
+    takeoverAckTimeoutMs?: number;
+    openSessionFiles?: OpenSessionFilesLookup;
+    omitPresenceSessionId?: boolean;
+    extraLiveSession?: boolean;
+  } = {},
+): Promise<Harness> {
   const dbPath = join(tempDir("gw-open-db-"), "ompd.db");
   paths.push(dbPath);
   const store = new Store(dbPath);
@@ -314,7 +316,7 @@ async function harness(opts: {
     liveDir,
     dormantDir,
     sessionsRoot,
-     pair: async scopes => {
+    pair: async scopes => {
       const res = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -629,7 +631,11 @@ describe("the session_resume websocket frame", () => {
       omitPresenceSessionId: true,
       extraLiveSession: true,
     });
-    liveFilePath = join(h.sessionsRoot, encodeSessionDirName(h.liveDir), `2026-08-10T00-00-00-000Z_${SESSION_LIVE}.jsonl`);
+    liveFilePath = join(
+      h.sessionsRoot,
+      encodeSessionDirName(h.liveDir),
+      `2026-08-10T00-00-00-000Z_${SESSION_LIVE}.jsonl`,
+    );
 
     const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
     const phone = await h.connect(token);

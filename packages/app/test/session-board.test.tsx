@@ -18,6 +18,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BrowserSession } from "../src/session/browser.ts";
 import { resetSafeAreaInsets, setSafeAreaInsets } from "./rnw.ts";
+
 declare global {
   // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;

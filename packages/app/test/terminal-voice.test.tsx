@@ -285,7 +285,6 @@ describe("terminal session voice controls", () => {
       }
     });
 
-
     test("spoken prose renders the say surface in terminal log", () => {
       const m = mountTerminal({
         spoken: "Three tests passing.",

@@ -27,13 +27,13 @@ import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Modal, Pressable, StyleSheet, View } from "react-native";
 import { Divider } from "react-native-paper";
-import { Glyph } from "../design/icons.tsx";
 import { AgentHub } from "../components/AgentHub.tsx";
 import { ResumeNudge, shouldNudgeResume } from "../components/ResumeNudge.tsx";
 import { Toast } from "../components/Toast.tsx";
 import { skillInvocation } from "../cowork/catalog.ts";
 import type { NewTaskInput } from "../cowork/tasks.ts";
 import { useCowork } from "../cowork/useCowork.ts";
+import { Glyph } from "../design/icons.tsx";
 import { useSplitBayWidth, useSplitLayout } from "../design/layout.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Label, Title } from "../design/text.tsx";
@@ -548,12 +548,7 @@ export function Console({
           }}
         />
         {takeoverTarget !== null && takeoverTarget.sessionId === sessionId ? (
-          <Modal
-            visible
-            transparent
-            animationType="none"
-            onRequestClose={() => setTakeoverTarget(null)}
-          >
+          <Modal visible transparent animationType="none" onRequestClose={() => setTakeoverTarget(null)}>
             <View style={styles.takeoverOverlay}>
               <Pressable
                 testID="takeover-backdrop"
@@ -578,7 +573,9 @@ export function Console({
                 </View>
                 <View style={styles.takeoverContent}>
                   <Body color={ink.plain} testID="takeover-warning">
-                    The terminal holding this session will lose control. Takeover will resume the session under ompd, but will be refused if the terminal is still holding the transcript file open. Close or exit the terminal first if you want to take over.
+                    The terminal holding this session will lose control. Takeover will resume the session under ompd,
+                    but will be refused if the terminal is still holding the transcript file open. Close or exit the
+                    terminal first if you want to take over.
                   </Body>
                 </View>
                 <View style={styles.takeoverActions}>
@@ -604,9 +601,7 @@ export function Console({
                     onPress={() => setTakeoverTarget(null)}
                     style={takeoverCancelStyle}
                   >
-                    <Label color={ink.plain}>
-                      Cancel
-                    </Label>
+                    <Label color={ink.plain}>Cancel</Label>
                   </Pressable>
                 </View>
               </View>

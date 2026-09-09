@@ -70,9 +70,9 @@ import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../c
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
-import { useIsTablet } from "../design/layout.ts";
 import { Body, Code, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
