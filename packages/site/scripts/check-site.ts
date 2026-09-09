@@ -21,8 +21,13 @@ export async function inspectLayout() {
     const offenders = [...document.querySelectorAll<HTMLElement>("pre, li, td, img")]
       .filter(element => element.getBoundingClientRect().right > geometry.client)
       .slice(0, 5)
-      .map(element => `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ""}: ${Math.round(element.getBoundingClientRect().width)}px`);
-    throw new Error(`page overflow at ${geometry.viewport}: scrollWidth ${geometry.scroll}, clientWidth ${geometry.client}; ${offenders.join(", ") || "outside the document bounds"}`);
+      .map(
+        element =>
+          `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ""}: ${Math.round(element.getBoundingClientRect().width)}px`,
+      );
+    throw new Error(
+      `page overflow at ${geometry.viewport}: scrollWidth ${geometry.scroll}, clientWidth ${geometry.client}; ${offenders.join(", ") || "outside the document bounds"}`,
+    );
   }
   if (geometry.viewport === 390 && (geometry.tour <= 0 || geometry.tour >= 2500)) {
     throw new Error(`tour height at 390 must be between 0 and 2500px: ${geometry.tour}px`);
@@ -86,7 +91,10 @@ if (import.meta.main) {
       images.every(image => image.width > 0),
       `${images.filter(image => image.width > 0).length}/${images.length}`,
     );
-    check("every image has descriptive alt text", images.every(image => image.alt.length >= 15));
+    check(
+      "every image has descriptive alt text",
+      images.every(image => image.alt.length >= 15),
+    );
 
     const destinations = await page.evaluate(() => {
       const ids = [...document.querySelectorAll<HTMLElement>("[id]")].map(el => el.id);
@@ -99,7 +107,9 @@ if (import.meta.main) {
     check("every id is unique", destinations.duplicateIds.length === 0, destinations.duplicateIds.join(", "));
     check("every internal anchor resolves", destinations.missing.length === 0, destinations.missing.join(", "));
 
-    const links = await page.evaluate(() => [...document.querySelectorAll<HTMLAnchorElement>("a[href]")].map(a => a.getAttribute("href") ?? ""));
+    const links = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLAnchorElement>("a[href]")].map(a => a.getAttribute("href") ?? ""),
+    );
     for (const href of links) {
       check(`link has a valid destination: ${href}`, /^(?:https?:\/\/|\/(?!\/)|#)/.test(href));
     }
@@ -116,7 +126,11 @@ if (import.meta.main) {
         }, chapter);
         try {
           const geometry = await page.evaluate(inspectLayout);
-          check(`layout at ${width}, chapter ${chapter + 1}`, true, `${geometry.scroll}/${geometry.client}px; tour ${geometry.tour}px; document ${geometry.height}px`);
+          check(
+            `layout at ${width}, chapter ${chapter + 1}`,
+            true,
+            `${geometry.scroll}/${geometry.client}px; tour ${geometry.tour}px; document ${geometry.height}px`,
+          );
         } catch (error) {
           check(`layout at ${width}, chapter ${chapter + 1}`, false, String(error));
         }
@@ -135,7 +149,9 @@ if (import.meta.main) {
         const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
         const blocking = axe.violations.filter(v => v.impact === "critical" || v.impact === "serious");
         for (const violation of blocking) {
-          console.log(`  FAIL axe ${violation.impact}: ${violation.id} - ${violation.help} (${violation.nodes.length} node(s))`);
+          console.log(
+            `  FAIL axe ${violation.impact}: ${violation.id} - ${violation.help} (${violation.nodes.length} node(s))`,
+          );
           for (const node of violation.nodes.slice(0, 3)) console.log(`         ${node.html.slice(0, 110)}`);
         }
         check(`axe clean at ${width}, chapter ${chapter + 1}`, blocking.length === 0, `${blocking.length} blocking`);
