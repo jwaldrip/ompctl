@@ -8,6 +8,17 @@ require Pod::Executable.execute_command('node', ['-p',
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
+# VisionCamera compiles its CLLocation code in by default, which links
+# CoreLocation and leaves CLLocationManager in the binary. Apple's static
+# scan sees that and answers every upload with ITMS-90683, asking for an
+# NSLocationWhenInUseUsageDescription. This app reads a QR code to pair and
+# nothing else from the camera: it never calls the location APIs (no
+# enableLocation, getLocationPermissionStatus or requestLocationPermission
+# anywhere in packages/app/src). Compiling the feature out is therefore
+# honest where a purpose string would not be: it removes the capability
+# rather than explaining a use that does not exist.
+$VCEnableLocation = false
+
 linkage = ENV['USE_FRAMEWORKS']
 if linkage != nil
   Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
