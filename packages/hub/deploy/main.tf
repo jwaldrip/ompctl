@@ -421,36 +421,10 @@ resource "google_cloud_run_domain_mapping" "hub" {
     route_name = google_cloud_run_v2_service.hub.name
   }
 }
-
-resource "google_cloud_run_domain_mapping" "root" {
-  count    = var.manage_domain_mappings ? 1 : 0
-  project  = var.project_id
-  location = var.region
-  name     = var.root_domain
-
-  metadata {
-    namespace = var.project_id
-  }
-
-  spec {
-    route_name = google_cloud_run_v2_service.site.name
-  }
-}
-
-resource "google_cloud_run_domain_mapping" "www" {
-  count    = var.manage_domain_mappings ? 1 : 0
-  project  = var.project_id
-  location = var.region
-  name     = "www.${var.root_domain}"
-
-  metadata {
-    namespace = var.project_id
-  }
-
-  spec {
-    route_name = google_cloud_run_v2_service.site.name
-  }
-}
+# Domain mappings for the marketing site (root apex and www) have been retired
+# because the marketing site is served from GitHub Pages. The Cloud Run service
+# (google_cloud_run_v2_service.site), its service account, and its IAM invoker
+# binding remain defined above so a rollback can restore service in one apply.
 
 # dns.googleapis.com is NOT declared here. Enabling a service is an owner
 # action (`serviceusage.services.enable`), the deploy identity does not hold it,
@@ -471,28 +445,31 @@ resource "google_dns_managed_zone" "ompctl" {
   depends_on = [google_project_iam_member.deployer_dns]
 }
 
-# Cloud Run's mapping targets, written out rather than read from
-# `google_cloud_run_domain_mapping.*.status`.
+# Cloud Run's mapping target for hub and app subdomains, written out rather
+# than read from `google_cloud_run_domain_mapping.*.status` (which is unknown
+# at plan time and would fail for_each evaluation).
 #
-# The status block is the authority, but it is only populated AFTER the mapping
-# is created, so a `for_each` over it is unknown at plan time and Terraform
-# refuses the plan outright ("Invalid for_each argument"). These values are
-# Google's published anycast frontends for Cloud Run / App Engine custom
-# domains, and were confirmed against the live mappings for this project:
-# subdomains take the CNAME, an apex takes the four A and four AAAA records.
+# Subdomains hub.ompctl.ai and app.ompctl.ai remain on Cloud Run: the hub holds
+# stateful relay websockets and app.ompctl.ai serves the console SPA and
+# Universal Link or App Link association documents (apple-app-site-association
+# and assetlinks.json), which GitHub Pages must never serve to avoid drift.
+#
+# The apex marketing site points to GitHub Pages (api.github.com/meta .pages[]).
 locals {
   cloud_run_cname = "ghs.googlehosted.com."
-  cloud_run_a = [
-    "216.239.32.21",
-    "216.239.34.21",
-    "216.239.36.21",
-    "216.239.38.21",
+
+  github_pages_cname = "jwaldrip.github.io."
+  github_pages_a = [
+    "185.199.108.153",
+    "185.199.109.153",
+    "185.199.110.153",
+    "185.199.111.153",
   ]
-  cloud_run_aaaa = [
-    "2001:4860:4802:32::15",
-    "2001:4860:4802:34::15",
-    "2001:4860:4802:36::15",
-    "2001:4860:4802:38::15",
+  github_pages_aaaa = [
+    "2606:50c0:8000::153",
+    "2606:50c0:8001::153",
+    "2606:50c0:8002::153",
+    "2606:50c0:8003::153",
   ]
 }
 
@@ -524,9 +501,7 @@ resource "google_dns_record_set" "www" {
   name         = "www.${var.root_domain}."
   type         = "CNAME"
   ttl          = 300
-  rrdatas      = [local.cloud_run_cname]
-
-  depends_on = [google_cloud_run_domain_mapping.www]
+  rrdatas      = [local.github_pages_cname]
 }
 
 # An apex cannot hold a CNAME, so it takes the address records instead.
@@ -536,9 +511,7 @@ resource "google_dns_record_set" "root_a" {
   name         = google_dns_managed_zone.ompctl.dns_name
   type         = "A"
   ttl          = 300
-  rrdatas      = local.cloud_run_a
-
-  depends_on = [google_cloud_run_domain_mapping.root]
+  rrdatas      = local.github_pages_a
 }
 
 resource "google_dns_record_set" "root_aaaa" {
@@ -547,9 +520,7 @@ resource "google_dns_record_set" "root_aaaa" {
   name         = google_dns_managed_zone.ompctl.dns_name
   type         = "AAAA"
   ttl          = 300
-  rrdatas      = local.cloud_run_aaaa
-
-  depends_on = [google_cloud_run_domain_mapping.root]
+  rrdatas      = local.github_pages_aaaa
 }
 
 resource "google_dns_record_set" "apex_txt" {
