@@ -415,17 +415,17 @@ describe("the system insets are honoured at both edges", () => {
     }
   });
 
-  test("the phone list still pays the home indicator through its shell, not the list content", () => {
-    // The default 390x844 window keeps the single-pane layout, where the
-    // fleet shell pays the bottom edge and the list content pays nothing, so
-    // nothing double counts on either edge.
+  test("the phone list pays the home indicator as list content, never as surface padding", () => {
+    // On a phone with a home indicator, the fleet shell declines the bottom
+    // edge so the list can scroll all the way through the inset. The list's
+    // content container pays the bottom inset, avoiding a dead band.
     setSafeAreaInsets(NOTCH);
     const shell = mountShell();
     try {
       const surface = shell.el("fleet-surface");
-      expect(padding(surface).bottom).toBe(`${NOTCH.bottom}px`);
+      expect(padding(surface).bottom).toBe("0px");
       const listContent = fleetListContent(shell);
-      expect(listContent.style.paddingBottom === "" || listContent.style.paddingBottom === "0px").toBe(true);
+      expect(listContent.style.paddingBottom).toBe(`${NOTCH.bottom}px`);
     } finally {
       shell.unmount();
     }
