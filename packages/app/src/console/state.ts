@@ -230,7 +230,10 @@ export interface ConsoleState {
    */
   readonly capturing: AgentId | null;
   readonly spoken: ReadonlyMap<AgentId, { seq: number; text: string }>;
-  /** Opaque byte cursor for the next older durable history page per agent. */
+  /** Live dictation feedback for terminal sessions, keyed by sessionId. */
+  readonly tuiDictation: ReadonlyMap<string, { readonly text: string; readonly final: boolean }>;
+  /** Latest spoken summary per terminal session, keyed by sessionId. */
+  readonly tuiSpoken: ReadonlyMap<string, { seq: number; text: string }>;
   readonly historyBefore: ReadonlyMap<AgentId, number | null>;
   readonly historyLoading: ReadonlySet<AgentId>;
   /** The last time session stats were requested per session id, to respect SESSION_STATS_MIN_INTERVAL_MS. */
@@ -476,6 +479,8 @@ export function emptyConsole(scopes: readonly string[]): ConsoleState {
     rosterMisses: new Map(),
     dictation: new Map(),
     capturing: null,
+    tuiDictation: new Map(),
+    tuiSpoken: new Map(),
     historyBefore: new Map(),
     historyLoading: new Set(),
     statsRequestedAt: new Map(),
@@ -767,7 +772,9 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       const { agentId, text, final } = event.event;
       const dictation = new Map(state.dictation);
       dictation.set(agentId, { text, final });
-      return { ...state, dictation };
+      const tuiDictation = new Map(state.tuiDictation);
+      tuiDictation.set(agentId, { text, final });
+      return { ...state, dictation, tuiDictation };
     }
 
     case "voice_capture": {
@@ -781,7 +788,9 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // A new utterance makes the previous one's words stale feedback, and
       // keeping them would read as the daemon transcribing the wrong audio.
       dictation.delete(event.agentId);
-      return { ...state, capturing: event.agentId, dictation };
+      const tuiDictation = new Map(state.tuiDictation);
+      tuiDictation.delete(event.agentId);
+      return { ...state, capturing: event.agentId, dictation, tuiDictation };
     }
 
     case "unauthorized":
@@ -1177,7 +1186,22 @@ function applySay(state: ConsoleState, event: SayEvent): ConsoleState {
   if (previous !== undefined && event.seq <= previous.seq) return state;
   const spoken = new Map(state.spoken);
   spoken.set(event.agentId, { seq: event.seq, text: event.text });
-  return { ...state, spoken };
+  const tuiSpoken = new Map(state.tuiSpoken);
+  tuiSpoken.set(event.agentId, { seq: event.seq, text: event.text });
+  return { ...state, spoken, tuiSpoken };
+}
+
+/** Live dictation state for a terminal session, if any. */
+export function tuiDictationFor(
+  state: ConsoleState,
+  sessionId: string,
+): { readonly text: string; readonly final: boolean } | null {
+  return state.tuiDictation?.get(sessionId) ?? state.dictation.get(sessionId) ?? null;
+}
+
+/** Latest spoken prose for a terminal session, if any. */
+export function tuiSpokenFor(state: ConsoleState, sessionId: string): string | null {
+  return state.tuiSpoken?.get(sessionId)?.text ?? state.spoken.get(sessionId)?.text ?? null;
 }
 
 /**
