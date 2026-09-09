@@ -52,6 +52,12 @@ import {
 const cleanups: Array<() => void> = [];
 const closables: HostProvisioner[] = [];
 
+function realDir(label: string): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `ompd-mount-${label}-`)));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
 afterEach(async () => {
   while (closables.length)
     await closables
@@ -278,6 +284,7 @@ describe("dispatch", () => {
       new ContainerBackend({
         capability: DOCKER_CAP,
         toolchain: stubToolchain,
+        workspace: realDir("ws-dispatch"),
         run: containerRunner("cnt000000001").run,
         spawn: recorder.spawn,
       }),
@@ -501,7 +508,12 @@ describe("runtime selection reaches the backend", () => {
       probed.push(argv[0] ?? "");
       throw new ProvisionError("not installed");
     };
-    const backend = new ContainerBackend({ run, runtime: "container", platform: "darwin" });
+    const backend = new ContainerBackend({
+      run,
+      runtime: "container",
+      platform: "darwin",
+      workspace: realDir("ws-pin"),
+    });
 
     await expect(backend.provision({ kind: "container" })).rejects.toThrow(ProvisionError);
     // The property that matters: an operator who pinned the native runtime and
@@ -536,6 +548,7 @@ describe("container hosts keep the approval gate", () => {
         capability: DOCKER_CAP,
         toolchain: async () => ({ ...(await stubToolchain()), ompPath: "/usr/local/bin/omp" }),
         scratchRoot: "/far",
+        workspace: realDir("ws-gate"),
         run: runner.run,
         spawn: recorder.spawn,
       }),
@@ -698,7 +711,8 @@ describe("container hosts keep the approval gate", () => {
 describe("the run command is shaped by capability, not assumed docker", () => {
   function runArgvFor(capability: RuntimeCapability): Promise<string[]> {
     const runner = containerRunner("cnt000000001");
-    const backend = new ContainerBackend({ capability, run: runner.run, toolchain: stubToolchain });
+    const workspace = realDir("ws-argv");
+    const backend = new ContainerBackend({ capability, workspace, run: runner.run, toolchain: stubToolchain });
     return backend.provision({ kind: "container" }).then(() => {
       const run = runner.calls.find(argv => argv[1] === "run");
       if (run === undefined) throw new Error("no run call recorded");
@@ -781,7 +795,12 @@ describe("the run command is shaped by capability, not assumed docker", () => {
     // accepting the request would report a sealed container while handing the
     // agent open egress. Refusing is the honest answer.
     const runner = containerRunner("cnt000000001");
-    const backend = new ContainerBackend({ capability: APPLE_CAP, run: runner.run, toolchain: stubToolchain });
+    const backend = new ContainerBackend({
+      capability: APPLE_CAP,
+      workspace: realDir("ws-applenet"),
+      run: runner.run,
+      toolchain: stubToolchain,
+    });
 
     await expect(backend.provision({ kind: "container", network: "none" })).rejects.toThrow(/cannot express/);
     // Refused before anything was created, and `--no-dns` was never reached for.
@@ -790,7 +809,12 @@ describe("the run command is shaped by capability, not assumed docker", () => {
 
   test("a no-network policy is honoured where the runtime can express it", async () => {
     const runner = containerRunner("cnt000000001");
-    const backend = new ContainerBackend({ capability: DOCKER_CAP, run: runner.run, toolchain: stubToolchain });
+    const backend = new ContainerBackend({
+      capability: DOCKER_CAP,
+      workspace: realDir("ws-dockernet"),
+      run: runner.run,
+      toolchain: stubToolchain,
+    });
 
     const handle = await backend.provision({ kind: "container", network: "none" });
     const run = runner.calls.find(argv => argv[1] === "run") ?? [];
@@ -805,7 +829,12 @@ describe("the run command is shaped by capability, not assumed docker", () => {
 
   test("the default policy still gets a network of its own, and reclaims it", async () => {
     const runner = containerRunner("cnt000000001");
-    const backend = new ContainerBackend({ capability: APPLE_CAP, run: runner.run, toolchain: stubToolchain });
+    const backend = new ContainerBackend({
+      capability: APPLE_CAP,
+      workspace: realDir("ws-appledef"),
+      run: runner.run,
+      toolchain: stubToolchain,
+    });
 
     const handle = await backend.provision({ kind: "container" });
     const created = runner.calls.find(argv => argv[1] === "network" && argv[2] === "create");
@@ -840,6 +869,7 @@ describe("a host outlives the process that made it", () => {
     const runner = containerRunner("cnt000000001");
     const backend = new ContainerBackend({
       capability: APPLE_CAP,
+      workspace: realDir("ws-digests"),
       run: runner.run,
       toolchain: toolchainWithDigests(),
     });
@@ -863,6 +893,7 @@ describe("a host outlives the process that made it", () => {
     const firstRunner = containerRunner("cnt000000001");
     const first = new ContainerBackend({
       capability: APPLE_CAP,
+      workspace: realDir("ws-restart"),
       run: firstRunner.run,
       toolchain: toolchainWithDigests(),
     });
@@ -962,6 +993,7 @@ describe("a host outlives the process that made it", () => {
     const runner = containerRunner("cnt000000001");
     const backend = new ContainerBackend({
       capability: APPLE_CAP,
+      workspace: realDir("ws-audit"),
       run: runner.run,
       toolchain: toolchainWithDigests(),
     });
@@ -997,11 +1029,6 @@ describe("extra mounts", () => {
    * `/private/var/folders/...`). Asserting the canonical form is the point: it
    * is what goes into argv.
    */
-  function realDir(label: string): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), `ompd-mount-${label}-`)));
-    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-    return dir;
-  }
 
   function harnessWithMounts(home = "/home/operator/.ompd") {
     const runner = containerRunner("cnt000000001");
@@ -1071,6 +1098,54 @@ describe("extra mounts", () => {
     // asked for an extra mount relied on before this feature existed.
     const volIndex = run.indexOf("--volume");
     expect(run[volIndex + 1]).toBe(`${workspace}:${workspace}`);
+  });
+
+  test("reproduction: installed daemon with workspace equal to home directory refuses to mount home read-write", async () => {
+    const runner = containerRunner("cnt000000001");
+    const home = "/Users/someoperator";
+    const backend = new ContainerBackend({
+      capability: DOCKER_CAP,
+      toolchain: stubToolchain,
+      workspace: home,
+      home: `${home}/.ompd`,
+      run: runner.run,
+    });
+    await expect(backend.provision({ kind: "container" })).rejects.toThrow(
+      /refusing to mount workspace \/Users\/someoperator.*specify a project directory or repository subdirectory instead/,
+    );
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  test("installed daemon with no workspace and no mounts refuses container start until a folder is chosen", async () => {
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({
+      capability: DOCKER_CAP,
+      toolchain: stubToolchain,
+      run: runner.run,
+    });
+    await expect(backend.provision({ kind: "container" })).rejects.toThrow(
+      /refusing to provision container: no workspace configured; specify an explicit workspace directory or bind a folder before starting a container/,
+    );
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  test("installed daemon with no default workspace uses the first bound folder as the workspace", async () => {
+    const runner = containerRunner("cnt000000001");
+    const backend = new ContainerBackend({
+      capability: DOCKER_CAP,
+      toolchain: stubToolchain,
+      run: runner.run,
+    });
+    const project = realDir("my-project");
+    await backend.provision({
+      kind: "container",
+      mounts: [{ hostPath: project, mode: "ro" }],
+    });
+    const run = runner.calls.find(argv => argv[1] === "run") ?? [];
+    expect(run).toContain("--workdir");
+    expect(run).toContain(project);
+    expect(run).toContain(`${project}:${project}:ro`);
+    expect(run.some(arg => arg.startsWith("/Users/") && !arg.includes("my-project"))).toBe(false);
   });
 
   interface RefusalCase {
