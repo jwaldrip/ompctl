@@ -51,8 +51,13 @@ if (existsSync(shotsDir)) {
   }
 }
 
-// Internal anchors must land somewhere real.
-const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1] ?? ""));
+// An anchor must have exactly one destination.
+const ids = new Set<string>();
+for (const m of html.matchAll(/id="([^"]+)"/g)) {
+  const id = m[1] ?? "";
+  if (ids.has(id)) problems.push(`duplicate id: #${id}`);
+  ids.add(id);
+}
 for (const m of html.matchAll(/href="#([^"]+)"/g)) {
   const id = m[1] ?? "";
   if (id.length > 0 && !ids.has(id)) problems.push(`anchor points at no such id: #${id}`);
