@@ -86,6 +86,11 @@ export function StatsScreen({
   }
   const client = clientRef.current;
 
+  // The selected range, readable from inside the subscription effect without
+  // becoming a dependency of it.
+  const rangeRef = useRef(range);
+  rangeRef.current = range;
+
   useEffect(() => {
     if (initialStats) {
       setLoadedStats(initialStats);
@@ -109,12 +114,18 @@ export function StatsScreen({
       }),
       client.on("status", event => {
         if (event.state === "connected") {
-          client.stats(range);
+          // The range this reconnect should ask for is whatever is selected
+          // now, not whatever was selected when the subscription was built.
+          // Read through the ref rather than depending on `range`: a
+          // dependency would tear down and rebuild the whole subscription
+          // every time the operator changes range, and `onSelectRange`
+          // already issues that request directly.
+          client.stats(rangeRef.current);
         }
       }),
     ];
     client.start?.();
-    client.stats(range);
+    client.stats(rangeRef.current);
 
     return () => {
       for (const off of offs) {
