@@ -153,11 +153,13 @@ export const BELIEVABLE_MARKETING_DATA = {
   commands: [
     {
       cmd: "eval: cargo bench --bench throughput",
-      output: "PASS: TestConnectionPoolLifecycle (0.12s)\nPASS: TestGracefulShutdownTimeout (0.34s)\nPASS: TestConcurrentTicketResumption (0.28s)\nPASS: TestRingBufferZeroAllocation (0.05s)\n4 tests passed, 0 failures, 0 skipped.",
+      output:
+        "PASS: TestConnectionPoolLifecycle (0.12s)\nPASS: TestGracefulShutdownTimeout (0.34s)\nPASS: TestConcurrentTicketResumption (0.28s)\nPASS: TestRingBufferZeroAllocation (0.05s)\n4 tests passed, 0 failures, 0 skipped.",
     },
     {
       cmd: "eval: go test -v -race ./pkg/transport/...",
-      output: "=== RUN   TestTransportDial\n=== RUN   TestTransportHandshake\n--- PASS: TestTransportDial (0.04s)\n--- PASS: TestTransportHandshake (0.08s)\nPASS\nok      pkg/transport   0.142s",
+      output:
+        "=== RUN   TestTransportDial\n=== RUN   TestTransportHandshake\n--- PASS: TestTransportDial (0.04s)\n--- PASS: TestTransportHandshake (0.08s)\nPASS\nok      pkg/transport   0.142s",
     },
   ],
 };
@@ -180,17 +182,55 @@ export function assembleSensitiveStrings(): SensitiveTargetSet {
   const directories = new Set<string>();
 
   const baseNames = [
-    "wifiwithoutwalls", "wifiwow", "thebushidocollective", "bushidophone",
-    "bushido", "phoneware", "waldrip", "jwaldrip", "gigsmart", "minions",
-    "bitwits", "tbc", "hopmesh", "telzino",
+    "wifiwithoutwalls",
+    "wifiwow",
+    "thebushidocollective",
+    "bushidophone",
+    "bushido",
+    "phoneware",
+    "waldrip",
+    "jwaldrip",
+    "gigsmart",
+    "minions",
+    "bitwits",
+    "tbc",
+    "hopmesh",
+    "telzino",
   ];
   for (const n of baseNames) clientAndOrgNames.add(n.toLowerCase());
 
   const commonWords = new Set([
-    "ompctl", "ompd", "daemon", "agent", "session", "switch", "work", "server",
-    "para", "scratch", "main", "test", "host", "socket", "fleet", "hub", "client",
-    "model", "app", "web", "android", "ios", "macos", "windows", "dev", "src",
-    "docs", "documentation", "core", "api", "cli",
+    "ompctl",
+    "ompd",
+    "daemon",
+    "agent",
+    "session",
+    "switch",
+    "work",
+    "server",
+    "para",
+    "scratch",
+    "main",
+    "test",
+    "host",
+    "socket",
+    "fleet",
+    "hub",
+    "client",
+    "model",
+    "app",
+    "web",
+    "android",
+    "ios",
+    "macos",
+    "windows",
+    "dev",
+    "src",
+    "docs",
+    "documentation",
+    "core",
+    "api",
+    "cli",
   ]);
 
   const sessionsDir = resolve(process.env.HOME ?? "", ".omp/agent/sessions");
@@ -300,7 +340,7 @@ export function checkDomForLeaks(domText: string, targets: SensitiveTargetSet): 
 }
 
 export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
-  await page.evaluate((data) => {
+  await page.evaluate(data => {
     function fnv1a(str: string): number {
       let h = 2166136261;
       for (let i = 0; i < str.length; i++) {
@@ -335,7 +375,9 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
     const rows = Array.from(document.querySelectorAll('[data-testid^="session-row-"], [data-testid^="session-open-"]'));
     const seenRows = new Set<Element>();
     rows.forEach((r, idx) => {
-      const row = r.getAttribute("data-testid")?.startsWith("session-row-") ? r : (r.closest('[data-testid^="session-row-"]') ?? r);
+      const row = r.getAttribute("data-testid")?.startsWith("session-row-")
+        ? r
+        : (r.closest('[data-testid^="session-row-"]') ?? r);
       if (seenRows.has(row)) return;
       seenRows.add(row);
 
@@ -440,13 +482,17 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
 
     // 8. WHOLESALE TRANSCRIPT REPLACEMENT (No real content allowed to reach capture)
     // User prompts
-    const userEntries = Array.from(document.querySelectorAll('[data-testid="entry-user"], [data-testid="transcript-say"]'));
+    const userEntries = Array.from(
+      document.querySelectorAll('[data-testid="entry-user"], [data-testid="transcript-say"]'),
+    );
     userEntries.forEach((ue, idx) => {
       ue.textContent = data.prompts[idx % data.prompts.length] ?? data.prompts[0]!;
     });
 
     // Thinking blocks: replace text, aria-labels, and parent aria-labels
-    const thinkingSummaries = Array.from(document.querySelectorAll('[data-testid*="thinking-summary"], [data-testid="terminal-thinking"]'));
+    const thinkingSummaries = Array.from(
+      document.querySelectorAll('[data-testid*="thinking-summary"], [data-testid="terminal-thinking"]'),
+    );
     thinkingSummaries.forEach((th, idx) => {
       const summary = data.thinking[idx % data.thinking.length] ?? data.thinking[0]!;
       th.textContent = summary;
@@ -477,21 +523,24 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
 
     // Tool titles
     const toolTitles = Array.from(document.querySelectorAll('[data-testid*="tool-title"]'));
-    toolTitles.forEach((tt) => {
+    toolTitles.forEach(tt => {
       tt.textContent = "eval";
     });
 
     // Tool statuses
-    const toolStatuses = Array.from(document.querySelectorAll('[data-testid*="tool-status"]:not([data-testid$="-container"])'));
-    toolStatuses.forEach((st) => {
+    const toolStatuses = Array.from(
+      document.querySelectorAll('[data-testid*="tool-status"]:not([data-testid$="-container"])'),
+    );
+    toolStatuses.forEach(st => {
       st.textContent = "completed";
     });
 
     // Assistant prose entries (outside tool cards)
     const assistantEntries = Array.from(document.querySelectorAll('[data-testid="entry-assistant"]'));
-    assistantEntries.forEach((ae) => {
+    assistantEntries.forEach(ae => {
       if (!ae.querySelector('[data-testid*="tool-"]')) {
-        ae.textContent = "I have profiled the memory allocations during the connection lifecycle. The connection pool now reuses buffers with zero heap allocations during reconnects.";
+        ae.textContent =
+          "I have profiled the memory allocations during the connection lifecycle. The connection pool now reuses buffers with zero heap allocations during reconnects.";
       }
     });
 
@@ -508,7 +557,10 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
         let val = attr.value;
         if (!val || val.length === 0) continue;
 
-        val = val.replace(/\/Users\/[a-zA-Z0-9_-]+\/dev\/src\/github\.com\/[^\s'"()]+/g, "/workspace/edge-mesh/packages/router");
+        val = val.replace(
+          /\/Users\/[a-zA-Z0-9_-]+\/dev\/src\/github\.com\/[^\s'"()]+/g,
+          "/workspace/edge-mesh/packages/router",
+        );
         val = val.replace(/\/Users\/[a-zA-Z0-9_-]+\/[^\s'"()]+/g, "/workspace/project");
         val = val.replace(/\/private\/tmp\/[^\s'"()]+/g, "/tmp/scratch");
         val = val.replace(/\/tmp\/[^\s'"()]+/g, "/tmp/scratch");
@@ -543,7 +595,10 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
     while (node !== null) {
       let text = node.nodeValue ?? "";
       if (text.length > 0) {
-        text = text.replace(/\/Users\/[a-zA-Z0-9_-]+\/dev\/src\/github\.com\/[^\s'"()]+/g, "/workspace/edge-mesh/packages/router");
+        text = text.replace(
+          /\/Users\/[a-zA-Z0-9_-]+\/dev\/src\/github\.com\/[^\s'"()]+/g,
+          "/workspace/edge-mesh/packages/router",
+        );
         text = text.replace(/\/Users\/[a-zA-Z0-9_-]+\/[^\s'"()]+/g, "/workspace/project");
         text = text.replace(/\/private\/tmp\/[^\s'"()]+/g, "/tmp/scratch");
         text = text.replace(/\/tmp\/[^\s'"()]+/g, "/tmp/scratch");
@@ -615,12 +670,16 @@ export async function assertFrameHealthy(frameName: string, page: Page): Promise
       }
     } else if (frame.includes("03-desktop-split-view")) {
       const rows = document.querySelectorAll('[data-testid^="session-open-"]');
-      const log = document.querySelector('[data-testid="terminal-log"], [data-testid="transcript-entry"], [data-testid="terminal-composer-surface"], [data-testid="aui-messages"], [data-testid="aui-thread"], [data-testid="session"]');
+      const log = document.querySelector(
+        '[data-testid="terminal-log"], [data-testid="transcript-entry"], [data-testid="terminal-composer-surface"], [data-testid="aui-messages"], [data-testid="aui-thread"], [data-testid="session"]',
+      );
       if (rows.length === 0 || !log) {
         return { ok: false, error: "Desktop split view missing session list or transcript pane" };
       }
     } else if (frame.includes("04-session-transcript")) {
-      const log = document.querySelector('[data-testid="terminal-log"], [data-testid="transcript-entry"], [data-testid="terminal-composer-surface"], [data-testid="aui-messages"], [data-testid="aui-thread"], [data-testid="session"]');
+      const log = document.querySelector(
+        '[data-testid="terminal-log"], [data-testid="transcript-entry"], [data-testid="terminal-composer-surface"], [data-testid="aui-messages"], [data-testid="aui-thread"], [data-testid="session"]',
+      );
       if (!log) {
         return { ok: false, error: "Session transcript is not rendered" };
       }
@@ -636,7 +695,10 @@ export async function assertFrameHealthy(frameName: string, page: Page): Promise
       const readErr = document.querySelector('[data-testid="routines-read-error"]');
       const actionErr = document.querySelector('[data-testid="routines-action-error"]');
       if (readErr || actionErr) {
-        return { ok: false, error: `Routines screen in error state: ${readErr?.textContent || actionErr?.textContent}` };
+        return {
+          ok: false,
+          error: `Routines screen in error state: ${readErr?.textContent || actionErr?.textContent}`,
+        };
       }
       if (!routinesScreen) {
         return { ok: false, error: "Routines screen is not rendered" };
@@ -670,7 +732,9 @@ export async function runLeakProofTest(pairLink: string, browser: Browser): Prom
   console.log("=======================================================");
   const targets = assembleSensitiveStrings();
   const totalCount = targets.clientAndOrgNames.length + targets.sessionTitles.length + targets.directories.length;
-  console.log(`Assembled ${totalCount} sensitive strings to guard (${targets.clientAndOrgNames.length} orgs/clients, ${targets.sessionTitles.length} titles, ${targets.directories.length} dirs).`);
+  console.log(
+    `Assembled ${totalCount} sensitive strings to guard (${targets.clientAndOrgNames.length} orgs/clients, ${targets.sessionTitles.length} titles, ${targets.directories.length} dirs).`,
+  );
 
   const page = await browser.newPage();
   try {
@@ -688,7 +752,7 @@ export async function runLeakProofTest(pairLink: string, browser: Browser): Prom
       return rows[0] ? `[data-testid="${rows[0].getAttribute("data-testid")}"]` : null;
     });
     if (sel) {
-      const c = await page.evaluate((s) => {
+      const c = await page.evaluate(s => {
         const r = document.querySelector(s)?.getBoundingClientRect();
         return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
       }, sel);
@@ -1023,7 +1087,7 @@ async function main(): Promise<void> {
           return rows[0] ? `[data-testid="${rows[0].getAttribute("data-testid")}"]` : null;
         });
         if (sel) {
-          const c = await dPage.evaluate((s) => {
+          const c = await dPage.evaluate(s => {
             const r = document.querySelector(s)?.getBoundingClientRect();
             return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
           }, sel);
@@ -1103,7 +1167,7 @@ async function main(): Promise<void> {
           return rows[0] ? `[data-testid="${rows[0].getAttribute("data-testid")}"]` : null;
         });
         if (sel) {
-          const c = await mShotPage.evaluate((s) => {
+          const c = await mShotPage.evaluate(s => {
             const r = document.querySelector(s)?.getBoundingClientRect();
             return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
           }, sel);
@@ -1127,7 +1191,9 @@ async function main(): Promise<void> {
 
         // Back to fleet or menu for routines
         await mShotPage.evaluate(() => {
-          (document.querySelector('[data-testid="session-back"], [data-testid="terminal-back"]') as HTMLElement | null)?.click();
+          (
+            document.querySelector('[data-testid="session-back"], [data-testid="terminal-back"]') as HTMLElement | null
+          )?.click();
         });
         await Bun.sleep(1000);
 
