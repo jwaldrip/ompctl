@@ -1834,6 +1834,43 @@ describe("replay", () => {
     expect(phone.frames.filter(isUpdateFrame).map(f => f.update)).toEqual([{ n: 2 }, { n: 3 }, { n: 4 }]);
   });
 
+  /**
+   * Replay and live traffic are the same frames in the same order, and a client
+   * that has to infer which is which infers it wrong: a phone drew a caret and
+   * offered an interrupt for a turn that had ended before it attached, because
+   * the last frame of a settled turn is a chunk and a chunk read as live opens a
+   * row nothing was ever going to close. This daemon is the only thing that
+   * knows, so it says.
+   */
+  test("replayed frames say they are replay, and live ones do not", async () => {
+    const h = await harness();
+    const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
+    const agent = await createAgent(h, manage, "worker");
+    const sessionId = agent.acpSessionId ?? "";
+
+    const stored = updateReaching(h, agent.id, 2);
+    h.fake.emitUpdate(sessionId, { n: 1 });
+    h.fake.emitUpdate(sessionId, { n: 2 });
+    await stored;
+
+    const phone = await openSocket(h.port, await h.pair("phone", [SCOPE_READ]));
+    phone.send({ t: "attach", agentId: agent.id, sinceSeq: 0 });
+    await phone.next(f => isUpdateFrame(f) && f.seq === 2, "replayed seq 2");
+
+    h.fake.emitUpdate(sessionId, { n: 3 });
+    await phone.next(f => isUpdateFrame(f) && f.seq === 3, "live seq 3");
+
+    const replayed = phone.frames.filter(isUpdateFrame).map(f => ({ seq: f.seq, replay: f.replay }));
+    expect(replayed).toEqual([
+      { seq: 1, replay: true },
+      { seq: 2, replay: true },
+      // Absent rather than false on the live frame: the flag is the exception,
+      // and a client too old to read it treats every frame as live, which is
+      // exactly what it did before this field existed.
+      { seq: 3, replay: undefined },
+    ]);
+  });
+
   test("a second attach does not resend frames the socket already has", async () => {
     const h = await harness();
     const manage = await h.pair("laptop", [SCOPE_READ, SCOPE_MANAGE]);
