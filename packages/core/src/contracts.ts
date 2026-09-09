@@ -1561,7 +1561,19 @@ export type ServerFrame =
    */
   | { t: "hello"; deviceId: string; agents: Agent[]; scopes?: string[] }
   | { t: "agents"; agents: Agent[] }
-  | { t: "update"; agentId: AgentId; seq: number; update: unknown }
+  /**
+   * One session update. `replay` marks a frame the daemon is re-sending from
+   * its own log because a client attached, rather than one the agent produced
+   * just now.
+   *
+   * A client cannot work this out for itself, and guessing at it is a measured
+   * defect: replay and live traffic are the same frames in the same order, so
+   * an app watching a settled transcript arrive drew a caret and offered an
+   * interrupt for a turn that had ended before it attached. Only the daemon
+   * knows which of its own frames are history. Absent means live, which is
+   * what every frame from a daemon older than this field is treated as.
+   */
+  | { t: "update"; agentId: AgentId; seq: number; update: unknown; replay?: true }
   | {
       t: "approval";
       agentId: AgentId;

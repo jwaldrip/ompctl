@@ -356,7 +356,12 @@ export interface AgentsEvent {
 export interface UpdateEvent {
   agentId: AgentId;
   seq: number;
-  /** Raw ACP `session/update` payload. Shape is the transcript's problem. */
+  /**
+   * True when the daemon re-sent this from its own log because this client
+   * attached. A consumer must not read a replayed frame as evidence that a
+   * turn is in flight: the transcript it describes may have ended long ago.
+   */
+  replay?: true;
   update: unknown;
 }
 
@@ -1944,7 +1949,7 @@ export class OmpdClient {
         });
         return;
       case "update":
-        this.handleUpdate(frame.agentId, frame.seq, frame.update);
+        this.handleUpdate(frame.agentId, frame.seq, frame.update, frame.replay === true);
         return;
       case "approval":
         this.emit("approval", {
@@ -2046,7 +2051,7 @@ export class OmpdClient {
     }
   }
 
-  private handleUpdate(agentId: AgentId, seq: number, update: unknown): void {
+  private handleUpdate(agentId: AgentId, seq: number, update: unknown, replay = false): void {
     const previous = this.watermarks.get(agentId);
     if (previous !== undefined && seq <= previous) {
       // Replay overlap after a reconnect. Dropping it here is what makes
@@ -2064,7 +2069,7 @@ export class OmpdClient {
     if (previous === undefined || seq > previous) {
       this.backpressureStreak = 0;
     }
-    this.emit("update", { agentId, seq, update });
+    this.emit("update", { agentId, seq, update, ...(replay ? { replay: true } : {}) });
   }
 
   // -- emitter --------------------------------------------------------------

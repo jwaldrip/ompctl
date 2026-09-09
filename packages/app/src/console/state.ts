@@ -645,7 +645,7 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       return applySessions(state, event.event.sessions);
 
     case "update": {
-      const { agentId, seq, update } = event.event;
+      const { agentId, seq, update, replay } = event.event;
       const watermarks = new Map(state.watermarks);
       watermarks.set(agentId, seq);
       // An update frame is newer evidence that the agent exists than any
@@ -663,8 +663,15 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       // `endTurn` is identity-stable when nothing is streaming, so this costs
       // one check per frame on the live path, where the roster IS busy and the
       // caret must stay.
+      //
+      // The chunk carve-out below is why the daemon now says which frames are
+      // its own log: a live chunk needs its open row kept, because that row is
+      // how the next chunk finds what it continues when the wire rotates the
+      // message id, so this could not settle on a chunk and a turn whose last
+      // frame WAS a chunk stayed open forever. A replayed chunk never opens a
+      // row in the first place, so there is nothing left here to settle.
       const live = state.agents.find(candidate => candidate.id === agentId);
-      const applied = withSession(state, agentId, session => reduce(session, update));
+      const applied = withSession(state, agentId, session => reduce(session, update, replay === true));
       const isChunk =
         typeof update === "object" &&
         update !== null &&

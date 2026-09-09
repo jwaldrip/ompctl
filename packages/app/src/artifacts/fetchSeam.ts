@@ -41,9 +41,7 @@ export const defaultArtifactFetchSeam: ArtifactFetchSeam = async (artifact, opti
   }
 
   const root = options?.daemonRoot ?? "";
-  const url =
-    artifact.url ??
-    `${root}/v1/artifacts/bytes?path=${encodeURIComponent(artifact.path)}`;
+  const url = artifact.url ?? `${root}/v1/artifacts/bytes?path=${encodeURIComponent(artifact.path)}`;
 
   const headers = new Headers(options?.headers);
   if (options?.token) {

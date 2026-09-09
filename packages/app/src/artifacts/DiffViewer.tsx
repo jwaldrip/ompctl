@@ -114,6 +114,7 @@ export function DiffViewer({ artifact, style }: DiffViewerProps): JSX.Element {
             {lines.map((line, idx) => {
               if (line.kind === "header") {
                 return (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a diff is positional, so line order is the identity
                   <View key={idx} style={styles.headerRow}>
                     <Text style={styles.headerText}>{line.text}</Text>
                   </View>
@@ -121,6 +122,7 @@ export function DiffViewer({ artifact, style }: DiffViewerProps): JSX.Element {
               }
               if (line.kind === "hunk") {
                 return (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a diff is positional, so line order is the identity
                   <View key={idx} style={styles.hunkRow} testID="diff-hunk-header">
                     <Text style={styles.hunkText}>{line.text}</Text>
                   </View>
@@ -136,6 +138,7 @@ export function DiffViewer({ artifact, style }: DiffViewerProps): JSX.Element {
 
               return (
                 <View
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a diff is positional, so line order is the identity
                   key={idx}
                   style={[styles.lineRow, { backgroundColor: rowBg }]}
                   testID={isAdd ? "diff-added-line" : isRem ? "diff-removed-line" : "diff-context-line"}

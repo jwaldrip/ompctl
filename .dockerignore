@@ -1,0 +1,25 @@
+# Version control
+**/.git
+**/.gitignore
+**/.gitattributes
+
+# Worktrees
+.worktrees
+worktrees
+
+# Dependencies (root and all workspaces)
+**/node_modules
+
+# Build outputs
+**/dist
+**/build
+
+# Mobile / Desktop native project caches and artifacts (not needed for web/hub/site images)
+packages/app/android
+packages/app/ios
+packages/app/windows
+packages/app/macos
+
+# Test artifacts and caches
+.cache
+.tmp
