@@ -3,7 +3,7 @@
  * session artifact enumeration.
  */
 
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { ArtifactReference } from "@ompd/core";
@@ -32,7 +32,7 @@ export async function serveArtifactFile(
 ): Promise<Response> {
   const maxBytes = options.byteCeiling ?? DEFAULT_ARTIFACT_BYTE_CEILING;
 
-  let st;
+  let st: Stats;
   try {
     st = await stat(realPath);
   } catch {
@@ -186,7 +186,7 @@ async function walkArtifactDir(
     if (dirent.name.endsWith(".bash-original.log") || dirent.name.endsWith(".bash.log")) continue;
     if (dirent.name.endsWith(".tombstone")) continue;
 
-    let st;
+    let st: Stats;
     try {
       st = await stat(fullPath);
       if (!st.isFile()) continue;

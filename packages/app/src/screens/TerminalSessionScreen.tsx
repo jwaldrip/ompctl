@@ -282,7 +282,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   const lastSubmittedDictation = useRef<string | null>(null);
   useEffect(() => {
     const dictation = props.voice?.dictation;
-    if (dictation && dictation.final && dictation.text.trim().length > 0) {
+    if (dictation?.final && dictation.text.trim().length > 0) {
       if (lastSubmittedDictation.current !== dictation.text) {
         lastSubmittedDictation.current = dictation.text;
         props.onSubmit(dictation.text.trim());
