@@ -36,6 +36,7 @@ import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
 import { encodeSessionDirName } from "../src/sessions/cwd-codec.ts";
 import { SessionIndex } from "../src/sessions/index.ts";
+import type { OpenSessionFilesLookup } from "../src/sessions/open-session-files.ts";
 import { Supervisor } from "../src/supervisor.ts";
 import { createFakeHost, type FakeHostController } from "./fake-host.ts";
 
@@ -53,8 +54,8 @@ const SIGNAL_DEADLINE_MS = 3000;
 
 const SESSION_LIVE = "019fee60-2c7a-7000-9fd5-7439c7bf3dd2";
 const SESSION_DORMANT = "019feebf-6449-7000-9474-a2ae1f871930";
+const SESSION_OTHER = "019fee60-2c7a-7000-9fd5-7439c7bf3dd3";
 const SESSION_UNKNOWN = "019fff0f-0000-7000-0000-00000000dead";
-
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   scratchDirs.push(dir);
@@ -87,13 +88,21 @@ function writeSessionFile(
  * table, and the only pid a test can guarantee is alive without spawning
  * anything is its own.
  */
-function writeLiveTuiPresence(runRoot: string, projectDir: string): void {
+function writeLiveTuiPresence(runRoot: string, projectDir: string, sessionId?: string): void {
   const clientsDir = join(runRoot, "hash1", "clients");
   mkdirSync(clientsDir, { recursive: true });
+  const presencePath = join(clientsDir, "live.json");
   writeFileSync(
-    join(clientsDir, "live.json"),
-    JSON.stringify({ pid: process.pid, id: "live", projectDir, sessionId: SESSION_LIVE }),
+    presencePath,
+    JSON.stringify({
+      pid: process.pid,
+      id: "live",
+      projectDir,
+      ...(sessionId !== undefined ? { sessionId } : {}),
+    }),
   );
+  const regTime = new Date("2026-08-09T00:00:00.000Z");
+  utimesSync(presencePath, regTime, regTime);
 }
 
 interface SocketClient {
@@ -214,11 +223,19 @@ interface Harness {
   liveDir: string;
   /** Real temp directory the dormant session's flattened name decodes back to. */
   dormantDir: string;
+  sessionsRoot: string;
   pair(scopes: string[]): Promise<string>;
   connect(token: string): Promise<SocketClient>;
 }
 
-async function harness(opts: { takeoverAckTimeoutMs?: number } = {}): Promise<Harness> {
+async function harness(
+  opts: {
+    takeoverAckTimeoutMs?: number;
+    openSessionFiles?: OpenSessionFilesLookup;
+    omitPresenceSessionId?: boolean;
+    extraLiveSession?: boolean;
+  } = {},
+): Promise<Harness> {
   const dbPath = join(tempDir("gw-open-db-"), "ompd.db");
   paths.push(dbPath);
   const store = new Store(dbPath);
@@ -238,7 +255,12 @@ async function harness(opts: { takeoverAckTimeoutMs?: number } = {}): Promise<Ha
   const runRoot = tempDir("gw-open-run-");
   const liveDir = tempDir("gw-open-live-proj-");
   const dormantDir = tempDir("gw-open-dormant-proj-");
-  const sessionIndex = new SessionIndex({ store, sessionsRoot, runDaemonsRoot: runRoot });
+  const sessionIndex = new SessionIndex({
+    store,
+    sessionsRoot,
+    runDaemonsRoot: runRoot,
+    ...(opts.openSessionFiles !== undefined ? { openSessionFiles: opts.openSessionFiles } : {}),
+  });
 
   const gw = new Gateway({
     supervisor: sup,
@@ -273,7 +295,18 @@ async function harness(opts: { takeoverAckTimeoutMs?: number } = {}): Promise<Ha
     dormantDir,
     new Date(mtimeBase + 1000),
   );
-  writeLiveTuiPresence(runRoot, liveDir);
+  if (opts.extraLiveSession) {
+    writeSessionFile(
+      sessionsRoot,
+      encodeSessionDirName(liveDir),
+      "2026-08-11T00-00-00-000Z",
+      SESSION_OTHER,
+      "other in live dir",
+      liveDir,
+      new Date(mtimeBase + 500),
+    );
+  }
+  writeLiveTuiPresence(runRoot, liveDir, opts.omitPresenceSessionId ? undefined : SESSION_LIVE);
 
   return {
     port,
@@ -282,6 +315,7 @@ async function harness(opts: { takeoverAckTimeoutMs?: number } = {}): Promise<Ha
     fake,
     liveDir,
     dormantDir,
+    sessionsRoot,
     pair: async scopes => {
       const res = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
         method: "POST",
@@ -577,6 +611,66 @@ describe("the session_resume websocket frame", () => {
 
     expect(reply.code).toBe("not_dormant");
     expect(reply.message).toContain("live-tui");
+    expect(h.fake.loads).toEqual([]);
+    expect(h.store.listAgents()).toEqual([]);
+    phone.close();
+  });
+
+  test("refuses a resume of a session held by a live TUI when presence omits sessionId and initial reading is stale with candidate files in directory", async () => {
+    let liveFilePath = "";
+    const openFiles: OpenSessionFilesLookup = async pids => {
+      const map = new Map<number, string[]>();
+      if (pids.includes(process.pid) && liveFilePath !== "") {
+        map.set(process.pid, [liveFilePath]);
+      }
+      return map;
+    };
+
+    const h = await harness({
+      openSessionFiles: openFiles,
+      omitPresenceSessionId: true,
+      extraLiveSession: true,
+    });
+    liveFilePath = join(
+      h.sessionsRoot,
+      encodeSessionDirName(h.liveDir),
+      `2026-08-10T00-00-00-000Z_${SESSION_LIVE}.jsonl`,
+    );
+
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
+    const phone = await h.connect(token);
+
+    // Resuming SESSION_LIVE must be refused as not_dormant (live-tui), not accepted as dormant!
+    phone.send({ t: "session_resume", sessionId: SESSION_LIVE, cwd: h.liveDir });
+    const reply = await phone.next(f => f.t === "error", "not_dormant refusal");
+    if (reply.t !== "error") throw new Error("expected an error frame");
+
+    expect(reply.code).toBe("not_dormant");
+    expect(reply.message).toContain("live-tui");
+    expect(h.fake.loads).toEqual([]);
+    expect(h.store.listAgents()).toEqual([]);
+    phone.close();
+  });
+
+  test("refuses a resume when liveness reading cannot be obtained and a live terminal runs in that directory", async () => {
+    // Open files lookup fails or returns empty:
+    const openFiles: OpenSessionFilesLookup = async () => new Map();
+
+    const h = await harness({
+      openSessionFiles: openFiles,
+      omitPresenceSessionId: true,
+      extraLiveSession: true,
+    });
+
+    const token = await h.pair([SCOPE_READ, SCOPE_PROMPT]);
+    const phone = await h.connect(token);
+
+    phone.send({ t: "session_resume", sessionId: SESSION_LIVE, cwd: h.liveDir });
+    const reply = await phone.next(f => f.t === "error", "liveness_unknown refusal");
+    if (reply.t !== "error") throw new Error("expected an error frame");
+
+    expect(reply.code).toBe("liveness_unknown");
+    expect(reply.message).toContain("liveness is unknown");
     expect(h.fake.loads).toEqual([]);
     expect(h.store.listAgents()).toEqual([]);
     phone.close();

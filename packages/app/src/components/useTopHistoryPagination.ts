@@ -176,7 +176,7 @@ export function useTopHistoryPagination(options: TopHistoryPaginationOptions): T
         }
       }
 
-      follow.onContentSizeChange();
+      follow.onContentSizeChange(_width, height);
     },
     [follow, platformOS],
   );

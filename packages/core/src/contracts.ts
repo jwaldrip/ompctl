@@ -1044,6 +1044,57 @@ export interface SubagentTranscript {
 }
 
 /**
+ * Where an artifact originated: produced directly by an agent session as an
+ * output, log, or subagent report, or browsed by the operator from a
+ * configured filesystem root.
+ */
+export type ArtifactOrigin = "session" | "browse";
+
+/**
+ * A viewable file or generated output the daemon can hand to a client.
+ *
+ * Identified by its path or artifact id, with display name, sniffed content
+ * type, byte size, and provenance.
+ */
+export interface ArtifactReference {
+  /**
+   * Identifier or path used to address the artifact via the daemon API.
+   */
+  id: string;
+  /**
+   * Absolute path to the artifact on the host machine.
+   */
+  path: string;
+  /**
+   * Display name shown to the operator (for example, the subagent report name
+   * or file name).
+   */
+  name: string;
+  /**
+   * Content MIME type determined by sniffing magic bytes, falling back to
+   * "application/octet-stream" when ambiguous.
+   */
+  contentType: string;
+  /**
+   * Byte size of the file on disk.
+   */
+  byteSize: number;
+  /**
+   * Provenance of the artifact: produced by an agent session versus browsed
+   * by the operator from an allowed filesystem root.
+   */
+  origin: ArtifactOrigin;
+  /**
+   * The session id this artifact belongs to, when origin is "session".
+   */
+  sessionId?: string;
+  /**
+   * Last modified timestamp in ISO format.
+   */
+  updatedAt?: string;
+}
+
+/**
  * Prior name for TranscriptTailEntry, preserved as an alias for one release
  * during the migration to first-class tool, thinking, and plan tail entries.
  */
@@ -1374,6 +1425,12 @@ export type ClientFrame =
    */
   | { t: "session_subagents"; sessionId: string }
   /**
+   * List viewable artifacts produced by a session: subagent reports (<Name>.md)
+   * and any output files written into the session's artifact directory. Read
+   * scope. Answered by `session_artifacts` to the asking socket only.
+   */
+  | { t: "session_artifacts"; sessionId: string }
+  /**
    * Ask what the daemon's two persisted settings hold right now. The hub
    * tunnels only a webhook fire and no tunnel is wired for
    * `GET /v1/sync-settings`, so a phone reads these through this frame
@@ -1678,6 +1735,7 @@ export type ServerFrame =
       cursor?: number;
     }
   | { t: "session_subagents"; sessionId: string; subagents: SubagentTranscript[] }
+  | { t: "session_artifacts"; sessionId: string; artifacts: ArtifactReference[] }
   | {
       t: "session_history";
       agentId: AgentId;
@@ -2215,6 +2273,10 @@ export interface SessionSummary {
   agentId?: AgentId;
   /** Origin metadata when this session was created by a routine action. */
   origin?: SessionOrigin;
+  /** Current model id derived from the transcript's last model_change event, or null when no model change was recorded. */
+  model?: string | null;
+  /** Current role derived from the transcript's last model_change event, or null when the record omitted a role or no model change was recorded. */
+  role?: string | null;
 }
 
 export interface SessionRoutineOrigin {

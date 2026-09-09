@@ -16,7 +16,15 @@
 
 import type { JSX } from "react";
 import { memo, useCallback, useState } from "react";
-import { Pressable, type PressableStateCallbackType, StyleSheet, View } from "react-native";
+import {
+  Pressable,
+  type PressableStateCallbackType,
+  type StyleProp,
+  StyleSheet,
+  type TextStyle,
+  View,
+  type ViewStyle,
+} from "react-native";
 import type { ScopeAccess } from "../console/state.ts";
 import { shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -70,6 +78,21 @@ export function formatCostReading(cost: number): string {
   if (!Number.isFinite(cost)) return "--";
   const digits = cost > 0 && cost < 0.01 ? 4 : 2;
   return `$${cost.toFixed(digits)}`;
+}
+
+/**
+ * Format model id for the metrics line.
+ * Provider prefixes like "google-antigravity/" or "anthropic/" are stripped
+ * to surface the distinguishing model name, and long identifiers are bounded
+ * so they cannot displace adjacent readings. An absent model renders as
+ * "unknown", matching the codebase convention for unrecorded values.
+ */
+export function formatModelReading(model: string | null | undefined): string {
+  if (model === null || model === undefined) return "unknown";
+  const trimmed = model.trim();
+  if (trimmed.length === 0) return "unknown";
+  const name = trimmed.split("/").pop() ?? trimmed;
+  return name.length > 24 ? `${name.slice(0, 23)}…` : name;
 }
 
 export const SessionRow = memo(function SessionRow({
@@ -195,6 +218,16 @@ export const SessionRow = memo(function SessionRow({
               label="active"
             />
             <Reading testID={`session-messages-${session.id}`} value={String(session.messageCount)} label="msgs" />
+            <Reading
+              testID={`session-model-${session.id}`}
+              value={formatModelReading(session.model)}
+              label="model"
+              style={styles.modelReading}
+              valueStyle={styles.modelData}
+            />
+            {session.role != null && session.role.length > 0 ? (
+              <Reading testID={`session-role-${session.id}`} value={session.role} label="role" />
+            ) : null}
             {session.cost != null ? (
               <Reading testID={`session-spend-${session.id}`} value={formatCostReading(session.cost)} label="spend" />
             ) : null}
@@ -262,10 +295,22 @@ export const SessionRow = memo(function SessionRow({
   );
 });
 
-function Reading({ value, label, testID }: { value: string; label: string; testID: string }): JSX.Element {
+function Reading({
+  value,
+  label,
+  testID,
+  style,
+  valueStyle,
+}: {
+  value: string;
+  label: string;
+  testID: string;
+  style?: StyleProp<ViewStyle>;
+  valueStyle?: StyleProp<TextStyle>;
+}): JSX.Element {
   return (
-    <View style={styles.reading}>
-      <Data color={ink.plain} testID={testID} numberOfLines={1}>
+    <View style={[styles.reading, style]}>
+      <Data color={ink.plain} testID={testID} numberOfLines={1} style={valueStyle}>
         {value}
       </Data>
       <Label color={ink.faint} style={styles.readingLabel} numberOfLines={1}>
@@ -358,6 +403,12 @@ const styles = StyleSheet.create({
   },
   readingLabel: {
     textTransform: "none",
+  },
+  modelReading: {
+    flexShrink: 1,
+  },
+  modelData: {
+    flexShrink: 1,
   },
   actions: {
     flexDirection: "row",

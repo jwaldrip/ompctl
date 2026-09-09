@@ -35,12 +35,12 @@ import {
   shouldRequestSessionStats,
   subagentTailFor,
   tuiPageToAskFor,
+  tuiPromptAccess,
   tuiSessionFor,
 } from "./state.ts";
 import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
 export type { WebViewTarget } from "./webview.ts";
-
 export interface ConsoleActions {
   select: (agentId: AgentId) => void;
   back: () => void;
@@ -92,6 +92,12 @@ export interface ConsoleActions {
    */
   retryTui: (sessionId: string) => void;
   /**
+   * Deliberate takeover of a live terminal session after the operator confirmed
+   * that the terminal will lose control. Issues a resume claim; the daemon refuses
+   * if the terminal is still holding the session file.
+   */
+  takeOverSession: (sessionId: string) => void;
+  /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
    * from here, and a refusal arrives as a notice, because nothing on screen
@@ -123,6 +129,15 @@ export interface ConsoleActions {
    * `transcript` frame of what it heard.
    */
   stopVoice: () => void;
+  /**
+   * Open this device's microphone for one terminal session and stream it to the
+   * daemon as audio frames.
+   */
+  startVoiceTui: (sessionId: string) => void;
+  /**
+   * Close the microphone for a terminal session.
+   */
+  stopVoiceTui: () => void;
 }
 
 /**
@@ -895,6 +910,13 @@ export function useConsole(
           client.openCollab(sessionId);
         }
       },
+      takeOverSession(sessionId) {
+        const row = stateRef.current.sessionIndex.find(s => s.id === sessionId);
+        if (row?.cwd) {
+          requestSubagents(sessionId);
+          client.resumeSession(sessionId, row.cwd);
+        }
+      },
       deleteSession(sessionId) {
         // The row renders the missing scope and offers no confirmation, but
         // this checks it again rather than trusting the surface: the frame is
@@ -970,6 +992,44 @@ export function useConsole(
           .catch(() => {})
           .then(() => {
             client.endAudio(agentId);
+          });
+      },
+      startVoiceTui(sessionId) {
+        const current = stateRef.current;
+        if (!voice.capture.availability.available) return;
+        if (current.capturing !== null) return;
+        if (tuiPromptAccess(current, connection.scopes) === "missing") {
+          dispatch({
+            t: "error",
+            event: {
+              message: "This device does not hold the prompt scope. Pair it again with prompt access to speak.",
+            },
+          });
+          return;
+        }
+        dispatch({ t: "voice_capture", agentId: sessionId });
+        voice.capture
+          .start(chunk => {
+            client.sendAudio(sessionId, chunk);
+          })
+          .catch(() => {
+            voice.capture.cancel();
+            dispatch({ t: "voice_capture", agentId: null });
+            dispatch({
+              t: "error",
+              event: { message: "The microphone did not open. Nothing was recorded." },
+            });
+          });
+      },
+      stopVoiceTui() {
+        const sessionId = stateRef.current.capturing;
+        if (sessionId === null) return;
+        dispatch({ t: "voice_capture", agentId: null });
+        voice.capture
+          .stop()
+          .catch(() => {})
+          .then(() => {
+            client.endAudio(sessionId);
           });
       },
       mountWebView(agentId) {

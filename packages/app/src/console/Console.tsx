@@ -25,7 +25,7 @@ import type { Agent, AgentId, SubagentTranscript } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { Modal, Pressable, StyleSheet, View } from "react-native";
 import { Divider } from "react-native-paper";
 import { AgentHub } from "../components/AgentHub.tsx";
 import { ResumeNudge, shouldNudgeResume } from "../components/ResumeNudge.tsx";
@@ -33,10 +33,11 @@ import { Toast } from "../components/Toast.tsx";
 import { skillInvocation } from "../cowork/catalog.ts";
 import type { NewTaskInput } from "../cowork/tasks.ts";
 import { useCowork } from "../cowork/useCowork.ts";
+import { Glyph } from "../design/icons.tsx";
 import { useSplitBayWidth, useSplitLayout } from "../design/layout.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
-import { Body } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
+import { Body, Label, Title } from "../design/text.tsx";
+import { ground, ink, radius, signal, space, stroke } from "../design/tokens.ts";
 import type { ShellSelection, ShellSurfaces } from "../nav/AppNavigator.tsx";
 import { AppNavigator } from "../nav/AppNavigator.tsx";
 import type { Connection, ConnectionList } from "../platform/connection.ts";
@@ -190,6 +191,7 @@ export function Console({
   useEffect(() => {
     setConfigPane(null);
   }, [state.selected]);
+  const [takeoverTarget, setTakeoverTarget] = useState<{ sessionId: string; cwd: string; title: string } | null>(null);
 
   /**
    * Whether a session was opened from a route pushed over the fleet, rather
@@ -494,31 +496,119 @@ export function Console({
   // log so switching rows never carries one session's draft into another.
   const terminal = (sessionId: string, back: () => void): JSX.Element => {
     const row = state.sessionIndex.find(candidate => candidate.id === sessionId);
+    const isLiveTui = row?.status === "live-tui";
     return (
-      <TerminalSessionScreen
-        key={sessionId}
-        title={row?.title ?? "Terminal session"}
-        cwd={row?.cwd ?? row?.flattenedDir ?? ""}
-        status={row?.status ?? null}
-        promptAccess={tuiPromptAccess(state, connection.scopes)}
-        // Armed by the row press itself, so this pane is the pressed row's
-        // before the daemon has answered anything about it.
-        load={loadFor(state, sessionId)}
-        tui={tuiSessionFor(state, sessionId)}
-        connection={state.connection}
-        onBack={back}
-        onSubmit={(text, images) => actions.promptTui(sessionId, text, images)}
-        onLoadEarlier={() => {
-          actions.loadEarlierTui(sessionId);
-        }}
-        onRetry={() => {
-          actions.retryTui(sessionId);
-        }}
-        subagentTranscripts={state.subagentTranscripts.get(sessionId)}
-        onOpenSubagent={transcript => {
-          actions.openSubagent(sessionId, transcript.name);
-        }}
-      />
+      <View style={styles.terminalContainer}>
+        {isLiveTui ? (
+          <View style={styles.takeoverBar} testID="terminal-takeover-bar">
+            <Label color={ink.muted} style={styles.takeoverLabel}>
+              Running in terminal
+            </Label>
+            <Pressable
+              testID="terminal-takeover-button"
+              accessibilityRole="button"
+              accessibilityLabel="Take over session from terminal"
+              onPress={() => {
+                if (row?.cwd) {
+                  setTakeoverTarget({
+                    sessionId,
+                    cwd: row.cwd,
+                    title: row.title || "Terminal session",
+                  });
+                }
+              }}
+              style={takeoverButtonStyle}
+            >
+              <Label color={signal.holding}>Take over</Label>
+            </Pressable>
+          </View>
+        ) : null}
+        <TerminalSessionScreen
+          key={sessionId}
+          title={row?.title ?? "Terminal session"}
+          cwd={row?.cwd ?? row?.flattenedDir ?? ""}
+          status={row?.status ?? null}
+          promptAccess={tuiPromptAccess(state, connection.scopes)}
+          // Armed by the row press itself, so this pane is the pressed row's
+          // before the daemon has answered anything about it.
+          load={loadFor(state, sessionId)}
+          tui={tuiSessionFor(state, sessionId)}
+          connection={state.connection}
+          onBack={back}
+          onSubmit={(text, images) => actions.promptTui(sessionId, text, images)}
+          onLoadEarlier={() => {
+            actions.loadEarlierTui(sessionId);
+          }}
+          onRetry={() => {
+            actions.retryTui(sessionId);
+          }}
+          subagentTranscripts={state.subagentTranscripts.get(sessionId)}
+          onOpenSubagent={transcript => {
+            actions.openSubagent(sessionId, transcript.name);
+          }}
+        />
+        {takeoverTarget !== null && takeoverTarget.sessionId === sessionId ? (
+          <Modal visible transparent animationType="none" onRequestClose={() => setTakeoverTarget(null)}>
+            <View style={styles.takeoverOverlay}>
+              <Pressable
+                testID="takeover-backdrop"
+                accessibilityLabel="Close takeover confirmation"
+                accessibilityRole="button"
+                onPress={() => setTakeoverTarget(null)}
+                style={styles.takeoverBackdrop}
+              />
+              <View testID="takeover-dialog" style={styles.takeoverSurface}>
+                <View style={styles.takeoverHeader}>
+                  <Title color={ink.bright}>Take over session?</Title>
+                  <Pressable
+                    testID="takeover-close"
+                    accessibilityRole="button"
+                    accessibilityLabel="Close"
+                    onPress={() => setTakeoverTarget(null)}
+                    hitSlop={space.snug}
+                    style={styles.takeoverCloseBtn}
+                  >
+                    <Glyph name="deny" size={12} color={ink.faint} />
+                  </Pressable>
+                </View>
+                <View style={styles.takeoverContent}>
+                  <Body color={ink.plain} testID="takeover-warning">
+                    The terminal holding this session will lose control. Takeover will resume the session under ompd,
+                    but will be refused if the terminal is still holding the transcript file open. Close or exit the
+                    terminal first if you want to take over.
+                  </Body>
+                </View>
+                <View style={styles.takeoverActions}>
+                  <Pressable
+                    testID="takeover-confirm"
+                    accessibilityRole="button"
+                    accessibilityLabel="Take over"
+                    onPress={() => {
+                      const target = takeoverTarget;
+                      setTakeoverTarget(null);
+                      actions.takeOverSession(target.sessionId);
+                    }}
+                    style={takeoverConfirmStyle}
+                  >
+                    <Label color={ink.bright} style={styles.takeoverConfirmText}>
+                      Take over
+                    </Label>
+                  </Pressable>
+                  <Pressable
+                    testID="takeover-cancel"
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel"
+                    onPress={() => setTakeoverTarget(null)}
+                    style={takeoverCancelStyle}
+                  >
+                    <Label color={ink.plain}>Cancel</Label>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        ) : null}
+      </View>
     );
   };
 
@@ -584,13 +674,14 @@ export function Console({
     fleet: () => (
       // One inset owner per column, not one per screen. The shell always
       // owns the top edge, so the agent hub and the list sit inside the safe
-      // area rather than under the status bar. In the split the detail pane
-      // holds screens whose composers own the bottom edge, and a child
-      // cannot paint a parent's padding, so the shell declines the bottom
-      // edge there and each pane pays for itself: the bay below, the
-      // composer in the pane beside it. On a phone the surface is one column
-      // with no composer under it, so the shell pays as usual.
-      <SafeScreen testID="fleet-surface" edges={{ bottom: !split }}>
+      // area rather than under the status bar. The fleet list is a scrollable
+      // surface whose rows should run through the home indicator without
+      // stopping an inset short, so the shell declines the bottom edge
+      // everywhere: the list pays the bottom inset as content padding so
+      // rows clear the home indicator while the list itself runs to the
+      // screen edge. In the split, the detail pane's composer owns its own
+      // bottom edge beside it.
+      <SafeScreen testID="fleet-surface" edges={{ bottom: false }}>
         <View style={split ? styles.splitLayout : styles.singleLayout}>
           <View style={split ? [styles.splitBay, { width: bayWidth }] : styles.bay}>
             <AgentHub
@@ -944,4 +1035,87 @@ const styles = StyleSheet.create({
   gone: { alignItems: "center", justifyContent: "center", padding: space.gulf },
   limit: { gap: space.step, justifyContent: "center", padding: space.gulf },
   coworkNotice: { padding: space.step, backgroundColor: ground.surface },
+  terminalContainer: { flex: 1 },
+  takeoverBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: space.wide,
+    paddingVertical: space.snug,
+    backgroundColor: ground.surface,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.edge,
+  },
+  takeoverLabel: { fontSize: 12 },
+  takeoverButton: {
+    paddingHorizontal: space.step,
+    paddingVertical: space.tight,
+    borderRadius: radius.control,
+    backgroundColor: ground.raised,
+  },
+  takeoverButtonPressed: { opacity: 0.7 },
+  takeoverOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: space.wide,
+  },
+  takeoverBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(10, 12, 16, 0.7)",
+  },
+  takeoverSurface: {
+    width: "100%",
+    maxWidth: 460,
+    backgroundColor: ground.surface,
+    borderRadius: radius.surface,
+    borderWidth: stroke.hair,
+    borderColor: ground.edge,
+    padding: space.wide,
+    gap: space.wide,
+  },
+  takeoverHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  takeoverCloseBtn: {
+    padding: space.snug,
+  },
+  takeoverContent: {
+    gap: space.step,
+  },
+  takeoverActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: space.step,
+  },
+  takeoverConfirmButton: {
+    paddingHorizontal: space.wide,
+    paddingVertical: space.snug,
+    backgroundColor: signal.holding,
+    borderRadius: radius.control,
+  },
+  takeoverConfirmPressed: { opacity: 0.8 },
+  takeoverCancelButton: {
+    paddingHorizontal: space.wide,
+    paddingVertical: space.snug,
+    backgroundColor: ground.raised,
+    borderRadius: radius.control,
+  },
+  takeoverCancelPressed: { opacity: 0.8 },
+  takeoverConfirmText: { fontWeight: "600" },
 });
+
+const takeoverButtonStyle = ({ pressed }: { pressed: boolean }) => [
+  styles.takeoverButton,
+  pressed && styles.takeoverButtonPressed,
+];
+const takeoverConfirmStyle = ({ pressed }: { pressed: boolean }) => [
+  styles.takeoverConfirmButton,
+  pressed && styles.takeoverConfirmPressed,
+];
+const takeoverCancelStyle = ({ pressed }: { pressed: boolean }) => [
+  styles.takeoverCancelButton,
+  pressed && styles.takeoverCancelPressed,
+];

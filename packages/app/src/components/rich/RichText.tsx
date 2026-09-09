@@ -23,16 +23,16 @@
 
 import type { JSX, ReactNode } from "react";
 import { memo } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { rhythm } from "../../design/rhythm.ts";
 import { Body, Display, Kicker, Label, Title } from "../../design/text.tsx";
 import { face, ground, ink, space, stroke, type } from "../../design/tokens.ts";
 import { AttachmentBlock } from "./AttachmentBlock.tsx";
-import type { RichBlock, RichSpan } from "./blocks.ts";
+import type { RichSpan } from "./blocks.ts";
 import { DiffBlock, isDiffText } from "./DiffBlock.tsx";
 import { highlight } from "./highlight.ts";
 import { tokenColor } from "./highlight-theme.ts";
-import { parseRich } from "./parse.ts";
+import { parseRich, type RichBlock } from "./parse.ts";
 
 /** Flat inline runs. Nesting a `Text` per span lets RN inherit the block's size and colour. */
 function Spans({ spans }: { spans: readonly RichSpan[] }): JSX.Element {
@@ -118,14 +118,37 @@ function BlockView({ block, muted }: { block: RichBlock; muted: boolean }): Reac
       return (
         <View style={styles.list}>
           {block.items.map((item, index) => (
-            <View key={`li:${spansText(item).slice(0, 64)}`} style={styles.listRow}>
+            // biome-ignore lint/suspicious/noArrayIndexKey: list item position is the stable identity
+            <View key={`li:${index}:${spansText(item.spans).slice(0, 48)}`} style={styles.listRow}>
               {/* Marker column so a wrapped item hangs past its number, not under it. */}
               <Label color={ink.muted} style={styles.listMarker}>
                 {block.ordered ? `${index + 1}.` : "\u2022"}
               </Label>
-              <Body color={muted ? ink.plain : ink.bright} style={styles.listItem}>
-                <Spans spans={item} />
-              </Body>
+              <View style={styles.listItem}>
+                <Body color={muted ? ink.plain : ink.bright}>
+                  <Spans spans={item.spans} />
+                </Body>
+                {item.children && item.children.length > 0 ? (
+                  <View style={styles.listChildren}>
+                    {item.children.map((child, childIdx) => {
+                      if (child.kind === "list") {
+                        return (
+                          // biome-ignore lint/suspicious/noArrayIndexKey: child position is stable
+                          <View key={`child-list:${childIdx}`} testID="nested-list" style={styles.nestedList}>
+                            <BlockView block={child} muted={muted} />
+                          </View>
+                        );
+                      }
+                      return (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: child position is stable
+                        <View key={`child-block:${childIdx}`} style={styles.childBlock}>
+                          <BlockView block={child} muted={muted} />
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : null}
+              </View>
             </View>
           ))}
         </View>
@@ -181,6 +204,72 @@ function BlockView({ block, muted }: { block: RichBlock; muted: boolean }): Reac
     case "rule":
       return <View style={styles.rule} />;
 
+    case "table": {
+      return (
+        <ScrollView
+          horizontal
+          nestedScrollEnabled
+          directionalLockEnabled
+          showsHorizontalScrollIndicator={false}
+          style={styles.tableScroll}
+          contentContainerStyle={styles.tableContent}
+        >
+          <View style={styles.table}>
+            <View style={[styles.tableRow, styles.tableHeaderRow]}>
+              {block.header.cells.map((cell, colIdx) => {
+                const align = block.alignments[colIdx] ?? null;
+                const alignStyle =
+                  align === "center" ? styles.alignCenter : align === "right" ? styles.alignRight : styles.alignLeft;
+                const textStyle =
+                  align === "center"
+                    ? styles.textAlignPropsCenter
+                    : align === "right"
+                      ? styles.textAlignPropsRight
+                      : styles.textAlignPropsLeft;
+                return (
+                  <View
+                    // biome-ignore lint/suspicious/noArrayIndexKey: column position is the header cell identity
+                    key={`th:${colIdx}`}
+                    testID={`table-header-cell-${align ?? "left"}`}
+                    accessibilityRole="header"
+                    style={[styles.tableCell, styles.tableHeaderCell, alignStyle]}
+                  >
+                    <Label heading color={ink.bright} style={[styles.tableHeaderText, textStyle]}>
+                      <Spans spans={cell} />
+                    </Label>
+                  </View>
+                );
+              })}
+            </View>
+            {block.rows.map((row, rowIdx) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: row position is the row identity
+              <View key={`tr:${rowIdx}`} style={[styles.tableRow, rowIdx % 2 === 1 && styles.tableRowAlt]}>
+                {row.cells.map((cell, colIdx) => {
+                  const align = block.alignments[colIdx] ?? null;
+                  const alignStyle =
+                    align === "center" ? styles.alignCenter : align === "right" ? styles.alignRight : styles.alignLeft;
+                  const textStyle =
+                    align === "center"
+                      ? styles.textAlignPropsCenter
+                      : align === "right"
+                        ? styles.textAlignPropsRight
+                        : styles.textAlignPropsLeft;
+                  return (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: cell position in row is the identity
+                    <View key={`td:${rowIdx}:${colIdx}`} testID="table-cell" style={[styles.tableCell, alignStyle]}>
+                      <Body color={muted ? ink.plain : ink.bright} style={textStyle}>
+                        <Spans spans={cell} />
+                      </Body>
+                    </View>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
+        </ScrollView>
+      );
+    }
+
     case "attachment":
       return <AttachmentBlock ref={block.ref} />;
   }
@@ -212,6 +301,7 @@ function blockKeyOf(block: RichBlock): string {
   if (block.kind === "code") return `code:${block.text.slice(0, 64)}`;
   if (block.kind === "list") return `list:${block.items.length}:${block.ordered}`;
   if (block.kind === "heading") return `h${block.level}:${spansText(block.spans).slice(0, 64)}`;
+  if (block.kind === "table") return `table:${block.rows.length}:${block.alignments.length}`;
   return spansText(block.spans).slice(0, 64);
 }
 
@@ -245,7 +335,62 @@ const styles = StyleSheet.create({
   // minimum aligns every short marker and still cannot cut one.
   // `test/no-hidden-content.test.ts` pins that this stays a `minWidth`.
   listMarker: { minWidth: rhythm.indent, textAlign: "right" },
-  listItem: { flex: 1 },
+  listItem: { flex: 1, gap: space.tight },
+  listChildren: { gap: space.tight, marginTop: space.tight },
+  nestedList: { width: "100%" },
+  childBlock: { width: "100%" },
+  tableScroll: { maxWidth: "100%" },
+  tableContent: { minWidth: "100%" },
+  table: {
+    minWidth: "100%",
+    backgroundColor: ground.surface,
+    borderWidth: stroke.hair,
+    borderColor: ground.line,
+  },
+  tableRow: {
+    flexDirection: "row",
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+  },
+  tableHeaderRow: {
+    backgroundColor: ground.raised,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.edge,
+  },
+  tableRowAlt: {
+    backgroundColor: ground.surface,
+  },
+  tableCell: {
+    flex: 1,
+    minWidth: rhythm.attribution,
+    paddingHorizontal: space.snug,
+    paddingVertical: space.snug,
+    justifyContent: "center",
+  },
+  tableHeaderCell: {
+    paddingVertical: space.snug,
+  },
+  tableHeaderText: {
+    fontFamily: face.semibold,
+  },
+  alignLeft: {
+    alignItems: "flex-start",
+  },
+  alignCenter: {
+    alignItems: "center",
+  },
+  alignRight: {
+    alignItems: "flex-end",
+  },
+  textAlignPropsLeft: {
+    textAlign: "left",
+  },
+  textAlignPropsCenter: {
+    textAlign: "center",
+  },
+  textAlignPropsRight: {
+    textAlign: "right",
+  },
   // A quoted block, edge to content: the same job and the same answer as a
   // card's own inset, which is what a clearance's command preview also pays.
   quote: {

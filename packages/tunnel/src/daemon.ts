@@ -198,15 +198,22 @@ export interface TunnelDaemonOptions {
 const DEFAULT_MIN_BACKOFF_MS = 500;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
 /**
- * The window a leg must outlive to count as healthy.
+ * The window a non-refusal leg must outlive to count as healthy.
  *
  * A registration is not evidence of a working link. The hub accepts a daemon,
- * then drops the leg a second later when a relayed burst trips its per-leg
- * rate limit, and a daemon that treated the accept as success retried from
- * the floor and walked straight back into it. Thirty seconds is far longer
- * than that cycle (the observed flap ran at roughly 1.3s) and far shorter
- * than the ordinary drops it must not penalise, which on this daemon arrive
- * about an hour apart.
+ * then drops the leg when a relayed burst trips its per-leg rate limit, and a
+ * daemon that treated the accept as success retried from the floor and walked
+ * straight back into it.
+ *
+ * A rate-limited close (code 4429) is never evidence of a working link regardless
+ * of duration, so 4429 never decays escalation.
+ *
+ * For non-refusal drops (such as 1006 connection drops), 30 seconds covers six
+ * hub ping intervals (`ACK_INTERVAL_MS = 5_000`, hub.ts) and a full presence
+ * lease renewal period (`LEASE_TTL_MS = 30_000`), proving bidirectional
+ * communication held. Healthy legs normally last an hour (Cloud Run 3600s
+ * request timeout), so 30s easily distinguishes routine disconnects from
+ * flapping while halving decay avoids cliff resets.
  */
 const DEFAULT_STABLE_AFTER_MS = 30_000;
 /**
@@ -456,11 +463,22 @@ export class TunnelDaemon {
     // replays its attach set; that burst is relayed onto the fresh leg and
     // trips the hub's per-leg budget, which closes it 4429. Clearing the
     // escalation on the accept meant the next dial went out from the floor,
-    // straight back into a bucket that had not refilled. Only a leg that
-    // outlived the stability window clears it.
+    // straight back into a bucket that had not refilled.
+    //
+    // A rate-limited leg (code 4429) means the hub refused to keep serving
+    // this client. However long that leg lived, refusal is never evidence of
+    // a working link, so it must not decay or reset the backoff escalation.
+    //
+    // For non-refusal closes that outlived the stability window, escalation
+    // decays by halving rather than a cliff reset to zero. Halving preserves
+    // memory of recent hub pressure so a subsequent quick drop does not
+    // immediately hammer the floor.
     const lived = registeredAt === null ? null : this.#now() - registeredAt;
-    if (lived !== null && lived >= this.#stableAfterMs) this.#attempt = 0;
-
+    const rateLimited = info.code === 4429;
+    if (!rateLimited && lived !== null && lived >= this.#stableAfterMs) {
+      const nextAttempt = Math.max(1, Math.floor(this.#attempt / 2));
+      this.#attempt = nextAttempt - 1;
+    }
     const ceiling = Math.min(this.#maxBackoffMs, this.#minBackoffMs * 2 ** this.#attempt);
     // Full jitter. A fleet reconnecting in lockstep after a hub redeploy is a
     // thundering herd against the thing that just came back.

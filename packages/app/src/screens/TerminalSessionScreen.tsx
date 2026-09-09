@@ -48,7 +48,7 @@
 import type { PromptImage, SessionLiveStatus, SubagentTranscript, TranscriptTailEntry } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   type ListRenderItemInfo,
@@ -58,7 +58,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { Button } from "react-native-paper";
+import { Button, Surface } from "react-native-paper";
 import { ActivityRow } from "../components/ActivityRow.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { RichText } from "../components/rich/RichText.tsx";
@@ -70,15 +70,19 @@ import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../c
 import type { SessionLoad, TuiPromptAccess, TuiSessionState } from "../console/state.ts";
 import { elapsed, shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { attributionWidth, rhythm } from "../design/rhythm.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
-import { Body, Kicker, Label, Title } from "../design/text.tsx";
-import { ground, ink, radius, signal, space, stroke } from "../design/tokens.ts";
+import { Body, Code, Kicker, Label, Title } from "../design/text.tsx";
+import { ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import { imageAttachmentPicker } from "../platform/attachments.ts";
 import { conversationActivity, tuiActivity } from "../session/activity.ts";
 import { SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
+import type { Entry } from "../session/model.ts";
+import { type NarrationSpeech, useNarration } from "../voice/narration.ts";
+import type { SessionVoice } from "./SessionScreen.tsx";
 
 export interface TerminalSessionScreenProps {
   title: string;
@@ -120,8 +124,13 @@ export interface TerminalSessionScreenProps {
    */
   subagentTranscripts?: readonly SubagentTranscript[];
   onOpenSubagent?: (transcript: SubagentTranscript) => void;
+  /** The composer's voice path: scope posture, capabilities, dictation, toggle. */
+  voice?: SessionVoice;
+  /** The daemon's prose for the last settled turn, if it sent one. */
+  spoken?: string | null;
+  /** Device speech implementation. Omitted in production so the native module is discovered once. */
+  narrationSpeech?: NarrationSpeech;
 }
-
 /**
  * The gutter's second line for a live hint, where a served turn shows its
  * elapsed stamp. One word each, because the gutter leaves 66 points for text
@@ -218,6 +227,39 @@ function logRows(tui: TuiSessionState): LogRow[] {
   return rows;
 }
 
+function tuiNarrationEntries(tui: TuiSessionState): Entry[] {
+  const entries: Entry[] = [];
+  tui.history.forEach((msg, idx) => {
+    if (("role" in msg && msg.role === "assistant") || msg.kind === "text") {
+      const text = "text" in msg ? msg.text : "";
+      if (text) {
+        entries.push({
+          kind: "assistant",
+          id: `tui-turn-${idx}`,
+          rowId: `tui-turn-${idx}`,
+          text,
+          streaming: false,
+          thought: false,
+        });
+      }
+    }
+  });
+  if (tui.reply !== null && tui.reply.length > 0) {
+    const last = entries.at(-1);
+    if (!last || (last.kind === "assistant" && last.text !== tui.reply)) {
+      entries.push({
+        kind: "assistant",
+        id: "tui-reply",
+        rowId: "tui-reply",
+        text: tui.reply,
+        streaming: tui.busy,
+        thought: false,
+      });
+    }
+  }
+  return entries;
+}
+
 /** The share of the window the open subagent list may take before it scrolls; the tail keeps the rest. */
 const SUBAGENTS_WINDOW_SHARE = 0.4;
 
@@ -232,6 +274,32 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
   // Closed by default on every width: the tail is what this screen is for,
   // and a list of transcripts open above it would take the room a phone has.
   const [subagentsOpen, setSubagentsOpen] = useState(false);
+  const isTablet = useIsTablet();
+  const narrationEntries = useMemo(() => tuiNarrationEntries(tui), [tui]);
+  const narration = useNarration(narrationEntries, props.narrationSpeech);
+  const [narrationNoticeOpen, setNarrationNoticeOpen] = useState(false);
+
+  const lastSubmittedDictation = useRef<string | null>(null);
+  useEffect(() => {
+    const dictation = props.voice?.dictation;
+    if (dictation && dictation.final && dictation.text.trim().length > 0) {
+      if (lastSubmittedDictation.current !== dictation.text) {
+        lastSubmittedDictation.current = dictation.text;
+        props.onSubmit(dictation.text.trim());
+      }
+    } else if (!dictation) {
+      lastSubmittedDictation.current = null;
+    }
+  }, [props.voice?.dictation, props.onSubmit]);
+
+  const micRef = useRef({ capturing: props.voice?.capturing, toggle: props.voice?.onToggle });
+  micRef.current = { capturing: props.voice?.capturing, toggle: props.voice?.onToggle };
+  useEffect(
+    () => () => {
+      if (micRef.current.capturing && micRef.current.toggle) micRef.current.toggle();
+    },
+    [],
+  );
   const now = Date.now();
   const onOpenSubagent = props.onOpenSubagent ?? (() => {});
   // Colour and geometry that can change under the app: the light theme swaps
@@ -475,7 +543,107 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
         <Kicker color={tone} testID="terminal-state">
           {statusLabel}
         </Kicker>
+
+        {!isTablet ? (
+          <View style={styles.headActions}>
+            {!narration.available ? (
+              <Pressable
+                testID="session-narration-toggle"
+                accessibilityRole="button"
+                accessibilityLabel={narration.reason ?? "Narration unavailable"}
+                accessibilityState={{ disabled: true }}
+                onPress={() => setNarrationNoticeOpen(open => !open)}
+                style={styles.headActionCompact}
+              >
+                <Glyph name="narration" size={13} color={theme.ink.faint} />
+              </Pressable>
+            ) : narration.enabled ? null : (
+              <Pressable
+                testID="session-narration-toggle"
+                accessibilityRole="switch"
+                accessibilityLabel="Turn narration on"
+                accessibilityState={{ checked: false }}
+                onPress={narration.toggle}
+                style={styles.headActionCompact}
+              >
+                <Glyph name="narration" size={13} color={theme.ink.muted} />
+              </Pressable>
+            )}
+          </View>
+        ) : null}
       </View>
+
+      {isTablet ? (
+        <View
+          testID="session-narration"
+          style={[styles.narration, narration.enabled && { backgroundColor: theme.ground.active }]}
+        >
+          <Pressable
+            testID="session-narration-toggle"
+            accessibilityRole="switch"
+            accessibilityLabel={
+              !narration.available
+                ? "Narration unavailable"
+                : narration.enabled
+                  ? "Turn narration off"
+                  : "Turn narration on"
+            }
+            accessibilityState={{ checked: narration.enabled, disabled: !narration.available }}
+            disabled={!narration.available}
+            onPress={narration.toggle}
+            style={({ pressed }) => [styles.narrationToggle, pressed && { backgroundColor: theme.ground.active }]}
+          >
+            <Glyph name="narration" size={14} color={narration.enabled ? theme.signal.ready : theme.ink.muted} />
+            <Label color={narration.enabled ? theme.ink.bright : theme.ink.muted} testID="session-narration-status">
+              {!narration.available ? "Narration unavailable" : narration.enabled ? "Narration on" : "Narration off"}
+            </Label>
+          </Pressable>
+          <Label
+            color={narration.reason === null ? theme.ink.faint : theme.signal.cold}
+            style={styles.narrationReason}
+            testID="session-narration-reason"
+          >
+            {narration.reason ??
+              (narration.enabled
+                ? "Reading new agent prose as it arrives."
+                : "Read new agent prose aloud as it arrives.")}
+          </Label>
+        </View>
+      ) : null}
+
+      {!isTablet && narration.enabled ? (
+        <View style={styles.narrationLineCompact}>
+          <Pressable
+            testID="session-narration-toggle"
+            accessibilityRole="switch"
+            accessibilityLabel="Turn narration off"
+            accessibilityState={{ checked: true }}
+            onPress={narration.toggle}
+            style={styles.narrationOnPill}
+          >
+            <Glyph name="narration" size={11} color={theme.signal.ready} />
+            <Label color={theme.ink.bright} testID="session-narration-status">
+              Narration on
+            </Label>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {!isTablet && narrationNoticeOpen && !narration.available ? (
+        <View style={styles.narrationNoticeCompact} testID="session-narration-notice">
+          <Label color={theme.signal.cold} style={styles.narrationNoticeText} testID="session-narration-reason">
+            {narration.reason ?? "Narration unavailable"}
+          </Label>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close narration notice"
+            onPress={() => setNarrationNoticeOpen(false)}
+            style={styles.noticeClose}
+          >
+            <Glyph name="deny" size={10} color={theme.ink.muted} />
+          </Pressable>
+        </View>
+      ) : null}
 
       {transcripts.length === 0 || props.onOpenSubagent === undefined ? null : (
         <View
@@ -665,6 +833,21 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             defaults to. Everything else about the surface is shared, because
             two arrangements of one composer is two conventions.
           */}
+          {props.spoken === null || props.spoken === undefined || props.spoken.length === 0 ? null : (
+            <Surface
+              elevation={0}
+              style={[
+                styles.spoken,
+                { backgroundColor: theme.ground.surface, borderLeftColor: theme.signal.reasoning },
+              ]}
+              testID="transcript-say"
+            >
+              <Glyph name="link" size={11} color={theme.signal.reasoning} />
+              <Code color={theme.ink.plain} style={styles.spokenText}>
+                {props.spoken}
+              </Code>
+            </Surface>
+          )}
           <Composer
             prefix="terminal-composer"
             picker={imageAttachmentPicker}
@@ -673,6 +856,7 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
             sendLabel="Send to this terminal"
             busy={tui.busy}
             onSubmit={props.onSubmit}
+            voice={props.voice}
           />
         </View>
       )}
@@ -793,4 +977,75 @@ const styles = StyleSheet.create({
   refusalHead: { flexDirection: "row", alignItems: "center", gap: rhythm.glyphGap },
   boundary: { marginTop: "auto", paddingTop: rhythm.rowGapTight },
   cardRow: { marginTop: rhythm.cardStack },
+  headActions: { flexDirection: "row", alignItems: "center", gap: space.tight, marginLeft: "auto" },
+  headActionCompact: {
+    minHeight: 32,
+    minWidth: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: space.tight,
+  },
+  narration: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: rhythm.gutter,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+  },
+  narrationToggle: {
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.snug,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
+  narrationReason: { flex: 1 },
+  narrationLineCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingTop: space.hair,
+    paddingHorizontal: rhythm.gutter,
+  },
+  narrationOnPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+    paddingHorizontal: space.snug,
+    paddingVertical: space.hair,
+    backgroundColor: ground.active,
+    borderRadius: radius.control,
+  },
+  narrationNoticeCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: space.snug,
+    paddingVertical: space.tight,
+    paddingHorizontal: space.snug,
+    backgroundColor: ground.surface,
+    borderRadius: radius.control,
+    borderLeftWidth: stroke.heavy,
+    borderLeftColor: signal.cold,
+    marginTop: space.tight,
+    marginHorizontal: rhythm.gutter,
+  },
+  narrationNoticeText: { flex: 1 },
+  noticeClose: {
+    padding: space.tight,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  spoken: {
+    flexDirection: "row",
+    gap: rhythm.cardGap,
+    padding: rhythm.cardPad,
+    borderLeftWidth: stroke.heavy,
+    borderRadius: radius.control,
+    alignItems: "center",
+    marginHorizontal: rhythm.gutter,
+    marginBottom: space.snug,
+  },
+  spokenText: { flex: 1 },
 });

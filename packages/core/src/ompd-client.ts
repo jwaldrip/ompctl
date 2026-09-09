@@ -233,6 +233,7 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   session_subagents: false,
   session_stats: false,
   session_history: false,
+  session_artifacts: false,
   // A snapshot ask, same class as `session_tail`: nothing on the machine
   // changes, and the surface that asked asks again the next time it opens.
   settings_read: false,
