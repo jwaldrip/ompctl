@@ -224,7 +224,13 @@ describe("Artifact Viewers", () => {
       { id: "2", path: "demo.mp4", name: "demo.mp4", kind: "video" as const, contentType: "video/mp4" },
       { id: "3", path: "main.ts", name: "main.ts", kind: "code" as const, contentType: "text/typescript" },
       { id: "4", path: "report.html", name: "report.html", kind: "html" as const, contentType: "text/html" },
-      { id: "5", path: "data.bin", name: "data.bin", kind: "fallback" as const, contentType: "application/octet-stream" },
+      {
+        id: "5",
+        path: "data.bin",
+        name: "data.bin",
+        kind: "fallback" as const,
+        contentType: "application/octet-stream",
+      },
     ];
     let selected: unknown = null;
     const { host, unmount } = themed(

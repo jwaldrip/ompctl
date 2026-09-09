@@ -235,10 +235,7 @@ function EntryRow({
       style={styles.entry}
       testID={`browse-entry-${entry.name}`}
     >
-      <Glyph
-        name={glyphName}
-        color={entry.kind === "file" && !openable ? ink.faint : ink.plain}
-      />
+      <Glyph name={glyphName} color={entry.kind === "file" && !openable ? ink.faint : ink.plain} />
       <Label
         color={entry.kind === "file" && !openable ? ink.muted : ink.bright}
         numberOfLines={1}

@@ -73,6 +73,14 @@ import {
   type WireHostSpec,
 } from "@ompd/core";
 import type { Server, ServerWebSocket } from "bun";
+import {
+  ArtifactRefusal,
+  getDefaultSessionsDir,
+  listSessionArtifacts,
+  resolveAllowedRoots,
+  serveArtifactFile,
+  verifyArtifactPath,
+} from "../artifacts/index.ts";
 import { LOCAL_HOSTNAMES, parseCollabLink } from "../collab/guest-link.ts";
 import { CollabGuests } from "../collab/guests.ts";
 import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData } from "../collab/relay.ts";
@@ -85,14 +93,6 @@ import { listSubagentTranscripts, subagentTranscriptPath } from "../sessions/sub
 import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
 import { type StatsSubsystem, statsUnavailableReason } from "../stats/index.ts";
-import {
-  ArtifactRefusal,
-  getDefaultSessionsDir,
-  listSessionArtifacts,
-  resolveAllowedRoots,
-  serveArtifactFile,
-  verifyArtifactPath,
-} from "../artifacts/index.ts";
 import {
   AgentBusyError,
   createAgentId,
@@ -2115,10 +2115,7 @@ export class Gateway {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
       const targetPath = url.searchParams.get("path") ?? url.searchParams.get("id");
       if (!targetPath) {
-        return Response.json(
-          { error: "bad_path", message: "path or id query parameter is required" },
-          { status: 400 },
-        );
+        return Response.json({ error: "bad_path", message: "path or id query parameter is required" }, { status: 400 });
       }
       try {
         const allowedRoots = await this.#getAllowedArtifactRoots();

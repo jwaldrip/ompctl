@@ -288,6 +288,27 @@ describe("artifact bytes and session artifacts", () => {
     expect(body.error).toBe("out_of_roots");
   });
 
+  test("a sibling directory sharing the root's name prefix refuses", async () => {
+    // The root is a path, not a string prefix. A sibling named by extending
+    // the root's own name is the escape a naive startsWith lets through, and
+    // it needs no traversal and no symlink to reach: anything that can write
+    // beside an allowed root can then read back out of it. Containment is
+    // only a guard if the separator is part of the comparison.
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ]);
+
+    const sibling = `${h.allowedRoot}-evil`;
+    mkdirSync(sibling, { recursive: true });
+    scratchDirs.push(sibling);
+    const leaked = join(sibling, "secret.txt");
+    writeFileSync(leaked, "top-secret");
+
+    const res = await h.http(`/v1/artifacts/bytes?path=${encodeURIComponent(leaked)}`, {}, token);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as ErrorResponse;
+    expect(body.error).toBe("out_of_roots");
+  });
+
   test("an oversized file refuses by name rather than truncating", async () => {
     // Harness with 1024 byte ceiling
     const h = await harness({ byteCeiling: 1024 });
@@ -382,7 +403,8 @@ describe("artifact bytes and session artifacts", () => {
     const token = await h.pair([SCOPE_READ]);
 
     // In the session's artifact directory, create subagent report and another artifact
-    const sessionPath = (await h.sessionIndex.pathFor(h.sessionId)) ??
+    const sessionPath =
+      (await h.sessionIndex.pathFor(h.sessionId)) ??
       join(h.sessionsRoot, "-work", `2026-08-10T00-00-00-000Z_${h.sessionId}.jsonl`);
     const artDir = subagentDirFor(sessionPath);
 

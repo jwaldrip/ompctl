@@ -27,8 +27,6 @@
  * test from a canned state.
  */
 
-import type { ArtifactItem } from "../artifacts/index.ts";
-import { ArtifactViewerScreen } from "../artifacts/index.ts";
 import type { AgentId } from "@ompd/core/contracts";
 import { NavigationContainer, StackActions, useNavigationContainerRef } from "@react-navigation/native";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -36,6 +34,8 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import type { JSX } from "react";
 import { createContext, useCallback, useContext, useEffect, useRef } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import type { ArtifactItem } from "../artifacts/index.ts";
+import { ArtifactViewerScreen } from "../artifacts/index.ts";
 import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
