@@ -56,6 +56,10 @@ export interface BrowserSession {
   readonly sizeBytes: number;
   /** Total session cost in USD, or null when not reported. */
   readonly cost?: number | null;
+  /** Current model id, or null when absent. */
+  readonly model?: string | null;
+  /** Current role, or null when absent. */
+  readonly role?: string | null;
 }
 
 // ---------------------------------------------------------------------------

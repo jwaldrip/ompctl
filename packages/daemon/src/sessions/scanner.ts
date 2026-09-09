@@ -306,6 +306,63 @@ export function setSessionCost(sessionId: string, cost: number | null): void {
   }
 }
 
+/** Running current model per session, derived from the transcript's last model_change event. */
+const runningSessionModels = new Map<string, string>();
+
+/** Running current role per session, derived from the transcript's last model_change event. */
+const runningSessionRoles = new Map<string, string>();
+
+export function getSessionModel(sessionId: string): string | null {
+  return runningSessionModels.get(sessionId) ?? null;
+}
+
+export function setSessionModel(sessionId: string, model: string | null): void {
+  if (model === null) {
+    runningSessionModels.delete(sessionId);
+  } else {
+    runningSessionModels.set(sessionId, model);
+  }
+}
+
+export function getSessionRole(sessionId: string): string | null {
+  return runningSessionRoles.get(sessionId) ?? null;
+}
+
+export function setSessionRole(sessionId: string, role: string | null): void {
+  if (role === null) {
+    runningSessionRoles.delete(sessionId);
+  } else {
+    runningSessionRoles.set(sessionId, role);
+  }
+}
+
+export interface SessionModelChange {
+  model: string | null;
+  role: string | null;
+}
+
+/**
+ * Parses a model_change line from an OMP session file.
+ * Fast string pre-filter avoids JSON parsing on lines that cannot be a model change.
+ */
+export function parseModelChangeLine(text: string): SessionModelChange | null {
+  if (text === "" || !text.includes('"model_change"')) return null;
+  let parsed: {
+    type?: unknown;
+    model?: unknown;
+    role?: unknown;
+  };
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (parsed.type !== "model_change") return null;
+  const model = typeof parsed.model === "string" && parsed.model.length > 0 ? parsed.model : null;
+  const role = typeof parsed.role === "string" && parsed.role.length > 0 ? parsed.role : null;
+  return { model, role };
+}
+
 /**
  * Parses a tool result line from an OMP session file.
  *
@@ -385,6 +442,9 @@ class TurnCounter {
   #carry: Buffer[] = [];
   #count = 0;
   #cost: number | null = null;
+  #model: string | null = null;
+  #role: string | null = null;
+  #hasModelChange = false;
   #sessionId?: string;
 
   constructor(sessionId?: string) {
@@ -405,6 +465,13 @@ class TurnCounter {
       if (turn !== null) {
         this.#count++;
         this.#accumulateCost(turn);
+      } else {
+        const mc = parseModelChangeLine(text);
+        if (mc !== null) {
+          this.#hasModelChange = true;
+          this.#model = mc.model;
+          this.#role = mc.role;
+        }
       }
       lineStart = i + 1;
     }
@@ -435,14 +502,36 @@ class TurnCounter {
 
   finish(): number {
     if (this.#carry.length > 0) {
-      const turn = parseTurnLine(Buffer.concat(this.#carry).toString("utf8"));
+      const text = Buffer.concat(this.#carry).toString("utf8");
+      const turn = parseTurnLine(text);
       if (turn !== null) {
         this.#count++;
         this.#accumulateCost(turn);
+      } else {
+        const mc = parseModelChangeLine(text);
+        if (mc !== null) {
+          this.#hasModelChange = true;
+          this.#model = mc.model;
+          this.#role = mc.role;
+        }
       }
     }
-    if (this.#sessionId && this.#cost !== null) {
-      runningSessionCosts.set(this.#sessionId, Math.round(this.#cost * 1_000_000) / 1_000_000);
+    if (this.#sessionId) {
+      if (this.#cost !== null) {
+        runningSessionCosts.set(this.#sessionId, Math.round(this.#cost * 1_000_000) / 1_000_000);
+      }
+      if (this.#hasModelChange) {
+        if (this.#model !== null) {
+          runningSessionModels.set(this.#sessionId, this.#model);
+        } else {
+          runningSessionModels.delete(this.#sessionId);
+        }
+        if (this.#role !== null) {
+          runningSessionRoles.set(this.#sessionId, this.#role);
+        } else {
+          runningSessionRoles.delete(this.#sessionId);
+        }
+      }
     }
     return this.#count;
   }
