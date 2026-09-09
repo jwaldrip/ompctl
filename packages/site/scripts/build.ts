@@ -12,6 +12,11 @@
  *    will not notice;
  *  - every internal anchor points at an id that exists in the document.
  *
+ * Tradeoff vs Cloud Run origin:
+ * Cloud Run let deploy/server.ts specify exact cache-control headers (max-age=300
+ * for HTML/CSS, max-age=86400 for content-addressed screenshots). GitHub Pages
+ * sets its own cache headers via Fastly and does not allow custom cache-control.
+ *
  * A build that only copied files would exit 0 on a site with a missing hero
  * image, which makes its exit code worthless as a gate.
  */
@@ -56,6 +61,31 @@ const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1] ?? ""));
 for (const m of html.matchAll(/href="#([^"]+)"/g)) {
   const id = m[1] ?? "";
   if (id.length > 0 && !ids.has(id)) problems.push(`anchor points at no such id: #${id}`);
+}
+
+// Custom domain configuration for GitHub Pages: CNAME must exist and match apex.
+const cnamePath = join(out, "CNAME");
+if (!existsSync(cnamePath)) {
+  problems.push("missing CNAME in output: required for GitHub Pages custom domain");
+} else {
+  const cname = readFileSync(cnamePath, "utf8").trim();
+  if (cname !== "ompctl.ai") {
+    problems.push(`CNAME must contain ompctl.ai, found: "${cname}"`);
+  }
+}
+
+// Association files belong to app.ompctl.ai (the ompctl-web service).
+// The apex host deliberately must not serve them to avoid drift.
+const forbidden = [
+  "apple-app-site-association",
+  ".well-known/apple-app-site-association",
+  "assetlinks.json",
+  ".well-known/assetlinks.json",
+];
+for (const rel of forbidden) {
+  if (existsSync(join(out, rel))) {
+    problems.push(`forbidden association file in apex output: ${rel}`);
+  }
 }
 
 const shots = existsSync(shotsDir) ? readdirSync(shotsDir).filter(f => f.endsWith(".png")).length : 0;
