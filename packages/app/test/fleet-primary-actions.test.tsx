@@ -72,11 +72,7 @@ const SESSION_BETA_SHORT: SessionSummary = {
   archived: false,
 };
 
-const TEST_SESSIONS: SessionSummary[] = [
-  SESSION_ALPHA_1,
-  SESSION_ALPHA_SHORT,
-  SESSION_BETA_SHORT,
-];
+const TEST_SESSIONS: SessionSummary[] = [SESSION_ALPHA_1, SESSION_ALPHA_SHORT, SESSION_BETA_SHORT];
 
 class CannedClient {
   readonly createdAgents: Array<{ name: string; cwd: string }> = [];
@@ -275,10 +271,7 @@ describe("ephemeral review and bulk archive", () => {
       // Confirming executes the bulk archive
       bay.press("ephemeral-confirm-yes");
       expect(bay.client.archived.length).toBe(1);
-      expect(bay.client.archived[0]?.sessionIds.sort()).toEqual([
-        "session-alpha-short",
-        "session-beta-short",
-      ].sort());
+      expect(bay.client.archived[0]?.sessionIds.sort()).toEqual(["session-alpha-short", "session-beta-short"].sort());
       expect(bay.client.archived[0]?.unarchive).toBe(false);
     } finally {
       bay.unmount();

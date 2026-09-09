@@ -306,7 +306,7 @@ export function browserReduce(state: BrowserState, action: BrowserAction): Brows
         sessions: state.sessions.map(s => (idSet.has(s.id) ? { ...s, status: "dormant" as const } : s)),
       };
     }
-}
+  }
 }
 
 // ---------------------------------------------------------------------------

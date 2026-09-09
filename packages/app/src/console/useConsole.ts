@@ -1100,11 +1100,7 @@ export function useConsole(
  * or sends `{ t: "session_archive", sessionIds, unarchive }` directly through the client's
  * socket/send interface.
  */
-export function sendSessionArchive(
-  client: OmpdClient,
-  sessionIds: readonly string[],
-  unarchive = false,
-): void {
+export function sendSessionArchive(client: OmpdClient, sessionIds: readonly string[], unarchive = false): void {
   const duck = client as unknown as {
     archiveSessions?: (sessionIds: readonly string[], unarchive?: boolean) => void;
     send?: (frame: unknown) => void;

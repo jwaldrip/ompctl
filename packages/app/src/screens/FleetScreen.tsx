@@ -47,15 +47,15 @@ import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
 import type { ScopeAccess, TuiSessionState } from "../console/state.ts";
 import { shortenPath } from "../design/format.ts";
-import { useIsTablet } from "../design/layout.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label, Title } from "../design/text.tsx";
 import { brand, ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import type { Connection } from "../platform/connection.ts";
 import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
 import { browserView } from "../session/browser.ts";
 import { FolderPickerScreen } from "./FolderPickerScreen.tsx";
-import type { Connection } from "../platform/connection.ts";
 /**
  * What the bay may honestly claim about the daemon.
  *
@@ -408,8 +408,8 @@ export function FleetScreen({
         <View style={styles.scopeNotice} testID="fleet-delete-scope-notice">
           <Glyph name="warning" size={12} color={signal.holding} />
           <Label color={signal.holding} style={styles.scopeNoticeText}>
-            This pairing can read sessions but not start, archive, or delete them: it holds no manage scope. Grant manage when minting this
-            device&rsquo;s credential, from the daemon or from a device that can invite.
+            This pairing can read sessions but not start, archive, or delete them: it holds no manage scope. Grant
+            manage when minting this device&rsquo;s credential, from the daemon or from a device that can invite.
           </Label>
         </View>
       ) : null}
@@ -510,10 +510,7 @@ export function FleetScreen({
             onPress={() => setReviewingEphemerals(false)}
             style={styles.backdrop}
           />
-          <View
-            testID="ephemeral-review-sheet"
-            style={isTablet ? styles.reviewPopover : styles.reviewSheet}
-          >
+          <View testID="ephemeral-review-sheet" style={isTablet ? styles.reviewPopover : styles.reviewSheet}>
             <View style={styles.reviewHeader}>
               <View style={styles.reviewHeaderLead}>
                 <Kicker color={ink.muted}>Cleanup</Kicker>
@@ -521,7 +518,8 @@ export function FleetScreen({
                   Review short sessions
                 </Title>
                 <Label color={ink.faint}>
-                  Sessions with fewer than 3 messages. Archived sessions leave the default list but remain reachable anytime.
+                  Sessions with fewer than 3 messages. Archived sessions leave the default list but remain reachable
+                  anytime.
                 </Label>
               </View>
               <Pressable
@@ -650,7 +648,11 @@ export function FleetScreen({
                     (selectedEphemeralIds.size === 0 || !canManage) && styles.primaryButtonDisabled,
                   ]}
                 >
-                  <Glyph name="archive" size={14} color={selectedEphemeralIds.size === 0 || !canManage ? ink.faint : ground.base} />
+                  <Glyph
+                    name="archive"
+                    size={14}
+                    color={selectedEphemeralIds.size === 0 || !canManage ? ink.faint : ground.base}
+                  />
                   <Kicker color={selectedEphemeralIds.size === 0 || !canManage ? ink.faint : ground.base}>
                     {`Archive ${selectedEphemeralIds.size} ${selectedEphemeralIds.size === 1 ? "session" : "sessions"}`}
                   </Kicker>
