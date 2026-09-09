@@ -2215,6 +2215,10 @@ export interface SessionSummary {
   agentId?: AgentId;
   /** Origin metadata when this session was created by a routine action. */
   origin?: SessionOrigin;
+  /** Current model id derived from the transcript's last model_change event, or null when no model change was recorded. */
+  model?: string | null;
+  /** Current role derived from the transcript's last model_change event, or null when the record omitted a role or no model change was recorded. */
+  role?: string | null;
 }
 
 export interface SessionRoutineOrigin {

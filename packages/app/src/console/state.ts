@@ -1799,6 +1799,8 @@ export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
       messageCount: summary.messageCount ?? 0,
       sizeBytes: summary.byteSize,
       cost: summary.cost ?? null,
+      model: summary.model ?? null,
+      role: summary.role ?? null,
     });
   }
 
