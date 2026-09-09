@@ -224,4 +224,66 @@ describe("TunnelDaemon backoff against a flapping hub", () => {
 
     expect(delays()).toEqual([500, 1000, 2000, 2000, 2000]);
   });
+
+  test("a leg that lives past the stability window and closes 4429 does not reset escalation", () => {
+    const { daemon, legs, register, runReconnects, delays, attempts, advance } = wired();
+
+    daemon.start();
+    // Walk through attempts 1, 2, 3 on short flaps
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const leg = legs[cycle];
+      if (leg === undefined) throw new Error(`no leg dialed for cycle ${cycle}`);
+      register(leg);
+      advance(1_000);
+      leg.drop(1006, "Connection ended");
+      runReconnects();
+    }
+
+    // Leg 4 connects, registers, and lives for 36s (past DEFAULT_STABLE_AFTER_MS = 30s).
+    // The hub then closes it with 4429 "rate limited".
+    const rateLimitedLeg = legs[3];
+    if (rateLimitedLeg === undefined) throw new Error("no fourth leg dialed");
+    register(rateLimitedLeg);
+    advance(36_000);
+    rateLimitedLeg.drop(4429, "rate limited");
+    runReconnects();
+
+    // Must continue escalating to attempt 4 (delay 4000ms), never resetting to attempt 1 (500ms).
+    expect(attempts()).toEqual([1, 2, 3, 4]);
+    expect(delays()).toEqual([500, 1000, 2000, 4000]);
+  });
+
+  test("escalation decays by halving on stable legs instead of cliff-resetting to zero", () => {
+    const { daemon, legs, register, runReconnects, delays, attempts, advance } = wired();
+
+    daemon.start();
+    // Four quick flaps escalate to attempt 4 (delays 500, 1000, 2000, 4000)
+    for (let cycle = 0; cycle < 4; cycle++) {
+      const leg = legs[cycle];
+      if (leg === undefined) throw new Error(`no leg dialed for cycle ${cycle}`);
+      register(leg);
+      advance(1_000);
+      leg.drop(1006, "Connection ended");
+      runReconnects();
+    }
+
+    // Leg 4 holds for 60s (stable). On drop, attempt decays from 4 to 2 (delay 1000ms).
+    const stableLeg1 = legs[4];
+    if (stableLeg1 === undefined) throw new Error("no fifth leg dialed");
+    register(stableLeg1);
+    advance(60_000);
+    stableLeg1.drop(1006, "Connection ended");
+    runReconnects();
+
+    // Leg 5 holds for 60s (stable). On drop, attempt decays from 2 to 1 (delay 500ms, baseline floor).
+    const stableLeg2 = legs[5];
+    if (stableLeg2 === undefined) throw new Error("no sixth leg dialed");
+    register(stableLeg2);
+    advance(60_000);
+    stableLeg2.drop(1006, "Connection ended");
+    runReconnects();
+
+    expect(attempts()).toEqual([1, 2, 3, 4, 2, 1]);
+    expect(delays()).toEqual([500, 1000, 2000, 4000, 1000, 500]);
+  });
 });
