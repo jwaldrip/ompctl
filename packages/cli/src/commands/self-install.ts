@@ -73,6 +73,36 @@ async function placeNativeAddon(ctx: CliContext, staging: string): Promise<void>
   if (resolved !== null) copyFileSync(resolved, beside);
 }
 
+/**
+ * Put the bundled `omp-bundled` executable next to the installed binary.
+ *
+ * This allows the installed daemon to create agents out of the box even when
+ * the user does not have omp installed on PATH, without requiring a separate
+ * installation step.
+ */
+async function placeBundledOmp(ctx: CliContext, staging: string): Promise<void> {
+  const name = "omp-bundled";
+  const beside = join(staging, "..", name);
+
+  if (isCompiledRuntime()) {
+    const sibling = join(process.execPath, "..", name);
+    if (existsSync(sibling)) copyFileSync(sibling, beside);
+    return;
+  }
+
+  const resolved = await resolveBundledFromCheckout(ctx);
+  if (resolved !== null) copyFileSync(resolved, beside);
+}
+
+async function resolveBundledFromCheckout(ctx: CliContext): Promise<string | null> {
+  const name = "omp-bundled";
+  const candidates = [join(ctx.cwd, "dist", name), join(sourceEntry(), "..", "..", "..", "..", "dist", name)];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 /** The addon inside the checkout this is being built from, if it is there. */
 async function resolveAddonFromCheckout(ctx: CliContext, name: string): Promise<string | null> {
   const pkg = `@oh-my-pi/pi-natives-${process.platform}-${process.arch}`;
@@ -139,6 +169,7 @@ export async function selfInstallCommand(
   // searches the binary's own directory, so a staged binary checked without it
   // would fail for a reason the installed one would not have had.
   await placeNativeAddon(ctx, staging);
+  await placeBundledOmp(ctx, staging);
 
   const staged = await ctx.exec([staging, "--version"]);
   if (staged.code !== 0) {

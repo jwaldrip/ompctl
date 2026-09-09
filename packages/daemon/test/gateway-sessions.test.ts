@@ -272,6 +272,87 @@ describe("POST /v1/sessions/:id/archive and /unarchive", () => {
     expect(afterUnarchive.sessions.map(s => s.id)).toContain(SESSION_ID);
   });
 });
+describe("POST /v1/sessions/archive and /unarchive (batch)", () => {
+  const SESSION_ID = "aaaaaaaa-0000-7000-0000-000000000001";
+  const UNKNOWN_ID = "dddddddd-0000-7000-0000-000000000009";
+
+  test("requires manage scope", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ]);
+    const res = await h.http(
+      "/v1/sessions/archive",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionIds: [SESSION_ID] }),
+      },
+      token,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("archives a set and reports per-id outcomes", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+
+    const res = await h.http(
+      "/v1/sessions/archive",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionIds: [SESSION_ID, UNKNOWN_ID] }),
+      },
+      token,
+    );
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      results: Array<{ sessionId: string; ok: boolean; archived?: boolean; refusal?: string }>;
+    };
+    expect(body.results).toEqual([
+      { sessionId: SESSION_ID, ok: true, archived: true },
+      { sessionId: UNKNOWN_ID, ok: false, refusal: "not_found" },
+    ]);
+  });
+
+  test("unarchives a set", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+
+    await h.http(
+      "/v1/sessions/archive",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionIds: [SESSION_ID] }),
+      },
+      token,
+    );
+
+    const res = await h.http(
+      "/v1/sessions/unarchive",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionIds: [SESSION_ID] }),
+      },
+      token,
+    );
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      results: Array<{ sessionId: string; ok: boolean; archived: boolean }>;
+    };
+    expect(body.results).toEqual([{ sessionId: SESSION_ID, ok: true, archived: false }]);
+  });
+
+  test("GET /v1/sessions/suggest-ephemeral returns suggested candidates", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ]);
+
+    const res = await h.http("/v1/sessions/suggest-ephemeral", {}, token);
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { sessionIds: string[] };
+    expect(Array.isArray(body.sessionIds)).toBe(true);
+  });
+});
 
 describe("POST /v1/sessions/delete", () => {
   const SESSION_ID = "aaaaaaaa-0000-7000-0000-000000000001";
