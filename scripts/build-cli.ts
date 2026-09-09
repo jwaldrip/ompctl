@@ -7,6 +7,7 @@
  *   3. Generate omp bridge: bun run gen:omp-bridge
  *   4. Compile binary: bun build --compile --external omp-legacy-pi-modules --outfile <outfile> packages/cli/src/main.ts
  *   5. Stage native addon beside binary: bun scripts/stage-native-addon.ts <outfile>
+ *   6. Compile bundled omp: bun build --compile --external omp-legacy-pi-modules --outfile <outdir>/omp-bundled <pi-coding-agent/dist/cli.js>
  *
  * In a `finally` block, restores packages/daemon/src/web-assets.ts to its tiny
  * tracked stub using `bun scripts/gen-web-assets.ts --stub`, so the multi-megabyte
@@ -76,6 +77,21 @@ try {
 
   // 5. Stage native addon beside binary
   runStep([process.execPath, join(repoRoot, "scripts", "stage-native-addon.ts"), outfile], "staging native addon");
+  // 6. Compile bundled omp beside binary
+  const bundledOmpOut = join(dirname(outfile), "omp-bundled");
+  runStep(
+    [
+      process.execPath,
+      "build",
+      "--compile",
+      "--external",
+      "omp-legacy-pi-modules",
+      "--outfile",
+      bundledOmpOut,
+      join(repoRoot, "node_modules", "@oh-my-pi", "pi-coding-agent", "dist", "cli.js"),
+    ],
+    `compiling bundled omp to ${bundledOmpOut}`,
+  );
 
   console.log(`[build-cli] successfully built ${outfile}`);
 } finally {
