@@ -6,6 +6,7 @@ export * from "./filesystem/index.ts";
 export * from "./gateway/index.ts";
 export * from "./home-id.ts";
 export * from "./hosts.ts";
+export * from "./omp-resolver.ts";
 export * from "./provisioner/index.ts";
 // The provisioner and the voice bridge each define a subprocess seam, and they
 // picked the same two names for genuinely different shapes: the provisioner's
