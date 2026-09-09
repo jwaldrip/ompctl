@@ -225,6 +225,11 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   fs_list: true,
   session_create: true,
   repo_clone: true,
+  provider_status: false,
+  provider_auth_start: true,
+  provider_auth_poll: false,
+  provider_disconnect: true,
+  provider_repos_list: true,
   // One-shot too, but a lost tail is not an instruction that silently did
   // not happen: nothing on the machine changes, and the surface that asked
   // asks again the next time it opens. Reporting it would put an error in
