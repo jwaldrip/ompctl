@@ -115,7 +115,7 @@ android {
         applicationId "ai.ompctl.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode Integer.parseInt(project.findProperty("OMPD_VERSION_CODE") ?: "1")
+        versionCode Integer.parseInt(project.findProperty("OMPD_BUILD_NUMBER") ?: project.findProperty("OMPD_VERSION_CODE") ?: "1")
         versionName project.findProperty("OMPD_VERSION_NAME") ?: "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Detox drives the app through its own instrumentation entry point and
