@@ -92,6 +92,12 @@ export interface ConsoleActions {
    */
   retryTui: (sessionId: string) => void;
   /**
+   * Deliberate takeover of a live terminal session after the operator confirmed
+   * that the terminal will lose control. Issues a resume claim; the daemon refuses
+   * if the terminal is still holding the session file.
+   */
+  takeOverSession: (sessionId: string) => void;
+  /**
    * Delete one session for good: its transcript leaves the machine. The
    * fleet's own refresh arrives as the daemon's pushed index rather than
    * from here, and a refusal arrives as a notice, because nothing on screen
@@ -902,6 +908,13 @@ export function useConsole(
           client.sessionTail(sessionId);
         } else {
           client.openCollab(sessionId);
+        }
+      },
+      takeOverSession(sessionId) {
+        const row = stateRef.current.sessionIndex.find(s => s.id === sessionId);
+        if (row?.cwd) {
+          requestSubagents(sessionId);
+          client.resumeSession(sessionId, row.cwd);
         }
       },
       deleteSession(sessionId) {
