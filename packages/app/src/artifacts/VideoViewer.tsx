@@ -68,10 +68,13 @@ export function VideoViewer({ artifact, style }: VideoViewerProps): JSX.Element 
     setIsPlaying(p => !p);
   }, []);
 
-  const handleScrub = useCallback((fraction: number) => {
-    const nextTime = Math.round(fraction * durationSec);
-    setCurrentTimeSec(nextTime);
-  }, [durationSec]);
+  const handleScrub = useCallback(
+    (fraction: number) => {
+      const nextTime = Math.round(fraction * durationSec);
+      setCurrentTimeSec(nextTime);
+    },
+    [durationSec],
+  );
 
   const handleOpenExternal = useCallback(() => {
     if (videoUri.length > 0) {
@@ -110,10 +113,7 @@ export function VideoViewer({ artifact, style }: VideoViewerProps): JSX.Element 
               color={rangeStatus === "honored" ? signal.ready : signal.holding}
               size={12}
             />
-            <Label
-              color={rangeStatus === "honored" ? signal.ready : signal.holding}
-              style={styles.badgeText}
-            >
+            <Label color={rangeStatus === "honored" ? signal.ready : signal.holding} style={styles.badgeText}>
               {rangeStatus === "honored" ? "Range: 206 Partial" : "Range: full stream"}
             </Label>
           </View>
