@@ -239,7 +239,11 @@ function accessRecorder(opts: { releaseFails?: boolean } = {}): AccessRecorder {
 
 const lifecycleWorkspace = realpathSync(mkdtempSync(join(tmpdir(), "ompd-lifecycle-ws-")));
 
-function backendWith(opts: { run: CommandRunner; modelAccess?: ModelAccessProvider; workspace?: string }): ContainerBackend {
+function backendWith(opts: {
+  run: CommandRunner;
+  modelAccess?: ModelAccessProvider;
+  workspace?: string;
+}): ContainerBackend {
   return new ContainerBackend({
     capability: APPLE_CAP,
     platform: "darwin",

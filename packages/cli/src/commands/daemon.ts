@@ -152,9 +152,7 @@ export async function startCommand(ctx: CliContext, cmd: Extract<Command, { kind
 
   const home = ctx.env.HOME ?? homedir();
   const isProtectedOrHome =
-    ctx.cwd === home ||
-    ctx.env.OMPD_MANAGED_PLIST === "1" ||
-    dangerousMountReason(ctx.cwd) !== null;
+    ctx.cwd === home || ctx.env.OMPD_MANAGED_PLIST === "1" || dangerousMountReason(ctx.cwd) !== null;
   const repoRoot = isProtectedOrHome ? undefined : ctx.cwd;
 
   const daemon = (ctx.createDaemon ?? ((opts: OmpdOptions) => new Ompd(opts)))({
