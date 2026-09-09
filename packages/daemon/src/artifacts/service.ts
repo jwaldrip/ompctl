@@ -44,10 +44,7 @@ export async function serveArtifactFile(
   }
 
   if (st.size > maxBytes) {
-    throw new ArtifactRefusal(
-      "file_too_large",
-      `file size ${st.size} bytes exceeds ceiling of ${maxBytes} bytes`,
-    );
+    throw new ArtifactRefusal("file_too_large", `file size ${st.size} bytes exceeds ceiling of ${maxBytes} bytes`);
   }
 
   const contentType = await sniffFileHead(realPath);
@@ -137,10 +134,7 @@ export async function serveArtifactFile(
  * documents, and other output artifacts, while omitting raw JSONL transcripts
  * and bash execution logs.
  */
-export async function listSessionArtifacts(
-  sessionFilePath: string,
-  sessionId: string,
-): Promise<ArtifactReference[]> {
+export async function listSessionArtifacts(sessionFilePath: string, sessionId: string): Promise<ArtifactReference[]> {
   const artifactDir = subagentDirFor(sessionFilePath);
   const artifacts: ArtifactReference[] = [];
 
