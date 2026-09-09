@@ -38,7 +38,6 @@ export interface StatsScreenProps {
 const RANGES = ["24h", "7d", "30d", "all"] as const;
 type Range = (typeof RANGES)[number];
 
-
 function formatCost(n: number): string {
   if (!Number.isFinite(n)) return "--";
   const digits = n > 0 && n < 0.01 ? 4 : 2;

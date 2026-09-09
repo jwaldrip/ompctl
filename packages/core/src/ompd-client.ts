@@ -27,7 +27,6 @@ import type {
   ApprovalScope,
   ApprovalSettledBy,
   ClientFrame,
-  DashboardStats,
   CloneId,
   CollabSignalFrame,
   CollabSignalInput,
@@ -36,6 +35,7 @@ import type {
   CollabVoiceNoteInput,
   CollabVoiceParticipant,
   ConnectorSummary,
+  DashboardStats,
   FsListing,
   ModelBrokerStatus,
   PlanReviewChoice,
@@ -724,7 +724,6 @@ export interface StatsEvent {
   range?: string;
 }
 
-
 /** The cowork container state, carrying model broker readiness. */
 export interface ContainerStateEvent {
   modelBroker: ModelBrokerStatus;
@@ -1242,7 +1241,6 @@ export class OmpdClient {
   readStats(range?: string): void {
     this.stats(range);
   }
-
 
   /** Read one structured page of a root or subagent's durable transcript. */
   sessionHistory(agentId: AgentId, sessionId: string, before?: number, limit?: number): void {

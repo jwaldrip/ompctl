@@ -3118,10 +3118,7 @@ export class Gateway {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
       const outcome = await this.#fetchDashboardStats(url.searchParams.get("range"));
       if (outcome.kind === "unavailable") {
-        return Response.json(
-          { error: "stats_unavailable", reason: outcome.reason },
-          { status: 503 },
-        );
+        return Response.json({ error: "stats_unavailable", reason: outcome.reason }, { status: 503 });
       }
       return Response.json(outcome.stats);
     }
@@ -6452,10 +6449,9 @@ export class Gateway {
     }
   }
 
-  async #fetchDashboardStats(range: string | null | undefined): Promise<
-    | { kind: "ok"; stats: DashboardStats }
-    | { kind: "unavailable"; reason: string }
-  > {
+  async #fetchDashboardStats(
+    range: string | null | undefined,
+  ): Promise<{ kind: "ok"; stats: DashboardStats } | { kind: "unavailable"; reason: string }> {
     if (this.#stats === undefined || !this.#stats.available) {
       return { kind: "unavailable", reason: statsUnavailableReason(this.#stats) };
     }

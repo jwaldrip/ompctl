@@ -3,9 +3,9 @@ import "./rnw.ts";
 import { describe, expect, test } from "bun:test";
 import type { DashboardStats } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
-import type { Connection } from "../src/platform/connection.ts";
 import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
+import type { Connection } from "../src/platform/connection.ts";
 
 const { StatsScreen } = await import("../src/screens/StatsScreen.tsx");
 const { StatusReadout } = await import("../src/components/StatusReadout.tsx");
@@ -218,7 +218,10 @@ describe("StatsScreen", () => {
         listeners.set(event, list);
         return () => {
           const cur = listeners.get(event) ?? [];
-          listeners.set(event, cur.filter(l => l !== listener));
+          listeners.set(
+            event,
+            cur.filter(l => l !== listener),
+          );
         };
       },
       emit: (event: string, payload: unknown) => {
@@ -238,11 +241,7 @@ describe("StatsScreen", () => {
 
     try {
       const mounted = mount(
-        <StatsScreen
-          connection={connection}
-          createClient={() => client as unknown as OmpdClient}
-          onBack={() => {}}
-        />,
+        <StatsScreen connection={connection} createClient={() => client as unknown as OmpdClient} onBack={() => {}} />,
       );
 
       expect(sent.length).toBeGreaterThan(0);
