@@ -1532,7 +1532,13 @@ export type ClientFrame =
    * Answered by `container_state`, to the asking socket only.
    */
   | { t: "container_state_read" }
-  | { t: "ping" };
+  | { t: "ping" }
+  /**
+   * Request aggregate dashboard stats (cost, tokens, latency across sessions).
+   * Answered by `stats`, to the asking socket only.
+   */
+  | { t: "stats"; range?: string }
+  | { t: "stats_read"; range?: string };
 
 export type ServerFrame =
   /**
@@ -1774,7 +1780,12 @@ export type ServerFrame =
   | { t: "session_stats"; sessionId: string; stats: SessionStats }
   /** A prompt submitted with `deliverAs: "followUp"` while a turn was in flight has been queued. */
   | { t: "prompt_queued"; agentId: AgentId; queued: number }
-  | { t: "pong" };
+  | { t: "pong" }
+  /**
+   * System-wide dashboard stats answering `stats` or `stats_read`, sent only
+   * to the socket that asked.
+   */
+  | { t: "stats"; stats: DashboardStats; range?: string };
 // Audit
 // ---------------------------------------------------------------------------
 

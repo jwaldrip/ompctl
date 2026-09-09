@@ -30,6 +30,7 @@ import {
   type CollabVoiceNoteFrame,
   type CollabVoiceParticipant,
   type ConnectorSummary,
+  type DashboardStats,
   type EndpointOffer,
   isRecord,
   type McpAuthState,
@@ -3115,14 +3116,14 @@ export class Gateway {
 
     if (path === "/v1/stats" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
-      if (this.#stats === undefined || !this.#stats.available) {
+      const outcome = await this.#fetchDashboardStats(url.searchParams.get("range"));
+      if (outcome.kind === "unavailable") {
         return Response.json(
-          { error: "stats_unavailable", reason: statsUnavailableReason(this.#stats) },
+          { error: "stats_unavailable", reason: outcome.reason },
           { status: 503 },
         );
       }
-      const stats = await this.#stats.getDashboardStats(url.searchParams.get("range"));
-      return Response.json(stats);
+      return Response.json(outcome.stats);
     }
 
     const sessionStatsRoute = /^\/v1\/sessions\/([^/]+)\/stats$/.exec(path);
@@ -4638,6 +4639,16 @@ export class Gateway {
           return;
         }
         void this.#serveSessionArtifactsFrame(ws, artifactsIndex, frame.sessionId);
+        return;
+      }
+
+      case "stats":
+      case "stats_read": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "stats requires read scope" });
+          return;
+        }
+        void this.#serveStatsFrame(ws, typeof frame.range === "string" ? frame.range : undefined);
         return;
       }
 
@@ -6437,6 +6448,38 @@ export class Gateway {
         sessionId,
         code: "session_artifacts_failed",
         message: err instanceof Error ? err.message : "session artifacts failed",
+      });
+    }
+  }
+
+  async #fetchDashboardStats(range: string | null | undefined): Promise<
+    | { kind: "ok"; stats: DashboardStats }
+    | { kind: "unavailable"; reason: string }
+  > {
+    if (this.#stats === undefined || !this.#stats.available) {
+      return { kind: "unavailable", reason: statsUnavailableReason(this.#stats) };
+    }
+    const stats = await this.#stats.getDashboardStats(range ?? null);
+    return { kind: "ok", stats };
+  }
+
+  async #serveStatsFrame(ws: GatewaySocket, range: string | undefined): Promise<void> {
+    try {
+      const outcome = await this.#fetchDashboardStats(range);
+      if (outcome.kind === "unavailable") {
+        this.#send(ws, {
+          t: "error",
+          code: "stats_unavailable",
+          message: outcome.reason,
+        });
+        return;
+      }
+      this.#send(ws, { t: "stats", stats: outcome.stats, ...(range ? { range } : {}) });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        code: "stats_failed",
+        message: err instanceof Error ? err.message : "failed to load stats",
       });
     }
   }

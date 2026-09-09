@@ -27,6 +27,7 @@ import type {
   ApprovalScope,
   ApprovalSettledBy,
   ClientFrame,
+  DashboardStats,
   CloneId,
   CollabSignalFrame,
   CollabSignalInput,
@@ -232,6 +233,8 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   session_tail: false,
   session_subagents: false,
   session_stats: false,
+  stats: false,
+  stats_read: false,
   session_history: false,
   session_artifacts: false,
   // A snapshot ask, same class as `session_tail`: nothing on the machine
@@ -716,6 +719,11 @@ export interface SessionStatsEvent {
   sessionId: string;
   stats: SessionStats;
 }
+export interface StatsEvent {
+  stats: DashboardStats;
+  range?: string;
+}
+
 
 /** The cowork container state, carrying model broker readiness. */
 export interface ContainerStateEvent {
@@ -772,6 +780,7 @@ export interface ClientEventMap {
   session_stats: SessionStatsEvent;
   agent_config: AgentConfigEvent;
   prompt_queued: PromptQueuedEvent;
+  stats: StatsEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -1222,6 +1231,18 @@ export class OmpdClient {
     };
     this.send(frame);
   }
+  /** Request aggregate dashboard stats. The answer arrives as the stats event. */
+  stats(range?: string): void {
+    this.send({
+      t: "stats",
+      ...(range === undefined ? {} : { range }),
+    });
+  }
+
+  readStats(range?: string): void {
+    this.stats(range);
+  }
+
 
   /** Read one structured page of a root or subagent's durable transcript. */
   sessionHistory(agentId: AgentId, sessionId: string, before?: number, limit?: number): void {
@@ -1840,6 +1861,12 @@ export class OmpdClient {
         this.emit("session_stats", {
           sessionId: frame.sessionId,
           stats: frame.stats,
+        });
+        return;
+      case "stats":
+        this.emit("stats", {
+          stats: frame.stats,
+          ...(frame.range === undefined ? {} : { range: frame.range }),
         });
         return;
       case "session_history":
