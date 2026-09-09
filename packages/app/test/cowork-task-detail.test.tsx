@@ -105,4 +105,41 @@ describe("TaskDetail failed state and retry", () => {
     root.unmount();
     host.remove();
   });
+
+  test("CoworkScreen preserves the failed task's agentId on retry rather than silently dropping it", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    const startedTasks: Array<{ title: string; prompt: string; agentId?: string }> = [];
+    const tasksState = reduceTasks(EMPTY_TASKS, { t: "upsert", task: FAILED_TASK });
+
+    act(() => {
+      root.render(
+        <CoworkScreen
+          tasks={tasksState}
+          skills={[]}
+          connectors={[]}
+          onStartTask={input => startedTasks.push(input as unknown as { title: string; prompt: string; agentId?: string })}
+          onInvokeSkill={() => {}}
+          onOpenSession={() => {}}
+        />,
+      );
+    });
+
+    const taskCard = host.querySelector(`[data-testid="task-${FAILED_TASK.id}"]`) as HTMLElement;
+    act(() => {
+      taskCard.click();
+    });
+
+    const retryBtn = host.querySelector('[data-testid="task-detail-retry"]') as HTMLElement;
+    act(() => {
+      retryBtn.click();
+    });
+
+    expect(startedTasks[0]?.agentId).toBe(FAILED_TASK.agentId);
+
+    root.unmount();
+    host.remove();
+  });
 });

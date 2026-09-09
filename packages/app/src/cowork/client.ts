@@ -41,16 +41,17 @@ export interface AgentCreateRequest {
   name: string;
   cwd: string;
   host: WireHostSpec;
+  requestId?: string;
 }
 
 export interface CoworkClient {
   connectionState: ConnectionState;
-  readSkills(cwd?: string, agentId?: string): void;
-  readConnectors(cwd?: string, agentId?: string): void;
-  readTasks(): void;
-  createTask(input: NewTaskInput & { agentId: AgentId }): void;
-  cancelTask(taskId: string): void;
-  createAgent(request: AgentCreateRequest): void;
+  readSkills(cwd?: string, agentId?: string, requestId?: string): void;
+  readConnectors(cwd?: string, agentId?: string, requestId?: string): void;
+  readTasks(agentId?: string, requestId?: string): void;
+  createTask(input: NewTaskInput & { agentId: AgentId }, requestId?: string): void;
+  cancelTask(taskId: string, requestId?: string): void;
+  createAgent(request: AgentCreateRequest, requestId?: string): void;
   readContainerState?(): void;
   on(name: "skills", listener: (event: SkillsEvent) => void): () => void;
   on(name: "connectors", listener: (event: ConnectorsEvent) => void): () => void;

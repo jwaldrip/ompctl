@@ -115,4 +115,117 @@ describe("Cowork empty catalogue and sidebar absence states", () => {
     root.unmount();
     host.remove();
   });
+
+  test("refused skills view shows refusal notice, head says 'Skills unavailable', and never 'No skills installed'", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(
+        <SkillsView
+          skills={[]}
+          onInvoke={() => {}}
+          status="refused"
+          refusal="skills_read requires read scope"
+        />,
+      );
+    });
+
+    const refused = host.querySelector('[data-testid="cowork-skills-refused"]');
+    expect(refused).not.toBeNull();
+    expect(refused?.textContent).toContain("skills_read requires read scope");
+
+    const count = host.querySelector('[data-testid="skills-count"]');
+    expect(count?.textContent).toBe("Skills unavailable");
+    expect(host.textContent).not.toContain("No skills installed");
+
+    root.unmount();
+    host.remove();
+  });
+
+  test("refused connectors view shows refusal notice, head says 'Connectors unavailable', and never 'No connectors installed'", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(
+        <ConnectorsView
+          connectors={[]}
+          status="refused"
+          refusal="connectors_read requires read scope"
+        />,
+      );
+    });
+
+    const refused = host.querySelector('[data-testid="cowork-connectors-refused"]');
+    expect(refused).not.toBeNull();
+    expect(refused?.textContent).toContain("connectors_read requires read scope");
+
+    const count = host.querySelector('[data-testid="connectors-count"]');
+    expect(count?.textContent).toBe("Connectors unavailable");
+    expect(host.textContent).not.toContain("No connectors installed");
+
+    root.unmount();
+    host.remove();
+  });
+
+  test("refused plugins view shows refusal notice and names what failed", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(
+        <PluginsView
+          skills={[]}
+          connectors={[]}
+          skillsRefusal="skills catalogue failed"
+        />,
+      );
+    });
+
+    const refused = host.querySelector('[data-testid="cowork-plugins-refused"]');
+    expect(refused).not.toBeNull();
+    expect(refused?.textContent).toContain("Skills: skills catalogue failed");
+
+    const count = host.querySelector('[data-testid="plugins-count"]');
+    expect(count?.textContent).toBe("Plugins unavailable");
+    expect(host.textContent).not.toContain("No plugins installed");
+
+    root.unmount();
+    host.remove();
+  });
+
+  test("refused task sidebar shows refusal notice, head says 'Tasks unavailable', and never 'No tasks'", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(
+        <TaskSidebar
+          tasks={{ inFlight: [], recent: [] }}
+          skills={[]}
+          selectedTaskId={null}
+          onSelectTask={() => {}}
+          onStartTask={() => {}}
+          status="refused"
+          refusal="tasks_read requires read scope"
+        />,
+      );
+    });
+
+    const refused = host.querySelector('[data-testid="cowork-tasks-refused"]');
+    expect(refused).not.toBeNull();
+    expect(refused?.textContent).toContain("tasks_read requires read scope");
+
+    const count = host.querySelector('[data-testid="task-sidebar-count"]');
+    expect(count?.textContent).toBe("Tasks unavailable");
+    expect(host.textContent).not.toContain("No tasks");
+
+    root.unmount();
+    host.remove();
+  });
 });
