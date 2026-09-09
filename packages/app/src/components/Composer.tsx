@@ -66,10 +66,11 @@ import { useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
+import { Label } from "../design/text.tsx";
 import { ground, ink, radius, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { ImageAttachmentPicker } from "../platform/attachments.ts";
+import type { SessionVoice } from "../screens/SessionScreen.tsx";
 import { AttachmentControl, AttachmentsBar, useImageAttachments } from "./AttachmentsBar.tsx";
-
 export interface ComposerProps {
   /**
    * The testID every control on this surface is prefixed with, so one screen's
@@ -105,6 +106,8 @@ export interface ComposerProps {
    * when there is some. Nothing permanent belongs here.
    */
   notes?: ReactNode;
+  /** The composer's voice path: scope posture, capabilities, dictation, toggle. */
+  voice?: SessionVoice;
 }
 
 export function Composer({
@@ -118,6 +121,7 @@ export function Composer({
   onCancel,
   actions,
   notes,
+  voice,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState("");
   const [images, setImages] = useState<PromptImage[]>([]);
@@ -129,6 +133,48 @@ export function Composer({
   const canSend = enabled && !(busy && interruptible) && (trimmed.length > 0 || images.length > 0);
   const stopping = busy && interruptible;
 
+  const micGate = !voice
+    ? null
+    : !voice.mic.available
+      ? "unavailable"
+      : voice.access === "missing"
+        ? "scope"
+        : voice.busyElsewhere
+          ? "busy"
+          : !enabled
+            ? "offline"
+            : "ready";
+  const micDisabled = micGate !== "ready" && !voice?.capturing;
+  const micStatus = !voice
+    ? null
+    : !voice.mic.available
+      ? voice.mic.reason
+      : voice.access === "missing"
+        ? prefix === "terminal-composer"
+          ? "This device does not hold the prompt scope. Pair it again with prompt access to steer this terminal."
+          : "This device does not hold the prompt scope. Pair it again with prompt access to speak to this agent."
+        : voice.busyElsewhere
+          ? "The microphone is already open in another session."
+          : !enabled
+            ? "No link"
+            : voice.capturing
+              ? "Recording"
+              : voice.speech.available
+                ? prefix === "terminal-composer"
+                  ? "Tap to speak; the terminal answers out loud."
+                  : "Tap to speak; the agent answers out loud."
+                : voice.speech.reason;
+  const micNotice = micGate === "ready" && !voice?.capturing && voice?.speech.available ? null : micStatus;
+  const micTone = voice?.capturing ? signal.working : micDisabled ? ink.faint : ink.plain;
+
+  const isRecording = voice?.capturing ?? false;
+  const isRefusalNotice =
+    micNotice !== null &&
+    (voice?.access === "missing" ||
+      voice?.busyElsewhere ||
+      !enabled ||
+      micNotice === "no microphone in this test" ||
+      !voice?.mic.available);
   const send = (): void => {
     if (!canSend) return;
     try {
@@ -182,8 +228,25 @@ export function Composer({
           is something to say, so it costs no height in the ordinary case.
         */}
         <AttachmentsBar band={band} prefix={prefix} />
+        {voice ? (
+          <View style={styles.voiceNotes} testID={`${prefix}-voice-notes`}>
+            {isRecording ? (
+              <Label color={ink.plain} testID={`${prefix}-mic-status`}>
+                Recording
+              </Label>
+            ) : isRefusalNotice ? (
+              <Label color={ink.plain} testID={`${prefix}-mic-status`}>
+                {micNotice}
+              </Label>
+            ) : null}
+            {voice.dictation === null ? null : (
+              <Label color={ink.bright} testID={`${prefix}-dictation`}>
+                {voice.dictation.final ? voice.dictation.text : `${voice.dictation.text} ...`}
+              </Label>
+            )}
+          </View>
+        ) : null}
         {notes}
-
         {/*
           The action row: one row, two ends. Left is what adds to the prompt,
           right is what acts on it. `space-between` rather than a spacer view,
@@ -197,6 +260,32 @@ export function Composer({
 
           <View style={styles.group} testID={`${prefix}-actions-right`}>
             {actions}
+            {voice ? (
+              <Pressable
+                testID={`${prefix}-mic`}
+                accessibilityRole="button"
+                disabled={micDisabled}
+                accessibilityLabel={
+                  voice.capturing
+                    ? "Stop the microphone and send"
+                    : micNotice !== null
+                      ? micNotice
+                      : prefix === "terminal-composer"
+                        ? "Speak to this terminal"
+                        : "Speak to this agent"
+                }
+                accessibilityHint={micStatus ?? undefined}
+                accessibilityState={{ disabled: micDisabled, selected: voice.capturing }}
+                onPress={voice.onToggle}
+                style={({ pressed }) => [
+                  styles.micTarget,
+                  voice.capturing && styles.micCapturing,
+                  pressed && !micDisabled && styles.micPressed,
+                ]}
+              >
+                <Glyph name="mic" size={15} color={micTone} />
+              </Pressable>
+            ) : null}
             {stopping ? (
               <Pressable
                 testID={`${prefix}-cancel`}
@@ -258,6 +347,24 @@ const styles = StyleSheet.create({
   // Each end of the row. `flexShrink` so a long right group gives way rather
   // than pushing the paperclip off the left edge of a narrow phone.
   group: { flexDirection: "row", alignItems: "center", gap: space.tight, flexShrink: 1 },
+  micTarget: {
+    width: TOUCH_TARGET,
+    height: TOUCH_TARGET,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  micCapturing: {
+    backgroundColor: ground.active,
+  },
+  micPressed: {
+    backgroundColor: ground.active,
+  },
+  voiceNotes: {
+    paddingHorizontal: space.step,
+    paddingTop: space.tight,
+    gap: space.hair,
+  },
   // Borderless, transparent, and side-padded by the surface: a field with its
   // own edge is a box inside a box, which is the defect this file exists to
   // stop. `minHeight` keeps a tap anywhere in the empty box landing on the

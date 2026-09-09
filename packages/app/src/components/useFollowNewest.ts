@@ -104,12 +104,11 @@ export function isNearBottom(offset: number, contentLength: number, viewportLeng
  */
 export interface ScrollsToEnd {
   scrollToEnd(options?: { animated?: boolean }): void;
+  getScrollableNode?(): unknown;
 }
-
-/** What a list spreads onto itself to follow its newest entry. */
 export interface FollowNewest {
   ref: (list: ScrollsToEnd | null) => void;
-  onContentSizeChange: () => void;
+  onContentSizeChange: (width?: number, height?: number) => void;
   onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   scrollEventThrottle: number;
 }
@@ -125,37 +124,63 @@ export function createFollower(): FollowNewest {
   let list: ScrollsToEnd | null = null;
   let painted = false;
   let nearBottom = true;
+  let targetBottomHeight = 0;
 
   return {
     ref: (next: ScrollsToEnd | null): void => {
       list = next;
       // A remount is a fresh surface: the next paint pins again rather than
       // inheriting a reading position from the list that just went away.
-      if (next === null) painted = false;
+      if (next === null) {
+        painted = false;
+        nearBottom = true;
+        targetBottomHeight = 0;
+      }
     },
 
     onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>): void => {
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-      nearBottom = isNearBottom(contentOffset.y, contentSize.height, layoutMeasurement.height);
+      const atCurrentBottom = isNearBottom(contentOffset.y, contentSize.height, layoutMeasurement.height);
+      const atTargetBottom =
+        targetBottomHeight > 0 && isNearBottom(contentOffset.y, targetBottomHeight, layoutMeasurement.height);
+      nearBottom = atCurrentBottom || atTargetBottom;
+      if (atCurrentBottom) {
+        targetBottomHeight = 0;
+      }
     },
 
-    onContentSizeChange: (): void => {
+    onContentSizeChange: (_width?: number, height?: number): void => {
       // The first paint has no reading position to protect; every later growth
       // follows only from the bottom, which is what leaves a prepend alone.
       if (painted && !nearBottom) return;
       painted = true;
+      if (typeof height === "number" && height > 0) {
+        targetBottomHeight = height;
+      }
       try {
-        // Never animated. This runs on the first paint and on every arriving
-        // entry of a streaming turn, where an animation would be a permanent
-        // slide rather than a transition.
+        // In web / DOM environments, VirtualizedList.scrollToEnd approximates
+        // metrics for unmeasured rows, landing hundreds of points short of the
+        // real end. Setting scrollTop directly on the scrollable node pins to
+        // the exact floor, and scrollToEnd updates the virtualizer's window.
+        const node =
+          typeof list?.getScrollableNode === "function" ? (list.getScrollableNode() as HTMLElement | null) : null;
+        if (node && typeof node.scrollTop === "number" && typeof node.scrollHeight === "number") {
+          node.scrollTop = node.scrollHeight - node.clientHeight;
+        }
         list?.scrollToEnd({ animated: false });
+        if (node && typeof node.scrollTop === "number" && typeof node.scrollHeight === "number") {
+          requestAnimationFrame(() => {
+            if (nearBottom && node) {
+              node.scrollTop = node.scrollHeight - node.clientHeight;
+            }
+          });
+        }
       } catch {
         // A host with no real scroller has nothing to scroll, and the newest
         // entry is already the last thing drawn. A missing scroller must not
         // take the surface down with it.
       }
     },
-
     scrollEventThrottle: SCROLL_EVENT_THROTTLE_MS,
   };
 }

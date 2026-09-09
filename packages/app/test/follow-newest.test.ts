@@ -124,6 +124,25 @@ describe("following the newest entry", () => {
     reattached.follow.onContentSizeChange();
     expect(reattached.ends).toBe(1);
   });
+  test("progressive layout expansion during open keeps follower pinned at newest entry", () => {
+    const f = follower();
+    f.follow.onContentSizeChange(390, 4523);
+    f.follow.onScroll(scrollTo(3996, 4523, 527));
+
+    f.follow.onContentSizeChange(390, 7593);
+    f.follow.onScroll(scrollTo(7066, 7593, 527));
+
+    f.follow.onContentSizeChange(390, 10905);
+    f.follow.onScroll(scrollTo(10371, 10905, 527));
+
+    // An interim scroll event fires at previous target while content is already at the new height
+    f.follow.onContentSizeChange(390, 11659);
+    f.follow.onScroll(scrollTo(11132, 12640, 527));
+
+    // Final layout measurement arrives
+    f.follow.onContentSizeChange(390, 12640);
+    expect(f.ends).toBe(5);
+  });
 });
 
 describe("one notion of follow", () => {

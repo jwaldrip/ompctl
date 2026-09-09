@@ -198,7 +198,8 @@ function mountShell(rows: readonly SessionSummary[] = [summary("sess_live")]): S
   });
 
   const el = (testID: string): HTMLElement | null => {
-    const found = host.querySelector(`[data-testid="${testID}"]`);
+    const found =
+      host.querySelector(`[data-testid="${testID}"]`) ?? document.querySelector(`[data-testid="${testID}"]`);
     return found instanceof HTMLElement ? found : null;
   };
 
@@ -356,24 +357,69 @@ describe("the stack opens on the fleet and comes back to it", () => {
       shell.unmount();
     }
   });
+
+  test("the config route does not issue a resume for a session with no agent", () => {
+    const shell = mountShell([summary("sess_tui", { status: "live-tui", cwd: "/work" })]);
+    try {
+      // Roster has no agents
+      expect(shell.client.resumes).toEqual([]);
+
+      // Opening a non-agent session into terminal view
+      shell.press("session-open-sess_tui");
+      expect(shell.el("terminal-session")).not.toBeNull();
+
+      // Config route must never be triggered to resume a session without an agent
+      expect(shell.client.resumes).toEqual([]);
+    } finally {
+      shell.unmount();
+    }
+  });
+
+  test("confirmed takeover action on a live-tui session requires confirmation before resuming", () => {
+    const shell = mountShell([summary("sess_live", { status: "live-tui", cwd: "/work" })]);
+    try {
+      shell.press("session-open-sess_live");
+      expect(shell.el("terminal-session")).not.toBeNull();
+
+      // Trigger takeover on the live terminal session
+      shell.press("terminal-takeover-button");
+      expect(shell.el("takeover-dialog")).not.toBeNull();
+      expect(shell.el("takeover-warning")).not.toBeNull();
+
+      // Before confirmation, no resume has been issued:
+      expect(shell.client.resumes).toEqual([]);
+
+      // Confirm takeover:
+      shell.press("takeover-confirm");
+      expect(shell.client.resumes).toEqual([{ sessionId: "sess_live", cwd: "/work" }]);
+
+      // Cancelling takeover closes the dialog without issuing another resume:
+      shell.press("terminal-takeover-button");
+      expect(shell.el("takeover-dialog")).not.toBeNull();
+      shell.press("takeover-cancel");
+      expect(shell.el("takeover-dialog")).toBeNull();
+      expect(shell.client.resumes).toEqual([{ sessionId: "sess_live", cwd: "/work" }]);
+    } finally {
+      shell.unmount();
+    }
+  });
 });
 
 describe("the system insets are honoured at both edges", () => {
   const NOTCH = { top: 47, right: 0, bottom: 34, left: 0 };
 
-  test("the fleet route clears the status bar with its header and the home indicator with its own shell", () => {
+  test("the fleet route clears the status bar with its header while the list pays the bottom inset", () => {
     setSafeAreaInsets(NOTCH);
     const shell = mountShell();
     try {
       const surface = shell.el("fleet-surface");
-      // The bottom edge belongs to the screen: the list must not scroll under
-      // the home indicator, which is where "Connections" sat on his phone.
-      expect(padding(surface).bottom).toBe(`${NOTCH.bottom}px`);
+      // The fleet shell declines the bottom edge so the list runs to the screen
+      // edge. Content padding on the list ensures rows clear the home indicator.
+      expect(padding(surface).bottom).toBe("0px");
       // The top edge belongs to the header, which is drawn inside the inset. The
       // screen must NOT add it again, or the list starts 47pt below a header
       // that already cleared the notch: that gap is the dead band he reported.
       expect(padding(surface).top).toBe("0px");
-
       // What the header spends the inset on: a status bar spacer exactly its
       // height, above the bar's own content. Asserting the header height itself
       // would be asserting React Navigation's default bar height; asserting the
@@ -415,17 +461,17 @@ describe("the system insets are honoured at both edges", () => {
     }
   });
 
-  test("the phone list still pays the home indicator through its shell, not the list content", () => {
-    // The default 390x844 window keeps the single-pane layout, where the
-    // fleet shell pays the bottom edge and the list content pays nothing, so
-    // nothing double counts on either edge.
+  test("the phone list pays the home indicator as list content, never as surface padding", () => {
+    // On a phone with a home indicator, the fleet shell declines the bottom
+    // edge so the list can scroll all the way through the inset. The list's
+    // content container pays the bottom inset, avoiding a dead band.
     setSafeAreaInsets(NOTCH);
     const shell = mountShell();
     try {
       const surface = shell.el("fleet-surface");
-      expect(padding(surface).bottom).toBe(`${NOTCH.bottom}px`);
+      expect(padding(surface).bottom).toBe("0px");
       const listContent = fleetListContent(shell);
-      expect(listContent.style.paddingBottom === "" || listContent.style.paddingBottom === "0px").toBe(true);
+      expect(listContent.style.paddingBottom).toBe(`${NOTCH.bottom}px`);
     } finally {
       shell.unmount();
     }
