@@ -34,6 +34,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GuestModelAccess } from "../provisioner/guest-config.ts";
 import type { GuestBridge, ModelAccessProvider } from "../provisioner/types.ts";
@@ -83,6 +84,71 @@ const DEFAULT_GRANT_TTL_MS = 24 * 60 * 60 * 1_000;
  * part of a provider or model name.
  */
 const THINKING_LEVEL = /:[^:/]+$/;
+
+/**
+ * What the host's own model choice came to.
+ *
+ * A value rather than a throw, because two callers want opposite things from
+ * the same question. `grant` wants a refusal that ends the provision and names
+ * every handle an operator can reach. A readiness check wants an answer it can
+ * put on a screen, before any container exists, without spawning anything and
+ * without throwing.
+ *
+ * They used to be one code path reachable only from `grant`, and that is the
+ * whole defect: `#resolvedModel` was assigned during provisioning, readiness
+ * read that field, and provisioning was gated on readiness. On a host whose
+ * `modelRoles.default` resolves perfectly well, Cowork reported "no model
+ * configured for container agents" and disabled the only button that would
+ * have resolved it.
+ */
+type HostModel =
+  | { ok: true; model: string }
+  | { ok: false; kind: "unreadable" | "invalid" | "unset" | "level-only"; detail: string };
+
+/**
+ * Read `modelRoles.default` out of the host's omp config.
+ *
+ * Synchronous, and read at the point of use rather than cached at construction.
+ * A value cached when the daemon started goes stale in the one direction that
+ * matters: an operator who selects a model in omp would go on being told the
+ * broker is not ready until they restarted a daemon they have no reason to
+ * suspect. This is a small YAML file on local disk, read on an
+ * operator-initiated path.
+ */
+function hostModel(path: string): HostModel {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    return { ok: false, kind: "unreadable", detail: reasonOf(err) };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = Bun.YAML.parse(text);
+  } catch (err) {
+    return { ok: false, kind: "invalid", detail: reasonOf(err) };
+  }
+
+  // Narrowed a step at a time rather than asserted, because this is a file a
+  // human edits: every level of it can legitimately be absent, and a wrong
+  // guess about its shape here is a container that cannot answer.
+  let candidate: unknown;
+  if (typeof parsed === "object" && parsed !== null && "modelRoles" in parsed) {
+    const roles: unknown = parsed.modelRoles;
+    if (typeof roles === "object" && roles !== null && "default" in roles) candidate = roles.default;
+  }
+  // Only the plain string form. omp also accepts a per-role object carrying
+  // fallbacks, and picking one member out of that would be guessing which of
+  // several models the operator meant to give away to a container.
+  if (typeof candidate !== "string" || candidate.trim() === "") {
+    return { ok: false, kind: "unset", detail: "" };
+  }
+
+  const model = candidate.trim().replace(THINKING_LEVEL, "");
+  if (model === "") return { ok: false, kind: "level-only", detail: candidate.trim() };
+  return { ok: true, model };
+}
 
 /**
  * The two lifecycle events this class records.
@@ -187,9 +253,6 @@ export class DaemonModelAccess implements ModelAccessProvider {
    * container's life.
    */
   #gatewayUrl = "";
-
-  /** The last model actually resolved, so `status` can answer without I/O. */
-  #resolvedModel: string | null = null;
 
   constructor(opts: DaemonModelAccessOptions) {
     this.#configDir = opts.configDir;
@@ -523,34 +586,78 @@ export class DaemonModelAccess implements ModelAccessProvider {
   }
 
   /**
-   * What `ompd doctor` reports. Field reads only: no I/O, no spawn, no throw, so
-   * it is safe to call on a daemon whose model access has never been used or has
-   * already failed.
+   * What `ompd doctor` reports. No spawn and no throw, so it is safe to call on
+   * a daemon whose model access has never been used or has already failed.
+   *
+   * `model` is what a grant would allowlist if one were minted now, which on an
+   * unset `containerModel` means reading the host's own choice off disk. It
+   * used to be the last model a grant had already resolved, so `ompd doctor`
+   * reported no model at all until the first container had run.
    */
   status(): ModelAccessStatus {
     let liveGrants = 0;
     for (const broker of this.#brokers.values()) liveGrants += broker.liveGrants();
+    const resolvable = this.#currentModel();
     return {
       enabled: this.#enabled,
-      model: this.#configuredModel() ?? this.#resolvedModel,
+      model: resolvable.ok ? resolvable.model : null,
       gatewayUrl: this.#services.status().gatewayUrl,
       liveGrants,
     };
   }
 
   /**
-   * The model broker's readiness and precondition status for cowork containers.
-   * Field reads only: safe to call any time.
+   * Whether a container agent could be granted a model right now, and what an
+   * operator has to do when it could not.
+   *
+   * Every reason names the action, because this string is rendered verbatim on
+   * a phone: "no model configured for container agents" is true, unactionable,
+   * and was being shown to an operator whose omp config held a perfectly good
+   * default.
    */
   modelBrokerState(): { ready: boolean; reason: string | null } {
     if (!this.#enabled) {
-      return { ready: false, reason: "container model access is disabled" };
+      return {
+        ready: false,
+        reason: `container model access is disabled. Set \`${ENABLED_KEY}\` to true in ompd's config.json to allow it.`,
+      };
     }
-    const model = this.#configuredModel() ?? this.#resolvedModel;
-    if (!model) {
-      return { ready: false, reason: "no model configured for container agents" };
+    const resolvable = this.#currentModel();
+    if (resolvable.ok) return { ready: true, reason: null };
+
+    const path = join(this.#configDir, HOST_CONFIG_RELATIVE);
+    switch (resolvable.kind) {
+      case "invalid":
+        return { ready: false, reason: `${path} is not valid YAML, so no default model could be read from it.` };
+      case "level-only":
+        return {
+          ready: false,
+          reason: `\`modelRoles.default\` in ${path} is only a thinking level (${resolvable.detail}) and names no model. Set a provider-qualified model id there, or set \`${MODEL_KEY}\` in ompd's config.json.`,
+        };
+      default:
+        return {
+          ready: false,
+          reason: `no model to grant a container agent. Select a default model in omp, or set \`${MODEL_KEY}\` in ompd's config.json to a provider-qualified id such as "anthropic/claude-haiku-4-5".`,
+        };
     }
-    return { ready: true, reason: null };
+  }
+
+  /**
+   * The model a grant would allowlist right now, or why none resolves.
+   *
+   * The single place both readiness and provisioning ask, so the screen that
+   * gates a container start and the grant that follows it cannot hold two
+   * different opinions about whether this host has a model to give.
+   *
+   * The configured key wins, then the host's live config. The last resolved
+   * model is deliberately not consulted: a grant re-resolves every time, so
+   * reporting a stale success would claim readiness for a model the next grant
+   * would refuse to mint.
+   */
+  #currentModel(): HostModel {
+    const configured = this.#configuredModel();
+    if (configured !== null) return { ok: true, model: configured };
+    return hostModel(join(this.#configDir, HOST_CONFIG_RELATIVE));
   }
 
   /**
@@ -637,64 +744,41 @@ export class DaemonModelAccess implements ModelAccessProvider {
    * would produce a container pointed at a model the operator's gateway may hold
    * no credential for, which fails at the first prompt with a message about the
    * model rather than about the missing configuration.
+   *
+   * The reading itself is `#currentModel`, shared with the readiness check.
+   * What stays here is the refusal: which key was unset, which file was read,
+   * and what to set. A readiness surface renders one sentence; a provision that
+   * failed gets all of it.
    */
   async #resolveModel(network: string | null): Promise<string> {
-    const configured = this.#configuredModel();
-    if (configured !== null) {
-      this.#resolvedModel = configured;
-      return configured;
-    }
+    const resolvable = this.#currentModel();
+    if (resolvable.ok) return resolvable.model;
 
     const path = join(this.#configDir, HOST_CONFIG_RELATIVE);
-    let text: string;
-    try {
-      text = await Bun.file(path).text();
-    } catch (err) {
+    if (resolvable.kind === "unreadable") {
       this.#fail("model.grant", { model: null, network }, [
         `no model could be resolved for a container agent: \`${MODEL_KEY}\` is unset in the daemon config and the`,
-        `host's own choice could not be read from ${path} (${reasonOf(err)}). Set \`${MODEL_KEY}\` to a`,
+        `host's own choice could not be read from ${path} (${resolvable.detail}). Set \`${MODEL_KEY}\` to a`,
         `provider-qualified model id such as "anthropic/claude-haiku-4-5", or select a model in omp.`,
       ]);
     }
-
-    let parsed: unknown;
-    try {
-      parsed = Bun.YAML.parse(text);
-    } catch (err) {
+    if (resolvable.kind === "invalid") {
       this.#fail("model.grant", { model: null, network }, [
         `no model could be resolved for a container agent: \`${MODEL_KEY}\` is unset in the daemon config and`,
-        `${path} is not valid YAML (${reasonOf(err)}).`,
+        `${path} is not valid YAML (${resolvable.detail}).`,
       ]);
     }
-
-    // Narrowed a step at a time rather than asserted, because this is a file a
-    // human edits: every level of it can legitimately be absent, and a wrong
-    // guess about its shape here is a container that cannot answer.
-    let candidate: unknown;
-    if (typeof parsed === "object" && parsed !== null && "modelRoles" in parsed) {
-      const roles: unknown = parsed.modelRoles;
-      if (typeof roles === "object" && roles !== null && "default" in roles) candidate = roles.default;
-    }
-    // Only the plain string form. omp also accepts a per-role object carrying
-    // fallbacks, and picking one member out of that would be guessing which of
-    // several models the operator meant to give away to a container.
-    if (typeof candidate !== "string" || candidate.trim() === "") {
-      this.#fail("model.grant", { model: null, network }, [
-        `no model could be resolved for a container agent: \`${MODEL_KEY}\` is unset in the daemon config and`,
-        `\`modelRoles.default\` in ${path} is not set to a model id. Set either one; a provider-qualified id such`,
-        `as "anthropic/claude-haiku-4-5" is the form the gateway matches.`,
-      ]);
-    }
-
-    const model = candidate.trim().replace(THINKING_LEVEL, "");
-    if (model === "") {
+    if (resolvable.kind === "level-only") {
       this.#fail("model.grant", { model: null, network }, [
         `\`modelRoles.default\` in ${path} is only a thinking level and names no model. Set it to a`,
         `provider-qualified model id, or set \`${MODEL_KEY}\` in the daemon config.`,
       ]);
     }
-    this.#resolvedModel = model;
-    return model;
+    this.#fail("model.grant", { model: null, network }, [
+      `no model could be resolved for a container agent: \`${MODEL_KEY}\` is unset in the daemon config and`,
+      `\`modelRoles.default\` in ${path} is not set to a model id. Set either one; a provider-qualified id such`,
+      `as "anthropic/claude-haiku-4-5" is the form the gateway matches.`,
+    ]);
   }
 
   /** The daemon's own `containerModel`, or null when it is unset. */

@@ -57,12 +57,18 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LocalHost, SpawnLocalHostOptions } from "@ompd/acp";
 import { spawnLocalHost } from "@ompd/acp";
-import { type HostKind, type HostMount, type HostSpec, resolveMountPath } from "@ompd/core";
+import {
+  type ContainerRuntimeStatus,
+  type HostKind,
+  type HostMount,
+  type HostSpec,
+  resolveMountPath,
+} from "@ompd/core";
 import { execCommand } from "./exec.ts";
 import { type GateWrapper, requireSafePath, writeGateWrapper } from "./gate-wrapper.ts";
 import { GUEST_HOME_MOUNT, type GuestModelAccess, seedGuestHome } from "./guest-config.ts";
 import { type EnsureToolchainOptions, ensureToolchain, type ResolvedToolchain } from "./image.ts";
-import { type RuntimeCapability, selectRuntime } from "./runtime.ts";
+import { type RuntimeCapability, selectRuntime, trySelectRuntime } from "./runtime.ts";
 import {
   type CommandRunner,
   type GuestBridge,
@@ -106,6 +112,15 @@ const DEFAULT_CPUS = "4";
 
 /** What a runtime may return as a container id. Apple returns a UUID, docker a hash. */
 const CONTAINER_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+
+/**
+ * How long a runtime probe answers for a readiness read.
+ *
+ * Long enough that a client reconnecting does not respawn three runtime
+ * commands, short enough that starting a runtime by hand shows up on the next
+ * pull of the screen rather than looking like a second fault.
+ */
+const RUNTIME_PROBE_TTL_MS = 10_000;
 
 export interface ContainerBackendOptions {
   /** Pin a runtime instead of probing in platform order. */
@@ -602,6 +617,19 @@ export class ContainerBackend implements ProvisionerBackend {
   #spawn: SpawnHost;
   #toolchain: (opts: EnsureToolchainOptions) => Promise<ResolvedToolchain>;
   #live = new Map<string, ContainerRecord>();
+  /**
+   * The last runtime probe and when it was taken.
+   *
+   * Cached because the probe spawns three commands per candidate (`--version`,
+   * a liveness check, `run --help`) and every client reads this state on
+   * connect, so a reconnect would otherwise run them per socket. Kept short
+   * because the operator who has just run `container system start` looks at
+   * this surface again immediately, and a stale "not ready" would send them
+   * hunting a second fault that does not exist.
+   */
+  #runtimeProbe: { at: number; state: ContainerRuntimeStatus } | undefined;
+  /** One probe at a time, shared by every caller that arrives while it runs. */
+  #runtimeProbeInFlight: Promise<ContainerRuntimeStatus> | undefined;
 
   constructor(opts: ContainerBackendOptions = {}) {
     this.#runtime = opts.runtime;
@@ -619,27 +647,70 @@ export class ContainerBackend implements ProvisionerBackend {
   }
 
   /**
-   * Derive the model broker's readiness and reason for cowork containers.
-   * Checks whether model access is configured and delegates to the provider.
+   * Whether a container agent could be granted a model, and what to do when it
+   * could not.
+   *
+   * Delegated whole, never re-derived. A second opinion assembled here out of
+   * `status()` is how two layers came to hold two different sentences about the
+   * same condition, and the one an operator reads is whichever layer answered.
    */
   modelBrokerState(): { ready: boolean; reason: string | null } {
-    if (this.#modelAccess === undefined) {
-      return { ready: false, reason: "container model access is not configured" };
+    const access = this.#modelAccess;
+    if (access === undefined) {
+      return { ready: false, reason: "this daemon has no model access configured for container agents" };
     }
-    if (typeof this.#modelAccess.modelBrokerState === "function") {
-      return this.#modelAccess.modelBrokerState();
+    // A provider that does not answer readiness is a bare test double, not a
+    // daemon: the one real implementation always answers. Reporting ready keeps
+    // those suites provisioning, and nothing in production takes this branch.
+    if (access.modelBrokerState === undefined) return { ready: true, reason: null };
+    return access.modelBrokerState();
+  }
+
+  /**
+   * Whether this machine can run a container at all.
+   *
+   * The same probe `provision` runs, asked before anything is created so a
+   * surface can say "no container runtime is running, here is the command"
+   * instead of offering a start that fails. `provision` deliberately re-probes
+   * rather than trusting this: a runtime can go down between a screen reading
+   * this and an operator tapping start, and the refusal that matters is the one
+   * taken at the moment the container would have been created.
+   */
+  async runtimeState(): Promise<ContainerRuntimeStatus> {
+    // An injected capability is both the test seam and the already-decided
+    // case. Probing it would spawn a runtime CLI inside suites that have none.
+    const injected = this.#capability;
+    if (injected !== undefined) {
+      return { ready: true, reason: null, label: `${injected.runtime} ${injected.version}` };
     }
-    if (typeof this.#modelAccess.status === "function") {
-      const s = this.#modelAccess.status();
-      if (!s.enabled) {
-        return { ready: false, reason: "container model access is disabled" };
-      }
-      if (!s.model) {
-        return { ready: false, reason: "no model configured for container agents" };
-      }
-      return { ready: true, reason: null };
+
+    const cached = this.#runtimeProbe;
+    if (cached !== undefined && Date.now() - cached.at < RUNTIME_PROBE_TTL_MS) return cached.state;
+
+    const started = this.#runtimeProbeInFlight ?? this.#probeRuntimeState();
+    this.#runtimeProbeInFlight = started;
+    try {
+      return await started;
+    } finally {
+      if (this.#runtimeProbeInFlight === started) this.#runtimeProbeInFlight = undefined;
     }
-    return { ready: true, reason: null };
+  }
+
+  async #probeRuntimeState(): Promise<ContainerRuntimeStatus> {
+    let state: ContainerRuntimeStatus;
+    try {
+      const selection = await trySelectRuntime({ run: this.#run, platform: this.#platform, pinned: this.#runtime });
+      state = selection.ok
+        ? { ready: true, reason: null, label: `${selection.capability.runtime} ${selection.capability.version}` }
+        : { ready: false, reason: selection.brief, label: null };
+    } catch (err) {
+      // The only throw is a pinned runtime name ompd holds no facts for, which
+      // is a config error an operator can fix. Reported here rather than left
+      // to surface as a failed start, which is the whole point of this method.
+      state = { ready: false, reason: err instanceof Error ? err.message : String(err), label: null };
+    }
+    this.#runtimeProbe = { at: Date.now(), state };
+    return state;
   }
 
   async provision(spec: HostSpec): Promise<HostHandle> {

@@ -758,6 +758,46 @@ describe("daemon model access", () => {
       expect(h.access.status().model).toBe("anthropic/claude-haiku-4-5");
     });
 
+    test("readiness resolves the host's default before any container has run", async () => {
+      // The deadlock this closes. Readiness used to read a field that only
+      // `grant` ever assigned, and the app disables the start that would have
+      // run `grant`, so on a host whose omp config names a perfectly good
+      // default Cowork reported "no model configured for container agents" and
+      // offered nothing that would have configured one.
+      const h = await harness({ model: "" });
+      h.writeHostConfig("modelRoles:\n  default: anthropic/claude-opus-5:xhigh\n");
+
+      expect(h.access.modelBrokerState()).toEqual({ ready: true, reason: null });
+      expect(h.access.status().model).toBe("anthropic/claude-opus-5");
+      // Nothing was provisioned to find that out.
+      expect(h.issued).toEqual([]);
+    });
+
+    test("readiness names both handles when nothing resolves", async () => {
+      const h = await harness({ model: "" });
+
+      const state = h.access.modelBrokerState();
+
+      expect(state.ready).toBe(false);
+      // The string is rendered verbatim on a phone, so it has to name what to
+      // do: the daemon key, or selecting a model in omp.
+      expect(state.reason).toContain("containerModel");
+      expect(state.reason).toContain("omp");
+      expect(h.issued).toEqual([]);
+    });
+
+    test("readiness reads the host config every time it is asked", async () => {
+      // Not cached at construction. An operator who selects a model in omp is
+      // not going to restart a daemon they have no reason to suspect, and a
+      // value fixed at boot would go on refusing until they did.
+      const h = await harness({ model: "" });
+      expect(h.access.modelBrokerState().ready).toBe(false);
+
+      h.writeHostConfig("modelRoles:\n  default: anthropic/claude-haiku-4-5\n");
+
+      expect(h.access.modelBrokerState()).toEqual({ ready: true, reason: null });
+    });
+
     test("a trailing thinking level is stripped from either source", async () => {
       // The level is omp's own per-role setting and is not part of any model id.
       // The gateway matches the top-level `model` field against its catalog, and
@@ -935,11 +975,11 @@ describe("daemon model access", () => {
     expect(h.services.ensureCalls).toBeGreaterThanOrEqual(2);
   });
 
-  test("status reads fields only, so ompd doctor can ask before anything is provisioned", async () => {
+  test("status answers before anything is provisioned, without spawning or throwing", async () => {
     const h = await harness({ model: "" });
 
-    // No config.yml exists in this harness, so a status that read one would
-    // either throw or invent a model.
+    // It may read the host's config, and this harness has none, so the one
+    // thing it must not do here is invent a model or throw on the missing file.
     expect(h.access.status()).toEqual({ enabled: true, model: null, gatewayUrl: null, liveGrants: 0 });
     expect(h.services.ensureCalls).toBe(0);
     expect(h.services.bearerCalls).toBe(0);

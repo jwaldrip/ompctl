@@ -35,6 +35,7 @@ import type {
   CollabVoiceNoteInput,
   CollabVoiceParticipant,
   ConnectorSummary,
+  ContainerRuntimeStatus,
   FsListing,
   ModelBrokerStatus,
   PlanReviewChoice,
@@ -711,9 +712,17 @@ export interface SessionStatsEvent {
   stats: SessionStats;
 }
 
-/** The cowork container state, carrying model broker readiness. */
+/**
+ * The cowork container state: whether a model can be granted, and whether the
+ * daemon's machine has a container runtime to run one on.
+ *
+ * `runtime` is absent from a daemon older than the field. A consumer must read
+ * that as unknown and not as a refusal, or a phone would disable a start that
+ * the daemon would have served.
+ */
 export interface ContainerStateEvent {
   modelBroker: ModelBrokerStatus;
+  runtime?: ContainerRuntimeStatus;
 }
 export interface PromptQueuedEvent {
   agentId: AgentId;
@@ -1860,7 +1869,7 @@ export class OmpdClient {
         this.emit("agent_created", { agent: frame.agent });
         return;
       case "container_state":
-        this.emit("container_state", { modelBroker: frame.modelBroker });
+        this.emit("container_state", { modelBroker: frame.modelBroker, runtime: frame.runtime });
         return;
       case "settings":
         this.emit("settings", {

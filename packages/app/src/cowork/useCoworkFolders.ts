@@ -19,7 +19,7 @@
  * one sealed socket the relay carries.
  */
 
-import type { AgentId, HostMount, ModelBrokerStatus, WireHostSpec } from "@ompd/core/contracts";
+import type { AgentId, ContainerRuntimeStatus, HostMount, ModelBrokerStatus, WireHostSpec } from "@ompd/core/contracts";
 import type { AgentCreatedEvent, ClientErrorEvent, ContainerStateEvent } from "@ompd/core/ompd-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { directoryLabel } from "../remote/model.ts";
@@ -50,6 +50,16 @@ export interface CoworkFoldersState {
   folders: BoundFolder[];
   start: ContainerStart;
   modelBroker?: ModelBrokerStatus;
+  /** Absent until the daemon says, and absent forever from one too old to say. */
+  runtime?: ContainerRuntimeStatus;
+  /**
+   * Why a start is not possible right now, or null when it is.
+   *
+   * Derived here rather than in the screen because the refusal on tap and the
+   * disabled button have to agree: a button disabled for one reason while the
+   * refusal names another is how an operator ends up fixing the wrong thing.
+   */
+  blocked: string | null;
 }
 
 export interface CoworkFoldersActions {
@@ -92,6 +102,7 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
   const [folders, setFolders] = useState<BoundFolder[]>([]);
   const [start, setStart] = useState<ContainerStart>({ status: "idle" });
   const [modelBroker, setModelBroker] = useState<ModelBrokerStatus | undefined>(undefined);
+  const [runtime, setRuntime] = useState<ContainerRuntimeStatus | undefined>(undefined);
 
   /**
    * Whether a start is awaiting its answer. The daemon's `agent_created` and
@@ -116,6 +127,11 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
       }),
       client.on("container_state", (event: ContainerStateEvent) => {
         setModelBroker(event.modelBroker);
+        // Left undefined by a daemon older than the field. Undefined is
+        // "unknown" everywhere below, never "not ready": gating a start on a
+        // field the far side never sends would disable a container this daemon
+        // would happily have run.
+        setRuntime(event.runtime);
       }),
       client.on("status", event => {
         if (event.state === "connected") client.readContainerState?.();
@@ -142,23 +158,36 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
     setFolders(previous => previous.filter(folder => folder.hostPath !== hostPath));
   }, []);
 
+  /**
+   * The first unmet precondition, in the order an operator has to satisfy them.
+   *
+   * The runtime and the model are the daemon's own facts and neither is
+   * anything an operator fixes on a phone, so they lead: binding folders on a
+   * machine with no container runtime is work that ends in a refusal. An
+   * unknown state is not a blocker, so an older daemon that never sends
+   * `runtime` gates on exactly what it used to.
+   */
+  const blocked =
+    runtime !== undefined && !runtime.ready
+      ? (runtime.reason ?? "no container runtime is available on the daemon's machine")
+      : modelBroker !== undefined && !modelBroker.ready
+        ? (modelBroker.reason ?? "no model is available for container agents")
+        : folders.length === 0
+          ? "Bind at least one folder: a container is scoped to what you bind, and its working directory is the first one."
+          : null;
+
   const startContainer = useCallback(() => {
     if (client === undefined) return;
-    const request = coworkContainerRequest(folders);
-    if (request === null) {
-      setStart({
-        status: "refused",
-        reason: "Bind a folder first: a container with nothing bound has nothing to scope.",
-        retryable: false,
-      });
+    if (blocked !== null) {
+      setStart({ status: "refused", reason: blocked, retryable: false });
       return;
     }
-    if (modelBroker !== undefined && !modelBroker.ready) {
-      setStart({
-        status: "refused",
-        reason: `Model broker not ready: ${modelBroker.reason ?? "unavailable"}`,
-        retryable: false,
-      });
+    const request = coworkContainerRequest(folders);
+    if (request === null) {
+      // Unreachable while `blocked` covers the empty set, and kept because the
+      // request builder owns that rule: a caller that ever starts without one
+      // must not send a spec with no cwd.
+      setStart({ status: "refused", reason: "Bind at least one folder to start a container.", retryable: false });
       return;
     }
 
@@ -169,10 +198,10 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
     // link too dead to carry the frame reports itself as an `error` event
     // with code `offline`, the same named exit a refusal takes.
     client.createAgent(request);
-  }, [client, folders, modelBroker]);
+  }, [blocked, client, folders]);
 
   return [
-    { active: client !== undefined, folders, start, modelBroker },
+    { active: client !== undefined, folders, start, modelBroker, runtime, blocked },
     { bind, unbind, start: startContainer },
   ];
 }
@@ -198,14 +227,12 @@ function refusalFor(code: string | undefined, message: string): ContainerStart {
     };
   }
   if (code === "agent_create_failed") {
-    // `ProvisionError` text lands here: a dangerous mount path, no container
-    // runtime, an image that will not pull. None of those change on retry,
-    // which is why this one is not marked retryable.
-    return {
-      status: "refused",
-      reason: `the daemon refused the mounts: ${message}`,
-      retryable: false,
-    };
+    // `ProvisionError` text lands here and it already names its own cause: a
+    // refused mount path, no container runtime, an image that will not pull.
+    // Relayed rather than wrapped in a cause of our own, which is what "the
+    // daemon refused the mounts" was doing to every message that had nothing
+    // to do with mounts. None of these change on retry.
+    return { status: "refused", reason: message, retryable: false };
   }
   if (code === "replica") {
     // The daemon answered honestly that it is a replica: the mounts were
