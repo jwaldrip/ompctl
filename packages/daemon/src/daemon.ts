@@ -756,7 +756,7 @@ export class Ompd {
     // or a container agent's session would be the only kind the gateway could
     // not answer a mode query for.
     this.#containerBackend = new ContainerBackend({
-      workspace: opts.repoRoot ?? process.cwd(),
+      workspace: opts.repoRoot,
       home: this.#home,
       spawn: this.#hosts.spawn,
       // Not optional in the daemon, only in the type: every container this
@@ -766,7 +766,7 @@ export class Ompd {
     });
     this.#provisioner = new HostProvisioner({
       store: this.#store,
-      workspace: opts.repoRoot ?? process.cwd(),
+      workspace: opts.repoRoot,
       backends: {
         local: new LocalBackend({ ompPath: this.#config.ompPath, spawn: this.#hosts.spawn }),
         // Runtime and image come from the validated config on disk, not from
