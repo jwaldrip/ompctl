@@ -56,6 +56,7 @@ import { assistantTextOf } from "../packages/acp/src/index.ts";
 import { type Agent, type AgentState, type AuditEntry, TERMINAL_AGENT_STATES } from "../packages/core/src/index.ts";
 import { Ompd } from "../packages/daemon/src/index.ts";
 import { addressInIpv4Cidr, isIpv4Cidr } from "../packages/daemon/src/model-broker/cidr.ts";
+import { normalizeModelReference } from "../packages/daemon/src/model-broker/model-access.ts";
 import { GUEST_HOME_MOUNT } from "../packages/daemon/src/provisioner/guest-config.ts";
 
 /**
@@ -319,7 +320,9 @@ function resolveContainerModel(configured: string): { model: string; from: strin
         `set one of the two rather than expecting a default`,
     };
   }
-  return { model: fallback.trim(), from: `${HOST_OMP_CONFIG} modelRoles.default` };
+  // The broker strips the thinking level before it grants, so the expectation
+  // has to be the id it will actually see. Shared function, not a second copy.
+  return { model: normalizeModelReference(fallback), from: `${HOST_OMP_CONFIG} modelRoles.default` };
 }
 
 async function api(base: string, token: string, path: string, init: RequestInit = {}): Promise<Response> {
