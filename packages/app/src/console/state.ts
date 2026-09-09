@@ -846,10 +846,13 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       if (event.sessionId === null) {
         return state.selectedTui === null ? state : { ...state, selectedTui: null };
       }
-      // The collab fallback re-selects the terminal it already committed to,
-      // so the idempotent case keeps the wait the row press armed rather than
-      // arming a second one.
-      if (state.selectedTui === event.sessionId && state.selected === null) return state;
+      // The collab fallback re-selects the terminal it already committed to.
+      // If the session is already selected and already in a loading wait, keep the wait;
+      // otherwise re-arm the load so an un-phased or failed open enters loading.
+      const held = state.loads.get(event.sessionId);
+      if (state.selectedTui === event.sessionId && state.selected === null && held?.phase === "loading") {
+        return state;
+      }
       return {
         ...armLoad(state, event.sessionId, event.awaiting === true),
         selectedTui: event.sessionId,
@@ -1015,16 +1018,11 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "open_failed": {
       const held = state.loads.get(event.subject);
-      // Only an unsettled wait can fail. A refusal for a subject that already
-      // has its data, or that nobody is waiting on, is an ordinary notice's
-      // business and must not blank a log that is on screen and correct.
-      //
-      // A stalled wait may fail: the refusal for a subject whose link dropped
-      // arrives on the socket that replaced it, and it is the answer the pane
-      // was waiting for either way.
-      if (held === undefined || (held.phase !== "loading" && held.phase !== "stalled")) return state;
+      // An open failed: record the refusal under the subject that was refused.
+      // If a wait was armed, keep its generation; otherwise stamp with the selection.
+      const generation = held?.generation ?? state.selection;
       const loads = new Map(state.loads);
-      loads.set(event.subject, { phase: "failed", generation: held.generation, error: event.message });
+      loads.set(event.subject, { phase: "failed", generation, error: event.message });
       const historyLoading = new Set(state.historyLoading);
       historyLoading.delete(event.subject);
       return { ...state, loads, historyLoading };
@@ -1245,12 +1243,11 @@ function armLoad(state: ConsoleState, subject: string, awaiting: boolean): Conso
  */
 function settleLoad(state: ConsoleState, subject: string): ConsoleState {
   const held = state.loads.get(subject);
-  // A stalled wait settles on real data too: the answer arriving on the socket
-  // that replaced the dropped one is exactly what the pane was waiting for,
-  // and refusing it here would leave a stall on screen over a live session.
-  if (held === undefined || (held.phase !== "loading" && held.phase !== "stalled")) return state;
+  // An explicit failure stays failed; data for an old wait does not un-refuse it.
+  if (held !== undefined && held.phase === "failed") return state;
+  const generation = held?.generation ?? state.selection;
   const loads = new Map(state.loads);
-  loads.set(subject, { phase: "ready", generation: held.generation, error: null });
+  loads.set(subject, { phase: "ready", generation, error: null });
   return { ...state, loads };
 }
 
@@ -1545,7 +1542,26 @@ export function sessionFor(state: ConsoleState, agentId: AgentId): SessionState 
  * nobody made.
  */
 export function loadFor(state: ConsoleState, subject: string): SessionLoad {
-  return state.loads.get(subject) ?? READY_LOAD;
+  const held = state.loads.get(subject);
+  if (held !== undefined) return held;
+  // A terminal or agent currently selected by the operator that has not settled
+  // its initial data reports loading, so the screen shows a loading state rather
+  // than an empty transcript while the ask resolves.
+  if (state.selectedTui === subject) {
+    const tui = state.tuiSessions.get(subject);
+    if (tui && tui.history.length > 0) {
+      return { phase: "ready", generation: 0, error: null };
+    }
+    return { phase: "loading", generation: state.selection, error: null };
+  }
+  if (state.selected === subject) {
+    const session = state.sessions.get(subject);
+    if (session && session.entries.length > 0) {
+      return { phase: "ready", generation: 0, error: null };
+    }
+    return { phase: "loading", generation: state.selection, error: null };
+  }
+  return READY_LOAD;
 }
 
 /**
