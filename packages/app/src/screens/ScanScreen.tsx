@@ -17,12 +17,12 @@ import { parsePairingBundle } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import type { CameraSeam, Code } from "../platform/camera.ts";
-import { cameraSeam, createCameraSeam } from "../platform/camera.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import type { CameraSeam, Code } from "../platform/camera";
+import { cameraSeam, createCameraSeam } from "../platform/camera";
 import type { Connection } from "../platform/connection.ts";
 
 export function ScanScreen({
@@ -87,12 +87,7 @@ export function ScanScreen({
   }
 
   return (
-    <LiveScanScreen
-      Camera={activeCamera.Camera}
-      hooks={activeCamera.hooks}
-      onCancel={onCancel}
-      onScanned={onScanned}
-    />
+    <LiveScanScreen Camera={activeCamera.Camera} hooks={activeCamera.hooks} onCancel={onCancel} onScanned={onScanned} />
   );
 }
 

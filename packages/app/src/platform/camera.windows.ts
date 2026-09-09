@@ -1,9 +1,8 @@
 /**
- * The web target's camera seam.
+ * The Windows target's camera seam.
  *
- * Web has no native camera module linked, and react-native-web does not export
- * requireNativeComponent. This file ensures that Vite and web resolvers never
- * attempt to load react-native-vision-camera or include it in the module graph.
+ * Windows has no native camera module linked. This file ensures that Metro
+ * for Windows resolves this stub rather than evaluating native vision-camera.
  */
 
 import type { CameraAvailability, CameraSeam } from "./camera.ts";
@@ -19,7 +18,7 @@ export type {
 
 export const cameraAvailability: CameraAvailability = {
   available: false,
-  reason: "Scanning is unavailable on web: this build has no camera scanner module.",
+  reason: "Scanning is unavailable on Windows: this build has no camera scanner module.",
 };
 
 export const cameraSeam: CameraSeam = {

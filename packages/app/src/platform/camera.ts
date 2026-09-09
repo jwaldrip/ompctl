@@ -13,8 +13,8 @@
  * on route evaluation.
  */
 
-import { NativeModules, Platform } from "react-native";
 import type { ComponentType } from "react";
+import { NativeModules, Platform } from "react-native";
 import type { Code } from "react-native-vision-camera";
 
 export type { Code };

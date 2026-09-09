@@ -22,9 +22,12 @@ import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+// Extensionless on purpose: Vite picks `camera.web.ts` for web, Metro picks
+// `camera.windows.ts` for Windows, and `camera.ts` everywhere else. Naming
+// the extension would bypass that and drag vision-camera into the web bundle.
+import type { CameraAvailability } from "../platform/camera";
+import { cameraAvailability } from "../platform/camera";
 import type { Connection } from "../platform/connection.ts";
-import type { CameraAvailability } from "../platform/camera.ts";
-import { cameraAvailability } from "../platform/camera.ts";
 // Extensionless on purpose: Metro picks `e2e-plaintext.ios.ts` for iOS and the
 // plain module everywhere else. Naming the extension would defeat that and
 // hand every platform the same answer.
