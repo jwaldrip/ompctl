@@ -279,10 +279,14 @@ describe("POST /v1/sessions/archive and /unarchive (batch)", () => {
   test("requires manage scope", async () => {
     const h = await harness();
     const token = await h.pair([SCOPE_READ]);
-    const res = await h.http("/v1/sessions/archive", {
-      method: "POST",
-      body: JSON.stringify({ sessionIds: [SESSION_ID] }),
-    }, token);
+    const res = await h.http(
+      "/v1/sessions/archive",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionIds: [SESSION_ID] }),
+      },
+      token,
+    );
     expect(res.status).toBe(403);
   });
 
@@ -290,10 +294,14 @@ describe("POST /v1/sessions/archive and /unarchive (batch)", () => {
     const h = await harness();
     const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
 
-    const res = await h.http("/v1/sessions/archive", {
-      method: "POST",
-      body: JSON.stringify({ sessionIds: [SESSION_ID, UNKNOWN_ID] }),
-    }, token);
+    const res = await h.http(
+      "/v1/sessions/archive",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionIds: [SESSION_ID, UNKNOWN_ID] }),
+      },
+      token,
+    );
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as {
@@ -309,15 +317,23 @@ describe("POST /v1/sessions/archive and /unarchive (batch)", () => {
     const h = await harness();
     const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
 
-    await h.http("/v1/sessions/archive", {
-      method: "POST",
-      body: JSON.stringify({ sessionIds: [SESSION_ID] }),
-    }, token);
+    await h.http(
+      "/v1/sessions/archive",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionIds: [SESSION_ID] }),
+      },
+      token,
+    );
 
-    const res = await h.http("/v1/sessions/unarchive", {
-      method: "POST",
-      body: JSON.stringify({ sessionIds: [SESSION_ID] }),
-    }, token);
+    const res = await h.http(
+      "/v1/sessions/unarchive",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionIds: [SESSION_ID] }),
+      },
+      token,
+    );
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as {

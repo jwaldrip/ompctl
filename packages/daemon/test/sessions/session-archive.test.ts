@@ -44,9 +44,7 @@ function writeSessionFile(
   ];
   writeFileSync(filePath, lines.join("\n") + "\n");
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(timestamp);
-  const mtime = match
-    ? new Date(`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`)
-    : new Date(timestamp);
+  const mtime = match ? new Date(`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`) : new Date(timestamp);
   utimesSync(filePath, mtime, mtime);
   return filePath;
 }

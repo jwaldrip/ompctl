@@ -53,8 +53,8 @@ import {
   SCOPE_READ,
   SESSION_ARCHIVE_REFUSAL_REASONS,
   SESSION_DELETE_REFUSAL_REASONS,
-  type SessionArchiveResult,
   type ServerFrame,
+  type SessionArchiveResult,
   type SessionDeleteResult,
   type SessionLiveStatus,
   type SessionQuery,
@@ -5596,7 +5596,11 @@ export class Gateway {
 
       case "session_suggest_ephemeral": {
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "session_suggest_ephemeral requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "session_suggest_ephemeral requires read scope",
+          });
           return;
         }
         const index = this.#sessionIndex;

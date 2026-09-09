@@ -38,8 +38,8 @@ import { getSessionsDir } from "@oh-my-pi/pi-utils";
 import type { SessionScanCacheEntry, Store } from "@ompd/core";
 import type {
   AgentId,
-  SessionCwdScope,
   SessionArchiveResult,
+  SessionCwdScope,
   SessionDeleteResult,
   SessionGroup,
   SessionLiveStatus,
