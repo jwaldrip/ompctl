@@ -433,7 +433,10 @@ describe("request correlation and catalogue attribution", () => {
 
     // Unauthorized task create carries requestId
     sock.send({ t: "task_create", title: "Test", prompt: "p", agentId: "agt_1", requestId: "req_task_unauth" });
-    const taskErr = await sock.next(frame => frame.t === "error" && frame.requestId === "req_task_unauth", "task error");
+    const taskErr = await sock.next(
+      frame => frame.t === "error" && frame.requestId === "req_task_unauth",
+      "task error",
+    );
     expect(taskErr).toMatchObject({ t: "error", code: "unauthorized", requestId: "req_task_unauth" });
   });
 

@@ -120,7 +120,9 @@ describe("TaskDetail failed state and retry", () => {
           tasks={tasksState}
           skills={[]}
           connectors={[]}
-          onStartTask={input => startedTasks.push(input as unknown as { title: string; prompt: string; agentId?: string })}
+          onStartTask={input =>
+            startedTasks.push(input as unknown as { title: string; prompt: string; agentId?: string })
+          }
           onInvokeSkill={() => {}}
           onOpenSession={() => {}}
         />,

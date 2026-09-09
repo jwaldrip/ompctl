@@ -3444,7 +3444,13 @@ export class Gateway {
         });
         return;
       case "failed":
-        this.#send(ws, { t: "error", code: "connectors_failed", message: outcome.error, catalog: "connectors", ...req });
+        this.#send(ws, {
+          t: "error",
+          code: "connectors_failed",
+          message: outcome.error,
+          catalog: "connectors",
+          ...req,
+        });
     }
   }
 

@@ -1875,7 +1875,10 @@ export class OmpdClient {
         });
         return;
       case "skills":
-        this.emit("skills", { skills: frame.skills, ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}) });
+        this.emit("skills", {
+          skills: frame.skills,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         return;
       case "connectors":
         this.emit("connectors", {
@@ -1884,10 +1887,16 @@ export class OmpdClient {
         });
         return;
       case "tasks":
-        this.emit("tasks", { tasks: frame.tasks, ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}) });
+        this.emit("tasks", {
+          tasks: frame.tasks,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         return;
       case "task":
-        this.emit("task", { task: frame.task, ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}) });
+        this.emit("task", {
+          task: frame.task,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         return;
       case "agent_created":
         this.emit("agent_created", {

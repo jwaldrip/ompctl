@@ -123,12 +123,7 @@ describe("Cowork empty catalogue and sidebar absence states", () => {
 
     act(() => {
       root.render(
-        <SkillsView
-          skills={[]}
-          onInvoke={() => {}}
-          status="refused"
-          refusal="skills_read requires read scope"
-        />,
+        <SkillsView skills={[]} onInvoke={() => {}} status="refused" refusal="skills_read requires read scope" />,
       );
     });
 
@@ -150,13 +145,7 @@ describe("Cowork empty catalogue and sidebar absence states", () => {
     const root = createRoot(host);
 
     act(() => {
-      root.render(
-        <ConnectorsView
-          connectors={[]}
-          status="refused"
-          refusal="connectors_read requires read scope"
-        />,
-      );
+      root.render(<ConnectorsView connectors={[]} status="refused" refusal="connectors_read requires read scope" />);
     });
 
     const refused = host.querySelector('[data-testid="cowork-connectors-refused"]');
@@ -177,13 +166,7 @@ describe("Cowork empty catalogue and sidebar absence states", () => {
     const root = createRoot(host);
 
     act(() => {
-      root.render(
-        <PluginsView
-          skills={[]}
-          connectors={[]}
-          skillsRefusal="skills catalogue failed"
-        />,
-      );
+      root.render(<PluginsView skills={[]} connectors={[]} skillsRefusal="skills catalogue failed" />);
     });
 
     const refused = host.querySelector('[data-testid="cowork-plugins-refused"]');
