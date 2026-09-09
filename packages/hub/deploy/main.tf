@@ -421,10 +421,39 @@ resource "google_cloud_run_domain_mapping" "hub" {
     route_name = google_cloud_run_v2_service.hub.name
   }
 }
-# Domain mappings for the marketing site (root apex and www) have been retired
-# because the marketing site is served from GitHub Pages. The Cloud Run service
-# (google_cloud_run_v2_service.site), its service account, and its IAM invoker
-# binding remain defined above so a rollback can restore service in one apply.
+# The root and www domain mappings are intentionally retained during the DNS
+# cutover (apply one) so clients holding cached Cloud Run anycast addresses
+# (up to the 300s TTL) continue receiving 200s from ompctl-site rather than
+# 404s. Once the TTL has drained, a follow-up apply removes both mappings.
+resource "google_cloud_run_domain_mapping" "root" {
+  count    = var.manage_domain_mappings ? 1 : 0
+  project  = var.project_id
+  location = var.region
+  name     = var.root_domain
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.site.name
+  }
+}
+
+resource "google_cloud_run_domain_mapping" "www" {
+  count    = var.manage_domain_mappings ? 1 : 0
+  project  = var.project_id
+  location = var.region
+  name     = "www.${var.root_domain}"
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.site.name
+  }
+}
 
 # dns.googleapis.com is NOT declared here. Enabling a service is an owner
 # action (`serviceusage.services.enable`), the deploy identity does not hold it,
