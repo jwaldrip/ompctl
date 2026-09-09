@@ -269,10 +269,19 @@ export function Console({
     dispatchBrowser({ t: "setQuery", query });
   }, []);
   const onArchive = useCallback((session: BrowserSession) => {
+    latest.current.actions.archiveSessions([session.id], false);
     dispatchBrowser({ t: "archive", id: session.id });
   }, []);
   const onUnarchive = useCallback((session: BrowserSession) => {
+    latest.current.actions.archiveSessions([session.id], true);
     dispatchBrowser({ t: "unarchive", id: session.id });
+  }, []);
+  const onArchiveBulk = useCallback((sessionIds: readonly string[]) => {
+    latest.current.actions.archiveSessions(sessionIds, false);
+    dispatchBrowser({ t: "archiveBulk", ids: sessionIds });
+  }, []);
+  const onNewSession = useCallback((cwd: string) => {
+    latest.current.actions.createAgent({ cwd });
   }, []);
   // Deletion is the one row action that leaves the device: archive and
   // restore are browser-local gestures, while this destroys a transcript on
@@ -699,8 +708,12 @@ export function Console({
               onOpen={onOpen}
               onArchive={onArchive}
               onUnarchive={onUnarchive}
+              onArchiveBulk={onArchiveBulk}
+              onNewSession={onNewSession}
               onDelete={onDelete}
               deleteAccess={manageScopeAccess(state, connection.scopes)}
+              manageAccess={manageScopeAccess(state, connection.scopes)}
+              connection={connection}
               link={fleetLink}
               onSetProject={onSetProject}
               onSetQuery={onSetQuery}

@@ -22,7 +22,7 @@ import type { Connection } from "../platform/connection.ts";
 import { createHubSocketFactory } from "../platform/socket.ts";
 import type { MemoVoice } from "../voice/memo.ts";
 import { deviceMemoVoice } from "../voice/memo.ts";
-import type { ConsoleState, SessionOpenTarget } from "./state.ts";
+import type { ConsoleState, SessionArchiveResult, SessionOpenTarget } from "./state.ts";
 import {
   agentFor,
   apply,
@@ -30,6 +30,7 @@ import {
   manageScopeAccess,
   promptScopeAccess,
   readScopeAccess,
+  sessionArchiveNotice,
   sessionDeleteNotice,
   sessionTurnsEnded,
   shouldRequestSessionStats,
@@ -107,6 +108,10 @@ export interface ConsoleActions {
    * confirmation: this sends the frame, it does not ask.
    */
   deleteSession: (sessionId: string) => void;
+  /**
+   * Archive or unarchive sessions on the daemon. Requires manage scope.
+   */
+  archiveSessions: (sessionIds: readonly string[], unarchive?: boolean) => void;
   /**
    * Start a new agent session in a working directory.
    */
@@ -540,6 +545,13 @@ export function useConsole(
         if (notice === null) return;
         dispatch({ t: "error", event: { message: notice } });
       }),
+      client.on("sessions_archived" as never, (event: unknown) => {
+        const ev = event as { results?: readonly SessionArchiveResult[] };
+        if (!ev?.results) return;
+        const notice = sessionArchiveNotice(ev.results);
+        if (notice === null) return;
+        dispatch({ t: "error", event: { message: notice } });
+      }),
       client.on("session_history", event => {
         clearLoadDeadline(event.agentId);
         requestSubagents(event.sessionId);
@@ -933,6 +945,19 @@ export function useConsole(
         }
         client.deleteSessions([sessionId]);
       },
+      archiveSessions(sessionIds, unarchive = false) {
+        if (sessionIds.length === 0) return;
+        if (manageScopeAccess(stateRef.current, connection.scopes) === "missing") {
+          dispatch({
+            t: "error",
+            event: {
+              message: "This device does not hold the manage scope. Pair it again with manage access to archive.",
+            },
+          });
+          return;
+        }
+        sendSessionArchive(client, sessionIds, unarchive);
+      },
       createAgent(request) {
         const name = request.name || request.cwd.split("/").filter(Boolean).pop() || "session";
         const anyClient = client as unknown as {
@@ -1066,4 +1091,33 @@ export function useConsole(
   );
 
   return [state, actions, client];
+}
+
+/**
+ * Seam for session archiving on the wire.
+ *
+ * Calls `client.archiveSessions(sessionIds, unarchive)` when implemented on the client,
+ * or sends `{ t: "session_archive", sessionIds, unarchive }` directly through the client's
+ * socket/send interface.
+ */
+export function sendSessionArchive(
+  client: OmpdClient,
+  sessionIds: readonly string[],
+  unarchive = false,
+): void {
+  const duck = client as unknown as {
+    archiveSessions?: (sessionIds: readonly string[], unarchive?: boolean) => void;
+    send?: (frame: unknown) => void;
+  };
+  if (typeof duck.archiveSessions === "function") {
+    duck.archiveSessions(sessionIds, unarchive);
+    return;
+  }
+  if (typeof duck.send === "function") {
+    duck.send({
+      t: "session_archive",
+      sessionIds: [...sessionIds],
+      unarchive,
+    });
+  }
 }

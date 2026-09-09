@@ -1709,6 +1709,27 @@ export function sessionDeleteNotice(results: readonly SessionDeleteResult[]): st
   return `${refused.length} sessions were not deleted. The first: ${reason}.`;
 }
 
+export type SessionArchiveRefusal = "live" | "not_found";
+
+export type SessionArchiveResult =
+  | { sessionId: string; ok: true; archived: boolean }
+  | { sessionId: string; ok: false; refusal: SessionArchiveRefusal };
+
+export const SESSION_ARCHIVE_REFUSAL_REASONS: Record<SessionArchiveRefusal, string> = {
+  live: "a live agent or terminal is currently holding this session",
+  not_found: "session file no longer exists on disk",
+};
+
+export function sessionArchiveNotice(results: readonly SessionArchiveResult[]): string | null {
+  const refused = results.filter(r => !r.ok);
+  if (refused.length === 0) return null;
+  const [first] = refused;
+  if (first === undefined || first.ok) return null;
+  const reason = SESSION_ARCHIVE_REFUSAL_REASONS[first.refusal] ?? first.refusal;
+  if (refused.length === 1) return `That session was not archived: ${reason}.`;
+  return `${refused.length} sessions were not archived. The first: ${reason}.`;
+}
+
 /** The same rule for the terminal steering surface, under its historic name. */
 export function tuiPromptAccess(state: ConsoleState, storedScopes: readonly string[]): TuiPromptAccess {
   return promptScopeAccess(state, storedScopes);

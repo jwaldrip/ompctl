@@ -85,16 +85,37 @@ export interface ProjectPickerProps {
   initialQuery?: string;
   /** Force open state for testing */
   defaultOpen?: boolean;
+  /** Mode: "filter" to filter the fleet list, "start" to select a project for a new session */
+  mode?: "filter" | "start";
+  /** Optional custom title or kicker */
+  title?: string;
+  /** Controlled open state */
+  open?: boolean;
+  /** Callback when picker closes without selection */
+  onClose?: () => void;
+  /** Option to browse daemon folders */
+  onBrowseFolders?: () => void;
 }
 
-export function ProjectPicker({
-  sessions,
-  selectedProject,
-  onSelectProject,
-  initialQuery = "",
-  defaultOpen = false,
-}: ProjectPickerProps): JSX.Element {
-  const [open, setOpen] = useState(defaultOpen);
+export function ProjectPicker(props: ProjectPickerProps): JSX.Element {
+  const {
+    sessions,
+    selectedProject,
+    onSelectProject,
+    initialQuery = "",
+    defaultOpen = false,
+    mode = "filter",
+    title,
+    onClose,
+    onBrowseFolders,
+  } = props;
+  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  const isControlled = props.open !== undefined;
+  const open = isControlled ? props.open : internalOpen;
+  const setOpen = (val: boolean) => {
+    if (!val) onClose?.();
+    if (!isControlled) setInternalOpen(val);
+  };
   const [query, setQuery] = useState(initialQuery);
   const isTablet = useIsTablet();
 
@@ -123,46 +144,49 @@ export function ProjectPicker({
     setOpen(false);
   };
 
+  const showTrigger = !isControlled && mode !== "start";
+
   return (
-    <View style={styles.container}>
-      {selectedSummary === null ? (
-        <Pressable
-          testID="project-picker-trigger"
-          accessibilityRole="button"
-          accessibilityLabel="Filter by project: All projects"
-          onPress={() => setOpen(true)}
-          style={triggerStyle}
-        >
-          <Glyph name="folder" size={11} color={ink.muted} />
-          <Kicker color={ink.muted}>All projects</Kicker>
-          <Glyph name="chevron" size={9} color={ink.faint} />
-        </Pressable>
-      ) : (
-        <View testID="project-chip-selected" style={styles.selectedChip}>
+    <View style={showTrigger ? styles.container : undefined}>
+      {showTrigger ? (
+        selectedSummary === null ? (
           <Pressable
             testID="project-picker-trigger"
             accessibilityRole="button"
-            accessibilityLabel={`Filter by project: ${selectedSummary.basename}. Tap to change.`}
+            accessibilityLabel="Filter by project: All projects"
             onPress={() => setOpen(true)}
-            style={selectedMainStyle}
+            style={triggerStyle}
           >
-            <Glyph name="folder" size={11} color={brand.azure} />
-            <Kicker color={brand.azure} numberOfLines={1}>
-              {selectedSummary.basename}
-            </Kicker>
+            <Glyph name="folder" size={11} color={ink.muted} />
+            <Kicker color={ink.muted}>All projects</Kicker>
+            <Glyph name="chevron" size={9} color={ink.faint} />
           </Pressable>
-          <Pressable
-            testID="project-chip-clear"
-            accessibilityRole="button"
-            accessibilityLabel={`Clear project filter for ${selectedSummary.basename}`}
-            onPress={() => onSelectProject(null)}
-            style={selectedClearStyle}
-          >
-            <Glyph name="deny" size={9} color={brand.azure} />
-          </Pressable>
-        </View>
-      )}
-
+        ) : (
+          <View testID="project-chip-selected" style={styles.selectedChip}>
+            <Pressable
+              testID="project-picker-trigger"
+              accessibilityRole="button"
+              accessibilityLabel={`Filter by project: ${selectedSummary.basename}. Tap to change.`}
+              onPress={() => setOpen(true)}
+              style={selectedMainStyle}
+            >
+              <Glyph name="folder" size={11} color={brand.azure} />
+              <Kicker color={brand.azure} numberOfLines={1}>
+                {selectedSummary.basename}
+              </Kicker>
+            </Pressable>
+            <Pressable
+              testID="project-chip-clear"
+              accessibilityRole="button"
+              accessibilityLabel={`Clear project filter for ${selectedSummary.basename}`}
+              onPress={() => onSelectProject(null)}
+              style={selectedClearStyle}
+            >
+              <Glyph name="deny" size={9} color={brand.azure} />
+            </Pressable>
+          </View>
+        )
+      ) : null}
       {open ? (
         <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
           <Pressable
@@ -177,6 +201,11 @@ export function ProjectPicker({
             style={isTablet ? styles.popoverSurface : styles.sheetSurface}
           >
             <View style={styles.header}>
+              {title !== undefined || mode === "start" ? (
+                <View style={styles.titleBox}>
+                  <Kicker color={ink.muted}>{title ?? "Start session in project"}</Kicker>
+                </View>
+              ) : null}
               <View style={styles.searchBox} testID="project-picker-search-bar">
                 <Glyph name="search" size={12} color={ink.faint} />
                 <TextInput
@@ -221,33 +250,61 @@ export function ProjectPicker({
               keyboardShouldPersistTaps="handled"
               style={styles.list}
               ListHeaderComponent={
-                <Pressable
-                  testID="project-picker-item-all"
-                  accessibilityRole="button"
-                  accessibilityLabel="All projects"
-                  accessibilityState={{ selected: selectedProject === null }}
-                  onPress={() => handleSelect(null)}
-                  style={({ pressed }) => [
-                    styles.row,
-                    selectedProject === null && styles.rowSelected,
-                    pressed && styles.rowPressed,
-                  ]}
-                >
-                  <View style={styles.rowMain}>
-                    <View style={styles.rowNameGroup}>
-                      <Glyph name="folder" size={13} color={selectedProject === null ? brand.azure : ink.muted} />
-                      <Body color={selectedProject === null ? brand.azure : ink.bright} numberOfLines={1}>
-                        All projects
-                      </Body>
+                mode === "start" ? (
+                  onBrowseFolders !== undefined ? (
+                    <Pressable
+                      testID="project-picker-browse-folders"
+                      accessibilityRole="button"
+                      accessibilityLabel="Browse folders on daemon"
+                      onPress={() => {
+                        handleSelect(null);
+                        onBrowseFolders();
+                      }}
+                      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                    >
+                      <View style={styles.rowMain}>
+                        <View style={styles.rowNameGroup}>
+                          <Glyph name="folder" size={13} color={brand.azure} />
+                          <Body color={brand.azure} numberOfLines={1}>
+                            Browse other folders...
+                          </Body>
+                        </View>
+                        <Label color={ink.faint} numberOfLines={1}>
+                          Choose any directory on the daemon
+                        </Label>
+                      </View>
+                      <Glyph name="chevron" size={11} color={ink.faint} />
+                    </Pressable>
+                  ) : null
+                ) : (
+                  <Pressable
+                    testID="project-picker-item-all"
+                    accessibilityRole="button"
+                    accessibilityLabel="All projects"
+                    accessibilityState={{ selected: selectedProject === null }}
+                    onPress={() => handleSelect(null)}
+                    style={({ pressed }) => [
+                      styles.row,
+                      selectedProject === null && styles.rowSelected,
+                      pressed && styles.rowPressed,
+                    ]}
+                  >
+                    <View style={styles.rowMain}>
+                      <View style={styles.rowNameGroup}>
+                        <Glyph name="folder" size={13} color={selectedProject === null ? brand.azure : ink.muted} />
+                        <Body color={selectedProject === null ? brand.azure : ink.bright} numberOfLines={1}>
+                          All projects
+                        </Body>
+                      </View>
+                      <Label color={ink.faint} numberOfLines={1}>
+                        Every session across the fleet
+                      </Label>
                     </View>
-                    <Label color={ink.faint} numberOfLines={1}>
-                      Every session across the fleet
-                    </Label>
-                  </View>
-                  <Kicker color={selectedProject === null ? brand.azure : ink.faint}>
-                    {`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`}
-                  </Kicker>
-                </Pressable>
+                    <Kicker color={selectedProject === null ? brand.azure : ink.faint}>
+                      {`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`}
+                    </Kicker>
+                  </Pressable>
+                )
               }
               renderItem={({ item }) => {
                 const isSelected = selectedProject === item.cwd;
@@ -449,5 +506,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.tight,
+  },
+  titleBox: {
+    paddingBottom: space.hair,
   },
 });
