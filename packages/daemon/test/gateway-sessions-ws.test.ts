@@ -602,6 +602,95 @@ describe("the session_delete websocket frame", () => {
     socket.close();
   });
 });
+describe("the session_archive websocket frame", () => {
+  const dormantPath = (sessionsRoot: string): string =>
+    join(sessionsRoot, "-dormant", `2026-08-12T00-00-00-000Z_${SESSION_DORMANT}.jsonl`);
+
+  function isArchivedFrame(frame: ServerFrame): frame is Extract<ServerFrame, { t: "sessions_archived" }> {
+    return frame.t === "sessions_archived";
+  }
+
+  test("archives a dormant session and answers the asking socket with the result", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await h.connect(token);
+    expect(existsSync(dormantPath(h.sessionsRoot))).toBe(true);
+
+    socket.send({ t: "session_archive", sessionIds: [SESSION_DORMANT] });
+    const reply = await socket.next(isArchivedFrame, "sessions_archived frame");
+    if (!isArchivedFrame(reply)) throw new Error("expected a sessions_archived frame");
+
+    expect(reply.results).toEqual([{ sessionId: SESSION_DORMANT, ok: true, archived: true }]);
+    // File remains on disk (unlike delete)
+    expect(existsSync(dormantPath(h.sessionsRoot))).toBe(true);
+    expect(h.store.listAudit().filter(entry => entry.action === "session.archive")).toHaveLength(1);
+    socket.close();
+  });
+
+  test("refuses a client without manage scope and audits the attempt", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ]); // holds read, not manage
+    const socket = await h.connect(token);
+
+    socket.send({ t: "session_archive", sessionIds: [SESSION_DORMANT] });
+    const reply = await socket.next(f => f.t === "error", "scope refusal error");
+    if (reply.t !== "error") throw new Error("expected an error frame");
+
+    expect(reply.code).toBe("unauthorized");
+    expect(reply.message).toContain("manage scope");
+    expect(socket.frames.some(isArchivedFrame)).toBe(false);
+    expect(h.store.listAudit().filter(entry => entry.action === "session.archive")).toMatchObject([
+      { outcome: "denied", detail: { reason: "unauthorized" } },
+    ]);
+    socket.close();
+  });
+
+  test("a mixed batch refuses the live session by name and still archives the dormant one", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await h.connect(token);
+
+    socket.send({ t: "session_archive", sessionIds: [SESSION_LIVE, SESSION_DORMANT] });
+    const reply = await socket.next(isArchivedFrame, "sessions_archived frame");
+    if (!isArchivedFrame(reply)) throw new Error("expected a sessions_archived frame");
+
+    expect(reply.results).toEqual([
+      { sessionId: SESSION_LIVE, ok: false, refusal: "live" },
+      { sessionId: SESSION_DORMANT, ok: true, archived: true },
+    ]);
+    socket.close();
+  });
+
+  test("unarchive reverses the archive mark via session_unarchive", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ, SCOPE_MANAGE]);
+    const socket = await h.connect(token);
+
+    socket.send({ t: "session_archive", sessionIds: [SESSION_DORMANT] });
+    await socket.next(isArchivedFrame, "sessions_archived frame");
+
+    socket.send({ t: "session_unarchive", sessionIds: [SESSION_DORMANT] });
+    const reply = await socket.next(isArchivedFrame, "sessions_archived unarchive reply");
+    if (!isArchivedFrame(reply)) throw new Error("expected a sessions_archived frame");
+
+    expect(reply.results).toEqual([{ sessionId: SESSION_DORMANT, ok: true, archived: false }]);
+    expect(h.store.listAudit().filter(entry => entry.action === "session.unarchive")).toHaveLength(1);
+    socket.close();
+  });
+
+  test("session_suggest_ephemeral returns suggestions under read scope", async () => {
+    const h = await harness();
+    const token = await h.pair([SCOPE_READ]);
+    const socket = await h.connect(token);
+
+    socket.send({ t: "session_suggest_ephemeral" });
+    const reply = await socket.next(f => f.t === "sessions_suggested_ephemeral", "sessions_suggested_ephemeral frame");
+    if (reply.t !== "sessions_suggested_ephemeral") throw new Error("expected a sessions_suggested_ephemeral frame");
+
+    expect(Array.isArray(reply.sessionIds)).toBe(true);
+    socket.close();
+  });
+});
 
 afterEach(async () => {
   while (gateways.length) await gateways.pop()?.close();
