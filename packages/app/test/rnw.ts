@@ -25,11 +25,11 @@
  * components that need them are loaded.
  */
 
-import type { CameraViewfinderProps, VisionCameraExports } from "../src/platform/camera.ts";
 import { mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { ReactNode } from "react";
 import { createContext, createElement } from "react";
+import type { CameraViewfinderProps, VisionCameraExports } from "../src/platform/camera.ts";
 
 // One registration for the whole suite. Individual tests used to register and
 // unregister themselves, which is how a second file in the same process died
@@ -197,11 +197,7 @@ export function resetCameraMock(): void {
 }
 
 export const mockVisionCamera: VisionCameraExports = {
-  Camera: ({
-    codeScanner,
-    isActive,
-    testID,
-  }: CameraViewfinderProps) => {
+  Camera: ({ codeScanner, isActive, testID }: CameraViewfinderProps) => {
     activeCodeScanner = isActive === true ? ((codeScanner as MockCodeScanner) ?? null) : null;
     return createElement("div", { "data-testid": testID });
   },

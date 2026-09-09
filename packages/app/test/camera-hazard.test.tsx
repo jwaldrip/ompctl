@@ -17,6 +17,7 @@ import "./rnw.ts";
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }

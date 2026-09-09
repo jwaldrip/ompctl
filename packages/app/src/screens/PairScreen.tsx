@@ -22,9 +22,9 @@ import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
-import type { Connection } from "../platform/connection.ts";
 import type { CameraAvailability } from "../platform/camera.ts";
 import { cameraAvailability } from "../platform/camera.ts";
+import type { Connection } from "../platform/connection.ts";
 // Extensionless on purpose: Metro picks `e2e-plaintext.ios.ts` for iOS and the
 // plain module everywhere else. Naming the extension would defeat that and
 // hand every platform the same answer.

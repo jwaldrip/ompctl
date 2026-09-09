@@ -13,8 +13,8 @@ import type { PairingBundle } from "@ompd/core/pairing";
 import { encodePairingBundle } from "@ompd/core/pairing";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { Connection } from "../src/platform/connection.ts";
 import type { CameraSeam } from "../src/platform/camera.ts";
+import type { Connection } from "../src/platform/connection.ts";
 import { mockCameraSeam, resetCameraMock, scanCode, setCameraAvailability } from "./rnw.ts";
 
 // Dynamic on purpose, the same way `pair-screen.test.tsx` loads its screen:
