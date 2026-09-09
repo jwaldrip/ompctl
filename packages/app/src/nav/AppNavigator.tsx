@@ -27,6 +27,8 @@
  * test from a canned state.
  */
 
+import type { ArtifactItem } from "../artifacts/index.ts";
+import { ArtifactViewerScreen } from "../artifacts/index.ts";
 import type { AgentId } from "@ompd/core/contracts";
 import { NavigationContainer, StackActions, useNavigationContainerRef } from "@react-navigation/native";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -55,6 +57,10 @@ export type ShellParamList = {
   settings: undefined;
   routines: undefined;
   stats: undefined;
+  artifactViewer: {
+    artifact: ArtifactItem;
+    artifacts?: readonly ArtifactItem[];
+  };
 };
 
 /** Which detail surface the console model says is open. */
@@ -259,6 +265,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
           <Stack.Screen name="settings" component={SettingsRoute} options={SETTINGS_OPTIONS} />
           <Stack.Screen name="routines" component={RoutinesRoute} options={ROUTINES_OPTIONS} />
           <Stack.Screen name="stats" component={StatsRoute} options={STATS_OPTIONS} />
+          <Stack.Screen name="artifactViewer" component={ArtifactViewerRoute} options={OWN_CHROME} />
         </Stack.Navigator>
       </NavigationContainer>
     </SurfaceContext.Provider>
@@ -331,6 +338,22 @@ function CoworkRoute({ navigation }: NativeStackScreenProps<ShellParamList, "cow
 
 function StatsRoute({ navigation }: NativeStackScreenProps<ShellParamList, "stats">): JSX.Element {
   return useSurfaces().stats(() => navigation.goBack());
+}
+
+function ArtifactViewerRoute({
+  route,
+  navigation,
+}: NativeStackScreenProps<ShellParamList, "artifactViewer">): JSX.Element {
+  return (
+    <ArtifactViewerScreen
+      artifact={route.params.artifact}
+      artifacts={route.params.artifacts}
+      onBack={() => navigation.goBack()}
+      onSelectArtifact={item => {
+        navigation.setParams({ artifact: item });
+      }}
+    />
+  );
 }
 type MenuNavigation = NativeStackNavigationProp<ShellParamList, "menu">;
 

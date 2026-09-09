@@ -21,7 +21,7 @@ import type { JSX } from "react";
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { CloneProgress } from "../components/CloneProgress.tsx";
-import { Glyph } from "../design/icons.tsx";
+import { Glyph, type GlyphName } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Code, Kicker, Label, Title } from "../design/text.tsx";
@@ -40,6 +40,8 @@ export interface BrowseScreenProps {
   onCloneHere: (url: string) => void;
   onDismissNotice: () => void;
   onDismissClone: () => void;
+  /** Open a file entry in the artifact viewer. */
+  onOpenFile?: (entry: FsEntry, fullPath: string) => void;
   /** Leave the screen. Absent, the back affordance is not drawn. */
   onBack?: () => void;
 }
@@ -54,6 +56,7 @@ export function BrowseScreen({
   onCloneHere,
   onDismissNotice,
   onDismissClone,
+  onOpenFile,
   onBack,
 }: BrowseScreenProps): JSX.Element {
   const [url, setUrl] = useState("");
@@ -104,14 +107,28 @@ export function BrowseScreen({
       )}
 
       <ScrollView style={styles.list} contentContainerStyle={styles.listContent} testID="browse-entries">
-        {state.entries.map(entry => (
-          <EntryRow
-            entry={entry}
-            key={entry.name}
-            onPress={() => (atRoots ? onOpenPath(entry.name) : onOpenChild(entry.name))}
-            showFullPath={atRoots}
-          />
-        ))}
+        {state.entries.map(entry => {
+          const fullPath = atRoots ? entry.name : state.path === "" ? entry.name : `${state.path}/${entry.name}`;
+          const isFile = entry.kind === "file";
+          const handlePress = () => {
+            if (isFile && onOpenFile !== undefined) {
+              onOpenFile(entry, fullPath);
+            } else if (atRoots) {
+              onOpenPath(entry.name);
+            } else {
+              onOpenChild(entry.name);
+            }
+          };
+          return (
+            <EntryRow
+              canOpenFile={onOpenFile !== undefined}
+              entry={entry}
+              key={entry.name}
+              onPress={handlePress}
+              showFullPath={atRoots}
+            />
+          );
+        })}
         {state.entries.length === 0 && !state.loading ? (
           <Body color={ink.muted} testID="browse-empty">
             {atRoots ? "This daemon is configured to browse nothing." : "Nothing in here."}
@@ -182,17 +199,33 @@ export function BrowseScreen({
   );
 }
 
+function getFileGlyph(name: string): GlyphName {
+  const dot = name.lastIndexOf(".");
+  const ext = dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
+  if (ext === "html" || ext === "htm") return "browser";
+  if (ext === "diff" || ext === "patch") return "edit";
+  if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "webp" || ext === "svg") {
+    return "attachment";
+  }
+  if (ext === "mp4" || ext === "webm" || ext === "mov" || ext === "mkv") return "resume";
+  return "read";
+}
+
 function EntryRow({
   entry,
   onPress,
   showFullPath,
+  canOpenFile = false,
 }: {
   entry: FsEntry;
   onPress: () => void;
   /** Roots are absolute, so their row shows the whole path rather than a name. */
   showFullPath: boolean;
+  canOpenFile?: boolean;
 }): JSX.Element {
-  const openable = entry.kind !== "file";
+  const openable = entry.kind !== "file" || canOpenFile;
+  const glyphName: GlyphName =
+    entry.kind === "dir" ? "folder" : entry.kind === "link" ? "symlink" : getFileGlyph(entry.name);
   return (
     <Pressable
       accessibilityRole="button"
@@ -203,11 +236,11 @@ function EntryRow({
       testID={`browse-entry-${entry.name}`}
     >
       <Glyph
-        name={entry.kind === "dir" ? "folder" : entry.kind === "link" ? "symlink" : "read"}
-        color={entry.kind === "file" ? ink.faint : ink.plain}
+        name={glyphName}
+        color={entry.kind === "file" && !openable ? ink.faint : ink.plain}
       />
       <Label
-        color={entry.kind === "file" ? ink.muted : ink.bright}
+        color={entry.kind === "file" && !openable ? ink.muted : ink.bright}
         numberOfLines={1}
         style={styles.entryName}
         testID={showFullPath ? `browse-root-${entry.name}` : undefined}
