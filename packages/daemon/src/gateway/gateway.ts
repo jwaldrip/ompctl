@@ -86,8 +86,8 @@ import { CollabGuests } from "../collab/guests.ts";
 import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData } from "../collab/relay.ts";
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
-import { ProviderRefusal, type ProvidersService } from "../providers/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
+import { ProviderRefusal, type ProvidersService } from "../providers/index.ts";
 import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { listSubagentTranscripts, subagentTranscriptPath } from "../sessions/subagents.ts";
@@ -4081,10 +4081,7 @@ export class Gateway {
     }
   }
 
-  #serveProviderDisconnect(
-    ws: GatewaySocket,
-    frame: Extract<ClientFrame, { t: "provider_disconnect" }>,
-  ): void {
+  #serveProviderDisconnect(ws: GatewaySocket, frame: Extract<ClientFrame, { t: "provider_disconnect" }>): void {
     if (!ws.data.scopes.has(SCOPE_MANAGE)) {
       this.#send(ws, { t: "error", code: "unauthorized", message: "provider_disconnect requires manage scope" });
       return;
@@ -4132,7 +4129,6 @@ export class Gateway {
       });
     }
   }
-
 
   // -- websocket -------------------------------------------------------------
 

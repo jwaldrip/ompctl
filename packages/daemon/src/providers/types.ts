@@ -14,12 +14,7 @@ import type {
 
 export type { GitProvider, ProviderConnectionStatus, ProviderRepo, ProviderStatusMap };
 
-export type ProviderRefusalCode =
-  | "credential_expired"
-  | "not_connected"
-  | "api_error"
-  | "bad_request"
-  | "auth_failed";
+export type ProviderRefusalCode = "credential_expired" | "not_connected" | "api_error" | "bad_request" | "auth_failed";
 
 export class ProviderRefusal extends Error {
   readonly code: ProviderRefusalCode;

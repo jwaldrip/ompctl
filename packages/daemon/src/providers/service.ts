@@ -11,8 +11,8 @@
  */
 
 import { join } from "node:path";
-import { openVault } from "../mcpauth/vault.ts";
 import type { SecretVault, VaultBackend } from "../mcpauth/types.ts";
+import { openVault } from "../mcpauth/vault.ts";
 import { ProviderStore } from "./store.ts";
 import {
   type DeviceCodeResponse,

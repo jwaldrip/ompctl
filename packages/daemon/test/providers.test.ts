@@ -8,16 +8,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { Server } from "bun";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Server } from "bun";
 import { Filesystem } from "../src/filesystem/index.ts";
-import {
-  ProviderRefusal,
-  type ProviderRepo,
-  ProvidersService,
-} from "../src/providers/index.ts";
+import { ProviderRefusal, type ProviderRepo, ProvidersService } from "../src/providers/index.ts";
 
 const scratch: string[] = [];
 
@@ -125,7 +121,10 @@ describe("providers daemon service", () => {
           return Response.json(items, {
             headers: {
               "Content-Type": "application/json",
-              Link: end < filtered.length ? `<${url.origin}/user/repos?page=${page + 1}&per_page=${perPage}>; rel="next"` : "",
+              Link:
+                end < filtered.length
+                  ? `<${url.origin}/user/repos?page=${page + 1}&per_page=${perPage}>; rel="next"`
+                  : "",
             },
           });
         }

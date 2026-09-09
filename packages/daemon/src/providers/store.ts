@@ -99,15 +99,7 @@ export class ProviderStore {
           provider, username, scopes, expires_at, created_at, updated_at, secret_blob
         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(
-        input.provider,
-        input.username,
-        input.scopes,
-        input.expiresAt ?? null,
-        createdAt,
-        now,
-        secretBlob,
-      );
+      .run(input.provider, input.username, input.scopes, input.expiresAt ?? null, createdAt, now, secretBlob);
 
     return {
       provider: input.provider,

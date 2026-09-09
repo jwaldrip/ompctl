@@ -10,10 +10,11 @@
 import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
+import type { ProviderRepo } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ProviderRepo } from "@ompd/core/contracts";
+
 // rnw.ts registers react-native-web mocks before react-native components evaluate
 const { RepositoryPicker } = await import("../src/components/ProjectPicker.tsx");
 
@@ -52,12 +53,7 @@ const sampleRepos: ProviderRepo[] = [
 describe("repository picker rendered surface", () => {
   test("the picker lists repositories", () => {
     const html = renderToStaticMarkup(
-      <RepositoryPicker
-        connected={true}
-        repos={sampleRepos}
-        inline={true}
-        onSelectRepo={() => {}}
-      />,
+      <RepositoryPicker connected={true} repos={sampleRepos} inline={true} onSelectRepo={() => {}} />,
     );
 
     expect(html).toContain('data-testid="repo-picker-item-alpha-tool"');
@@ -99,12 +95,7 @@ describe("repository picker rendered surface", () => {
 
   test("falls back to URL entry when no provider is connected", () => {
     const html = renderToStaticMarkup(
-      <RepositoryPicker
-        connected={false}
-        repos={[]}
-        inline={true}
-        onSelectUrl={() => {}}
-      />,
+      <RepositoryPicker connected={false} repos={[]} inline={true} onSelectUrl={() => {}} />,
     );
 
     expect(html).toContain('data-testid="repo-picker-url-input"');

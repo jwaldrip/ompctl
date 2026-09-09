@@ -13,7 +13,16 @@
 import type { GitProvider, ProviderRepo } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
-import { FlatList, Modal, Pressable, type PressableStateCallbackType, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  FlatList,
+  Modal,
+  Pressable,
+  type PressableStateCallbackType,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
@@ -507,7 +516,9 @@ export function RepositoryPicker({
     >
       <View style={styles.header}>
         <View style={repoStyles.headerCopy}>
-          <Kicker>{showUrlInput ? "Clone from URL" : `Clone from ${provider === "gitlab" ? "GitLab" : "GitHub"}`}</Kicker>
+          <Kicker>
+            {showUrlInput ? "Clone from URL" : `Clone from ${provider === "gitlab" ? "GitLab" : "GitHub"}`}
+          </Kicker>
           <Title heading numberOfLines={1}>
             {showUrlInput ? "Enter repository URL" : "Choose a repository"}
           </Title>
@@ -633,10 +644,7 @@ export function RepositoryPicker({
                     <Body color={ink.bright} numberOfLines={1}>
                       {item.name}
                     </Body>
-                    <Label
-                      color={item.isPrivate ? signal.holding : signal.ready}
-                      style={repoStyles.badge}
-                    >
+                    <Label color={item.isPrivate ? signal.holding : signal.ready} style={repoStyles.badge}>
                       {item.isPrivate ? "private" : "public"}
                     </Label>
                   </View>
