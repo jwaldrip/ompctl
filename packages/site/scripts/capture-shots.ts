@@ -190,6 +190,7 @@ export function assembleSensitiveStrings(): SensitiveTargetSet {
     "ompctl", "ompd", "daemon", "agent", "session", "switch", "work", "server",
     "para", "scratch", "main", "test", "host", "socket", "fleet", "hub", "client",
     "model", "app", "web", "android", "ios", "macos", "windows", "dev", "src",
+    "docs", "documentation", "core", "api", "cli",
   ]);
 
   const sessionsDir = resolve(process.env.HOME ?? "", ".omp/agent/sessions");
@@ -242,38 +243,62 @@ export function assembleSensitiveStrings(): SensitiveTargetSet {
   };
 }
 
-/** Check DOM text and innerHTML for any leakage of sensitive targets. */
+/**
+ * Structural Allowlist Verifier:
+ * Asserts no private targets, no raw thread/message IDs, no email addresses,
+ * no Google/Gmail references, and no third-party extensions (Speechify) appear
+ * in the captured DOM.
+ */
 export function checkDomForLeaks(domText: string, targets: SensitiveTargetSet): string[] {
   const lower = domText.toLowerCase();
   const leaks: string[] = [];
 
+  // 1. Client and org names
   for (const name of targets.clientAndOrgNames) {
     if (lower.includes(name)) {
       leaks.push(`client/org:${name}`);
     }
   }
 
+  // 2. Session titles
   for (const title of targets.sessionTitles) {
     if (lower.includes(title)) {
       leaks.push(`title:${title}`);
     }
   }
 
+  // 3. Directories
   for (const dir of targets.directories) {
     if (lower.includes(dir)) {
       leaks.push(`directory:${dir}`);
     }
   }
 
+  // 4. Email addresses
+  const emailMatch = domText.match(/[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/);
+  if (emailMatch && emailMatch[0] !== "developer@example.com") {
+    leaks.push(`email:${emailMatch[0]}`);
+  }
+
+  // 5. Raw thread / message IDs
+  const hexIdMatch = domText.match(/\b1[a-f0-9]{15,}\b/);
+  if (hexIdMatch) {
+    leaks.push(`raw_hex_id:${hexIdMatch[0]}`);
+  }
+
+  // 6. Gmail / mailbox references
+  if (lower.includes("gmail") || lower.includes("threadid") || lower.includes("firebaseapp")) {
+    leaks.push("unapproved_content:gmail/mailbox_payload");
+  }
+
+  // 7. Speechify browser extension toolbar
+  if (lower.includes("speechify") || domText.includes("speechify-")) {
+    leaks.push("extension_chrome:speechify_toolbar");
+  }
+
   return leaks;
 }
 
-/**
- * Allowlist DOM Sanitizer:
- * Unconditionally replaces every session title, working directory, device name,
- * agent/subagent name, and transcript string with deterministic synthetic values.
- * Nothing passes through on pattern non-match.
- */
 export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
   await page.evaluate((data) => {
     function fnv1a(str: string): number {
@@ -284,7 +309,21 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
       return Math.abs(h);
     }
 
-    // 1. Top header titles
+    // 1. Remove Speechify browser extension completely
+    const allDomEls = Array.from(document.querySelectorAll("*"));
+    for (const el of allDomEls) {
+      const id = (el.id || "").toLowerCase();
+      const cls = typeof el.className === "string" ? el.className.toLowerCase() : "";
+      const tag = el.tagName.toLowerCase();
+      if (id.includes("speechify") || cls.includes("speechify") || tag.includes("speechify")) {
+        el.remove();
+      }
+    }
+
+    // 2. Dismiss any resume modal
+    (document.querySelector('[data-testid="resume-nudge-close"]') as HTMLElement | null)?.click();
+
+    // 3. Top header titles
     const allDivs = Array.from(document.querySelectorAll('div[dir="auto"], span'));
     for (const d of allDivs) {
       if (d.textContent && /^Cloud \d+$/i.test(d.textContent.trim())) {
@@ -292,7 +331,7 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
       }
     }
 
-    // 2. Fleet list rows: unconditional replacement of title, cwd, aria-labels
+    // 4. Fleet list rows: unconditional replacement of title, cwd, aria-labels
     const rows = Array.from(document.querySelectorAll('[data-testid^="session-row-"], [data-testid^="session-open-"]'));
     const seenRows = new Set<Element>();
     rows.forEach((r, idx) => {
@@ -341,7 +380,7 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
       }
     });
 
-    // 3. Group headers & group paths & data-testid attributes
+    // 5. Group headers & group paths & data-testid attributes
     const groupPaths = Array.from(document.querySelectorAll('[data-testid^="group-path-"]'));
     groupPaths.forEach((el, idx) => {
       const p = data.projects[idx % data.projects.length] ?? data.projects[0]!;
@@ -356,7 +395,7 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
       el.setAttribute("aria-label", `${p.path}, active sessions`);
     });
 
-    // 4. Active session header
+    // 6. Active session header
     const termTitle = document.querySelector('[data-testid="terminal-title"]');
     if (termTitle) {
       termTitle.textContent = data.titles[0] ?? "";
@@ -373,7 +412,7 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
       el.textContent = "…/" + proj.path.split("/").slice(-2).join("/");
     }
 
-    // 5. Subagents band
+    // 7. Subagents band
     const subRows = Array.from(document.querySelectorAll('[data-testid^="subagent-transcript-"]'));
     subRows.forEach((sr, idx) => {
       const sa = data.subagents[idx % data.subagents.length] ?? data.subagents[0]!;
@@ -399,18 +438,70 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
       snEl.setAttribute("data-testid", `subagent-name-${idx}`);
     });
 
-    // 6. Transcript entries & thinking & tool cards
-    const says = Array.from(document.querySelectorAll('[data-testid="transcript-say"]'));
-    says.forEach((s, idx) => {
-      s.textContent = data.prompts[idx % data.prompts.length] ?? "";
+    // 8. WHOLESALE TRANSCRIPT REPLACEMENT (No real content allowed to reach capture)
+    // User prompts
+    const userEntries = Array.from(document.querySelectorAll('[data-testid="entry-user"], [data-testid="transcript-say"]'));
+    userEntries.forEach((ue, idx) => {
+      ue.textContent = data.prompts[idx % data.prompts.length] ?? data.prompts[0]!;
     });
 
-    const summaries = Array.from(document.querySelectorAll('[data-testid="thinking-summary"]'));
-    summaries.forEach((ts, idx) => {
-      ts.textContent = data.thinking[idx % data.thinking.length] ?? "";
+    // Thinking blocks: replace text, aria-labels, and parent aria-labels
+    const thinkingSummaries = Array.from(document.querySelectorAll('[data-testid*="thinking-summary"], [data-testid="terminal-thinking"]'));
+    thinkingSummaries.forEach((th, idx) => {
+      const summary = data.thinking[idx % data.thinking.length] ?? data.thinking[0]!;
+      th.textContent = summary;
+      th.setAttribute("aria-label", `thinking: ${summary}`);
+      if (th.parentElement?.hasAttribute("aria-label")) {
+        th.parentElement.setAttribute("aria-label", `thinking: ${summary}`);
+      }
     });
 
-    // 7. Universal attribute sanitizer on ALL elements
+    const thinkingArias = Array.from(document.querySelectorAll('[aria-label*="thinking:"]'));
+    thinkingArias.forEach((el, idx) => {
+      const summary = data.thinking[idx % data.thinking.length] ?? data.thinking[0]!;
+      el.setAttribute("aria-label", `thinking: ${summary}`);
+    });
+    // Tool outputs
+    const toolOutputs = Array.from(document.querySelectorAll('[data-testid*="tool-output"]'));
+    toolOutputs.forEach((to, idx) => {
+      const item = data.commands[idx % data.commands.length] ?? data.commands[0]!;
+      to.textContent = item.output;
+    });
+
+    // Tool summaries
+    const toolSummaries = Array.from(document.querySelectorAll('[data-testid*="tool-summary"]'));
+    toolSummaries.forEach((ts, idx) => {
+      const item = data.commands[idx % data.commands.length] ?? data.commands[0]!;
+      ts.textContent = item.output.split("\n")[0] ?? "PASS";
+    });
+
+    // Tool titles
+    const toolTitles = Array.from(document.querySelectorAll('[data-testid*="tool-title"]'));
+    toolTitles.forEach((tt) => {
+      tt.textContent = "eval";
+    });
+
+    // Tool statuses
+    const toolStatuses = Array.from(document.querySelectorAll('[data-testid*="tool-status"]:not([data-testid$="-container"])'));
+    toolStatuses.forEach((st) => {
+      st.textContent = "completed";
+    });
+
+    // Assistant prose entries (outside tool cards)
+    const assistantEntries = Array.from(document.querySelectorAll('[data-testid="entry-assistant"]'));
+    assistantEntries.forEach((ae) => {
+      if (!ae.querySelector('[data-testid*="tool-"]')) {
+        ae.textContent = "I have profiled the memory allocations during the connection lifecycle. The connection pool now reuses buffers with zero heap allocations during reconnects.";
+      }
+    });
+
+    // All code and pre blocks
+    document.querySelectorAll("pre, code").forEach((el, idx) => {
+      const item = data.commands[idx % data.commands.length] ?? data.commands[0]!;
+      el.textContent = item.output;
+    });
+
+    // 9. Universal attribute sanitizer on ALL elements
     const allElements = Array.from(document.querySelectorAll("*"));
     for (const el of allElements) {
       for (const attr of Array.from(el.attributes)) {
@@ -446,7 +537,7 @@ export async function sanitizeDomForPublicShot(page: Page): Promise<void> {
       }
     }
 
-    // 8. Universal defense-in-depth text node pass
+    // 10. Universal defense-in-depth text node pass
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let node: Node | null = walk.nextNode();
     while (node !== null) {
@@ -524,12 +615,12 @@ export async function assertFrameHealthy(frameName: string, page: Page): Promise
       }
     } else if (frame.includes("03-desktop-split-view")) {
       const rows = document.querySelectorAll('[data-testid^="session-open-"]');
-      const log = document.querySelector('[data-testid="terminal-log"], [data-testid="transcript-entry"], [data-testid="terminal-composer-surface"]');
+      const log = document.querySelector('[data-testid="terminal-log"], [data-testid="transcript-entry"], [data-testid="terminal-composer-surface"], [data-testid="aui-messages"], [data-testid="aui-thread"], [data-testid="session"]');
       if (rows.length === 0 || !log) {
         return { ok: false, error: "Desktop split view missing session list or transcript pane" };
       }
     } else if (frame.includes("04-session-transcript")) {
-      const log = document.querySelector('[data-testid="terminal-log"], [data-testid="transcript-entry"], [data-testid="terminal-composer-surface"]');
+      const log = document.querySelector('[data-testid="terminal-log"], [data-testid="transcript-entry"], [data-testid="terminal-composer-surface"], [data-testid="aui-messages"], [data-testid="aui-thread"], [data-testid="session"]');
       if (!log) {
         return { ok: false, error: "Session transcript is not rendered" };
       }
@@ -586,6 +677,26 @@ export async function runLeakProofTest(pairLink: string, browser: Browser): Prom
     await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
     await page.goto(pairLink, { waitUntil: "networkidle2" });
     await Bun.sleep(2500);
+
+    // Open a live session so the transcript/tool-output is mounted
+    const sel = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll('[data-testid^="session-open-"]'));
+      for (const r of rows) {
+        const tid = r.getAttribute("data-testid");
+        if (tid && tid.includes("01a07f16")) return `[data-testid="${tid}"]`;
+      }
+      return rows[0] ? `[data-testid="${rows[0].getAttribute("data-testid")}"]` : null;
+    });
+    if (sel) {
+      const c = await page.evaluate((s) => {
+        const r = document.querySelector(s)?.getBoundingClientRect();
+        return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
+      }, sel);
+      if (c) {
+        await page.mouse.click(c.x, c.y);
+        await Bun.sleep(2500);
+      }
+    }
 
     // STEP 1: Verify check FAILS on unsanitized DOM
     console.log("\n[LEAK TEST 1: Unsanitized DOM]");
