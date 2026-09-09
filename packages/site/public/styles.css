@@ -4,7 +4,6 @@
 :root {
   --ground-base: #0a0c10;
   --ground-surface: #11151c;
-  --ground-raised: #181d26;
   --ground-line: #1c2230;
   --ground-edge: #262d38;
   --ink-bright: #f4f7fb;
@@ -625,9 +624,6 @@ tbody th code {
     max-width: 190px;
   }
 
-  .pairing .phone-plate {
-    max-width: 156px;
-  }
 
   .route {
     gap: 24px;

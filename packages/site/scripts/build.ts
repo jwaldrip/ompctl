@@ -10,7 +10,7 @@
  *  - no image is referenced that is not shipped, and no image is shipped that
  *    nothing references, because a stale 300KB capture is dead weight a reviewer
  *    will not notice;
- *  - every internal anchor points at an id that exists in the document.
+ *  - every internal anchor points at a unique id in the document.
  *
  * A build that only copied files would exit 0 on a site with a missing hero
  * image, which makes its exit code worthless as a gate.
