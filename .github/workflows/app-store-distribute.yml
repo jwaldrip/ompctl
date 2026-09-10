@@ -45,6 +45,17 @@ jobs:
       OMPD_UPLOAD: ${{ github.event_name == 'push' && 'true' || github.event.inputs.upload }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve build number
+        run: |
+          source ./scripts/lib/version.sh
+          ompd_version__resolve
+          echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME" >> "$GITHUB_ENV"
+          echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION" >> "$GITHUB_ENV"
+          echo "Resolved build number: $OMPD_BUILD_NUMBER (version $OMPD_VERSION_NAME)"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -127,6 +138,17 @@ jobs:
       OMPD_UPLOAD: ${{ github.event_name == 'push' && 'true' || github.event.inputs.upload }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve build number
+        run: |
+          source ./scripts/lib/version.sh
+          ompd_version__resolve
+          echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME" >> "$GITHUB_ENV"
+          echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION" >> "$GITHUB_ENV"
+          echo "Resolved build number: $OMPD_BUILD_NUMBER (version $OMPD_VERSION_NAME)"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -212,6 +234,17 @@ jobs:
       OMPD_UPLOAD: ${{ github.event_name == 'push' && 'true' || github.event.inputs.upload }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve build number
+        run: |
+          source ./scripts/lib/version.sh
+          ompd_version__resolve
+          echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME" >> "$GITHUB_ENV"
+          echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION" >> "$GITHUB_ENV"
+          echo "Resolved build number: $OMPD_BUILD_NUMBER (version $OMPD_VERSION_NAME)"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -300,6 +333,18 @@ jobs:
         working-directory: packages/app
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve build number
+        shell: bash
+        run: |
+          source ./scripts/lib/version.sh
+          ompd_version__resolve
+          echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME" >> "$GITHUB_ENV"
+          echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION" >> "$GITHUB_ENV"
+          echo "Resolved build number: $OMPD_BUILD_NUMBER (version $OMPD_VERSION_NAME)"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"

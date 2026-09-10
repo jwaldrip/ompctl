@@ -13,8 +13,9 @@ import type { PairingBundle } from "@ompd/core/pairing";
 import { encodePairingBundle } from "@ompd/core/pairing";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import type { CameraSeam } from "../src/platform/camera.ts";
 import type { Connection } from "../src/platform/connection.ts";
-import { resetCameraMock, scanCode, setCameraAvailability } from "./rnw.ts";
+import { mockCameraSeam, resetCameraMock, scanCode, setCameraAvailability } from "./rnw.ts";
 
 // Dynamic on purpose, the same way `pair-screen.test.tsx` loads its screen:
 // bun evaluates a file's whole static import graph before its body runs, so a
@@ -48,7 +49,7 @@ interface Harness {
   unmount: () => void;
 }
 
-function mountScanScreen(): Harness {
+function mountScanScreen(camera: CameraSeam = mockCameraSeam): Harness {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -58,6 +59,7 @@ function mountScanScreen(): Harness {
   act(() => {
     root.render(
       <ScanScreen
+        camera={camera}
         onCancel={() => {
           cancelled += 1;
         }}
@@ -160,6 +162,79 @@ describe("ScanScreen: a decode is not a pairing", () => {
     expect(el(h.host, "scan-invalid")).not.toBeNull();
     h.unmount();
   });
+  test("scans a hub bundle carrying the formatted credential and unwraps it for connection", () => {
+    const daemon = `dmn_${"7".repeat(64)}`;
+    const formattedToken = `${"7".repeat(64)}.tok_scanned_hub`;
+    const hubBundle: PairingBundle = {
+      v: 1,
+      label: "My Phone",
+      connection: {
+        transport: "hub",
+        hubUrl: "wss://hub.example.com",
+        daemonId: daemon,
+        token: formattedToken,
+        scopes: ["read", "prompt"],
+      },
+    };
+
+    const h = mountScanScreen();
+    act(() => {
+      scanCode(encodePairingBundle(hubBundle));
+    });
+
+    const confirm = el(h.host, "scan-confirm");
+    expect(confirm).not.toBeNull();
+    expect(confirm?.textContent).toContain("My Phone");
+
+    act(() => {
+      el(h.host, "scan-confirm-accept")?.click();
+    });
+
+    expect(h.scanned).toEqual([
+      {
+        connection: {
+          transport: "hub",
+          hubUrl: "wss://hub.example.com",
+          daemonId: daemon,
+          token: "tok_scanned_hub",
+          scopes: ["read", "prompt"],
+        },
+        label: "My Phone",
+      },
+    ]);
+    h.unmount();
+  });
+
+  test("scans a deep-link URL carrying the formatted credential and accepts it", () => {
+    const daemon = `dmn_${"8".repeat(64)}`;
+    const deepLinkUrl = `https://app.ompctl.ai/pair?hub=hub.example.com&scopes=read,prompt#token=${"8".repeat(64)}.tok_deeplink_qr`;
+
+    const h = mountScanScreen();
+    act(() => {
+      scanCode(deepLinkUrl);
+    });
+
+    const confirm = el(h.host, "scan-confirm");
+    expect(confirm).not.toBeNull();
+
+    act(() => {
+      el(h.host, "scan-confirm-accept")?.click();
+    });
+
+    expect(h.scanned).toEqual([
+      {
+        connection: {
+          transport: "hub",
+          hubUrl: "wss://hub.example.com",
+          daemonId: daemon,
+          token: "tok_deeplink_qr",
+          scopes: ["read", "prompt"],
+        },
+        label: "Scanned device",
+      },
+    ]);
+    h.unmount();
+  });
 
   test("cancelling the screen reports back without ever having scanned anything", () => {
     const h = mountScanScreen();
@@ -176,6 +251,43 @@ describe("ScanScreen: a decode is not a pairing", () => {
     const h = mountScanScreen();
     expect(el(h.host, "scan-permission")).not.toBeNull();
     expect(el(h.host, "scan-camera")).toBeNull();
+    h.unmount();
+  });
+});
+
+describe("ScanScreen: camera availability as a value", () => {
+  test("with camera available, the screen mounts with camera viewfinder active", () => {
+    const h = mountScanScreen(mockCameraSeam);
+    expect(el(h.host, "scan-camera")).not.toBeNull();
+    expect(el(h.host, "scan-no-device")).toBeNull();
+    h.unmount();
+  });
+
+  test("with camera unavailable, mounting the screen does not throw and renders refusal reason", () => {
+    const unavailableSeam: CameraSeam = {
+      availability: {
+        available: false,
+        reason: "Scanning is unavailable on macOS: this build has no camera scanner module.",
+      },
+    };
+
+    let h!: Harness;
+    expect(() => {
+      h = mountScanScreen(unavailableSeam);
+    }).not.toThrow();
+
+    expect(el(h.host, "scan-camera")).toBeNull();
+    const noDevice = el(h.host, "scan-no-device");
+    expect(noDevice).not.toBeNull();
+    expect(noDevice?.textContent).toContain(
+      "Scanning is unavailable on macOS: this build has no camera scanner module.",
+    );
+    expect(noDevice?.textContent).toContain("Paste the endpoint and token instead.");
+
+    act(() => {
+      el(h.host, "scan-cancel")?.click();
+    });
+    expect(h.cancelled).toBe(1);
     h.unmount();
   });
 });

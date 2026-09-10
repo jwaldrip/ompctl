@@ -6,9 +6,11 @@
  */
 
 import type { DashboardStats } from "@ompd/core/contracts";
+import type { ClientErrorEvent, OmpdClient, StatsEvent, StatusEvent } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { createOmpdClient } from "../console/useConsole.ts";
 import { formatTokens } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
@@ -16,24 +18,25 @@ import { Body, Data, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
 
+export interface StatsClient {
+  stats(range?: string): void;
+  on(event: "stats", listener: (event: StatsEvent) => void): () => void;
+  on(event: "error", listener: (event: ClientErrorEvent) => void): () => void;
+  on(event: "status", listener: (event: StatusEvent) => void): () => void;
+  start?(): void;
+  close?(): void;
+}
+
 export interface StatsScreenProps {
   connection?: Connection;
   stats?: DashboardStats;
+  client?: StatsClient;
+  createClient?: (connection: Connection) => OmpdClient;
   onBack: () => void;
 }
 
 const RANGES = ["24h", "7d", "30d", "all"] as const;
 type Range = (typeof RANGES)[number];
-
-function restRoot(socketUrl: string): string | null {
-  try {
-    const url = new URL(socketUrl);
-    const protocol = url.protocol === "wss:" ? "https:" : "http:";
-    return `${protocol}//${url.host}`;
-  } catch {
-    return null;
-  }
-}
 
 function formatCost(n: number): string {
   if (!Number.isFinite(n)) return "--";
@@ -61,42 +64,32 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function StatsScreen({ connection, stats: initialStats, onBack }: StatsScreenProps): JSX.Element {
+export function StatsScreen({
+  connection,
+  stats: initialStats,
+  client: externalClient,
+  createClient = createOmpdClient,
+  onBack,
+}: StatsScreenProps): JSX.Element {
   const [range, setRange] = useState<Range>("7d");
   const [loadedStats, setLoadedStats] = useState<DashboardStats | null>(initialStats ?? null);
-  const [loading, setLoading] = useState<boolean>(initialStats === undefined);
+  const [loading, setLoading] = useState<boolean>(
+    initialStats === undefined && (externalClient !== undefined || connection !== undefined),
+  );
   const [error, setError] = useState<string | null>(null);
 
-  const fetchStats = useCallback(
-    async (selectedRange: Range) => {
-      if (!connection) return;
-      const root = connection.transport === "direct" ? restRoot(connection.url) : null;
-      if (!root) {
-        setError("HTTP stats are unavailable for this connection transport.");
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(`${root}/v1/stats?range=${selectedRange}`, {
-          headers: { Authorization: `Bearer ${connection.token}` },
-        });
-        if (!res.ok) {
-          setError(`HTTP ${res.status}: Failed to load stats`);
-          setLoading(false);
-          return;
-        }
-        const data = (await res.json()) as DashboardStats;
-        setLoadedStats(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load stats");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [connection],
-  );
+  const clientRef = useRef<StatsClient | null>(null);
+  if (externalClient) {
+    clientRef.current = externalClient;
+  } else if (clientRef.current === null && connection) {
+    clientRef.current = createClient(connection);
+  }
+  const client = clientRef.current;
+
+  // The selected range, readable from inside the subscription effect without
+  // becoming a dependency of it.
+  const rangeRef = useRef(range);
+  rangeRef.current = range;
 
   useEffect(() => {
     if (initialStats) {
@@ -104,8 +97,61 @@ export function StatsScreen({ connection, stats: initialStats, onBack }: StatsSc
       setLoading(false);
       return;
     }
-    void fetchStats(range);
-  }, [initialStats, fetchStats, range]);
+    if (!client) return;
+
+    setLoading(true);
+    setError(null);
+
+    const offs = [
+      client.on("stats", event => {
+        setLoadedStats(event.stats);
+        setLoading(false);
+        setError(null);
+      }),
+      client.on("error", event => {
+        const message =
+          event.code === "unknown_frame" && /\bstats\b/i.test(event.message)
+            ? "This daemon does not support Stats yet. Update ompd, then reconnect."
+            : event.message;
+        setError(message);
+        setLoading(false);
+      }),
+      client.on("status", event => {
+        if (event.state === "connected") {
+          // The range this reconnect should ask for is whatever is selected
+          // now, not whatever was selected when the subscription was built.
+          // Read through the ref rather than depending on `range`: a
+          // dependency would tear down and rebuild the whole subscription
+          // every time the operator changes range, and `onSelectRange`
+          // already issues that request directly.
+          client.stats(rangeRef.current);
+        }
+      }),
+    ];
+    client.start?.();
+    client.stats(rangeRef.current);
+
+    return () => {
+      for (const off of offs) {
+        if (off) off();
+      }
+      if (!externalClient) {
+        client.close?.();
+      }
+    };
+  }, [client, externalClient, initialStats]);
+
+  const onSelectRange = useCallback(
+    (newRange: Range) => {
+      setRange(newRange);
+      if (client) {
+        setLoading(true);
+        setError(null);
+        client.stats(newRange);
+      }
+    },
+    [client],
+  );
 
   const activeStats = initialStats ?? loadedStats;
 
@@ -145,8 +191,7 @@ export function StatsScreen({ connection, stats: initialStats, onBack }: StatsSc
               accessibilityRole="button"
               key={r}
               onPress={() => {
-                setRange(r);
-                if (connection) void fetchStats(r);
+                onSelectRange(r);
               }}
               style={[styles.rangePill, range === r && styles.rangePillActive]}
               testID={`stats-range-${r}`}

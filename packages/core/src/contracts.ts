@@ -1553,7 +1553,13 @@ export type ClientFrame =
    * Answered by `container_state`, to the asking socket only.
    */
   | { t: "container_state_read" }
-  | { t: "ping" };
+  | { t: "ping" }
+  /**
+   * Request aggregate dashboard stats (cost, tokens, latency across sessions).
+   * Answered by `stats`, to the asking socket only.
+   */
+  | { t: "stats"; range?: string }
+  | { t: "stats_read"; range?: string };
 
 export type ServerFrame =
   /**
@@ -1739,8 +1745,11 @@ export type ServerFrame =
   | { t: "task"; task: Task; requestId?: string }
   /** The agent an `agent_create` made, sent only to the socket that asked. */
   | { t: "agent_created"; agent: Agent; requestId?: string }
-  /** The cowork container state, carrying model broker readiness. */
-  | { t: "container_state"; modelBroker: ModelBrokerStatus }
+  /**
+   * The cowork container state: whether a model can be granted, and whether
+   * this machine has a container runtime to grant it to.
+   */
+  | { t: "container_state"; modelBroker: ModelBrokerStatus; runtime?: ContainerRuntimeStatus }
   /**
    * What a `routine_delete` did, one result per id asked for, sent only to the
    * socket that asked. Beside `sessions_deleted` rather than an error frame,
@@ -1814,7 +1823,12 @@ export type ServerFrame =
   | { t: "session_stats"; sessionId: string; stats: SessionStats }
   /** A prompt submitted with `deliverAs: "followUp"` while a turn was in flight has been queued. */
   | { t: "prompt_queued"; agentId: AgentId; queued: number }
-  | { t: "pong" };
+  | { t: "pong" }
+  /**
+   * System-wide dashboard stats answering `stats` or `stats_read`, sent only
+   * to the socket that asked.
+   */
+  | { t: "stats"; stats: DashboardStats; range?: string };
 // Audit
 // ---------------------------------------------------------------------------
 
@@ -2245,8 +2259,32 @@ export interface ModelBrokerStatus {
   reason: string | null;
 }
 
+/**
+ * Whether this daemon's machine can run a container at all.
+ *
+ * The other half of the same question the model broker answers, and it was
+ * missing: a phone could only find out that no container runtime was up by
+ * tapping Start and reading a refusal, which is the shape of a gate that hides
+ * its own precondition.
+ *
+ * `reason` is the failing runtime's own hint, which is the sentence naming the
+ * command to run. `label` is the selected runtime and version, so a ready state
+ * says which runtime it would use rather than only that one exists.
+ */
+export interface ContainerRuntimeStatus {
+  ready: boolean;
+  reason: string | null;
+  label: string | null;
+}
+
 export interface ContainerState {
   modelBroker: ModelBrokerStatus;
+  /**
+   * Optional on the wire, and read as "unknown" rather than "not ready" when
+   * absent: a phone build newer than the daemon it is paired to must not gate a
+   * container start on a field that daemon never sends.
+   */
+  runtime?: ContainerRuntimeStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -2547,6 +2585,30 @@ export interface FsListing {
 /** Opaque id correlating one clone's progress frames with its completion. */
 export type CloneId = string;
 
+export type GitProvider = "github" | "gitlab";
+
+export interface ProviderConnectionStatus {
+  connected: boolean;
+  username?: string;
+  scopes?: string[];
+  updatedAt?: string;
+}
+
+export type ProviderStatusMap = Record<GitProvider, ProviderConnectionStatus>;
+
+export interface ProviderRepo {
+  id: string;
+  name: string;
+  owner: string;
+  fullName: string;
+  description: string | null;
+  defaultBranch: string;
+  isPrivate: boolean;
+  lastPushedAt: string | null;
+  cloneUrl: string;
+  sshUrl?: string;
+}
+
 export type RemoteStartClientFrame =
   /**
    * Ask for one directory's entries. Omit `path` for the roots listing, which
@@ -2565,7 +2627,17 @@ export type RemoteStartClientFrame =
    * repository's own name. A url carrying a credential is refused rather than
    * run, because the alternative is a secret in an audit record.
    */
-  | { t: "repo_clone"; url: string; parent: string; name?: string };
+  | { t: "repo_clone"; url: string; parent: string; name?: string }
+  /** Ask for the status of connected Git providers. */
+  | { t: "provider_status" }
+  /** Start device-flow authorization for a provider. */
+  | { t: "provider_auth_start"; provider: GitProvider }
+  /** Poll authorization status for an active device code. */
+  | { t: "provider_auth_poll"; provider: GitProvider; deviceCode: string }
+  /** Disconnect and remove credentials for a provider. */
+  | { t: "provider_disconnect"; provider: GitProvider }
+  /** List repositories from a provider with pagination and optional query. */
+  | { t: "provider_repos_list"; provider: GitProvider; page?: number; perPage?: number; query?: string };
 
 export type RemoteStartServerFrame =
   | ({ t: "fs_listing" } & FsListing)
@@ -2575,7 +2647,31 @@ export type RemoteStartServerFrame =
    */
   | { t: "clone_progress"; cloneId: CloneId; line: string }
   /** The clone finished and `path` now exists. The terminal frame; failures use `error`. */
-  | { t: "clone_done"; cloneId: CloneId; path: string };
+  | { t: "clone_done"; cloneId: CloneId; path: string }
+  | { t: "provider_status"; providers: ProviderStatusMap }
+  | {
+      t: "provider_auth_device";
+      provider: GitProvider;
+      deviceCode: string;
+      userCode: string;
+      verificationUri: string;
+      expiresIn: number;
+      interval: number;
+    }
+  | {
+      t: "provider_auth_result";
+      provider: GitProvider;
+      status: "authorized" | "pending" | "slow_down" | "expired" | "denied";
+      username?: string;
+      error?: string;
+    }
+  | {
+      t: "provider_repos_listing";
+      provider: GitProvider;
+      page: number;
+      hasMore: boolean;
+      repos: ProviderRepo[];
+    };
 
 // ---------------------------------------------------------------------------
 // Stats

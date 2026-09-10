@@ -927,7 +927,10 @@ export class Ompd {
       connectors: { list: listConnectorCatalog },
       mcpAuth: this.#mcpAuth,
       tasks: this.#tasks,
-      containerState: () => ({ modelBroker: this.#containerBackend.modelBrokerState() }),
+      containerState: async () => ({
+        modelBroker: this.#containerBackend.modelBrokerState(),
+        runtime: await this.#containerBackend.runtimeState(),
+      }),
       syncConfig: {
         read: () => {
           const config = loadConfig(this.#home);

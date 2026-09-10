@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/lib/version.sh"
+ompd_version__resolve
 cd "$ROOT/ios"
 TEAM_ID="${OMPD_APPLE_TEAM_ID:?OMPD_APPLE_TEAM_ID is required}"
 OUT="${OMPD_IOS_ARCHIVE_DIR:-$ROOT/build/ios}"
@@ -34,6 +36,8 @@ xcodebuild \
   PRODUCT_BUNDLE_IDENTIFIER=ai.ompctl.app \
   CODE_SIGN_STYLE=Automatic \
   "${AUTH_ARGS[@]}" \
+  CURRENT_PROJECT_VERSION="$OMPD_BUILD_NUMBER" \
+  MARKETING_VERSION="$OMPD_VERSION_NAME" \
   archive
 
 EXPORT_PLIST="$OUT/ExportOptions.plist"
@@ -53,7 +57,7 @@ cat >"$EXPORT_PLIST" <<PLIST
   <key>uploadSymbols</key>
   <true/>
   <key>manageAppVersionAndBuildNumber</key>
-  <true/>
+  <${OMPD_MANAGE_APP_VERSION_AND_BUILD_NUMBER:-false}/>
 </dict>
 </plist>
 PLIST

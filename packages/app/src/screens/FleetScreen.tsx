@@ -28,11 +28,13 @@
 import type { Agent, AgentId } from "@ompd/core/contracts";
 import type { ConnectionState } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   FlatList,
+  Modal,
   Pressable,
   type PressableStateCallbackType,
+  ScrollView,
   SectionList,
   StyleSheet,
   TextInput,
@@ -44,12 +46,16 @@ import { SessionBoard } from "../components/SessionBoard.tsx";
 import { SessionRow } from "../components/SessionRow.tsx";
 import { SortBar } from "../components/SortBar.tsx";
 import type { ScopeAccess, TuiSessionState } from "../console/state.ts";
+import { shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
+import { useIsTablet } from "../design/layout.ts";
 import { useOwnedBottomInset } from "../design/SafeScreen.tsx";
-import { Body, Display, Kicker, Label } from "../design/text.tsx";
+import { Body, Display, Kicker, Label, Title } from "../design/text.tsx";
 import { brand, ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import type { Connection } from "../platform/connection.ts";
 import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
 import { browserView } from "../session/browser.ts";
+import { FolderPickerScreen } from "./FolderPickerScreen.tsx";
 /**
  * What the bay may honestly claim about the daemon.
  *
@@ -76,6 +82,13 @@ export interface FleetScreenProps {
   onOpen: (session: BrowserSession) => void;
   onArchive: (session: BrowserSession) => void;
   onUnarchive: (session: BrowserSession) => void;
+  manageAccess?: ScopeAccess;
+  /** Bulk archive a set of sessions. */
+  onArchiveBulk?: (sessionIds: readonly string[]) => void;
+  /** Start a new session in a working directory. */
+  onNewSession?: (cwd: string) => void;
+  /** Optional pairing connection for folder browsing. */
+  connection?: Connection;
   /** Destroy one session's transcript. The row takes the operator through a confirmation first. */
   onDelete: (session: BrowserSession) => void;
   /**
@@ -138,6 +151,10 @@ export function FleetScreen({
   onUnarchive,
   onDelete,
   deleteAccess,
+  manageAccess,
+  onArchiveBulk,
+  onNewSession,
+  connection,
   link,
   now,
   onSetProject,
@@ -148,6 +165,20 @@ export function FleetScreen({
   tuiSessions,
 }: FleetScreenProps): JSX.Element {
   // The list is the bottom-most surface in the bay, with no composer beneath
+  const isTablet = useIsTablet();
+  const effectiveManageAccess = manageAccess ?? deleteAccess;
+  const canManage = effectiveManageAccess !== "missing";
+
+  const [newSessionPickerOpen, setNewSessionPickerOpen] = useState(false);
+  const [browsingFolders, setBrowsingFolders] = useState(false);
+  const [reviewingEphemerals, setReviewingEphemerals] = useState(false);
+  const [selectedEphemeralIds, setSelectedEphemeralIds] = useState<Set<string>>(() => new Set());
+  const [confirmingBulkArchive, setConfirmingBulkArchive] = useState(false);
+
+  const ephemeralCandidates = useMemo(() => {
+    return browser.sessions.filter(s => s.status === "dormant" && s.messageCount < 3);
+  }, [browser.sessions]);
+
   // it, so it owns the home-indicator inset itself. Paying it as content
   // padding (not as padding on the bay container, the defect this replaces)
   // lets the scrollable surface run to the screen edge instead of stopping an
@@ -329,14 +360,56 @@ export function FleetScreen({
         />
       </View>
 
-      {deleteAccess === "missing" ? (
+      <View style={styles.primaryActionBar}>
+        <Pressable
+          testID="sessions-new"
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !canManage }}
+          disabled={!canManage}
+          accessibilityLabel={canManage ? "New session" : "New session unavailable: this pairing holds no manage scope"}
+          onPress={() => {
+            if (!canManage) return;
+            setNewSessionPickerOpen(true);
+          }}
+          style={[styles.primaryButton, !canManage && styles.primaryButtonDisabled]}
+        >
+          <Glyph name="newTask" size={14} color={canManage ? ground.base : ink.faint} />
+          <Kicker color={canManage ? ground.base : ink.faint}>New session</Kicker>
+        </Pressable>
+      </View>
+
+      {!browser.showArchived && ephemeralCandidates.length > 0 ? (
+        <View style={styles.ephemeralBanner} testID="ephemeral-suggest-banner">
+          <View style={styles.ephemeralBannerLead}>
+            <Glyph name="archive" size={12} color={ink.muted} />
+            <Label color={ink.muted}>
+              {`${ephemeralCandidates.length} short ${ephemeralCandidates.length === 1 ? "session" : "sessions"} (fewer than 3 messages)`}
+            </Label>
+          </View>
+          <Pressable
+            testID="ephemeral-review-trigger"
+            accessibilityRole="button"
+            accessibilityLabel={`Review ${ephemeralCandidates.length} short sessions to archive`}
+            onPress={() => {
+              setSelectedEphemeralIds(new Set(ephemeralCandidates.map(s => s.id)));
+              setConfirmingBulkArchive(false);
+              setReviewingEphemerals(true);
+            }}
+            style={styles.reviewTrigger}
+          >
+            <Kicker color={brand.azure}>Review</Kicker>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {effectiveManageAccess === "missing" ? (
         // A band in the column, never a layer over it: see
         // `test/no-hidden-content.test.ts` for why nothing here floats.
         <View style={styles.scopeNotice} testID="fleet-delete-scope-notice">
           <Glyph name="warning" size={12} color={signal.holding} />
           <Label color={signal.holding} style={styles.scopeNoticeText}>
-            This pairing can archive but not delete: it holds no manage scope. Grant manage when minting this
-            device&rsquo;s credential, from the daemon or from a device that can invite.
+            This pairing can read sessions but not start, archive, or delete them: it holds no manage scope. Grant
+            manage when minting this device&rsquo;s credential, from the daemon or from a device that can invite.
           </Label>
         </View>
       ) : null}
@@ -385,6 +458,210 @@ export function FleetScreen({
           )}
         </>
       )}
+
+      {newSessionPickerOpen ? (
+        <ProjectPicker
+          sessions={browser.sessions}
+          selectedProject={null}
+          mode="start"
+          open={newSessionPickerOpen}
+          onClose={() => setNewSessionPickerOpen(false)}
+          onSelectProject={cwd => {
+            setNewSessionPickerOpen(false);
+            if (cwd !== null) {
+              onNewSession?.(cwd);
+            }
+          }}
+          onBrowseFolders={
+            connection !== undefined
+              ? () => {
+                  setNewSessionPickerOpen(false);
+                  setBrowsingFolders(true);
+                }
+              : undefined
+          }
+        />
+      ) : null}
+
+      {browsingFolders && connection ? (
+        <Modal visible={browsingFolders} animationType="slide" onRequestClose={() => setBrowsingFolders(false)}>
+          <FolderPickerScreen
+            connection={connection}
+            onPick={path => {
+              setBrowsingFolders(false);
+              onNewSession?.(path);
+            }}
+            onBack={() => setBrowsingFolders(false)}
+          />
+        </Modal>
+      ) : null}
+
+      {reviewingEphemerals ? (
+        <Modal
+          visible={reviewingEphemerals}
+          transparent
+          animationType="none"
+          onRequestClose={() => setReviewingEphemerals(false)}
+        >
+          <Pressable
+            testID="ephemeral-review-backdrop"
+            accessibilityLabel="Close review"
+            accessibilityRole="button"
+            onPress={() => setReviewingEphemerals(false)}
+            style={styles.backdrop}
+          />
+          <View testID="ephemeral-review-sheet" style={isTablet ? styles.reviewPopover : styles.reviewSheet}>
+            <View style={styles.reviewHeader}>
+              <View style={styles.reviewHeaderLead}>
+                <Kicker color={ink.muted}>Cleanup</Kicker>
+                <Title heading testID="ephemeral-review-title">
+                  Review short sessions
+                </Title>
+                <Label color={ink.faint}>
+                  Sessions with fewer than 3 messages. Archived sessions leave the default list but remain reachable
+                  anytime.
+                </Label>
+              </View>
+              <Pressable
+                testID="ephemeral-review-close"
+                accessibilityRole="button"
+                accessibilityLabel="Close review"
+                onPress={() => setReviewingEphemerals(false)}
+                style={styles.closeBtn}
+              >
+                <Glyph name="deny" size={12} color={ink.muted} />
+              </Pressable>
+            </View>
+
+            <View style={styles.reviewToolbar}>
+              <Label color={ink.muted} testID="ephemeral-selected-count">
+                {`${selectedEphemeralIds.size} of ${ephemeralCandidates.length} selected`}
+              </Label>
+              <Pressable
+                testID="ephemeral-toggle-all"
+                accessibilityRole="button"
+                onPress={() => {
+                  if (selectedEphemeralIds.size === ephemeralCandidates.length) {
+                    setSelectedEphemeralIds(new Set());
+                  } else {
+                    setSelectedEphemeralIds(new Set(ephemeralCandidates.map(s => s.id)));
+                  }
+                }}
+                style={styles.toggleAllBtn}
+              >
+                <Kicker color={brand.azure}>
+                  {selectedEphemeralIds.size === ephemeralCandidates.length ? "Deselect all" : "Select all"}
+                </Kicker>
+              </Pressable>
+            </View>
+
+            <ScrollView style={styles.reviewList}>
+              {ephemeralCandidates.map(s => {
+                const isSelected = selectedEphemeralIds.has(s.id);
+                return (
+                  <Pressable
+                    key={s.id}
+                    testID={`ephemeral-item-${s.id}`}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: isSelected }}
+                    onPress={() => {
+                      setSelectedEphemeralIds(prev => {
+                        const next = new Set(prev);
+                        if (next.has(s.id)) next.delete(s.id);
+                        else next.add(s.id);
+                        return next;
+                      });
+                    }}
+                    style={[styles.reviewRow, isSelected && styles.reviewRowSelected]}
+                  >
+                    <Pressable
+                      testID={`ephemeral-select-${s.id}`}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: isSelected }}
+                      onPress={() => {
+                        setSelectedEphemeralIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(s.id)) next.delete(s.id);
+                          else next.add(s.id);
+                          return next;
+                        });
+                      }}
+                      style={[styles.checkbox, isSelected && styles.checkboxSelected]}
+                    >
+                      {isSelected ? <Glyph name="allow" size={10} color={ground.base} /> : null}
+                    </Pressable>
+                    <View style={styles.reviewRowBody}>
+                      <Body color={ink.bright} numberOfLines={1}>
+                        {s.title || "Untitled session"}
+                      </Body>
+                      <Label color={ink.muted} numberOfLines={1}>
+                        {shortenPath(s.cwd, 2)}
+                      </Label>
+                    </View>
+                    <Kicker color={ink.faint}>{`${s.messageCount} msgs`}</Kicker>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.reviewFooter}>
+              {confirmingBulkArchive ? (
+                <View style={styles.confirmDialog} testID="ephemeral-confirm-dialog">
+                  <Label color={ink.bright} style={styles.confirmCopy} testID="ephemeral-confirm-copy">
+                    {`Archive ${selectedEphemeralIds.size} ${selectedEphemeralIds.size === 1 ? "session" : "sessions"}? They will leave the default list but stay reachable under the archive filter.`}
+                  </Label>
+                  <View style={styles.confirmActions}>
+                    <Pressable
+                      testID="ephemeral-confirm-cancel"
+                      accessibilityRole="button"
+                      accessibilityLabel="Keep in list"
+                      onPress={() => setConfirmingBulkArchive(false)}
+                      style={styles.confirmCancelBtn}
+                    >
+                      <Kicker color={ink.plain}>Keep in list</Kicker>
+                    </Pressable>
+                    <Pressable
+                      testID="ephemeral-confirm-yes"
+                      accessibilityRole="button"
+                      accessibilityLabel={`Archive ${selectedEphemeralIds.size} sessions`}
+                      onPress={() => {
+                        onArchiveBulk?.([...selectedEphemeralIds]);
+                        setConfirmingBulkArchive(false);
+                        setReviewingEphemerals(false);
+                      }}
+                      style={styles.confirmYesBtn}
+                    >
+                      <Glyph name="archive" size={12} color={ground.base} />
+                      <Kicker color={ground.base}>{`Archive ${selectedEphemeralIds.size} sessions`}</Kicker>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <Pressable
+                  testID="ephemeral-archive-action"
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: selectedEphemeralIds.size === 0 || !canManage }}
+                  disabled={selectedEphemeralIds.size === 0 || !canManage}
+                  onPress={() => setConfirmingBulkArchive(true)}
+                  style={[
+                    styles.primaryButton,
+                    (selectedEphemeralIds.size === 0 || !canManage) && styles.primaryButtonDisabled,
+                  ]}
+                >
+                  <Glyph
+                    name="archive"
+                    size={14}
+                    color={selectedEphemeralIds.size === 0 || !canManage ? ink.faint : ground.base}
+                  />
+                  <Kicker color={selectedEphemeralIds.size === 0 || !canManage ? ink.faint : ground.base}>
+                    {`Archive ${selectedEphemeralIds.size} ${selectedEphemeralIds.size === 1 ? "session" : "sessions"}`}
+                  </Kicker>
+                </Pressable>
+              )}
+            </View>
+          </View>
+        </Modal>
+      ) : null}
     </View>
   );
 }
@@ -525,5 +802,179 @@ const styles = StyleSheet.create({
     backgroundColor: ground.active,
     borderWidth: stroke.hair,
     borderColor: brand.azure,
+  },
+  primaryActionBar: {
+    paddingHorizontal: space.wide,
+    paddingVertical: space.snug,
+    backgroundColor: ground.surface,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+  },
+  primaryButton: {
+    minHeight: TOUCH_TARGET,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.tight,
+    backgroundColor: signal.ready,
+    paddingHorizontal: space.wide,
+  },
+  primaryButtonDisabled: {
+    backgroundColor: ground.active,
+  },
+  ephemeralBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: space.wide,
+    paddingVertical: space.snug,
+    backgroundColor: ground.raised,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+    gap: space.step,
+  },
+  ephemeralBannerLead: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.tight,
+  },
+  reviewTrigger: {
+    minHeight: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: space.step,
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(10, 12, 16, 0.7)",
+  },
+  reviewSheet: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: ground.surface,
+    maxHeight: "85%",
+    borderTopLeftRadius: radius.surface,
+    borderTopRightRadius: radius.surface,
+    borderTopWidth: stroke.hair,
+    borderColor: ground.edge,
+    overflow: "hidden",
+  },
+  reviewPopover: {
+    position: "absolute",
+    top: "10%",
+    bottom: "10%",
+    left: "15%",
+    right: "15%",
+    backgroundColor: ground.surface,
+    borderRadius: radius.surface,
+    borderWidth: stroke.hair,
+    borderColor: ground.edge,
+    overflow: "hidden",
+  },
+  reviewHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    padding: space.wide,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+    gap: space.step,
+  },
+  reviewHeaderLead: {
+    flex: 1,
+    gap: space.hair,
+  },
+  closeBtn: {
+    width: TOUCH_TARGET,
+    height: TOUCH_TARGET,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reviewToolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: space.wide,
+    paddingVertical: space.snug,
+    backgroundColor: ground.raised,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+  },
+  toggleAllBtn: {
+    minHeight: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: space.tight,
+  },
+  reviewList: {
+    flex: 1,
+  },
+  reviewRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: space.wide,
+    paddingVertical: space.step,
+    gap: space.step,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+    minHeight: TOUCH_TARGET,
+  },
+  reviewRowSelected: {
+    backgroundColor: ground.raised,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: stroke.hair,
+    borderColor: ground.edge,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: ground.active,
+  },
+  checkboxSelected: {
+    backgroundColor: signal.ready,
+    borderColor: signal.ready,
+  },
+  reviewRowBody: {
+    flex: 1,
+    gap: space.hair,
+    minWidth: 0,
+  },
+  reviewFooter: {
+    padding: space.wide,
+    borderTopWidth: stroke.hair,
+    borderTopColor: ground.line,
+    backgroundColor: ground.surface,
+  },
+  confirmDialog: {
+    gap: space.step,
+  },
+  confirmCopy: {
+    lineHeight: 18,
+  },
+  confirmActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: space.step,
+  },
+  confirmCancelBtn: {
+    minHeight: TOUCH_TARGET,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: space.wide,
+  },
+  confirmYesBtn: {
+    minHeight: TOUCH_TARGET,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.tight,
+    backgroundColor: brand.azure,
+    paddingHorizontal: space.wide,
   },
 });

@@ -214,7 +214,9 @@ export type BrowserAction =
       prefs: { sort?: SortSpec; grouped?: boolean; project?: string | null; view?: "list" | "board" };
     }
   | { t: "archive"; id: string }
-  | { t: "unarchive"; id: string };
+  | { t: "unarchive"; id: string }
+  | { t: "archiveBulk"; ids: readonly string[] }
+  | { t: "unarchiveBulk"; ids: readonly string[] };
 export function browserReduce(state: BrowserState, action: BrowserAction): BrowserState {
   switch (action.t) {
     case "load":
@@ -283,19 +285,33 @@ export function browserReduce(state: BrowserState, action: BrowserAction): Brows
         ...state,
         sessions: state.sessions.map(s => (s.id === action.id ? { ...s, status: "archived" as const } : s)),
       };
-
     case "unarchive":
       return {
         ...state,
         sessions: state.sessions.map(s => (s.id === action.id ? { ...s, status: "dormant" as const } : s)),
       };
+
+    case "archiveBulk": {
+      const idSet = new Set(action.ids);
+      return {
+        ...state,
+        sessions: state.sessions.map(s => (idSet.has(s.id) ? { ...s, status: "archived" as const } : s)),
+      };
+    }
+
+    case "unarchiveBulk": {
+      const idSet = new Set(action.ids);
+      return {
+        ...state,
+        sessions: state.sessions.map(s => (idSet.has(s.id) ? { ...s, status: "dormant" as const } : s)),
+      };
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
 // Derived view
 // ---------------------------------------------------------------------------
-
 /** What the UI actually renders. Computed from state, never stored. */
 export interface BrowserView {
   readonly groups: readonly SessionGroup[];

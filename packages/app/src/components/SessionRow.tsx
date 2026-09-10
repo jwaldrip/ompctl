@@ -30,7 +30,7 @@ import { shortenPath } from "../design/format.ts";
 import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
 import { Data, Kicker, Label, Title } from "../design/text.tsx";
-import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { brand, ground, ink, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { BrowserSession, SessionStatus } from "../session/browser.ts";
 import { formatAge, formatBytes, SESSION_STATUS_SIGNALS, STATUS_LABELS } from "../session/browser.ts";
 
@@ -112,8 +112,8 @@ export const SessionRow = memo(function SessionRow({
   const name = session.title || "Untitled session";
 
   const [armed, setArmed] = useState(false);
+  const [archiveArmed, setArchiveArmed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(defaultMenuOpen);
-
   const open = useCallback(() => {
     if (menuOpen) {
       setMenuOpen(false);
@@ -122,15 +122,23 @@ export const SessionRow = memo(function SessionRow({
     onOpen(session);
   }, [menuOpen, onOpen, session]);
 
-  const archiveOrRestore = useCallback(() => {
+  const handleArchiveTap = useCallback(() => {
     setMenuOpen(false);
     if (session.status === "archived") {
       onUnarchive(session);
     } else {
-      onArchive(session);
+      setArchiveArmed(true);
     }
-  }, [onArchive, onUnarchive, session]);
+  }, [onUnarchive, session]);
 
+  const confirmArchive = useCallback(() => {
+    setArchiveArmed(false);
+    onArchive(session);
+  }, [onArchive, session]);
+
+  const cancelArchive = useCallback(() => {
+    setArchiveArmed(false);
+  }, []);
   const arm = useCallback(() => {
     setMenuOpen(false);
     setArmed(true);
@@ -172,6 +180,40 @@ export const SessionRow = memo(function SessionRow({
           accessibilityRole="button"
           accessibilityLabel={`Keep ${name}`}
           onPress={keep}
+          style={keepActionStyle}
+        >
+          <Kicker color={ink.plain}>Keep</Kicker>
+        </Pressable>
+      </View>
+    );
+  }
+  if (archiveArmed) {
+    return (
+      <View testID={`session-row-${session.id}`} style={styles.row}>
+        <View style={[styles.bar, { backgroundColor: brand.azure }]} />
+
+        <Pressable
+          testID={`session-archive-confirm-${session.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={`Archive ${name}`}
+          onPress={confirmArchive}
+          style={confirmActionStyle}
+        >
+          <Glyph name="archive" size={13} color={brand.azure} />
+          <Kicker color={brand.azure}>Archive</Kicker>
+        </Pressable>
+
+        <View style={styles.confirmBody}>
+          <Label color={ink.bright} numberOfLines={2} testID={`session-archive-prompt-${session.id}`}>
+            {`Archive 1 session? It leaves the default list but stays reachable under the archive filter.`}
+          </Label>
+        </View>
+
+        <Pressable
+          testID={`session-archive-cancel-${session.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={`Keep ${name}`}
+          onPress={cancelArchive}
           style={keepActionStyle}
         >
           <Kicker color={ink.plain}>Keep</Kicker>
@@ -245,7 +287,7 @@ export const SessionRow = memo(function SessionRow({
               testID={archived ? `session-unarchive-${session.id}` : `session-archive-${session.id}`}
               accessibilityRole="button"
               accessibilityLabel={archived ? `Unarchive ${name}` : `Archive ${name}`}
-              onPress={archiveOrRestore}
+              onPress={handleArchiveTap}
               style={menuItemStyle}
             >
               <Glyph name={archived ? "restore" : "archive"} size={13} color={ink.plain} />

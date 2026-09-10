@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/lib/version.sh"
+ompd_version__resolve
 cd "$ROOT/macos"
 TEAM_ID="${OMPD_APPLE_TEAM_ID:?OMPD_APPLE_TEAM_ID is required}"
 OUT="${OMPD_MACOS_ARCHIVE_DIR:-$ROOT/build/macos}"
@@ -38,6 +40,8 @@ xcodebuild \
   PRODUCT_BUNDLE_IDENTIFIER=ai.ompctl.app \
   CODE_SIGN_STYLE=Automatic \
   "${AUTH_ARGS[@]}" \
+  CURRENT_PROJECT_VERSION="$OMPD_BUILD_NUMBER" \
+  MARKETING_VERSION="$OMPD_VERSION_NAME" \
   archive
 
 EXPORT_PLIST="$OUT/ExportOptions.plist"

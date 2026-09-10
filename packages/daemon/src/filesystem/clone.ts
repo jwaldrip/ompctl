@@ -60,6 +60,10 @@ export interface CloneRequest {
   parent: string;
   /** Directory name to create. Defaults to the repository's own name. */
   name?: string;
+  /** Optional authentication token for private repository clones. */
+  token?: string;
+  /** Optional username for authentication (defaults to x-access-token). */
+  tokenUser?: string;
 }
 
 export interface CloneRun {
@@ -90,7 +94,7 @@ export interface StartCloneOptions {
  * carry one, and the operator sees a clone that simply never finishes. The
  * askpass variables close the graphical version of the same trap.
  */
-function cloneEnv(): Record<string, string | undefined> {
+function cloneEnv(token?: string): Record<string, string | undefined> {
   return {
     ...process.env,
     GIT_TERMINAL_PROMPT: "0",
@@ -98,6 +102,7 @@ function cloneEnv(): Record<string, string | undefined> {
     SSH_ASKPASS: "",
     SSH_ASKPASS_REQUIRE: "never",
     GCM_INTERACTIVE: "never",
+    ...(token ? { OMPD_GIT_TOKEN: token } : {}),
   };
 }
 
@@ -217,7 +222,20 @@ export async function startClone(options: StartCloneOptions): Promise<CloneRun> 
   if (exists) throw new FsRefusal("target_exists", `${target} already exists`);
 
   const spawn = options.spawn ?? defaultCloneSpawn;
-  const child = spawn(["git", "clone", "--progress", "--", url, target], { cwd: parent, env: cloneEnv() });
+  const user = options.request.tokenUser ?? "x-access-token";
+  const gitArgs = options.request.token
+    ? [
+        "git",
+        "-c",
+        `credential.helper=!f() { echo username=${user}; echo "password=$OMPD_GIT_TOKEN"; }; f`,
+        "clone",
+        "--progress",
+        "--",
+        url,
+        target,
+      ]
+    : ["git", "clone", "--progress", "--", url, target];
+  const child = spawn(gitArgs, { cwd: parent, env: cloneEnv(options.request.token) });
 
   const tail: string[] = [];
   let forwarded = 0;

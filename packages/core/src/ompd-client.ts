@@ -35,7 +35,9 @@ import type {
   CollabVoiceNoteInput,
   CollabVoiceParticipant,
   ConnectorSummary,
+  ContainerRuntimeStatus,
   CoworkCatalog,
+  DashboardStats,
   FsListing,
   ModelBrokerStatus,
   PlanReviewChoice,
@@ -229,6 +231,11 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   fs_list: true,
   session_create: true,
   repo_clone: true,
+  provider_status: false,
+  provider_auth_start: true,
+  provider_auth_poll: false,
+  provider_disconnect: true,
+  provider_repos_list: true,
   // One-shot too, but a lost tail is not an instruction that silently did
   // not happen: nothing on the machine changes, and the surface that asked
   // asks again the next time it opens. Reporting it would put an error in
@@ -236,6 +243,8 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   session_tail: false,
   session_subagents: false,
   session_stats: false,
+  stats: false,
+  stats_read: false,
   session_history: false,
   session_artifacts: false,
   // A snapshot ask, same class as `session_tail`: nothing on the machine
@@ -727,10 +736,22 @@ export interface SessionStatsEvent {
   sessionId: string;
   stats: SessionStats;
 }
+export interface StatsEvent {
+  stats: DashboardStats;
+  range?: string;
+}
 
-/** The cowork container state, carrying model broker readiness. */
+/**
+ * The cowork container state: whether a model can be granted, and whether the
+ * daemon's machine has a container runtime to run one on.
+ *
+ * `runtime` is absent from a daemon older than the field. A consumer must read
+ * that as unknown and not as a refusal, or a phone would disable a start that
+ * the daemon would have served.
+ */
 export interface ContainerStateEvent {
   modelBroker: ModelBrokerStatus;
+  runtime?: ContainerRuntimeStatus;
 }
 export interface PromptQueuedEvent {
   agentId: AgentId;
@@ -783,6 +804,7 @@ export interface ClientEventMap {
   session_stats: SessionStatsEvent;
   agent_config: AgentConfigEvent;
   prompt_queued: PromptQueuedEvent;
+  stats: StatsEvent;
 }
 
 export type ClientEventName = keyof ClientEventMap;
@@ -1244,6 +1266,17 @@ export class OmpdClient {
       sessionId,
     };
     this.send(frame);
+  }
+  /** Request aggregate dashboard stats. The answer arrives as the stats event. */
+  stats(range?: string): void {
+    this.send({
+      t: "stats",
+      ...(range === undefined ? {} : { range }),
+    });
+  }
+
+  readStats(range?: string): void {
+    this.stats(range);
   }
 
   /** Read one structured page of a root or subagent's durable transcript. */
@@ -1881,6 +1914,12 @@ export class OmpdClient {
           stats: frame.stats,
         });
         return;
+      case "stats":
+        this.emit("stats", {
+          stats: frame.stats,
+          ...(frame.range === undefined ? {} : { range: frame.range }),
+        });
+        return;
       case "session_history":
         this.emit("session_history", {
           agentId: frame.agentId,
@@ -1920,7 +1959,7 @@ export class OmpdClient {
         });
         return;
       case "container_state":
-        this.emit("container_state", { modelBroker: frame.modelBroker });
+        this.emit("container_state", { modelBroker: frame.modelBroker, runtime: frame.runtime });
         return;
       case "settings":
         this.emit("settings", {

@@ -22,6 +22,11 @@ import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+// Extensionless on purpose: Vite picks `camera.web.ts` for web, Metro picks
+// `camera.windows.ts` for Windows, and `camera.ts` everywhere else. Naming
+// the extension would bypass that and drag vision-camera into the web bundle.
+import type { CameraAvailability } from "../platform/camera";
+import { cameraAvailability } from "../platform/camera";
 import type { Connection } from "../platform/connection.ts";
 // Extensionless on purpose: Metro picks `e2e-plaintext.ios.ts` for iOS and the
 // plain module everywhere else. Naming the extension would defeat that and
@@ -35,6 +40,7 @@ export function PairScreen({
   onCancel,
   onPair,
   onScan,
+  camera = cameraAvailability,
 }: {
   notice?: string;
   defaultTarget?: string;
@@ -46,6 +52,7 @@ export function PairScreen({
    * from anywhere, none of which a flag inside this form could give it.
    */
   onScan: () => void;
+  camera?: CameraAvailability;
 }): JSX.Element {
   const [raw, setRaw] = useState(defaultTarget ?? DEFAULT_HUB_HOST);
 
@@ -101,9 +108,18 @@ export function PairScreen({
             change it only if you run your own.
           </Body>
 
-          <Pressable accessibilityRole="button" onPress={onScan} style={styles.scanEntry} testID="pair-scan-entry">
-            <Glyph color={ink.plain} name="qrcode" size={14} />
-            <Label color={ink.plain}>Scan a QR code instead</Label>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !camera.available }}
+            disabled={!camera.available}
+            onPress={camera.available ? onScan : undefined}
+            style={[styles.scanEntry, !camera.available && styles.scanEntryDisabled]}
+            testID="pair-scan-entry"
+          >
+            <Glyph color={camera.available ? ink.plain : ink.muted} name="qrcode" size={14} />
+            <Label color={camera.available ? ink.plain : ink.muted} testID="pair-scan-label">
+              {camera.available ? "Scan a QR code instead" : camera.reason}
+            </Label>
           </Pressable>
 
           <Field label="Hub" value={raw} onChange={setRaw} testID="pair-endpoint" />
@@ -226,4 +242,5 @@ const styles = StyleSheet.create({
   submit: { marginTop: space.snug },
   cancel: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET },
   scanEntry: { alignItems: "center", flexDirection: "row", gap: space.snug, minHeight: TOUCH_TARGET },
+  scanEntryDisabled: { opacity: 0.6 },
 });

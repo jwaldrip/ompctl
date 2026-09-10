@@ -125,6 +125,7 @@ function readsDisabled(el: Element): boolean {
 }
 
 interface Harness {
+  host: HTMLElement;
   endpointInput: HTMLInputElement;
   tokenInput: HTMLInputElement;
   submit: HTMLElement;
@@ -153,6 +154,7 @@ function mountPairScreen(): Harness {
   if (!(form instanceof HTMLElement)) throw new Error("no pair form rendered");
 
   return {
+    host,
     endpointInput,
     tokenInput,
     submit,
@@ -260,6 +262,38 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
       typeInto(h.tokenInput, "tok_abc");
     });
     expect(readsDisabled(h.submit)).toBe(true);
+    const kind = h.host.querySelector('[data-testid="pair-token-kind"]');
+    expect(kind?.textContent).toBe("Not a device token");
+    h.unmount();
+  });
+
+  test("accepts the CLI invite secret line verbatim to enable Connect", () => {
+    const daemon = `dmn_${"e".repeat(64)}`;
+    const cliSecretLine = `${"e".repeat(64)}.tok_verbatim_test`;
+    const h = mountPairScreen();
+
+    act(() => {
+      typeInto(h.endpointInput, "hub.example.com");
+      typeInto(h.tokenInput, cliSecretLine);
+    });
+
+    expect(readsDisabled(h.submit)).toBe(false);
+    const kind = h.host.querySelector('[data-testid="pair-token-kind"]');
+    expect(kind?.textContent).toContain("Daemon dmn_eeeeeee");
+
+    act(() => {
+      h.submit.click();
+    });
+
+    expect(h.paired).toEqual([
+      {
+        transport: "hub",
+        hubUrl: "wss://hub.example.com",
+        daemonId: daemon,
+        token: "tok_verbatim_test",
+        scopes: [],
+      },
+    ]);
     h.unmount();
   });
 
@@ -306,5 +340,80 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
       { transport: "direct", url: "ws://127.0.0.1:7777/v1/socket", token: "tok_xyz", scopes: [] },
     ]);
     h.unmount();
+  });
+});
+
+describe("PairScreen: QR scanning affordance gates on camera availability", () => {
+  test("with camera available, the scan entry is enabled and fires onScan when clicked", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    let scanned = 0;
+
+    act(() => {
+      root.render(
+        <PairScreen
+          camera={{ available: true }}
+          onPair={() => {}}
+          onScan={() => {
+            scanned += 1;
+          }}
+        />,
+      );
+    });
+
+    const scanEntry = host.querySelector('[data-testid="pair-scan-entry"]');
+    expect(scanEntry).not.toBeNull();
+    expect(readsDisabled(scanEntry!)).toBe(false);
+    expect(scanEntry?.textContent).toContain("Scan a QR code instead");
+
+    act(() => {
+      (scanEntry as HTMLElement).click();
+    });
+    expect(scanned).toBe(1);
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+
+  test("with camera unavailable, the scan entry is disabled with refusal reason and cannot be clicked", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    let scanned = 0;
+
+    act(() => {
+      root.render(
+        <PairScreen
+          camera={{
+            available: false,
+            reason: "Scanning is unavailable on macOS: this build has no camera scanner module.",
+          }}
+          onPair={() => {}}
+          onScan={() => {
+            scanned += 1;
+          }}
+        />,
+      );
+    });
+
+    const scanEntry = host.querySelector('[data-testid="pair-scan-entry"]');
+    expect(scanEntry).not.toBeNull();
+    expect(readsDisabled(scanEntry!)).toBe(true);
+    expect(scanEntry?.textContent).toContain(
+      "Scanning is unavailable on macOS: this build has no camera scanner module.",
+    );
+
+    act(() => {
+      (scanEntry as HTMLElement).click();
+    });
+    expect(scanned).toBe(0);
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
   });
 });

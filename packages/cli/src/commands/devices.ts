@@ -127,10 +127,16 @@ function bestEndpointOffer(offers: EndpointOffer[] | null): EndpointOffer | null
 }
 
 /** `Endpoint` plus the credential a scanning device saves alongside it. */
-function pairedConnectionFor(endpoint: Endpoint, token: string, scopes: string[]): PairedConnection {
+export function pairedConnectionFor(endpoint: Endpoint, token: string, scopes: string[]): PairedConnection {
   return endpoint.transport === "direct"
     ? { transport: "direct", url: endpoint.url, token, scopes }
-    : { transport: "hub", hubUrl: endpoint.hubUrl, daemonId: endpoint.daemonId, token, scopes };
+    : {
+        transport: "hub",
+        hubUrl: endpoint.hubUrl,
+        daemonId: endpoint.daemonId,
+        token: formatDeviceCredential({ daemonId: endpoint.daemonId, token }),
+        scopes,
+      };
 }
 
 /**
@@ -203,7 +209,7 @@ function hostOf(hubUrl: string): string {
  * 64-character fingerprint. That leaves the hub field with one job and a
  * default, so the common case is typing nothing there at all.
  */
-function printPairingCredential(ctx: CliContext, opts: { offers: EndpointOffer[] | null; token: string }): void {
+function printPairingCredential(ctx: CliContext, opts: { offers: EndpointOffer[] | null; credential: string }): void {
   const hub = (opts.offers ?? [])
     .map(offer => offer.endpoint)
     .find((endpoint): endpoint is Extract<Endpoint, { transport: "hub" }> => endpoint.transport === "hub");
@@ -217,7 +223,7 @@ function printPairingCredential(ctx: CliContext, opts: { offers: EndpointOffer[]
   ctx.out("  in the app, these are the two fields:");
   ctx.out("");
   ctx.out(`    Hub    ${hostOf(hub.hubUrl)}`);
-  ctx.out(`    Token  ${formatDeviceCredential({ daemonId: hub.daemonId, token: opts.token })}`);
+  ctx.out(`    Token  ${opts.credential}`);
   ctx.out("");
   ctx.out("  the token names the daemon and authorises this device. The hub is the app's");
   ctx.out("  default, so it only needs typing if you run your own.");
@@ -266,12 +272,19 @@ export async function approveCommand(ctx: CliContext, cmd: Extract<Command, { ki
     return 1;
   }
 
+  const approveOffers = await fetchEndpointOffers(ctx);
+  const hub = (approveOffers ?? [])
+    .map(offer => offer.endpoint)
+    .find((endpoint): endpoint is Extract<Endpoint, { transport: "hub" }> => endpoint.transport === "hub");
+  const credential =
+    hub !== undefined ? formatDeviceCredential({ daemonId: hub.daemonId, token: response.token }) : response.token;
+
   // Printed exactly once. Only its hash is kept daemon-side, so there is no
   // route, file, or command that can produce it a second time; saying so here
   // is the difference between an operator copying it now and re-pairing later.
   ctx.out(`approved. scopes: ${cmd.scopes.join(", ")}`);
   ctx.out("");
-  ctx.out(`  ${response.token}`);
+  ctx.out(`  ${credential}`);
   ctx.out("");
   ctx.out("  This token is shown once and is not recoverable. The daemon keeps only its");
   ctx.out("  hash. Copy it now; if you lose it, rotate or pair again.");
@@ -283,9 +296,8 @@ export async function approveCommand(ctx: CliContext, cmd: Extract<Command, { ki
   // first, which the daemon cannot produce again.
   ctx.out("");
   ctx.out("  the token above is a secret; the endpoints below are not:");
-  const approveOffers = await fetchEndpointOffers(ctx);
   if (approveOffers !== null) printEndpointOffers(ctx, approveOffers);
-  printPairingCredential(ctx, { offers: approveOffers, token: response.token });
+  printPairingCredential(ctx, { offers: approveOffers, credential });
 
   if (typeof response.name === "string") {
     await printPairingQr(ctx, {
@@ -337,9 +349,18 @@ export async function inviteCommand(ctx: CliContext, cmd: Extract<Command, { kin
     return 1;
   }
 
+  const inviteOffers = await fetchEndpointOffers(ctx);
+  const hub = (inviteOffers ?? [])
+    .map(offer => offer.endpoint)
+    .find((endpoint): endpoint is Extract<Endpoint, { transport: "hub" }> => endpoint.transport === "hub");
+  const credential =
+    hub !== undefined
+      ? formatDeviceCredential({ daemonId: hub.daemonId, token: approveResponse.token })
+      : approveResponse.token;
+
   ctx.out(`invited ${cmd.name}. scopes: ${cmd.scopes.join(", ")}`);
   ctx.out("");
-  ctx.out(`  ${approveResponse.token}`);
+  ctx.out(`  ${credential}`);
   ctx.out("");
   ctx.out("  This token is shown once and is not recoverable. The daemon keeps only its");
   ctx.out("  hash. Copy it now; if you lose it, rotate or invite again.");
@@ -347,9 +368,8 @@ export async function inviteCommand(ctx: CliContext, cmd: Extract<Command, { kin
 
   ctx.out("");
   ctx.out("  the token above is a secret; the endpoints below are not:");
-  const inviteOffers = await fetchEndpointOffers(ctx);
   if (inviteOffers !== null) printEndpointOffers(ctx, inviteOffers);
-  printPairingCredential(ctx, { offers: inviteOffers, token: approveResponse.token });
+  printPairingCredential(ctx, { offers: inviteOffers, credential });
 
   // Unlike `approve`, the name here is the operator's own typed positional
   // rather than a value read back off the wire: this command chose it, so

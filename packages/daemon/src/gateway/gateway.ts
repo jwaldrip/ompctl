@@ -30,6 +30,8 @@ import {
   type CollabVoiceNoteFrame,
   type CollabVoiceParticipant,
   type ConnectorSummary,
+  type ContainerState,
+  type DashboardStats,
   type EndpointOffer,
   isRecord,
   type McpAuthState,
@@ -89,6 +91,7 @@ import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData 
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
+import { ProviderRefusal, type ProvidersService } from "../providers/index.ts";
 import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { listSubagentTranscripts, subagentTranscriptPath } from "../sessions/subagents.ts";
@@ -1257,10 +1260,19 @@ export interface GatewayOptions {
    */
   filesystem?: FilesystemSurface;
   /**
-   * Provides the cowork container state, notably model broker readiness.
-   * When absent, reports ready: true.
+   * Git providers (GitHub, GitLab) for repository browsing and cloning.
    */
-  containerState?: () => { modelBroker: { ready: boolean; reason: string | null } };
+  providers?: ProvidersService;
+  /**
+   * The cowork container state: whether a model can be granted and whether this
+   * machine has a runtime to run a container on. When absent, reports ready.
+   *
+   * May answer asynchronously, because the runtime half is a probe that spawns
+   * the runtime's own CLI. The handler awaits it rather than sending a
+   * placeholder: a screen that gates a start on this state has nothing to do
+   * with a "checking" answer it would have to poll out of.
+   */
+  containerState?: () => ContainerState | Promise<ContainerState>;
   /** Embedded web assets map, for testing or overriding the compiled-in WEB_ASSETS. */
   embeddedAssets?: { assets: Record<string, string>; built: boolean };
   /**
@@ -1455,7 +1467,8 @@ export class Gateway {
   #sessionWatch: SessionWatch | undefined;
   #endpoints: (() => EndpointOffer[]) | undefined;
   #filesystem: FilesystemSurface | undefined;
-  #containerStateProvider: (() => { modelBroker: { ready: boolean; reason: string | null } }) | undefined;
+  #providers: ProvidersService | undefined;
+  #containerStateProvider: (() => ContainerState | Promise<ContainerState>) | undefined;
   #artifactRoots: readonly string[] | undefined;
   #sessionsRoot: string | undefined;
   #artifactByteCeiling: number | undefined;
@@ -1561,6 +1574,7 @@ export class Gateway {
     this.#stats?.start();
     this.#endpoints = opts.endpoints;
     this.#filesystem = opts.filesystem;
+    this.#providers = opts.providers;
     this.#containerStateProvider = opts.containerState;
     this.#onWebViewResult = opts.onWebViewResult;
     this.#onWebViewUnavailable = opts.onWebViewUnavailable;
@@ -3117,14 +3131,11 @@ export class Gateway {
 
     if (path === "/v1/stats" && req.method === "GET") {
       if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
-      if (this.#stats === undefined || !this.#stats.available) {
-        return Response.json(
-          { error: "stats_unavailable", reason: statsUnavailableReason(this.#stats) },
-          { status: 503 },
-        );
+      const outcome = await this.#fetchDashboardStats(url.searchParams.get("range"));
+      if (outcome.kind === "unavailable") {
+        return Response.json({ error: "stats_unavailable", reason: outcome.reason }, { status: 503 });
       }
-      const stats = await this.#stats.getDashboardStats(url.searchParams.get("range"));
-      return Response.json(stats);
+      return Response.json(outcome.stats);
     }
 
     const sessionStatsRoute = /^\/v1\/sessions\/([^/]+)\/stats$/.exec(path);
@@ -4034,6 +4045,7 @@ export class Gateway {
       return;
     }
 
+    const tokenInfo = this.#providers?.tokenForUrl(frame.url);
     let run: CloneRun;
     try {
       run = await filesystem.clone(
@@ -4041,6 +4053,7 @@ export class Gateway {
           url: frame.url,
           parent: frame.parent,
           ...(frame.name === undefined ? {} : { name: frame.name }),
+          ...(tokenInfo ? { token: tokenInfo.token, tokenUser: tokenInfo.username } : {}),
         },
         // Bound to the socket, not to a subscription: progress belongs to the
         // device that asked, and a clone is nobody else's business.
@@ -4082,6 +4095,138 @@ export class Gateway {
     if (running === undefined) return;
     this.#clones.delete(ws);
     for (const run of running) run.cancel();
+  }
+  // -- git providers ---------------------------------------------------------
+
+  #serveProviderStatus(ws: GatewaySocket): void {
+    if (!ws.data.scopes.has(SCOPE_READ)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_status requires read scope" });
+      return;
+    }
+    const providers = this.#providers?.status() ?? {
+      github: { connected: false },
+      gitlab: { connected: false },
+    };
+    this.#send(ws, { t: "provider_status", providers });
+  }
+
+  async #serveProviderAuthStart(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "provider_auth_start" }>,
+  ): Promise<void> {
+    if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_auth_start requires manage scope" });
+      return;
+    }
+    if (!this.#providers) {
+      this.#send(ws, { t: "error", code: "providers_unavailable", message: "no providers service is configured" });
+      return;
+    }
+    if (frame.provider !== "github" && frame.provider !== "gitlab") {
+      this.#send(ws, { t: "error", code: "bad_frame", message: "provider must be github or gitlab" });
+      return;
+    }
+    try {
+      const device = await this.#providers.startDeviceAuth(frame.provider);
+      this.#send(ws, {
+        t: "provider_auth_device",
+        provider: device.provider,
+        deviceCode: device.deviceCode,
+        userCode: device.userCode,
+        verificationUri: device.verificationUri,
+        expiresIn: device.expiresIn,
+        interval: device.interval,
+      });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        code: "auth_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async #serveProviderAuthPoll(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "provider_auth_poll" }>,
+  ): Promise<void> {
+    if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_auth_poll requires manage scope" });
+      return;
+    }
+    if (!this.#providers) {
+      this.#send(ws, { t: "error", code: "providers_unavailable", message: "no providers service is configured" });
+      return;
+    }
+    if (typeof frame.deviceCode !== "string" || frame.deviceCode.length === 0) {
+      this.#send(ws, { t: "error", code: "bad_frame", message: "deviceCode is required" });
+      return;
+    }
+    try {
+      const result = await this.#providers.pollDeviceAuth(frame.provider, frame.deviceCode);
+      this.#send(ws, {
+        t: "provider_auth_result",
+        provider: result.provider,
+        status: result.status,
+        username: result.username,
+        error: result.error,
+      });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        code: "auth_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  #serveProviderDisconnect(ws: GatewaySocket, frame: Extract<ClientFrame, { t: "provider_disconnect" }>): void {
+    if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_disconnect requires manage scope" });
+      return;
+    }
+    this.#providers?.disconnect(frame.provider);
+    const providers = this.#providers?.status() ?? {
+      github: { connected: false },
+      gitlab: { connected: false },
+    };
+    this.#send(ws, { t: "provider_status", providers });
+  }
+
+  async #serveProviderReposList(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "provider_repos_list" }>,
+  ): Promise<void> {
+    if (!ws.data.scopes.has(SCOPE_READ)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_repos_list requires read scope" });
+      return;
+    }
+    if (!this.#providers) {
+      this.#send(ws, { t: "error", code: "providers_unavailable", message: "no providers service is configured" });
+      return;
+    }
+    try {
+      const result = await this.#providers.listRepos({
+        provider: frame.provider,
+        page: frame.page,
+        perPage: frame.perPage,
+        query: frame.query,
+      });
+      this.#send(ws, {
+        t: "provider_repos_listing",
+        provider: result.provider,
+        page: result.page,
+        hasMore: result.hasMore,
+        repos: result.repos,
+      });
+    } catch (err) {
+      const code = err instanceof ProviderRefusal ? err.code : "provider_repos_failed";
+      this.#send(ws, {
+        t: "error",
+        code,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // -- websocket -------------------------------------------------------------
@@ -4736,6 +4881,16 @@ export class Gateway {
         return;
       }
 
+      case "stats":
+      case "stats_read": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "stats requires read scope" });
+          return;
+        }
+        void this.#serveStatsFrame(ws, typeof frame.range === "string" ? frame.range : undefined);
+        return;
+      }
+
       case "session_stats": {
         if (!ws.data.scopes.has(SCOPE_READ)) {
           this.#send(ws, {
@@ -5106,8 +5261,14 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "unauthorized", message: "container_state_read requires read scope" });
           return;
         }
-        const state = this.#containerState();
-        this.#send(ws, { t: "container_state", modelBroker: state.modelBroker });
+        // Not awaited inline: this switch answers every other frame on this
+        // socket while the runtime probe runs, and the reply is addressed to
+        // the socket that asked rather than broadcast, so it cannot arrive out
+        // of order with anything that depends on it.
+        void (async () => {
+          const state = await this.#containerState();
+          this.#send(ws, { t: "container_state", modelBroker: state.modelBroker, runtime: state.runtime });
+        })();
         return;
       }
 
@@ -5779,6 +5940,26 @@ export class Gateway {
           return;
         }
         void this.#startCloneOverSocket(ws, frame);
+        return;
+      }
+      case "provider_status": {
+        this.#serveProviderStatus(ws);
+        return;
+      }
+      case "provider_auth_start": {
+        void this.#serveProviderAuthStart(ws, frame);
+        return;
+      }
+      case "provider_auth_poll": {
+        void this.#serveProviderAuthPoll(ws, frame);
+        return;
+      }
+      case "provider_disconnect": {
+        this.#serveProviderDisconnect(ws, frame);
+        return;
+      }
+      case "provider_repos_list": {
+        void this.#serveProviderReposList(ws, frame);
         return;
       }
       case "prompt": {
@@ -6748,6 +6929,37 @@ export class Gateway {
     }
   }
 
+  async #fetchDashboardStats(
+    range: string | null | undefined,
+  ): Promise<{ kind: "ok"; stats: DashboardStats } | { kind: "unavailable"; reason: string }> {
+    if (this.#stats === undefined || !this.#stats.available) {
+      return { kind: "unavailable", reason: statsUnavailableReason(this.#stats) };
+    }
+    const stats = await this.#stats.getDashboardStats(range ?? null);
+    return { kind: "ok", stats };
+  }
+
+  async #serveStatsFrame(ws: GatewaySocket, range: string | undefined): Promise<void> {
+    try {
+      const outcome = await this.#fetchDashboardStats(range);
+      if (outcome.kind === "unavailable") {
+        this.#send(ws, {
+          t: "error",
+          code: "stats_unavailable",
+          message: outcome.reason,
+        });
+        return;
+      }
+      this.#send(ws, { t: "stats", stats: outcome.stats, ...(range ? { range } : {}) });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        code: "stats_failed",
+        message: err instanceof Error ? err.message : "failed to load stats",
+      });
+    }
+  }
+
   async #serveSessionStatsFrame(ws: GatewaySocket, sessionId: string): Promise<void> {
     if (this.#stats === undefined) {
       this.#send(ws, { t: "error", sessionId, code: "stats_unavailable", message: "this daemon keeps no stats" });
@@ -6956,11 +7168,12 @@ export class Gateway {
     }
   }
 
-  #containerState(): { modelBroker: { ready: boolean; reason: string | null } } {
-    if (this.#containerStateProvider) {
-      return this.#containerStateProvider();
-    }
-    return { modelBroker: { ready: true, reason: null } };
+  async #containerState(): Promise<ContainerState> {
+    // Ready with no reason when nothing provides the state: a daemon built
+    // without a container backend is not a daemon whose runtime is down, and
+    // reporting not-ready would disable a start on every harness that omits it.
+    if (this.#containerStateProvider === undefined) return { modelBroker: { ready: true, reason: null } };
+    return await this.#containerStateProvider();
   }
 }
 

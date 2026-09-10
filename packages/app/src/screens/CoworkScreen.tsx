@@ -28,7 +28,7 @@
  * one-handed moment of choosing, then hands the absolute path back.
  */
 
-import type { ModelBrokerStatus } from "@ompd/core/contracts";
+import type { ContainerRuntimeStatus, ModelBrokerStatus } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -140,6 +140,8 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
         folders={folderState.folders}
         start={folderState.start}
         modelBroker={folderState.modelBroker}
+        runtime={folderState.runtime}
+        blocked={folderState.blocked}
         onAdd={() => setPicking(true)}
         onUnbind={folderActions.unbind}
         onStart={folderActions.start}
@@ -271,11 +273,17 @@ function TasksEmpty(): JSX.Element {
  * that silently shows nothing on a refusal is the defect this exists to stop:
  * idle, starting, started (with the way into the session), and refused (with
  * its reason, and whether another attempt is worth it).
+ *
+ * Both preconditions are drawn too, for the same reason and one level earlier.
+ * A start that is impossible because this machine has no container runtime
+ * running used to look identical to one that was ready, until it was tapped.
  */
 function FolderBinding({
   folders,
   start,
   modelBroker,
+  runtime,
+  blocked,
   onAdd,
   onUnbind,
   onStart,
@@ -284,14 +292,16 @@ function FolderBinding({
   folders: readonly BoundFolder[];
   start: ContainerStart;
   modelBroker?: ModelBrokerStatus;
+  runtime?: ContainerRuntimeStatus;
+  /** The one unmet precondition this screen renders and the button obeys. */
+  blocked: string | null;
   onAdd: () => void;
   onUnbind: (hostPath: string) => void;
   onStart: () => void;
   onOpenSession: (agentId: string) => void;
 }): JSX.Element {
   const [unbindingPath, setUnbindingPath] = useState<string | null>(null);
-  const brokerNotReady = modelBroker !== undefined && !modelBroker.ready;
-  const startDisabled = start.status === "starting" || brokerNotReady;
+  const startDisabled = start.status === "starting" || blocked !== null;
   return (
     <View style={styles.folders} testID="cowork-folders">
       <View style={styles.foldersHead}>
@@ -303,7 +313,7 @@ function FolderBinding({
       </View>
       {folders.length === 0 ? (
         <Label color={ink.muted} testID="cowork-folders-empty">
-          No folders bound; the container will see only its own workspace.
+          Bind at least one folder. The container mounts what you bind, at the same path, and starts in the first one.
         </Label>
       ) : (
         folders.map(folder => (
@@ -369,6 +379,20 @@ function FolderBinding({
           </Label>
         </View>
       ) : null}
+      {runtime !== undefined ? (
+        <View style={styles.brokerRow} testID="cowork-runtime-state">
+          <Glyph
+            name={runtime.ready ? "allow" : "warning"}
+            size={12}
+            color={runtime.ready ? signal.ready : signal.holding}
+          />
+          <Label color={runtime.ready ? signal.ready : signal.holding} style={styles.refusedText}>
+            {runtime.ready
+              ? `Container runtime ready${runtime.label === null ? "" : `: ${runtime.label}`}`
+              : (runtime.reason ?? "no container runtime is available")}
+          </Label>
+        </View>
+      ) : null}
       {modelBroker !== undefined ? (
         <View style={styles.brokerRow} testID="cowork-model-broker-state">
           <Glyph
@@ -376,7 +400,7 @@ function FolderBinding({
             size={12}
             color={modelBroker.ready ? signal.ready : signal.holding}
           />
-          <Label color={modelBroker.ready ? signal.ready : signal.holding}>
+          <Label color={modelBroker.ready ? signal.ready : signal.holding} style={styles.refusedText}>
             {modelBroker.ready
               ? "Model broker ready"
               : `Model broker not ready: ${modelBroker.reason ?? "unavailable"}`}
@@ -397,9 +421,7 @@ function FolderBinding({
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ disabled: startDisabled }}
-          accessibilityLabel={
-            brokerNotReady ? `Start container disabled: ${modelBroker.reason ?? "model broker not ready"}` : undefined
-          }
+          accessibilityLabel={blocked === null ? undefined : `Start container disabled: ${blocked}`}
           disabled={startDisabled}
           onPress={onStart}
           style={[styles.containerStart, startDisabled && styles.disabled]}
@@ -497,7 +519,12 @@ const styles = StyleSheet.create({
     borderColor: ground.line,
     borderBottomWidth: stroke.hair,
     gap: space.snug,
-    padding: space.step,
+    // The gutter is the sidebar's, not this block's own. In the narrow layout
+    // this sits directly above `TaskSidebar`, whose head and section labels pad
+    // to `space.wide`, so a `space.step` inset here put BOUND FOLDERS four
+    // points left of NO TASKS on the same screen.
+    paddingHorizontal: space.wide,
+    paddingVertical: space.step,
   },
   foldersHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   add: {
@@ -505,7 +532,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.tight,
     minHeight: TOUCH_TARGET,
+    // The touch padding hangs off the gutter rather than pushing the label in
+    // from it: a trailing control that pays its own inset reads as a wider
+    // right margin than left, on a row whose whole job is to look like a pair.
     paddingHorizontal: space.snug,
+    marginRight: -space.snug,
   },
   folderRow: { flexDirection: "row", alignItems: "center", gap: space.snug, minHeight: TOUCH_TARGET },
   folderPath: { flex: 1 },
