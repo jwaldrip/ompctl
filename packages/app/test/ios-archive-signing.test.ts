@@ -114,13 +114,11 @@ test("standalone iOS cut archives with its installed distribution profile", asyn
   const home = join(root, "home");
   const out = join(root, "out");
   const profile = join(root, "profile.mobileprovision");
-  const key = join(root, "AuthKey_test.p8");
   const archiveLog = join(root, "xcodebuild-archive.args");
   const exportLog = join(root, "xcodebuild-export.args");
   mkdirSync(bin);
   mkdirSync(home);
   writeFileSync(profile, "fixture");
-  writeFileSync(key, "fixture");
   executable(join(bin, "security"), "#!/bin/sh\nprintf '%s\n' fixture\n");
   executable(
     join(bin, "PlistBuddy"),
@@ -161,9 +159,6 @@ exit 0
         PATH: `${bin}:${process.env.PATH}`,
         XCODE_ARCHIVE_LOG: archiveLog,
         XCODE_EXPORT_LOG: exportLog,
-        OMPD_ASC_KEY_PATH: key,
-        OMPD_ASC_KEY_ID: "test",
-        OMPD_ASC_ISSUER_ID: "issuer",
         OMPD_APPLE_TEAM_ID: "8H7HVPHS87",
         OMPD_BUILD_NUMBER: "892",
         OMPD_VERSION_NAME: "1.0.1",
@@ -192,18 +187,14 @@ exit 0
   }
 });
 
-test("standalone iOS cut refuses a mismatched profile before xcodebuild", async () => {
+test("both iOS release paths refuse a mismatched profile before xcodebuild", async () => {
   const root = mkdtempSync(join(tmpdir(), "ompctl-ios-profile-mismatch-"));
   const bin = join(root, "bin");
   const home = join(root, "home");
-  const out = join(root, "out");
   const profile = join(root, "profile.mobileprovision");
-  const key = join(root, "AuthKey_test.p8");
-  const xcodeMarker = join(root, "xcodebuild-called");
   mkdirSync(bin);
   mkdirSync(home);
   writeFileSync(profile, "fixture");
-  writeFileSync(key, "fixture");
   executable(join(bin, "security"), "#!/bin/sh\nprintf '%s\n' fixture\n");
   executable(
     join(bin, "PlistBuddy"),
@@ -220,30 +211,48 @@ esac
   );
   executable(join(bin, "xcodebuild"), '#!/bin/sh\ntouch "$XCODE_MARKER"\n');
 
-  try {
-    const child = Bun.spawn(["/bin/bash", join(import.meta.dir, "..", "scripts", "cut-ios.sh")], {
+  const cases = [
+    {
+      script: archiveScript,
       env: {
-        ...process.env,
-        HOME: home,
-        PATH: `${bin}:${process.env.PATH}`,
-        XCODE_MARKER: xcodeMarker,
-        OMPD_ASC_KEY_PATH: key,
-        OMPD_ASC_KEY_ID: "test",
-        OMPD_ASC_ISSUER_ID: "issuer",
-        OMPD_APPLE_TEAM_ID: "8H7HVPHS87",
-        OMPD_BUILD_NUMBER: "892",
-        OMPD_VERSION_NAME: "1.0.1",
-        OMPD_IOS_BUILD_DIR: out,
-        OMPD_IOS_PROVISIONING_PROFILE: profile,
-        OMPD_PLIST_BUDDY: join(bin, "PlistBuddy"),
+        OMPD_IOS_ARCHIVE_DIR: join(root, "ci-out"),
+        OMPD_IOS_PROFILE_PATH: profile,
       },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-    expect(exitCode).toBe(1);
-    expect(stderr).toContain("provisioning profile does not match platform, team, and bundle id");
-    expect(await Bun.file(xcodeMarker).exists()).toBe(false);
+      error: "iOS provisioning profile does not match platform, team, and bundle id",
+    },
+    {
+      script: join(import.meta.dir, "..", "scripts", "cut-ios.sh"),
+      env: {
+        OMPD_IOS_BUILD_DIR: join(root, "standalone-out"),
+        OMPD_IOS_PROVISIONING_PROFILE: profile,
+      },
+      error: "cut-ios: provisioning profile does not match platform, team, and bundle id",
+    },
+  ];
+
+  try {
+    for (const [index, candidate] of cases.entries()) {
+      const xcodeMarker = join(root, `xcodebuild-called-${index}`);
+      const child = Bun.spawn(["/bin/bash", candidate.script], {
+        env: {
+          ...process.env,
+          ...candidate.env,
+          HOME: home,
+          PATH: `${bin}:${process.env.PATH}`,
+          XCODE_MARKER: xcodeMarker,
+          OMPD_APPLE_TEAM_ID: "8H7HVPHS87",
+          OMPD_BUILD_NUMBER: "892",
+          OMPD_VERSION_NAME: "1.0.1",
+          OMPD_PLIST_BUDDY: join(bin, "PlistBuddy"),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain(candidate.error);
+      expect(await Bun.file(xcodeMarker).exists()).toBe(false);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
