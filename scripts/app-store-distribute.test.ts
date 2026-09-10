@@ -46,6 +46,56 @@ async function runLookupStep(stepName: string, lookupExit: number): Promise<Look
     rmSync(dir, { recursive: true, force: true });
   }
 }
+interface OrderRun {
+  exitCode: number;
+  stdout: string;
+  calls: number;
+}
+
+async function runOrderStep(ref: string, earlier: boolean, fail: boolean): Promise<OrderRun> {
+  const order = jobs["release-order"] as { steps?: Array<Record<string, unknown>> };
+  const step = order.steps?.find(candidate => candidate.name === "Wait for earlier main releases");
+  if (typeof step?.run !== "string") throw new Error("missing release ordering run body");
+  const dir = mkdtempSync(join(tmpdir(), "ompctl-release-order-"));
+  const stub = join(dir, "gh");
+  const counter = join(dir, "calls");
+  writeFileSync(counter, "0");
+  writeFileSync(
+    stub,
+    `#!/bin/sh
+count_file="${counter}"
+n=$(($(cat "$count_file") + 1))
+echo "$n" > "$count_file"
+if [ ${fail ? 1 : 0} -eq 1 ]; then
+  echo "api unavailable" >&2
+  exit 1
+fi
+if [ ${earlier ? 1 : 0} -eq 1 ] && [ "$n" -eq 1 ]; then
+  echo 100
+fi
+`,
+    { mode: 0o755 },
+  );
+  try {
+    const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", step.run.replace("sleep 15", "sleep 0")], {
+      cwd: root,
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        GITHUB_REF: ref,
+        GITHUB_REPOSITORY: "jwaldrip/ompctl",
+        GITHUB_RUN_ID: "200",
+        GH_TOKEN: "test",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { exitCode: await child.exited, stdout, calls: Number(readFileSync(counter, "utf8")) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 describe("App Store release workflow", () => {
   test("every main push uploads iOS and macOS while other platforms remain explicit", () => {
@@ -71,13 +121,38 @@ describe("App Store release workflow", () => {
     expect(workflow).not.toHaveProperty("concurrency");
   });
 
+  test("main release ordering waits, passes non-main runs, and fails closed", async () => {
+    const order = jobs["release-order"] as {
+      permissions?: Record<string, unknown>;
+      steps?: Array<Record<string, unknown>>;
+      "timeout-minutes"?: number;
+    };
+    expect(order["timeout-minutes"]).toBe(180);
+    expect(order.permissions).toMatchObject({ actions: "read", contents: "read" });
+    const wait = order.steps?.find(step => step.name === "Wait for earlier main releases");
+    expect(wait?.run).toContain("gh api --paginate");
+    expect(wait?.run).toContain(".id < $GITHUB_RUN_ID");
+    expect(wait?.run).toContain(".status !=");
+    expect(wait?.run).toContain("completed");
+
+    const queued = await runOrderStep("refs/heads/main", true, false);
+    expect(queued.exitCode).toBe(0);
+    expect(queued.calls).toBe(2);
+    expect(queued.stdout).toContain("waiting for earlier release runs: 100");
+    expect(queued.stdout).toContain("earlier main releases complete");
+
+    expect(await runOrderStep("refs/heads/feature", true, false)).toMatchObject({ exitCode: 0, calls: 0 });
+    expect(await runOrderStep("refs/heads/main", false, true)).toMatchObject({ exitCode: 1, calls: 1 });
+  });
   test("Apple main-push jobs fail closed if signing or upload credentials are absent", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {
       const job = jobs[name] as {
         env?: Record<string, unknown>;
         steps?: Array<Record<string, unknown>>;
+        needs?: string;
         "timeout-minutes"?: number;
       };
+      expect(job.needs).toBe("release-order");
       expect(job["timeout-minutes"]).toBe(180);
       expect(job.env?.OMPD_UPLOAD).toContain("github.event_name == 'push'");
       expect(job.env?.OMPD_APP_ID).toContain("OMPD_ASC_APP_ID");

@@ -21,8 +21,39 @@ on:
 
 
 jobs:
+  release-order:
+    name: Preserve main release order
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for earlier main releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "non-main release; ordering gate not needed"
+            exit 0
+          fi
+          endpoint="/repos/$GITHUB_REPOSITORY/actions/workflows/app-store-distribute.yml/runs?branch=main&per_page=100"
+          while true; do
+            if ! earlier="$(gh api --paginate "$endpoint" --jq ".workflow_runs[] | select(.id < $GITHUB_RUN_ID and .status != \"completed\") | .id")"; then
+              echo "::error::Could not read earlier release runs"
+              exit 1
+            fi
+            if [[ -z "$earlier" ]]; then
+              break
+            fi
+            echo "waiting for earlier release runs: $earlier"
+            sleep 15
+          done
+          echo "earlier main releases complete"
+
   ios-testflight:
     name: iOS archive + TestFlight
+    needs: release-order
     if: >
       github.event_name == 'push' ||
       contains(github.event.inputs.platforms, 'ios') ||
@@ -256,6 +287,7 @@ jobs:
 
   macos-testflight:
     name: macOS archive
+    needs: release-order
     if: >
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && (
