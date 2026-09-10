@@ -2,20 +2,31 @@
 set -euo pipefail
 
 MIN_MAJOR="${OMPD_MIN_XCODE_MAJOR:-26}"
+APPLICATIONS_ROOT="${OMPD_XCODE_APPLICATIONS_ROOT:-/Applications}"
 SELECTED=""
 VERSION=""
+BEST_KEY=""
 
-for candidate in /Applications/Xcode.app /Applications/Xcode_26*.app; do
+for candidate in "$APPLICATIONS_ROOT/Xcode.app" "$APPLICATIONS_ROOT"/Xcode_26*.app; do
   if [[ ! -d "$candidate/Contents/Developer" ]]; then
     continue
   fi
   candidate_output="$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version)"
   candidate_version="$(awk '$1 == "Xcode" { print $2 }' <<< "$candidate_output")"
-  candidate_major="${candidate_version%%.*}"
-  if [[ "$candidate_major" =~ ^[0-9]+$ && "$candidate_major" -ge "$MIN_MAJOR" ]]; then
+  if [[ ! "$candidate_version" =~ ^([0-9]+)(\.([0-9]+))?(\.([0-9]+))? ]]; then
+    continue
+  fi
+  candidate_major="${BASH_REMATCH[1]}"
+  candidate_minor="${BASH_REMATCH[3]:-0}"
+  candidate_patch="${BASH_REMATCH[5]:-0}"
+  if [[ "$candidate_major" -lt "$MIN_MAJOR" ]]; then
+    continue
+  fi
+  printf -v candidate_key '%08d%08d%08d' "$candidate_major" "$candidate_minor" "$candidate_patch"
+  if [[ -z "$BEST_KEY" || "$candidate_key" > "$BEST_KEY" ]]; then
     SELECTED="$candidate/Contents/Developer"
     VERSION="$candidate_version"
-    break
+    BEST_KEY="$candidate_key"
   fi
 done
 
