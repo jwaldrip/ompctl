@@ -342,6 +342,8 @@ export interface OmpdOptions {
   staticRoot?: string;
   /** Repository the evolution engine proposes against. Defaults to the cwd. */
   repoRoot?: string;
+  /** OMP session tree indexed by this daemon. Defaults to OMP's configured session directory. */
+  sessionsRoot?: string;
   /** Host factory seam, so a test never spawns a real `omp acp`. */
   spawnHost?: (opts: SpawnLocalHostOptions) => LocalHost;
   /** Approval deadline seam for deterministic composition tests. */
@@ -882,7 +884,7 @@ export class Ompd {
       repoRoot: opts.repoRoot ?? process.cwd(),
     });
     this.#tasks = new TaskManager({ store: this.#store, supervisor: this.#supervisor });
-    this.#sessionIndex = new SessionIndex({ store: this.#store });
+    this.#sessionIndex = new SessionIndex({ store: this.#store, sessionsRoot: opts.sessionsRoot });
     // Same default root as the index (omp's own sessions directory), which is
     // the only tree `@oh-my-pi/omp-stats` can aggregate; see `available`.
     this.#stats = new StatsSubsystem();
