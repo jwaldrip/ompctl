@@ -7,7 +7,7 @@ SELECTED=""
 VERSION=""
 BEST_KEY=""
 
-for candidate in "$APPLICATIONS_ROOT/Xcode.app" "$APPLICATIONS_ROOT"/Xcode_26*.app; do
+for candidate in "$APPLICATIONS_ROOT/Xcode.app" "$APPLICATIONS_ROOT"/Xcode_*.app; do
   if [[ ! -d "$candidate/Contents/Developer" ]]; then
     continue
   fi

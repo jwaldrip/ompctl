@@ -29,8 +29,8 @@ test("release Xcode selection consumes full probe output and chooses the highest
   const bin = join(root, "bin");
   mkdirSync(bin);
   fakeXcode(root, "Xcode.app", "25.4");
-  fakeXcode(root, "Xcode_26.0.1.app", "26.0.1");
-  const newest = fakeXcode(root, "Xcode_26.3.app", "26.3");
+  fakeXcode(root, "Xcode_26.3.app", "26.3");
+  const newest = fakeXcode(root, "Xcode_27.1.app", "27.1");
   writeFileSync(
     join(bin, "xcode-select"),
     `#!/bin/sh
@@ -62,7 +62,7 @@ exit 1
     expect({ exitCode, stderr, stdout }).toEqual({
       exitCode: 0,
       stderr: "",
-      stdout: "release_xcode_ready version=26.3\n",
+      stdout: "release_xcode_ready version=27.1\n",
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

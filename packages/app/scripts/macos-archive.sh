@@ -67,6 +67,15 @@ if [[ -n "${OMPD_ASC_KEY_PATH:-}" && -n "${OMPD_ASC_KEY_ID:-}" && -n "${OMPD_ASC
   )
 fi
 
+SWIFT_COMPATIBILITY_LIB_DIR="$(cd "$(dirname "$(xcrun --find swiftc)")/../lib/swift/macosx" && pwd)"
+for compatibility_library in libswiftCompatibility56.a libswiftCompatibilityConcurrency.a; do
+  if [[ ! -f "$SWIFT_COMPATIBILITY_LIB_DIR/$compatibility_library" ]]; then
+    echo "Selected Xcode is missing $compatibility_library at $SWIFT_COMPATIBILITY_LIB_DIR" >&2
+    exit 1
+  fi
+done
+SWIFT_LIBRARY_SEARCH_PATH="\$(inherited) $SWIFT_COMPATIBILITY_LIB_DIR"
+
 xcodebuild \
   "${PROJECT_ARGS[@]}" \
   -configuration Release \
@@ -78,6 +87,7 @@ xcodebuild \
   "${AUTH_ARGS[@]}" \
   CURRENT_PROJECT_VERSION="$OMPD_BUILD_NUMBER" \
   MARKETING_VERSION="$OMPD_VERSION_NAME" \
+  "LIBRARY_SEARCH_PATHS=$SWIFT_LIBRARY_SEARCH_PATH" \
   archive
 
 EXPORT_PLIST="$OUT/ExportOptions.plist"
