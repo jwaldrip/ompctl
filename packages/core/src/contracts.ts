@@ -2558,6 +2558,30 @@ export interface FsListing {
 /** Opaque id correlating one clone's progress frames with its completion. */
 export type CloneId = string;
 
+export type GitProvider = "github" | "gitlab";
+
+export interface ProviderConnectionStatus {
+  connected: boolean;
+  username?: string;
+  scopes?: string[];
+  updatedAt?: string;
+}
+
+export type ProviderStatusMap = Record<GitProvider, ProviderConnectionStatus>;
+
+export interface ProviderRepo {
+  id: string;
+  name: string;
+  owner: string;
+  fullName: string;
+  description: string | null;
+  defaultBranch: string;
+  isPrivate: boolean;
+  lastPushedAt: string | null;
+  cloneUrl: string;
+  sshUrl?: string;
+}
+
 export type RemoteStartClientFrame =
   /**
    * Ask for one directory's entries. Omit `path` for the roots listing, which
@@ -2576,7 +2600,17 @@ export type RemoteStartClientFrame =
    * repository's own name. A url carrying a credential is refused rather than
    * run, because the alternative is a secret in an audit record.
    */
-  | { t: "repo_clone"; url: string; parent: string; name?: string };
+  | { t: "repo_clone"; url: string; parent: string; name?: string }
+  /** Ask for the status of connected Git providers. */
+  | { t: "provider_status" }
+  /** Start device-flow authorization for a provider. */
+  | { t: "provider_auth_start"; provider: GitProvider }
+  /** Poll authorization status for an active device code. */
+  | { t: "provider_auth_poll"; provider: GitProvider; deviceCode: string }
+  /** Disconnect and remove credentials for a provider. */
+  | { t: "provider_disconnect"; provider: GitProvider }
+  /** List repositories from a provider with pagination and optional query. */
+  | { t: "provider_repos_list"; provider: GitProvider; page?: number; perPage?: number; query?: string };
 
 export type RemoteStartServerFrame =
   | ({ t: "fs_listing" } & FsListing)
@@ -2586,7 +2620,31 @@ export type RemoteStartServerFrame =
    */
   | { t: "clone_progress"; cloneId: CloneId; line: string }
   /** The clone finished and `path` now exists. The terminal frame; failures use `error`. */
-  | { t: "clone_done"; cloneId: CloneId; path: string };
+  | { t: "clone_done"; cloneId: CloneId; path: string }
+  | { t: "provider_status"; providers: ProviderStatusMap }
+  | {
+      t: "provider_auth_device";
+      provider: GitProvider;
+      deviceCode: string;
+      userCode: string;
+      verificationUri: string;
+      expiresIn: number;
+      interval: number;
+    }
+  | {
+      t: "provider_auth_result";
+      provider: GitProvider;
+      status: "authorized" | "pending" | "slow_down" | "expired" | "denied";
+      username?: string;
+      error?: string;
+    }
+  | {
+      t: "provider_repos_listing";
+      provider: GitProvider;
+      page: number;
+      hasMore: boolean;
+      repos: ProviderRepo[];
+    };
 
 // ---------------------------------------------------------------------------
 // Stats

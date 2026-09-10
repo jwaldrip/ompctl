@@ -90,6 +90,7 @@ import { CollabRelay, isRelaySocketData, type RelaySocket, type RelaySocketData 
 import { type CollabConnection, CollabRoomError, CollabRooms } from "../collab/rooms.ts";
 import { type CloneRun, type FilesystemSurface, FsRefusal } from "../filesystem/index.ts";
 import { MODE_OPTION_ID, type SessionConfig } from "../hosts.ts";
+import { ProviderRefusal, type ProvidersService } from "../providers/index.ts";
 import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { listSubagentTranscripts, subagentTranscriptPath } from "../sessions/subagents.ts";
@@ -1258,6 +1259,10 @@ export interface GatewayOptions {
    */
   filesystem?: FilesystemSurface;
   /**
+   * Git providers (GitHub, GitLab) for repository browsing and cloning.
+   */
+  providers?: ProvidersService;
+  /**
    * Provides the cowork container state, notably model broker readiness.
    * When absent, reports ready: true.
    */
@@ -1456,6 +1461,7 @@ export class Gateway {
   #sessionWatch: SessionWatch | undefined;
   #endpoints: (() => EndpointOffer[]) | undefined;
   #filesystem: FilesystemSurface | undefined;
+  #providers: ProvidersService | undefined;
   #containerStateProvider: (() => { modelBroker: { ready: boolean; reason: string | null } }) | undefined;
   #artifactRoots: readonly string[] | undefined;
   #sessionsRoot: string | undefined;
@@ -1562,6 +1568,7 @@ export class Gateway {
     this.#stats?.start();
     this.#endpoints = opts.endpoints;
     this.#filesystem = opts.filesystem;
+    this.#providers = opts.providers;
     this.#containerStateProvider = opts.containerState;
     this.#onWebViewResult = opts.onWebViewResult;
     this.#onWebViewUnavailable = opts.onWebViewUnavailable;
@@ -4032,6 +4039,7 @@ export class Gateway {
       return;
     }
 
+    const tokenInfo = this.#providers?.tokenForUrl(frame.url);
     let run: CloneRun;
     try {
       run = await filesystem.clone(
@@ -4039,6 +4047,7 @@ export class Gateway {
           url: frame.url,
           parent: frame.parent,
           ...(frame.name === undefined ? {} : { name: frame.name }),
+          ...(tokenInfo ? { token: tokenInfo.token, tokenUser: tokenInfo.username } : {}),
         },
         // Bound to the socket, not to a subscription: progress belongs to the
         // device that asked, and a clone is nobody else's business.
@@ -4080,6 +4089,138 @@ export class Gateway {
     if (running === undefined) return;
     this.#clones.delete(ws);
     for (const run of running) run.cancel();
+  }
+  // -- git providers ---------------------------------------------------------
+
+  #serveProviderStatus(ws: GatewaySocket): void {
+    if (!ws.data.scopes.has(SCOPE_READ)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_status requires read scope" });
+      return;
+    }
+    const providers = this.#providers?.status() ?? {
+      github: { connected: false },
+      gitlab: { connected: false },
+    };
+    this.#send(ws, { t: "provider_status", providers });
+  }
+
+  async #serveProviderAuthStart(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "provider_auth_start" }>,
+  ): Promise<void> {
+    if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_auth_start requires manage scope" });
+      return;
+    }
+    if (!this.#providers) {
+      this.#send(ws, { t: "error", code: "providers_unavailable", message: "no providers service is configured" });
+      return;
+    }
+    if (frame.provider !== "github" && frame.provider !== "gitlab") {
+      this.#send(ws, { t: "error", code: "bad_frame", message: "provider must be github or gitlab" });
+      return;
+    }
+    try {
+      const device = await this.#providers.startDeviceAuth(frame.provider);
+      this.#send(ws, {
+        t: "provider_auth_device",
+        provider: device.provider,
+        deviceCode: device.deviceCode,
+        userCode: device.userCode,
+        verificationUri: device.verificationUri,
+        expiresIn: device.expiresIn,
+        interval: device.interval,
+      });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        code: "auth_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async #serveProviderAuthPoll(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "provider_auth_poll" }>,
+  ): Promise<void> {
+    if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_auth_poll requires manage scope" });
+      return;
+    }
+    if (!this.#providers) {
+      this.#send(ws, { t: "error", code: "providers_unavailable", message: "no providers service is configured" });
+      return;
+    }
+    if (typeof frame.deviceCode !== "string" || frame.deviceCode.length === 0) {
+      this.#send(ws, { t: "error", code: "bad_frame", message: "deviceCode is required" });
+      return;
+    }
+    try {
+      const result = await this.#providers.pollDeviceAuth(frame.provider, frame.deviceCode);
+      this.#send(ws, {
+        t: "provider_auth_result",
+        provider: result.provider,
+        status: result.status,
+        username: result.username,
+        error: result.error,
+      });
+    } catch (err) {
+      this.#send(ws, {
+        t: "error",
+        code: "auth_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  #serveProviderDisconnect(ws: GatewaySocket, frame: Extract<ClientFrame, { t: "provider_disconnect" }>): void {
+    if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_disconnect requires manage scope" });
+      return;
+    }
+    this.#providers?.disconnect(frame.provider);
+    const providers = this.#providers?.status() ?? {
+      github: { connected: false },
+      gitlab: { connected: false },
+    };
+    this.#send(ws, { t: "provider_status", providers });
+  }
+
+  async #serveProviderReposList(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "provider_repos_list" }>,
+  ): Promise<void> {
+    if (!ws.data.scopes.has(SCOPE_READ)) {
+      this.#send(ws, { t: "error", code: "unauthorized", message: "provider_repos_list requires read scope" });
+      return;
+    }
+    if (!this.#providers) {
+      this.#send(ws, { t: "error", code: "providers_unavailable", message: "no providers service is configured" });
+      return;
+    }
+    try {
+      const result = await this.#providers.listRepos({
+        provider: frame.provider,
+        page: frame.page,
+        perPage: frame.perPage,
+        query: frame.query,
+      });
+      this.#send(ws, {
+        t: "provider_repos_listing",
+        provider: result.provider,
+        page: result.page,
+        hasMore: result.hasMore,
+        repos: result.repos,
+      });
+    } catch (err) {
+      const code = err instanceof ProviderRefusal ? err.code : "provider_repos_failed";
+      this.#send(ws, {
+        t: "error",
+        code,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // -- websocket -------------------------------------------------------------
@@ -5787,6 +5928,26 @@ export class Gateway {
           return;
         }
         void this.#startCloneOverSocket(ws, frame);
+        return;
+      }
+      case "provider_status": {
+        this.#serveProviderStatus(ws);
+        return;
+      }
+      case "provider_auth_start": {
+        void this.#serveProviderAuthStart(ws, frame);
+        return;
+      }
+      case "provider_auth_poll": {
+        void this.#serveProviderAuthPoll(ws, frame);
+        return;
+      }
+      case "provider_disconnect": {
+        this.#serveProviderDisconnect(ws, frame);
+        return;
+      }
+      case "provider_repos_list": {
+        void this.#serveProviderReposList(ws, frame);
         return;
       }
       case "prompt": {
