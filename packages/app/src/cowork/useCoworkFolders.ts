@@ -106,23 +106,50 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
 
   /**
    * Whether a start is awaiting its answer. The daemon's `agent_created` and
-   * `error` frames are the only outcomes, and both arrive on a client this
-   * hook does not own, so a ref -- not the state -- decides which frames are
-   * this start's business and which belong to whoever else shares the socket.
+   * `error` frames are correlated by `requestId`, so concurrent catalogue
+   * errors cannot hijack the container start state machine.
    */
   const awaiting = useRef(false);
+  const activeRequestId = useRef<string | null>(null);
+  const requestCounter = useRef(0);
 
   useEffect(() => {
     if (client === undefined) return;
     const offs = [
       client.on("agent_created", (event: AgentCreatedEvent) => {
-        if (!awaiting.current) return;
+        if (activeRequestId.current !== null && event.requestId !== undefined) {
+          if (event.requestId !== activeRequestId.current) return;
+        } else if (!awaiting.current) {
+          // Re-sync: if the container is running and belongs to a container host,
+          // reconcile even if the start outcome was missed by a transient error or reconnect.
+          if (event.agent.host?.kind === "container") {
+            setStart({ status: "started", agentId: event.agent.id });
+          }
+          return;
+        }
         awaiting.current = false;
+        activeRequestId.current = null;
         setStart({ status: "started", agentId: event.agent.id });
       }),
       client.on("error", (event: ClientErrorEvent) => {
-        if (!awaiting.current) return;
+        if (activeRequestId.current !== null && event.requestId !== undefined) {
+          if (event.requestId !== activeRequestId.current) return;
+        } else if (activeRequestId.current !== null) {
+          // An error without requestId that is attributed to a catalogue belongs to catalogue polling
+          if (event.catalog !== undefined) return;
+          if (
+            event.code?.startsWith("skills_") ||
+            event.code?.startsWith("connectors_") ||
+            event.code?.startsWith("tasks_")
+          ) {
+            return;
+          }
+          if (!awaiting.current) return;
+        } else if (!awaiting.current) {
+          return;
+        }
         awaiting.current = false;
+        activeRequestId.current = null;
         setStart(refusalFor(event.code, event.message));
       }),
       client.on("container_state", (event: ContainerStateEvent) => {
@@ -191,13 +218,15 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
       return;
     }
 
-    setStart({ status: "starting" });
+    const reqId = `req_agent_create_${++requestCounter.current}`;
+    activeRequestId.current = reqId;
     awaiting.current = true;
+    setStart({ status: "starting" });
     // Fire-and-forget on purpose: the state machine is the outcome surface, so
     // the screen never awaits this and a second tap cannot double-start. A
     // link too dead to carry the frame reports itself as an `error` event
     // with code `offline`, the same named exit a refusal takes.
-    client.createAgent(request);
+    client.createAgent({ ...request, requestId: reqId }, reqId);
   }, [blocked, client, folders]);
 
   return [

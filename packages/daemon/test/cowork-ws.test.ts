@@ -417,6 +417,46 @@ describe("the same frames over a hub-relayed tunnel session", () => {
   });
 });
 
+describe("request correlation and catalogue attribution", () => {
+  test("catalogue reads echo requestId and carry catalog discriminator on error and success", async () => {
+    const h = await harness();
+    const token = await h.pair("cowork-correlate", [SCOPE_READ]);
+    const sock = await h.connect(token);
+
+    sock.send({ t: "skills_read", cwd: "/test", requestId: "req_skills_test" });
+    const skills = await sock.next(frame => frame.t === "skills", "skills frame");
+    expect(skills).toMatchObject({ t: "skills", requestId: "req_skills_test" });
+
+    sock.send({ t: "connectors_read", cwd: "/test", requestId: "req_conn_test" });
+    const conn = await sock.next(frame => frame.t === "connectors", "connectors frame");
+    expect(conn).toMatchObject({ t: "connectors", requestId: "req_conn_test" });
+
+    // Unauthorized task create carries requestId
+    sock.send({ t: "task_create", title: "Test", prompt: "p", agentId: "agt_1", requestId: "req_task_unauth" });
+    const taskErr = await sock.next(
+      frame => frame.t === "error" && frame.requestId === "req_task_unauth",
+      "task error",
+    );
+    expect(taskErr).toMatchObject({ t: "error", code: "unauthorized", requestId: "req_task_unauth" });
+  });
+
+  test("scope refusal carries catalog discriminator for catalogue reads", async () => {
+    const h = await harness();
+    // Pair with no read scope
+    const token = await h.pair("cowork-no-read", []);
+    const sock = await h.connect(token);
+
+    sock.send({ t: "skills_read", cwd: "/test", requestId: "req_skills_denied" });
+    const skillsErr = await sock.next(frame => frame.t === "error", "skills error");
+    expect(skillsErr).toMatchObject({
+      t: "error",
+      code: "unauthorized",
+      catalog: "skills",
+      requestId: "req_skills_denied",
+    });
+  });
+});
+
 afterEach(async () => {
   while (sockets.length) sockets.pop()?.close();
   while (gateways.length) await gateways.pop()?.close();

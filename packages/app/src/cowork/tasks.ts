@@ -25,11 +25,12 @@ export interface TaskListState {
 
 export const EMPTY_TASKS: TaskListState = { tasks: new Map() };
 
-/** What starting a task from the composer or the `/` menu collects — `agentId` is added by whoever has one (`useCowork`), not by the sidebar itself. */
+/** What starting a task collects: composer or / menu passes title and prompt; retry carries the original task's agentId explicitly. */
 export interface NewTaskInput {
   title: string;
   prompt: string;
   skillName?: string;
+  agentId?: string;
 }
 
 export type TaskListAction =

@@ -359,14 +359,26 @@ const CHUNK_CHANNELS: Record<string, "user" | "message" | "thought"> = {
  * Folds one `session/update` into the state. The returned state is new whenever
  * anything changed and identical by reference when nothing did, so a renderer
  * can skip work by comparing pointers.
+ *
+ * `replay` is the daemon's own word for "this is my log, not the agent talking
+ * now". It matters to exactly one thing: a live chunk opens a streaming row,
+ * because that open row is how the NEXT chunk finds what it continues when the
+ * message id rotates mid-reply. A replayed chunk must not, because nothing
+ * follows it: the row would stay open forever, the store would keep reporting a
+ * turn in flight, and the composer would keep offering to queue behind a turn
+ * that ended before this device attached.
+ *
+ * Replay does not need the open row to coalesce. It arrives in order, in one
+ * burst, with no concurrent turn, so the last assistant row of the channel is
+ * unambiguously the row a following chunk continues.
  */
-export function reduce(state: SessionState, update: unknown): SessionState {
+export function reduce(state: SessionState, update: unknown, replay = false): SessionState {
   const payload = unwrap(update);
   const name = readString(payload, "sessionUpdate");
   if (name === null) return appendUnknown(state, "malformed update", update);
 
   const channel = CHUNK_CHANNELS[name];
-  if (channel !== undefined) return reduceChunk(state, payload, channel);
+  if (channel !== undefined) return reduceChunk(state, payload, channel, replay);
 
   switch (name) {
     case "tool_call":
@@ -397,13 +409,18 @@ export function reduceAll(state: SessionState, updates: readonly unknown[]): Ses
 
 // -- chunks -----------------------------------------------------------------
 
-function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "message" | "thought"): SessionState {
+function reduceChunk(
+  state: SessionState,
+  payload: unknown,
+  channel: "user" | "message" | "thought",
+  replay = false,
+): SessionState {
   const text = extractText(readField(payload, "content"));
   if (text.length === 0) return state;
 
   const messageId = readString(payload, "messageId");
   const thought = channel === "thought";
-  const index = findChunkTarget(state.entries, channel, messageId, text);
+  const index = findChunkTarget(state.entries, channel, messageId, text, replay);
 
   if (index >= 0) {
     const current = state.entries[index];
@@ -442,7 +459,10 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
       : // `rowId` is the id this row was born with and keeps. `id` goes on
         // following the wire so `findChunkTarget` can still resume a settled
         // row by the id a later chunk names.
-        { kind: "assistant", id, rowId: id, text, streaming: true, thought };
+        //
+        // A replayed row is born closed. Nothing is coming that would close it
+        // later, and an open row is what the store reads as a turn in flight.
+        { kind: "assistant", id, rowId: id, text, streaming: !replay, thought };
   const rawEntries = [...settled, entry];
   const { entries, trimmed } = trimEntries(rawEntries);
   return {
@@ -456,12 +476,18 @@ function reduceChunk(state: SessionState, payload: unknown, channel: "user" | "m
  * Where a chunk belongs. An id matches wherever it sits, because an agent may
  * resume a message after a tool call; without one, only a still-open block of
  * the same channel can absorb it.
+ *
+ * A replayed chunk has no open block to look for, because a replayed row is
+ * born closed. What continues it is the row immediately before it, and only
+ * that one: a chunk after a replayed tool call starts a new message, exactly
+ * as the live path's `closeStreams` at a tool call decides.
  */
 function findChunkTarget(
   entries: readonly Entry[],
   channel: "user" | "message" | "thought",
   messageId: string | null,
   text: string,
+  replay = false,
 ): number {
   if (channel === "user") {
     if (messageId !== null) {
@@ -493,8 +519,17 @@ function findChunkTarget(
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry === undefined) continue;
-    if (entry.kind !== "assistant") continue;
-    if (entry.thought !== (channel === "thought")) continue;
+    if (entry.kind !== "assistant") {
+      // A replayed chunk is continued by the row immediately before it and by
+      // nothing further back. Anything else here is the boundary the live path
+      // draws with `closeStreams`: a tool call, an approval, another speaker.
+      if (replay) return -1;
+      continue;
+    }
+    if (entry.thought !== (channel === "thought")) {
+      if (replay) return -1;
+      continue;
+    }
     // An id locates a message that has already settled, which is how an agent
     // resumes one after a tool call.
     if (messageId !== null && entry.id === messageId) return index;
@@ -507,7 +542,11 @@ function findChunkTarget(
     // ends at a tool call, an approval, or the end of a turn, each of which
     // closes the stream deliberately, never at an id the wire changed
     // mid-sentence.
-    if (entry.streaming) return index;
+    //
+    // A replay has no open row to find, so the newest row of this channel is
+    // the one a following chunk continues. Same answer, arrived at without
+    // needing a flag on the row that nothing will ever clear.
+    if (replay || entry.streaming) return index;
   }
   return -1;
 }

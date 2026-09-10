@@ -2,12 +2,11 @@
  * The Cowork surface: the task sidebar as primary navigation, with skills,
  * connectors, and plugins one tap away.
  *
- * Two layouts, one component tree — the same split the console already draws
- * at `SPLIT_WIDTH`, applied to a different shape of screen.
+ * Two layouts, one component tree: the same split the console already draws
  *
  * Wide (>= SPLIT_WIDTH): a fixed nav rail, the task sidebar, and a content
  * pane sit side by side, because there is room for the primary surface and
- * whatever it opens onto at once — the same reasoning `Console` already
+ * whatever it opens onto at once: the same reasoning `Console` already
  * applies to the bay and the log.
  *
  * Narrow (down to 390px): a permanent side rail has nowhere to go. At 390px a
@@ -40,7 +39,7 @@ import { TaskSidebar } from "../components/TaskSidebar.tsx";
 import type { CoworkClient } from "../cowork/client.ts";
 import type { TaskListState } from "../cowork/tasks.ts";
 import { taskListView } from "../cowork/tasks.ts";
-import type { ConnectorSummary, SkillSummary, Task } from "../cowork/types.ts";
+import type { ConnectorSummary, CoworkSlice, SkillSummary, Task } from "../cowork/types.ts";
 import type { BoundFolder, ContainerStart } from "../cowork/useCoworkFolders.ts";
 import { useCoworkFolders } from "../cowork/useCoworkFolders.ts";
 import type { GlyphName } from "../design/icons.tsx";
@@ -78,7 +77,11 @@ export interface CoworkScreenProps {
   tasks: TaskListState;
   skills: readonly SkillSummary[];
   connectors: readonly ConnectorSummary[];
+  skillsSlice?: CoworkSlice<readonly SkillSummary[]>;
+  connectorsSlice?: CoworkSlice<readonly ConnectorSummary[]>;
+  tasksSlice?: CoworkSlice<TaskListState>;
   onStartTask: (input: NewTaskInput) => void;
+  onRetryTask?: (task: Task) => void;
   onInvokeSkill: (skill: SkillSummary) => void;
   onOpenSession: (agentId: string) => void;
   now?: number;
@@ -154,26 +157,57 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
       onSelectTask={selectTask}
       onStartTask={startTask}
       now={now}
+      refusal={props.tasksSlice?.error}
+      status={props.tasksSlice?.status}
     />
   );
 
   const content = (() => {
-    if (view === "skills") return <SkillsView skills={skills} onInvoke={onInvokeSkill} />;
-    if (view === "connectors") return <ConnectorsView connectors={connectors} />;
-    if (view === "plugins") return <PluginsView skills={skills} connectors={connectors} />;
+    if (view === "skills") {
+      return (
+        <SkillsView
+          skills={skills}
+          onInvoke={onInvokeSkill}
+          refusal={props.skillsSlice?.error}
+          status={props.skillsSlice?.status}
+        />
+      );
+    }
+    if (view === "connectors") {
+      return (
+        <ConnectorsView
+          connectors={connectors}
+          refusal={props.connectorsSlice?.error}
+          status={props.connectorsSlice?.status}
+        />
+      );
+    }
+    if (view === "plugins") {
+      return (
+        <PluginsView
+          skills={skills}
+          connectors={connectors}
+          skillsRefusal={props.skillsSlice?.error}
+          connectorsRefusal={props.connectorsSlice?.error}
+        />
+      );
+    }
     if (selectedTask !== null) {
       return (
         <TaskDetail
           task={selectedTask}
           onOpenSession={onOpenSession}
           onRetry={() => {
-            // Client-side resubmit: re-uses the existing task creation path with the
-            // same prompt, title, and skill, without needing a dedicated daemon frame.
-            onStartTask({
-              title: selectedTask.title,
-              prompt: selectedTask.prompt,
-              skillName: selectedTask.skillName,
-            });
+            if (props.onRetryTask) {
+              props.onRetryTask(selectedTask);
+            } else {
+              onStartTask({
+                title: selectedTask.title,
+                prompt: selectedTask.prompt,
+                skillName: selectedTask.skillName,
+                agentId: selectedTask.agentId,
+              });
+            }
           }}
           now={now}
         />

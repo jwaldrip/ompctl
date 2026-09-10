@@ -36,6 +36,7 @@ import type {
   CollabVoiceParticipant,
   ConnectorSummary,
   ContainerRuntimeStatus,
+  CoworkCatalog,
   FsListing,
   ModelBrokerStatus,
   PlanReviewChoice,
@@ -215,6 +216,9 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   // hear that rather than believe a transcript is gone; re-sending it on a
   // reconnect would be worse, because by then they may have decided not to.
   session_delete: true,
+  session_archive: true,
+  session_unarchive: true,
+  session_suggest_ephemeral: false,
   // Same failure class as the one-shot session frames, with more at stake:
   // an invite that never left is a credential the operator believes they
   // handed over and did not, and the new device's user is left scanning a
@@ -354,7 +358,12 @@ export interface AgentsEvent {
 export interface UpdateEvent {
   agentId: AgentId;
   seq: number;
-  /** Raw ACP `session/update` payload. Shape is the transcript's problem. */
+  /**
+   * True when the daemon re-sent this from its own log because this client
+   * attached. A consumer must not read a replayed frame as evidence that a
+   * turn is in flight: the transcript it describes may have ended long ago.
+   */
+  replay?: true;
   update: unknown;
 }
 
@@ -390,6 +399,8 @@ export interface ClientErrorEvent {
   sessionId?: string;
   /** The machine key inside `code` when one exists (a `CollabRefusal` for collab frames), for wording from the refusal record. */
   reason?: string;
+  requestId?: string;
+  catalog?: CoworkCatalog;
 }
 
 /**
@@ -684,15 +695,18 @@ export interface AgentConfigEvent {
  */
 export interface SkillsEvent {
   skills: SkillSummary[];
+  requestId?: string;
 }
 
 export interface ConnectorsEvent {
   connectors: ConnectorSummary[];
+  requestId?: string;
 }
 
 /** The task roster answering `readTasks`. A snapshot, not a push: it says what a poll saw. */
 export interface TasksEvent {
   tasks: Task[];
+  requestId?: string;
 }
 
 /**
@@ -702,11 +716,13 @@ export interface TasksEvent {
  */
 export interface TaskEvent {
   task: Task;
+  requestId?: string;
 }
 
 /** The agent a `createAgent` made, delivered only to the client that asked. */
 export interface AgentCreatedEvent {
   agent: Agent;
+  requestId?: string;
 }
 export interface SessionStatsEvent {
   sessionId: string;
@@ -1176,6 +1192,18 @@ export class OmpdClient {
     this.send({ t: "session_delete", sessionIds: [...sessionIds] });
   }
 
+  archiveSessions(sessionIds: readonly string[], unarchive = false): void {
+    this.send({ t: "session_archive", sessionIds: [...sessionIds], ...(unarchive ? { unarchive: true } : {}) });
+  }
+
+  unarchiveSessions(sessionIds: readonly string[]): void {
+    this.send({ t: "session_unarchive", sessionIds: [...sessionIds] });
+  }
+
+  suggestEphemeralSessions(): void {
+    this.send({ t: "session_suggest_ephemeral" });
+  }
+
   /**
    * Ask for one page of a session's transcript: the newest turns, or the
    * page older than `cursor` when an earlier answer handed one over. The
@@ -1301,26 +1329,32 @@ export class OmpdClient {
    * A snapshot ask, same class as `readSettings`: the Cowork surface re-asks
    * on its poll and after every reconnect, so it is never replayed.
    */
-  readSkills(cwd?: string, agentId?: string): void {
+  readSkills(cwd?: string, agentId?: string, requestId?: string): void {
     this.send({
       t: "skills_read",
       ...(cwd === undefined ? {} : { cwd }),
       ...(agentId === undefined ? {} : { agentId }),
+      ...(requestId === undefined ? {} : { requestId }),
     });
   }
 
   /** The connectors catalogue, scoped exactly like `readSkills`. */
-  readConnectors(cwd?: string, agentId?: string): void {
+  readConnectors(cwd?: string, agentId?: string, requestId?: string): void {
     this.send({
       t: "connectors_read",
       ...(cwd === undefined ? {} : { cwd }),
       ...(agentId === undefined ? {} : { agentId }),
+      ...(requestId === undefined ? {} : { requestId }),
     });
   }
 
   /** The task roster, optionally narrowed to one agent's tasks. */
-  readTasks(agentId?: string): void {
-    this.send({ t: "tasks_read", ...(agentId === undefined ? {} : { agentId }) });
+  readTasks(agentId?: string, requestId?: string): void {
+    this.send({
+      t: "tasks_read",
+      ...(agentId === undefined ? {} : { agentId }),
+      ...(requestId === undefined ? {} : { requestId }),
+    });
   }
 
   /**
@@ -1329,13 +1363,16 @@ export class OmpdClient {
    * refusal arrives as an `error` naming it. One-shot like the other
    * instructions: a replayed start would run the prompt twice.
    */
-  createTask(input: {
-    title: string;
-    prompt: string;
-    agentId: AgentId;
-    skillName?: string;
-    labels?: Record<string, string>;
-  }): void {
+  createTask(
+    input: {
+      title: string;
+      prompt: string;
+      agentId: AgentId;
+      skillName?: string;
+      labels?: Record<string, string>;
+    },
+    requestId?: string,
+  ): void {
     this.send({
       t: "task_create",
       title: input.title,
@@ -1343,6 +1380,7 @@ export class OmpdClient {
       agentId: input.agentId,
       ...(input.skillName === undefined ? {} : { skillName: input.skillName }),
       ...(input.labels === undefined ? {} : { labels: input.labels }),
+      ...(requestId === undefined ? {} : { requestId }),
     });
   }
 
@@ -1350,8 +1388,8 @@ export class OmpdClient {
    * Cancel one task. The task as the daemon now holds it arrives as the
    * `task` event; a refusal arrives as an `error` naming it.
    */
-  cancelTask(taskId: string): void {
-    this.send({ t: "task_cancel", taskId });
+  cancelTask(taskId: string, requestId?: string): void {
+    this.send({ t: "task_cancel", taskId, ...(requestId === undefined ? {} : { requestId }) });
   }
 
   /**
@@ -1365,13 +1403,18 @@ export class OmpdClient {
    * rather than letting a caller ship a frame that can only be a 400. Which
    * image a container host runs is the daemon's own `containerImage` config.
    */
-  createAgent(request: {
-    name: string;
-    cwd: string;
-    host?: WireHostSpec;
-    routineId?: string;
-    labels?: Record<string, string>;
-  }): void {
+  createAgent(
+    request: {
+      name: string;
+      cwd: string;
+      host?: WireHostSpec;
+      routineId?: string;
+      labels?: Record<string, string>;
+      requestId?: string;
+    },
+    requestId?: string,
+  ): void {
+    const resolvedRequestId = request.requestId ?? requestId;
     this.send({
       t: "agent_create",
       name: request.name,
@@ -1379,6 +1422,7 @@ export class OmpdClient {
       ...(request.host === undefined ? {} : { host: request.host }),
       ...(request.routineId === undefined ? {} : { routineId: request.routineId }),
       ...(request.labels === undefined ? {} : { labels: request.labels }),
+      ...(resolvedRequestId === undefined ? {} : { requestId: resolvedRequestId }),
     });
   }
 
@@ -1855,19 +1899,34 @@ export class OmpdClient {
         });
         return;
       case "skills":
-        this.emit("skills", { skills: frame.skills });
+        this.emit("skills", {
+          skills: frame.skills,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         return;
       case "connectors":
-        this.emit("connectors", { connectors: frame.connectors });
+        this.emit("connectors", {
+          connectors: frame.connectors,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         return;
       case "tasks":
-        this.emit("tasks", { tasks: frame.tasks });
+        this.emit("tasks", {
+          tasks: frame.tasks,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         return;
       case "task":
-        this.emit("task", { task: frame.task });
+        this.emit("task", {
+          task: frame.task,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         return;
       case "agent_created":
-        this.emit("agent_created", { agent: frame.agent });
+        this.emit("agent_created", {
+          agent: frame.agent,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         return;
       case "container_state":
         this.emit("container_state", { modelBroker: frame.modelBroker, runtime: frame.runtime });
@@ -1938,7 +1997,7 @@ export class OmpdClient {
         });
         return;
       case "update":
-        this.handleUpdate(frame.agentId, frame.seq, frame.update);
+        this.handleUpdate(frame.agentId, frame.seq, frame.update, frame.replay === true);
         return;
       case "approval":
         this.emit("approval", {
@@ -1993,6 +2052,8 @@ export class OmpdClient {
           agentId: frame.agentId,
           sessionId: frame.sessionId,
           reason: frame.reason,
+          requestId: frame.requestId,
+          catalog: frame.catalog,
         });
         // Except when the daemon has stopped recognising us at all, which
         // wears the same code as a scope refusal. Asking settles which it is
@@ -2040,7 +2101,7 @@ export class OmpdClient {
     }
   }
 
-  private handleUpdate(agentId: AgentId, seq: number, update: unknown): void {
+  private handleUpdate(agentId: AgentId, seq: number, update: unknown, replay = false): void {
     const previous = this.watermarks.get(agentId);
     if (previous !== undefined && seq <= previous) {
       // Replay overlap after a reconnect. Dropping it here is what makes
@@ -2058,7 +2119,7 @@ export class OmpdClient {
     if (previous === undefined || seq > previous) {
       this.backpressureStreak = 0;
     }
-    this.emit("update", { agentId, seq, update });
+    this.emit("update", { agentId, seq, update, ...(replay ? { replay: true } : {}) });
   }
 
   // -- emitter --------------------------------------------------------------

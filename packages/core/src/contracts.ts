@@ -1262,6 +1262,8 @@ export function parsePromptImages(
   return { ok: true, images };
 }
 
+export type CoworkCatalog = "skills" | "connectors" | "tasks";
+
 export type ClientFrame =
   | { t: "attach"; agentId: AgentId; sinceSeq?: number }
   | { t: "detach"; agentId: AgentId }
@@ -1360,6 +1362,22 @@ export type ClientFrame =
    * that asked for one.
    */
   | { t: "session_delete"; sessionIds: string[] }
+  /**
+   * Archive or unarchive sessions. Unlike deletion, archiving is reversible
+   * and preserves the transcript file and all cached records.
+   *
+   * Requires manage scope. A session a process currently holds is refused
+   * by name rather than archived: see `SessionArchiveRefusal`.
+   *
+   * Answered by `sessions_archived`, one result per id, to the asking socket only.
+   */
+  | { t: "session_archive"; sessionIds: string[]; unarchive?: boolean }
+  | { t: "session_unarchive"; sessionIds: string[] }
+  /**
+   * Suggest ephemeral or abandoned sessions suitable for archiving.
+   * Read scope. Answered by `sessions_suggested_ephemeral`.
+   */
+  | { t: "session_suggest_ephemeral" }
   /**
    * Mint a new device's credential over this socket, in one authenticated
    * request. The two HTTP steps this replaces -- an unauthenticated
@@ -1470,6 +1488,7 @@ export type ClientFrame =
       value?: string;
       modeId?: string;
     }
+
   /**
    * The Cowork catalogue reads, sealed-socket versions of `GET /v1/skills`
    * and `GET /v1/connectors`. A hub-paired phone reaches these frames rather
@@ -1482,13 +1501,13 @@ export type ClientFrame =
    * agent's cwd, and `cwd` wins when both are given. Answered by
    * `skills`/`connectors`, to the asking socket only.
    */
-  | { t: "skills_read"; cwd?: string; agentId?: string }
-  | { t: "connectors_read"; cwd?: string; agentId?: string }
+  | { t: "skills_read"; cwd?: string; agentId?: string; requestId?: string }
+  | { t: "connectors_read"; cwd?: string; agentId?: string; requestId?: string }
   /**
    * The task roster over this socket, the `GET /v1/tasks` twin. Answered by
    * `tasks`, to the asking socket only.
    */
-  | { t: "tasks_read"; agentId?: string }
+  | { t: "tasks_read"; agentId?: string; requestId?: string }
   /**
    * Start one task, the `POST /v1/tasks` twin: a named prompt against a
    * session that already exists, never a session-spawner. Answered by `task`
@@ -1501,13 +1520,14 @@ export type ClientFrame =
       agentId: AgentId;
       skillName?: string;
       labels?: Record<string, string>;
+      requestId?: string;
     }
   /**
    * Cancel one task, the `POST /v1/tasks/:id/cancel` twin. Answered by
    * `task` carrying the task as the daemon now holds it, to the asking
    * socket only.
    */
-  | { t: "task_cancel"; taskId: string }
+  | { t: "task_cancel"; taskId: string; requestId?: string }
   /**
    * Create an agent, the `POST /v1/agents` twin: the manage-scoped act that
    * provisions a host, which is how a Cowork container start crosses the
@@ -1524,6 +1544,7 @@ export type ClientFrame =
       host?: WireHostSpec;
       routineId?: string;
       labels?: Record<string, string>;
+      requestId?: string;
     }
   /** Request per-session stats (cost, tokens, cache rate). Answered by session_stats to the asking socket only. */
   | { t: "session_stats"; sessionId: string }
@@ -1545,7 +1566,19 @@ export type ServerFrame =
    */
   | { t: "hello"; deviceId: string; agents: Agent[]; scopes?: string[] }
   | { t: "agents"; agents: Agent[] }
-  | { t: "update"; agentId: AgentId; seq: number; update: unknown }
+  /**
+   * One session update. `replay` marks a frame the daemon is re-sending from
+   * its own log because a client attached, rather than one the agent produced
+   * just now.
+   *
+   * A client cannot work this out for itself, and guessing at it is a measured
+   * defect: replay and live traffic are the same frames in the same order, so
+   * an app watching a settled transcript arrive drew a caret and offered an
+   * interrupt for a turn that had ended before it attached. Only the daemon
+   * knows which of its own frames are history. Absent means live, which is
+   * what every frame from a daemon older than this field is treated as.
+   */
+  | { t: "update"; agentId: AgentId; seq: number; update: unknown; replay?: true }
   | {
       t: "approval";
       agentId: AgentId;
@@ -1594,7 +1627,16 @@ export type ServerFrame =
    * parsing `message`. `sessionId` correlates a failure with the session
    * row it came from, for frames that name a session rather than an agent.
    */
-  | { t: "error"; agentId?: AgentId; sessionId?: string; message: string; code?: string; reason?: string }
+  | {
+      t: "error";
+      agentId?: AgentId;
+      sessionId?: string;
+      message: string;
+      code?: string;
+      reason?: string;
+      requestId?: string;
+      catalog?: CoworkCatalog;
+    }
   /** Ask a client's embedded WebView to perform an action, already cleared by the policy engine. */
   | { t: "webview_action"; agentId: AgentId; requestId: string; action: WebViewAction }
   | CollabServerFrame
@@ -1650,6 +1692,16 @@ export type ServerFrame =
    * error frame cannot say which ids it covers.
    */
   | { t: "sessions_deleted"; results: SessionDeleteResult[] }
+  /**
+   * What a `session_archive` or `session_unarchive` did, one result per id asked for,
+   * sent only to the socket that asked.
+   */
+  | { t: "sessions_archived"; results: SessionArchiveResult[] }
+  /**
+   * Suggested ephemeral session ids answering `session_suggest_ephemeral`, sent only
+   * to the socket that asked.
+   */
+  | { t: "sessions_suggested_ephemeral"; sessionIds: string[] }
   /** Current routine definitions and recent event outcomes, only for the asking socket. */
   | { t: "routines"; routines: RemoteRoutine[]; runs: Run[] }
   /** One routine event completed, with every action outcome in configured order. */
@@ -1679,14 +1731,14 @@ export type ServerFrame =
    * `connectors_read`, sent only to the socket that asked. Reshaped and
    * wire-safe by construction: never a connector's raw config.
    */
-  | { t: "skills"; skills: SkillSummary[] }
-  | { t: "connectors"; connectors: ConnectorSummary[] }
+  | { t: "skills"; skills: SkillSummary[]; requestId?: string }
+  | { t: "connectors"; connectors: ConnectorSummary[]; requestId?: string }
   /** The task roster answering `tasks_read`, sent only to the socket that asked. */
-  | { t: "tasks"; tasks: Task[] }
+  | { t: "tasks"; tasks: Task[]; requestId?: string }
   /** One task as the daemon now holds it, answering `task_create` or `task_cancel`. */
-  | { t: "task"; task: Task }
+  | { t: "task"; task: Task; requestId?: string }
   /** The agent an `agent_create` made, sent only to the socket that asked. */
-  | { t: "agent_created"; agent: Agent }
+  | { t: "agent_created"; agent: Agent; requestId?: string }
   /**
    * The cowork container state: whether a model can be granted, and whether
    * this machine has a container runtime to grant it to.
@@ -1877,6 +1929,8 @@ export type AuditAction =
    * and, on a refusal, which refusal it was.
    */
   | "session.delete"
+  | "session.archive"
+  | "session.unarchive"
   /**
    * A device deleted one routine and its runs and webhook credential, or was
    * refused. One record per id, whichever way it went, for the same reason as
@@ -2374,6 +2428,30 @@ export const SESSION_DELETE_REFUSAL_REASONS: Record<SessionDeleteRefusal, string
   live: "a process is holding this session; stop it or take it over first",
   not_found: "this machine has no session with that id",
   failed: "the transcript could not be removed from disk",
+};
+
+/**
+ * Why one id in an archive request was refused.
+ *
+ * - `live`: a process holds this session right now (`live-ompd` or `live-tui`).
+ *   Archiving a session currently in use is refused.
+ * - `not_found`: this machine has no session file with that id.
+ */
+export type SessionArchiveRefusal = "live" | "not_found";
+
+/**
+ * One id's outcome for an archive or unarchive request.
+ */
+export type SessionArchiveResult =
+  | { sessionId: string; ok: true; archived: boolean }
+  | { sessionId: string; ok: false; refusal: SessionArchiveRefusal };
+
+/**
+ * The wording for each archive refusal.
+ */
+export const SESSION_ARCHIVE_REFUSAL_REASONS: Record<SessionArchiveRefusal, string> = {
+  live: "a process is holding this session; stop it or take it over first",
+  not_found: "this machine has no session with that id",
 };
 
 /**

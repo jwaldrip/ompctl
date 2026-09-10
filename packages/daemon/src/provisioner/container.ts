@@ -264,10 +264,15 @@ function discard(dir: string): void {
  * string would reintroduce the same hole one layer down, because the runtime
  * would resolve it again on the far side.
  */
-function resolveMount(hostPath: string, home: string): string {
+function resolveMount(hostPath: string, home: string, label = "mount"): string {
   const resolution = resolveMountPath(hostPath, { home, mustExist: true });
   if (!resolution.ok) {
-    throw new ProvisionError(`refusing to mount ${hostPath}: ${resolution.reason}`, "container");
+    const hint =
+      resolution.reason.includes("protected root") && (hostPath.startsWith("/Users") || hostPath.startsWith("/home"))
+        ? "; specify a project directory or repository subdirectory instead of the home directory"
+        : "";
+    const prefix = label === "mount" ? `refusing to mount ${hostPath}` : `refusing to mount ${label} ${hostPath}`;
+    throw new ProvisionError(`${prefix}: ${resolution.reason}${hint}`, "container");
   }
   return resolution.path;
 }
@@ -607,7 +612,7 @@ export class ContainerBackend implements ProvisionerBackend {
   #runtime: string | undefined;
   #capability: RuntimeCapability | undefined;
   #image: string | undefined;
-  #workspace: string;
+  #workspace: string | undefined;
   #scratchRoot: string;
   #toolchainRoot: string | undefined;
   #platform: string | undefined;
@@ -635,7 +640,7 @@ export class ContainerBackend implements ProvisionerBackend {
     this.#runtime = opts.runtime;
     this.#capability = opts.capability;
     this.#image = opts.image;
-    this.#workspace = opts.workspace ?? process.cwd();
+    this.#workspace = opts.workspace;
     this.#scratchRoot = opts.scratchRoot ?? DEFAULT_SCRATCH_ROOT;
     this.#toolchainRoot = opts.toolchainRoot;
     this.#platform = opts.platform;
@@ -730,6 +735,12 @@ export class ContainerBackend implements ProvisionerBackend {
       hostPath: resolveMount(mount.hostPath, this.#home),
       mode: mount.mode ?? "ro",
     }));
+    let resolvedWorkspace: string | undefined;
+    if (this.#workspace !== undefined) {
+      resolvedWorkspace = resolveMount(this.#workspace, this.#home, "workspace");
+    } else if (mounts.length > 0) {
+      resolvedWorkspace = mounts[0]!.hostPath;
+    }
     if (spec.image !== undefined) refuseIfFlagShaped(spec.image);
 
     // Capability, not a name. `selectRuntime` throws a `ProvisionError` naming
@@ -739,6 +750,13 @@ export class ContainerBackend implements ProvisionerBackend {
     const cap =
       this.#capability ?? (await selectRuntime({ run: this.#run, platform: this.#platform, pinned: this.#runtime }));
     const runtime = cap.runtime;
+
+    if (resolvedWorkspace === undefined) {
+      throw new ProvisionError(
+        "refusing to provision container: no workspace configured; specify an explicit workspace directory or bind a folder before starting a container",
+        "container",
+      );
+    }
 
     // The base image and, on the default path, a host directory holding omp
     // that gets bind-mounted read-only. Nothing here touches a private
@@ -970,6 +988,9 @@ export class ContainerBackend implements ProvisionerBackend {
       for (const mount of mounts) {
         mountArgs.push("--volume", `${mount.hostPath}:${mount.hostPath}:${mount.mode}`);
       }
+      if (this.#workspace !== undefined && !mounts.some(m => m.hostPath === resolvedWorkspace)) {
+        mountArgs.unshift("--volume", `${resolvedWorkspace}:${resolvedWorkspace}`);
+      }
       // The toolchain, read-only. A write into it reports `Read-only file system`
       // on every runtime here. What is NOT true, and used to be claimed on this
       // line, is that the container cannot rewrite it: Apple rejects `--cap-drop`
@@ -1044,11 +1065,9 @@ export class ContainerBackend implements ProvisionerBackend {
         networkArg,
         ...confinementArgs(cap),
         ...tmpfsArgs(cap, this.#scratchRoot),
-        "--volume",
-        `${this.#workspace}:${this.#workspace}`,
         ...mountArgs,
         "--workdir",
-        this.#workspace,
+        resolvedWorkspace,
         ...env,
         toolchain.image,
         "tail",

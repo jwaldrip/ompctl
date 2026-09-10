@@ -3,7 +3,7 @@
  * session artifact enumeration.
  */
 
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { ArtifactReference } from "@ompd/core";
@@ -32,7 +32,7 @@ export async function serveArtifactFile(
 ): Promise<Response> {
   const maxBytes = options.byteCeiling ?? DEFAULT_ARTIFACT_BYTE_CEILING;
 
-  let st;
+  let st: Stats;
   try {
     st = await stat(realPath);
   } catch {
@@ -44,10 +44,7 @@ export async function serveArtifactFile(
   }
 
   if (st.size > maxBytes) {
-    throw new ArtifactRefusal(
-      "file_too_large",
-      `file size ${st.size} bytes exceeds ceiling of ${maxBytes} bytes`,
-    );
+    throw new ArtifactRefusal("file_too_large", `file size ${st.size} bytes exceeds ceiling of ${maxBytes} bytes`);
   }
 
   const contentType = await sniffFileHead(realPath);
@@ -137,10 +134,7 @@ export async function serveArtifactFile(
  * documents, and other output artifacts, while omitting raw JSONL transcripts
  * and bash execution logs.
  */
-export async function listSessionArtifacts(
-  sessionFilePath: string,
-  sessionId: string,
-): Promise<ArtifactReference[]> {
+export async function listSessionArtifacts(sessionFilePath: string, sessionId: string): Promise<ArtifactReference[]> {
   const artifactDir = subagentDirFor(sessionFilePath);
   const artifacts: ArtifactReference[] = [];
 
@@ -192,7 +186,7 @@ async function walkArtifactDir(
     if (dirent.name.endsWith(".bash-original.log") || dirent.name.endsWith(".bash.log")) continue;
     if (dirent.name.endsWith(".tombstone")) continue;
 
-    let st;
+    let st: Stats;
     try {
       st = await stat(fullPath);
       if (!st.isFile()) continue;

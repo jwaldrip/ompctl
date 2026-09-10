@@ -419,6 +419,7 @@ describe("starting the container", () => {
         name: "dev",
         cwd: DEV,
         host: { kind: "container", mounts: [{ hostPath: DEV, mode: "ro" }] },
+        requestId: "req_agent_create_1",
       },
     ]);
 
@@ -438,6 +439,37 @@ describe("starting the container", () => {
 
     h.press("cowork-container-open");
     expect(openedSessions).toEqual(["agt_test"]);
+
+    h.unmount();
+  });
+
+  test("a catalogue error in flight does not abort a container start", () => {
+    const h = mount();
+    browseToDev(h);
+    h.press("folder-picker-confirm");
+
+    h.press("cowork-container-start");
+
+    // Interleaving: catalogue error arrives while container start is in flight
+    h.deliver({ t: "error", code: "skills_failed", message: "skills catalogue failed" });
+
+    // Then the real container start answer arrives
+    h.deliver({
+      t: "agent_created",
+      agent: {
+        id: "agt_test",
+        name: "dev",
+        state: "idle",
+        host: { kind: "container", id: "ctr_1", spec: { kind: "container" } },
+        cwd: DEV,
+        createdAt: "2026-02-01T00:00:00.000Z",
+        lastActiveAt: "2026-02-01T00:00:00.000Z",
+        labels: {},
+      },
+    });
+
+    expect(h.query("cowork-container-open")).not.toBeNull();
+    expect(h.query("cowork-container-refused")).toBeNull();
 
     h.unmount();
   });
@@ -466,6 +498,7 @@ describe("starting the container", () => {
           { hostPath: ROOT, mode: "ro" },
         ],
       },
+      requestId: "req_agent_create_1",
     });
 
     h.unmount();

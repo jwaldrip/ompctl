@@ -1,18 +1,22 @@
-# Builds and deploys the ompd hub. NOT RUN: this workflow has never executed
-# and nothing described here exists in any GCP project yet.
-#
-# Manual dispatch only. The hub brokers access to machines that execute code,
-# so it does not deploy itself on a push to a branch.
+# Builds and deploys the ompd hub and web console (app.ompctl.ai).
+# Deploys run on push to main (targeting production) or via manual workflow_dispatch.
 name: hub-deploy
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       environment:
         description: Target environment
         required: true
         type: choice
+        default: production
         options: [staging, production]
+
+concurrency:
+  group: hub-deploy-${{ inputs.environment || 'production' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -47,7 +51,7 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || 'production' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +62,7 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build and push hub + web + site images
+      - name: Build and push hub + web images
         # `gcloud builds submit --tag ... --file ...` does not exist: `--tag`
         # mode hardcodes `docker build -t TAG .` against `./Dockerfile` in the
         # source root, with no flag to point it at a different Dockerfile
@@ -102,8 +106,8 @@ jobs:
             local id status err attempt unreadable=0
 
             # Guarded rather than a bare assignment for the same `bash -e` reason,
-            # and because gcloud's own error does not say which of the three
-            # configs was in flight when it fired.
+            # and because gcloud's own error does not say which config was in
+            # flight when it fired.
             if ! id="$(gcloud builds submit \
               --project "${{ vars.GCP_PROJECT_ID }}" \
               --config "$config" \
@@ -175,7 +179,6 @@ jobs:
 
           submit_and_wait packages/hub/deploy/cloudbuild.yaml "${REG}/hub:${{ github.sha }}"
           submit_and_wait packages/app/deploy/cloudbuild.yaml "${REG}/web:${{ github.sha }}"
-          submit_and_wait packages/site/deploy/cloudbuild.yaml "${REG}/site:${{ github.sha }}"
 
       - uses: hashicorp/setup-terraform@v3
 
@@ -203,7 +206,6 @@ jobs:
             -var "connector_id=${{ vars.GCP_VPC_CONNECTOR_ID }}" \
             -var "image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/hub:${{ github.sha }}" \
             -var "web_image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/web:${{ github.sha }}" \
-            -var "site_image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/site:${{ github.sha }}" \
             -var "app_domain=${{ vars.OMPCTL_APP_DOMAIN || 'app.ompctl.ai' }}" \
             -var "hub_domain=${{ vars.OMPCTL_HUB_DOMAIN || 'hub.ompctl.ai' }}" \
             -var "apple_team_id=${{ vars.OMPCTL_APPLE_TEAM_ID }}" \

@@ -64,6 +64,7 @@ import { HostRegistry } from "./hosts.ts";
 import { McpAuthSubsystem } from "./mcpauth/index.ts";
 import type { VaultBackend } from "./mcpauth/types.ts";
 import { DaemonModelAccess } from "./model-broker/index.ts";
+import { type ResolvedOmp, resolveOmp } from "./omp-resolver.ts";
 import { ContainerBackend, HostProvisioner, KNOWN_RUNTIMES, LocalBackend } from "./provisioner/index.ts";
 import { Scheduler } from "./routines/index.ts";
 import { SessionIndex } from "./sessions/session-index.ts";
@@ -371,6 +372,8 @@ export interface OmpdOptions {
    */
   stt?: SttEngine;
   tts?: TtsEngine;
+  /** Resolved omp executable seam, for tests. */
+  resolvedOmp?: ResolvedOmp;
   onLog?: (line: string) => void;
 }
 
@@ -678,6 +681,7 @@ export class Ompd {
    * updates a turn produced rather than the agent's whole history.
    */
   #lastSeq = new Map<AgentId, number>();
+  #resolvedOmp: ResolvedOmp;
 
   /**
    * Opens local state and builds every subsystem. Touches the filesystem and
@@ -688,6 +692,16 @@ export class Ompd {
 
     this.#config = loadConfig(this.#home, opts.overrides);
     this.#onLog = opts.onLog ?? (() => {});
+    this.#resolvedOmp =
+      opts.resolvedOmp ??
+      resolveOmp({
+        configuredPath: this.#config.ompPath === "omp" ? undefined : this.#config.ompPath,
+        repoRoot: opts.repoRoot,
+      });
+    this.#onLog(
+      `using ${this.#resolvedOmp.source} omp at ${this.#resolvedOmp.path}${this.#resolvedOmp.version ? ` (${this.#resolvedOmp.version})` : ""}`,
+    );
+
     this.#voiceEnabled = opts.voice ?? true;
     // Set here, not in `start`, because the guard there decides whether to
     // probe by asking whether these are already filled.
@@ -731,7 +745,7 @@ export class Ompd {
     // Read-only to this daemon, and only ever by the `omp` children it spawns.
     // Nothing here copies `~/.omp` anywhere, least of all into a guest.
     this.#modelAccess = new DaemonModelAccess({
-      ompPath: this.#config.ompPath,
+      ompPath: this.#resolvedOmp.path,
       configDir: join(homedir(), ".omp"),
       brokerPort: this.#config.containerModelBrokerPort,
       model: this.#config.containerModel,
@@ -756,7 +770,7 @@ export class Ompd {
     // or a container agent's session would be the only kind the gateway could
     // not answer a mode query for.
     this.#containerBackend = new ContainerBackend({
-      workspace: opts.repoRoot ?? process.cwd(),
+      workspace: opts.repoRoot,
       home: this.#home,
       spawn: this.#hosts.spawn,
       // Not optional in the daemon, only in the type: every container this
@@ -766,9 +780,9 @@ export class Ompd {
     });
     this.#provisioner = new HostProvisioner({
       store: this.#store,
-      workspace: opts.repoRoot ?? process.cwd(),
+      workspace: opts.repoRoot,
       backends: {
-        local: new LocalBackend({ ompPath: this.#config.ompPath, spawn: this.#hosts.spawn }),
+        local: new LocalBackend({ ompPath: this.#resolvedOmp.path, spawn: this.#hosts.spawn }),
         // Runtime and image come from the validated config on disk, not from
         // the environment. See `containerBackendSettings`.
         container: this.#containerBackend,
@@ -796,7 +810,7 @@ export class Ompd {
       policy,
       events: this.#events,
       approvalTimeoutMs: opts.approvalTimeoutMs,
-      ompPath: this.#config.ompPath,
+      ompPath: this.#resolvedOmp.path,
       spawnHost: this.#hosts.spawn,
       provisioner: this.#provisioner,
       // The daemon's real state directory, not the `~/.ompd` the supervisor
@@ -1127,6 +1141,9 @@ export class Ompd {
 
   get supervisor(): Supervisor {
     return this.#supervisor;
+  }
+  get resolvedOmp(): ResolvedOmp {
+    return this.#resolvedOmp;
   }
 
   get gateway(): Gateway {

@@ -52,8 +52,10 @@ import {
   SCOPE_MANAGE,
   SCOPE_PROMPT,
   SCOPE_READ,
+  SESSION_ARCHIVE_REFUSAL_REASONS,
   SESSION_DELETE_REFUSAL_REASONS,
   type ServerFrame,
+  type SessionArchiveResult,
   type SessionDeleteResult,
   type SessionLiveStatus,
   type SessionQuery,
@@ -3157,8 +3159,16 @@ export class Gateway {
       if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
       const index = this.#sessionIndex;
       if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
-      index.archive(sessionArchiveRoute[1] ?? "");
-      return Response.json({ ok: true });
+      const sessionId = sessionArchiveRoute[1] ?? "";
+      const results = await this.#archiveSessions(index, [sessionId], false, actor.deviceId);
+      const result = results[0];
+      if (result && !result.ok) {
+        return Response.json(
+          { error: result.refusal, reason: SESSION_ARCHIVE_REFUSAL_REASONS[result.refusal] },
+          { status: result.refusal === "live" ? 409 : 404 },
+        );
+      }
+      return Response.json({ ok: true, result });
     }
 
     const sessionUnarchiveRoute = /^\/v1\/sessions\/([^/]+)\/unarchive$/.exec(path);
@@ -3166,8 +3176,60 @@ export class Gateway {
       if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
       const index = this.#sessionIndex;
       if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
-      index.unarchive(sessionUnarchiveRoute[1] ?? "");
-      return Response.json({ ok: true });
+      const sessionId = sessionUnarchiveRoute[1] ?? "";
+      const results = await this.#archiveSessions(index, [sessionId], true, actor.deviceId);
+      const result = results[0];
+      if (result && !result.ok) {
+        return Response.json(
+          { error: result.refusal, reason: SESSION_ARCHIVE_REFUSAL_REASONS[result.refusal] },
+          { status: 404 },
+        );
+      }
+      return Response.json({ ok: true, result });
+    }
+
+    if (path === "/v1/sessions/archive" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+      let body: { sessionIds?: unknown; unarchive?: unknown };
+      try {
+        body = (await req.json()) as { sessionIds?: unknown; unarchive?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const ids = body.sessionIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || id.length === 0)) {
+        return Response.json({ error: "sessionIds must be a non-empty array of session ids" }, { status: 400 });
+      }
+      const results = await this.#archiveSessions(index, ids as string[], Boolean(body.unarchive), actor.deviceId);
+      return Response.json({ results });
+    }
+
+    if (path === "/v1/sessions/unarchive" && req.method === "POST") {
+      if (!scopes.has(SCOPE_MANAGE)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+      let body: { sessionIds?: unknown };
+      try {
+        body = (await req.json()) as { sessionIds?: unknown };
+      } catch {
+        return Response.json({ error: "bad_json" }, { status: 400 });
+      }
+      const ids = body.sessionIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || id.length === 0)) {
+        return Response.json({ error: "sessionIds must be a non-empty array of session ids" }, { status: 400 });
+      }
+      const results = await this.#archiveSessions(index, ids as string[], true, actor.deviceId);
+      return Response.json({ results });
+    }
+
+    if (path === "/v1/sessions/suggest-ephemeral" && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+      const sessionIds = await index.suggestEphemeral();
+      return Response.json({ sessionIds });
     }
 
     // A POST with a body rather than `DELETE /v1/sessions/:id`, because the
@@ -3393,17 +3455,20 @@ export class Gateway {
   }
 
   /** One socket skills read, mapping the shared outcome onto the asking socket. */
-  async #serveSkillsRead(ws: GatewaySocket, query: CatalogQuery): Promise<void> {
+  async #serveSkillsRead(ws: GatewaySocket, query: CatalogQuery, requestId?: string): Promise<void> {
     const outcome = await this.#listSkills(query);
+    const req = requestId !== undefined ? { requestId } : {};
     switch (outcome.kind) {
       case "ok":
-        this.#send(ws, { t: "skills", skills: outcome.value });
+        this.#send(ws, { t: "skills", skills: outcome.value, ...req });
         return;
       case "off":
         this.#send(ws, {
           t: "error",
           code: "skills_unavailable",
           message: "no skills catalogue is wired into this daemon",
+          catalog: "skills",
+          ...req,
         });
         return;
       case "unknown-agent":
@@ -3411,25 +3476,30 @@ export class Gateway {
           t: "error",
           code: "not_found",
           message: query.agentId === undefined ? "no such agent" : `no agent ${query.agentId} on this machine`,
+          catalog: "skills",
+          ...req,
         });
         return;
       case "failed":
-        this.#send(ws, { t: "error", code: "skills_failed", message: outcome.error });
+        this.#send(ws, { t: "error", code: "skills_failed", message: outcome.error, catalog: "skills", ...req });
     }
   }
 
   /** One socket connectors read, on the same shared-outcome rule. */
-  async #serveConnectorsRead(ws: GatewaySocket, query: CatalogQuery): Promise<void> {
+  async #serveConnectorsRead(ws: GatewaySocket, query: CatalogQuery, requestId?: string): Promise<void> {
     const outcome = await this.#listConnectors(query);
+    const req = requestId !== undefined ? { requestId } : {};
     switch (outcome.kind) {
       case "ok":
-        this.#send(ws, { t: "connectors", connectors: outcome.value });
+        this.#send(ws, { t: "connectors", connectors: outcome.value, ...req });
         return;
       case "off":
         this.#send(ws, {
           t: "error",
           code: "connectors_unavailable",
           message: "no connector catalogue is wired into this daemon",
+          catalog: "connectors",
+          ...req,
         });
         return;
       case "unknown-agent":
@@ -3437,10 +3507,18 @@ export class Gateway {
           t: "error",
           code: "not_found",
           message: query.agentId === undefined ? "no such agent" : `no agent ${query.agentId} on this machine`,
+          catalog: "connectors",
+          ...req,
         });
         return;
       case "failed":
-        this.#send(ws, { t: "error", code: "connectors_failed", message: outcome.error });
+        this.#send(ws, {
+          t: "error",
+          code: "connectors_failed",
+          message: outcome.error,
+          catalog: "connectors",
+          ...req,
+        });
     }
   }
 
@@ -3449,7 +3527,13 @@ export class Gateway {
    * socket. Takes the already-started mutation so its scope gate has run
    * before any await, the same shape `routine_run` uses.
    */
-  async #serveTaskMutation(ws: GatewaySocket, asked: string, mutation: Promise<TaskOutcome>): Promise<void> {
+  async #serveTaskMutation(
+    ws: GatewaySocket,
+    asked: string,
+    mutation: Promise<TaskOutcome>,
+    requestId?: string,
+  ): Promise<void> {
+    const req = requestId !== undefined ? { requestId } : {};
     let outcome: TaskOutcome;
     try {
       outcome = await mutation;
@@ -3460,28 +3544,32 @@ export class Gateway {
         t: "error",
         code: "task_failed",
         message: err instanceof Error ? err.message : `${asked} failed`,
+        ...req,
       });
       return;
     }
     switch (outcome.kind) {
       case "ok":
-        this.#send(ws, { t: "task", task: outcome.value });
+        this.#send(ws, { t: "task", task: outcome.value, ...req });
         return;
       case "off":
         this.#send(ws, {
           t: "error",
           code: "tasks_unavailable",
           message: "no task lifecycle is wired into this daemon",
+          catalog: "tasks",
+          ...req,
         });
         return;
       case "bad":
-        this.#send(ws, { t: "error", code: "bad_frame", message: outcome.error });
+        this.#send(ws, { t: "error", code: "bad_frame", message: outcome.error, ...req });
         return;
       case "refused":
-        this.#send(ws, { t: "error", code: "unauthorized", message: outcome.error });
+        this.#send(ws, { t: "error", code: "unauthorized", message: outcome.error, ...req });
         return;
       case "missing":
-        this.#send(ws, { t: "error", code: "not_found", message: outcome.error });
+        this.#send(ws, { t: "error", code: "not_found", message: outcome.error, ...req });
+        return;
     }
   }
 
@@ -3489,11 +3577,16 @@ export class Gateway {
    * One socket agent creation, mapping the shared outcome onto the asking
    * socket. The audit is `Supervisor.createAgent`'s own; this adds nothing.
    */
-  async #serveAgentCreate(ws: GatewaySocket, frame: Extract<ClientFrame, { t: "agent_create" }>): Promise<void> {
+  async #serveAgentCreate(
+    ws: GatewaySocket,
+    frame: Extract<ClientFrame, { t: "agent_create" }>,
+    requestId?: string,
+  ): Promise<void> {
+    const req = (frame.requestId ?? requestId) !== undefined ? { requestId: frame.requestId ?? requestId } : {};
     const outcome = await this.#createAgentOverWire(frame, this.#actorOf(ws));
     switch (outcome.kind) {
       case "created":
-        this.#send(ws, { t: "agent_created", agent: outcome.agent });
+        this.#send(ws, { t: "agent_created", agent: outcome.agent, ...req });
         return;
       case "queued":
         // The HTTP door answers a queue with 202 because a caller there may
@@ -3506,16 +3599,18 @@ export class Gateway {
           t: "error",
           code: "replica",
           message: "this daemon is a replica; create the agent where its directories live",
+          ...req,
         });
         return;
       case "bad":
-        this.#send(ws, { t: "error", code: "bad_frame", message: outcome.error });
+        this.#send(ws, { t: "error", code: "bad_frame", message: outcome.error, ...req });
         return;
       case "refused":
-        this.#send(ws, { t: "error", code: "unauthorized", message: outcome.error });
+        this.#send(ws, { t: "error", code: "unauthorized", message: outcome.error, ...req });
         return;
       case "failed":
-        this.#send(ws, { t: "error", code: "agent_create_failed", message: outcome.error });
+        this.#send(ws, { t: "error", code: "agent_create_failed", message: outcome.error, ...req });
+        return;
     }
   }
 
@@ -4385,7 +4480,10 @@ export class Gateway {
         }
         if (frame.sinceSeq !== undefined) {
           for (const record of this.#store.updatesSince(frame.agentId, frame.sinceSeq)) {
-            this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload);
+            // Marked as replay: these are this daemon's own log, not the agent
+            // speaking now. A client reading them as live cannot tell that the
+            // turn they describe is over.
+            this.#deliverUpdate(ws, frame.agentId, record.seq, record.payload, true);
           }
         }
 
@@ -4845,8 +4943,16 @@ export class Gateway {
         // reaches this frame instead of that route and must not meet a weaker
         // door here. The reply goes to the asking socket only: a catalogue is
         // an answer to a request, not a broadcast.
+        const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+        const req = requestId !== undefined ? { requestId } : {};
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "skills_read requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "skills_read requires read scope",
+            catalog: "skills",
+            ...req,
+          });
           return;
         }
         if (!isCatalogQuery(frame)) {
@@ -4854,19 +4960,29 @@ export class Gateway {
             t: "error",
             code: "bad_frame",
             message: "skills_read needs a string cwd and agentId, when given",
+            catalog: "skills",
+            ...req,
           });
           return;
         }
         // Detached like the session index: discovery is async, and this
         // socket keeps being served while the catalogue is read.
-        void this.#serveSkillsRead(ws, frame);
+        void this.#serveSkillsRead(ws, frame, requestId);
         return;
       }
 
       case "connectors_read": {
         // Read, the same gate and for the same reason as `skills_read`.
+        const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+        const req = requestId !== undefined ? { requestId } : {};
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "connectors_read requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "connectors_read requires read scope",
+            catalog: "connectors",
+            ...req,
+          });
           return;
         }
         if (!isCatalogQuery(frame)) {
@@ -4874,21 +4990,37 @@ export class Gateway {
             t: "error",
             code: "bad_frame",
             message: "connectors_read needs a string cwd and agentId, when given",
+            catalog: "connectors",
+            ...req,
           });
           return;
         }
-        void this.#serveConnectorsRead(ws, frame);
+        void this.#serveConnectorsRead(ws, frame, requestId);
         return;
       }
 
       case "tasks_read": {
         // Read, matching `GET /v1/tasks`: the roster is watching, not acting.
+        const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+        const req = requestId !== undefined ? { requestId } : {};
         if (!ws.data.scopes.has(SCOPE_READ)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "tasks_read requires read scope" });
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "tasks_read requires read scope",
+            catalog: "tasks",
+            ...req,
+          });
           return;
         }
         if (frame.agentId !== undefined && typeof frame.agentId !== "string") {
-          this.#send(ws, { t: "error", code: "bad_frame", message: "tasks_read needs a string agentId, when given" });
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "tasks_read needs a string agentId, when given",
+            catalog: "tasks",
+            ...req,
+          });
           return;
         }
         const outcome = this.#listTasks(frame.agentId);
@@ -4897,10 +5029,12 @@ export class Gateway {
             t: "error",
             code: "tasks_unavailable",
             message: "no task lifecycle is wired into this daemon",
+            catalog: "tasks",
+            ...req,
           });
           return;
         }
-        this.#send(ws, { t: "tasks", tasks: outcome.value });
+        this.#send(ws, { t: "tasks", tasks: outcome.value, ...req });
         return;
       }
 
@@ -4908,8 +5042,10 @@ export class Gateway {
         // Prompt, the HTTP route's own bar and for its reason: a task is a
         // named prompt against a session that already exists, so anyone who
         // may prompt may start one, and a read-only device may not.
+        const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+        const req = requestId !== undefined ? { requestId } : {};
         if (!ws.data.scopes.has(SCOPE_PROMPT)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "task_create requires prompt scope" });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "task_create requires prompt scope", ...req });
           return;
         }
         // The same value checks the shared path runs; the frame carries no
@@ -4925,44 +5061,49 @@ export class Gateway {
             t: "error",
             code: "bad_frame",
             message: "task_create needs a title, a prompt, an agentId, and a string skillName when given",
+            ...req,
           });
           return;
         }
         // Detached like `routine_run`: `Supervisor.prompt` runs the prompt,
         // and every socket keeps being served while it lands.
-        void this.#serveTaskMutation(ws, "task_create", this.#createTask(frame, this.#actorOf(ws)));
+        void this.#serveTaskMutation(ws, "task_create", this.#createTask(frame, this.#actorOf(ws)), requestId);
         return;
       }
 
       case "task_cancel": {
         // Prompt, the same gate the HTTP cancel route and the `cancel` frame
         // take: cancelling a task is cancelling the prompt that runs it.
+        const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+        const req = requestId !== undefined ? { requestId } : {};
         if (!ws.data.scopes.has(SCOPE_PROMPT)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "task_cancel requires prompt scope" });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "task_cancel requires prompt scope", ...req });
           return;
         }
         if (typeof frame.taskId !== "string" || frame.taskId.length === 0) {
-          this.#send(ws, { t: "error", code: "bad_frame", message: "task_cancel needs a non-empty taskId" });
+          this.#send(ws, { t: "error", code: "bad_frame", message: "task_cancel needs a non-empty taskId", ...req });
           return;
         }
-        void this.#serveTaskMutation(ws, "task_cancel", this.#cancelTask(frame.taskId, this.#actorOf(ws)));
+        void this.#serveTaskMutation(ws, "task_cancel", this.#cancelTask(frame.taskId, this.#actorOf(ws)), requestId);
         return;
       }
 
       case "agent_create": {
         // Manage, the HTTP route's own bar: this provisions a host, which is
         // the most privileged thing a device can ask for over either door.
+        const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+        const req = requestId !== undefined ? { requestId } : {};
         if (!ws.data.scopes.has(SCOPE_MANAGE)) {
-          this.#send(ws, { t: "error", code: "unauthorized", message: "agent_create requires manage scope" });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "agent_create requires manage scope", ...req });
           return;
         }
         if (typeof frame.name !== "string" || typeof frame.cwd !== "string") {
-          this.#send(ws, { t: "error", code: "bad_frame", message: "agent_create needs a name and a cwd" });
+          this.#send(ws, { t: "error", code: "bad_frame", message: "agent_create needs a name and a cwd", ...req });
           return;
         }
         // Detached like `session_create`: provisioning a host is async, and
         // this socket keeps being served while the container comes up.
-        void this.#serveAgentCreate(ws, frame);
+        void this.#serveAgentCreate(ws, frame, requestId);
         return;
       }
 
@@ -5438,6 +5579,145 @@ export class Gateway {
         return;
       }
 
+      case "session_archive": {
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#store.audit({
+            action: frame.unarchive ? "session.unarchive" : "session.archive",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "unauthorized" },
+          });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "session_archive requires manage scope" });
+          return;
+        }
+        const index = this.#sessionIndex;
+        if (!index) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        if (
+          !Array.isArray(frame.sessionIds) ||
+          frame.sessionIds.length === 0 ||
+          frame.sessionIds.some(id => typeof id !== "string" || id.length === 0)
+        ) {
+          this.#store.audit({
+            action: frame.unarchive ? "session.unarchive" : "session.archive",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "session_archive needs at least one non-empty session id",
+          });
+          return;
+        }
+        void this.#archiveSessions(index, frame.sessionIds, Boolean(frame.unarchive), ws.data.deviceId).then(
+          results => {
+            this.#send(ws, { t: "sessions_archived", results });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "session_archive_failed",
+              message: err instanceof Error ? err.message : "session archive failed",
+            });
+          },
+        );
+        return;
+      }
+
+      case "session_unarchive": {
+        if (!ws.data.scopes.has(SCOPE_MANAGE)) {
+          this.#store.audit({
+            action: "session.unarchive",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "unauthorized" },
+          });
+          this.#send(ws, { t: "error", code: "unauthorized", message: "session_unarchive requires manage scope" });
+          return;
+        }
+        const index = this.#sessionIndex;
+        if (!index) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        if (
+          !Array.isArray(frame.sessionIds) ||
+          frame.sessionIds.length === 0 ||
+          frame.sessionIds.some(id => typeof id !== "string" || id.length === 0)
+        ) {
+          this.#store.audit({
+            action: "session.unarchive",
+            actorDeviceId: ws.data.deviceId,
+            outcome: "denied",
+            detail: { reason: "bad_frame" },
+          });
+          this.#send(ws, {
+            t: "error",
+            code: "bad_frame",
+            message: "session_unarchive needs at least one non-empty session id",
+          });
+          return;
+        }
+        void this.#archiveSessions(index, frame.sessionIds, true, ws.data.deviceId).then(
+          results => {
+            this.#send(ws, { t: "sessions_archived", results });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "session_unarchive_failed",
+              message: err instanceof Error ? err.message : "session unarchive failed",
+            });
+          },
+        );
+        return;
+      }
+
+      case "session_suggest_ephemeral": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, {
+            t: "error",
+            code: "unauthorized",
+            message: "session_suggest_ephemeral requires read scope",
+          });
+          return;
+        }
+        const index = this.#sessionIndex;
+        if (!index) {
+          this.#send(ws, {
+            t: "error",
+            code: "sessions_unavailable",
+            message: "no session index is wired into this daemon",
+          });
+          return;
+        }
+        void index.suggestEphemeral().then(
+          sessionIds => {
+            this.#send(ws, { t: "sessions_suggested_ephemeral", sessionIds });
+          },
+          (err: unknown) => {
+            this.#send(ws, {
+              t: "error",
+              code: "session_suggest_ephemeral_failed",
+              message: err instanceof Error ? err.message : "ephemeral suggestion failed",
+            });
+          },
+        );
+        return;
+      }
+
       case "fs_list": {
         // Audited at every exit, refusals included, for the reason
         // `session_prompt` is: this is a device reading the operator's own
@@ -5900,13 +6180,17 @@ export class Gateway {
     this.#send(ws, { t: "error", sessionId, code: "collab_unavailable", message: outcome.unavailable });
   }
 
-  #deliverUpdate(ws: GatewaySocket, agentId: AgentId, seq: number, update: unknown): void {
+  #deliverUpdate(ws: GatewaySocket, agentId: AgentId, seq: number, update: unknown, replay = false): void {
     // The single choke point replay and live traffic share, so a frame the
     // socket already has can never be sent twice.
     const delivered = ws.data.delivered.get(agentId) ?? 0;
     if (seq <= delivered) return;
     ws.data.delivered.set(agentId, seq);
-    this.#send(ws, { t: "update", agentId, seq, update });
+    // The flag rides the frame rather than arriving as a separate marker,
+    // because this is the only place that knows: `updatesSince` and a live
+    // push both reach here as the same shape, and a client left to infer which
+    // is which infers it wrong. Omitted when live, so the wire keeps its shape.
+    this.#send(ws, { t: "update", agentId, seq, update, ...(replay ? { replay: true } : {}) });
   }
 
   /**
@@ -6132,6 +6416,36 @@ export class Gateway {
               sessionId: result.sessionId,
               refusal: result.refusal,
               reason: SESSION_DELETE_REFUSAL_REASONS[result.refusal],
+            },
+      });
+    }
+    return results;
+  }
+
+  /**
+   * The one place a session archive/unarchive happens, for both doors: the HTTP route
+   * and the socket frame.
+   *
+   * Audited per id, matching `#deleteSessions`.
+   */
+  async #archiveSessions(
+    index: SessionIndex,
+    sessionIds: readonly string[],
+    unarchive: boolean,
+    actorDeviceId: string,
+  ): Promise<SessionArchiveResult[]> {
+    const results = unarchive ? await index.unarchive(sessionIds) : await index.archive(sessionIds);
+    for (const result of results) {
+      this.#store.audit({
+        action: unarchive ? "session.unarchive" : "session.archive",
+        actorDeviceId,
+        outcome: result.ok ? "ok" : "denied",
+        detail: result.ok
+          ? { sessionId: result.sessionId, archived: result.archived }
+          : {
+              sessionId: result.sessionId,
+              refusal: result.refusal,
+              reason: SESSION_ARCHIVE_REFUSAL_REASONS[result.refusal],
             },
       });
     }
