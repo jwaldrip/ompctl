@@ -9,7 +9,7 @@ set -euo pipefail
 KEYCHAIN_PATH="${OMPD_APPLE_KEYCHAIN_PATH:-${RUNNER_TEMP:-/tmp}/ompd-signing.keychain-db}"
 KEYCHAIN_PASSWORD="${OMPD_APPLE_KEYCHAIN_PASSWORD:-$(openssl rand -base64 32)}"
 P12_PATH="${RUNNER_TEMP:-/tmp}/ompd-dist.p12"
-
+INSTALLER_P12_PATH="${RUNNER_TEMP:-/tmp}/ompd-installer.p12"
 python3 - <<'PY' > "$P12_PATH"
 import base64, os, sys
 raw = os.environ["OMPD_APPLE_CERT_P12_BASE64"].strip()
@@ -19,7 +19,16 @@ sys.stdout.buffer.write(base64.b64decode(raw))
 PY
 chmod 600 "$P12_PATH"
 wc -c "$P12_PATH" | awk '{print "p12_bytes",$1}'
-
+if [[ -n "${OMPD_MACOS_INSTALLER_CERT_P12_BASE64:-}" ]]; then
+  : "${OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD:?OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD is required with installer certificate}"
+  python3 - <<'PY' > "$INSTALLER_P12_PATH"
+import base64, os, sys
+raw = "".join(os.environ["OMPD_MACOS_INSTALLER_CERT_P12_BASE64"].split())
+sys.stdout.buffer.write(base64.b64decode(raw))
+PY
+  chmod 600 "$INSTALLER_P12_PATH"
+  wc -c "$INSTALLER_P12_PATH" | awk '{print "installer_p12_bytes",$1}'
+fi
 # Create / unlock ephemeral keychain
 security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -37,6 +46,14 @@ security import "$P12_PATH" \
   -t cert \
   -f pkcs12 \
   -k "$KEYCHAIN_PATH"
+if [[ -f "$INSTALLER_P12_PATH" ]]; then
+  security import "$INSTALLER_P12_PATH" \
+    -P "$OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD" \
+    -A \
+    -t cert \
+    -f pkcs12 \
+    -k "$KEYCHAIN_PATH"
+fi
 
 security set-key-partition-list \
   -S apple-tool:,apple:,codesign: \
@@ -59,13 +76,25 @@ if [[ "${COUNT:-0}" -lt 1 ]]; then
   printf '%s\n' "$IDENT_OUT" | sed -E 's/"[^"]+"/"<redacted>"/g' || true
   exit 1
 fi
+INSTALLER_NAME=""
+if [[ -f "$INSTALLER_P12_PATH" ]]; then
+  INSTALLER_OUT="$(security find-identity -v -p basic "$KEYCHAIN_PATH" || true)"
+  INSTALLER_NAME="$(printf '%s\n' "$INSTALLER_OUT" | awk -F'"' '/Mac Developer Installer|Mac Installer Distribution/{print $2; exit}')"
+  if [[ -z "$INSTALLER_NAME" ]]; then
+    echo "No Mac installer identity in ephemeral keychain" >&2
+    exit 1
+  fi
+  echo "mac_installer_identity_ready name=$INSTALLER_NAME"
+fi
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
     echo "OMPD_APPLE_KEYCHAIN_PATH=$KEYCHAIN_PATH"
-    echo "OMPD_APPLE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD"
+    if [[ -n "$INSTALLER_NAME" ]]; then
+      echo "OMPD_MACOS_INSTALLER_SIGNING_CERTIFICATE=$INSTALLER_NAME"
+    fi
   } >> "$GITHUB_ENV"
 fi
 
-rm -f "$P12_PATH"
+rm -f "$P12_PATH" "$INSTALLER_P12_PATH"
 echo "apple_signing_keychain_ready"

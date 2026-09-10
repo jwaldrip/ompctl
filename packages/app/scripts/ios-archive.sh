@@ -7,6 +7,28 @@ cd "$ROOT/ios"
 TEAM_ID="${OMPD_APPLE_TEAM_ID:?OMPD_APPLE_TEAM_ID is required}"
 OUT="${OMPD_IOS_ARCHIVE_DIR:-$ROOT/build/ios}"
 mkdir -p "$OUT"
+BUNDLE_ID="${OMPD_IOS_BUNDLE_ID:-ai.ompctl.app}"
+PROFILE_PATH="${OMPD_IOS_PROFILE_PATH:?OMPD_IOS_PROFILE_PATH is required for App Store export}"
+SIGNING_CERTIFICATE="${OMPD_IOS_SIGNING_CERTIFICATE:-Apple Distribution}"
+if [[ ! -f "$PROFILE_PATH" ]]; then
+  echo "iOS provisioning profile not found: $PROFILE_PATH" >&2
+  exit 1
+fi
+PROFILE_PLIST="$OUT/ios-profile.plist"
+security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")"
+PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
+PROFILE_TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
+PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
+PROFILE_PLATFORM="$(/usr/libexec/PlistBuddy -c 'Print :Platform:0' "$PROFILE_PLIST")"
+if [[ "$PROFILE_TEAM" != "$TEAM_ID" || "$PROFILE_APP_ID" != "$TEAM_ID.$BUNDLE_ID" || "$PROFILE_PLATFORM" != "iOS" ]]; then
+  echo "iOS provisioning profile does not match platform, team, and bundle id" >&2
+  exit 1
+fi
+PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+mkdir -p "$PROFILE_DIR"
+cp "$PROFILE_PATH" "$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+echo "ios_profile_ready name=$PROFILE_NAME uuid=$PROFILE_UUID"
 
 if [[ ! -d Pods ]]; then
   if command -v bundle >/dev/null 2>&1 && [[ -f ../Gemfile ]]; then
@@ -33,7 +55,7 @@ xcodebuild \
   -destination 'generic/platform=iOS' \
   -archivePath "$OUT/ompd.xcarchive" \
   DEVELOPMENT_TEAM="$TEAM_ID" \
-  PRODUCT_BUNDLE_IDENTIFIER=ai.ompctl.app \
+  PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
   CODE_SIGN_STYLE=Automatic \
   "${AUTH_ARGS[@]}" \
   CURRENT_PROJECT_VERSION="$OMPD_BUILD_NUMBER" \
@@ -51,16 +73,25 @@ cat >"$EXPORT_PLIST" <<PLIST
   <key>destination</key>
   <string>export</string>
   <key>signingStyle</key>
-  <string>automatic</string>
+  <string>manual</string>
   <key>teamID</key>
   <string>${TEAM_ID}</string>
+  <key>provisioningProfiles</key>
+  <dict>
+    <key>${BUNDLE_ID}</key>
+    <string>${PROFILE_NAME}</string>
+  </dict>
+  <key>signingCertificate</key>
+  <string>${SIGNING_CERTIFICATE}</string>
   <key>uploadSymbols</key>
   <true/>
   <key>manageAppVersionAndBuildNumber</key>
-  <${OMPD_MANAGE_APP_VERSION_AND_BUILD_NUMBER:-false}/>
+  <false/>
 </dict>
 </plist>
 PLIST
+
+rm -rf "$OUT/ipa"
 
 xcodebuild \
   -exportArchive \

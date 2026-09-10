@@ -4,15 +4,15 @@
  * debounced notification, so a socket that asked for the index once keeps
  * receiving refreshed `sessions` frames without asking again.
  *
- * node:fs `watch` with `recursive: true` is the whole mechanism, verified
- * on both platforms this daemon's tests run on (macOS locally, Linux in
- * CI, Bun 1.3.14 on each): it reports events for files inside directories
- * created after the watch started, which is exactly how a new project's
- * first session arrives, and it reports appends to existing files, which
- * is how an active session's lastActivity row moves. One handle for the
- * whole tree matters here: this machine's real sessions root holds ~190
- * cwd-group directories, and a per-directory fanout would spend a file
- * descriptor on each of them for as long as the daemon lives.
+ * node:fs recursive watches miss or collapse nested events on macOS. This
+ * watcher holds one root watch to discover cwd-group directories and one
+ * non-recursive watch per group for session-file changes. Creating or
+ * removing a group also arms a refresh, so a session file written before
+ * its child watch is attached still lands in the next scan.
+ *
+ * The real sessions root is measured in hundreds of group directories,
+ * within the process limits on both supported platforms. Correctness here
+ * outranks saving handles with a recursive watch that drops updates.
  *
  * Debounce, not filtering, is what keeps a working agent from becoming a
  * frame per append: an append legitimately changes a row (lastActivityAt,
@@ -23,8 +23,8 @@
  */
 
 import type { FSWatcher } from "node:fs";
-import { statSync, watch } from "node:fs";
-import { basename, join, sep } from "node:path";
+import { readdirSync, statSync, watch } from "node:fs";
+import { basename, join } from "node:path";
 import { SESSION_FILE_RE } from "./scanner.ts";
 
 /**
@@ -42,12 +42,17 @@ export const SESSION_WATCH_QUIET_MS = 400;
  * much continuous activity the notification fires mid-burst.
  */
 export const SESSION_WATCH_MAX_WAIT_MS = 5000;
+export const SESSION_WATCH_RECONCILE_MS = 1000;
 
 export interface SessionWatchOptions {
   /** Override of the quiet window, for tests driving real timers. */
   quietMs?: number;
   /** Override of the max-wait cap, for tests driving real timers. */
   maxWaitMs?: number;
+  /** Override of the session-file reconciliation interval. */
+  reconcileMs?: number;
+  /** Override of node:fs watch for deterministic missed-event tests. */
+  watchFactory?: (path: string, listener: (eventType: string, filename: string | Buffer | null) => void) => FSWatcher;
   /**
    * Watcher failure report. The watcher stops itself after raising one: a
    * dead watch is a pull-only daemon (every `sessions` ask still rebuilds
@@ -61,11 +66,27 @@ export interface SessionWatchOptions {
 export interface SessionWatch {
   stop(): void;
 }
+interface DirectoryFingerprint {
+  directoryMtimeMs: number;
+  sessionCount: number;
+  totalBytes: number;
+  latestSessionMtimeMs: number;
+}
+
+function sameFingerprint(left: DirectoryFingerprint | undefined, right: DirectoryFingerprint): boolean {
+  return (
+    left !== undefined &&
+    left.directoryMtimeMs === right.directoryMtimeMs &&
+    left.sessionCount === right.sessionCount &&
+    left.totalBytes === right.totalBytes &&
+    left.latestSessionMtimeMs === right.latestSessionMtimeMs
+  );
+}
 
 /**
- * Watch `sessionsRoot` recursively and call `onChanged` once per debounced
- * burst of session-file events. Returns null when the root is missing or is
- * not a directory: a machine that has never run OMP has nothing to watch,
+ * Watch `sessionsRoot` and its current group directories, and call `onChanged`
+ * once per debounced burst of session-file events. Returns null when the root
+ * is missing or is not a directory: a machine that has never run OMP has nothing to watch,
  * and a watcher over a missing directory would be a standing error rather
  * than a feature. The first session run creates the root, and the next
  * `watch` call after that finds it, so callers retry rather than cache the
@@ -84,7 +105,10 @@ export function watchSessionFiles(
 
   const quietMs = opts.quietMs ?? SESSION_WATCH_QUIET_MS;
   const maxWaitMs = opts.maxWaitMs ?? SESSION_WATCH_MAX_WAIT_MS;
+  const reconcileMs = opts.reconcileMs ?? SESSION_WATCH_RECONCILE_MS;
+  const watchPath = opts.watchFactory ?? ((path, listener) => watch(path, listener));
   let timer: Timer | null = null;
+  let reconcileTimer: Timer | null = null;
   let firstPendingAt: number | undefined;
   let stopped = false;
 
@@ -104,39 +128,121 @@ export function watchSessionFiles(
     }, delay);
   };
 
-  const fsWatcher: FSWatcher = watch(sessionsRoot, { recursive: true }, (_event, filename) => {
-    if (typeof filename !== "string") {
-      // A platform that reports no filename still reported a change inside
-      // this tree; refusing to arm here would turn a naming gap into a
-      // silent list. The debounce keeps the cost of that honesty bounded.
-      arm();
-      return;
-    }
-    if (filename.includes(sep)) {
-      // An entry inside a group directory: only a session file can change
-      // the catalog, so editor temp files and Finder droppings cost nothing
-      // here.
-      if (SESSION_FILE_RE.test(basename(filename))) arm();
-      return;
-    }
-    // A root-level entry. A group directory appearing is how a new
-    // project's sessions arrive, and a file created inside a just-created
-    // directory does not reliably report under its own name (verified
-    // against macOS FSEvents), so the directory event itself must arm. The
-    // stat tells a group directory from junk at the root, so droppings
-    // still cost nothing.
-    try {
-      if (statSync(join(sessionsRoot, filename)).isDirectory()) arm();
-    } catch {
-      // Vanished between the event and the stat: it reported a departure,
-      // and departures inside group directories report under their own
-      // names, which the branch above already arms on.
-    }
-  });
-  fsWatcher.on("error", err => {
+  const directoryWatchers = new Map<string, FSWatcher>();
+  const directoryFingerprints = new Map<string, DirectoryFingerprint>();
+  let rootWatcher: FSWatcher | null = null;
+
+  const fail = (err: unknown): void => {
+    if (stopped) return;
     opts.onError?.(err);
     stop();
-  });
+  };
+
+  const watchDirectory = (name: string): boolean => {
+    if (stopped || directoryWatchers.has(name)) return false;
+    const path = join(sessionsRoot, name);
+    let watcher: FSWatcher;
+    try {
+      watcher = watchPath(path, (_event, filename) => {
+        if (typeof filename !== "string" || SESSION_FILE_RE.test(basename(filename))) arm();
+      });
+    } catch (err) {
+      try {
+        if (!statSync(path).isDirectory()) return false;
+      } catch {
+        return false;
+      }
+      throw err;
+    }
+    watcher.on("error", err => {
+      if (stopped) return;
+      try {
+        if (!statSync(path).isDirectory()) {
+          watcher.close();
+          directoryWatchers.delete(name);
+          arm();
+          return;
+        }
+      } catch {
+        watcher.close();
+        directoryWatchers.delete(name);
+        arm();
+        return;
+      }
+      fail(err);
+    });
+    directoryWatchers.set(name, watcher);
+    return true;
+  };
+
+  const reconcileDirectories = (): boolean => {
+    if (stopped) return false;
+    const live = new Set<string>();
+    let changed = false;
+    for (const entry of readdirSync(sessionsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const path = join(sessionsRoot, entry.name);
+      let fingerprint: DirectoryFingerprint;
+      try {
+        const directoryMtimeMs = statSync(path).mtimeMs;
+        let sessionCount = 0;
+        let totalBytes = 0;
+        let latestSessionMtimeMs = 0;
+        for (const file of readdirSync(path, { withFileTypes: true })) {
+          if (!file.isFile() || !SESSION_FILE_RE.test(file.name)) continue;
+          const metadata = statSync(join(path, file.name));
+          sessionCount += 1;
+          totalBytes += metadata.size;
+          latestSessionMtimeMs = Math.max(latestSessionMtimeMs, metadata.mtimeMs);
+        }
+        fingerprint = { directoryMtimeMs, sessionCount, totalBytes, latestSessionMtimeMs };
+      } catch {
+        continue;
+      }
+      live.add(entry.name);
+      if (watchDirectory(entry.name) || !sameFingerprint(directoryFingerprints.get(entry.name), fingerprint))
+        changed = true;
+      directoryFingerprints.set(entry.name, fingerprint);
+    }
+    for (const [name, watcher] of directoryWatchers) {
+      if (live.has(name)) continue;
+      watcher.close();
+      directoryWatchers.delete(name);
+      changed = true;
+    }
+    for (const name of directoryFingerprints.keys()) {
+      if (live.has(name)) continue;
+      directoryFingerprints.delete(name);
+      changed = true;
+    }
+    return changed;
+  };
+
+  try {
+    rootWatcher = watchPath(sessionsRoot, (_event, filename) => {
+      if (stopped) return;
+      try {
+        const directoriesChanged = reconcileDirectories();
+        if (typeof filename !== "string" || directoriesChanged) arm();
+      } catch (err) {
+        fail(err);
+      }
+    });
+    rootWatcher.on("error", fail);
+    reconcileDirectories();
+    reconcileTimer = setInterval(() => {
+      try {
+        if (reconcileDirectories()) arm();
+      } catch (err) {
+        fail(err);
+      }
+    }, reconcileMs);
+  } catch (err) {
+    rootWatcher?.close();
+    for (const watcher of directoryWatchers.values()) watcher.close();
+    opts.onError?.(err);
+    return null;
+  }
 
   function stop(): void {
     if (stopped) return;
@@ -145,7 +251,14 @@ export function watchSessionFiles(
       clearTimeout(timer);
       timer = null;
     }
-    fsWatcher.close();
+    if (reconcileTimer !== null) {
+      clearInterval(reconcileTimer);
+      reconcileTimer = null;
+    }
+    rootWatcher?.close();
+    rootWatcher = null;
+    for (const watcher of directoryWatchers.values()) watcher.close();
+    directoryWatchers.clear();
   }
 
   return { stop };

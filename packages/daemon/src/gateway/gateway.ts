@@ -1465,6 +1465,7 @@ export class Gateway {
    * at all.
    */
   #sessionWatch: SessionWatch | undefined;
+  #lastSessionsPayload = new WeakMap<GatewaySocket, string>();
   #endpoints: (() => EndpointOffer[]) | undefined;
   #filesystem: FilesystemSurface | undefined;
   #providers: ProvidersService | undefined;
@@ -1798,7 +1799,7 @@ export class Gateway {
    */
   acceptTunnelSession(
     token: string,
-    send: (raw: string) => void,
+    send: (raw: string) => unknown,
     getBufferedAmount?: () => number,
     onClose?: (code?: number, reason?: string) => void,
   ): TunnelSessionResult {
@@ -6438,13 +6439,17 @@ export class Gateway {
     if (this.#sessionWatch !== undefined) return;
     const index = this.#sessionIndex;
     if (!index) return;
-    const handle = index.watch(() => this.#pushSessionsToWatchers(), {
+    let handle: SessionWatch | null = null;
+    handle = index.watch(() => this.#pushSessionsToWatchers(), {
       onError: err => {
         this.#onError?.(err instanceof Error ? err : new Error(String(err)));
         // A failed watch degrades this daemon to pull-only: every `sessions`
         // ask still rebuilds from disk, so the failure is reported and the
         // handle forgotten rather than retried in a loop.
-        if (this.#sessionWatch === handle) this.#sessionWatch = undefined;
+        if (handle !== null && this.#sessionWatch === handle) {
+          handle.stop();
+          this.#sessionWatch = undefined;
+        }
       },
     });
     if (handle === null) return;
@@ -6477,7 +6482,7 @@ export class Gateway {
       if (ws.data.revoked) continue;
       if (ws.data.watchingSessions && ws.data.scopes.has(SCOPE_READ)) {
         watchers += 1;
-        void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery);
+        void this.#serveSessionsFrame(ws, index, ws.data.sessionQuery, true);
       } else if (ws.data.attached.size > 0) {
         watchers += 1;
       }
@@ -6536,13 +6541,23 @@ export class Gateway {
    * reconnect replay arriving meanwhile joins the same in-flight build
    * instead of multiplying the work.
    */
-  async #serveSessionsFrame(ws: GatewaySocket, index: SessionIndex, query: SessionQuery): Promise<void> {
+  async #serveSessionsFrame(
+    ws: GatewaySocket,
+    index: SessionIndex,
+    query: SessionQuery,
+    suppressUnchanged = false,
+  ): Promise<void> {
     try {
       const { sessions, warmed } = await index.queryWithWarm(query);
-      this.#send(ws, { t: "sessions", sessions });
+      const deliver = (rows: typeof sessions): void => {
+        const frame: ServerFrame = { t: "sessions", sessions: rows };
+        const encoded = JSON.stringify(frame);
+        if (suppressUnchanged && this.#lastSessionsPayload.get(ws) === encoded) return;
+        if (this.#send(ws, frame, encoded)) this.#lastSessionsPayload.set(ws, encoded);
+      };
+      deliver(sessions);
       if (warmed === null) return;
-      const upgraded = await warmed;
-      this.#send(ws, { t: "sessions", sessions: upgraded });
+      deliver(await warmed);
     } catch (err) {
       // Detached from `#handle`, so its last-line-of-defence try/catch no
       // longer covers this; an answer that cannot be produced must still
@@ -7139,7 +7154,7 @@ export class Gateway {
     }
   }
 
-  #send(ws: GatewaySocket, frame: ServerFrame): void {
+  #send(ws: GatewaySocket, frame: ServerFrame, encoded?: string): boolean {
     const buffered = ws.getBufferedAmount?.() ?? 0;
     if (buffered > this.#maxSocketBufferBytes) {
       this.#store.audit({
@@ -7158,13 +7173,17 @@ export class Gateway {
         // Socket closed or closing
       }
       this.#close(ws);
-      return;
+      return false;
     }
     try {
-      ws.send(JSON.stringify(frame));
+      const result = ws.send(encoded ?? JSON.stringify(frame));
+      if (result === 0) return false;
+      return true;
     } catch {
-      // The socket went away between an event firing and this send. `#close`
-      // removes it from the registry; there is nothing to report to.
+      // The socket went away between an event firing and this send. Remove it
+      // now so failed watcher pushes cannot leave a stale registry entry.
+      this.#close(ws);
+      return false;
     }
   }
 
