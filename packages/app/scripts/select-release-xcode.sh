@@ -11,7 +11,9 @@ for candidate in "$APPLICATIONS_ROOT/Xcode.app" "$APPLICATIONS_ROOT"/Xcode_26*.a
   if [[ ! -d "$candidate/Contents/Developer" ]]; then
     continue
   fi
-  candidate_output="$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version)"
+  if ! candidate_output="$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version 2>/dev/null)"; then
+    continue
+  fi
   candidate_version="$(awk '$1 == "Xcode" { print $2 }' <<< "$candidate_output")"
   if [[ ! "$candidate_version" =~ ^([0-9]+)(\.([0-9]+))?(\.([0-9]+))? ]]; then
     continue
