@@ -35,6 +35,19 @@ cat <<'PLIST'
 PLIST
 `,
   );
+  executable(
+    join(bin, "PlistBuddy"),
+    `#!/bin/sh
+case "$2" in
+  "Print :Name") printf '%s\n' "ompctl iOS App Store CI" ;;
+  "Print :UUID") printf '%s\n' "00000000-0000-4000-8000-000000000001" ;;
+  "Print :TeamIdentifier:0") printf '%s\n' "8H7HVPHS87" ;;
+  "Print :Entitlements:application-identifier") printf '%s\n' "8H7HVPHS87.ai.ompctl.app" ;;
+  "Print :Platform:0") printf '%s\n' "iOS" ;;
+  *) exit 1 ;;
+esac
+`,
+  );
   executable(join(bin, "pod"), "#!/bin/sh\nexit 0\n");
   executable(
     join(bin, "bundle"),
@@ -64,6 +77,7 @@ exit 42
         OMPD_VERSION_NAME: "1.0.1",
         OMPD_IOS_ARCHIVE_DIR: out,
         OMPD_IOS_PROFILE_PATH: profile,
+        OMPD_PLIST_BUDDY: join(bin, "PlistBuddy"),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -94,6 +108,20 @@ test("standalone iOS cut archives with its installed distribution profile", asyn
   mkdirSync(home);
   writeFileSync(profile, "fixture");
   writeFileSync(key, "fixture");
+  executable(join(bin, "security"), "#!/bin/sh\nprintf '%s\n' fixture\n");
+  executable(
+    join(bin, "PlistBuddy"),
+    `#!/bin/sh
+case "$2" in
+  "Print :Name") printf '%s\n' "Renamed iOS Profile CI" ;;
+  "Print :UUID") printf '%s\n' "00000000-0000-4000-8000-000000000002" ;;
+  "Print :TeamIdentifier:0") printf '%s\n' "8H7HVPHS87" ;;
+  "Print :Entitlements:application-identifier") printf '%s\n' "8H7HVPHS87.ai.ompctl.app" ;;
+  "Print :Platform:0") printf '%s\n' "iOS" ;;
+  *) exit 1 ;;
+esac
+`,
+  );
   executable(
     join(bin, "pod"),
     `#!/bin/sh
@@ -123,6 +151,7 @@ exit 42
         OMPD_VERSION_NAME: "1.0.1",
         OMPD_IOS_BUILD_DIR: out,
         OMPD_IOS_PROVISIONING_PROFILE: profile,
+        OMPD_PLIST_BUDDY: join(bin, "PlistBuddy"),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -132,7 +161,7 @@ exit 42
     const args = (await Bun.file(xcodeLog).text()).trim().split("\n");
     expect(args).toContain("CODE_SIGN_STYLE=Manual");
     expect(args).toContain("CODE_SIGN_IDENTITY=Apple Distribution");
-    expect(args).toContain("PROVISIONING_PROFILE_SPECIFIER=ompctl iOS App Store");
+    expect(args).toContain("PROVISIONING_PROFILE_SPECIFIER=Renamed iOS Profile CI");
     expect(args).not.toContain("-allowProvisioningUpdates");
   } finally {
     rmSync(root, { recursive: true, force: true });

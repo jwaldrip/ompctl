@@ -10,17 +10,18 @@ mkdir -p "$OUT"
 BUNDLE_ID="${OMPD_IOS_BUNDLE_ID:-ai.ompctl.app}"
 PROFILE_PATH="${OMPD_IOS_PROFILE_PATH:?OMPD_IOS_PROFILE_PATH is required for App Store export}"
 SIGNING_CERTIFICATE="${OMPD_IOS_SIGNING_CERTIFICATE:-Apple Distribution}"
+PLIST_BUDDY="${OMPD_PLIST_BUDDY:-/usr/libexec/PlistBuddy}"
 if [[ ! -f "$PROFILE_PATH" ]]; then
   echo "iOS provisioning profile not found: $PROFILE_PATH" >&2
   exit 1
 fi
 PROFILE_PLIST="$OUT/ios-profile.plist"
 security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
-PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")"
-PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
-PROFILE_TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
-PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
-PROFILE_PLATFORM="$(/usr/libexec/PlistBuddy -c 'Print :Platform:0' "$PROFILE_PLIST")"
+PROFILE_NAME="$("$PLIST_BUDDY" -c 'Print :Name' "$PROFILE_PLIST")"
+PROFILE_UUID="$("$PLIST_BUDDY" -c 'Print :UUID' "$PROFILE_PLIST")"
+PROFILE_TEAM="$("$PLIST_BUDDY" -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
+PROFILE_APP_ID="$("$PLIST_BUDDY" -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
+PROFILE_PLATFORM="$("$PLIST_BUDDY" -c 'Print :Platform:0' "$PROFILE_PLIST")"
 if [[ "$PROFILE_TEAM" != "$TEAM_ID" || "$PROFILE_APP_ID" != "$TEAM_ID.$BUNDLE_ID" || "$PROFILE_PLATFORM" != "iOS" ]]; then
   echo "iOS provisioning profile does not match platform, team, and bundle id" >&2
   exit 1
