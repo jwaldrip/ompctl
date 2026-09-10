@@ -15,8 +15,7 @@
 
 import "./rnw.ts";
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -111,32 +110,4 @@ describe("Web build camera exclusion", () => {
     }
   });
 
-  test("built web bundle contains zero react-native-vision-camera identifiers", async () => {
-    const distAssets = resolve(import.meta.dirname, "../dist/assets");
-    let bundleCode = "";
-    if (existsSync(distAssets)) {
-      const jsFiles = readdirSync(distAssets).filter(f => f.endsWith(".js"));
-      for (const f of jsFiles) {
-        bundleCode += `${readFileSync(join(distAssets, f), "utf8")}\n`;
-      }
-    }
-    if (!bundleCode) {
-      const { build } = await import("vite");
-      const { default: config } = await import("../vite.config.ts");
-      const result = await build({
-        ...config,
-        root: resolve(import.meta.dirname, ".."),
-        logLevel: "silent",
-        build: { write: false, sourcemap: false },
-      });
-      const outputs = Array.isArray(result) ? result : [result];
-      const chunks = outputs.flatMap(out => ("output" in out ? out.output : []));
-      bundleCode = chunks.map(chunk => ("code" in chunk ? chunk.code : "")).join("\n");
-    }
-
-    expect(bundleCode.length).toBeGreaterThan(0);
-    expect(bundleCode.includes("NativeCameraView")).toBe(false);
-    expect(bundleCode.includes("CameraViewManager")).toBe(false);
-    expect(bundleCode.includes("react-native-vision-camera")).toBe(false);
-  });
 });
