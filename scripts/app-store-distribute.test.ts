@@ -42,9 +42,25 @@ describe("App Store release workflow", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {
       const job = jobs[name] as { env?: Record<string, unknown>; steps?: Array<Record<string, unknown>> };
       expect(job.env?.OMPD_UPLOAD).toContain("github.event_name == 'push'");
+      expect(job.env?.OMPD_APP_ID).toContain("OMPD_ASC_APP_ID");
+      expect(job.env?.OMPD_BETA_GROUP_ID).toContain("OMPD_ASC_BETA_GROUP_ID");
       const stepNames = (job.steps ?? []).map(step => step.name).filter(Boolean);
       expect(stepNames).toContain("Require distribution certificate");
-      expect(stepNames.some(step => String(step).includes("Require ASC secrets"))).toBe(true);
+      expect(stepNames.some(step => String(step).includes("Require ASC release configuration"))).toBe(true);
+      expect(
+        stepNames.some(step => String(step).includes("Publish") && String(step).includes("internal testers")),
+      ).toBe(true);
     }
+
+    const macos = jobs["macos-testflight"] as {
+      env?: Record<string, unknown>;
+      steps?: Array<Record<string, unknown>>;
+    };
+    expect(macos.env?.OMPD_MACOS_PROFILE_BASE64).toContain("OMPD_MACOS_PROFILE_BASE64");
+    expect(macos.env?.OMPD_MACOS_INSTALLER_CERT_P12_BASE64).toContain("OMPD_MACOS_INSTALLER_CERT_P12_BASE64");
+    expect(macos.env?.OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD).toContain("OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD");
+    const macosStepNames = (macos.steps ?? []).map(step => step.name).filter(Boolean);
+    expect(macosStepNames).toContain("Require macOS signing material");
+    expect(macosStepNames).toContain("Import macOS provisioning profile");
   });
 });

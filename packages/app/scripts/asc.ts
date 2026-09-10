@@ -18,8 +18,11 @@ import { join } from "node:path";
 
 const HOME = process.env.HOME || "";
 const KEY_ID = process.env.OMPD_ASC_KEY_ID || "CKYD83GHF3";
-const APP_ID = process.env.OMPD_APP_ID || "6802417672";
-const GROUP_ID = process.env.OMPD_BETA_GROUP_ID || "50ac3e8f-19d6-44bd-beb4-8955e262fa52";
+function requireEnv(name: "OMPD_APP_ID" | "OMPD_BETA_GROUP_ID"): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
 
 function resolveIssuerId(): string {
   if (process.env.OMPD_ASC_ISSUER_ID) {
@@ -93,49 +96,161 @@ async function call(method: string, path: string, body?: unknown) {
   throw new Error("ASC request failed after retries");
 }
 
-const [cmd, arg] = process.argv.slice(2);
+export type ApplePlatform = "IOS" | "MAC_OS";
 
-if (!cmd || cmd === "--help" || cmd === "help") {
-  console.log("Usage: bun scripts/asc.ts <builds|assign|group|nonexempt> [args]");
-  process.exit(0);
+interface BuildResource {
+  id: string;
+  attributes: {
+    version: string;
+    processingState: string;
+    usesNonExemptEncryption?: boolean | null;
+    uploadedDate?: string;
+  };
+  relationships?: { preReleaseVersion?: { data?: { id?: string } } };
 }
 
-if (cmd === "builds") {
-  const res = await call(
-    "GET",
-    `/v1/builds?filter[app]=${APP_ID}&sort=-uploadedDate&limit=5&fields[builds]=version,processingState,usesNonExemptEncryption,uploadedDate,expired`,
-  );
-  if (res.status !== 200) throw new Error(`builds returned ${res.status}: ${JSON.stringify(res.json)}`);
-  for (const b of res.json.data) {
-    console.log(
-      `${b.id} build=${b.attributes.version} state=${b.attributes.processingState} nonexempt=${b.attributes.usesNonExemptEncryption} uploaded=${b.attributes.uploadedDate}`,
+interface BuildsResponse {
+  data: BuildResource[];
+  included?: Array<{ id: string; attributes?: { platform?: ApplePlatform } }>;
+}
+
+export function selectBuildByPlatform(
+  response: BuildsResponse,
+  buildNumber: string,
+  platform: ApplePlatform,
+): BuildResource | undefined {
+  const platforms = new Map(response.included?.map(item => [item.id, item.attributes?.platform]));
+  return response.data.find(build => {
+    const preReleaseId = build.relationships?.preReleaseVersion?.data?.id;
+    return (
+      build.attributes.version === buildNumber && preReleaseId !== undefined && platforms.get(preReleaseId) === platform
     );
-  }
-} else if (cmd === "assign") {
-  if (!arg) throw new Error("Missing build ID for assign");
-  const { status } = await call("POST", `/v1/betaGroups/${GROUP_ID}/relationships/builds`, {
-    data: [{ type: "builds", id: arg }],
   });
-  console.log(`assign ${status}`);
-  if (status !== 204) process.exit(1);
-} else if (cmd === "nonexempt") {
-  if (!arg) throw new Error("Missing build ID for nonexempt");
-  const { status } = await call("PATCH", `/v1/builds/${arg}`, {
-    data: { type: "builds", id: arg, attributes: { usesNonExemptEncryption: false } },
-  });
-  console.log(`nonexempt ${status}`);
-  if (status !== 200) process.exit(1);
-} else if (cmd === "group") {
-  const { status, json } = await call(
-    "GET",
-    `/v1/betaGroups/${GROUP_ID}/builds?limit=5&fields[builds]=version,processingState`,
-  );
-  const list = json?.data?.map(
-    (b: { id: string; attributes: { version: string; processingState: string } }) =>
-      `${b.id} build=${b.attributes.version} ${b.attributes.processingState}`,
-  );
-  console.log(status, JSON.stringify(list));
-} else {
-  console.error(`Unknown command: ${cmd}`);
-  process.exit(1);
 }
+
+export function groupBuildPagePath(groupId: string, next: string): string {
+  const url = new URL(next);
+  if (
+    url.origin !== "https://api.appstoreconnect.apple.com" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== `/v1/betaGroups/${groupId}/builds`
+  ) {
+    throw new Error("ASC returned an invalid tester-group pagination link");
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+async function groupHasBuild(groupId: string, buildId: string): Promise<boolean> {
+  let path: string | undefined = `/v1/betaGroups/${groupId}/builds?limit=200&fields[builds]=version,processingState`;
+  while (path) {
+    const res = await call("GET", path);
+    if (res.status !== 200) throw new Error(`group builds returned ${res.status}: ${JSON.stringify(res.json)}`);
+    if ((res.json.data as Array<{ id: string }>).some(build => build.id === buildId)) return true;
+    const next = res.json.links?.next;
+    path = typeof next === "string" && next !== "" ? groupBuildPagePath(groupId, next) : undefined;
+  }
+  return false;
+}
+
+async function ensureAssigned(buildId: string): Promise<void> {
+  const groupId = requireEnv("OMPD_BETA_GROUP_ID");
+  if (await groupHasBuild(groupId, buildId)) return;
+  const res = await call("POST", `/v1/betaGroups/${groupId}/relationships/builds`, {
+    data: [{ type: "builds", id: buildId }],
+  });
+  if (res.status !== 204) throw new Error(`assign returned ${res.status}: ${JSON.stringify(res.json)}`);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (await groupHasBuild(groupId, buildId)) return;
+    await Bun.sleep(2000);
+  }
+  throw new Error(`build ${buildId} was not visible in tester group after assignment`);
+}
+
+async function waitForBuildAndAssign(buildNumber: string, platform: ApplePlatform): Promise<void> {
+  const appId = requireEnv("OMPD_APP_ID");
+  const waitMs = Number(process.env.OMPD_ASC_BUILD_WAIT_MS ?? "3600000");
+  if (!Number.isFinite(waitMs) || waitMs <= 0) throw new Error("OMPD_ASC_BUILD_WAIT_MS must be a positive number");
+  const deadline = Date.now() + waitMs;
+  while (Date.now() <= deadline) {
+    const res = await call(
+      "GET",
+      `/v1/builds?filter[app]=${appId}&filter[version]=${buildNumber}&limit=20&include=preReleaseVersion&fields[builds]=version,processingState,usesNonExemptEncryption,uploadedDate,preReleaseVersion&fields[preReleaseVersions]=platform,version`,
+    );
+    if (res.status !== 200) throw new Error(`build lookup returned ${res.status}: ${JSON.stringify(res.json)}`);
+    const build = selectBuildByPlatform(res.json as BuildsResponse, buildNumber, platform);
+    if (build?.attributes.processingState === "INVALID") {
+      throw new Error(`build ${buildNumber} for ${platform} is invalid`);
+    }
+    if (build?.attributes.processingState === "VALID") {
+      if (build.attributes.usesNonExemptEncryption !== false) {
+        const patched = await call("PATCH", `/v1/builds/${build.id}`, {
+          data: { type: "builds", id: build.id, attributes: { usesNonExemptEncryption: false } },
+        });
+        if (patched.status !== 200) {
+          throw new Error(`nonexempt returned ${patched.status}: ${JSON.stringify(patched.json)}`);
+        }
+      }
+      await ensureAssigned(build.id);
+      console.log(`ready_assigned build=${buildNumber} platform=${platform} id=${build.id}`);
+      return;
+    }
+    console.log(
+      `waiting build=${buildNumber} platform=${platform} state=${build?.attributes.processingState ?? "missing"}`,
+    );
+    await Bun.sleep(15000);
+  }
+  throw new Error(`timed out waiting for build ${buildNumber} on ${platform}`);
+}
+
+async function main(): Promise<void> {
+  const [cmd, arg, platformArg] = process.argv.slice(2);
+  if (!cmd || cmd === "--help" || cmd === "help") {
+    console.log("Usage: bun scripts/asc.ts <builds|assign|group|nonexempt|wait-assign> [args]");
+    return;
+  }
+
+  if (cmd === "builds") {
+    const appId = requireEnv("OMPD_APP_ID");
+    const res = await call(
+      "GET",
+      `/v1/builds?filter[app]=${appId}&sort=-uploadedDate&limit=5&fields[builds]=version,processingState,usesNonExemptEncryption,uploadedDate,expired`,
+    );
+    if (res.status !== 200) throw new Error(`builds returned ${res.status}: ${JSON.stringify(res.json)}`);
+    for (const b of res.json.data) {
+      console.log(
+        `${b.id} build=${b.attributes.version} state=${b.attributes.processingState} nonexempt=${b.attributes.usesNonExemptEncryption} uploaded=${b.attributes.uploadedDate}`,
+      );
+    }
+  } else if (cmd === "assign") {
+    if (!arg) throw new Error("Missing build ID for assign");
+    await ensureAssigned(arg);
+    console.log("assign 204");
+  } else if (cmd === "nonexempt") {
+    if (!arg) throw new Error("Missing build ID for nonexempt");
+    const res = await call("PATCH", `/v1/builds/${arg}`, {
+      data: { type: "builds", id: arg, attributes: { usesNonExemptEncryption: false } },
+    });
+    console.log(`nonexempt ${res.status}`);
+    if (res.status !== 200) throw new Error(`nonexempt returned ${res.status}`);
+  } else if (cmd === "group") {
+    const groupId = requireEnv("OMPD_BETA_GROUP_ID");
+    const res = await call("GET", `/v1/betaGroups/${groupId}/builds?limit=5&fields[builds]=version,processingState`);
+    if (res.status !== 200) throw new Error(`group returned ${res.status}: ${JSON.stringify(res.json)}`);
+    const list = res.json.data.map(
+      (b: { id: string; attributes: { version: string; processingState: string } }) =>
+        `${b.id} build=${b.attributes.version} ${b.attributes.processingState}`,
+    );
+    console.log(res.status, JSON.stringify(list));
+  } else if (cmd === "wait-assign") {
+    if (!arg) throw new Error("Missing build number for wait-assign");
+    if (platformArg !== "IOS" && platformArg !== "MAC_OS") {
+      throw new Error("wait-assign platform must be IOS or MAC_OS");
+    }
+    await waitForBuildAndAssign(arg, platformArg);
+  } else {
+    throw new Error(`Unknown command: ${cmd}`);
+  }
+}
+
+if (import.meta.main) await main();

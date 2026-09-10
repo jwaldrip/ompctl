@@ -42,6 +42,8 @@ jobs:
       OMPD_ASC_PRIVATE_KEY: ${{ secrets.OMPD_ASC_PRIVATE_KEY }}
       OMPD_APPLE_CERT_P12_BASE64: ${{ secrets.OMPD_APPLE_CERT_P12_BASE64 }}
       OMPD_APPLE_CERT_P12_PASSWORD: ${{ secrets.OMPD_APPLE_CERT_P12_PASSWORD }}
+      OMPD_APP_ID: ${{ vars.OMPD_ASC_APP_ID }}
+      OMPD_BETA_GROUP_ID: ${{ vars.OMPD_ASC_BETA_GROUP_ID }}
       OMPD_UPLOAD: ${{ github.event_name == 'push' && 'true' || github.event.inputs.upload }}
     steps:
       - uses: actions/checkout@v4
@@ -108,14 +110,22 @@ jobs:
           name: ompd-ios-ipa
           path: packages/app/build/ios/ipa/*.ipa
           if-no-files-found: error
-      - name: Require ASC secrets when upload requested
-        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH == ''
+      - name: Require ASC release configuration
+        if: >
+          env.OMPD_UPLOAD == 'true' && (
+            env.OMPD_ASC_KEY_PATH == '' ||
+            env.OMPD_APP_ID == '' ||
+            env.OMPD_BETA_GROUP_ID == ''
+          )
         run: |
-          echo "::error::upload=true but ASC API key secrets are missing (OMPD_ASC_KEY_ID / OMPD_ASC_ISSUER_ID / OMPD_ASC_PRIVATE_KEY). Set secrets or re-run with upload=false for artifact-only."
+          echo "::error::App Store Connect key, app id, and beta group id are required"
           exit 1
       - name: Upload to TestFlight
         if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''
         run: bun run upload:testflight
+      - name: Publish iOS build to internal testers
+        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''
+        run: bun scripts/asc.ts wait-assign "$OMPD_BUILD_NUMBER" IOS
       - name: Artifact-only notice
         if: env.OMPD_UPLOAD != 'true'
         run: echo "upload=false; IPA artifact retained (no TestFlight submit)"
@@ -236,6 +246,11 @@ jobs:
       OMPD_ASC_PRIVATE_KEY: ${{ secrets.OMPD_ASC_PRIVATE_KEY }}
       OMPD_APPLE_CERT_P12_BASE64: ${{ secrets.OMPD_APPLE_CERT_P12_BASE64 }}
       OMPD_APPLE_CERT_P12_PASSWORD: ${{ secrets.OMPD_APPLE_CERT_P12_PASSWORD }}
+      OMPD_MACOS_PROFILE_BASE64: ${{ secrets.OMPD_MACOS_PROFILE_BASE64 }}
+      OMPD_MACOS_INSTALLER_CERT_P12_BASE64: ${{ secrets.OMPD_MACOS_INSTALLER_CERT_P12_BASE64 }}
+      OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD: ${{ secrets.OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD }}
+      OMPD_APP_ID: ${{ vars.OMPD_ASC_APP_ID }}
+      OMPD_BETA_GROUP_ID: ${{ vars.OMPD_ASC_BETA_GROUP_ID }}
       OMPD_UPLOAD: ${{ github.event_name == 'push' && 'true' || github.event.inputs.upload }}
     steps:
       - uses: actions/checkout@v4
@@ -266,6 +281,14 @@ jobs:
         run: |
           echo "::error::OMPD_APPLE_CERT_P12_BASE64 and OMPD_APPLE_CERT_P12_PASSWORD are required"
           exit 1
+      - name: Require macOS signing material
+        if: >
+          env.OMPD_MACOS_PROFILE_BASE64 == '' ||
+          env.OMPD_MACOS_INSTALLER_CERT_P12_BASE64 == '' ||
+          env.OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD == ''
+        run: |
+          echo "::error::macOS provisioning profile and installer certificate secrets are required"
+          exit 1
       - name: Import ASC API key
         if: env.OMPD_ASC_KEY_ID != '' && env.OMPD_ASC_ISSUER_ID != '' && env.OMPD_ASC_PRIVATE_KEY != ''
         run: |
@@ -282,6 +305,18 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
               fh.write(f"OMPD_ASC_KEY_PATH={p}\n")
           PY
+      - name: Import macOS provisioning profile
+        run: |
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          profile = Path(os.environ["RUNNER_TEMP"]) / "ompctl-macos.provisionprofile"
+          profile.write_bytes(base64.b64decode("".join(os.environ["OMPD_MACOS_PROFILE_BASE64"].split())))
+          profile.chmod(0o600)
+          print(f"macos_profile_bytes {profile.stat().st_size}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write(f"OMPD_MACOS_PROFILE_PATH={profile}\n")
+          PY
       - name: Import Apple signing certificate
         run: bash ./scripts/import-apple-signing.sh
       - name: Select Xcode 16+
@@ -296,18 +331,23 @@ jobs:
           name: ompd-macos-export
           path: packages/app/build/macos/export/**
           if-no-files-found: error
-      - name: Require ASC secrets when upload requested (macOS)
-        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH == ''
+      - name: Require ASC release configuration (macOS)
+        if: >
+          env.OMPD_UPLOAD == 'true' && (
+            env.OMPD_ASC_KEY_PATH == '' ||
+            env.OMPD_APP_ID == '' ||
+            env.OMPD_BETA_GROUP_ID == ''
+          )
         run: |
-          echo "::error::upload=true but ASC API key secrets are missing for macOS TestFlight"
+          echo "::error::App Store Connect key, app id, and beta group id are required"
           exit 1
       - name: Upload macOS to App Store Connect / TestFlight
         if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''
         run: |
           # Prefer a .pkg; fall back to .dmg/.app zip produced by export
-          PKG="$(find build/macos/export -name '*.pkg' | head -1 || true)"
+          PKG="$(find build/macos/export -name '*.pkg' -print -quit)"
           if [[ -z "$PKG" ]]; then
-            APP="$(find build/macos/export -type d -name '*.app' -print -quit | head -1 || true)"
+            APP="$(find build/macos/export -type d -name '*.app' -print -quit)"
             if [[ -n "$APP" ]]; then
               PKG="$RUNNER_TEMP/ompd-macos.zip"
               ditto -c -k --sequesterRsrc --keepParent "$APP" "$PKG"
@@ -322,6 +362,9 @@ jobs:
           API_PRIVATE_KEYS_DIR="$(cd "$(dirname "$OMPD_ASC_KEY_PATH")" && pwd)"
           xcrun altool --upload-app             --type macos             --file "$PKG"             --apiKey "$OMPD_ASC_KEY_ID"             --apiIssuer "$OMPD_ASC_ISSUER_ID"
           echo "uploaded macOS build to App Store Connect"
+      - name: Publish macOS build to internal testers
+        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''
+        run: bun scripts/asc.ts wait-assign "$OMPD_BUILD_NUMBER" MAC_OS
       - name: Artifact-only notice (macOS)
         if: env.OMPD_UPLOAD != 'true'
         run: echo "upload=false; macOS export artifact retained (no ASC submit)"
