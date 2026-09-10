@@ -46,6 +46,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ContainerBackend } from "../src/provisioner/container.ts";
 import {
   capabilityFromHelp,
   DARWIN_RUNTIME_ORDER,
@@ -990,5 +991,63 @@ describe("selectRuntime", () => {
       /no container runtime is available on platform win32/,
     );
     expect(fake.argv).toEqual([]);
+  });
+});
+
+/**
+ * The same probe, asked before anything is created.
+ *
+ * Cowork disables its start on the daemon's answer, so the two things that
+ * matter are that a runtime whose service is down says so with the command to
+ * run, and that asking does not spawn a runtime CLI per socket.
+ */
+describe("ContainerBackend.runtimeState", () => {
+  test("a runtime that is installed with its service down reports the command to run", async () => {
+    const fake = fakeRunner({
+      container: { version: HEALTHY_APPLE.version, code: 1, status: "apiserver is not running" },
+      docker: HEALTHY_DOCKER,
+    });
+    const backend = new ContainerBackend({ run: fake.run, platform: "darwin" });
+
+    const state = await backend.runtimeState();
+
+    expect(state.ready).toBe(false);
+    expect(state.label).toBeNull();
+    expect(state.reason).toContain("container system start");
+    // The candidate's own hint, not the whole refusal. The paragraph about not
+    // falling back to Docker belongs to a provision that failed; on a phone row
+    // it would push the one actionable sentence off the surface.
+    expect(state.reason).not.toContain("will not fall back");
+  });
+
+  test("a healthy runtime reports ready and which runtime it would use", async () => {
+    const fake = fakeRunner({ container: HEALTHY_APPLE });
+    const backend = new ContainerBackend({ run: fake.run, platform: "darwin" });
+
+    expect(await backend.runtimeState()).toEqual({ ready: true, reason: null, label: "container 0.4.1" });
+  });
+
+  test("reading the state repeatedly does not re-probe the runtime", async () => {
+    // Every client reads this on connect, and the probe is three spawns.
+    const fake = fakeRunner({ container: HEALTHY_APPLE });
+    const backend = new ContainerBackend({ run: fake.run, platform: "darwin" });
+
+    await backend.runtimeState();
+    const afterFirst = fake.argv.length;
+    await Promise.all([backend.runtimeState(), backend.runtimeState()]);
+
+    expect(afterFirst).toBeGreaterThan(0);
+    expect(fake.argv.length).toBe(afterFirst);
+  });
+
+  test("a pinned runtime is the only one probed, and its own failure is the reason", async () => {
+    const fake = fakeRunner({ container: HEALTHY_APPLE, docker: HEALTHY_DOCKER });
+    const backend = new ContainerBackend({ run: fake.run, platform: "darwin", runtime: "podman" });
+
+    const state = await backend.runtimeState();
+
+    expect(state.ready).toBe(false);
+    expect(state.reason).toContain("podman");
+    expect(fake.argv.every(command => command[0] === "podman")).toBe(true);
   });
 });

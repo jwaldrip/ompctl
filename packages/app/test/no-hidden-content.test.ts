@@ -149,6 +149,28 @@ describe("a composer's surface reaches the edge it pads to", () => {
   });
 });
 
+describe("a sentence the daemon wrote cannot run off the row that shows it", () => {
+  test("cowork's precondition rows give their label a flexible box", async () => {
+    // The sixth wearing of the same defect, reported from a phone on
+    // 2026-09-09: "Model broker not ready: no model configured for container
+    // agents" was cut off mid-sentence at the right edge of the screen. These
+    // reasons are written by the daemon, so their length is not something this
+    // screen can know, and a label whose flex floor is its own content pushes
+    // straight through the gutter. The rule is the flex-item one from the top
+    // of this file, applied to every row that renders a remote string.
+    const text = await source("src/screens/CoworkScreen.tsx");
+    expect(styleBlock(text, "refusedText")).toContain("flex: 1");
+
+    const rows = ["cowork-runtime-state", "cowork-model-broker-state", "cowork-container-refused"];
+    for (const row of rows) {
+      const start = text.indexOf(`testID="${row}"`);
+      expect(start).toBeGreaterThan(-1);
+      const end = text.indexOf("</View>", start);
+      expect(text.slice(start, end)).toContain("style={styles.refusedText}");
+    }
+  });
+});
+
 /**
  * A style property in points, whether the source writes it as a number or as a
  * spacing token. Read out of the real style block, so narrowing a container or

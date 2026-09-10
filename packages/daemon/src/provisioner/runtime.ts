@@ -1015,6 +1015,80 @@ function noFallbackNote(platform: string): string {
 }
 
 /**
+ * A selection that did not happen, said twice on purpose.
+ *
+ * `message` is the full refusal: every candidate's own reason, then the note
+ * that no other runtime was tried and how to ask for one. That paragraph is
+ * right for a provision that failed, where an operator is already reading an
+ * error and needs all of it.
+ *
+ * `brief` is the one sentence a readiness surface can render, which is the
+ * failing candidate's own hint because that is the half naming the command to
+ * run. A phone row cannot carry the paragraph, and clipping the paragraph cuts
+ * exactly the sentence worth showing.
+ */
+export type RuntimeSelection =
+  | { ok: true; capability: RuntimeCapability }
+  | { ok: false; message: string; brief: string };
+
+/**
+ * Probe for a usable runtime and answer either way.
+ *
+ * Separate from `selectRuntime` because readiness and provisioning want
+ * opposite things from the same probe: a container start wants a throw that
+ * ends it, and a screen asking "could I start one" wants a value. Deriving one
+ * from the other keeps them from drifting into two different opinions about
+ * whether this machine can run a container.
+ *
+ * An unknown pinned name still throws. `absent` is an operator's machine
+ * missing a tool; an unknown name is a caller asking for a runtime ompd holds
+ * no facts for, and that must not read as a normal probe miss on a readiness
+ * surface either.
+ */
+export async function trySelectRuntime(opts: ProbeOptions = {}): Promise<RuntimeSelection> {
+  const run = opts.run ?? execCommand;
+  const platform = opts.platform ?? process.platform;
+
+  if (opts.pinned !== undefined) {
+    if (!KNOWN_RUNTIMES.includes(opts.pinned)) {
+      throw new ProvisionError(
+        `pinned container runtime ${JSON.stringify(opts.pinned)} is not one ompd knows; valid runtimes are ${KNOWN_RUNTIMES.join(", ")}`,
+        "container",
+      );
+    }
+    const probed = await probeRuntime(opts.pinned, run, platform);
+    if (isCapability(probed)) return { ok: true, capability: probed };
+    return {
+      ok: false,
+      message: `pinned container runtime ${opts.pinned} is unusable (${probed.reason}): ${probed.hint}`,
+      brief: probed.hint,
+    };
+  }
+
+  const order = runtimeOrder(platform);
+  if (order.length === 0) {
+    const message =
+      `no container runtime is available on platform ${platform}; ompd selects ${DARWIN_RUNTIME_ORDER.join(", ")} on darwin and ${LINUX_RUNTIME_ORDER.join(", ")} on linux, and can be pinned by setting ` +
+      `\`containerRuntime\` in \`<OMPD_HOME>/config.json\` to any of ${KNOWN_RUNTIMES.join(", ")} on those platforms`;
+    return { ok: false, message, brief: `ompd knows no container runtime for ${platform}.` };
+  }
+
+  const failures: string[] = [];
+  const briefs: string[] = [];
+  for (const runtime of order) {
+    const probed = await probeRuntime(runtime, run, platform);
+    if (isCapability(probed)) return { ok: true, capability: probed };
+    failures.push(`${runtime} (${probed.reason}): ${probed.hint}`);
+    briefs.push(probed.hint);
+  }
+  return {
+    ok: false,
+    message: `no container runtime is usable on ${platform}: ${failures.join("; ")}. ${noFallbackNote(platform)}`,
+    brief: briefs.join(" "),
+  };
+}
+
+/**
  * The runtime to provision with, or a `ProvisionError` naming why none is.
  *
  * There is no fallback on either path. A pinned runtime is probed alone,
@@ -1031,40 +1105,7 @@ function noFallbackNote(platform: string): string {
  * three of them installed.
  */
 export async function selectRuntime(opts: ProbeOptions = {}): Promise<RuntimeCapability> {
-  const run = opts.run ?? execCommand;
-  const platform = opts.platform ?? process.platform;
-
-  if (opts.pinned !== undefined) {
-    if (!KNOWN_RUNTIMES.includes(opts.pinned)) {
-      throw new ProvisionError(
-        `pinned container runtime ${JSON.stringify(opts.pinned)} is not one ompd knows; valid runtimes are ${KNOWN_RUNTIMES.join(", ")}`,
-        "container",
-      );
-    }
-    const probed = await probeRuntime(opts.pinned, run, platform);
-    if (isCapability(probed)) return probed;
-    throw new ProvisionError(
-      `pinned container runtime ${opts.pinned} is unusable (${probed.reason}): ${probed.hint}`,
-      "container",
-    );
-  }
-
-  const order = runtimeOrder(platform);
-  if (order.length === 0) {
-    throw new ProvisionError(
-      `no container runtime is available on platform ${platform}; ompd selects ${DARWIN_RUNTIME_ORDER.join(", ")} on darwin and ${LINUX_RUNTIME_ORDER.join(", ")} on linux, and can be pinned by setting \`containerRuntime\` in \`<OMPD_HOME>/config.json\` to any of ${KNOWN_RUNTIMES.join(", ")} on those platforms`,
-      "container",
-    );
-  }
-
-  const failures: string[] = [];
-  for (const runtime of order) {
-    const probed = await probeRuntime(runtime, run, platform);
-    if (isCapability(probed)) return probed;
-    failures.push(`${runtime} (${probed.reason}): ${probed.hint}`);
-  }
-  throw new ProvisionError(
-    `no container runtime is usable on ${platform}: ${failures.join("; ")}. ${noFallbackNote(platform)}`,
-    "container",
-  );
+  const selection = await trySelectRuntime(opts);
+  if (selection.ok) return selection.capability;
+  throw new ProvisionError(selection.message, "container");
 }

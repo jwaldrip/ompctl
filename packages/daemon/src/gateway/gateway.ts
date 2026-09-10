@@ -30,6 +30,7 @@ import {
   type CollabVoiceNoteFrame,
   type CollabVoiceParticipant,
   type ConnectorSummary,
+  type ContainerState,
   type DashboardStats,
   type EndpointOffer,
   isRecord,
@@ -1263,10 +1264,15 @@ export interface GatewayOptions {
    */
   providers?: ProvidersService;
   /**
-   * Provides the cowork container state, notably model broker readiness.
-   * When absent, reports ready: true.
+   * The cowork container state: whether a model can be granted and whether this
+   * machine has a runtime to run a container on. When absent, reports ready.
+   *
+   * May answer asynchronously, because the runtime half is a probe that spawns
+   * the runtime's own CLI. The handler awaits it rather than sending a
+   * placeholder: a screen that gates a start on this state has nothing to do
+   * with a "checking" answer it would have to poll out of.
    */
-  containerState?: () => { modelBroker: { ready: boolean; reason: string | null } };
+  containerState?: () => ContainerState | Promise<ContainerState>;
   /** Embedded web assets map, for testing or overriding the compiled-in WEB_ASSETS. */
   embeddedAssets?: { assets: Record<string, string>; built: boolean };
   /**
@@ -1462,7 +1468,7 @@ export class Gateway {
   #endpoints: (() => EndpointOffer[]) | undefined;
   #filesystem: FilesystemSurface | undefined;
   #providers: ProvidersService | undefined;
-  #containerStateProvider: (() => { modelBroker: { ready: boolean; reason: string | null } }) | undefined;
+  #containerStateProvider: (() => ContainerState | Promise<ContainerState>) | undefined;
   #artifactRoots: readonly string[] | undefined;
   #sessionsRoot: string | undefined;
   #artifactByteCeiling: number | undefined;
@@ -5255,8 +5261,14 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "unauthorized", message: "container_state_read requires read scope" });
           return;
         }
-        const state = this.#containerState();
-        this.#send(ws, { t: "container_state", modelBroker: state.modelBroker });
+        // Not awaited inline: this switch answers every other frame on this
+        // socket while the runtime probe runs, and the reply is addressed to
+        // the socket that asked rather than broadcast, so it cannot arrive out
+        // of order with anything that depends on it.
+        void (async () => {
+          const state = await this.#containerState();
+          this.#send(ws, { t: "container_state", modelBroker: state.modelBroker, runtime: state.runtime });
+        })();
         return;
       }
 
@@ -7156,11 +7168,12 @@ export class Gateway {
     }
   }
 
-  #containerState(): { modelBroker: { ready: boolean; reason: string | null } } {
-    if (this.#containerStateProvider) {
-      return this.#containerStateProvider();
-    }
-    return { modelBroker: { ready: true, reason: null } };
+  async #containerState(): Promise<ContainerState> {
+    // Ready with no reason when nothing provides the state: a daemon built
+    // without a container backend is not a daemon whose runtime is down, and
+    // reporting not-ready would disable a start on every harness that omits it.
+    if (this.#containerStateProvider === undefined) return { modelBroker: { ready: true, reason: null } };
+    return await this.#containerStateProvider();
   }
 }
 

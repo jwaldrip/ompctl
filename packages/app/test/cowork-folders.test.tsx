@@ -362,7 +362,7 @@ describe("binding on the cowork screen", () => {
     h.press(`cowork-folder-unbind-confirm-${DEV}`);
 
     expect(h.query(`cowork-folder-${DEV}`)).toBeNull();
-    expect(h.text("cowork-folders-empty")).toContain("No folders bound");
+    expect(h.text("cowork-folders-empty")).toContain("Bind at least one folder");
 
     h.unmount();
   });
@@ -531,8 +531,12 @@ describe("starting the container", () => {
       message: 'mount path must be absolute, got "etc"',
     });
 
-    expect(h.text("cowork-container-refused")).toContain("the daemon refused the mounts");
+    // Relayed verbatim, not wrapped in a cause of this screen's own. The
+    // daemon's `ProvisionError` already names what it refused, and "the daemon
+    // refused the mounts" was being printed over messages about a missing
+    // container runtime or an image that would not pull.
     expect(h.text("cowork-container-refused")).toContain("absolute");
+    expect(h.text("cowork-container-refused")).not.toContain("refused the mounts");
 
     h.unmount();
   });
@@ -571,13 +575,80 @@ describe("starting the container", () => {
     h.unmount();
   });
 
-  test("answers a start with nothing bound by name rather than by silence", () => {
+  test("a start with nothing bound is disabled and says what to do, not offered and refused", () => {
+    // Was offered and then refused on tap. Disabled with the reason on the
+    // button and in the empty row is the same treatment the other two
+    // preconditions get, and the point stands either way: never silent.
     const h = mount();
 
-    h.press("cowork-container-start");
+    const button = h.query("cowork-container-start");
+    expect(button?.getAttribute("aria-disabled")).toBe("true");
+    expect(button?.getAttribute("aria-label")).toContain("Bind at least one folder");
 
-    expect(h.text("cowork-container-refused")).toContain("Bind a folder first");
+    h.press("cowork-container-start");
     expect(h.socket.framesOfType("agent_create")).toEqual([]);
+
+    h.unmount();
+  });
+
+  test("the empty state says what to do rather than describing a start that is refused", () => {
+    // It used to read "No folders bound; the container will see only its own
+    // workspace", which describes a container this screen cannot start: the
+    // request needs a cwd and the first bound folder is where it comes from.
+    const h = mount();
+
+    expect(h.text("cowork-folders-empty")).toContain("Bind at least one folder");
+
+    h.unmount();
+  });
+
+  test("a daemon with no container runtime says so before the button is tapped", () => {
+    const h = mount();
+    browseToDev(h);
+    h.press("folder-picker-confirm");
+
+    h.deliver({
+      t: "container_state",
+      modelBroker: { ready: true, reason: null },
+      runtime: {
+        ready: false,
+        reason: "`container` is installed but its apiserver is not answering; run `container system start`.",
+        label: null,
+      },
+    });
+
+    expect(h.text("cowork-runtime-state")).toContain("container system start");
+    expect(h.query("cowork-container-start")?.getAttribute("aria-disabled")).toBe("true");
+    h.press("cowork-container-start");
+    expect(h.socket.framesOfType("agent_create")).toEqual([]);
+
+    h.deliver({
+      t: "container_state",
+      modelBroker: { ready: true, reason: null },
+      runtime: { ready: true, reason: null, label: "container 0.4.1" },
+    });
+
+    expect(h.text("cowork-runtime-state")).toContain("container 0.4.1");
+    expect(h.query("cowork-container-start")?.getAttribute("aria-disabled")).not.toBe("true");
+    h.press("cowork-container-start");
+    expect(h.socket.framesOfType("agent_create").length).toBe(1);
+
+    h.unmount();
+  });
+
+  test("a daemon too old to report a runtime does not disable the start", () => {
+    // The field is absent, which is unknown and not a refusal. Gating on it
+    // would disable a container that daemon would have run.
+    const h = mount();
+    browseToDev(h);
+    h.press("folder-picker-confirm");
+
+    h.deliver({ t: "container_state", modelBroker: { ready: true, reason: null } });
+
+    expect(h.query("cowork-runtime-state")).toBeNull();
+    expect(h.query("cowork-container-start")?.getAttribute("aria-disabled")).not.toBe("true");
+    h.press("cowork-container-start");
+    expect(h.socket.framesOfType("agent_create").length).toBe(1);
 
     h.unmount();
   });

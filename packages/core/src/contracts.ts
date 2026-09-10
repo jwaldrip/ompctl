@@ -1745,8 +1745,11 @@ export type ServerFrame =
   | { t: "task"; task: Task; requestId?: string }
   /** The agent an `agent_create` made, sent only to the socket that asked. */
   | { t: "agent_created"; agent: Agent; requestId?: string }
-  /** The cowork container state, carrying model broker readiness. */
-  | { t: "container_state"; modelBroker: ModelBrokerStatus }
+  /**
+   * The cowork container state: whether a model can be granted, and whether
+   * this machine has a container runtime to grant it to.
+   */
+  | { t: "container_state"; modelBroker: ModelBrokerStatus; runtime?: ContainerRuntimeStatus }
   /**
    * What a `routine_delete` did, one result per id asked for, sent only to the
    * socket that asked. Beside `sessions_deleted` rather than an error frame,
@@ -2256,8 +2259,32 @@ export interface ModelBrokerStatus {
   reason: string | null;
 }
 
+/**
+ * Whether this daemon's machine can run a container at all.
+ *
+ * The other half of the same question the model broker answers, and it was
+ * missing: a phone could only find out that no container runtime was up by
+ * tapping Start and reading a refusal, which is the shape of a gate that hides
+ * its own precondition.
+ *
+ * `reason` is the failing runtime's own hint, which is the sentence naming the
+ * command to run. `label` is the selected runtime and version, so a ready state
+ * says which runtime it would use rather than only that one exists.
+ */
+export interface ContainerRuntimeStatus {
+  ready: boolean;
+  reason: string | null;
+  label: string | null;
+}
+
 export interface ContainerState {
   modelBroker: ModelBrokerStatus;
+  /**
+   * Optional on the wire, and read as "unknown" rather than "not ready" when
+   * absent: a phone build newer than the daemon it is paired to must not gate a
+   * container start on a field that daemon never sends.
+   */
+  runtime?: ContainerRuntimeStatus;
 }
 
 // ---------------------------------------------------------------------------
