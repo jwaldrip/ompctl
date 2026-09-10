@@ -8,12 +8,14 @@ const workflow = Bun.YAML.parse(source) as Record<string, unknown>;
 
 const triggers = workflow.on as Record<string, unknown>;
 const jobs = workflow.jobs as Record<string, Record<string, unknown>>;
-const concurrency = workflow.concurrency as Record<string, unknown>;
 
 function jobCondition(name: string): string {
   const condition = jobs[name]?.if;
   if (typeof condition !== "string") throw new Error(`${name} has no job condition`);
   return condition;
+}
+function normalizeCondition(condition: string): string {
+  return condition.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
 }
 
 describe("App Store release workflow", () => {
@@ -22,34 +24,54 @@ describe("App Store release workflow", () => {
     expect(push.branches).toEqual(["main"]);
     expect(triggers).not.toHaveProperty("tags");
 
-    const ios = jobCondition("ios-testflight");
-    const macos = jobCondition("macos-testflight");
-    const android = jobCondition("android-play-internal");
-    const windows = jobCondition("windows-msix");
-
-    expect(ios).toContain("github.event_name == 'push'");
-    expect(macos).toContain("github.event_name == 'push'");
-    expect(android).not.toContain("github.event_name == 'push'");
-    expect(windows).not.toContain("github.event_name == 'push'");
+    expect(normalizeCondition(jobCondition("ios-testflight"))).toBe(
+      "github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all'",
+    );
+    expect(normalizeCondition(jobCondition("macos-testflight"))).toBe(
+      "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all'))",
+    );
+    expect(normalizeCondition(jobCondition("android-play-internal"))).toBe(
+      "github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'android') || github.event.inputs.platforms == 'all')",
+    );
+    expect(normalizeCondition(jobCondition("windows-msix"))).toBe(
+      "github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'windows') || github.event.inputs.platforms == 'all')",
+    );
   });
 
-  test("main releases are serialized and never cancelled by a newer merge", () => {
-    expect(concurrency.group).toContain("github.ref");
-    expect(concurrency["cancel-in-progress"]).toBe(false);
+  test("rapid main pushes cannot replace a pending release", () => {
+    expect(workflow).not.toHaveProperty("concurrency");
   });
 
   test("Apple main-push jobs fail closed if signing or upload credentials are absent", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {
-      const job = jobs[name] as { env?: Record<string, unknown>; steps?: Array<Record<string, unknown>> };
+      const job = jobs[name] as {
+        env?: Record<string, unknown>;
+        steps?: Array<Record<string, unknown>>;
+        "timeout-minutes"?: number;
+      };
+      expect(job["timeout-minutes"]).toBe(180);
       expect(job.env?.OMPD_UPLOAD).toContain("github.event_name == 'push'");
       expect(job.env?.OMPD_APP_ID).toContain("OMPD_ASC_APP_ID");
       expect(job.env?.OMPD_BETA_GROUP_ID).toContain("OMPD_ASC_BETA_GROUP_ID");
-      const stepNames = (job.steps ?? []).map(step => step.name).filter(Boolean);
+      const steps = job.steps ?? [];
+      const checkout = steps.find(step => step.uses === "actions/checkout@v4");
+      expect(checkout?.with).toMatchObject({ "fetch-depth": 0 });
+      const selectXcode = steps.find(step => step.name === "Select Xcode 16+");
+      expect(String(selectXcode?.run).trimStart().startsWith("sudo xcode-select -s /Applications/Xcode_16.4.app")).toBe(
+        true,
+      );
+      const stepNames = steps.map(step => step.name).filter(Boolean);
       expect(stepNames).toContain("Require distribution certificate");
       expect(stepNames.some(step => String(step).includes("Require ASC release configuration"))).toBe(true);
-      expect(
-        stepNames.some(step => String(step).includes("Publish") && String(step).includes("internal testers")),
-      ).toBe(true);
+      const uploadName =
+        name === "ios-testflight" ? "Upload to TestFlight" : "Upload macOS to App Store Connect / TestFlight";
+      const publishName =
+        name === "ios-testflight" ? "Publish iOS build to internal testers" : "Publish macOS build to internal testers";
+      const uploadIndex = steps.findIndex(step => step.name === uploadName);
+      const publishIndex = steps.findIndex(step => step.name === publishName);
+      expect(uploadIndex).toBeGreaterThan(-1);
+      expect(publishIndex).toBeGreaterThan(uploadIndex);
+      expect(steps[publishIndex]?.if).toBe("env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''");
     }
 
     const macos = jobs["macos-testflight"] as {

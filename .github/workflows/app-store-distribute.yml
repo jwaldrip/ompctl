@@ -19,9 +19,6 @@ on:
   push:
     branches: [main]
 
-concurrency:
-  group: app-store-distribute-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   ios-testflight:
@@ -31,7 +28,7 @@ jobs:
       contains(github.event.inputs.platforms, 'ios') ||
       github.event.inputs.platforms == 'all'
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 180
     defaults:
       run:
         working-directory: packages/app
@@ -78,7 +75,7 @@ jobs:
         run: bash ./scripts/import-apple-signing.sh
       - name: Select Xcode 16+
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
           xcodebuild -version
       - name: Install pods
         run: |
@@ -235,7 +232,7 @@ jobs:
         github.event.inputs.platforms == 'all'
       ))
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 180
     defaults:
       run:
         working-directory: packages/app
@@ -297,6 +294,8 @@ jobs:
           from pathlib import Path
           key_id = os.environ["OMPD_ASC_KEY_ID"]
           material = os.environ["OMPD_ASC_PRIVATE_KEY"]
+          if "\\n" in material and "\n" not in material:
+              material = material.replace("\\n", "\n")
           p = Path.home() / ".appstoreconnect/private_keys" / f"AuthKey_{key_id}.p8"
           p.parent.mkdir(parents=True, exist_ok=True)
           p.write_text(material)
@@ -321,7 +320,7 @@ jobs:
         run: bash ./scripts/import-apple-signing.sh
       - name: Select Xcode 16+
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
           xcodebuild -version
       - name: Install macOS pods
         run: cd macos && pod install

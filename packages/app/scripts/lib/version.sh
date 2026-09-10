@@ -9,12 +9,12 @@
 #
 # Resolution precedence:
 #   1. Explicit environment variables (OMPD_BUILD_NUMBER or OMPD_VERSION_CODE).
-#   2. Git commit count (git rev-list --count HEAD).
-#   3. Fallback floor (770, strictly above iOS TestFlight build 15).
+#   2. Full-history Git commit count (git rev-list --count HEAD).
+# Resolution fails rather than reuse a guessed build number.
 #
 # Marketing version precedence:
 #   1. Explicit OMPD_VERSION_NAME environment variable.
-#   2. packages/app/package.json "version" field (default 0.1.0).
+#   2. packages/app/package.json "version" field.
 #
 # Windows version mapping:
 #   Windows MSIX Identity requires a 4-part quad-integer (Major.Minor.Build.Revision).
@@ -46,14 +46,19 @@ ompd_version__resolve() {
   # 1. Resolve Build Number
   local build_num="${OMPD_BUILD_NUMBER:-${OMPD_VERSION_CODE:-}}"
   if [[ -z "$build_num" ]]; then
-    if command -v git >/dev/null 2>&1; then
-      build_num="$(git rev-list --count HEAD 2>/dev/null || true)"
+    if ! command -v git >/dev/null 2>&1; then
+      echo "Cannot resolve build number: git is unavailable and no explicit build number was provided" >&2
+      return 1
+    fi
+    if ! build_num="$(git rev-list --count HEAD 2>/dev/null)"; then
+      echo "Cannot resolve build number from Git history" >&2
+      return 1
     fi
   fi
 
-  # Validate positive integer. Fallback to 770 (epoch commit count, > 15).
-  if [[ -z "$build_num" || ! "$build_num" =~ ^[0-9]+$ || "$build_num" -le 0 ]]; then
-    build_num=770
+  if [[ ! "$build_num" =~ ^[0-9]+$ || "$build_num" -le 0 ]]; then
+    echo "Build number must be a positive integer" >&2
+    return 1
   fi
 
   # 2. Resolve Marketing Version Name
@@ -68,7 +73,8 @@ ompd_version__resolve() {
   fi
 
   if [[ -z "$ver_name" ]]; then
-    ver_name="0.1.0"
+    echo "Cannot resolve marketing version from environment or package.json" >&2
+    return 1
   fi
 
   # 3. Resolve Windows 4-part Version (Major.Minor.Build.Revision)

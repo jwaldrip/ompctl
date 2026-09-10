@@ -10,15 +10,15 @@
  *   bun scripts/asc.ts builds             # list recent builds and states
  *   bun scripts/asc.ts assign <build_id>  # assign build to internal beta group
  *   bun scripts/asc.ts nonexempt <id>     # mark non-exempt encryption false
- *   bun scripts/asc.ts group              # inspect beta group builds
+ *   bun scripts/asc.ts group                            # inspect beta group builds
+ *   bun scripts/asc.ts wait-assign <number> <platform>  # wait and publish to the group
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const HOME = process.env.HOME || "";
-const KEY_ID = process.env.OMPD_ASC_KEY_ID || "CKYD83GHF3";
-function requireEnv(name: "OMPD_APP_ID" | "OMPD_BETA_GROUP_ID"): string {
+function requireEnv(name: "OMPD_ASC_KEY_ID" | "OMPD_APP_ID" | "OMPD_BETA_GROUP_ID"): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
@@ -35,18 +35,18 @@ function resolveIssuerId(): string {
   throw new Error("Missing ASC issuer ID. Set OMPD_ASC_ISSUER_ID or ~/.private_keys/asc_issuer_id");
 }
 
-function resolveKeyPath(): string {
+function resolveKeyPath(keyId: string): string {
   if (process.env.OMPD_ASC_KEY_PATH && existsSync(process.env.OMPD_ASC_KEY_PATH)) {
     return process.env.OMPD_ASC_KEY_PATH;
   }
   const candidates = [
-    join(HOME, ".appstoreconnect", "private_keys", `AuthKey_${KEY_ID}.p8`),
-    join(HOME, ".private_keys", `AuthKey_${KEY_ID}.p8`),
+    join(HOME, ".appstoreconnect", "private_keys", `AuthKey_${keyId}.p8`),
+    join(HOME, ".private_keys", `AuthKey_${keyId}.p8`),
   ];
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
-  throw new Error(`Missing ASC private key AuthKey_${KEY_ID}.p8. Set OMPD_ASC_KEY_PATH or place in ~/.private_keys/`);
+  throw new Error(`Missing ASC private key AuthKey_${keyId}.p8. Set OMPD_ASC_KEY_PATH or place in ~/.private_keys/`);
 }
 
 function b64url(b: Uint8Array | string): string {
@@ -56,12 +56,13 @@ function b64url(b: Uint8Array | string): string {
 
 async function createToken(): Promise<string> {
   const issuer = resolveIssuerId();
-  const keyPath = resolveKeyPath();
+  const keyId = requireEnv("OMPD_ASC_KEY_ID");
+  const keyPath = resolveKeyPath(keyId);
   const pem = readFileSync(keyPath, "utf8");
   const der = Buffer.from(pem.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, ""), "base64");
   const key = await crypto.subtle.importKey("pkcs8", der, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   const now = Math.floor(Date.now() / 1000);
-  const h = b64url(JSON.stringify({ alg: "ES256", kid: KEY_ID, typ: "JWT" }));
+  const h = b64url(JSON.stringify({ alg: "ES256", kid: keyId, typ: "JWT" }));
   const p = b64url(
     JSON.stringify({
       iss: issuer,
@@ -153,16 +154,29 @@ async function groupHasBuild(groupId: string, buildId: string): Promise<boolean>
   return false;
 }
 
+export function assignmentResponseAccepted(status: number): boolean {
+  return status === 204 || status === 409;
+}
+
+export function buildStateCanProgress(state: string | undefined): boolean {
+  return state === undefined || state === "PROCESSING" || state === "VALID";
+}
+
 async function ensureAssigned(buildId: string): Promise<void> {
   const groupId = requireEnv("OMPD_BETA_GROUP_ID");
   if (await groupHasBuild(groupId, buildId)) return;
   const res = await call("POST", `/v1/betaGroups/${groupId}/relationships/builds`, {
     data: [{ type: "builds", id: buildId }],
   });
-  if (res.status !== 204) throw new Error(`assign returned ${res.status}: ${JSON.stringify(res.json)}`);
-  for (let attempt = 0; attempt < 6; attempt++) {
+  if (!assignmentResponseAccepted(res.status)) {
+    throw new Error(`assign returned ${res.status}: ${JSON.stringify(res.json)}`);
+  }
+  const waitMs = Number(process.env.OMPD_ASC_ASSIGN_WAIT_MS ?? "300000");
+  if (!Number.isFinite(waitMs) || waitMs <= 0) throw new Error("OMPD_ASC_ASSIGN_WAIT_MS must be a positive number");
+  const deadline = Date.now() + waitMs;
+  while (Date.now() <= deadline) {
     if (await groupHasBuild(groupId, buildId)) return;
-    await Bun.sleep(2000);
+    await Bun.sleep(5000);
   }
   throw new Error(`build ${buildId} was not visible in tester group after assignment`);
 }
@@ -179,8 +193,9 @@ async function waitForBuildAndAssign(buildNumber: string, platform: ApplePlatfor
     );
     if (res.status !== 200) throw new Error(`build lookup returned ${res.status}: ${JSON.stringify(res.json)}`);
     const build = selectBuildByPlatform(res.json as BuildsResponse, buildNumber, platform);
-    if (build?.attributes.processingState === "INVALID") {
-      throw new Error(`build ${buildNumber} for ${platform} is invalid`);
+    const state = build?.attributes.processingState;
+    if (!buildStateCanProgress(state)) {
+      throw new Error(`build ${buildNumber} for ${platform} ended in ${state}`);
     }
     if (build?.attributes.processingState === "VALID") {
       if (build.attributes.usesNonExemptEncryption !== false) {
