@@ -1,8 +1,9 @@
-name: App store test tracks
+name: App store release tracks
 
-# Builds and uploads to TestFlight / Play Internal / Mac TestFlight / Windows package.
-# Upload steps are skipped (not failed) when the required secrets are absent so the
-# workflow can still produce artifacts for manual upload.
+# Every merge to main archives and uploads iOS and macOS to TestFlight. Manual
+# dispatch remains for Android, Windows, or an artifact-only Apple build.
+# Missing release credentials fail the job; a merge must never report success
+# while publishing nothing.
 
 on:
   workflow_dispatch:
@@ -10,14 +11,13 @@ on:
       platforms:
         description: "Comma list: ios,android,macos,windows,all"
         required: true
-        default: "ios,android"
+        default: "ios,macos"
       upload:
         description: "Upload to stores when secrets exist"
         type: boolean
         default: true
   push:
-    tags:
-      - "ompd-app-v*"
+    branches: [main]
 
 concurrency:
   group: app-store-distribute-${{ github.ref }}
@@ -51,10 +51,12 @@ jobs:
         run: |
           source ./scripts/lib/version.sh
           ompd_version__resolve
-          echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME" >> "$GITHUB_ENV"
-          echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION" >> "$GITHUB_ENV"
+          {
+            echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER"
+            echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER"
+            echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME"
+            echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION"
+          } >> "$GITHUB_ENV"
           echo "Resolved build number: $OMPD_BUILD_NUMBER (version $OMPD_VERSION_NAME)"
       - uses: oven-sh/setup-bun@v2
         with:
@@ -121,9 +123,10 @@ jobs:
   android-play-internal:
     name: Android AAB + Play Internal
     if: >
-      github.event_name == 'push' ||
-      contains(github.event.inputs.platforms, 'android') ||
-      github.event.inputs.platforms == 'all'
+      github.event_name == 'workflow_dispatch' && (
+        contains(github.event.inputs.platforms, 'android') ||
+        github.event.inputs.platforms == 'all'
+      )
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     defaults:
@@ -144,10 +147,12 @@ jobs:
         run: |
           source ./scripts/lib/version.sh
           ompd_version__resolve
-          echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME" >> "$GITHUB_ENV"
-          echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION" >> "$GITHUB_ENV"
+          {
+            echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER"
+            echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER"
+            echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME"
+            echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION"
+          } >> "$GITHUB_ENV"
           echo "Resolved build number: $OMPD_BUILD_NUMBER (version $OMPD_VERSION_NAME)"
       - uses: actions/setup-java@v4
         with:
@@ -183,7 +188,6 @@ jobs:
       - name: Write Play service account
         if: env.OMPD_UPLOAD == 'true' && env.OMPD_PLAY_SERVICE_ACCOUNT_JSON_VALUE != ''
         run: |
-          SA="$RUNNER_TEMP/play-sa.json"
           python3 - <<'PY'
           import os
           from pathlib import Path
@@ -215,10 +219,11 @@ jobs:
   macos-testflight:
     name: macOS archive
     if: >
-      github.event_name == 'workflow_dispatch' && (
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (
         contains(github.event.inputs.platforms, 'macos') ||
         github.event.inputs.platforms == 'all'
-      )
+      ))
     runs-on: macos-15
     timeout-minutes: 90
     defaults:
@@ -240,10 +245,12 @@ jobs:
         run: |
           source ./scripts/lib/version.sh
           ompd_version__resolve
-          echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME" >> "$GITHUB_ENV"
-          echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION" >> "$GITHUB_ENV"
+          {
+            echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER"
+            echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER"
+            echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME"
+            echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION"
+          } >> "$GITHUB_ENV"
           echo "Resolved build number: $OMPD_BUILD_NUMBER (version $OMPD_VERSION_NAME)"
       - uses: oven-sh/setup-bun@v2
         with:
@@ -340,10 +347,12 @@ jobs:
         run: |
           source ./scripts/lib/version.sh
           ompd_version__resolve
-          echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" >> "$GITHUB_ENV"
-          echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME" >> "$GITHUB_ENV"
-          echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION" >> "$GITHUB_ENV"
+          {
+            echo "OMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER"
+            echo "OMPD_VERSION_CODE=$OMPD_BUILD_NUMBER"
+            echo "OMPD_VERSION_NAME=$OMPD_VERSION_NAME"
+            echo "OMPD_WINDOWS_VERSION=$OMPD_WINDOWS_VERSION"
+          } >> "$GITHUB_ENV"
           echo "Resolved build number: $OMPD_BUILD_NUMBER (version $OMPD_VERSION_NAME)"
       - uses: oven-sh/setup-bun@v2
         with:
