@@ -887,7 +887,7 @@ export class Ompd {
     this.#sessionIndex = new SessionIndex({ store: this.#store, sessionsRoot: opts.sessionsRoot });
     // Same default root as the index (omp's own sessions directory), which is
     // the only tree `@oh-my-pi/omp-stats` can aggregate; see `available`.
-    this.#stats = new StatsSubsystem();
+    this.#stats = new StatsSubsystem({ sessionsRoot: opts.sessionsRoot });
 
     // Constructed here rather than in `start`, because opening the vault is
     // what proves the master key is reachable, and a daemon that cannot read

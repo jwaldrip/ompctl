@@ -76,3 +76,37 @@ test("file reconciliation detects an appended session when every watch event is 
     },
   );
 });
+
+test("stopping during a cooperative reconciliation suppresses its pending notification", async () => {
+  const root = mkdtempSync(join(tmpdir(), "session-watch-stop-"));
+  const group = join(root, "-existing");
+  mkdirSync(group);
+  for (let index = 0; index < 17; index += 1) {
+    const suffix = String(index).padStart(12, "0");
+    writeFileSync(join(group, `2026-09-10T00-00-00-000Z_019feed0-0000-7000-8000-${suffix}.jsonl`), "{}\n");
+  }
+  const watchers: SilentWatcher[] = [];
+  let changes = 0;
+  const handle = watchSessionFiles(
+    root,
+    () => {
+      changes += 1;
+    },
+    {
+      quietMs: 5,
+      reconcileMs: 10,
+      watchFactory: () => {
+        const watcher = new SilentWatcher();
+        watchers.push(watcher);
+        return watcher as unknown as FSWatcher;
+      },
+    },
+  );
+  expect(handle).not.toBeNull();
+  handle?.stop();
+  await Bun.sleep(25);
+  expect(changes).toBe(0);
+  expect(watchers.length).toBeGreaterThan(0);
+  expect(watchers.every(watcher => watcher.closed)).toBe(true);
+  rmSync(root, { recursive: true, force: true });
+});

@@ -42,7 +42,7 @@ export const SESSION_WATCH_QUIET_MS = 400;
  * much continuous activity the notification fires mid-burst.
  */
 export const SESSION_WATCH_MAX_WAIT_MS = 5000;
-export const SESSION_WATCH_RECONCILE_MS = 5000;
+export const SESSION_WATCH_RECONCILE_MS = 1000;
 
 export interface SessionWatchOptions {
   /** Override of the quiet window, for tests driving real timers. */
@@ -196,7 +196,7 @@ export function watchSessionFiles(
           totalBytes += metadata.size;
           latestSessionMtimeMs = Math.max(latestSessionMtimeMs, metadata.mtimeMs);
           units += 1;
-          if (units >= 16) {
+          if (units >= 8) {
             units = 0;
             yield;
             if (stopped) return false;
@@ -211,7 +211,7 @@ export function watchSessionFiles(
         changed = true;
       directoryFingerprints.set(entry.name, fingerprint);
       units += 1;
-      if (units >= 16) {
+      if (units >= 8) {
         units = 0;
         yield;
         if (stopped) return false;
@@ -230,13 +230,6 @@ export function watchSessionFiles(
     }
     return changed;
   }
-
-  const reconcileNow = (): boolean => {
-    const work = reconcileDirectories();
-    let step = work.next();
-    while (!step.done) step = work.next();
-    return step.value;
-  };
 
   const reconcileCooperatively = async (): Promise<boolean> => {
     const work = reconcileDirectories();
@@ -278,7 +271,7 @@ export function watchSessionFiles(
       requestReconcile();
     });
     rootWatcher.on("error", fail);
-    reconcileNow();
+    requestReconcile();
     reconcileTimer = setInterval(requestReconcile, reconcileMs);
   } catch (err) {
     rootWatcher?.close();
