@@ -9,7 +9,8 @@ for candidate in /Applications/Xcode.app /Applications/Xcode_26*.app; do
   if [[ ! -d "$candidate/Contents/Developer" ]]; then
     continue
   fi
-  candidate_version="$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | awk '$1 == "Xcode" { print $2; exit }')"
+  candidate_output="$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version)"
+  candidate_version="$(awk '$1 == "Xcode" { print $2 }' <<< "$candidate_output")"
   candidate_major="${candidate_version%%.*}"
   if [[ "$candidate_major" =~ ^[0-9]+$ && "$candidate_major" -ge "$MIN_MAJOR" ]]; then
     SELECTED="$candidate/Contents/Developer"
