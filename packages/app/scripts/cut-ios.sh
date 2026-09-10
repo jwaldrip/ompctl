@@ -88,13 +88,11 @@ xcodebuild \
   -archivePath "$OUT/ompd.xcarchive" \
   DEVELOPMENT_TEAM="$TEAM_ID" \
   PRODUCT_BUNDLE_IDENTIFIER=ai.ompctl.app \
-  CODE_SIGN_STYLE=Automatic \
+  CODE_SIGN_STYLE=Manual \
+  "CODE_SIGN_IDENTITY=Apple Distribution" \
+  "PROVISIONING_PROFILE_SPECIFIER=ompctl iOS App Store" \
   CURRENT_PROJECT_VERSION="$OMPD_BUILD_NUMBER" \
   MARKETING_VERSION="$OMPD_VERSION_NAME" \
-  -allowProvisioningUpdates \
-  -authenticationKeyPath "$KEY_PATH" \
-  -authenticationKeyID "$KEY_ID" \
-  -authenticationKeyIssuerID "$ISSUER_ID" \
   -quiet archive
 echo "archive ok"
 

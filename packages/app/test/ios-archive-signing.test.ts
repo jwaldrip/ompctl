@@ -81,3 +81,60 @@ exit 42
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("standalone iOS cut archives with its installed distribution profile", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ompctl-ios-cut-signing-"));
+  const bin = join(root, "bin");
+  const home = join(root, "home");
+  const out = join(root, "out");
+  const profile = join(root, "profile.mobileprovision");
+  const key = join(root, "AuthKey_test.p8");
+  const xcodeLog = join(root, "xcodebuild.args");
+  mkdirSync(bin);
+  mkdirSync(home);
+  writeFileSync(profile, "fixture");
+  writeFileSync(key, "fixture");
+  executable(
+    join(bin, "pod"),
+    `#!/bin/sh
+exit 0
+`,
+  );
+  executable(
+    join(bin, "xcodebuild"),
+    `#!/bin/sh
+printf '%s\n' "$@" > "$XCODE_LOG"
+exit 42
+`,
+  );
+
+  try {
+    const child = Bun.spawn(["/bin/bash", join(import.meta.dir, "..", "scripts", "cut-ios.sh")], {
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${bin}:${process.env.PATH}`,
+        XCODE_LOG: xcodeLog,
+        OMPD_ASC_KEY_PATH: key,
+        OMPD_ASC_KEY_ID: "test",
+        OMPD_ASC_ISSUER_ID: "issuer",
+        OMPD_APPLE_TEAM_ID: "8H7HVPHS87",
+        OMPD_BUILD_NUMBER: "892",
+        OMPD_VERSION_NAME: "1.0.1",
+        OMPD_IOS_BUILD_DIR: out,
+        OMPD_IOS_PROVISIONING_PROFILE: profile,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    expect({ exitCode, stderr }).toEqual({ exitCode: 42, stderr: "" });
+    const args = (await Bun.file(xcodeLog).text()).trim().split("\n");
+    expect(args).toContain("CODE_SIGN_STYLE=Manual");
+    expect(args).toContain("CODE_SIGN_IDENTITY=Apple Distribution");
+    expect(args).toContain("PROVISIONING_PROFILE_SPECIFIER=ompctl iOS App Store");
+    expect(args).not.toContain("-allowProvisioningUpdates");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
