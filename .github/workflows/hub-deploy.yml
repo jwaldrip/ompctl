@@ -2,9 +2,52 @@
 # Deploys run on push to main (targeting production) or via manual workflow_dispatch.
 name: hub-deploy
 
+# ==============================================================================
+# DEPLOY BOUNDARY AND DEPENDENCY MATRIX
+#
+# Source Path                   | Affects Hub | Affects Web | Action
+# ------------------------------+-------------+-------------+-------------------
+# packages/hub/**               | YES         | NO          | Rebuild hub image
+# packages/app/**               | NO          | YES         | Rebuild web image
+# packages/tunnel/**            | YES         | YES         | Rebuild both images
+# packages/core/**              | NO          | YES         | Rebuild web image
+# package.json, bun.lock        | YES         | YES         | Rebuild both images
+# packages/hub/deploy/main.tf   | NO          | NO          | Apply Terraform with live images
+# .github/workflows/hub-deploy  | NO          | NO          | Apply Terraform with live images
+# All other paths               | NO          | NO          | Do not start workflow
+#
+# Derivation:
+# - packages/hub imports only @ompd/tunnel and node/bun built-ins. It does not
+#   import @ompd/core or packages/daemon.
+# - packages/app imports both @ompd/core and @ompd/tunnel.
+# - packages/tunnel has no workspace dependencies.
+# - packages/core has no workspace dependencies and is not imported by hub.
+# - Root package.json and bun.lock affect dependency resolution for all builds.
+# - Infra changes (Terraform, workflow) use live Cloud Run images for unbuilt
+#   services to avoid creating new revisions and dropping websocket connections.
+# - All test directories, *.test.* files, and markdown documentation are excluded
+#   so test and doc updates never roll Cloud Run services.
+# ==============================================================================
+
 on:
   push:
     branches: [main]
+    paths:
+      - ".github/workflows/hub-deploy.yml"
+      - "packages/hub/**"
+      - "!packages/hub/test/**"
+      - "!packages/hub/**/*.md"
+      - "packages/app/**"
+      - "!packages/app/test/**"
+      - "!packages/app/**/*.md"
+      - "packages/core/**"
+      - "!packages/core/test/**"
+      - "!packages/core/**/*.md"
+      - "packages/tunnel/**"
+      - "!packages/tunnel/test/**"
+      - "!packages/tunnel/**/*.md"
+      - "package.json"
+      - "bun.lock"
   workflow_dispatch:
     inputs:
       environment:
@@ -23,7 +66,36 @@ permissions:
   id-token: write
 
 jobs:
+  plan:
+    name: Compute deploy plan
+    runs-on: ubuntu-latest
+    outputs:
+      should_trigger: ${{ steps.plan.outputs.should_trigger }}
+      build_hub: ${{ steps.plan.outputs.build_hub }}
+      build_web: ${{ steps.plan.outputs.build_web }}
+      apply_terraform: ${{ steps.plan.outputs.apply_terraform }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Calculate changed components
+        id: plan
+        run: |
+          bun scripts/deploy-boundary.ts \
+            --before "${{ github.event.before }}" \
+            --sha "${{ github.sha }}" \
+            --event "${{ github.event_name }}"
+
   test:
+    name: Test tunnel and hub
+    needs: plan
+    if: needs.plan.outputs.build_hub == 'true'
     runs-on: ubuntu-latest
     services:
       # The redis-backed backplane is the part that only works or fails for
@@ -49,11 +121,20 @@ jobs:
         run: bun test packages/tunnel packages/hub
 
   deploy:
-    needs: test
+    name: Build and deploy
+    needs: [plan, test]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.plan.outputs.apply_terraform == 'true' &&
+      (needs.plan.outputs.build_hub == 'false' || needs.test.result == 'success')
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment || 'production' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: google-github-actions/auth@v2
         with:
@@ -62,50 +143,85 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build and push hub + web images
-        # `gcloud builds submit --tag ... --file ...` does not exist: `--tag`
-        # mode hardcodes `docker build -t TAG .` against `./Dockerfile` in the
-        # source root, with no flag to point it at a different Dockerfile
-        # path. Both images live outside the repo root, so each has its own
-        # committed Cloud Build config (packages/*/deploy/cloudbuild.yaml)
-        # rather than one generated inline, which a `run: |` block's own YAML
-        # indentation makes impossible to terminate correctly.
-        #
-        # `--async` + poll, not the default synchronous log-streaming submit:
-        # streaming requires the caller to be project Viewer/Owner (a
-        # primitive role Cloud Build checks specifically, not satisfied by
-        # any granular role such as logging.viewer), which the deployer SA
-        # deliberately does not hold. The build itself does not need it.
+      - name: Resolve target container images
+        id: images
+        run: |
+          get_live_image() {
+            local service="$1"
+            local img=""
+            echo "Querying live image for service: ${service}..." >&2
+
+            if raw_json="$(gcloud run services describe "${service}" \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --region "${{ vars.GCP_REGION }}" \
+              --format=json 2>/dev/null)"; then
+              img="$(echo "${raw_json}" | jq -r '.spec.template.spec.containers[0].image // .template.containers[0].image // empty')"
+            fi
+
+            if [ -z "${img}" ]; then
+              img="$(gcloud run services describe "${service}" \
+                --project "${{ vars.GCP_PROJECT_ID }}" \
+                --region "${{ vars.GCP_REGION }}" \
+                --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
+            fi
+            if [ -z "${img}" ]; then
+              img="$(gcloud run services describe "${service}" \
+                --project "${{ vars.GCP_PROJECT_ID }}" \
+                --region "${{ vars.GCP_REGION }}" \
+                --format='value(template.containers[0].image)' 2>/dev/null || true)"
+            fi
+
+            if [ -z "${img}" ]; then
+              echo "::error::Could not query live image for service ${service} (returned empty)" >&2
+              return 1
+            fi
+
+            echo "${img}"
+          }
+
+          REG="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd"
+          SHA_HUB_IMAGE="${REG}/hub:${{ github.sha }}"
+          SHA_WEB_IMAGE="${REG}/web:${{ github.sha }}"
+
+          BUILD_HUB="${{ needs.plan.outputs.build_hub }}"
+          BUILD_WEB="${{ needs.plan.outputs.build_web }}"
+
+          echo "Deploy plan reason: ${{ needs.plan.outputs.reason }}"
+          echo "Build hub flag: ${BUILD_HUB}"
+          echo "Build web flag: ${BUILD_WEB}"
+
+          if [ "${BUILD_HUB}" = "true" ]; then
+            TARGET_HUB_IMAGE="${SHA_HUB_IMAGE}"
+            echo "Hub will be built and deployed with tag: ${TARGET_HUB_IMAGE}"
+          else
+            LIVE_HUB="$(get_live_image ompd-hub)"
+            TARGET_HUB_IMAGE="${LIVE_HUB}"
+            echo "Hub will NOT be rebuilt; pinned to live image: ${TARGET_HUB_IMAGE}"
+          fi
+
+          if [ "${BUILD_WEB}" = "true" ]; then
+            TARGET_WEB_IMAGE="${SHA_WEB_IMAGE}"
+            echo "Web will be built and deployed with tag: ${TARGET_WEB_IMAGE}"
+          else
+            LIVE_WEB="$(get_live_image ompctl-web)"
+            TARGET_WEB_IMAGE="${LIVE_WEB}"
+            echo "Web will NOT be rebuilt; pinned to live image: ${TARGET_WEB_IMAGE}"
+          fi
+
+          echo "target_hub_image=${TARGET_HUB_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "target_web_image=${TARGET_WEB_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "TARGET_HUB_IMAGE=${TARGET_HUB_IMAGE}" >> "$GITHUB_ENV"
+          echo "TARGET_WEB_IMAGE=${TARGET_WEB_IMAGE}" >> "$GITHUB_ENV"
+
+      - name: Build changed container images
         run: |
           REG="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd"
           CONSOLE="https://console.cloud.google.com/cloud-build/builds"
 
-          # Submitting a build and learning its outcome are two different
-          # operations, and this function keeps their failures apart on purpose.
-          #
-          # Run 32383715488 conflated them and lost the deploy to it. The poll
-          # read the status straight into an assignment, `status="$(gcloud builds
-          # describe ...)"`. One describe of the still-running site build
-          # answered FAILED_PRECONDITION, and because this step runs under
-          # `bash -e` a failed command substitution in an assignment aborts the
-          # whole script. Nothing was wrong with that build: the same id had
-          # already polled clean four times over the preceding 54s, the same call
-          # had just succeeded for hub and web, and the site image had built and
-          # pushed from byte-identical source in two earlier runs. The deploy died
-          # of a failed question, not a failed build, and it died mute: the abort
-          # happened inside the assignment, so the function never reached a line
-          # that could name the build, and terraform never ran at all.
-          #
-          # Hence the split below. A query that fails is retried and is not
-          # allowed to imply anything about the build. A build is failed only when
-          # Cloud Build actually reports it terminal and not SUCCESS. And every
-          # exit path prints the build id and its console URL, because the one
-          # thing the old loop never told anyone was where to go and look.
           submit_and_wait() {
             local config="$1" tag="$2"
             local id status err attempt unreadable=0
-
-            # Guarded rather than a bare assignment for the same `bash -e` reason,
+            # Guarded rather than a bare assignment for the same bash -e reason,
             # and because gcloud's own error does not say which config was in
             # flight when it fired.
             if ! id="$(gcloud builds submit \
@@ -119,7 +235,7 @@ jobs:
               return 1
             fi
             # An empty id would send every describe below to look up nothing, and
-            # `value(status)` of nothing reads exactly like a build too young to
+            # value(status) of nothing reads exactly like a build too young to
             # have a status yet: the poll would spin the full window and then
             # blame a build that was never created.
             if [ -z "$id" ]; then
@@ -130,8 +246,8 @@ jobs:
 
             err="$(mktemp)"
             for attempt in $(seq 1 60); do
-              # The describe sits in an `if` condition, which is the one place
-              # `bash -e` tolerates a non-zero exit, and its stderr goes to a file
+              # The describe sits in an if condition, which is the one place
+              # bash -e tolerates a non-zero exit, and its stderr goes to a file
               # so the actual reason survives long enough to be printed.
               if status="$(gcloud builds describe "$id" \
                 --project "${{ vars.GCP_PROJECT_ID }}" \
@@ -177,15 +293,24 @@ jobs:
             return 1
           }
 
-          submit_and_wait packages/hub/deploy/cloudbuild.yaml "${REG}/hub:${{ github.sha }}"
-          submit_and_wait packages/app/deploy/cloudbuild.yaml "${REG}/web:${{ github.sha }}"
+          if [ "${{ needs.plan.outputs.build_hub }}" = "true" ]; then
+            echo "Submitting hub container build..."
+            submit_and_wait packages/hub/deploy/cloudbuild.yaml "${TARGET_HUB_IMAGE}"
+          else
+            echo "Skipping hub container build (no hub changes)"
+          fi
+
+          if [ "${{ needs.plan.outputs.build_web }}" = "true" ]; then
+            echo "Submitting web container build..."
+            submit_and_wait packages/app/deploy/cloudbuild.yaml "${TARGET_WEB_IMAGE}"
+          else
+            echo "Skipping web container build (no web changes)"
+          fi
 
       - uses: hashicorp/setup-terraform@v3
 
       - name: Grant Cloud DNS admin
         run: |
-          # Enabling the API is a one-time owner action. The deployer cannot
-          # do it. Grant the role the zone apply needs; fail if that grant fails.
           if ! gcloud services enable dns.googleapis.com --project "${{ vars.GCP_PROJECT_ID }}"; then
             echo "dns.googleapis.com is not enabled and this SA cannot enable it."
             echo "Enable it once as the project owner, then re-run."
@@ -193,7 +318,6 @@ jobs:
           gcloud projects add-iam-policy-binding "${{ vars.GCP_PROJECT_ID }}" \
             --member "serviceAccount:${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" \
             --role roles/dns.admin --quiet
-
 
       - name: Apply
         working-directory: packages/hub/deploy
@@ -204,8 +328,8 @@ jobs:
             -var "region=${{ vars.GCP_REGION }}" \
             -var "network_id=${{ vars.GCP_NETWORK_ID }}" \
             -var "connector_id=${{ vars.GCP_VPC_CONNECTOR_ID }}" \
-            -var "image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/hub:${{ github.sha }}" \
-            -var "web_image=${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ompd/web:${{ github.sha }}" \
+            -var "image=${TARGET_HUB_IMAGE}" \
+            -var "web_image=${TARGET_WEB_IMAGE}" \
             -var "app_domain=${{ vars.OMPCTL_APP_DOMAIN || 'app.ompctl.ai' }}" \
             -var "hub_domain=${{ vars.OMPCTL_HUB_DOMAIN || 'hub.ompctl.ai' }}" \
             -var "apple_team_id=${{ vars.OMPCTL_APPLE_TEAM_ID }}" \
@@ -214,3 +338,81 @@ jobs:
           terraform output -json nameservers
           terraform output -json product_identity
           echo "::endgroup::"
+
+      - name: Verify deployed images and service endpoints
+        run: |
+          get_live_image() {
+            local service="$1"
+            local img=""
+            if raw_json="$(gcloud run services describe "${service}" \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --region "${{ vars.GCP_REGION }}" \
+              --format=json 2>/dev/null)"; then
+              img="$(echo "${raw_json}" | jq -r '.spec.template.spec.containers[0].image // .template.containers[0].image // empty')"
+            fi
+            if [ -z "${img}" ]; then
+              img="$(gcloud run services describe "${service}" \
+                --project "${{ vars.GCP_PROJECT_ID }}" \
+                --region "${{ vars.GCP_REGION }}" \
+                --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
+            fi
+            if [ -z "${img}" ]; then
+              img="$(gcloud run services describe "${service}" \
+                --project "${{ vars.GCP_PROJECT_ID }}" \
+                --region "${{ vars.GCP_REGION }}" \
+                --format='value(template.containers[0].image)' 2>/dev/null || true)"
+            fi
+            if [ -z "${img}" ]; then
+              echo "::error::Could not read live image for service ${service}" >&2
+              return 1
+            fi
+            echo "${img}"
+          }
+
+          check_endpoint() {
+            local url="$1"
+            local expected="${2:-200}"
+            local attempts=10
+            local status=""
+            for i in $(seq 1 $attempts); do
+              status="$(curl -s -o /dev/null -w "%{http_code}" "$url" || true)"
+              if [ "$status" = "$expected" ]; then
+                echo "Endpoint $url returned HTTP $status (attempt $i)"
+                return 0
+              fi
+              echo "Endpoint $url returned HTTP $status (attempt $i/$attempts), waiting..."
+              sleep 3
+            done
+            echo "::error::Endpoint $url failed to return HTTP $expected after $attempts attempts (last status: $status)"
+            return 1
+          }
+
+          echo "Verifying Cloud Run service images..."
+          ACTUAL_HUB_IMAGE="$(get_live_image ompd-hub)"
+          ACTUAL_WEB_IMAGE="$(get_live_image ompctl-web)"
+
+          echo "Expected hub image: ${TARGET_HUB_IMAGE}"
+          echo "Actual hub image:   ${ACTUAL_HUB_IMAGE}"
+          echo "Expected web image: ${TARGET_WEB_IMAGE}"
+          echo "Actual web image:   ${ACTUAL_WEB_IMAGE}"
+
+          if [ "${ACTUAL_HUB_IMAGE}" != "${TARGET_HUB_IMAGE}" ]; then
+            echo "::error::Hub image mismatch: expected '${TARGET_HUB_IMAGE}', got '${ACTUAL_HUB_IMAGE}'"
+            exit 1
+          fi
+
+          if [ "${ACTUAL_WEB_IMAGE}" != "${TARGET_WEB_IMAGE}" ]; then
+            echo "::error::Web image mismatch: expected '${TARGET_WEB_IMAGE}', got '${ACTUAL_WEB_IMAGE}'"
+            exit 1
+          fi
+
+          echo "Service images verified against selected inputs."
+
+          HUB_HOST="${{ vars.OMPCTL_HUB_DOMAIN || 'hub.ompctl.ai' }}"
+          APP_HOST="${{ vars.OMPCTL_APP_DOMAIN || 'app.ompctl.ai' }}"
+
+          echo "Verifying hub endpoint health..."
+          check_endpoint "https://${HUB_HOST}/v1/health" 200
+
+          echo "Verifying web endpoint health..."
+          check_endpoint "https://${APP_HOST}/v1/health" 200
