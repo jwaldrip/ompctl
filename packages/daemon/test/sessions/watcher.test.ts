@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { FSWatcher } from "node:fs";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { watchSessionFiles } from "../../src/sessions/watcher.ts";
@@ -59,6 +59,17 @@ test("directory reconciliation detects a deleted session when every watch event 
     join(root, "-existing", "2026-09-10T00-00-00-000Z_019feed0-0000-7000-8000-000000000001.jsonl");
   await expectReconciledAfterMissedEvent(
     root => rmSync(file(root)),
+    root => {
+      mkdirSync(join(root, "-existing"));
+      writeFileSync(file(root), "{}\n");
+    },
+  );
+});
+test("file reconciliation detects an appended session when every watch event is missed", async () => {
+  const file = (root: string) =>
+    join(root, "-existing", "2026-09-10T00-00-00-000Z_019feed0-0000-7000-8000-000000000002.jsonl");
+  await expectReconciledAfterMissedEvent(
+    root => appendFileSync(file(root), '{"type":"message"}\n'),
     root => {
       mkdirSync(join(root, "-existing"));
       writeFileSync(file(root), "{}\n");

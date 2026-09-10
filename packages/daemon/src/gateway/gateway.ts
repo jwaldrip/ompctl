@@ -6439,13 +6439,17 @@ export class Gateway {
     if (this.#sessionWatch !== undefined) return;
     const index = this.#sessionIndex;
     if (!index) return;
-    const handle = index.watch(() => this.#pushSessionsToWatchers(), {
+    let handle: SessionWatch | null = null;
+    handle = index.watch(() => this.#pushSessionsToWatchers(), {
       onError: err => {
         this.#onError?.(err instanceof Error ? err : new Error(String(err)));
         // A failed watch degrades this daemon to pull-only: every `sessions`
         // ask still rebuilds from disk, so the failure is reported and the
         // handle forgotten rather than retried in a loop.
-        if (this.#sessionWatch === handle) this.#sessionWatch = undefined;
+        if (handle !== null && this.#sessionWatch === handle) {
+          handle.stop();
+          this.#sessionWatch = undefined;
+        }
       },
     });
     if (handle === null) return;
@@ -6549,8 +6553,7 @@ export class Gateway {
         const frame: ServerFrame = { t: "sessions", sessions: rows };
         const encoded = JSON.stringify(frame);
         if (suppressUnchanged && this.#lastSessionsPayload.get(ws) === encoded) return;
-        this.#lastSessionsPayload.set(ws, encoded);
-        this.#send(ws, frame, encoded);
+        if (this.#send(ws, frame, encoded)) this.#lastSessionsPayload.set(ws, encoded);
       };
       deliver(sessions);
       if (warmed === null) return;
@@ -7151,7 +7154,7 @@ export class Gateway {
     }
   }
 
-  #send(ws: GatewaySocket, frame: ServerFrame, encoded?: string): void {
+  #send(ws: GatewaySocket, frame: ServerFrame, encoded?: string): boolean {
     const buffered = ws.getBufferedAmount?.() ?? 0;
     if (buffered > this.#maxSocketBufferBytes) {
       this.#store.audit({
@@ -7170,13 +7173,16 @@ export class Gateway {
         // Socket closed or closing
       }
       this.#close(ws);
-      return;
+      return false;
     }
     try {
       ws.send(encoded ?? JSON.stringify(frame));
+      return true;
     } catch {
-      // The socket went away between an event firing and this send. `#close`
-      // removes it from the registry; there is nothing to report to.
+      // The socket went away between an event firing and this send. Remove it
+      // now so failed watcher pushes cannot leave a stale registry entry.
+      this.#close(ws);
+      return false;
     }
   }
 

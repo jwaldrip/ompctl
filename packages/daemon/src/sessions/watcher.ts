@@ -49,7 +49,7 @@ export interface SessionWatchOptions {
   quietMs?: number;
   /** Override of the max-wait cap, for tests driving real timers. */
   maxWaitMs?: number;
-  /** Override of the directory-metadata reconciliation interval. */
+  /** Override of the session-file reconciliation interval. */
   reconcileMs?: number;
   /** Override of node:fs watch for deterministic missed-event tests. */
   watchFactory?: (path: string, listener: (eventType: string, filename: string | Buffer | null) => void) => FSWatcher;
@@ -65,6 +65,22 @@ export interface SessionWatchOptions {
 /** A running watch over the sessions root. `stop` is idempotent. */
 export interface SessionWatch {
   stop(): void;
+}
+interface DirectoryFingerprint {
+  directoryMtimeMs: number;
+  sessionCount: number;
+  totalBytes: number;
+  latestSessionMtimeMs: number;
+}
+
+function sameFingerprint(left: DirectoryFingerprint | undefined, right: DirectoryFingerprint): boolean {
+  return (
+    left !== undefined &&
+    left.directoryMtimeMs === right.directoryMtimeMs &&
+    left.sessionCount === right.sessionCount &&
+    left.totalBytes === right.totalBytes &&
+    left.latestSessionMtimeMs === right.latestSessionMtimeMs
+  );
 }
 
 /**
@@ -113,7 +129,7 @@ export function watchSessionFiles(
   };
 
   const directoryWatchers = new Map<string, FSWatcher>();
-  const directoryMtimes = new Map<string, number>();
+  const directoryFingerprints = new Map<string, DirectoryFingerprint>();
   let rootWatcher: FSWatcher | null = null;
 
   const fail = (err: unknown): void => {
@@ -165,21 +181,38 @@ export function watchSessionFiles(
     let changed = false;
     for (const entry of readdirSync(sessionsRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      let mtimeMs: number;
+      const path = join(sessionsRoot, entry.name);
+      let fingerprint: DirectoryFingerprint;
       try {
-        mtimeMs = statSync(join(sessionsRoot, entry.name)).mtimeMs;
+        const directoryMtimeMs = statSync(path).mtimeMs;
+        let sessionCount = 0;
+        let totalBytes = 0;
+        let latestSessionMtimeMs = 0;
+        for (const file of readdirSync(path, { withFileTypes: true })) {
+          if (!file.isFile() || !SESSION_FILE_RE.test(file.name)) continue;
+          const metadata = statSync(join(path, file.name));
+          sessionCount += 1;
+          totalBytes += metadata.size;
+          latestSessionMtimeMs = Math.max(latestSessionMtimeMs, metadata.mtimeMs);
+        }
+        fingerprint = { directoryMtimeMs, sessionCount, totalBytes, latestSessionMtimeMs };
       } catch {
         continue;
       }
       live.add(entry.name);
-      if (watchDirectory(entry.name) || directoryMtimes.get(entry.name) !== mtimeMs) changed = true;
-      directoryMtimes.set(entry.name, mtimeMs);
+      if (watchDirectory(entry.name) || !sameFingerprint(directoryFingerprints.get(entry.name), fingerprint))
+        changed = true;
+      directoryFingerprints.set(entry.name, fingerprint);
     }
     for (const [name, watcher] of directoryWatchers) {
       if (live.has(name)) continue;
       watcher.close();
       directoryWatchers.delete(name);
-      directoryMtimes.delete(name);
+      changed = true;
+    }
+    for (const name of directoryFingerprints.keys()) {
+      if (live.has(name)) continue;
+      directoryFingerprints.delete(name);
       changed = true;
     }
     return changed;
