@@ -72,7 +72,7 @@ const outcome = await new Promise<string>(resolve => {
     if (mine === undefined || attached) return;
     attached = true;
     phase(`agent ${agentId} seen, state ${mine.state}`);
-    client.attach(agentId);
+    client.attach(agentId, { sinceSeq: 0 });
     client.prompt(agentId, `Reply with exactly this token and nothing else: ${nonce}`);
     phase("prompt sent through the hub");
   });

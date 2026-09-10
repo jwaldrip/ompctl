@@ -39,7 +39,7 @@ const host = spawnLocalHost({
 });
 
 await host.client.initialize();
-const sessionId = await host.client.newSession(workdir);
+const { sessionId } = await host.client.newSession(workdir);
 console.log(`session ${sessionId} in ${workdir}`);
 
 const result = await host.client.prompt(
