@@ -18,7 +18,7 @@ import type { NewTaskInput, TaskListView } from "../cowork/tasks.ts";
 import type { SkillSummary, Task } from "../cowork/types.ts";
 import { Glyph } from "../design/icons.tsx";
 import { Body, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { TaskCard } from "./TaskCard.tsx";
 
@@ -31,6 +31,8 @@ export interface TaskSidebarProps {
   onSelectTask: (task: Task) => void;
   onStartTask: (input: NewTaskInput) => void;
   now?: number;
+  refusal?: string | null;
+  status?: string;
 }
 
 /** A composer draft longer than this is titled by truncation, not repeated verbatim in the strip's headline. */
@@ -43,10 +45,13 @@ export function TaskSidebar({
   onSelectTask,
   onStartTask,
   now,
+  refusal,
+  status,
 }: TaskSidebarProps): JSX.Element {
   const [draft, setDraft] = useState("");
   const trimmed = draft.trim();
   const paletteOpen = draft.startsWith("/") && trimmed.length > 0;
+  const isRefused = status === "refused" || (refusal !== null && refusal !== undefined);
   const total = tasks.inFlight.length + tasks.recent.length;
 
   const start = (skillName?: string): void => {
@@ -61,10 +66,17 @@ export function TaskSidebar({
       <View style={styles.head}>
         <Glyph name="tasks" size={16} color={ink.plain} />
         <Kicker color={ink.muted} testID="task-sidebar-count">
-          {total === 0 ? "No tasks" : `${total} ${total === 1 ? "task" : "tasks"}`}
+          {isRefused ? "Tasks unavailable" : total === 0 ? "No tasks" : `${total} ${total === 1 ? "task" : "tasks"}`}
         </Kicker>
       </View>
-
+      {isRefused ? (
+        <View style={styles.refused} testID="cowork-tasks-refused">
+          <Glyph name="warning" color={signal.holding} size={13} />
+          <Label color={signal.holding} style={styles.refusedText}>
+            {refusal ?? "The daemon refused the task roster."}
+          </Label>
+        </View>
+      ) : null}
       <View style={styles.composer}>
         <View style={styles.composerRow}>
           <Glyph name="newTask" size={13} color={ink.faint} />
@@ -116,7 +128,7 @@ export function TaskSidebar({
           </View>
         ) : null}
 
-        {total === 0 ? (
+        {total === 0 && !isRefused ? (
           <View style={styles.empty} testID="task-sidebar-empty">
             <Glyph name="tasks" size={22} color={ground.edge} />
             <Body color={ink.plain}>No tasks yet.</Body>
@@ -157,4 +169,16 @@ const styles = StyleSheet.create({
   },
   sectionLabel: { paddingHorizontal: space.wide, paddingTop: space.step, paddingBottom: space.tight, letterSpacing: 1 },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },
+  refused: {
+    alignItems: "center",
+    backgroundColor: ground.surface,
+    borderColor: signal.holding,
+    borderWidth: stroke.hair,
+    flexDirection: "row",
+    gap: space.snug,
+    padding: space.snug,
+    marginHorizontal: space.wide,
+    marginVertical: space.snug,
+  },
+  refusedText: { flex: 1 },
 });
