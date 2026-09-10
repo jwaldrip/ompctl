@@ -14,7 +14,7 @@
 #      OMPD_ASC_ISSUER_ID (default: content of ~/.private_keys/asc_issuer_id)
 #   3. iOS App Store Provisioning Profile:
 #      OMPD_IOS_PROVISIONING_PROFILE (default: ~/.private_keys/ompctl_ios_appstore.mobileprovision)
-#      UUID: d37caa29-88ad-453d-b98c-c7696603faee
+#      Name and UUID are read from the profile at runtime.
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -133,10 +133,6 @@ xcodebuild -exportArchive \
   -archivePath "$OUT/ompd.xcarchive" \
   -exportPath "$OUT/ipa" \
   -exportOptionsPlist "$OUT/ExportOptions-manual.plist" \
-  -allowProvisioningUpdates \
-  -authenticationKeyPath "$KEY_PATH" \
-  -authenticationKeyID "$KEY_ID" \
-  -authenticationKeyIssuerID "$ISSUER_ID" \
   -quiet
 echo "export ok"
 

@@ -39,15 +39,6 @@ if [[ ! -d Pods ]]; then
   fi
 fi
 
-AUTH_ARGS=()
-if [[ -n "${OMPD_ASC_KEY_PATH:-}" && -n "${OMPD_ASC_KEY_ID:-}" && -n "${OMPD_ASC_ISSUER_ID:-}" ]]; then
-  AUTH_ARGS+=(
-    -allowProvisioningUpdates
-    -authenticationKeyPath "$OMPD_ASC_KEY_PATH"
-    -authenticationKeyID "$OMPD_ASC_KEY_ID"
-    -authenticationKeyIssuerID "$OMPD_ASC_ISSUER_ID"
-  )
-fi
 
 xcodebuild \
   -workspace ompd.xcworkspace \
@@ -99,8 +90,7 @@ xcodebuild \
   -exportArchive \
   -archivePath "$OUT/ompd.xcarchive" \
   -exportPath "$OUT/ipa" \
-  -exportOptionsPlist "$EXPORT_PLIST" \
-  "${AUTH_ARGS[@]}"
+  -exportOptionsPlist "$EXPORT_PLIST"
 
 # Prove the IPA carries a distribution signature before upload.
 IPA_FILE="$(ls -1 "$OUT/ipa"/*.ipa | head -1)"
