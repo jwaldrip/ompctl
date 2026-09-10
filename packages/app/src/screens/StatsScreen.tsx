@@ -109,7 +109,11 @@ export function StatsScreen({
         setError(null);
       }),
       client.on("error", event => {
-        setError(event.message);
+        const message =
+          event.code === "unknown_frame" && /\bstats\b/i.test(event.message)
+            ? "This daemon does not support Stats yet. Update ompd, then reconnect."
+            : event.message;
+        setError(message);
         setLoading(false);
       }),
       client.on("status", event => {

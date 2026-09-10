@@ -259,4 +259,41 @@ describe("StatsScreen", () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  test("names the daemon upgrade when an older daemon refuses the stats frame", () => {
+    const listeners = new Map<string, Array<(event: unknown) => void>>();
+    const client = {
+      stats: () => {},
+      on: (event: string, listener: (event: unknown) => void) => {
+        const list = listeners.get(event) ?? [];
+        list.push(listener);
+        listeners.set(event, list);
+        return () => {};
+      },
+      emit: (event: string, payload: unknown) => {
+        act(() => {
+          for (const listener of listeners.get(event) ?? []) listener(payload);
+        });
+      },
+    };
+    const connection: Connection = {
+      transport: "hub",
+      hubUrl: "wss://hub.ompctl.ai",
+      daemonId: "dmn_123",
+      token: "tok_abc",
+      scopes: ["read"],
+    };
+
+    const mounted = mount(
+      <StatsScreen connection={connection} createClient={() => client as unknown as OmpdClient} onBack={() => {}} />,
+    );
+    try {
+      client.emit("error", { code: "unknown_frame", message: "unsupported frame type stats" });
+      expect(byTestID(mounted.host, "stats-error").textContent).toContain(
+        "This daemon does not support Stats yet. Update ompd, then reconnect.",
+      );
+    } finally {
+      mounted.unmount();
+    }
+  });
 });
