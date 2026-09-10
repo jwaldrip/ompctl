@@ -317,6 +317,7 @@ describe("GET /v1/endpoints against a real Ompd", () => {
     scratchDirs.push(home);
     const daemon = new Ompd({
       home,
+      sessionsRoot: join(home, "sessions"),
       // The default a real operator gets: ask the OS for a free port. The
       // whole point of this test is that the seam must not echo this `0`
       // back into an offer.

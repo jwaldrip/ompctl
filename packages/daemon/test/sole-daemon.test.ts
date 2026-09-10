@@ -149,6 +149,7 @@ describe("Ompd.start beside a live daemon on the same home", () => {
     const home = tempDir("ompd-sole-");
     const first = new Ompd({
       home,
+      sessionsRoot: join(home, "sessions"),
       overrides: { port: 0 },
       spawnHost: createFakeHost().factory,
       voice: false,
@@ -158,6 +159,7 @@ describe("Ompd.start beside a live daemon on the same home", () => {
 
     const second = new Ompd({
       home,
+      sessionsRoot: join(home, "sessions"),
       // Port 0 again, so the configured address cannot be the witness: only
       // the endpoint the live daemon published connects the two starts.
       overrides: { port: 0 },

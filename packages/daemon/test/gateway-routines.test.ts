@@ -48,6 +48,7 @@ async function harness(): Promise<Harness> {
   scratch.push(home);
   const daemon = new Ompd({
     home,
+    sessionsRoot: join(home, "sessions"),
     // Port 0 asks the OS for a free one, so tests never collide with each other
     // or with a daemon the developer left running.
     overrides: { port: 0 },

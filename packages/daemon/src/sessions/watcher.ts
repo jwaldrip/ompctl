@@ -53,6 +53,8 @@ export interface SessionWatchOptions {
   reconcileMs?: number;
   /** Override of node:fs watch for deterministic missed-event tests. */
   watchFactory?: (path: string, listener: (eventType: string, filename: string | Buffer | null) => void) => FSWatcher;
+  /** Called once after the initial fingerprint baseline is complete. */
+  onReady?: () => void;
   /**
    * Watcher failure report. The watcher stops itself after raising one: a
    * dead watch is a pull-only daemon (every `sessions` ask still rebuilds
@@ -243,6 +245,7 @@ export function watchSessionFiles(
 
   let reconcileInFlight = false;
   let reconcileAgain = false;
+  let initialized = false;
   const requestReconcile = (): void => {
     if (stopped) return;
     if (reconcileInFlight) {
@@ -254,12 +257,20 @@ export function watchSessionFiles(
       try {
         do {
           reconcileAgain = false;
-          if (await reconcileCooperatively()) arm();
+          const changed = await reconcileCooperatively();
+          if (stopped) break;
+          if (initialized) {
+            if (changed) arm();
+          } else {
+            initialized = true;
+            opts.onReady?.();
+          }
         } while (reconcileAgain && !stopped);
       } catch (err) {
         fail(err);
       } finally {
         reconcileInFlight = false;
+        if (reconcileAgain && !stopped) requestReconcile();
       }
     })();
   };

@@ -21,11 +21,13 @@ async function expectReconciledAfterMissedEvent(
   const root = mkdtempSync(join(tmpdir(), "session-watch-reconcile-"));
   setup(root);
   const watchers: SilentWatcher[] = [];
+  const ready = Promise.withResolvers<void>();
   const changed = Promise.withResolvers<void>();
   const handle = watchSessionFiles(root, changed.resolve, {
     quietMs: 5,
     maxWaitMs: 20,
     reconcileMs: 10,
+    onReady: ready.resolve,
     watchFactory: () => {
       const watcher = new SilentWatcher();
       watchers.push(watcher);
@@ -34,6 +36,7 @@ async function expectReconciledAfterMissedEvent(
   });
   expect(handle).not.toBeNull();
   try {
+    await ready.promise;
     mutate(root);
     const timeout = Bun.sleep(250).then(() => {
       throw new Error("missed filesystem event was not reconciled");

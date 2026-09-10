@@ -203,6 +203,7 @@ describe("the daemon holds it across a real turn", () => {
     const host = createFakeHost();
     const daemon = new Ompd({
       home,
+      sessionsRoot: join(home, "sessions"),
       overrides: { port: 0 },
       spawnHost: host.factory,
       spawnAwake: fake.spawn,
