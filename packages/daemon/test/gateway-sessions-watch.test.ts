@@ -250,9 +250,13 @@ describe("the watcher-driven sessions push", () => {
     const silent = await h.connect(token);
 
     asked.send({ t: "sessions" });
-    // Drain the ask's own answer, so any later `sessions` frame on this
-    // socket can only be a watcher push.
-    await asked.next(isSessionsFrame, "the ask's first paint");
+    // Finish the ask's own cold-to-warm cycle before the mutation. Otherwise
+    // the warm upgrade can accidentally carry the new file and let a dead
+    // filesystem watcher pass this test.
+    await asked.next(
+      f => isSessionsFrame(f) && f.sessions.some(s => s.id === SESSION_BASE && typeof s.messageCount === "number"),
+      "the ask's warm upgrade",
+    );
 
     // The never-asked socket is connected, served, and read-scoped: a pong
     // proves the daemon is talking to it, so the assertion below measures
@@ -289,12 +293,13 @@ describe("the watcher-driven sessions push", () => {
     const asked = await h.connect(token);
     asked.send({ t: "sessions" });
 
-    // Wait out the ask's own first paint and its warm upgrade, so the count
-    // below measures only frames the watcher produced.
+    // Wait out the ask's first paint, warm upgrade, and the watcher's one
+    // startup reconciliation so the baseline excludes all initial work.
     await asked.next(
       f => isSessionsFrame(f) && f.sessions.some(s => s.id === SESSION_BASE && typeof s.messageCount === "number"),
       "the ask's warm upgrade",
     );
+    await sleep(SESSION_WATCH_QUIET_MS + 200);
     const baseline = asked.frames.filter(isSessionsFrame).length;
 
     // One agent-shaped burst: five session files appearing over a few
