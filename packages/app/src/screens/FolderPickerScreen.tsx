@@ -20,19 +20,17 @@
  * absolute path on screen to confirm, and the hint says so instead of guessing.
  */
 
-import type { FsEntry, ProviderRepo } from "@ompd/core/contracts";
+import type { FsEntry } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import type { JSX } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { CloneProgress } from "../components/CloneProgress.tsx";
-import { RepositoryPicker } from "../components/ProjectPicker.tsx";
 import { createOmpdClient } from "../console/useConsole.ts";
 import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Code, Kicker, Label, Title } from "../design/text.tsx";
-import { brand, ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
 import { directoryLabel } from "../remote/model.ts";
 import { type RemoteStartClient, useRemoteStart } from "../remote/useRemoteStart.ts";
@@ -42,12 +40,6 @@ interface CommonProps {
   onPick: (path: string) => void;
   /** Leave without choosing. Absent, the back affordance is not drawn. */
   onBack?: () => void;
-  /** Repository to clone into the chosen destination. */
-  repoToClone?: ProviderRepo | { url: string; name?: string } | null;
-  /** Mode: "bind" for cowork bindings (default), "clone" for destination selection. */
-  mode?: "bind" | "clone";
-  /** Called when a clone finishes and creates a new session. */
-  onSessionOpened?: (sessionId: string) => void;
 }
 
 /** The caller hands over a pairing and this screen owns one socket for its lifetime. */
@@ -68,13 +60,12 @@ export function FolderPickerScreen(props: FolderPickerScreenProps): JSX.Element 
   const client = useScreenClient(props);
   const [state, actions] = useRemoteStart(client);
   const atRoots = state.path === "";
+  // A directory is offerable once its own listing has arrived: the confirmed
+  // path is `state.path` itself, resolved by the daemon, and a path this
+  // screen only hoped for would be binding a guess. A listing already on
+  // screen stays offerable while the next one loads, because the directory it
+  // describes is real whichever answer is in flight.
   const offerable = state.path !== "";
-
-  const [selectedRepo, setSelectedRepo] = useState<ProviderRepo | { url: string; name?: string } | null>(
-    props.repoToClone ?? null,
-  );
-  const [showRepoPicker, setShowRepoPicker] = useState(false);
-  const isCloneMode = props.mode === "clone" || selectedRepo !== null;
 
   return (
     <SafeScreen style={styles.screen} testID="folder-picker-screen">
@@ -91,7 +82,7 @@ export function FolderPickerScreen(props: FolderPickerScreenProps): JSX.Element 
             </Pressable>
           )}
           <View style={styles.headerCopy}>
-            <Kicker>{isCloneMode ? "Clone destination" : "Bound folders"}</Kicker>
+            <Kicker>Bound folders</Kicker>
             <Title heading numberOfLines={1} testID="folder-picker-title">
               {directoryLabel(state.path)}
             </Title>
@@ -133,15 +124,6 @@ export function FolderPickerScreen(props: FolderPickerScreenProps): JSX.Element 
           </Label>
         </Pressable>
       )}
-      {state.clone === null ? null : (
-        <View style={styles.cloneInset}>
-          <CloneProgress
-            clone={state.clone}
-            onDismiss={actions.dismissClone}
-            onOpenDestination={() => actions.startHere()}
-          />
-        </View>
-      )}
 
       <ScrollView style={styles.list} contentContainerStyle={styles.listContent} testID="folder-picker-entries">
         {state.entries.map(entry => (
@@ -166,87 +148,27 @@ export function FolderPickerScreen(props: FolderPickerScreenProps): JSX.Element 
       </ScrollView>
 
       <View style={styles.actions}>
-        {isCloneMode ? (
-          <>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !offerable }}
-              disabled={!offerable}
-              onPress={() => {
-                if (selectedRepo) {
-                  const url = "cloneUrl" in selectedRepo ? selectedRepo.cloneUrl : selectedRepo.url;
-                  actions.cloneHere(url, selectedRepo.name);
-                } else {
-                  setShowRepoPicker(true);
-                }
-              }}
-              style={[styles.bind, !offerable && styles.disabled]}
-              testID="folder-picker-clone-confirm"
-            >
-              <Glyph name="repo" color={ink.inverse} size={13} />
-              <Text style={styles.bindText}>
-                {selectedRepo ? `Clone into ${directoryLabel(state.path)}` : "Pick a repository to clone"}
-              </Text>
-            </Pressable>
-            <Label color={ink.muted} numberOfLines={2} testID="folder-picker-confirm-hint">
-              {offerable
-                ? selectedRepo
-                  ? `Will clone into ${state.path}. Existing directories or repositories will be refused.`
-                  : `Destination directory: ${state.path}`
-                : "Open a directory first: the roots view is a menu, not a folder."}
-            </Label>
-          </>
-        ) : (
-          <>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !offerable }}
-              disabled={!offerable}
-              onPress={() => props.onPick(state.path)}
-              style={[styles.bind, !offerable && styles.disabled]}
-              testID="folder-picker-confirm"
-            >
-              <Glyph name="folder" color={ink.inverse} size={13} />
-              <Text style={styles.bindText}>Bind this folder</Text>
-            </Pressable>
-            <Label color={ink.muted} numberOfLines={2} testID="folder-picker-confirm-hint">
-              {offerable
-                ? `The container will mount ${state.path} read-only, at this same path.`
-                : "Open a directory first: the roots view is a menu, not a folder."}
-            </Label>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setShowRepoPicker(true)}
-              style={styles.cloneAffordance}
-              testID="folder-picker-open-repo-picker"
-            >
-              <Glyph name="repo" color={brand.azure} size={12} />
-              <Label color={brand.azure}>Or clone a repository here</Label>
-            </Pressable>
-          </>
-        )}
+        {/* Not offered rather than silently swallowed: at the roots view the
+            control is visibly idle with its reason beside it, because a
+            disabled button that explains itself is a state, and one that
+            swallows the tap reads as broken. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !offerable }}
+          disabled={!offerable}
+          onPress={() => props.onPick(state.path)}
+          style={[styles.bind, !offerable && styles.disabled]}
+          testID="folder-picker-confirm"
+        >
+          <Glyph name="folder" color={ink.inverse} size={13} />
+          <Text style={styles.bindText}>Bind this folder</Text>
+        </Pressable>
+        <Label color={ink.muted} numberOfLines={2} testID="folder-picker-confirm-hint">
+          {offerable
+            ? `The container will mount ${state.path} read-only, at this same path.`
+            : "Open a directory first: the roots view is a menu, not a folder."}
+        </Label>
       </View>
-
-      {showRepoPicker ? (
-        <RepositoryPicker
-          defaultOpen={true}
-          onSelectRepo={repo => {
-            setSelectedRepo(repo);
-            setShowRepoPicker(false);
-            if (offerable) {
-              actions.cloneHere(repo.cloneUrl, repo.name);
-            }
-          }}
-          onSelectUrl={url => {
-            setSelectedRepo({ url });
-            setShowRepoPicker(false);
-            if (offerable) {
-              actions.cloneHere(url);
-            }
-          }}
-          onBack={() => setShowRepoPicker(false)}
-        />
-      ) : null}
     </SafeScreen>
   );
 }
@@ -368,16 +290,4 @@ const styles = StyleSheet.create({
   },
   bindText: { ...type.title, color: ink.inverse },
   disabled: { opacity: 0.45 },
-  cloneInset: {
-    marginHorizontal: rhythm.gutter,
-    marginBottom: rhythm.rowGap,
-  },
-  cloneAffordance: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: space.snug,
-    minHeight: TOUCH_TARGET,
-    paddingVertical: space.snug,
-  },
 });
