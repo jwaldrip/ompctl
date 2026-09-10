@@ -257,12 +257,12 @@ pairing phone started
 $ ompd approve 580734 --scopes read,prompt
 approved. scopes: read, prompt
 
-  3njHB7YmEEaSKpS63rxf0ajA83gKnIzyFdY7-yfxCnQ
+  7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a.3njHB7YmEEaSKpS63rxf0ajA83gKnIzyFdY7-yfxCnQ
 
   This token is shown once and is not recoverable.
 ```
 
-Then open the web UI on the phone and paste the daemon URL and that token. It
+Then open the app or web UI on the phone and paste that credential. It
 pairs once. Restarting the daemon, upgrading it, or rebooting the machine does
 not sign that phone out.
 

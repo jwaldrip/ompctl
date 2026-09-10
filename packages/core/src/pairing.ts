@@ -158,7 +158,10 @@ export function parseDeviceCredential(raw: string): DeviceCredential | null {
   const trimmed = raw.trim();
   const split = trimmed.indexOf(CREDENTIAL_SEPARATOR);
   if (split <= 0) return null;
-  const body = trimmed.slice(0, split).toLowerCase();
+  let body = trimmed.slice(0, split).toLowerCase();
+  if (body.startsWith(DAEMON_ID_PREFIX)) {
+    body = body.slice(DAEMON_ID_PREFIX.length);
+  }
   const token = trimmed.slice(split + 1);
   if (!DAEMON_ID_BODY.test(body) || token.length === 0) return null;
   return { daemonId: `${DAEMON_ID_PREFIX}${body}`, token };
