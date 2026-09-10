@@ -3,6 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/mono-root.sh
 source "$ROOT/scripts/lib/mono-root.sh"
+source "$ROOT/scripts/lib/version.sh"
+ompd_version__resolve
 cd "$ROOT/android"
 chmod +x ./gradlew
 
@@ -11,7 +13,11 @@ chmod +x ./gradlew
 : "${OMPD_ANDROID_KEY_ALIAS:?OMPD_ANDROID_KEY_ALIAS is required}"
 : "${OMPD_ANDROID_KEY_PASSWORD:?OMPD_ANDROID_KEY_PASSWORD is required}"
 
-./gradlew :app:bundleRelease --console=plain
+./gradlew :app:bundleRelease \
+  "-POMPD_BUILD_NUMBER=$OMPD_BUILD_NUMBER" \
+  "-POMPD_VERSION_CODE=$OMPD_BUILD_NUMBER" \
+  "-POMPD_VERSION_NAME=$OMPD_VERSION_NAME" \
+  --console=plain
 AAB="$ROOT/android/app/build/outputs/bundle/release/app-release.aab"
 test -f "$AAB"
 echo "AAB_PATH=$AAB"

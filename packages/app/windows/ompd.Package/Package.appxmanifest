@@ -9,7 +9,7 @@
   <Identity
     Name="ompctl"
     Publisher="CN=jwaldrip"
-    Version="1.0.0.0" />
+    Version="$(PackageVersion)" />
 
   <Properties>
     <DisplayName>ompctl</DisplayName>
