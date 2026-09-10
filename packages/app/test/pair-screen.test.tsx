@@ -308,3 +308,78 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
     h.unmount();
   });
 });
+
+describe("PairScreen: QR scanning affordance gates on camera availability", () => {
+  test("with camera available, the scan entry is enabled and fires onScan when clicked", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    let scanned = 0;
+
+    act(() => {
+      root.render(
+        <PairScreen
+          camera={{ available: true }}
+          onPair={() => {}}
+          onScan={() => {
+            scanned += 1;
+          }}
+        />,
+      );
+    });
+
+    const scanEntry = host.querySelector('[data-testid="pair-scan-entry"]');
+    expect(scanEntry).not.toBeNull();
+    expect(readsDisabled(scanEntry!)).toBe(false);
+    expect(scanEntry?.textContent).toContain("Scan a QR code instead");
+
+    act(() => {
+      (scanEntry as HTMLElement).click();
+    });
+    expect(scanned).toBe(1);
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+
+  test("with camera unavailable, the scan entry is disabled with refusal reason and cannot be clicked", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    let scanned = 0;
+
+    act(() => {
+      root.render(
+        <PairScreen
+          camera={{
+            available: false,
+            reason: "Scanning is unavailable on macOS: this build has no camera scanner module.",
+          }}
+          onPair={() => {}}
+          onScan={() => {
+            scanned += 1;
+          }}
+        />,
+      );
+    });
+
+    const scanEntry = host.querySelector('[data-testid="pair-scan-entry"]');
+    expect(scanEntry).not.toBeNull();
+    expect(readsDisabled(scanEntry!)).toBe(true);
+    expect(scanEntry?.textContent).toContain(
+      "Scanning is unavailable on macOS: this build has no camera scanner module.",
+    );
+
+    act(() => {
+      (scanEntry as HTMLElement).click();
+    });
+    expect(scanned).toBe(0);
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+});

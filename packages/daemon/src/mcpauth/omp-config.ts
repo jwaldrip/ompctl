@@ -161,7 +161,6 @@ export interface OwnershipDoc {
  * what OMP's bundled schema will validate: an editor reporting an error on a
  * key ompd put there is a support question ompd created.
  */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control characters is the point.
 const SERVER_NAME_PATTERN = /^[^\u0000-\u001f\u007f]{1,200}$/;
 const SERVER_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,100}$/;
 
