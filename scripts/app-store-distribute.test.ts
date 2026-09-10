@@ -62,5 +62,6 @@ describe("App Store release workflow", () => {
     const macosStepNames = (macos.steps ?? []).map(step => step.name).filter(Boolean);
     expect(macosStepNames).toContain("Require macOS signing material");
     expect(macosStepNames).toContain("Import macOS provisioning profile");
+    expect(macosStepNames).toContain("Install macOS pods");
   });
 });
