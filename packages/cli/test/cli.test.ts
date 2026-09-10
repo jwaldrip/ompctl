@@ -36,10 +36,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseDeviceCredential } from "@ompd/core/pairing";
 import { homeIdFor, OMPD_VERSION, type Ompd } from "@ompd/daemon";
 import { parseCommand, USAGE, UsageError } from "../src/args.ts";
 import { type CliContext, resolveBaseUrl, TOKEN_GUIDANCE } from "../src/client.ts";
 import { startupLines } from "../src/commands/daemon.ts";
+import { pairedConnectionFor } from "../src/commands/devices.ts";
 import { PLIST_MARKER, PLIST_PROGRAM_KEY, plistPath, plistProgram } from "../src/commands/service.ts";
 import { BINARY_MARKER, findCheckoutRoot } from "../src/install.ts";
 import { run } from "../src/main.ts";
@@ -890,9 +892,13 @@ describe("invite", () => {
     const out = h.stdout();
     expect(out).toContain("█");
 
-    // One credential, printed three ways: the fields, and the link. Each has to
-    // name the same daemon, or a device pairs against something else.
+    // One credential, printed three ways: the secret line, the fields, and the link.
     const credential = `${"c".repeat(64)}.tok_qr`;
+    const secretLine = out.split("\n")[2]?.trim() ?? "";
+    expect(secretLine).toBe(credential);
+    const parsedSecret = parseDeviceCredential(secretLine);
+    expect(parsedSecret?.daemonId).toBe(daemon);
+    expect(parsedSecret?.token).toBe("tok_qr");
     expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).toContain("hub.example.com");
     expect(out.split("\n").find(line => line.trim().startsWith("Token "))).toContain(credential);
     // The link carries the granted scopes beside the hub host in the query,
@@ -908,6 +914,89 @@ describe("invite", () => {
     expect(parsedUrl.hash).toBe(`#token=${credential}`);
     // The daemon id is not retyped by anyone, so it belongs inside the token.
     expect(out.split("\n").find(line => line.trim().startsWith("Hub "))).not.toContain(daemon);
+  });
+  test("CLI invite secret line parses with parseDeviceCredential and daemon id matches", async () => {
+    const daemon = `dmn_${"d".repeat(64)}`;
+    const h = harness({
+      routes: {
+        "POST /v1/pair": { body: { code: "123123" } },
+        "POST /v1/pairings/approve": { body: { token: "tok_invite_secret" } },
+        "GET /v1/endpoints": {
+          body: {
+            offers: [
+              {
+                endpoint: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: daemon },
+                reach: "anywhere",
+                note: "reachable from anywhere",
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(await run(["invite", "phone", "--scopes", "read,prompt"], h.ctx)).toBe(0);
+    const out = h.stdout();
+    const secretLine = out.split("\n")[2]?.trim() ?? "";
+    const parsed = parseDeviceCredential(secretLine);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.daemonId).toBe(daemon);
+    expect(parsed?.token).toBe("tok_invite_secret");
+    expect(secretLine).toBe(`${"d".repeat(64)}.tok_invite_secret`);
+  });
+
+  test("QR and deep-link round trip the exact same credential", async () => {
+    const daemon = `dmn_${"f".repeat(64)}`;
+    const rawToken = "tok_roundtrip_test";
+    const h = harness({
+      routes: {
+        "POST /v1/pair": { body: { code: "998877" } },
+        "POST /v1/pairings/approve": { body: { token: rawToken } },
+        "GET /v1/endpoints": {
+          body: {
+            offers: [
+              {
+                endpoint: { transport: "hub", hubUrl: "wss://hub.example.com", daemonId: daemon },
+                reach: "anywhere",
+                note: "reachable from anywhere",
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(await run(["invite", "phone", "--scopes", "read,prompt"], h.ctx)).toBe(0);
+    const out = h.stdout();
+
+    // 1. Primary secret line
+    const secretLine = out.split("\n")[2]?.trim() ?? "";
+    const expectedCredential = `${"f".repeat(64)}.${rawToken}`;
+    expect(secretLine).toBe(expectedCredential);
+
+    // 2. Deep-link carries the exact same credential in the fragment
+    const linkLine =
+      out
+        .split("\n")
+        .find(line => line.includes("https://app.ompctl.ai/pair"))
+        ?.trim() ?? "";
+    const parsedUrl = new URL(linkLine);
+    const deepLinkCredential = decodeURIComponent(parsedUrl.hash.replace("#token=", ""));
+    expect(deepLinkCredential).toBe(expectedCredential);
+
+    // 3. QR bundle carries the exact same credential
+    const offer = { transport: "hub" as const, hubUrl: "wss://hub.example.com", daemonId: daemon };
+    const bundleConnection = pairedConnectionFor(offer, rawToken, ["read", "prompt"]);
+    expect(bundleConnection.token).toBe(expectedCredential);
+
+    // Both round trip through parseDeviceCredential to the exact same daemon ID and token
+    const parsedFromSecret = parseDeviceCredential(secretLine);
+    const parsedFromDeepLink = parseDeviceCredential(deepLinkCredential);
+    const parsedFromQr = parseDeviceCredential(bundleConnection.token);
+
+    expect(parsedFromSecret).toEqual({ daemonId: daemon, token: rawToken });
+    expect(parsedFromDeepLink).toEqual(parsedFromSecret);
+    expect(parsedFromQr).toEqual(parsedFromSecret);
   });
   test("surfaces the daemon's scope_escalation refusal instead of crashing", async () => {
     const h = harness({

@@ -160,6 +160,79 @@ describe("ScanScreen: a decode is not a pairing", () => {
     expect(el(h.host, "scan-invalid")).not.toBeNull();
     h.unmount();
   });
+  test("scans a hub bundle carrying the formatted credential and unwraps it for connection", () => {
+    const daemon = `dmn_${"7".repeat(64)}`;
+    const formattedToken = `${"7".repeat(64)}.tok_scanned_hub`;
+    const hubBundle: PairingBundle = {
+      v: 1,
+      label: "My Phone",
+      connection: {
+        transport: "hub",
+        hubUrl: "wss://hub.example.com",
+        daemonId: daemon,
+        token: formattedToken,
+        scopes: ["read", "prompt"],
+      },
+    };
+
+    const h = mountScanScreen();
+    act(() => {
+      scanCode(encodePairingBundle(hubBundle));
+    });
+
+    const confirm = el(h.host, "scan-confirm");
+    expect(confirm).not.toBeNull();
+    expect(confirm?.textContent).toContain("My Phone");
+
+    act(() => {
+      el(h.host, "scan-confirm-accept")?.click();
+    });
+
+    expect(h.scanned).toEqual([
+      {
+        connection: {
+          transport: "hub",
+          hubUrl: "wss://hub.example.com",
+          daemonId: daemon,
+          token: "tok_scanned_hub",
+          scopes: ["read", "prompt"],
+        },
+        label: "My Phone",
+      },
+    ]);
+    h.unmount();
+  });
+
+  test("scans a deep-link URL carrying the formatted credential and accepts it", () => {
+    const daemon = `dmn_${"8".repeat(64)}`;
+    const deepLinkUrl = `https://app.ompctl.ai/pair?hub=hub.example.com&scopes=read,prompt#token=${"8".repeat(64)}.tok_deeplink_qr`;
+
+    const h = mountScanScreen();
+    act(() => {
+      scanCode(deepLinkUrl);
+    });
+
+    const confirm = el(h.host, "scan-confirm");
+    expect(confirm).not.toBeNull();
+
+    act(() => {
+      el(h.host, "scan-confirm-accept")?.click();
+    });
+
+    expect(h.scanned).toEqual([
+      {
+        connection: {
+          transport: "hub",
+          hubUrl: "wss://hub.example.com",
+          daemonId: daemon,
+          token: "tok_deeplink_qr",
+          scopes: ["read", "prompt"],
+        },
+        label: "Scanned device",
+      },
+    ]);
+    h.unmount();
+  });
 
   test("cancelling the screen reports back without ever having scanned anything", () => {
     const h = mountScanScreen();

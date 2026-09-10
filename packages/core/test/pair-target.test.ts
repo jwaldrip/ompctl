@@ -82,6 +82,7 @@ describe("device credentials", () => {
 
   test("accepts a credential that already carries the prefix, so either paste works", () => {
     expect(formatDeviceCredential({ daemonId: BODY, token: "t" })).toBe(`${BODY}.t`);
+    expect(parseDeviceCredential(`${DAEMON}.tok_abc`)).toEqual({ daemonId: DAEMON, token: "tok_abc" });
   });
 
   test("a token by itself is not a credential: it names no daemon", () => {

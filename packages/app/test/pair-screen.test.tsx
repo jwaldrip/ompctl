@@ -125,6 +125,7 @@ function readsDisabled(el: Element): boolean {
 }
 
 interface Harness {
+  host: HTMLElement;
   endpointInput: HTMLInputElement;
   tokenInput: HTMLInputElement;
   submit: HTMLElement;
@@ -153,6 +154,7 @@ function mountPairScreen(): Harness {
   if (!(form instanceof HTMLElement)) throw new Error("no pair form rendered");
 
   return {
+    host,
     endpointInput,
     tokenInput,
     submit,
@@ -260,6 +262,38 @@ describe("PairScreen: Connect is gated on a parseable endpoint and a token", () 
       typeInto(h.tokenInput, "tok_abc");
     });
     expect(readsDisabled(h.submit)).toBe(true);
+    const kind = h.host.querySelector('[data-testid="pair-token-kind"]');
+    expect(kind?.textContent).toBe("Not a device token");
+    h.unmount();
+  });
+
+  test("accepts the CLI invite secret line verbatim to enable Connect", () => {
+    const daemon = `dmn_${"e".repeat(64)}`;
+    const cliSecretLine = `${"e".repeat(64)}.tok_verbatim_test`;
+    const h = mountPairScreen();
+
+    act(() => {
+      typeInto(h.endpointInput, "hub.example.com");
+      typeInto(h.tokenInput, cliSecretLine);
+    });
+
+    expect(readsDisabled(h.submit)).toBe(false);
+    const kind = h.host.querySelector('[data-testid="pair-token-kind"]');
+    expect(kind?.textContent).toContain("Daemon dmn_eeeeeee");
+
+    act(() => {
+      h.submit.click();
+    });
+
+    expect(h.paired).toEqual([
+      {
+        transport: "hub",
+        hubUrl: "wss://hub.example.com",
+        daemonId: daemon,
+        token: "tok_verbatim_test",
+        scopes: [],
+      },
+    ]);
     h.unmount();
   });
 

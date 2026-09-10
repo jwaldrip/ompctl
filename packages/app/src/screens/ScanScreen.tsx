@@ -13,7 +13,7 @@
  * confirmation card between "scanned" and "saved" is that choice.
  */
 
-import { parsePairingBundle } from "@ompd/core/pairing";
+import { parseDeviceCredential, parsePairingBundle } from "@ompd/core/pairing";
 import type { JSX } from "react";
 import { useCallback, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -24,6 +24,7 @@ import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { Connection } from "../platform/connection.ts";
+import { parsePairDeepLink } from "../platform/deeplink.ts";
 
 export function ScanScreen({
   onCancel,
@@ -43,12 +44,31 @@ export function ScanScreen({
     const raw = codes[0]?.value;
     if (raw === undefined) return;
     const bundle = parsePairingBundle(raw);
-    if (bundle === null) {
-      setInvalid(true);
+    if (bundle !== null) {
+      setInvalid(false);
+      const conn = bundle.connection;
+      const cred = conn.transport === "hub" ? parseDeviceCredential(conn.token) : null;
+      const connection: Connection =
+        conn.transport === "hub" && cred !== null ? { ...conn, token: cred.token, daemonId: cred.daemonId } : conn;
+      setPending({ connection, label: bundle.label });
       return;
     }
-    setInvalid(false);
-    setPending({ connection: bundle.connection, label: bundle.label });
+    const deepLink = parsePairDeepLink(raw);
+    if (deepLink !== null) {
+      setInvalid(false);
+      setPending({
+        connection: {
+          transport: "hub",
+          hubUrl: deepLink.hubUrl,
+          daemonId: deepLink.daemonId,
+          token: deepLink.token,
+          scopes: [...deepLink.scopes],
+        },
+        label: "Scanned device",
+      });
+      return;
+    }
+    setInvalid(true);
   }, []);
 
   const codeScanner = useCodeScanner({
