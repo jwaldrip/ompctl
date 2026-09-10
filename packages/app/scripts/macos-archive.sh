@@ -28,8 +28,9 @@ if [[ "$METHOD" == "app-store-connect" ]]; then
   PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
   PROFILE_TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
   PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$PROFILE_PLIST")"
-  if [[ "$PROFILE_TEAM" != "$TEAM_ID" || "$PROFILE_APP_ID" != "$TEAM_ID.$BUNDLE_ID" ]]; then
-    echo "macOS provisioning profile does not match team and bundle id" >&2
+  PROFILE_PLATFORM="$(/usr/libexec/PlistBuddy -c 'Print :Platform:0' "$PROFILE_PLIST")"
+  if [[ "$PROFILE_TEAM" != "$TEAM_ID" || "$PROFILE_APP_ID" != "$TEAM_ID.$BUNDLE_ID" || "$PROFILE_PLATFORM" != "OSX" ]]; then
+    echo "macOS provisioning profile does not match platform, team, and bundle id" >&2
     exit 1
   fi
   PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"

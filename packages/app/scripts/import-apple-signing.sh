@@ -76,17 +76,24 @@ if [[ "${COUNT:-0}" -lt 1 ]]; then
   printf '%s\n' "$IDENT_OUT" | sed -E 's/"[^"]+"/"<redacted>"/g' || true
   exit 1
 fi
+INSTALLER_NAME=""
 if [[ -f "$INSTALLER_P12_PATH" ]]; then
   INSTALLER_OUT="$(security find-identity -v -p basic "$KEYCHAIN_PATH" || true)"
-  if ! printf '%s\n' "$INSTALLER_OUT" | grep -q 'Mac Developer Installer'; then
+  INSTALLER_NAME="$(printf '%s\n' "$INSTALLER_OUT" | awk -F'"' '/Mac Developer Installer|Mac Installer Distribution/{print $2; exit}')"
+  if [[ -z "$INSTALLER_NAME" ]]; then
     echo "No Mac installer identity in ephemeral keychain" >&2
     exit 1
   fi
-  echo "mac_installer_identity_ready"
+  echo "mac_installer_identity_ready name=$INSTALLER_NAME"
 fi
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
-  echo "OMPD_APPLE_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+  {
+    echo "OMPD_APPLE_KEYCHAIN_PATH=$KEYCHAIN_PATH"
+    if [[ -n "$INSTALLER_NAME" ]]; then
+      echo "OMPD_MACOS_INSTALLER_SIGNING_CERTIFICATE=$INSTALLER_NAME"
+    fi
+  } >> "$GITHUB_ENV"
 fi
 
 rm -f "$P12_PATH" "$INSTALLER_P12_PATH"

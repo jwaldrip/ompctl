@@ -75,26 +75,73 @@ async function createToken(): Promise<string> {
   return `${h}.${p}.${b64url(new Uint8Array(sig))}`;
 }
 
-async function call(method: string, path: string, body?: unknown) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch(`https://api.appstoreconnect.apple.com${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${await createToken()}`,
-        "content-type": "application/json",
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await res.text();
-    if (res.status === 401 && attempt < 2) {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, 1500);
-      await promise;
-      continue;
+interface AscHttpResponse {
+  status: number;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+}
+
+export interface AscRequestDeps {
+  fetcher(url: string, init: RequestInit): Promise<AscHttpResponse>;
+  token(): Promise<string>;
+  sleep(ms: number): Promise<void>;
+}
+
+function retryDelayMs(response: AscHttpResponse | undefined, attempt: number): number {
+  const retryAfter = Number(response?.headers.get("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(retryAfter * 1000, 60000);
+  return Math.min(1500 * 2 ** attempt, 30000);
+}
+
+export async function requestWithRetry(
+  method: string,
+  path: string,
+  body: unknown,
+  deps: AscRequestDeps,
+): Promise<{ status: number; json: any }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const token = await deps.token();
+    let response: AscHttpResponse | undefined;
+    try {
+      response = await deps.fetcher(`https://api.appstoreconnect.apple.com${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const text = await response.text();
+      const retryable = response.status === 401 || response.status === 429 || response.status >= 500;
+      if (retryable && attempt < 5) {
+        await deps.sleep(retryDelayMs(response, attempt));
+        continue;
+      }
+      let json: any = null;
+      if (text) {
+        try {
+          json = JSON.parse(text);
+        } catch {
+          json = text;
+        }
+      }
+      return { status: response.status, json };
+    } catch (error) {
+      lastError = error;
+      if (attempt === 5) throw error;
+      await deps.sleep(retryDelayMs(response, attempt));
     }
-    return { status: res.status, json: text ? JSON.parse(text) : null };
   }
-  throw new Error("ASC request failed after retries");
+  throw lastError instanceof Error ? lastError : new Error("ASC request failed after retries");
+}
+
+async function call(method: string, path: string, body?: unknown) {
+  return requestWithRetry(method, path, body, {
+    fetcher: (url, init) => fetch(url, init),
+    token: createToken,
+    sleep: Bun.sleep,
+  });
 }
 
 export type ApplePlatform = "IOS" | "MAC_OS";
@@ -121,12 +168,25 @@ export function selectBuildByPlatform(
   platform: ApplePlatform,
 ): BuildResource | undefined {
   const platforms = new Map(response.included?.map(item => [item.id, item.attributes?.platform]));
-  return response.data.find(build => {
+  let selected: BuildResource | undefined;
+  let selectedAt = Number.NEGATIVE_INFINITY;
+  for (const build of response.data) {
     const preReleaseId = build.relationships?.preReleaseVersion?.data?.id;
-    return (
-      build.attributes.version === buildNumber && preReleaseId !== undefined && platforms.get(preReleaseId) === platform
-    );
-  });
+    if (
+      build.attributes.version !== buildNumber ||
+      preReleaseId === undefined ||
+      platforms.get(preReleaseId) !== platform
+    ) {
+      continue;
+    }
+    const uploadedAt = Date.parse(build.attributes.uploadedDate ?? "");
+    const timestamp = Number.isNaN(uploadedAt) ? Number.NEGATIVE_INFINITY : uploadedAt;
+    if (selected === undefined || timestamp > selectedAt) {
+      selected = build;
+      selectedAt = timestamp;
+    }
+  }
+  return selected;
 }
 
 export function groupBuildPagePath(groupId: string, next: string): string {
@@ -164,35 +224,38 @@ export function buildStateCanProgress(state: string | undefined): boolean {
 
 async function ensureAssigned(buildId: string): Promise<void> {
   const groupId = requireEnv("OMPD_BETA_GROUP_ID");
-  if (await groupHasBuild(groupId, buildId)) return;
-  const res = await call("POST", `/v1/betaGroups/${groupId}/relationships/builds`, {
-    data: [{ type: "builds", id: buildId }],
-  });
-  if (!assignmentResponseAccepted(res.status)) {
-    throw new Error(`assign returned ${res.status}: ${JSON.stringify(res.json)}`);
-  }
   const waitMs = Number(process.env.OMPD_ASC_ASSIGN_WAIT_MS ?? "300000");
   if (!Number.isFinite(waitMs) || waitMs <= 0) throw new Error("OMPD_ASC_ASSIGN_WAIT_MS must be a positive number");
   const deadline = Date.now() + waitMs;
   while (Date.now() <= deadline) {
     if (await groupHasBuild(groupId, buildId)) return;
+    const res = await call("POST", `/v1/betaGroups/${groupId}/relationships/builds`, {
+      data: [{ type: "builds", id: buildId }],
+    });
+    if (!assignmentResponseAccepted(res.status)) {
+      throw new Error(`assign returned ${res.status}: ${JSON.stringify(res.json)}`);
+    }
     await Bun.sleep(5000);
   }
   throw new Error(`build ${buildId} was not visible in tester group after assignment`);
 }
 
-async function waitForBuildAndAssign(buildNumber: string, platform: ApplePlatform): Promise<void> {
+async function lookupBuild(buildNumber: string, platform: ApplePlatform): Promise<BuildResource | undefined> {
   const appId = requireEnv("OMPD_APP_ID");
+  const res = await call(
+    "GET",
+    `/v1/builds?filter[app]=${appId}&filter[version]=${buildNumber}&sort=-uploadedDate&limit=20&include=preReleaseVersion&fields[builds]=version,processingState,usesNonExemptEncryption,uploadedDate,preReleaseVersion&fields[preReleaseVersions]=platform,version`,
+  );
+  if (res.status !== 200) throw new Error(`build lookup returned ${res.status}: ${JSON.stringify(res.json)}`);
+  return selectBuildByPlatform(res.json as BuildsResponse, buildNumber, platform);
+}
+
+async function waitForBuildAndAssign(buildNumber: string, platform: ApplePlatform): Promise<void> {
   const waitMs = Number(process.env.OMPD_ASC_BUILD_WAIT_MS ?? "3600000");
   if (!Number.isFinite(waitMs) || waitMs <= 0) throw new Error("OMPD_ASC_BUILD_WAIT_MS must be a positive number");
   const deadline = Date.now() + waitMs;
   while (Date.now() <= deadline) {
-    const res = await call(
-      "GET",
-      `/v1/builds?filter[app]=${appId}&filter[version]=${buildNumber}&limit=20&include=preReleaseVersion&fields[builds]=version,processingState,usesNonExemptEncryption,uploadedDate,preReleaseVersion&fields[preReleaseVersions]=platform,version`,
-    );
-    if (res.status !== 200) throw new Error(`build lookup returned ${res.status}: ${JSON.stringify(res.json)}`);
-    const build = selectBuildByPlatform(res.json as BuildsResponse, buildNumber, platform);
+    const build = await lookupBuild(buildNumber, platform);
     const state = build?.attributes.processingState;
     if (!buildStateCanProgress(state)) {
       throw new Error(`build ${buildNumber} for ${platform} ended in ${state}`);
@@ -221,7 +284,7 @@ async function waitForBuildAndAssign(buildNumber: string, platform: ApplePlatfor
 async function main(): Promise<void> {
   const [cmd, arg, platformArg] = process.argv.slice(2);
   if (!cmd || cmd === "--help" || cmd === "help") {
-    console.log("Usage: bun scripts/asc.ts <builds|assign|group|nonexempt|wait-assign> [args]");
+    console.log("Usage: bun scripts/asc.ts <builds|assign|group|nonexempt|find-build|wait-assign> [args]");
     return;
   }
 
@@ -257,6 +320,20 @@ async function main(): Promise<void> {
         `${b.id} build=${b.attributes.version} ${b.attributes.processingState}`,
     );
     console.log(res.status, JSON.stringify(list));
+  } else if (cmd === "find-build") {
+    if (!arg) throw new Error("Missing build number for find-build");
+    if (platformArg !== "IOS" && platformArg !== "MAC_OS") {
+      throw new Error("find-build platform must be IOS or MAC_OS");
+    }
+    const build = await lookupBuild(arg, platformArg);
+    if (build) {
+      console.log(
+        `build_present build=${arg} platform=${platformArg} id=${build.id} state=${build.attributes.processingState}`,
+      );
+    } else {
+      console.log(`build_missing build=${arg} platform=${platformArg}`);
+      process.exitCode = 3;
+    }
   } else if (cmd === "wait-assign") {
     if (!arg) throw new Error("Missing build number for wait-assign");
     if (platformArg !== "IOS" && platformArg !== "MAC_OS") {

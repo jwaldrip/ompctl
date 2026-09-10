@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = join(import.meta.dirname, "..");
@@ -16,6 +17,34 @@ function jobCondition(name: string): string {
 }
 function normalizeCondition(condition: string): string {
   return condition.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
+}
+interface LookupRun {
+  exitCode: number;
+  output: string;
+}
+
+async function runLookupStep(stepName: string, lookupExit: number): Promise<LookupRun> {
+  const jobName = stepName.includes("iOS") ? "ios-testflight" : "macos-testflight";
+  const job = jobs[jobName] as { steps?: Array<Record<string, unknown>> };
+  const step = job.steps?.find(candidate => candidate.name === stepName);
+  if (typeof step?.run !== "string") throw new Error(`missing run body for ${stepName}`);
+  const dir = mkdtempSync(join(tmpdir(), "ompctl-release-lookup-"));
+  const stub = join(dir, "bun");
+  const output = join(dir, "output");
+  writeFileSync(stub, `#!/bin/sh\necho "lookup stub exited ${lookupExit}" >&2\nexit ${lookupExit}\n`, { mode: 0o755 });
+  writeFileSync(output, "");
+  try {
+    const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", step.run], {
+      cwd: root,
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: output, OMPD_BUILD_NUMBER: "999" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { exitCode: await child.exited, output: readFileSync(output, "utf8") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe("App Store release workflow", () => {
@@ -63,16 +92,27 @@ describe("App Store release workflow", () => {
       const stepNames = steps.map(step => step.name).filter(Boolean);
       expect(stepNames).toContain("Require distribution certificate");
       expect(stepNames.some(step => String(step).includes("Require ASC release configuration"))).toBe(true);
-      const uploadName =
-        name === "ios-testflight" ? "Upload to TestFlight" : "Upload macOS to App Store Connect / TestFlight";
-      const publishName =
-        name === "ios-testflight" ? "Publish iOS build to internal testers" : "Publish macOS build to internal testers";
+      const ios = name === "ios-testflight";
+      const lookupName = ios ? "Check for an existing iOS upload" : "Check for an existing macOS upload";
+      const uploadName = ios ? "Upload to TestFlight" : "Upload macOS to App Store Connect / TestFlight";
+      const publishName = ios ? "Publish iOS build to internal testers" : "Publish macOS build to internal testers";
+      const lookupIndex = steps.findIndex(step => step.name === lookupName);
       const uploadIndex = steps.findIndex(step => step.name === uploadName);
       const publishIndex = steps.findIndex(step => step.name === publishName);
-      expect(uploadIndex).toBeGreaterThan(-1);
+      expect(lookupIndex).toBeGreaterThan(-1);
+      expect(uploadIndex).toBeGreaterThan(lookupIndex);
       expect(publishIndex).toBeGreaterThan(uploadIndex);
+      expect(steps[lookupIndex]?.run).toContain(`find-build "$OMPD_BUILD_NUMBER" ${ios ? "IOS" : "MAC_OS"}`);
+      expect(steps[lookupIndex]?.run).toContain('if [[ "$status" -ne 3 ]]');
+      expect(steps[uploadIndex]?.if).toContain(`steps.${ios ? "ios_build" : "macos_build"}.outputs.exists != 'true'`);
       expect(steps[publishIndex]?.if).toBe("env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''");
     }
+
+    const iosJob = jobs["ios-testflight"] as { env?: Record<string, unknown>; steps?: Array<Record<string, unknown>> };
+    expect(iosJob.env?.OMPD_IOS_PROFILE_BASE64).toContain("OMPD_IOS_PROFILE_BASE64");
+    const iosStepNames = (iosJob.steps ?? []).map(step => step.name).filter(Boolean);
+    expect(iosStepNames).toContain("Require iOS provisioning profile");
+    expect(iosStepNames).toContain("Import iOS provisioning profile");
 
     const macos = jobs["macos-testflight"] as {
       env?: Record<string, unknown>;
@@ -81,9 +121,21 @@ describe("App Store release workflow", () => {
     expect(macos.env?.OMPD_MACOS_PROFILE_BASE64).toContain("OMPD_MACOS_PROFILE_BASE64");
     expect(macos.env?.OMPD_MACOS_INSTALLER_CERT_P12_BASE64).toContain("OMPD_MACOS_INSTALLER_CERT_P12_BASE64");
     expect(macos.env?.OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD).toContain("OMPD_MACOS_INSTALLER_CERT_P12_PASSWORD");
-    const macosStepNames = (macos.steps ?? []).map(step => step.name).filter(Boolean);
+    const macosSteps = macos.steps ?? [];
+    const macosStepNames = macosSteps.map(step => step.name).filter(Boolean);
     expect(macosStepNames).toContain("Require macOS signing material");
     expect(macosStepNames).toContain("Import macOS provisioning profile");
     expect(macosStepNames).toContain("Install macOS pods");
+    const macosUpload = macosSteps.find(step => step.name === "Upload macOS to App Store Connect / TestFlight");
+    expect(macosUpload?.run).toContain("No signed macOS pkg export found to upload");
+    expect(macosUpload?.run).not.toContain("ditto");
+  });
+
+  test("upload lookup distinguishes present, missing, and unread remote state", async () => {
+    for (const stepName of ["Check for an existing iOS upload", "Check for an existing macOS upload"]) {
+      expect(await runLookupStep(stepName, 0)).toEqual({ exitCode: 0, output: "exists=true\n" });
+      expect(await runLookupStep(stepName, 3)).toEqual({ exitCode: 0, output: "exists=false\n" });
+      expect(await runLookupStep(stepName, 1)).toEqual({ exitCode: 1, output: "" });
+    }
   });
 });
