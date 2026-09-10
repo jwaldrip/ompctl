@@ -313,62 +313,6 @@ resource "google_cloud_run_v2_service_iam_member" "web_public" {
   member   = "allUsers"
 }
 
-variable "site_image" {
-  type        = string
-  description = "Container image for the ompctl marketing site (the ompctl.ai apex)."
-}
-
-resource "google_service_account" "site" {
-  project    = var.project_id
-  account_id = "ompctl-site"
-}
-
-# The apex is a separate service from the console on purpose. `ompctl-web`
-# serves the SPA and owns the Universal Link association documents; mapping the
-# apex onto it would put the marketing page and those documents behind one
-# deploy, and a bad site build would then take Universal Links down with it.
-resource "google_cloud_run_v2_service" "site" {
-  project  = var.project_id
-  location = var.region
-  name     = "ompctl-site"
-
-  ingress = "INGRESS_TRAFFIC_ALL"
-
-  template {
-    service_account = google_service_account.site.email
-
-    scaling {
-      min_instance_count = 0
-      max_instance_count = 5
-    }
-
-    containers {
-      image = var.site_image
-
-      resources {
-        cpu_idle = true
-        limits = {
-          cpu    = "1"
-          memory = "256Mi"
-        }
-      }
-
-      startup_probe {
-        http_get {
-          path = "/healthz"
-        }
-      }
-    }
-  }
-}
-
-resource "google_cloud_run_v2_service_iam_member" "site_public" {
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.site.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
 
 # Cloud Run refuses to create a domain mapping unless the CALLER has verified
 # ownership of the domain. That check is per-identity, not per-project: the
@@ -419,39 +363,6 @@ resource "google_cloud_run_domain_mapping" "hub" {
 
   spec {
     route_name = google_cloud_run_v2_service.hub.name
-  }
-}
-# The root and www domain mappings are intentionally retained during the DNS
-# cutover (apply one) so clients holding cached Cloud Run anycast addresses
-# (up to the 300s TTL) continue receiving 200s from ompctl-site rather than
-# 404s. Once the TTL has drained, a follow-up apply removes both mappings.
-resource "google_cloud_run_domain_mapping" "root" {
-  count    = var.manage_domain_mappings ? 1 : 0
-  project  = var.project_id
-  location = var.region
-  name     = var.root_domain
-
-  metadata {
-    namespace = var.project_id
-  }
-
-  spec {
-    route_name = google_cloud_run_v2_service.site.name
-  }
-}
-
-resource "google_cloud_run_domain_mapping" "www" {
-  count    = var.manage_domain_mappings ? 1 : 0
-  project  = var.project_id
-  location = var.region
-  name     = "www.${var.root_domain}"
-
-  metadata {
-    namespace = var.project_id
-  }
-
-  spec {
-    route_name = google_cloud_run_v2_service.site.name
   }
 }
 
@@ -585,7 +496,6 @@ resource "google_dns_record_set" "domainkey" {
 output "app_domain" { value = var.app_domain }
 output "hub_domain" { value = var.hub_domain }
 output "web_url" { value = google_cloud_run_v2_service.web.uri }
-output "site_url" { value = google_cloud_run_v2_service.site.uri }
 
 output "nameservers" {
   description = "Set these as the NS records at Squarespace. Nothing else lives there."

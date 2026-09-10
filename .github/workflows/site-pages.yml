@@ -1,7 +1,7 @@
 # Deploys the ompctl marketing site (ompctl.ai) to GitHub Pages.
 #
-# Tradeoff vs Cloud Run origin:
-# On Cloud Run, packages/site/deploy/server.ts set explicit Cache-Control headers:
+# Tradeoff against the retired Cloud Run origin:
+# its static server set explicit Cache-Control headers:
 #   - public, max-age=86400 for screenshots in shots/
 #   - public, max-age=300 for index.html and styles.css
 # GitHub Pages serves static assets through its own CDN edge with managed cache headers
