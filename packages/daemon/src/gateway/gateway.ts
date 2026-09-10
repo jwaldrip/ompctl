@@ -7176,7 +7176,11 @@ export class Gateway {
       return false;
     }
     try {
-      ws.send(encoded ?? JSON.stringify(frame));
+      const result = ws.send(encoded ?? JSON.stringify(frame));
+      if (typeof result === "number" && result <= 0) {
+        if (result < 0) this.#close(ws);
+        return false;
+      }
       return true;
     } catch {
       // The socket went away between an event firing and this send. Remove it

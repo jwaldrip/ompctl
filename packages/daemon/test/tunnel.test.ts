@@ -17,6 +17,7 @@ import { rmSync } from "node:fs";
 import { DefaultPolicy, SCOPE_PROMPT, SCOPE_READ, type ServerFrame, Store } from "@ompd/core";
 import { Gateway, GatewayEvents } from "../src/gateway/index.ts";
 import { HostRegistry } from "../src/hosts.ts";
+import type { SessionIndex } from "../src/sessions/index.ts";
 import { Supervisor } from "../src/supervisor.ts";
 import { createFakeHost } from "./fake-host.ts";
 
@@ -38,7 +39,7 @@ interface Fixture {
   device(id: string, scopes: string[]): string;
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(sessionIndex?: SessionIndex): Promise<Fixture> {
   const path = `/tmp/ompd-tunnel-${crypto.randomUUID()}.db`;
   paths.push(path);
   const store = new Store(path);
@@ -53,7 +54,7 @@ async function fixture(): Promise<Fixture> {
     spawnHost: hosts.spawn,
     events,
   });
-  const gw = new Gateway({ supervisor: sup, store, events, port: 0, sessions: hosts });
+  const gw = new Gateway({ supervisor: sup, store, events, port: 0, sessions: hosts, sessionIndex });
   gateways.push(gw);
   await gw.listen();
 
@@ -73,6 +74,13 @@ function session(gw: Gateway, token: string) {
   const frames: ServerFrame[] = [];
   const result = gw.acceptTunnelSession(token, raw => frames.push(JSON.parse(raw) as ServerFrame));
   return { frames, result };
+}
+async function waitUntil(check: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (check()) return;
+    await Bun.sleep(5);
+  }
+  throw new Error(`timed out waiting for ${label}`);
 }
 
 describe("tunnel sessions reuse the local authorization path", () => {
@@ -163,6 +171,74 @@ describe("tunnel sessions reuse the local authorization path", () => {
     // it has to cover it for a tunnel exactly as for a local socket.
     const notice = frames.find(frame => frame.t === "error" && frame.code === "unauthorized");
     expect(notice).toMatchObject({ message: "this device has been revoked" });
+  });
+
+  test("a dropped Bun send does not suppress the next identical watcher push", async () => {
+    let onChange: (() => void) | undefined;
+    let stops = 0;
+    const index = {
+      queryWithWarm: async () => ({ sessions: [], warmed: null }),
+      pathFor: async () => undefined,
+      watch: (change: () => void) => {
+        onChange = change;
+        return {
+          stop: () => {
+            stops += 1;
+          },
+        };
+      },
+    } as unknown as SessionIndex;
+    const f = await fixture(index);
+    const token = f.device("dev_drop", [SCOPE_READ]);
+    let sends = 0;
+    const tunnel = f.gw.acceptTunnelSession(token, () => {
+      sends += 1;
+      return 0;
+    });
+    if (!tunnel.ok) throw new Error("session was refused");
+    const afterOpen = sends;
+    tunnel.deliver(JSON.stringify({ t: "sessions" }));
+    await waitUntil(() => onChange !== undefined && sends > afterOpen, "initial dropped sessions response");
+    const afterInitial = sends;
+    const push = onChange;
+    if (!push) throw new Error("session watcher did not arm");
+    push();
+    await waitUntil(() => sends > afterInitial, "retry of the dropped sessions payload");
+    tunnel.close();
+    expect(stops).toBe(1);
+  });
+
+  test("a failed session watch is stopped before the gateway rearms it", async () => {
+    let onError: ((error: unknown) => void) | undefined;
+    let watchCalls = 0;
+    let stops = 0;
+    const index = {
+      queryWithWarm: async () => ({ sessions: [], warmed: null }),
+      pathFor: async () => undefined,
+      watch: (_change: () => void, options?: { onError?: (error: unknown) => void }) => {
+        watchCalls += 1;
+        onError = options?.onError;
+        return {
+          stop: () => {
+            stops += 1;
+          },
+        };
+      },
+    } as unknown as SessionIndex;
+    const f = await fixture(index);
+    const token = f.device("dev_watch_error", [SCOPE_READ]);
+    const tunnel = f.gw.acceptTunnelSession(token, () => 1);
+    if (!tunnel.ok) throw new Error("session was refused");
+    tunnel.deliver(JSON.stringify({ t: "sessions" }));
+    await waitUntil(() => watchCalls === 1 && onError !== undefined, "first session watch");
+    const fail = onError;
+    if (!fail) throw new Error("session watch did not expose its error handler");
+    fail(new Error("watch failed"));
+    expect(stops).toBe(1);
+    tunnel.deliver(JSON.stringify({ t: "sessions" }));
+    await waitUntil(() => watchCalls === 2, "replacement session watch");
+    tunnel.close();
+    expect(stops).toBe(2);
   });
 });
 
