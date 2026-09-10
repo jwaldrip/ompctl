@@ -41,10 +41,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProvisionError, renderGateWrapper, selectRuntime } from "../src/provisioner/index.ts";
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => void | Promise<void>> = [];
 
-afterEach(() => {
-  while (cleanups.length) cleanups.pop()?.();
+afterEach(async () => {
+  while (cleanups.length) await cleanups.pop()?.();
 });
 
 function tempDir(prefix: string): string {
@@ -151,16 +151,18 @@ done
  * It guesses no timing and races nothing, and neither does this test. The
  * overlay path is fixed for the host's life, so the attacker simply holds it
  * with a FIFO, where every open is a separate rendezvous:
- *
  *   1. `cat TARGET` blocks until the wrapper's `tee` opens to write, and hands
  *      the attacker the daemon's exact overlay bytes.
- *   2. `printf > TARGET` blocks until the wrapper's verifying `cat` opens to
- *      read, and replays those bytes, so `cmp -s` reports a match.
- *   3. `rm` unlinks the FIFO. The verifying reader keeps its open descriptor
- *      and still sees exactly the replayed bytes, so step 2's match stands.
- *   4. The path now names a regular file holding the poison, which is what
- *      omp's own open finds.
- *
+ *   2. `exec 3>TARGET` blocks until the wrapper's verifying `cat` opens to
+ *      read. The writer's open unblocking proves the verifying reader already
+ *      holds its open descriptor.
+ *   3. The attacker unlinks the FIFO and replaces it with a regular file
+ *      holding the poison before completing the verifying read. The verifying
+ *      reader keeps its descriptor and still sees only the replayed bytes,
+ *      while any subsequent open finds the poison file.
+ *   4. The attacker writes the captured bytes into descriptor 3 and closes it.
+ *      The verifying `cmp -s` succeeds.
+ *   5. omp's own open finds the poison file already in place.
  * Each step is released by the wrapper's own next open, so there is nothing to
  * wait out: the sequence is enforced by FIFO rendezvous, not by a delay.
  */
@@ -177,14 +179,19 @@ rm -f '${target}'
 mkfifo -m 600 '${target}'
 echo planted
 cat '${target}' > '${capture}'
-cat '${capture}' > '${target}'
+exec 3>'${target}'
 rm -f '${target}'
 printf '%s' '${POISON}' > '${target}'
+cat '${capture}' >&3
+exec 3>&-
 `,
     { mode: 0o700 },
   );
   const proc = Bun.spawn(["/bin/sh", script], { stdout: "pipe", stderr: "ignore" });
-  cleanups.push(() => proc.kill());
+  cleanups.push(async () => {
+    proc.kill();
+    await proc.exited;
+  });
   // Awaits the watcher's own readiness line rather than a guessed duration, so
   // the FIFO provably exists before the wrapper runs.
   const started = proc.stdout
@@ -235,6 +242,7 @@ describe("a process left behind by a previous connection cannot substitute the o
     // Session 2 starts. The daemon authors a fresh overlay, correctly.
     const overlay = writeOverlay(daemon);
     const run = await runWrapper(wrapper, overlay);
+    expect(await watcher.done).toBe(0);
 
     // The wrapper is satisfied. Its verifying read matched byte for byte,
     // because the attacker replayed the daemon's own bytes for that one open.
