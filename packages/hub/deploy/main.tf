@@ -313,62 +313,6 @@ resource "google_cloud_run_v2_service_iam_member" "web_public" {
   member   = "allUsers"
 }
 
-variable "site_image" {
-  type        = string
-  description = "Container image for the ompctl marketing site (the ompctl.ai apex)."
-}
-
-resource "google_service_account" "site" {
-  project    = var.project_id
-  account_id = "ompctl-site"
-}
-
-# The apex is a separate service from the console on purpose. `ompctl-web`
-# serves the SPA and owns the Universal Link association documents; mapping the
-# apex onto it would put the marketing page and those documents behind one
-# deploy, and a bad site build would then take Universal Links down with it.
-resource "google_cloud_run_v2_service" "site" {
-  project  = var.project_id
-  location = var.region
-  name     = "ompctl-site"
-
-  ingress = "INGRESS_TRAFFIC_ALL"
-
-  template {
-    service_account = google_service_account.site.email
-
-    scaling {
-      min_instance_count = 0
-      max_instance_count = 5
-    }
-
-    containers {
-      image = var.site_image
-
-      resources {
-        cpu_idle = true
-        limits = {
-          cpu    = "1"
-          memory = "256Mi"
-        }
-      }
-
-      startup_probe {
-        http_get {
-          path = "/healthz"
-        }
-      }
-    }
-  }
-}
-
-resource "google_cloud_run_v2_service_iam_member" "site_public" {
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.site.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
 
 # Cloud Run refuses to create a domain mapping unless the CALLER has verified
 # ownership of the domain. That check is per-identity, not per-project: the
@@ -422,36 +366,6 @@ resource "google_cloud_run_domain_mapping" "hub" {
   }
 }
 
-resource "google_cloud_run_domain_mapping" "root" {
-  count    = var.manage_domain_mappings ? 1 : 0
-  project  = var.project_id
-  location = var.region
-  name     = var.root_domain
-
-  metadata {
-    namespace = var.project_id
-  }
-
-  spec {
-    route_name = google_cloud_run_v2_service.site.name
-  }
-}
-
-resource "google_cloud_run_domain_mapping" "www" {
-  count    = var.manage_domain_mappings ? 1 : 0
-  project  = var.project_id
-  location = var.region
-  name     = "www.${var.root_domain}"
-
-  metadata {
-    namespace = var.project_id
-  }
-
-  spec {
-    route_name = google_cloud_run_v2_service.site.name
-  }
-}
-
 # dns.googleapis.com is NOT declared here. Enabling a service is an owner
 # action (`serviceusage.services.enable`), the deploy identity does not hold it,
 # and a `google_project_service` resource would therefore fail every apply on a
@@ -471,28 +385,31 @@ resource "google_dns_managed_zone" "ompctl" {
   depends_on = [google_project_iam_member.deployer_dns]
 }
 
-# Cloud Run's mapping targets, written out rather than read from
-# `google_cloud_run_domain_mapping.*.status`.
+# Cloud Run's mapping target for hub and app subdomains, written out rather
+# than read from `google_cloud_run_domain_mapping.*.status` (which is unknown
+# at plan time and would fail for_each evaluation).
 #
-# The status block is the authority, but it is only populated AFTER the mapping
-# is created, so a `for_each` over it is unknown at plan time and Terraform
-# refuses the plan outright ("Invalid for_each argument"). These values are
-# Google's published anycast frontends for Cloud Run / App Engine custom
-# domains, and were confirmed against the live mappings for this project:
-# subdomains take the CNAME, an apex takes the four A and four AAAA records.
+# Subdomains hub.ompctl.ai and app.ompctl.ai remain on Cloud Run: the hub holds
+# stateful relay websockets and app.ompctl.ai serves the console SPA and
+# Universal Link or App Link association documents (apple-app-site-association
+# and assetlinks.json), which GitHub Pages must never serve to avoid drift.
+#
+# The apex marketing site points to GitHub Pages (api.github.com/meta .pages[]).
 locals {
   cloud_run_cname = "ghs.googlehosted.com."
-  cloud_run_a = [
-    "216.239.32.21",
-    "216.239.34.21",
-    "216.239.36.21",
-    "216.239.38.21",
+
+  github_pages_cname = "jwaldrip.github.io."
+  github_pages_a = [
+    "185.199.108.153",
+    "185.199.109.153",
+    "185.199.110.153",
+    "185.199.111.153",
   ]
-  cloud_run_aaaa = [
-    "2001:4860:4802:32::15",
-    "2001:4860:4802:34::15",
-    "2001:4860:4802:36::15",
-    "2001:4860:4802:38::15",
+  github_pages_aaaa = [
+    "2606:50c0:8000::153",
+    "2606:50c0:8001::153",
+    "2606:50c0:8002::153",
+    "2606:50c0:8003::153",
   ]
 }
 
@@ -524,9 +441,7 @@ resource "google_dns_record_set" "www" {
   name         = "www.${var.root_domain}."
   type         = "CNAME"
   ttl          = 300
-  rrdatas      = [local.cloud_run_cname]
-
-  depends_on = [google_cloud_run_domain_mapping.www]
+  rrdatas      = [local.github_pages_cname]
 }
 
 # An apex cannot hold a CNAME, so it takes the address records instead.
@@ -536,9 +451,7 @@ resource "google_dns_record_set" "root_a" {
   name         = google_dns_managed_zone.ompctl.dns_name
   type         = "A"
   ttl          = 300
-  rrdatas      = local.cloud_run_a
-
-  depends_on = [google_cloud_run_domain_mapping.root]
+  rrdatas      = local.github_pages_a
 }
 
 resource "google_dns_record_set" "root_aaaa" {
@@ -547,9 +460,7 @@ resource "google_dns_record_set" "root_aaaa" {
   name         = google_dns_managed_zone.ompctl.dns_name
   type         = "AAAA"
   ttl          = 300
-  rrdatas      = local.cloud_run_aaaa
-
-  depends_on = [google_cloud_run_domain_mapping.root]
+  rrdatas      = local.github_pages_aaaa
 }
 
 resource "google_dns_record_set" "apex_txt" {
@@ -585,7 +496,6 @@ resource "google_dns_record_set" "domainkey" {
 output "app_domain" { value = var.app_domain }
 output "hub_domain" { value = var.hub_domain }
 output "web_url" { value = google_cloud_run_v2_service.web.uri }
-output "site_url" { value = google_cloud_run_v2_service.site.uri }
 
 output "nameservers" {
   description = "Set these as the NS records at Squarespace. Nothing else lives there."

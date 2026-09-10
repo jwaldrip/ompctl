@@ -28,6 +28,7 @@
 export type {
   ConnectorStatus,
   ConnectorSummary,
+  CoworkCatalog,
   SkillKind,
   SkillSummary,
   Task,
@@ -35,3 +36,11 @@ export type {
   WorkspaceSourceLevel,
 } from "@ompd/core/contracts";
 export { TERMINAL_TASK_STATES } from "@ompd/core/contracts";
+
+export type CoworkSliceStatus = "loading" | "loaded" | "refused";
+
+export interface CoworkSlice<T> {
+  status: CoworkSliceStatus;
+  data: T;
+  error: string | null;
+}
