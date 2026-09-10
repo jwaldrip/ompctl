@@ -776,7 +776,7 @@ export function Console({
     // for the console's connection. The screen decides from the pairing's
     // scopes whether it may change anything or only read.
     settings: back => <SettingsScreen connection={connection} onBack={back} />,
-    stats: back => <StatsScreen connection={connection} onBack={back} />,
+    stats: back => <StatsScreen connection={connection} createClient={createClient} onBack={back} />,
     // Owns its own socket, like the settings screen above. It receives the
     // console's `createClient` for the same reason Cowork does: it is the seam
     // a test drives this surface's socket through, and in the app it is the

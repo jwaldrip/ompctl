@@ -2,8 +2,10 @@ import "./rnw.ts";
 
 import { describe, expect, test } from "bun:test";
 import type { DashboardStats } from "@ompd/core/contracts";
+import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
+import type { Connection } from "../src/platform/connection.ts";
 
 const { StatsScreen } = await import("../src/screens/StatsScreen.tsx");
 const { StatusReadout } = await import("../src/components/StatusReadout.tsx");
@@ -193,6 +195,68 @@ describe("StatsScreen", () => {
       expect(spend.textContent).toContain("not reported");
     } finally {
       noCost.unmount();
+    }
+  });
+
+  test("renders stats from socket reply and does not fetch", async () => {
+    let fetchCalled = false;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      fetchCalled = true;
+      return Promise.reject(new Error("fetch must not be called"));
+    }) as unknown as typeof fetch;
+
+    const listeners = new Map<string, Array<(event: unknown) => void>>();
+    const sent: Array<{ t: string; range?: string }> = [];
+    const client = {
+      stats: (range?: string) => {
+        sent.push({ t: "stats", range });
+      },
+      on: (event: string, listener: (event: unknown) => void) => {
+        const list = listeners.get(event) ?? [];
+        list.push(listener);
+        listeners.set(event, list);
+        return () => {
+          const cur = listeners.get(event) ?? [];
+          listeners.set(
+            event,
+            cur.filter(l => l !== listener),
+          );
+        };
+      },
+      emit: (event: string, payload: unknown) => {
+        act(() => {
+          for (const l of listeners.get(event) ?? []) l(payload);
+        });
+      },
+    };
+
+    const connection: Connection = {
+      transport: "hub",
+      hubUrl: "wss://hub.ompctl.ai/v1/link/dmn_123/socket",
+      daemonId: "dmn_123",
+      token: "tok_abc",
+      scopes: ["read"],
+    };
+
+    try {
+      const mounted = mount(
+        <StatsScreen connection={connection} createClient={() => client as unknown as OmpdClient} onBack={() => {}} />,
+      );
+
+      expect(sent.length).toBeGreaterThan(0);
+      expect(sent[0]?.t).toBe("stats");
+      expect(sent[0]?.range).toBe("7d");
+
+      client.emit("stats", { stats: fixtureStats });
+
+      const cost = byTestID(mounted.host, "stats-overview-cost");
+      expect(cost.textContent).toContain("$1.42");
+      expect(fetchCalled).toBe(false);
+
+      mounted.unmount();
+    } finally {
+      globalThis.fetch = origFetch;
     }
   });
 });

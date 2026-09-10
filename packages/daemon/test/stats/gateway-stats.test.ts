@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 import { SCOPE_READ, Store } from "@ompd/core";
+import type { DashboardStats } from "@ompd/core/contracts";
 import { Gateway } from "../../src/gateway/gateway.ts";
 import { SessionIndex } from "../../src/sessions/session-index.ts";
 import { StatsSubsystem } from "../../src/stats/index.ts";
@@ -164,5 +165,113 @@ describe("gateway stats endpoints", () => {
     });
 
     expect(res.status).toBe(404);
+  });
+
+  test("stats frame answers with the same numbers as HTTP /v1/stats for the same range, and refuses without read", async () => {
+    const dbDir = tempDir("gw-stats-ws-");
+    const store = new Store(join(dbDir, "ompd.db"));
+    const supervisor = new Supervisor({ store, home: dbDir });
+    const expectedStats: DashboardStats = {
+      overall: {
+        totalRequests: 42,
+        successfulRequests: 40,
+        failedRequests: 2,
+        errorRate: 2 / 42,
+        totalInputTokens: 1000,
+        totalOutputTokens: 200,
+        totalCacheReadTokens: 500,
+        totalCacheWriteTokens: 50,
+        cacheRate: 500 / 1500,
+        totalCost: 1.23,
+        totalPremiumRequests: 0,
+        avgDuration: 1200,
+        avgTtft: 450,
+        avgTokensPerSecond: 35,
+        firstTimestamp: 1000,
+        lastTimestamp: 2000,
+      },
+      byModel: [],
+      byFolder: [],
+      byAgentType: [],
+      timeSeries: [],
+      modelSeries: [],
+      modelPerformanceSeries: [],
+      costSeries: [],
+    };
+    const mockStats = {
+      available: true,
+      start() {},
+      stop() {},
+      sync: async () => {},
+      getDashboardStats: async () => expectedStats,
+      getSessionStats: async () => null,
+    } as unknown as StatsSubsystem;
+
+    const gateway = new Gateway({ store, supervisor, stats: mockStats });
+    gateways.push(gateway);
+    const port = await gateway.listen();
+
+    const pairWith = async (name: string, scopes: string[]): Promise<string> => {
+      const pairRes = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, publicKey: `pk_${crypto.randomUUID()}` }),
+      });
+      const pairBody = (await pairRes.json()) as { code: string };
+      return gateway.approvePairing(pairBody.code, scopes);
+    };
+
+    const readToken = await pairWith("reader", [SCOPE_READ]);
+    const noReadToken = await pairWith("no-reader", []);
+
+    // 1. HTTP returns expectedStats
+    const httpRes = await fetch(`http://127.0.0.1:${port}/v1/stats?range=7d`, {
+      headers: { Authorization: `Bearer ${readToken}` },
+    });
+    expect(httpRes.status).toBe(200);
+    const httpData = (await httpRes.json()) as DashboardStats;
+    expect(httpData.overall.totalCost).toBe(1.23);
+
+    const nextMessage = (ws: WebSocket): Promise<Record<string, unknown>> => {
+      const deferred = Promise.withResolvers<Record<string, unknown>>();
+      const handler = (ev: MessageEvent) => {
+        const parsed: unknown = JSON.parse(String(ev.data));
+        if (parsed && typeof parsed === "object") {
+          const rec = parsed as Record<string, unknown>;
+          if (rec.t === "hello") return;
+          ws.removeEventListener("message", handler);
+          deferred.resolve(rec);
+        }
+      };
+      ws.addEventListener("message", handler);
+      return deferred.promise;
+    };
+    // 2. WS with read scope
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/socket?token=${encodeURIComponent(readToken)}`);
+    const opened = Promise.withResolvers<boolean>();
+    ws.addEventListener("open", () => opened.resolve(true));
+    expect(await opened.promise).toBe(true);
+
+    const replyPromise = nextMessage(ws);
+    ws.send(JSON.stringify({ t: "stats", range: "7d" }));
+    const reply = await replyPromise;
+
+    expect(reply.t).toBe("stats");
+    expect(reply.stats).toEqual(httpData);
+    ws.close();
+
+    // 3. WS without read scope
+    const wsNoRead = new WebSocket(`ws://127.0.0.1:${port}/v1/socket?token=${encodeURIComponent(noReadToken)}`);
+    const openedNoRead = Promise.withResolvers<boolean>();
+    wsNoRead.addEventListener("open", () => openedNoRead.resolve(true));
+    expect(await openedNoRead.promise).toBe(true);
+
+    const replyNoReadPromise = nextMessage(wsNoRead);
+    wsNoRead.send(JSON.stringify({ t: "stats", range: "7d" }));
+    const replyNoRead = await replyNoReadPromise;
+
+    expect(replyNoRead.t).toBe("error");
+    expect(replyNoRead.code).toBe("unauthorized");
+    wsNoRead.close();
   });
 });
