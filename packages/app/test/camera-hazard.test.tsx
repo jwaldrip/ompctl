@@ -109,5 +109,4 @@ describe("Web build camera exclusion", () => {
       await server.close();
     }
   });
-
 });
