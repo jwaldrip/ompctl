@@ -160,10 +160,9 @@ describe("App Store release workflow", () => {
       const steps = job.steps ?? [];
       const checkout = steps.find(step => step.uses === "actions/checkout@v4");
       expect(checkout?.with).toMatchObject({ "fetch-depth": 0 });
-      const selectXcode = steps.find(step => step.name === "Select Xcode 16+");
-      expect(String(selectXcode?.run).trimStart().startsWith("sudo xcode-select -s /Applications/Xcode_16.4.app")).toBe(
-        true,
-      );
+      const selectXcode = steps.find(step => step.name === "Select release Xcode");
+      expect(selectXcode?.run).toBe("bash ./scripts/select-release-xcode.sh");
+      if (name === "ios-testflight") expect(selectXcode?.env).toMatchObject({ OMPD_REQUIRE_IOS_SDK: "1" });
       const stepNames = steps.map(step => step.name).filter(Boolean);
       expect(stepNames).toContain("Require distribution certificate");
       expect(stepNames.some(step => String(step).includes("Require ASC release configuration"))).toBe(true);

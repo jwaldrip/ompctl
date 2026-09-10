@@ -110,10 +110,10 @@ jobs:
           exit 1
       - name: Import Apple signing certificate
         run: bash ./scripts/import-apple-signing.sh
-      - name: Select Xcode 16+
-        run: |
-          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
-          xcodebuild -version
+      - name: Select release Xcode
+        env:
+          OMPD_REQUIRE_IOS_SDK: "1"
+        run: bash ./scripts/select-release-xcode.sh
       - name: Install pods
         run: |
           cd ios
@@ -381,10 +381,8 @@ jobs:
           PY
       - name: Import Apple signing certificate
         run: bash ./scripts/import-apple-signing.sh
-      - name: Select Xcode 16+
-        run: |
-          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer ||           sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
-          xcodebuild -version
+      - name: Select release Xcode
+        run: bash ./scripts/select-release-xcode.sh
       - name: Install macOS pods
         run: cd macos && pod install
       - name: Archive macOS
