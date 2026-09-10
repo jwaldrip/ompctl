@@ -313,52 +313,6 @@ resource "google_cloud_run_v2_service_iam_member" "web_public" {
   member   = "allUsers"
 }
 
-# Transitional resource for the provider's two-apply deletion protocol. The
-# marketing site is already live on GitHub Pages and this service has no IAM
-# binding or DNS path. Terraform nevertheless refuses to destroy a Cloud Run
-# v2 service whose state still has deletion protection enabled. Re-declaring
-# the surviving resource with the exact image and identity read from the Cloud
-# Run API changes only that provider guard. After this apply succeeds, the next
-# change removes this block and Terraform can destroy the service and account.
-resource "google_service_account" "site" {
-  project    = var.project_id
-  account_id = "ompctl-site"
-}
-
-resource "google_cloud_run_v2_service" "site" {
-  project             = var.project_id
-  location            = var.region
-  name                = "ompctl-site"
-  ingress             = "INGRESS_TRAFFIC_ALL"
-  deletion_protection = false
-
-  template {
-    service_account = google_service_account.site.email
-
-    scaling {
-      min_instance_count = 0
-      max_instance_count = 5
-    }
-
-    containers {
-      image = "us-central1-docker.pkg.dev/ompctl/ompd/site:f5c4a3abd788ddbe6bbe91768de8db665d7be2e6"
-
-      resources {
-        cpu_idle = true
-        limits = {
-          cpu    = "1"
-          memory = "256Mi"
-        }
-      }
-
-      startup_probe {
-        http_get {
-          path = "/healthz"
-        }
-      }
-    }
-  }
-}
 
 
 # Cloud Run refuses to create a domain mapping unless the CALLER has verified
