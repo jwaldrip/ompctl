@@ -21,11 +21,13 @@ async function expectReconciledAfterMissedEvent(
   const root = mkdtempSync(join(tmpdir(), "session-watch-reconcile-"));
   setup(root);
   const watchers: SilentWatcher[] = [];
+  const ready = Promise.withResolvers<void>();
   const changed = Promise.withResolvers<void>();
   const handle = watchSessionFiles(root, changed.resolve, {
     quietMs: 5,
     maxWaitMs: 20,
     reconcileMs: 10,
+    onReady: ready.resolve,
     watchFactory: () => {
       const watcher = new SilentWatcher();
       watchers.push(watcher);
@@ -34,6 +36,7 @@ async function expectReconciledAfterMissedEvent(
   });
   expect(handle).not.toBeNull();
   try {
+    await ready.promise;
     mutate(root);
     const timeout = Bun.sleep(250).then(() => {
       throw new Error("missed filesystem event was not reconciled");
@@ -75,4 +78,38 @@ test("file reconciliation detects an appended session when every watch event is 
       writeFileSync(file(root), "{}\n");
     },
   );
+});
+
+test("stopping during a cooperative reconciliation suppresses its pending notification", async () => {
+  const root = mkdtempSync(join(tmpdir(), "session-watch-stop-"));
+  const group = join(root, "-existing");
+  mkdirSync(group);
+  for (let index = 0; index < 17; index += 1) {
+    const suffix = String(index).padStart(12, "0");
+    writeFileSync(join(group, `2026-09-10T00-00-00-000Z_019feed0-0000-7000-8000-${suffix}.jsonl`), "{}\n");
+  }
+  const watchers: SilentWatcher[] = [];
+  let changes = 0;
+  const handle = watchSessionFiles(
+    root,
+    () => {
+      changes += 1;
+    },
+    {
+      quietMs: 5,
+      reconcileMs: 10,
+      watchFactory: () => {
+        const watcher = new SilentWatcher();
+        watchers.push(watcher);
+        return watcher as unknown as FSWatcher;
+      },
+    },
+  );
+  expect(handle).not.toBeNull();
+  handle?.stop();
+  await Bun.sleep(25);
+  expect(changes).toBe(0);
+  expect(watchers.length).toBeGreaterThan(0);
+  expect(watchers.every(watcher => watcher.closed)).toBe(true);
+  rmSync(root, { recursive: true, force: true });
 });

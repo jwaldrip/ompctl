@@ -55,13 +55,35 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
+function indexedFakeHost(home: string) {
+  const sessionsRoot = join(home, "sessions");
+  const group = join(sessionsRoot, "-fake");
+  let nextSession = 0;
+  const fake = createFakeHost({
+    nextSessionId: () => {
+      nextSession += 1;
+      const sessionId = `00000000-0000-7000-8000-${String(nextSession).padStart(12, "0")}`;
+      mkdirSync(group, { recursive: true });
+      writeFileSync(
+        join(group, `2026-09-10T00-00-00-000Z_${sessionId}.jsonl`),
+        `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-09-10T00:00:00.000Z", cwd: home })}
+`,
+      );
+      return sessionId;
+    },
+  });
+  return { fake, sessionsRoot };
+}
+
 function build(home: string, extra: Partial<OmpdOptions> = {}): Ompd {
+  const { fake, sessionsRoot } = indexedFakeHost(home);
   const daemon = new Ompd({
     home,
+    sessionsRoot,
     // Port 0 asks the OS for a free one, so tests never collide with each
     // other or with a daemon the developer left running.
     overrides: { port: 0 },
-    spawnHost: createFakeHost().factory,
+    spawnHost: fake.factory,
     voice: false,
     ...extra,
   });
@@ -1063,9 +1085,10 @@ async function pairDevice(base: string, approver: string, name: string, scopes: 
 describe("WebView composition", () => {
   test("mounts the per-agent MCP server and round-trips a tool call through the registered device", async () => {
     const home = tempDir("ompd-webview-");
-    const fake = createFakeHost();
+    const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
       home,
+      sessionsRoot,
       overrides: { port: 0 },
       spawnHost: fake.factory,
       voice: false,
@@ -1152,9 +1175,10 @@ describe("WebView composition", () => {
 
   test("routes WebView navigation approval decisions through the operator socket", async () => {
     const home = tempDir("ompd-webview-approval-");
-    const fake = createFakeHost();
+    const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
       home,
+      sessionsRoot,
       overrides: { port: 0 },
       spawnHost: fake.factory,
       voice: false,
@@ -1275,9 +1299,10 @@ describe("WebView composition", () => {
 
   test("fails a WebView approval closed when the operator does not decide", async () => {
     const home = tempDir("ompd-webview-approval-timeout-");
-    const fake = createFakeHost();
+    const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
       home,
+      sessionsRoot,
       overrides: { port: 0 },
       spawnHost: fake.factory,
       voice: false,
@@ -1324,9 +1349,10 @@ describe("WebView composition", () => {
 
   test("an agent-issued WebView call passes OMP's MCP wrapper and the bridge gate", async () => {
     const home = tempDir("ompd-webview-agent-call-");
-    const fake = createFakeHost();
+    const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
       home,
+      sessionsRoot,
       overrides: { port: 0 },
       spawnHost: fake.factory,
       voice: false,
@@ -1416,9 +1442,10 @@ describe("WebView composition", () => {
 
   test("fails an in-flight action when the registered device disconnects", async () => {
     const home = tempDir("ompd-webview-");
-    const fake = createFakeHost();
+    const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
       home,
+      sessionsRoot,
       overrides: { port: 0 },
       spawnHost: fake.factory,
       voice: false,

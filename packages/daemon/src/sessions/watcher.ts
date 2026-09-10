@@ -53,6 +53,8 @@ export interface SessionWatchOptions {
   reconcileMs?: number;
   /** Override of node:fs watch for deterministic missed-event tests. */
   watchFactory?: (path: string, listener: (eventType: string, filename: string | Buffer | null) => void) => FSWatcher;
+  /** Called once after the initial fingerprint baseline is complete. */
+  onReady?: () => void;
   /**
    * Watcher failure report. The watcher stops itself after raising one: a
    * dead watch is a pull-only daemon (every `sessions` ask still rebuilds
@@ -175,10 +177,11 @@ export function watchSessionFiles(
     return true;
   };
 
-  const reconcileDirectories = (): boolean => {
+  function* reconcileDirectories(): Generator<void, boolean> {
     if (stopped) return false;
     const live = new Set<string>();
     let changed = false;
+    let units = 0;
     for (const entry of readdirSync(sessionsRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const path = join(sessionsRoot, entry.name);
@@ -194,6 +197,12 @@ export function watchSessionFiles(
           sessionCount += 1;
           totalBytes += metadata.size;
           latestSessionMtimeMs = Math.max(latestSessionMtimeMs, metadata.mtimeMs);
+          units += 1;
+          if (units >= 8) {
+            units = 0;
+            yield;
+            if (stopped) return false;
+          }
         }
         fingerprint = { directoryMtimeMs, sessionCount, totalBytes, latestSessionMtimeMs };
       } catch {
@@ -203,6 +212,12 @@ export function watchSessionFiles(
       if (watchDirectory(entry.name) || !sameFingerprint(directoryFingerprints.get(entry.name), fingerprint))
         changed = true;
       directoryFingerprints.set(entry.name, fingerprint);
+      units += 1;
+      if (units >= 8) {
+        units = 0;
+        yield;
+        if (stopped) return false;
+      }
     }
     for (const [name, watcher] of directoryWatchers) {
       if (live.has(name)) continue;
@@ -216,27 +231,59 @@ export function watchSessionFiles(
       changed = true;
     }
     return changed;
+  }
+
+  const reconcileCooperatively = async (): Promise<boolean> => {
+    const work = reconcileDirectories();
+    let step = work.next();
+    while (!step.done) {
+      await Bun.sleep(0);
+      step = work.next();
+    }
+    return step.value;
+  };
+
+  let reconcileInFlight = false;
+  let reconcileAgain = false;
+  let initialized = false;
+  const requestReconcile = (): void => {
+    if (stopped) return;
+    if (reconcileInFlight) {
+      reconcileAgain = true;
+      return;
+    }
+    reconcileInFlight = true;
+    void (async () => {
+      try {
+        do {
+          reconcileAgain = false;
+          const changed = await reconcileCooperatively();
+          if (stopped) break;
+          if (initialized) {
+            if (changed) arm();
+          } else {
+            initialized = true;
+            opts.onReady?.();
+          }
+        } while (reconcileAgain && !stopped);
+      } catch (err) {
+        fail(err);
+      } finally {
+        reconcileInFlight = false;
+        if (reconcileAgain && !stopped) requestReconcile();
+      }
+    })();
   };
 
   try {
     rootWatcher = watchPath(sessionsRoot, (_event, filename) => {
       if (stopped) return;
-      try {
-        const directoriesChanged = reconcileDirectories();
-        if (typeof filename !== "string" || directoriesChanged) arm();
-      } catch (err) {
-        fail(err);
-      }
+      if (typeof filename !== "string") arm();
+      requestReconcile();
     });
     rootWatcher.on("error", fail);
-    reconcileDirectories();
-    reconcileTimer = setInterval(() => {
-      try {
-        if (reconcileDirectories()) arm();
-      } catch (err) {
-        fail(err);
-      }
-    }, reconcileMs);
+    requestReconcile();
+    reconcileTimer = setInterval(requestReconcile, reconcileMs);
   } catch (err) {
     rootWatcher?.close();
     for (const watcher of directoryWatchers.values()) watcher.close();

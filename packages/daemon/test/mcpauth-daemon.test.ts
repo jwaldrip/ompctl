@@ -121,6 +121,7 @@ function tokenEndpoint(opts: { access: string; refresh: string; successor: strin
 function build(home: string, mcpAuthPort: number): Ompd {
   const daemon = new Ompd({
     home,
+    sessionsRoot: join(home, "sessions"),
     overrides: { port: 0, mcpAuthPort },
     spawnHost: createFakeHost().factory,
     // Never the operator's real login keychain: a test that seeds a vault must
