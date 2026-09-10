@@ -989,11 +989,20 @@ function CoworkSurface({
         tasks={state.tasks}
         skills={state.skills}
         connectors={state.connectors}
+        skillsSlice={state.skillsSlice}
+        connectorsSlice={state.connectorsSlice}
+        tasksSlice={state.tasksSlice}
         // The same client the catalogues ride: the folder picker browses with
         // its `fs_list` frames and the binding starts a container with its
         // `agent_create`, so choosing a folder opens no second link.
         client={client}
         onStartTask={start}
+        onRetryTask={task => {
+          setRefusal(null);
+          void actions.retryTask(task).catch((cause: unknown) => {
+            setRefusal(cause instanceof Error ? cause.message : String(cause));
+          });
+        }}
         // Invoking a skill is starting a task that runs it: the same act the
         // composer performs, with the invocation text `catalog.ts` already
         // defines rather than a second spelling of it here.

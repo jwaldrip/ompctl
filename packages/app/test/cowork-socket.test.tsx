@@ -164,9 +164,11 @@ describe("the catalogue asks", () => {
   test("all three ride frames on mount, scoped to the cwd it was handed", () => {
     const p = probe();
     try {
-      expect(p.socket.framesOfType("skills_read")).toEqual([{ t: "skills_read", cwd: CWD }]);
-      expect(p.socket.framesOfType("connectors_read")).toEqual([{ t: "connectors_read", cwd: CWD }]);
-      expect(p.socket.framesOfType("tasks_read")).toEqual([{ t: "tasks_read" }]);
+      expect(p.socket.framesOfType("skills_read")).toEqual([{ t: "skills_read", cwd: CWD, requestId: "req_skills_1" }]);
+      expect(p.socket.framesOfType("connectors_read")).toEqual([
+        { t: "connectors_read", cwd: CWD, requestId: "req_connectors_2" },
+      ]);
+      expect(p.socket.framesOfType("tasks_read")).toEqual([{ t: "tasks_read", requestId: "req_tasks_3" }]);
     } finally {
       p.unmount();
     }
@@ -194,15 +196,39 @@ describe("the catalogue asks", () => {
     }
   });
 
-  test("a refusal is carried as the error the surface shows, and the next answer clears it", () => {
+  test("a refusal is carried as the error the surface shows, and a successful answer on that slice clears it", () => {
     const p = probe();
     try {
-      p.deliver({ t: "error", code: "unauthorized", message: "skills_read requires read scope" });
+      p.deliver({ t: "error", code: "unauthorized", message: "skills_read requires read scope", catalog: "skills" });
       expect(p.state().error).toBe("skills_read requires read scope");
       expect(p.state().loading).toBe(false);
 
+      // An answer on another slice does not erase the refusal
       p.deliver({ t: "tasks", tasks: [] });
+      expect(p.state().error).toBe("skills_read requires read scope");
+
+      // A successful answer on the refused slice retires the error
+      p.deliver({ t: "skills", skills: [] });
       expect(p.state().error).toBeNull();
+    } finally {
+      p.unmount();
+    }
+  });
+
+  test("refusing one catalogue leaves its refusal visible after another catalogue succeeds", () => {
+    const p = probe();
+    try {
+      p.deliver({ t: "error", code: "skills_failed", message: "skills catalogue failed to load", catalog: "skills" });
+      expect(p.state().error).toBe("skills catalogue failed to load");
+      expect(p.state().skillsSlice.status).toBe("refused");
+      expect(p.state().skillsSlice.error).toBe("skills catalogue failed to load");
+
+      p.deliver({ t: "connectors", connectors: [] });
+      expect(p.state().error).toBe("skills catalogue failed to load");
+      expect(p.state().skillsSlice.status).toBe("refused");
+      expect(p.state().skillsSlice.error).toBe("skills catalogue failed to load");
+      expect(p.state().connectorsSlice.status).toBe("loaded");
+      expect(p.state().connectorsSlice.error).toBeNull();
     } finally {
       p.unmount();
     }
