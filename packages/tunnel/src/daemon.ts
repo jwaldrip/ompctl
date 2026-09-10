@@ -117,7 +117,7 @@ export type AcceptResult =
 export interface SessionAcceptor {
   accept(
     token: string,
-    send: (raw: string) => void,
+    send: (raw: string) => unknown,
     getBufferedAmount?: () => number,
     onClose?: (code?: number, reason?: string) => void,
   ): AcceptResult;
@@ -662,12 +662,16 @@ export class TunnelDaemon {
     // is on the wire, then flush in the order the gateway produced them.
     let sessionReady = false;
     const pending: string[] = [];
-    const deliver = (raw: string): void => {
+    const deliver = (raw: string): boolean => {
       if (!sessionReady) {
         pending.push(raw);
-        return;
+        return true;
       }
+      // Acceptance here means the plaintext entered the sealed-channel send
+      // chain. The browser WebSocket queues that sealed frame or throws; a
+      // later channel gap tears the session down rather than losing it silently.
       void this.#sealTo(session, raw);
+      return true;
     };
 
     const getBufferedAmount = (): number => {

@@ -173,7 +173,7 @@ describe("tunnel sessions reuse the local authorization path", () => {
     expect(notice).toMatchObject({ message: "this device has been revoked" });
   });
 
-  test("a dropped Bun send does not suppress the next identical watcher push", async () => {
+  test("dropped sends retry while enqueued backpressure sends commit the payload", async () => {
     let onChange: (() => void) | undefined;
     let stops = 0;
     const index = {
@@ -191,9 +191,10 @@ describe("tunnel sessions reuse the local authorization path", () => {
     const f = await fixture(index);
     const token = f.device("dev_drop", [SCOPE_READ]);
     let sends = 0;
+    let sendResult = 0;
     const tunnel = f.gw.acceptTunnelSession(token, () => {
       sends += 1;
-      return 0;
+      return sendResult;
     });
     if (!tunnel.ok) throw new Error("session was refused");
     const afterOpen = sends;
@@ -204,6 +205,14 @@ describe("tunnel sessions reuse the local authorization path", () => {
     if (!push) throw new Error("session watcher did not arm");
     push();
     await waitUntil(() => sends > afterInitial, "retry of the dropped sessions payload");
+    sendResult = -1;
+    const beforeEnqueue = sends;
+    push();
+    await waitUntil(() => sends > beforeEnqueue, "enqueued backpressure sessions payload");
+    const afterEnqueue = sends;
+    push();
+    await Bun.sleep(20);
+    expect(sends).toBe(afterEnqueue);
     tunnel.close();
     expect(stops).toBe(1);
   });

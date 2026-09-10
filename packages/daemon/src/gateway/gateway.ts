@@ -1799,7 +1799,7 @@ export class Gateway {
    */
   acceptTunnelSession(
     token: string,
-    send: (raw: string) => void,
+    send: (raw: string) => unknown,
     getBufferedAmount?: () => number,
     onClose?: (code?: number, reason?: string) => void,
   ): TunnelSessionResult {
@@ -7177,10 +7177,7 @@ export class Gateway {
     }
     try {
       const result = ws.send(encoded ?? JSON.stringify(frame));
-      if (typeof result === "number" && result <= 0) {
-        if (result < 0) this.#close(ws);
-        return false;
-      }
+      if (result === 0) return false;
       return true;
     } catch {
       // The socket went away between an event firing and this send. Remove it
