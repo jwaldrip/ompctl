@@ -14,10 +14,10 @@
  * So both directions are asserted here: nothing survives a spawn that threw,
  * and the overlay stays intact and readable for a live child's whole lifetime.
  *
- * Every leak assertion is a delta between two snapshots of the temp dir, never
- * an absolute "no ompd-gate-* exists". Sibling suites and the live-check scripts
- * spawn real hosts in the same temp dir concurrently, so an absolute assertion
- * would report their in-flight overlays as this code's leak.
+ * Spawn-failure leak assertions are deltas between two snapshots of the temp
+ * dir. The live child writes the exact overlay path it received to a witness,
+ * because sibling suites can create their own overlay between two snapshots
+ * and make a timing-derived identity wrong.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -32,7 +32,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { GATE_CONFIG_YAML, type SpawnLocalHostOptions, spawnLocalHost } from "../src/index.ts";
 
 /** Overlay directories present in the temp dir at this instant. */
@@ -110,15 +110,20 @@ describe("spawnLocalHost overlay lifetime", () => {
     // read, not about what the parent wrote.
     const dir = scratchDir();
     const witness = join(dir, "witness.yml");
+    const pathWitness = join(dir, "overlay-path.txt");
     const bin = join(dir, "fake-omp");
-    // `$3` is the overlay path: argv is `acp --config <path>`. The marker is
-    // written after the copy, so seeing it means the copy is complete. `exec`
-    // hands the pid to sleep, so `kill` reaches the process being waited on.
-    writeFileSync(bin, `#!/bin/sh\ncat "$3" > '${witness}'\necho host-ready >&2\nexec sleep 300\n`);
+    // `$3` is the overlay config path: argv is `acp --config <path>`. Record
+    // that exact path as well as its content. A temp-directory snapshot can
+    // only infer which overlay is ours, and two concurrent full suites proved
+    // that inference wrong by creating two overlays between the snapshots.
+    // The child knows which path it received, so make it the authority.
+    writeFileSync(
+      bin,
+      `#!/bin/sh\nprintf '%s' "$3" > '${pathWitness}'\ncat "$3" > '${witness}'\necho host-ready >&2\nexec sleep 300\n`,
+    );
     chmodSync(bin, 0o755);
 
     const ready = Promise.withResolvers<void>();
-    const before = gateDirs();
     const host = spawnLocalHost({
       ...callbacks,
       ompPath: bin,
@@ -127,17 +132,15 @@ describe("spawnLocalHost overlay lifetime", () => {
       },
     });
 
-    const overlays = appeared(before, gateDirs());
-    expect(overlays).toHaveLength(1);
-    const overlay = join(tmpdir(), overlays[0] as string);
-
     // The child's own signal, not a guessed delay.
     await ready.promise;
+    const overlayConfig = readFileSync(pathWitness, "utf8");
+    const overlay = dirname(overlayConfig);
 
     // What the child actually got: the whole overlay, not a truncated prefix.
     expect(readFileSync(witness, "utf8")).toBe(GATE_CONFIG_YAML);
     // Still private, and still on disk, while the child runs.
-    expect(statSync(join(overlay, "gate.yml")).mode & 0o777).toBe(0o600);
+    expect(statSync(overlayConfig).mode & 0o777).toBe(0o600);
     expect(existsSync(overlay)).toBe(true);
 
     host.kill();
@@ -147,6 +150,5 @@ describe("spawnLocalHost overlay lifetime", () => {
     await host.exited;
 
     expect(existsSync(overlay)).toBe(false);
-    expect(appeared(before, gateDirs())).toEqual([]);
   });
 });

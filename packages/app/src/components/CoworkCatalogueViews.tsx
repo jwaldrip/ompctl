@@ -13,7 +13,7 @@ import type { ConnectorSummary, SkillSummary } from "../cowork/types.ts";
 import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
 import { Body, Data, Kicker, Label } from "../design/text.tsx";
-import { ground, ink, space, stroke } from "../design/tokens.ts";
+import { ground, ink, signal, space, stroke } from "../design/tokens.ts";
 import { ConnectorRow } from "./ConnectorRow.tsx";
 import { PluginBadge } from "./PluginBadge.tsx";
 import { SkillCard } from "./SkillCard.tsx";
@@ -25,13 +25,29 @@ import { SkillCard } from "./SkillCard.tsx";
 export interface SkillsViewProps {
   skills: readonly SkillSummary[];
   onInvoke: (skill: SkillSummary) => void;
+  refusal?: string | null;
+  status?: string;
 }
 
-export function SkillsView({ skills, onInvoke }: SkillsViewProps): JSX.Element {
+export function SkillsView({ skills, onInvoke, refusal, status }: SkillsViewProps): JSX.Element {
+  const isRefused = status === "refused" || (refusal !== null && refusal !== undefined);
   return (
     <ScrollView testID="skills-view" contentContainerStyle={styles.list}>
-      <Head glyph="skill" count={skills.length} noun="skill" emptyLabel="No skills installed" testID="skills-count" />
-      {skills.length === 0 ? (
+      <Head
+        glyph="skill"
+        count={skills.length}
+        noun="skill"
+        emptyLabel={isRefused ? "Skills unavailable" : "No skills installed"}
+        testID="skills-count"
+      />
+      {isRefused ? (
+        <View style={styles.refused} testID="cowork-skills-refused">
+          <Glyph name="warning" color={signal.holding} size={13} />
+          <Label color={signal.holding} style={styles.refusedText}>
+            {refusal ?? "The daemon refused the skills catalogue."}
+          </Label>
+        </View>
+      ) : skills.length === 0 ? (
         <Empty
           glyph="skill"
           title="No skills installed."
@@ -50,7 +66,14 @@ export function SkillsView({ skills, onInvoke }: SkillsViewProps): JSX.Element {
 // Connectors
 // ---------------------------------------------------------------------------
 
-export function ConnectorsView({ connectors }: { connectors: readonly ConnectorSummary[] }): JSX.Element {
+export interface ConnectorsViewProps {
+  connectors: readonly ConnectorSummary[];
+  refusal?: string | null;
+  status?: string;
+}
+
+export function ConnectorsView({ connectors, refusal, status }: ConnectorsViewProps): JSX.Element {
+  const isRefused = status === "refused" || (refusal !== null && refusal !== undefined);
   const health = connectorHealth(connectors);
 
   return (
@@ -59,10 +82,17 @@ export function ConnectorsView({ connectors }: { connectors: readonly ConnectorS
         glyph="connector"
         count={connectors.length}
         noun="connector"
-        emptyLabel="No connectors installed"
+        emptyLabel={isRefused ? "Connectors unavailable" : "No connectors installed"}
         testID="connectors-count"
       />
-      {connectors.length === 0 ? (
+      {isRefused ? (
+        <View style={styles.refused} testID="cowork-connectors-refused">
+          <Glyph name="warning" color={signal.holding} size={13} />
+          <Label color={signal.holding} style={styles.refusedText}>
+            {refusal ?? "The daemon refused the connectors catalogue."}
+          </Label>
+        </View>
+      ) : connectors.length === 0 ? (
         <Empty
           glyph="connector"
           title="No connectors installed."
@@ -97,10 +127,13 @@ export function ConnectorsView({ connectors }: { connectors: readonly ConnectorS
 export interface PluginsViewProps {
   skills: readonly SkillSummary[];
   connectors: readonly ConnectorSummary[];
+  skillsRefusal?: string | null;
+  connectorsRefusal?: string | null;
 }
 
-export function PluginsView({ skills, connectors }: PluginsViewProps): JSX.Element {
+export function PluginsView({ skills, connectors, skillsRefusal, connectorsRefusal }: PluginsViewProps): JSX.Element {
   const groups = groupByPlugin(skills, connectors);
+  const isRefused = Boolean(skillsRefusal || connectorsRefusal);
 
   return (
     <ScrollView testID="plugins-view" contentContainerStyle={styles.list}>
@@ -108,10 +141,22 @@ export function PluginsView({ skills, connectors }: PluginsViewProps): JSX.Eleme
         glyph="plugin"
         count={groups.length}
         noun="plugin"
-        emptyLabel="No plugins installed"
+        emptyLabel={isRefused ? "Plugins unavailable" : "No plugins installed"}
         testID="plugins-count"
       />
-      {groups.length === 0 ? (
+      {isRefused ? (
+        <View style={styles.refused} testID="cowork-plugins-refused">
+          <Glyph name="warning" color={signal.holding} size={13} />
+          <Label color={signal.holding} style={styles.refusedText}>
+            {[
+              skillsRefusal ? `Skills: ${skillsRefusal}` : null,
+              connectorsRefusal ? `Connectors: ${connectorsRefusal}` : null,
+            ]
+              .filter(Boolean)
+              .join(". ")}
+          </Label>
+        </View>
+      ) : groups.length === 0 ? (
         <Empty glyph="plugin" title="No plugins installed." />
       ) : (
         groups.map(group => <PluginGroupCard key={group.key} group={group} />)
@@ -235,6 +280,17 @@ const styles = StyleSheet.create({
   },
   sectionLabel: { paddingHorizontal: space.wide, paddingTop: space.step, paddingBottom: space.tight, letterSpacing: 1 },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },
+  refused: {
+    alignItems: "center",
+    backgroundColor: ground.surface,
+    borderColor: signal.holding,
+    borderWidth: stroke.hair,
+    flexDirection: "row",
+    gap: space.snug,
+    padding: space.snug,
+    margin: space.wide,
+  },
+  refusedText: { flex: 1 },
   group: { borderBottomWidth: stroke.heavy, borderBottomColor: ground.edge, paddingVertical: space.step },
   groupHead: {
     flexDirection: "row",
