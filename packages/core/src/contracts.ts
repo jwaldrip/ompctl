@@ -1262,6 +1262,8 @@ export function parsePromptImages(
   return { ok: true, images };
 }
 
+export type CoworkCatalog = "skills" | "connectors" | "tasks";
+
 export type ClientFrame =
   | { t: "attach"; agentId: AgentId; sinceSeq?: number }
   | { t: "detach"; agentId: AgentId }
@@ -1486,6 +1488,7 @@ export type ClientFrame =
       value?: string;
       modeId?: string;
     }
+
   /**
    * The Cowork catalogue reads, sealed-socket versions of `GET /v1/skills`
    * and `GET /v1/connectors`. A hub-paired phone reaches these frames rather
@@ -1498,13 +1501,13 @@ export type ClientFrame =
    * agent's cwd, and `cwd` wins when both are given. Answered by
    * `skills`/`connectors`, to the asking socket only.
    */
-  | { t: "skills_read"; cwd?: string; agentId?: string }
-  | { t: "connectors_read"; cwd?: string; agentId?: string }
+  | { t: "skills_read"; cwd?: string; agentId?: string; requestId?: string }
+  | { t: "connectors_read"; cwd?: string; agentId?: string; requestId?: string }
   /**
    * The task roster over this socket, the `GET /v1/tasks` twin. Answered by
    * `tasks`, to the asking socket only.
    */
-  | { t: "tasks_read"; agentId?: string }
+  | { t: "tasks_read"; agentId?: string; requestId?: string }
   /**
    * Start one task, the `POST /v1/tasks` twin: a named prompt against a
    * session that already exists, never a session-spawner. Answered by `task`
@@ -1517,13 +1520,14 @@ export type ClientFrame =
       agentId: AgentId;
       skillName?: string;
       labels?: Record<string, string>;
+      requestId?: string;
     }
   /**
    * Cancel one task, the `POST /v1/tasks/:id/cancel` twin. Answered by
    * `task` carrying the task as the daemon now holds it, to the asking
    * socket only.
    */
-  | { t: "task_cancel"; taskId: string }
+  | { t: "task_cancel"; taskId: string; requestId?: string }
   /**
    * Create an agent, the `POST /v1/agents` twin: the manage-scoped act that
    * provisions a host, which is how a Cowork container start crosses the
@@ -1540,6 +1544,7 @@ export type ClientFrame =
       host?: WireHostSpec;
       routineId?: string;
       labels?: Record<string, string>;
+      requestId?: string;
     }
   /** Request per-session stats (cost, tokens, cache rate). Answered by session_stats to the asking socket only. */
   | { t: "session_stats"; sessionId: string }
@@ -1622,7 +1627,16 @@ export type ServerFrame =
    * parsing `message`. `sessionId` correlates a failure with the session
    * row it came from, for frames that name a session rather than an agent.
    */
-  | { t: "error"; agentId?: AgentId; sessionId?: string; message: string; code?: string; reason?: string }
+  | {
+      t: "error";
+      agentId?: AgentId;
+      sessionId?: string;
+      message: string;
+      code?: string;
+      reason?: string;
+      requestId?: string;
+      catalog?: CoworkCatalog;
+    }
   /** Ask a client's embedded WebView to perform an action, already cleared by the policy engine. */
   | { t: "webview_action"; agentId: AgentId; requestId: string; action: WebViewAction }
   | CollabServerFrame
@@ -1717,14 +1731,14 @@ export type ServerFrame =
    * `connectors_read`, sent only to the socket that asked. Reshaped and
    * wire-safe by construction: never a connector's raw config.
    */
-  | { t: "skills"; skills: SkillSummary[] }
-  | { t: "connectors"; connectors: ConnectorSummary[] }
+  | { t: "skills"; skills: SkillSummary[]; requestId?: string }
+  | { t: "connectors"; connectors: ConnectorSummary[]; requestId?: string }
   /** The task roster answering `tasks_read`, sent only to the socket that asked. */
-  | { t: "tasks"; tasks: Task[] }
+  | { t: "tasks"; tasks: Task[]; requestId?: string }
   /** One task as the daemon now holds it, answering `task_create` or `task_cancel`. */
-  | { t: "task"; task: Task }
+  | { t: "task"; task: Task; requestId?: string }
   /** The agent an `agent_create` made, sent only to the socket that asked. */
-  | { t: "agent_created"; agent: Agent }
+  | { t: "agent_created"; agent: Agent; requestId?: string }
   /** The cowork container state, carrying model broker readiness. */
   | { t: "container_state"; modelBroker: ModelBrokerStatus }
   /**
