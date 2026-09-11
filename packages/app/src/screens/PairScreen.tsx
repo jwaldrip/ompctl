@@ -22,9 +22,9 @@ import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
-// Extensionless on purpose: Vite picks `camera.web.ts` for web, Metro picks
-// `camera.windows.ts` for Windows, and `camera.ts` everywhere else. Naming
-// the extension would bypass that and drag vision-camera into the web bundle.
+// Extensionless on purpose: Vite picks `camera.web.ts` for web; Metro picks
+// `camera.windows.ts`, `camera.macos.ts`, or the generic mobile seam for its
+// target. Naming the extension would bypass that platform boundary.
 import type { CameraAvailability } from "../platform/camera";
 import { cameraAvailability } from "../platform/camera";
 import type { Connection } from "../platform/connection.ts";
@@ -197,7 +197,7 @@ function Field({
       <TextInput
         testID={testID}
         accessibilityLabel={label}
-        style={[styles.input, type.code]}
+        style={[styles.input, type.body]}
         value={value}
         onChangeText={onChange}
         secureTextEntry={secure === true}
@@ -231,6 +231,7 @@ const styles = StyleSheet.create({
   input: {
     minHeight: TOUCH_TARGET,
     paddingHorizontal: space.step,
+    paddingVertical: space.step,
     color: ink.bright,
     backgroundColor: ground.surface,
     borderWidth: stroke.hair,

@@ -18,13 +18,13 @@ module.exports = {
     windows: {},
   },
   dependencies: {
-    // 4.24 is the last screens release RN 0.81's Android/iOS codegen
-    // accepts. Its Windows project pulls a Windows App SDK that this
-    // 0.81 tree cannot link. Main never autolinked screens on Windows
-    // either: 4.27 shipped no project the generator picked up. Keep
-    // that exclusion explicit so a pin change cannot silently add it.
+    // react-native-screens ships no AppKit component views. Its 4.24
+    // Windows project also pulls a Windows App SDK that this 0.81 tree
+    // cannot link. Keep both exclusions explicit so a package update cannot
+    // add unsupported native components to either build.
     "react-native-screens": {
       platforms: {
+        macos: null,
         windows: null,
       },
     },
