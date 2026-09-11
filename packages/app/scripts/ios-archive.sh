@@ -10,17 +10,18 @@ mkdir -p "$OUT"
 BUNDLE_ID="${OMPD_IOS_BUNDLE_ID:-ai.ompctl.app}"
 PROFILE_PATH="${OMPD_IOS_PROFILE_PATH:?OMPD_IOS_PROFILE_PATH is required for App Store export}"
 SIGNING_CERTIFICATE="${OMPD_IOS_SIGNING_CERTIFICATE:-Apple Distribution}"
+PLIST_BUDDY="${OMPD_PLIST_BUDDY:-/usr/libexec/PlistBuddy}"
 if [[ ! -f "$PROFILE_PATH" ]]; then
   echo "iOS provisioning profile not found: $PROFILE_PATH" >&2
   exit 1
 fi
 PROFILE_PLIST="$OUT/ios-profile.plist"
 security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
-PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")"
-PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
-PROFILE_TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
-PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
-PROFILE_PLATFORM="$(/usr/libexec/PlistBuddy -c 'Print :Platform:0' "$PROFILE_PLIST")"
+PROFILE_NAME="$("$PLIST_BUDDY" -c 'Print :Name' "$PROFILE_PLIST")"
+PROFILE_UUID="$("$PLIST_BUDDY" -c 'Print :UUID' "$PROFILE_PLIST")"
+PROFILE_TEAM="$("$PLIST_BUDDY" -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
+PROFILE_APP_ID="$("$PLIST_BUDDY" -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
+PROFILE_PLATFORM="$("$PLIST_BUDDY" -c 'Print :Platform:0' "$PROFILE_PLIST")"
 if [[ "$PROFILE_TEAM" != "$TEAM_ID" || "$PROFILE_APP_ID" != "$TEAM_ID.$BUNDLE_ID" || "$PROFILE_PLATFORM" != "iOS" ]]; then
   echo "iOS provisioning profile does not match platform, team, and bundle id" >&2
   exit 1
@@ -38,15 +39,6 @@ if [[ ! -d Pods ]]; then
   fi
 fi
 
-AUTH_ARGS=()
-if [[ -n "${OMPD_ASC_KEY_PATH:-}" && -n "${OMPD_ASC_KEY_ID:-}" && -n "${OMPD_ASC_ISSUER_ID:-}" ]]; then
-  AUTH_ARGS+=(
-    -allowProvisioningUpdates
-    -authenticationKeyPath "$OMPD_ASC_KEY_PATH"
-    -authenticationKeyID "$OMPD_ASC_KEY_ID"
-    -authenticationKeyIssuerID "$OMPD_ASC_ISSUER_ID"
-  )
-fi
 
 xcodebuild \
   -workspace ompd.xcworkspace \
@@ -56,8 +48,9 @@ xcodebuild \
   -archivePath "$OUT/ompd.xcarchive" \
   DEVELOPMENT_TEAM="$TEAM_ID" \
   PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
-  CODE_SIGN_STYLE=Automatic \
-  "${AUTH_ARGS[@]}" \
+  CODE_SIGN_STYLE=Manual \
+  "CODE_SIGN_IDENTITY=$SIGNING_CERTIFICATE" \
+  "PROVISIONING_PROFILE_SPECIFIER=$PROFILE_NAME" \
   CURRENT_PROJECT_VERSION="$OMPD_BUILD_NUMBER" \
   MARKETING_VERSION="$OMPD_VERSION_NAME" \
   archive
@@ -97,8 +90,7 @@ xcodebuild \
   -exportArchive \
   -archivePath "$OUT/ompd.xcarchive" \
   -exportPath "$OUT/ipa" \
-  -exportOptionsPlist "$EXPORT_PLIST" \
-  "${AUTH_ARGS[@]}"
+  -exportOptionsPlist "$EXPORT_PLIST"
 
 # Prove the IPA carries a distribution signature before upload.
 IPA_FILE="$(ls -1 "$OUT/ipa"/*.ipa | head -1)"
