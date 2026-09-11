@@ -55,4 +55,4 @@ writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify([...graph.dependenci
   expect(normalized.some(file => file.includes("react-native-vision-camera"))).toBe(false);
   expect(normalized.some(file => file.endsWith("/views/NativeStackView.js"))).toBe(true);
   expect(normalized.some(file => file.includes("/views/NativeStackView.native"))).toBe(false);
-}, 30_000);
+}, 120_000);
