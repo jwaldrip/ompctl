@@ -44,37 +44,46 @@ if ! [[ "$cancel_wait_seconds" =~ ^[0-9]+$ && "$cancel_poll_seconds" =~ ^[0-9]+$
   exit 1
 fi
 
+pending=()
 while IFS= read -r run_id; do
   [[ -z "$run_id" ]] && continue
-  if ! gh api --method POST "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" >/dev/null; then
-    if ! status="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq .status)"; then
-      echo "::error::Could not confirm superseded release run $run_id after cancellation failed"
-      exit 1
-    fi
-    if [[ "$status" == "completed" ]]; then
-      continue
-    fi
+  if gh api --method POST "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" >/dev/null; then
+    echo "requested cancellation of superseded release run $run_id"
+    pending+=("$run_id")
+    continue
+  fi
+  if ! status="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq .status)"; then
+    echo "::error::Could not confirm superseded release run $run_id after cancellation failed"
+    exit 1
+  fi
+  if [[ "$status" != "completed" ]]; then
     echo "::error::Could not cancel superseded release run $run_id; it remains $status"
     exit 1
   fi
-  echo "requested cancellation of superseded release run $run_id"
-  deadline=$((SECONDS + cancel_wait_seconds))
-  while true; do
+done <<< "$earlier"
+
+deadline=$((SECONDS + cancel_wait_seconds))
+while ((${#pending[@]} > 0)); do
+  next=()
+  for run_id in "${pending[@]}"; do
     if ! status="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq .status)"; then
       echo "::error::Could not read superseded release run $run_id after requesting cancellation"
       exit 1
     fi
     if [[ "$status" == "completed" ]]; then
       echo "superseded release run $run_id stopped"
-      break
+    else
+      next+=("$run_id")
     fi
-    if ((SECONDS >= deadline)); then
-      echo "::error::Superseded release run $run_id did not stop after cancellation"
-      exit 1
-    fi
-    sleep "$cancel_poll_seconds"
   done
-done <<< "$earlier"
+  pending=("${next[@]}")
+  ((${#pending[@]} == 0)) && break
+  if ((SECONDS >= deadline)); then
+    echo "::error::Superseded release runs did not stop after cancellation: ${pending[*]}"
+    exit 1
+  fi
+  sleep "$cancel_poll_seconds"
+done
 
 if ! head_sha="$(gh api "/repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"; then
   echo "::error::Could not re-read the current main commit after release cancellation"

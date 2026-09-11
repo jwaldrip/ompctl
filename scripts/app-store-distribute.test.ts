@@ -203,7 +203,11 @@ describe("App Store release workflow", () => {
         statusChecksBeforeComplete: 1,
       }),
     ).toMatchObject({ exitCode: 0, calls: 6 });
-
+    expect(
+      await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
+        earlierRun: "100\n101\n102",
+      }),
+    ).toMatchObject({ exitCode: 0, calls: 9 });
     const moved = await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
       headShaAfterFirst: "newer-sha",
     });
