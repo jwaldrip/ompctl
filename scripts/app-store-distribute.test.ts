@@ -70,9 +70,9 @@ describe("App Store release workflow", () => {
   test("rapid automatic pushes cancel older releases while manual dispatches stay independent", () => {
     const concurrency = workflow.concurrency as { group?: string; "cancel-in-progress"?: boolean };
     expect(concurrency["cancel-in-progress"]).toBe(true);
-    expect(concurrency.group).toContain("github.event_name == 'push'");
-    expect(concurrency.group).toContain("github.ref");
-    expect(concurrency.group).toContain("github.run_id");
+    expect(concurrency.group).toBe(
+      `app-store-distribute-\${{ github.event_name == 'push' && github.ref || github.run_id }}`,
+    );
     expect(jobs).not.toHaveProperty("release-order");
   });
   test("Apple main-push jobs fail closed if signing or upload credentials are absent", () => {
