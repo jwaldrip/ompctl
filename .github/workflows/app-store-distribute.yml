@@ -1,7 +1,7 @@
 name: App store release tracks
 
-# The newest main push archives and publishes iOS and macOS to TestFlight.
-# Superseded automatic runs are cancelled; manual dispatch keeps the selected ref.
+# The newest main push archives and uploads iOS and macOS to TestFlight. Manual
+# dispatches remain independent for a selected platform, ref, and upload policy.
 # Missing release credentials fail the job; a merge must never report success
 # while publishing nothing.
 
@@ -18,38 +18,19 @@ on:
         default: true
   push:
     branches: [main]
-
+concurrency:
+  group: app-store-distribute-${{ github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
-  release-order:
-    name: Select latest main release
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    permissions:
-      actions: write
-      contents: read
-    outputs:
-      release: ${{ steps.latest.outputs.release }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cancel superseded automatic releases
-        id: latest
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/apple-release-gate.sh select
-
   ios-testflight:
     name: iOS archive + TestFlight
-    needs: release-order
     if: >
-      needs.release-order.outputs.release == 'true' &&
-      (github.event_name == 'push' ||
+      github.event_name == 'push' ||
       contains(github.event.inputs.platforms, 'ios') ||
-      github.event.inputs.platforms == 'all')
+      github.event.inputs.platforms == 'all'
     runs-on: macos-15
     timeout-minutes: 180
-    permissions:
-      contents: read
     defaults:
       run:
         working-directory: packages/app
@@ -146,15 +127,9 @@ jobs:
           name: ompd-ios-ipa
           path: packages/app/build/ios/ipa/*.ipa
           if-no-files-found: error
-      - name: Recheck current main before iOS upload
-        id: ios_upload_current
-        if: env.OMPD_UPLOAD == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash ../../scripts/apple-release-gate.sh current "iOS upload"
       - name: Require ASC release configuration
         if: >
-          steps.ios_upload_current.outputs.release == 'true' && (
+          env.OMPD_UPLOAD == 'true' && (
             env.OMPD_ASC_KEY_PATH == '' ||
             env.OMPD_APP_ID == '' ||
             env.OMPD_BETA_GROUP_ID == ''
@@ -164,7 +139,7 @@ jobs:
           exit 1
       - name: Check for an existing iOS upload
         id: ios_build
-        if: steps.ios_upload_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''
+        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''
         run: |
           if bun scripts/asc.ts find-build "$OMPD_BUILD_NUMBER" IOS; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -176,25 +151,14 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Upload to TestFlight
-        if: steps.ios_upload_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != '' && steps.ios_build.outputs.exists != 'true'
+        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != '' && steps.ios_build.outputs.exists != 'true'
         run: bun run upload:testflight
-      - name: Recheck current main before publishing iOS build
-        id: ios_assign_current
-        if: steps.ios_upload_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash ../../scripts/apple-release-gate.sh current "iOS tester assignment"
       - name: Publish iOS build to internal testers
-        if: steps.ios_assign_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
+        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''
         run: bun scripts/asc.ts wait-assign "$OMPD_BUILD_NUMBER" IOS
       - name: Artifact-only notice
-        if: env.OMPD_UPLOAD != 'true' || steps.ios_upload_current.outputs.release == 'false'
+        if: env.OMPD_UPLOAD != 'true'
         run: echo "upload=false; IPA artifact retained (no TestFlight submit)"
-      - name: Superseded iOS assignment notice
-        if: steps.ios_upload_current.outputs.release == 'true' && steps.ios_assign_current.outputs.release == 'false'
-        run: echo "uploaded build retained without tester assignment; a newer main release owns publication"
 
   android-play-internal:
     name: Android AAB + Play Internal
@@ -294,18 +258,14 @@ jobs:
 
   macos-testflight:
     name: macOS archive
-    needs: release-order
     if: >
-      needs.release-order.outputs.release == 'true' &&
-      (github.event_name == 'push' ||
+      github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && (
         contains(github.event.inputs.platforms, 'macos') ||
         github.event.inputs.platforms == 'all'
-      )))
+      ))
     runs-on: macos-15
     timeout-minutes: 180
-    permissions:
-      contents: read
     defaults:
       run:
         working-directory: packages/app
@@ -403,15 +363,9 @@ jobs:
           name: ompd-macos-export
           path: packages/app/build/macos/export/**
           if-no-files-found: error
-      - name: Recheck current main before macOS upload
-        id: macos_upload_current
-        if: env.OMPD_UPLOAD == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash ../../scripts/apple-release-gate.sh current "macOS upload"
       - name: Require ASC release configuration (macOS)
         if: >
-          steps.macos_upload_current.outputs.release == 'true' && (
+          env.OMPD_UPLOAD == 'true' && (
             env.OMPD_ASC_KEY_PATH == '' ||
             env.OMPD_APP_ID == '' ||
             env.OMPD_BETA_GROUP_ID == ''
@@ -421,7 +375,7 @@ jobs:
           exit 1
       - name: Check for an existing macOS upload
         id: macos_build
-        if: steps.macos_upload_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''
+        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''
         run: |
           if bun scripts/asc.ts find-build "$OMPD_BUILD_NUMBER" MAC_OS; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -433,7 +387,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Upload macOS to App Store Connect / TestFlight
-        if: steps.macos_upload_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != '' && steps.macos_build.outputs.exists != 'true'
+        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != '' && steps.macos_build.outputs.exists != 'true'
         run: |
           PKG="$(find build/macos/export -name '*.pkg' -print -quit)"
           if [[ -z "$PKG" || ! -f "$PKG" ]]; then
@@ -444,23 +398,12 @@ jobs:
           API_PRIVATE_KEYS_DIR="$(cd "$(dirname "$OMPD_ASC_KEY_PATH")" && pwd)"
           xcrun altool --upload-app             --type macos             --file "$PKG"             --apiKey "$OMPD_ASC_KEY_ID"             --apiIssuer "$OMPD_ASC_ISSUER_ID"
           echo "uploaded macOS build to App Store Connect"
-      - name: Recheck current main before publishing macOS build
-        id: macos_assign_current
-        if: steps.macos_upload_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash ../../scripts/apple-release-gate.sh current "macOS tester assignment"
       - name: Publish macOS build to internal testers
-        if: steps.macos_assign_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
+        if: env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''
         run: bun scripts/asc.ts wait-assign "$OMPD_BUILD_NUMBER" MAC_OS
       - name: Artifact-only notice (macOS)
-        if: env.OMPD_UPLOAD != 'true' || steps.macos_upload_current.outputs.release == 'false'
+        if: env.OMPD_UPLOAD != 'true'
         run: echo "upload=false; macOS export artifact retained (no ASC submit)"
-      - name: Superseded macOS assignment notice
-        if: steps.macos_upload_current.outputs.release == 'true' && steps.macos_assign_current.outputs.release == 'false'
-        run: echo "uploaded build retained without tester assignment; a newer main release owns publication"
 
   windows-msix:
     name: Windows MSIX package
