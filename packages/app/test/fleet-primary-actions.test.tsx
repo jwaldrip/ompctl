@@ -13,7 +13,7 @@
 import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { SessionSummary } from "@ompd/core/contracts";
+import type { Agent, SessionSummary } from "@ompd/core/contracts";
 import type { OmpdClient } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -73,6 +73,30 @@ const SESSION_BETA_SHORT: SessionSummary = {
 };
 
 const TEST_SESSIONS: SessionSummary[] = [SESSION_ALPHA_1, SESSION_ALPHA_SHORT, SESSION_BETA_SHORT];
+const STALE_TERMINAL_AGENTS: Agent[] = [
+  {
+    id: "agt_stopped",
+    name: "stopped without session file",
+    state: "stopped",
+    host: { kind: "local", id: "1", spec: { kind: "local" } },
+    cwd: "/Users/op/dev/src/github.com/op/stale",
+    createdAt: "2026-02-01T00:00:00.000Z",
+    lastActiveAt: "2026-02-01T00:00:00.000Z",
+    labels: {},
+    acpSessionId: "session-missing-stopped",
+  },
+  {
+    id: "agt_failed",
+    name: "failed without session file",
+    state: "failed",
+    host: { kind: "local", id: "2", spec: { kind: "local" } },
+    cwd: "/Users/op/dev/src/github.com/op/stale",
+    createdAt: "2026-02-01T00:00:00.000Z",
+    lastActiveAt: "2026-02-01T00:00:00.000Z",
+    labels: {},
+    acpSessionId: "session-missing-failed",
+  },
+];
 
 class CannedClient {
   readonly createdAgents: Array<{ name: string; cwd: string }> = [];
@@ -249,10 +273,11 @@ describe("new session primary affordance", () => {
 });
 
 describe("ephemeral review and bulk archive", () => {
-  test("ephemeral review shows a count and archives only on confirm", () => {
+  test("cleanup excludes terminal roster rows that have no session file", () => {
     const bay = mountBay(["read", "manage"]);
     try {
-      // 2 short dormant sessions (< 3 messages) in test sessions
+      bay.frame("agents", { agents: STALE_TERMINAL_AGENTS });
+      // Only the 2 indexed short sessions are cleanup candidates.
       const banner = bay.require("ephemeral-suggest-banner");
       expect(banner.textContent).toContain("2 short sessions");
 

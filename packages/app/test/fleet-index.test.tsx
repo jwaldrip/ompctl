@@ -214,16 +214,23 @@ describe("a live agent is overlaid onto its indexed session", () => {
     expect(browserSessionsOf(stopped).find(row => row.id === "s-held")).toMatchObject({ status: "dormant" });
   });
 
-  test("a stopped agent with no indexed session is not fabricated into the session list", () => {
+  test("terminal agents with no indexed session are not fabricated into the session list", () => {
     const stopped = drive([
       { t: "sessions", event: { sessions: INDEX } },
       {
         t: "agents",
-        event: { agents: [agent("agt_orphan", { acpSessionId: "s-missing", state: "stopped" })] },
+        event: {
+          agents: [
+            agent("agt_orphan_stopped", { acpSessionId: "s-missing-stopped", state: "stopped" }),
+            agent("agt_orphan_failed", { acpSessionId: "s-missing-failed", state: "failed" }),
+          ],
+        },
       },
     ]);
 
-    expect(browserSessionsOf(stopped).find(row => row.id === "s-missing")).toBeUndefined();
+    expect(
+      browserSessionsOf(stopped).filter(row => row.id === "s-missing-stopped" || row.id === "s-missing-failed"),
+    ).toEqual([]);
   });
 
   test("two agents naming one unindexed session produce a single live row", () => {
