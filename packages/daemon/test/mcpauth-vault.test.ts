@@ -241,7 +241,9 @@ describe("a backend that cannot keep a key", () => {
       backend: "libsecret",
       load: () => held,
       store: key => {
-        held = Buffer.concat([key.subarray(0, 31), Buffer.of(0)]);
+        // Flip one bit rather than assigning a constant: a random key can
+        // legitimately end in any byte, including zero.
+        held = Buffer.concat([key.subarray(0, 31), Buffer.of(key[31]! ^ 1)]);
       },
     };
     expect(() => openVault(freshHome(), { keyProvider: mangling })).toThrow(/libsecret/);
