@@ -1872,30 +1872,30 @@ export function browserSessionsOf(state: FleetRowSources): BrowserSession[] {
     });
   }
 
-  // An agent created since the last ask holds a session the snapshot cannot
-  // know about yet, and a fleet browser that hides the agent someone just
-  // made is a regression on what the roster alone already listed. Those rows
-  // are synthesized from the roster until the next index replaces them;
-  // subagents stay in Agent Hub, where their hierarchy is legible.
-  // A row's id is a session identity, so it may appear once. Two roster agents
-  // can name the same acpSessionId before the index has seen it: a resumed
-  // session whose previous holder is still listed. Emitting both produced two
-  // children with one key, and React's warning banner then covered the
-  // composer on a real screen. A live holder wins over a terminal one, since
-  // the live process is the truth about what holds the session now.
+  // A live agent created since the last ask can hold a session the snapshot
+  // cannot know about yet, and a fleet browser that hides the agent someone
+  // just made is a regression on what the roster alone already listed. Keep
+  // that live row until the next index replaces it. A stopped or failed agent
+  // with no indexed session has no transcript on this machine and is not a
+  // session: synthesizing it creates an unopenable zero-message row that every
+  // archive attempt must refuse as not_found.
+  //
+  // Subagents stay in Agent Hub, where their hierarchy is legible. A row's id
+  // is a session identity, so it may appear once. Two live roster agents can
+  // name the same acpSessionId before the index has seen it, as during a resume;
+  // emitting both produced two children with one key, so keep the first.
   const synthesized = new Map<string, BrowserSession>();
   for (const agent of state.agents) {
     if (agent.parentAgentId !== undefined) continue;
+    if (TERMINAL_AGENT_STATES.includes(agent.state)) continue;
     if (agent.acpSessionId !== undefined && indexed.has(agent.acpSessionId)) continue;
     const id = agent.acpSessionId ?? agent.id;
-    const terminal = TERMINAL_AGENT_STATES.includes(agent.state);
-    const held = synthesized.get(id);
-    if (held !== undefined && (terminal || held.status === "live-ompd")) continue;
+    if (synthesized.has(id)) continue;
     synthesized.set(id, {
       id,
       title: agent.name,
       cwd: agent.cwd,
-      status: terminal ? "dormant" : "live-ompd",
+      status: "live-ompd",
       createdAt: agent.createdAt,
       lastActiveAt: agent.lastActiveAt,
       // Counting the transcript this device happens to hold would be the
