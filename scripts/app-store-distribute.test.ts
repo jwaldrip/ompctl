@@ -104,7 +104,7 @@ esac
   );
   try {
     const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", step.run], {
-      cwd: root,
+      cwd: jobName === "release-order" ? root : join(root, "packages/app"),
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
