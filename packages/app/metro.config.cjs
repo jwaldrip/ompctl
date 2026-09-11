@@ -39,6 +39,11 @@ const repoRoot = path.resolve(projectRoot, "..", "..");
 const ASSISTANT_UI_CLOUD = /@assistant-ui[/\\]core[/\\]dist[/\\]react[/\\]runtimes[/\\]cloud[/\\]/;
 const CLOUD_STUB = path.join(projectRoot, "stubs", "assistant-ui-cloud.js");
 const REACT_NATIVE_PACKAGE = /^react-native(?=\/|$)/;
+const NATIVE_STACK_ROOT = path.dirname(
+  require.resolve("@react-navigation/native-stack/package.json", { paths: [projectRoot] }),
+);
+const NATIVE_STACK_SOURCE_VIEW = path.join(NATIVE_STACK_ROOT, "src", "views", "NativeStackView.tsx");
+const NATIVE_STACK_MODULE_VIEW = path.join(NATIVE_STACK_ROOT, "lib", "module", "views", "NativeStackView.js");
 
 const config = {
   projectRoot,
@@ -54,11 +59,21 @@ const config = {
     platforms: ["ios", "android", "macos", "windows", "native"],
     /**
      * React Native macOS is a fork, not a platform extension inside the generic
-     * package. Every `react-native` import in a macOS graph must enter that fork;
-     * iOS, Android, and Windows keep their configured packages. The cloud
-     * subtree remains the only resolved-file redirect.
+     * package. Every `react-native` import in a macOS graph enters that fork.
+     * Native Stack has a JavaScript view for unsupported platforms; macOS must
+     * use it because react-native-screens ships no AppKit component views.
      */
     resolveRequest: (context, moduleName, platform) => {
+      const nativeStackViewRequest =
+        platform === "macos" &&
+        moduleName === "../views/NativeStackView" &&
+        context.originModulePath.startsWith(`${NATIVE_STACK_ROOT}${path.sep}`) &&
+        path.basename(context.originModulePath).startsWith("createNativeStackNavigator.");
+      if (nativeStackViewRequest) {
+        const sourceBuild = context.originModulePath.startsWith(`${path.join(NATIVE_STACK_ROOT, "src")}${path.sep}`);
+        return { type: "sourceFile", filePath: sourceBuild ? NATIVE_STACK_SOURCE_VIEW : NATIVE_STACK_MODULE_VIEW };
+      }
+
       const platformModuleName =
         platform === "macos" ? moduleName.replace(REACT_NATIVE_PACKAGE, "react-native-macos") : moduleName;
       const resolved = context.resolveRequest(context, platformModuleName, platform);

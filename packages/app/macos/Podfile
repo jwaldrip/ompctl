@@ -1,3 +1,6 @@
+# Native Stack uses its JavaScript fallback on macOS because react-native-screens has no AppKit views.
+ENV['RCT_NEW_ARCH_ENABLED'] = '0'
+
 require 'pathname'
 
 ws_dir = Pathname.new(__dir__)
