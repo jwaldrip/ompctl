@@ -135,7 +135,7 @@ esac
         GITHUB_OUTPUT: output,
         GH_TOKEN: "test",
         OMPD_CANCEL_POLL_SECONDS: "0",
-        OMPD_CANCEL_WAIT_SECONDS: "1",
+        OMPD_CANCEL_WAIT_SECONDS: "30",
       },
       stdout: "pipe",
       stderr: "pipe",

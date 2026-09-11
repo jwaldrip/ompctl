@@ -77,7 +77,9 @@ while ((${#pending[@]} > 0)); do
     fi
   done
   pending=("${next[@]}")
-  ((${#pending[@]} == 0)) && break
+  if ((${#pending[@]} == 0)); then
+    break
+  fi
   if ((SECONDS >= deadline)); then
     echo "::error::Superseded release runs did not stop after cancellation: ${pending[*]}"
     exit 1
