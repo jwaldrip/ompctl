@@ -56,6 +56,7 @@ async function runSelectionStep(
   event: "push" | "workflow_dispatch",
   headSha: string,
   fail = false,
+  runAttempt = "1",
 ): Promise<SelectionRun> {
   const job = jobs["release-current"] as { steps?: Array<Record<string, unknown>> };
   const step = job.steps?.find(candidate => candidate.name === "Check main head");
@@ -82,6 +83,7 @@ ${fail ? "exit 1" : `echo "${headSha}"`}
         PATH: `${dir}:${process.env.PATH}`,
         GITHUB_EVENT_NAME: event,
         GITHUB_REPOSITORY: "jwaldrip/ompctl",
+        GITHUB_RUN_ATTEMPT: runAttempt,
         GITHUB_SHA: "current-sha",
         GITHUB_OUTPUT: output,
         GH_TOKEN: "test",
@@ -119,8 +121,14 @@ describe("App Store release workflow", () => {
     );
   });
 
-  test("stale push reruns stop before platform concurrency while manual dispatches stay independent", async () => {
-    expect(workflow).not.toHaveProperty("concurrency");
+  test("first-attempt pushes coalesce while reruns and manual dispatches stay independent", async () => {
+    const concurrency = workflow.concurrency as { group?: string; queue?: string; "cancel-in-progress"?: boolean };
+    expect(concurrency).toEqual({
+      group: `app-store-distribute-\${{ github.event_name == 'push' && github.run_attempt == 1 && github.ref || github.run_id }}`,
+    });
+    expect(concurrency).not.toHaveProperty("queue");
+    expect(concurrency).not.toHaveProperty("cancel-in-progress");
+
     const selector = jobs["release-current"] as {
       outputs?: Record<string, unknown>;
       permissions?: Record<string, unknown>;
@@ -131,29 +139,29 @@ describe("App Store release workflow", () => {
     expect(selector.outputs?.release).toContain("steps.current.outputs.release");
     expect(await runSelectionStep("push", "current-sha")).toEqual({ calls: 1, exitCode: 0, output: "release=true\n" });
     expect(await runSelectionStep("push", "newer-sha")).toEqual({ calls: 1, exitCode: 0, output: "release=false\n" });
-    expect(await runSelectionStep("workflow_dispatch", "unrelated-sha")).toEqual({
+    expect(await runSelectionStep("push", "current-sha", false, "2")).toEqual({
+      calls: 0,
+      exitCode: 0,
+      output: "release=false\n",
+    });
+    expect(await runSelectionStep("workflow_dispatch", "unrelated-sha", false, "2")).toEqual({
       calls: 0,
       exitCode: 0,
       output: "release=true\n",
     });
     expect(await runSelectionStep("push", "unused", true)).toMatchObject({ calls: 1, exitCode: 1 });
 
-    for (const [name, platform] of [
-      ["ios-testflight", "ios"],
-      ["macos-testflight", "macos"],
-    ] as const) {
-      const job = jobs[name] as { concurrency?: { group?: string; "cancel-in-progress"?: boolean }; needs?: string };
+    for (const name of ["ios-testflight", "macos-testflight"] as const) {
+      const job = jobs[name] as { concurrency?: unknown; needs?: string };
       expect(job.needs).toBe("release-current");
-      expect(job.concurrency?.["cancel-in-progress"]).toBe(true);
-      expect(job.concurrency?.group).toBe(
-        `app-store-distribute-${platform}-\${{ github.event_name == 'push' && github.ref || github.run_id }}`,
-      );
+      expect(job).not.toHaveProperty("concurrency");
     }
   });
   test("Apple main-push jobs fail closed if signing or upload credentials are absent", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {
       const job = jobs[name] as {
         env?: Record<string, unknown>;
+        needs?: string;
         steps?: Array<Record<string, unknown>>;
         "timeout-minutes"?: number;
       };
