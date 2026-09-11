@@ -39,6 +39,7 @@ const repoRoot = path.resolve(projectRoot, "..", "..");
 const ASSISTANT_UI_CLOUD = /@assistant-ui[/\\]core[/\\]dist[/\\]react[/\\]runtimes[/\\]cloud[/\\]/;
 const CLOUD_STUB = path.join(projectRoot, "stubs", "assistant-ui-cloud.js");
 const REACT_NATIVE_PACKAGE = /^react-native(?=\/|$)/;
+const NATIVE_STACK_VIEW_REQUEST = /(?:^|\/)views\/NativeStackView(?:\.[^/]+)?$/;
 const NATIVE_STACK_ROOT = path.dirname(
   require.resolve("@react-navigation/native-stack/package.json", { paths: [projectRoot] }),
 );
@@ -66,9 +67,8 @@ const config = {
     resolveRequest: (context, moduleName, platform) => {
       const nativeStackViewRequest =
         platform === "macos" &&
-        moduleName === "../views/NativeStackView" &&
-        context.originModulePath.startsWith(`${NATIVE_STACK_ROOT}${path.sep}`) &&
-        path.basename(context.originModulePath).startsWith("createNativeStackNavigator.");
+        NATIVE_STACK_VIEW_REQUEST.test(moduleName) &&
+        context.originModulePath.startsWith(`${NATIVE_STACK_ROOT}${path.sep}`);
       if (nativeStackViewRequest) {
         const sourceBuild = context.originModulePath.startsWith(`${path.join(NATIVE_STACK_ROOT, "src")}${path.sep}`);
         return { type: "sourceFile", filePath: sourceBuild ? NATIVE_STACK_SOURCE_VIEW : NATIVE_STACK_MODULE_VIEW };
