@@ -50,16 +50,19 @@ interface OrderRun {
   exitCode: number;
   stdout: string;
   calls: number;
+  output: string;
 }
 
-async function runOrderStep(ref: string, earlier: boolean, fail: boolean): Promise<OrderRun> {
+async function runOrderStep(ref: string, headSha: string, fail: boolean): Promise<OrderRun> {
   const order = jobs["release-order"] as { steps?: Array<Record<string, unknown>> };
-  const step = order.steps?.find(candidate => candidate.name === "Wait for earlier main releases");
-  if (typeof step?.run !== "string") throw new Error("missing release ordering run body");
+  const step = order.steps?.find(candidate => candidate.name === "Skip superseded main release");
+  if (typeof step?.run !== "string") throw new Error("missing release freshness run body");
   const dir = mkdtempSync(join(tmpdir(), "ompctl-release-order-"));
   const stub = join(dir, "gh");
   const counter = join(dir, "calls");
+  const output = join(dir, "output");
   writeFileSync(counter, "0");
+  writeFileSync(output, "");
   writeFileSync(
     stub,
     `#!/bin/sh
@@ -70,28 +73,32 @@ if [ ${fail ? 1 : 0} -eq 1 ]; then
   echo "api unavailable" >&2
   exit 1
 fi
-if [ ${earlier ? 1 : 0} -eq 1 ] && [ "$n" -eq 1 ]; then
-  echo 100
-fi
+echo "${headSha}"
 `,
     { mode: 0o755 },
   );
   try {
-    const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", step.run.replace("sleep 15", "sleep 0")], {
+    const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", step.run], {
       cwd: root,
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
         GITHUB_REF: ref,
         GITHUB_REPOSITORY: "jwaldrip/ompctl",
-        GITHUB_RUN_ID: "200",
+        GITHUB_SHA: "current-sha",
+        GITHUB_OUTPUT: output,
         GH_TOKEN: "test",
       },
       stdout: "pipe",
       stderr: "pipe",
     });
     const [stdout] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    return { exitCode: await child.exited, stdout, calls: Number(readFileSync(counter, "utf8")) };
+    return {
+      exitCode: await child.exited,
+      stdout,
+      calls: Number(readFileSync(counter, "utf8")),
+      output: readFileSync(output, "utf8"),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -104,10 +111,10 @@ describe("App Store release workflow", () => {
     expect(triggers).not.toHaveProperty("tags");
 
     expect(normalizeCondition(jobCondition("ios-testflight"))).toBe(
-      "github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all'",
+      "needs.release-order.outputs.release == 'true' && (github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all')",
     );
     expect(normalizeCondition(jobCondition("macos-testflight"))).toBe(
-      "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all'))",
+      "needs.release-order.outputs.release == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all')))",
     );
     expect(normalizeCondition(jobCondition("android-play-internal"))).toBe(
       "github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'android') || github.event.inputs.platforms == 'all')",
@@ -117,32 +124,36 @@ describe("App Store release workflow", () => {
     );
   });
 
-  test("rapid main pushes cannot replace a pending release", () => {
+  test("rapid main pushes select only the current commit without occupying a runner", async () => {
     expect(workflow).not.toHaveProperty("concurrency");
-  });
-
-  test("main release ordering waits, passes non-main runs, and fails closed", async () => {
     const order = jobs["release-order"] as {
+      outputs?: Record<string, unknown>;
       permissions?: Record<string, unknown>;
       steps?: Array<Record<string, unknown>>;
       "timeout-minutes"?: number;
     };
-    expect(order["timeout-minutes"]).toBe(180);
+    expect(order["timeout-minutes"]).toBe(5);
     expect(order.permissions).toMatchObject({ actions: "read", contents: "read" });
-    const wait = order.steps?.find(step => step.name === "Wait for earlier main releases");
-    expect(wait?.run).toContain("gh api --paginate");
-    expect(wait?.run).toContain(".id < $GITHUB_RUN_ID");
-    expect(wait?.run).toContain(".status !=");
-    expect(wait?.run).toContain("completed");
+    expect(order.outputs?.release).toContain("steps.latest.outputs.release");
+    const gate = order.steps?.find(step => step.name === "Skip superseded main release");
+    expect(gate?.run).toContain("/commits/main");
+    expect(gate?.run).not.toContain("while true");
 
-    const queued = await runOrderStep("refs/heads/main", true, false);
-    expect(queued.exitCode).toBe(0);
-    expect(queued.calls).toBe(2);
-    expect(queued.stdout).toContain("waiting for earlier release runs: 100");
-    expect(queued.stdout).toContain("earlier main releases complete");
+    const current = await runOrderStep("refs/heads/main", "current-sha", false);
+    expect(current).toMatchObject({ exitCode: 0, calls: 1 });
+    expect(current.output).toContain("release=true");
+    expect(current.stdout).toContain("is the current main commit");
 
-    expect(await runOrderStep("refs/heads/feature", true, false)).toMatchObject({ exitCode: 0, calls: 0 });
-    expect(await runOrderStep("refs/heads/main", false, true)).toMatchObject({ exitCode: 1, calls: 1 });
+    const stale = await runOrderStep("refs/heads/main", "newer-sha", false);
+    expect(stale).toMatchObject({ exitCode: 0, calls: 1 });
+    expect(stale.output).toContain("release=false");
+    expect(stale.stdout).toContain("is superseded by newer-sha");
+
+    const explicit = await runOrderStep("refs/heads/feature", "unused", false);
+    expect(explicit).toMatchObject({ exitCode: 0, calls: 0 });
+    expect(explicit.output).toContain("release=true");
+
+    expect(await runOrderStep("refs/heads/main", "unused", true)).toMatchObject({ exitCode: 1, calls: 1 });
   });
   test("Apple main-push jobs fail closed if signing or upload credentials are absent", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {

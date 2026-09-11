@@ -22,42 +22,45 @@ on:
 
 jobs:
   release-order:
-    name: Preserve main release order
+    name: Select latest main release
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 5
     permissions:
       actions: read
       contents: read
+    outputs:
+      release: ${{ steps.latest.outputs.release }}
     steps:
-      - name: Wait for earlier main releases
+      - name: Skip superseded main release
+        id: latest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "non-main release; ordering gate not needed"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "non-main release selected explicitly"
             exit 0
           fi
-          endpoint="/repos/$GITHUB_REPOSITORY/actions/workflows/app-store-distribute.yml/runs?branch=main&per_page=100"
-          while true; do
-            if ! earlier="$(gh api --paginate "$endpoint" --jq ".workflow_runs[] | select(.id < $GITHUB_RUN_ID and .status != \"completed\") | .id")"; then
-              echo "::error::Could not read earlier release runs"
-              exit 1
-            fi
-            if [[ -z "$earlier" ]]; then
-              break
-            fi
-            echo "waiting for earlier release runs: $earlier"
-            sleep 15
-          done
-          echo "earlier main releases complete"
+          if ! head_sha="$(gh api "/repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"; then
+            echo "::error::Could not read the current main commit"
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" != "$head_sha" ]]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "release $GITHUB_SHA is superseded by $head_sha"
+            exit 0
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "release $GITHUB_SHA is the current main commit"
 
   ios-testflight:
     name: iOS archive + TestFlight
     needs: release-order
     if: >
-      github.event_name == 'push' ||
+      needs.release-order.outputs.release == 'true' &&
+      (github.event_name == 'push' ||
       contains(github.event.inputs.platforms, 'ios') ||
-      github.event.inputs.platforms == 'all'
+      github.event.inputs.platforms == 'all')
     runs-on: macos-15
     timeout-minutes: 180
     defaults:
@@ -289,11 +292,12 @@ jobs:
     name: macOS archive
     needs: release-order
     if: >
-      github.event_name == 'push' ||
+      needs.release-order.outputs.release == 'true' &&
+      (github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && (
         contains(github.event.inputs.platforms, 'macos') ||
         github.event.inputs.platforms == 'all'
-      ))
+      )))
     runs-on: macos-15
     timeout-minutes: 180
     defaults:
