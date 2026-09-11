@@ -46,18 +46,30 @@ async function runLookupStep(stepName: string, lookupExit: number): Promise<Look
     rmSync(dir, { recursive: true, force: true });
   }
 }
-interface OrderRun {
+interface WorkflowStepRun {
   exitCode: number;
   stdout: string;
   calls: number;
   output: string;
 }
 
-async function runOrderStep(ref: string, headSha: string, fail: boolean): Promise<OrderRun> {
-  const order = jobs["release-order"] as { steps?: Array<Record<string, unknown>> };
-  const step = order.steps?.find(candidate => candidate.name === "Skip superseded main release");
-  if (typeof step?.run !== "string") throw new Error("missing release freshness run body");
-  const dir = mkdtempSync(join(tmpdir(), "ompctl-release-order-"));
+interface WorkflowStepOptions {
+  event?: "push" | "workflow_dispatch";
+  headSha?: string;
+  earlierRun?: string;
+  failAt?: "head" | "list" | "cancel" | "status";
+  failedCancelStatus?: string;
+}
+
+async function runWorkflowStep(
+  jobName: "release-order" | "ios-testflight" | "macos-testflight",
+  stepName: string,
+  options: WorkflowStepOptions = {},
+): Promise<WorkflowStepRun> {
+  const job = jobs[jobName] as { steps?: Array<Record<string, unknown>> };
+  const step = job.steps?.find(candidate => candidate.name === stepName);
+  if (typeof step?.run !== "string") throw new Error(`missing run body for ${stepName}`);
+  const dir = mkdtempSync(join(tmpdir(), "ompctl-release-step-"));
   const stub = join(dir, "gh");
   const counter = join(dir, "calls");
   const output = join(dir, "output");
@@ -69,11 +81,24 @@ async function runOrderStep(ref: string, headSha: string, fail: boolean): Promis
 count_file="${counter}"
 n=$(($(cat "$count_file") + 1))
 echo "$n" > "$count_file"
-if [ ${fail ? 1 : 0} -eq 1 ]; then
-  echo "api unavailable" >&2
-  exit 1
-fi
-echo "${headSha}"
+case "$*" in
+  *"/commits/main"*)
+    [ "${options.failAt ?? ""}" = head ] && exit 1
+    echo "${options.headSha ?? "current-sha"}"
+    ;;
+  *"actions/workflows"*)
+    [ "${options.failAt ?? ""}" = list ] && exit 1
+    echo "${options.earlierRun ?? ""}"
+    ;;
+  *"--method POST"*)
+    [ "${options.failAt ?? ""}" = cancel ] && exit 1
+    exit 0
+    ;;
+  *"actions/runs/"*)
+    [ "${options.failAt ?? ""}" = status ] && exit 1
+    echo "${options.failedCancelStatus ?? "completed"}"
+    ;;
+esac
 `,
     { mode: 0o755 },
   );
@@ -83,8 +108,9 @@ echo "${headSha}"
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
-        GITHUB_REF: ref,
+        GITHUB_EVENT_NAME: options.event ?? "push",
         GITHUB_REPOSITORY: "jwaldrip/ompctl",
+        GITHUB_RUN_ID: "200",
         GITHUB_SHA: "current-sha",
         GITHUB_OUTPUT: output,
         GH_TOKEN: "test",
@@ -124,7 +150,7 @@ describe("App Store release workflow", () => {
     );
   });
 
-  test("rapid main pushes select only the current commit without occupying a runner", async () => {
+  test("rapid main pushes cancel superseded releases without occupying a runner", async () => {
     expect(workflow).not.toHaveProperty("concurrency");
     const order = jobs["release-order"] as {
       outputs?: Record<string, unknown>;
@@ -133,27 +159,77 @@ describe("App Store release workflow", () => {
       "timeout-minutes"?: number;
     };
     expect(order["timeout-minutes"]).toBe(5);
-    expect(order.permissions).toMatchObject({ actions: "read", contents: "read" });
+    expect(order.permissions).toMatchObject({ actions: "write", contents: "read" });
     expect(order.outputs?.release).toContain("steps.latest.outputs.release");
-    const gate = order.steps?.find(step => step.name === "Skip superseded main release");
-    expect(gate?.run).toContain("/commits/main");
-    expect(gate?.run).not.toContain("while true");
 
-    const current = await runOrderStep("refs/heads/main", "current-sha", false);
-    expect(current).toMatchObject({ exitCode: 0, calls: 1 });
+    const current = await runWorkflowStep("release-order", "Cancel superseded automatic releases");
+    expect(current).toMatchObject({ exitCode: 0, calls: 2 });
     expect(current.output).toContain("release=true");
     expect(current.stdout).toContain("is the current main commit");
 
-    const stale = await runOrderStep("refs/heads/main", "newer-sha", false);
+    const cancelling = await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
+      earlierRun: "100",
+    });
+    expect(cancelling).toMatchObject({ exitCode: 0, calls: 3 });
+    expect(cancelling.stdout).toContain("cancelled superseded release run 100");
+
+    const stale = await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
+      headSha: "newer-sha",
+    });
     expect(stale).toMatchObject({ exitCode: 0, calls: 1 });
     expect(stale.output).toContain("release=false");
     expect(stale.stdout).toContain("is superseded by newer-sha");
 
-    const explicit = await runOrderStep("refs/heads/feature", "unused", false);
+    const explicit = await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
+      event: "workflow_dispatch",
+      headSha: "unrelated-tip",
+    });
     expect(explicit).toMatchObject({ exitCode: 0, calls: 0 });
     expect(explicit.output).toContain("release=true");
 
-    expect(await runOrderStep("refs/heads/main", "unused", true)).toMatchObject({ exitCode: 1, calls: 1 });
+    expect(
+      await runWorkflowStep("release-order", "Cancel superseded automatic releases", { failAt: "head" }),
+    ).toMatchObject({ exitCode: 1, calls: 1 });
+    expect(
+      await runWorkflowStep("release-order", "Cancel superseded automatic releases", { failAt: "list" }),
+    ).toMatchObject({ exitCode: 1, calls: 2 });
+    expect(
+      await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
+        earlierRun: "100",
+        failAt: "cancel",
+        failedCancelStatus: "completed",
+      }),
+    ).toMatchObject({ exitCode: 0, calls: 4 });
+    expect(
+      await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
+        earlierRun: "100",
+        failAt: "cancel",
+        failedCancelStatus: "in_progress",
+      }),
+    ).toMatchObject({ exitCode: 1, calls: 4 });
+  });
+
+  test("Apple publishing rechecks main after archiving and before tester assignment", async () => {
+    const checks = [
+      ["ios-testflight", "Recheck current main before iOS upload"],
+      ["ios-testflight", "Recheck current main before publishing iOS build"],
+      ["macos-testflight", "Recheck current main before macOS upload"],
+      ["macos-testflight", "Recheck current main before publishing macOS build"],
+    ] as const;
+    for (const [job, step] of checks) {
+      expect(await runWorkflowStep(job, step)).toMatchObject({ exitCode: 0, calls: 1, output: "release=true\n" });
+      expect(await runWorkflowStep(job, step, { headSha: "newer-sha" })).toMatchObject({
+        exitCode: 0,
+        calls: 1,
+        output: "release=false\n",
+      });
+      expect(await runWorkflowStep(job, step, { event: "workflow_dispatch", headSha: "unrelated-tip" })).toMatchObject({
+        exitCode: 0,
+        calls: 0,
+        output: "release=true\n",
+      });
+      expect(await runWorkflowStep(job, step, { failAt: "head" })).toMatchObject({ exitCode: 1, calls: 1 });
+    }
   });
   test("Apple main-push jobs fail closed if signing or upload credentials are absent", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {
@@ -178,19 +254,31 @@ describe("App Store release workflow", () => {
       expect(stepNames).toContain("Require distribution certificate");
       expect(stepNames.some(step => String(step).includes("Require ASC release configuration"))).toBe(true);
       const ios = name === "ios-testflight";
+      const uploadGuardName = ios
+        ? "Recheck current main before iOS upload"
+        : "Recheck current main before macOS upload";
       const lookupName = ios ? "Check for an existing iOS upload" : "Check for an existing macOS upload";
       const uploadName = ios ? "Upload to TestFlight" : "Upload macOS to App Store Connect / TestFlight";
+      const assignGuardName = ios
+        ? "Recheck current main before publishing iOS build"
+        : "Recheck current main before publishing macOS build";
       const publishName = ios ? "Publish iOS build to internal testers" : "Publish macOS build to internal testers";
+      const uploadGuardIndex = steps.findIndex(step => step.name === uploadGuardName);
       const lookupIndex = steps.findIndex(step => step.name === lookupName);
       const uploadIndex = steps.findIndex(step => step.name === uploadName);
+      const assignGuardIndex = steps.findIndex(step => step.name === assignGuardName);
       const publishIndex = steps.findIndex(step => step.name === publishName);
-      expect(lookupIndex).toBeGreaterThan(-1);
+      expect(uploadGuardIndex).toBeGreaterThan(-1);
+      expect(lookupIndex).toBeGreaterThan(uploadGuardIndex);
       expect(uploadIndex).toBeGreaterThan(lookupIndex);
-      expect(publishIndex).toBeGreaterThan(uploadIndex);
+      expect(assignGuardIndex).toBeGreaterThan(uploadIndex);
+      expect(publishIndex).toBeGreaterThan(assignGuardIndex);
       expect(steps[lookupIndex]?.run).toContain(`find-build "$OMPD_BUILD_NUMBER" ${ios ? "IOS" : "MAC_OS"}`);
       expect(steps[lookupIndex]?.run).toContain('if [[ "$status" -ne 3 ]]');
       expect(steps[uploadIndex]?.if).toContain(`steps.${ios ? "ios_build" : "macos_build"}.outputs.exists != 'true'`);
-      expect(steps[publishIndex]?.if).toBe("env.OMPD_UPLOAD == 'true' && env.OMPD_ASC_KEY_PATH != ''");
+      expect(steps[publishIndex]?.if).toBe(
+        `steps.${ios ? "ios_assign_current" : "macos_assign_current"}.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''`,
+      );
     }
 
     const iosJob = jobs["ios-testflight"] as { env?: Record<string, unknown>; steps?: Array<Record<string, unknown>> };
