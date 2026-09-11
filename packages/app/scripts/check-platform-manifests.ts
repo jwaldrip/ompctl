@@ -1,18 +1,17 @@
 #!/usr/bin/env bun
 /**
- * Guard against hardcoded version literals across all platform manifests.
+ * Guard platform manifest values that must not drift across release builds.
  *
  * Verifies that:
- *   1. iOS Info.plist: CFBundleVersion is $(CURRENT_PROJECT_VERSION) and
- *      CFBundleShortVersionString is $(MARKETING_VERSION).
- *   2. macOS Info.plist: CFBundleVersion is $(CURRENT_PROJECT_VERSION) and
- *      CFBundleShortVersionString is $(MARKETING_VERSION).
+ *   1. iOS Info.plist uses parameterized versions and enables the New Architecture.
+ *   2. macOS Info.plist uses parameterized versions and disables the New Architecture,
+ *      because this dependency set contains iOS-only Fabric component registrations.
  *   3. Windows Package.appxmanifest (both ompd and ompd.Package):
  *      Identity Version attribute references $(PackageVersion).
  *   4. Android build.gradle: versionCode reads from OMPD_BUILD_NUMBER or
  *      OMPD_VERSION_CODE project property rather than a hardcoded integer.
  *
- * Exits nonzero with the exact problem if any manifest carries a hardcoded literal.
+ * Exits nonzero with the exact problem if any manifest carries a forbidden value.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -25,12 +24,18 @@ export interface Violation {
   actual: string;
 }
 
-export function inspectPlistContent(content: string): { buildVersion: string | null; marketingVersion: string | null } {
+export function inspectPlistContent(content: string): {
+  buildVersion: string | null;
+  marketingVersion: string | null;
+  newArchEnabled: boolean | null;
+} {
   const buildMatch = content.match(/<key>CFBundleVersion<\/key>\s*<string>([^<]*)<\/string>/);
   const versionMatch = content.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/);
+  const newArchMatch = content.match(/<key>RCTNewArchEnabled<\/key>\s*<(true|false)\/>/);
   return {
     buildVersion: buildMatch ? buildMatch[1]! : null,
     marketingVersion: versionMatch ? versionMatch[1]! : null,
+    newArchEnabled: newArchMatch ? newArchMatch[1] === "true" : null,
   };
 }
 
@@ -66,14 +71,14 @@ export function findAppDir(start: string = process.cwd()): string {
 export function checkPlatformManifests(appDir: string = findAppDir()): Violation[] {
   const violations: Violation[] = [];
 
-  const checkPlist = (relPath: string) => {
+  const checkPlist = (relPath: string, expectedNewArch: boolean) => {
     const fullPath = join(appDir, relPath);
     if (!existsSync(fullPath)) {
       violations.push({ file: relPath, field: "file", expected: "exists", actual: "missing" });
       return;
     }
     const content = readFileSync(fullPath, "utf8");
-    const { buildVersion, marketingVersion } = inspectPlistContent(content);
+    const { buildVersion, marketingVersion, newArchEnabled } = inspectPlistContent(content);
 
     if (buildVersion === null) {
       violations.push({
@@ -104,6 +109,15 @@ export function checkPlatformManifests(appDir: string = findAppDir()): Violation
         field: "CFBundleShortVersionString",
         expected: "$(MARKETING_VERSION)",
         actual: marketingVersion,
+      });
+    }
+
+    if (newArchEnabled !== expectedNewArch) {
+      violations.push({
+        file: relPath,
+        field: "RCTNewArchEnabled",
+        expected: String(expectedNewArch),
+        actual: newArchEnabled === null ? "missing" : String(newArchEnabled),
       });
     }
   };
@@ -157,8 +171,8 @@ export function checkPlatformManifests(appDir: string = findAppDir()): Violation
     }
   };
 
-  checkPlist("ios/ompd/Info.plist");
-  checkPlist("macos/ompd-macOS/Info.plist");
+  checkPlist("ios/ompd/Info.plist", true);
+  checkPlist("macos/ompd-macOS/Info.plist", false);
   checkWindows("windows/ompd/Package.appxmanifest");
   checkWindows("windows/ompd.Package/Package.appxmanifest");
   checkGradle("android/app/build.gradle");
@@ -167,10 +181,10 @@ export function checkPlatformManifests(appDir: string = findAppDir()): Violation
 }
 
 if (import.meta.main) {
-  console.log("Checking platform manifests for hardcoded version literals...");
+  console.log("Checking platform manifest version and runtime settings...");
   const violations = checkPlatformManifests();
   if (violations.length > 0) {
-    console.error(`\nFAILED: Found ${violations.length} hardcoded version literal(s) in platform manifests:\n`);
+    console.error(`\nFAILED: Found ${violations.length} invalid platform manifest value(s):\n`);
     for (const v of violations) {
       console.error(`  - ${v.file}`);
       console.error(`      field:    ${v.field}`);
@@ -179,5 +193,5 @@ if (import.meta.main) {
     }
     process.exit(1);
   }
-  console.log("OK: All platform manifests read parameterized version settings.");
+  console.log("OK: Platform manifest version and runtime settings are valid.");
 }

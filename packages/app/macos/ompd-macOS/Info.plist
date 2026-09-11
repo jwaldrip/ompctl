@@ -69,7 +69,7 @@
 	<key>NSSupportsSuddenTermination</key>
 	<true/>
 	<key>RCTNewArchEnabled</key>
-	<true/>
+	<false/>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

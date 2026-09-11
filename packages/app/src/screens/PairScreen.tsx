@@ -197,7 +197,7 @@ function Field({
       <TextInput
         testID={testID}
         accessibilityLabel={label}
-        style={[styles.input, type.code]}
+        style={[styles.input, type.body]}
         value={value}
         onChangeText={onChange}
         secureTextEntry={secure === true}
@@ -231,6 +231,7 @@ const styles = StyleSheet.create({
   input: {
     minHeight: TOUCH_TARGET,
     paddingHorizontal: space.step,
+    paddingVertical: space.step,
     color: ink.bright,
     backgroundColor: ground.surface,
     borderWidth: stroke.hair,
