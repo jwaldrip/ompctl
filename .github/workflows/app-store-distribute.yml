@@ -1,7 +1,7 @@
 name: App store release tracks
 
-# Every merge to main archives and uploads iOS and macOS to TestFlight. Manual
-# dispatch remains for Android, Windows, or an artifact-only Apple build.
+# The newest main push archives and uploads iOS and macOS to TestFlight. Manual
+# dispatches remain independent for a selected platform, ref, and upload policy.
 # Missing release credentials fail the job; a merge must never report success
 # while publishing nothing.
 
@@ -18,46 +18,53 @@ on:
         default: true
   push:
     branches: [main]
-
+concurrency:
+  group: app-store-distribute-${{ github.event_name == 'push' && github.run_attempt == 1 && github.ref || github.run_id }}
 
 jobs:
-  release-order:
-    name: Preserve main release order
+  release-current:
+    name: Select current automatic release
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 5
     permissions:
-      actions: read
       contents: read
+    outputs:
+      release: ${{ steps.current.outputs.release }}
     steps:
-      - name: Wait for earlier main releases
+      - name: Check main head
+        id: current
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "non-main release; ordering gate not needed"
+          if [[ "$GITHUB_EVENT_NAME" != "push" ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          endpoint="/repos/$GITHUB_REPOSITORY/actions/workflows/app-store-distribute.yml/runs?branch=main&per_page=100"
-          while true; do
-            if ! earlier="$(gh api --paginate "$endpoint" --jq ".workflow_runs[] | select(.id < $GITHUB_RUN_ID and .status != \"completed\") | .id")"; then
-              echo "::error::Could not read earlier release runs"
-              exit 1
-            fi
-            if [[ -z "$earlier" ]]; then
-              break
-            fi
-            echo "waiting for earlier release runs: $earlier"
-            sleep 15
-          done
-          echo "earlier main releases complete"
+          if [[ "$GITHUB_RUN_ATTEMPT" != "1" ]]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "automatic push reruns do not publish; use an explicit workflow dispatch"
+            exit 0
+          fi
+          if ! head_sha="$(gh api "/repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"; then
+            echo "::error::Could not read the current main commit"
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" == "$head_sha" ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "release $GITHUB_SHA is superseded by $head_sha"
+          fi
 
   ios-testflight:
     name: iOS archive + TestFlight
-    needs: release-order
+    needs: release-current
     if: >
-      github.event_name == 'push' ||
+      needs.release-current.outputs.release == 'true' &&
+      (github.event_name != 'push' || github.run_attempt == 1) &&
+      (github.event_name == 'push' ||
       contains(github.event.inputs.platforms, 'ios') ||
-      github.event.inputs.platforms == 'all'
+      github.event.inputs.platforms == 'all')
     runs-on: macos-15
     timeout-minutes: 180
     defaults:
@@ -287,13 +294,15 @@ jobs:
 
   macos-testflight:
     name: macOS archive
-    needs: release-order
+    needs: release-current
     if: >
-      github.event_name == 'push' ||
+      needs.release-current.outputs.release == 'true' &&
+      (github.event_name != 'push' || github.run_attempt == 1) &&
+      (github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && (
         contains(github.event.inputs.platforms, 'macos') ||
         github.event.inputs.platforms == 'all'
-      ))
+      )))
     runs-on: macos-15
     timeout-minutes: 180
     defaults:

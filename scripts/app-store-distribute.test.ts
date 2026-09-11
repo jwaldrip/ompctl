@@ -46,68 +46,72 @@ async function runLookupStep(stepName: string, lookupExit: number): Promise<Look
     rmSync(dir, { recursive: true, force: true });
   }
 }
-interface OrderRun {
-  exitCode: number;
-  stdout: string;
+interface SelectionRun {
   calls: number;
+  exitCode: number;
+  output: string;
 }
 
-async function runOrderStep(ref: string, earlier: boolean, fail: boolean): Promise<OrderRun> {
-  const order = jobs["release-order"] as { steps?: Array<Record<string, unknown>> };
-  const step = order.steps?.find(candidate => candidate.name === "Wait for earlier main releases");
-  if (typeof step?.run !== "string") throw new Error("missing release ordering run body");
-  const dir = mkdtempSync(join(tmpdir(), "ompctl-release-order-"));
+async function runSelectionStep(
+  event: "push" | "workflow_dispatch",
+  headSha: string,
+  fail = false,
+  runAttempt = "1",
+): Promise<SelectionRun> {
+  const job = jobs["release-current"] as { steps?: Array<Record<string, unknown>> };
+  const step = job.steps?.find(candidate => candidate.name === "Check main head");
+  if (typeof step?.run !== "string") throw new Error("missing current-release selection step");
+  const dir = mkdtempSync(join(tmpdir(), "ompctl-release-current-"));
   const stub = join(dir, "gh");
   const counter = join(dir, "calls");
+  const output = join(dir, "output");
   writeFileSync(counter, "0");
+  writeFileSync(output, "");
   writeFileSync(
     stub,
     `#!/bin/sh
-count_file="${counter}"
-n=$(($(cat "$count_file") + 1))
-echo "$n" > "$count_file"
-if [ ${fail ? 1 : 0} -eq 1 ]; then
-  echo "api unavailable" >&2
-  exit 1
-fi
-if [ ${earlier ? 1 : 0} -eq 1 ] && [ "$n" -eq 1 ]; then
-  echo 100
-fi
+echo $(($(cat "${counter}") + 1)) > "${counter}"
+${fail ? "exit 1" : `echo "${headSha}"`}
 `,
     { mode: 0o755 },
   );
   try {
-    const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", step.run.replace("sleep 15", "sleep 0")], {
+    const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", step.run], {
       cwd: root,
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
-        GITHUB_REF: ref,
+        GITHUB_EVENT_NAME: event,
         GITHUB_REPOSITORY: "jwaldrip/ompctl",
-        GITHUB_RUN_ID: "200",
+        GITHUB_RUN_ATTEMPT: runAttempt,
+        GITHUB_SHA: "current-sha",
+        GITHUB_OUTPUT: output,
         GH_TOKEN: "test",
       },
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stdout] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    return { exitCode: await child.exited, stdout, calls: Number(readFileSync(counter, "utf8")) };
+    await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return {
+      calls: Number(readFileSync(counter, "utf8")),
+      exitCode: await child.exited,
+      output: readFileSync(output, "utf8"),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
-
 describe("App Store release workflow", () => {
-  test("every main push uploads iOS and macOS while other platforms remain explicit", () => {
+  test("eligible automatic pushes target both Apple platforms while other platforms remain explicit", () => {
     const push = triggers.push as { branches?: string[] };
     expect(push.branches).toEqual(["main"]);
     expect(triggers).not.toHaveProperty("tags");
 
     expect(normalizeCondition(jobCondition("ios-testflight"))).toBe(
-      "github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all'",
+      "needs.release-current.outputs.release == 'true' && (github.event_name != 'push' || github.run_attempt == 1) && (github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all')",
     );
     expect(normalizeCondition(jobCondition("macos-testflight"))).toBe(
-      "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all'))",
+      "needs.release-current.outputs.release == 'true' && (github.event_name != 'push' || github.run_attempt == 1) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all')))",
     );
     expect(normalizeCondition(jobCondition("android-play-internal"))).toBe(
       "github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'android') || github.event.inputs.platforms == 'all')",
@@ -117,42 +121,51 @@ describe("App Store release workflow", () => {
     );
   });
 
-  test("rapid main pushes cannot replace a pending release", () => {
-    expect(workflow).not.toHaveProperty("concurrency");
-  });
+  test("first-attempt pushes coalesce while reruns and manual dispatches stay independent", async () => {
+    const concurrency = workflow.concurrency as { group?: string; queue?: string; "cancel-in-progress"?: boolean };
+    expect(concurrency).toEqual({
+      group: `app-store-distribute-\${{ github.event_name == 'push' && github.run_attempt == 1 && github.ref || github.run_id }}`,
+    });
+    expect(concurrency).not.toHaveProperty("queue");
+    expect(concurrency).not.toHaveProperty("cancel-in-progress");
 
-  test("main release ordering waits, passes non-main runs, and fails closed", async () => {
-    const order = jobs["release-order"] as {
+    const selector = jobs["release-current"] as {
+      outputs?: Record<string, unknown>;
       permissions?: Record<string, unknown>;
-      steps?: Array<Record<string, unknown>>;
       "timeout-minutes"?: number;
     };
-    expect(order["timeout-minutes"]).toBe(180);
-    expect(order.permissions).toMatchObject({ actions: "read", contents: "read" });
-    const wait = order.steps?.find(step => step.name === "Wait for earlier main releases");
-    expect(wait?.run).toContain("gh api --paginate");
-    expect(wait?.run).toContain(".id < $GITHUB_RUN_ID");
-    expect(wait?.run).toContain(".status !=");
-    expect(wait?.run).toContain("completed");
+    expect(selector["timeout-minutes"]).toBe(5);
+    expect(selector.permissions).toMatchObject({ contents: "read" });
+    expect(selector.outputs?.release).toContain("steps.current.outputs.release");
+    expect(await runSelectionStep("push", "current-sha")).toEqual({ calls: 1, exitCode: 0, output: "release=true\n" });
+    expect(await runSelectionStep("push", "newer-sha")).toEqual({ calls: 1, exitCode: 0, output: "release=false\n" });
+    expect(await runSelectionStep("push", "current-sha", false, "2")).toEqual({
+      calls: 0,
+      exitCode: 0,
+      output: "release=false\n",
+    });
+    expect(await runSelectionStep("workflow_dispatch", "unrelated-sha", false, "2")).toEqual({
+      calls: 0,
+      exitCode: 0,
+      output: "release=true\n",
+    });
+    expect(await runSelectionStep("push", "unused", true)).toMatchObject({ calls: 1, exitCode: 1 });
 
-    const queued = await runOrderStep("refs/heads/main", true, false);
-    expect(queued.exitCode).toBe(0);
-    expect(queued.calls).toBe(2);
-    expect(queued.stdout).toContain("waiting for earlier release runs: 100");
-    expect(queued.stdout).toContain("earlier main releases complete");
-
-    expect(await runOrderStep("refs/heads/feature", true, false)).toMatchObject({ exitCode: 0, calls: 0 });
-    expect(await runOrderStep("refs/heads/main", false, true)).toMatchObject({ exitCode: 1, calls: 1 });
+    for (const name of ["ios-testflight", "macos-testflight"] as const) {
+      const job = jobs[name] as { concurrency?: unknown; needs?: string };
+      expect(job.needs).toBe("release-current");
+      expect(job).not.toHaveProperty("concurrency");
+    }
   });
   test("Apple main-push jobs fail closed if signing or upload credentials are absent", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {
       const job = jobs[name] as {
         env?: Record<string, unknown>;
-        steps?: Array<Record<string, unknown>>;
         needs?: string;
+        steps?: Array<Record<string, unknown>>;
         "timeout-minutes"?: number;
       };
-      expect(job.needs).toBe("release-order");
+      expect(job.needs).toBe("release-current");
       expect(job["timeout-minutes"]).toBe(180);
       expect(job.env?.OMPD_UPLOAD).toContain("github.event_name == 'push'");
       expect(job.env?.OMPD_APP_ID).toContain("OMPD_ASC_APP_ID");
