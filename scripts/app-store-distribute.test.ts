@@ -102,7 +102,7 @@ ${fail ? "exit 1" : `echo "${headSha}"`}
   }
 }
 describe("App Store release workflow", () => {
-  test("every main push uploads iOS and macOS while other platforms remain explicit", () => {
+  test("eligible automatic pushes target both Apple platforms while other platforms remain explicit", () => {
     const push = triggers.push as { branches?: string[] };
     expect(push.branches).toEqual(["main"]);
     expect(triggers).not.toHaveProperty("tags");
