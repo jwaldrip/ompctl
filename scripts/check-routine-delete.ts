@@ -99,6 +99,7 @@ const routine: Routine = {
 
 const initialSecret = "initial-live-secret";
 const daemon = new Ompd({
+  mcpAuthVault: "file",
   home,
   overrides: { port: 0, host: "127.0.0.1" },
   repoRoot: REPO_ROOT,

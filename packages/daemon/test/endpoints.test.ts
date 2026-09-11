@@ -316,6 +316,7 @@ describe("GET /v1/endpoints against a real Ompd", () => {
     const home = mkdtempSync(join(tmpdir(), "ompd-endpoints-daemon-"));
     scratchDirs.push(home);
     const daemon = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot: join(home, "sessions"),
       // The default a real operator gets: ask the OS for a free port. The

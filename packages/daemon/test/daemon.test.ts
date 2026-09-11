@@ -78,6 +78,7 @@ function indexedFakeHost(home: string) {
 function build(home: string, extra: Partial<OmpdOptions> = {}): Ompd {
   const { fake, sessionsRoot } = indexedFakeHost(home);
   const daemon = new Ompd({
+    mcpAuthVault: "file",
     home,
     sessionsRoot,
     // Port 0 asks the OS for a free one, so tests never collide with each
@@ -1087,6 +1088,7 @@ describe("WebView composition", () => {
     const home = tempDir("ompd-webview-");
     const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot,
       overrides: { port: 0 },
@@ -1177,6 +1179,7 @@ describe("WebView composition", () => {
     const home = tempDir("ompd-webview-approval-");
     const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot,
       overrides: { port: 0 },
@@ -1301,6 +1304,7 @@ describe("WebView composition", () => {
     const home = tempDir("ompd-webview-approval-timeout-");
     const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot,
       overrides: { port: 0 },
@@ -1351,6 +1355,7 @@ describe("WebView composition", () => {
     const home = tempDir("ompd-webview-agent-call-");
     const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot,
       overrides: { port: 0 },
@@ -1444,6 +1449,7 @@ describe("WebView composition", () => {
     const home = tempDir("ompd-webview-");
     const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot,
       overrides: { port: 0 },

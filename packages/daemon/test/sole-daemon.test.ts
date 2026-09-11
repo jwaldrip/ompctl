@@ -148,6 +148,7 @@ describe("Ompd.start beside a live daemon on the same home", () => {
   test("a second daemon does not start, whatever port it asks for", async () => {
     const home = tempDir("ompd-sole-");
     const first = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot: join(home, "sessions"),
       overrides: { port: 0 },
@@ -158,6 +159,7 @@ describe("Ompd.start beside a live daemon on the same home", () => {
     const info = await first.start();
 
     const second = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot: join(home, "sessions"),
       // Port 0 again, so the configured address cannot be the witness: only

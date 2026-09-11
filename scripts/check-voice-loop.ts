@@ -348,6 +348,7 @@ interface SocketOutcome {
 async function driveSocket(home: string, spoken: string): Promise<SocketOutcome> {
   const logs: string[] = [];
   const daemon = new Ompd({
+    mcpAuthVault: "file",
     home,
     overrides: { port: 0 },
     voice: true,

@@ -710,7 +710,7 @@ async function main(): Promise<number> {
       containerModel: "",
       containerModelBrokerPort: brokerPort,
     };
-    daemon = new Ompd({ home, overrides, repoRoot: workspace, voice: false, onLog });
+    daemon = new Ompd({ mcpAuthVault: "file", home, overrides, repoRoot: workspace, voice: false, onLog });
     const started = await daemon.start();
     let base = started.url;
     let token = readFileSync(join(home, "token"), "utf8").trim();
@@ -1127,7 +1127,7 @@ async function main(): Promise<number> {
         : "  the daemon's own teardown removed it, so reconciliation below meets a ref whose container is gone",
     );
 
-    daemon = new Ompd({ home, overrides, repoRoot: workspace, voice: false, onLog });
+    daemon = new Ompd({ mcpAuthVault: "file", home, overrides, repoRoot: workspace, voice: false, onLog });
     const restarted = await daemon.start();
     base = restarted.url;
     token = readFileSync(join(home, "token"), "utf8").trim();

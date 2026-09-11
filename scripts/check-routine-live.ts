@@ -451,6 +451,7 @@ async function phaseWrite(port: number, keep: boolean): Promise<PhaseResult> {
   log(`baseline: ${baselineHosts.length} acp children, ${baselineGates.length} gate dirs`);
 
   const daemon = new Ompd({
+    mcpAuthVault: "file",
     home,
     overrides: { port, host: "127.0.0.1" },
     repoRoot: REPO_ROOT,
@@ -680,6 +681,7 @@ async function phaseSingleton(port: number, keep: boolean): Promise<PhaseResult>
   log(`work ${work}`);
 
   const daemon = new Ompd({
+    mcpAuthVault: "file",
     home,
     overrides: { port, host: "127.0.0.1" },
     repoRoot: REPO_ROOT,
