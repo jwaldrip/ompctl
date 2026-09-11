@@ -23,6 +23,46 @@ function requireEnv(name: "OMPD_ASC_KEY_ID" | "OMPD_APP_ID" | "OMPD_BETA_GROUP_I
   if (!value) throw new Error(`${name} is required`);
   return value;
 }
+interface GitHubResponse {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+}
+
+export async function automaticReleaseIsCurrent(
+  env: Record<string, string | undefined> = process.env,
+  fetcher: (url: string, init: RequestInit) => Promise<GitHubResponse> = fetch,
+): Promise<boolean> {
+  if (env.GITHUB_EVENT_NAME !== "push") return true;
+  const repository = env.GITHUB_REPOSITORY?.trim();
+  const sha = env.GITHUB_SHA?.trim();
+  const token = env.GH_TOKEN?.trim();
+  if (!repository || !sha || !token) {
+    throw new Error("GITHUB_REPOSITORY, GITHUB_SHA, and GH_TOKEN are required for automatic tester assignment");
+  }
+  const response = await fetcher(`https://api.github.com/repos/${repository}/commits/main`, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!response.ok) throw new Error(`GitHub main commit lookup returned ${response.status}`);
+  const body = await response.json();
+  if (!body || typeof body !== "object" || !("sha" in body) || typeof body.sha !== "string") {
+    throw new Error("GitHub main commit lookup returned no SHA");
+  }
+  return body.sha === sha;
+}
+
+export async function assignIfAutomaticReleaseIsCurrent(
+  current: () => Promise<boolean>,
+  assign: () => Promise<void>,
+): Promise<boolean> {
+  if (!(await current())) return false;
+  await assign();
+  return true;
+}
 
 function resolveIssuerId(): string {
   if (process.env.OMPD_ASC_ISSUER_ID) {
@@ -222,19 +262,25 @@ export function buildStateCanProgress(state: string | undefined): boolean {
   return state === undefined || state === "PROCESSING" || state === "VALID";
 }
 
-async function ensureAssigned(buildId: string): Promise<void> {
+async function ensureAssigned(buildId: string, guardAutomaticRelease = false): Promise<boolean> {
   const groupId = requireEnv("OMPD_BETA_GROUP_ID");
   const waitMs = Number(process.env.OMPD_ASC_ASSIGN_WAIT_MS ?? "300000");
   if (!Number.isFinite(waitMs) || waitMs <= 0) throw new Error("OMPD_ASC_ASSIGN_WAIT_MS must be a positive number");
   const deadline = Date.now() + waitMs;
   while (Date.now() <= deadline) {
-    if (await groupHasBuild(groupId, buildId)) return;
-    const res = await call("POST", `/v1/betaGroups/${groupId}/relationships/builds`, {
-      data: [{ type: "builds", id: buildId }],
-    });
-    if (!assignmentResponseAccepted(res.status)) {
-      throw new Error(`assign returned ${res.status}: ${JSON.stringify(res.json)}`);
-    }
+    if (await groupHasBuild(groupId, buildId)) return true;
+    const assigned = await assignIfAutomaticReleaseIsCurrent(
+      guardAutomaticRelease ? automaticReleaseIsCurrent : async () => true,
+      async () => {
+        const res = await call("POST", `/v1/betaGroups/${groupId}/relationships/builds`, {
+          data: [{ type: "builds", id: buildId }],
+        });
+        if (!assignmentResponseAccepted(res.status)) {
+          throw new Error(`assign returned ${res.status}: ${JSON.stringify(res.json)}`);
+        }
+      },
+    );
+    if (!assigned) return false;
     await Bun.sleep(5000);
   }
   throw new Error(`build ${buildId} was not visible in tester group after assignment`);
@@ -269,7 +315,10 @@ async function waitForBuildAndAssign(buildNumber: string, platform: ApplePlatfor
           throw new Error(`nonexempt returned ${patched.status}: ${JSON.stringify(patched.json)}`);
         }
       }
-      await ensureAssigned(build.id);
+      if (!(await ensureAssigned(build.id, true))) {
+        console.log(`superseded_assignment_stopped build=${buildNumber} platform=${platform} id=${build.id}`);
+        return;
+      }
       console.log(`ready_assigned build=${buildNumber} platform=${platform} id=${build.id}`);
       return;
     }

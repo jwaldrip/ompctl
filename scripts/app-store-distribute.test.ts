@@ -277,12 +277,14 @@ describe("App Store release workflow", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {
       const job = jobs[name] as {
         env?: Record<string, unknown>;
+        permissions?: Record<string, unknown>;
         steps?: Array<Record<string, unknown>>;
         needs?: string;
         "timeout-minutes"?: number;
       };
       expect(job.needs).toBe("release-order");
       expect(job["timeout-minutes"]).toBe(180);
+      expect(job.permissions).toMatchObject({ contents: "read" });
       expect(job.env?.OMPD_UPLOAD).toContain("github.event_name == 'push'");
       expect(job.env?.OMPD_APP_ID).toContain("OMPD_ASC_APP_ID");
       expect(job.env?.OMPD_BETA_GROUP_ID).toContain("OMPD_ASC_BETA_GROUP_ID");
@@ -321,6 +323,7 @@ describe("App Store release workflow", () => {
       expect(steps[publishIndex]?.if).toBe(
         `steps.${ios ? "ios_assign_current" : "macos_assign_current"}.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''`,
       );
+      expect(steps[publishIndex]?.env).toMatchObject({ GH_TOKEN: `\${{ github.token }}` });
     }
 
     const iosJob = jobs["ios-testflight"] as { env?: Record<string, unknown>; steps?: Array<Record<string, unknown>> };

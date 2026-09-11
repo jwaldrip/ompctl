@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  assignIfAutomaticReleaseIsCurrent,
   assignmentResponseAccepted,
+  automaticReleaseIsCurrent,
   buildStateCanProgress,
   groupBuildPagePath,
   requestWithRetry,
@@ -14,7 +16,9 @@ function response(status: number, body = "{}", retryAfter: string | null = null)
     text: async () => body,
   };
 }
-
+function githubResponse(status: number, body: unknown) {
+  return { ok: status >= 200 && status < 300, status, json: async () => body };
+}
 describe("App Store Connect request retries", () => {
   test("retries throttling and server failures before returning the successful response", async () => {
     const responses = [response(429, "{}", "1"), response(503), response(200, '{"data":[{"id":"build"}]}')];
@@ -100,6 +104,74 @@ describe("App Store Connect processing transitions", () => {
     expect(buildStateCanProgress("EXPIRED")).toBe(false);
   });
 });
+
+describe("automatic release tester assignment", () => {
+  const env = {
+    GITHUB_EVENT_NAME: "push",
+    GITHUB_REPOSITORY: "jwaldrip/ompctl",
+    GITHUB_SHA: "current-sha",
+    GH_TOKEN: "token",
+  };
+
+  test("allows explicit dispatch without consulting the moving main branch", async () => {
+    let calls = 0;
+    expect(
+      await automaticReleaseIsCurrent({ GITHUB_EVENT_NAME: "workflow_dispatch" }, async () => {
+        calls += 1;
+        return githubResponse(500, {});
+      }),
+    ).toBe(true);
+    expect(calls).toBe(0);
+  });
+
+  test("does not call the tester assignment mutation after a release loses main", async () => {
+    let assignments = 0;
+    expect(
+      await assignIfAutomaticReleaseIsCurrent(
+        async () => false,
+        async () => {
+          assignments += 1;
+        },
+      ),
+    ).toBe(false);
+    expect(assignments).toBe(0);
+
+    expect(
+      await assignIfAutomaticReleaseIsCurrent(
+        async () => true,
+        async () => {
+          assignments += 1;
+        },
+      ),
+    ).toBe(true);
+    expect(assignments).toBe(1);
+  });
+
+  test("allows only the automatic release whose SHA is still main", async () => {
+    let request: { url: string; init: RequestInit } | undefined;
+    const current = await automaticReleaseIsCurrent(env, async (url, init) => {
+      request = { url, init };
+      return githubResponse(200, { sha: "current-sha" });
+    });
+    expect(current).toBe(true);
+    expect(request?.url).toBe("https://api.github.com/repos/jwaldrip/ompctl/commits/main");
+    expect(request?.init.headers).toMatchObject({ Authorization: "Bearer token" });
+    expect(await automaticReleaseIsCurrent(env, async () => githubResponse(200, { sha: "newer-sha" }))).toBe(false);
+  });
+
+  test("fails closed when GitHub identity or main state is unreadable", async () => {
+    await expect(
+      automaticReleaseIsCurrent({ GITHUB_EVENT_NAME: "push" }, async () => githubResponse(200, {})),
+    ).rejects.toThrow("GITHUB_REPOSITORY, GITHUB_SHA, and GH_TOKEN are required");
+    await expect(automaticReleaseIsCurrent(env, async () => githubResponse(503, {}))).rejects.toThrow(
+      "GitHub main commit lookup returned 503",
+    );
+    await expect(automaticReleaseIsCurrent(env, async () => githubResponse(200, {}))).rejects.toThrow(
+      "GitHub main commit lookup returned no SHA",
+    );
+  });
+});
+
 describe("App Store Connect configuration", () => {
   test("refuses to infer a credential identity when the key id is absent", async () => {
     const child = Bun.spawn([process.execPath, `${import.meta.dir}/../scripts/asc.ts`, "builds"], {

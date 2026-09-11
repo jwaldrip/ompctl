@@ -48,6 +48,8 @@ jobs:
       github.event.inputs.platforms == 'all')
     runs-on: macos-15
     timeout-minutes: 180
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: packages/app
@@ -184,6 +186,8 @@ jobs:
         run: bash ../../scripts/apple-release-gate.sh current "iOS tester assignment"
       - name: Publish iOS build to internal testers
         if: steps.ios_assign_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bun scripts/asc.ts wait-assign "$OMPD_BUILD_NUMBER" IOS
       - name: Artifact-only notice
         if: env.OMPD_UPLOAD != 'true' || steps.ios_upload_current.outputs.release == 'false'
@@ -300,6 +304,8 @@ jobs:
       )))
     runs-on: macos-15
     timeout-minutes: 180
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: packages/app
@@ -446,6 +452,8 @@ jobs:
         run: bash ../../scripts/apple-release-gate.sh current "macOS tester assignment"
       - name: Publish macOS build to internal testers
         if: steps.macos_assign_current.outputs.release == 'true' && env.OMPD_ASC_KEY_PATH != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bun scripts/asc.ts wait-assign "$OMPD_BUILD_NUMBER" MAC_OS
       - name: Artifact-only notice (macOS)
         if: env.OMPD_UPLOAD != 'true' || steps.macos_upload_current.outputs.release == 'false'
