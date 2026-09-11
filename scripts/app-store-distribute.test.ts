@@ -56,9 +56,11 @@ interface WorkflowStepRun {
 interface WorkflowStepOptions {
   event?: "push" | "workflow_dispatch";
   headSha?: string;
+  headShaAfterFirst?: string;
   earlierRun?: string;
   failAt?: "head" | "list" | "cancel" | "status";
   failedCancelStatus?: string;
+  statusChecksBeforeComplete?: number;
 }
 
 async function runWorkflowStep(
@@ -72,8 +74,12 @@ async function runWorkflowStep(
   const dir = mkdtempSync(join(tmpdir(), "ompctl-release-step-"));
   const stub = join(dir, "gh");
   const counter = join(dir, "calls");
+  const headCounter = join(dir, "head-calls");
+  const statusCounter = join(dir, "status-calls");
   const output = join(dir, "output");
   writeFileSync(counter, "0");
+  writeFileSync(headCounter, "0");
+  writeFileSync(statusCounter, "0");
   writeFileSync(output, "");
   writeFileSync(
     stub,
@@ -84,7 +90,14 @@ echo "$n" > "$count_file"
 case "$*" in
   *"/commits/main"*)
     [ "${options.failAt ?? ""}" = head ] && exit 1
-    echo "${options.headSha ?? "current-sha"}"
+    head_file="${headCounter}"
+    head_n=$(($(cat "$head_file") + 1))
+    echo "$head_n" > "$head_file"
+    if [ "$head_n" -gt 1 ]; then
+      echo "${options.headShaAfterFirst ?? options.headSha ?? "current-sha"}"
+    else
+      echo "${options.headSha ?? "current-sha"}"
+    fi
     ;;
   *"actions/workflows"*)
     [ "${options.failAt ?? ""}" = list ] && exit 1
@@ -96,7 +109,14 @@ case "$*" in
     ;;
   *"actions/runs/"*)
     [ "${options.failAt ?? ""}" = status ] && exit 1
-    echo "${options.failedCancelStatus ?? "completed"}"
+    status_file="${statusCounter}"
+    status_n=$(($(cat "$status_file") + 1))
+    echo "$status_n" > "$status_file"
+    if [ "$status_n" -le ${options.statusChecksBeforeComplete ?? 0} ]; then
+      echo in_progress
+    else
+      echo "${options.failedCancelStatus ?? "completed"}"
+    fi
     ;;
 esac
 `,
@@ -114,6 +134,8 @@ esac
         GITHUB_SHA: "current-sha",
         GITHUB_OUTPUT: output,
         GH_TOKEN: "test",
+        OMPD_CANCEL_POLL_SECONDS: "0",
+        OMPD_CANCEL_WAIT_SECONDS: "1",
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -150,7 +172,7 @@ describe("App Store release workflow", () => {
     );
   });
 
-  test("rapid main pushes cancel superseded releases without occupying a runner", async () => {
+  test("rapid main pushes cancel superseded releases without waiting for successful completion", async () => {
     expect(workflow).not.toHaveProperty("concurrency");
     const order = jobs["release-order"] as {
       outputs?: Record<string, unknown>;
@@ -161,17 +183,33 @@ describe("App Store release workflow", () => {
     expect(order["timeout-minutes"]).toBe(5);
     expect(order.permissions).toMatchObject({ actions: "write", contents: "read" });
     expect(order.outputs?.release).toContain("steps.latest.outputs.release");
+    expect(order.steps?.[0]?.uses).toBe("actions/checkout@v4");
 
     const current = await runWorkflowStep("release-order", "Cancel superseded automatic releases");
-    expect(current).toMatchObject({ exitCode: 0, calls: 2 });
+    expect(current).toMatchObject({ exitCode: 0, calls: 3 });
     expect(current.output).toContain("release=true");
     expect(current.stdout).toContain("is the current main commit");
 
     const cancelling = await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
       earlierRun: "100",
     });
-    expect(cancelling).toMatchObject({ exitCode: 0, calls: 3 });
-    expect(cancelling.stdout).toContain("cancelled superseded release run 100");
+    expect(cancelling).toMatchObject({ exitCode: 0, calls: 5 });
+    expect(cancelling.stdout).toContain("requested cancellation of superseded release run 100");
+    expect(cancelling.stdout).toContain("superseded release run 100 stopped");
+
+    expect(
+      await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
+        earlierRun: "100",
+        statusChecksBeforeComplete: 1,
+      }),
+    ).toMatchObject({ exitCode: 0, calls: 6 });
+
+    const moved = await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
+      headShaAfterFirst: "newer-sha",
+    });
+    expect(moved).toMatchObject({ exitCode: 0, calls: 3 });
+    expect(moved.output).toContain("release=false");
+    expect(moved.stdout).toContain("lost the main tip during cancellation");
 
     const stale = await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
       headSha: "newer-sha",
@@ -199,7 +237,7 @@ describe("App Store release workflow", () => {
         failAt: "cancel",
         failedCancelStatus: "completed",
       }),
-    ).toMatchObject({ exitCode: 0, calls: 4 });
+    ).toMatchObject({ exitCode: 0, calls: 5 });
     expect(
       await runWorkflowStep("release-order", "Cancel superseded automatic releases", {
         earlierRun: "100",
