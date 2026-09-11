@@ -18,17 +18,47 @@ on:
         default: true
   push:
     branches: [main]
-concurrency:
-  group: app-store-distribute-${{ github.event_name == 'push' && github.ref || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
+  release-current:
+    name: Select current automatic release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.current.outputs.release }}
+    steps:
+      - name: Check main head
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != "push" ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! head_sha="$(gh api "/repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"; then
+            echo "::error::Could not read the current main commit"
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" == "$head_sha" ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "release $GITHUB_SHA is superseded by $head_sha"
+          fi
+
   ios-testflight:
     name: iOS archive + TestFlight
+    needs: release-current
     if: >
-      github.event_name == 'push' ||
+      needs.release-current.outputs.release == 'true' &&
+      (github.event_name == 'push' ||
       contains(github.event.inputs.platforms, 'ios') ||
-      github.event.inputs.platforms == 'all'
+      github.event.inputs.platforms == 'all')
+    concurrency:
+      group: app-store-distribute-ios-${{ github.event_name == 'push' && github.ref || github.run_id }}
+      cancel-in-progress: true
     runs-on: macos-15
     timeout-minutes: 180
     defaults:
@@ -258,12 +288,17 @@ jobs:
 
   macos-testflight:
     name: macOS archive
+    needs: release-current
     if: >
-      github.event_name == 'push' ||
+      needs.release-current.outputs.release == 'true' &&
+      (github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && (
         contains(github.event.inputs.platforms, 'macos') ||
         github.event.inputs.platforms == 'all'
-      ))
+      )))
+    concurrency:
+      group: app-store-distribute-macos-${{ github.event_name == 'push' && github.ref || github.run_id }}
+      cancel-in-progress: true
     runs-on: macos-15
     timeout-minutes: 180
     defaults:

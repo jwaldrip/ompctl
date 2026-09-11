@@ -46,7 +46,59 @@ async function runLookupStep(stepName: string, lookupExit: number): Promise<Look
     rmSync(dir, { recursive: true, force: true });
   }
 }
+interface SelectionRun {
+  calls: number;
+  exitCode: number;
+  output: string;
+}
 
+async function runSelectionStep(
+  event: "push" | "workflow_dispatch",
+  headSha: string,
+  fail = false,
+): Promise<SelectionRun> {
+  const job = jobs["release-current"] as { steps?: Array<Record<string, unknown>> };
+  const step = job.steps?.find(candidate => candidate.name === "Check main head");
+  if (typeof step?.run !== "string") throw new Error("missing current-release selection step");
+  const dir = mkdtempSync(join(tmpdir(), "ompctl-release-current-"));
+  const stub = join(dir, "gh");
+  const counter = join(dir, "calls");
+  const output = join(dir, "output");
+  writeFileSync(counter, "0");
+  writeFileSync(output, "");
+  writeFileSync(
+    stub,
+    `#!/bin/sh
+echo $(($(cat "${counter}") + 1)) > "${counter}"
+${fail ? "exit 1" : `echo "${headSha}"`}
+`,
+    { mode: 0o755 },
+  );
+  try {
+    const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", step.run], {
+      cwd: root,
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        GITHUB_EVENT_NAME: event,
+        GITHUB_REPOSITORY: "jwaldrip/ompctl",
+        GITHUB_SHA: "current-sha",
+        GITHUB_OUTPUT: output,
+        GH_TOKEN: "test",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return {
+      calls: Number(readFileSync(counter, "utf8")),
+      exitCode: await child.exited,
+      output: readFileSync(output, "utf8"),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 describe("App Store release workflow", () => {
   test("every main push uploads iOS and macOS while other platforms remain explicit", () => {
     const push = triggers.push as { branches?: string[] };
@@ -54,10 +106,10 @@ describe("App Store release workflow", () => {
     expect(triggers).not.toHaveProperty("tags");
 
     expect(normalizeCondition(jobCondition("ios-testflight"))).toBe(
-      "github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all'",
+      "needs.release-current.outputs.release == 'true' && (github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all')",
     );
     expect(normalizeCondition(jobCondition("macos-testflight"))).toBe(
-      "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all'))",
+      "needs.release-current.outputs.release == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all')))",
     );
     expect(normalizeCondition(jobCondition("android-play-internal"))).toBe(
       "github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'android') || github.event.inputs.platforms == 'all')",
@@ -67,13 +119,36 @@ describe("App Store release workflow", () => {
     );
   });
 
-  test("rapid automatic pushes cancel older releases while manual dispatches stay independent", () => {
-    const concurrency = workflow.concurrency as { group?: string; "cancel-in-progress"?: boolean };
-    expect(concurrency["cancel-in-progress"]).toBe(true);
-    expect(concurrency.group).toBe(
-      `app-store-distribute-\${{ github.event_name == 'push' && github.ref || github.run_id }}`,
-    );
-    expect(jobs).not.toHaveProperty("release-order");
+  test("stale push reruns stop before platform concurrency while manual dispatches stay independent", async () => {
+    expect(workflow).not.toHaveProperty("concurrency");
+    const selector = jobs["release-current"] as {
+      outputs?: Record<string, unknown>;
+      permissions?: Record<string, unknown>;
+      "timeout-minutes"?: number;
+    };
+    expect(selector["timeout-minutes"]).toBe(5);
+    expect(selector.permissions).toMatchObject({ contents: "read" });
+    expect(selector.outputs?.release).toContain("steps.current.outputs.release");
+    expect(await runSelectionStep("push", "current-sha")).toEqual({ calls: 1, exitCode: 0, output: "release=true\n" });
+    expect(await runSelectionStep("push", "newer-sha")).toEqual({ calls: 1, exitCode: 0, output: "release=false\n" });
+    expect(await runSelectionStep("workflow_dispatch", "unrelated-sha")).toEqual({
+      calls: 0,
+      exitCode: 0,
+      output: "release=true\n",
+    });
+    expect(await runSelectionStep("push", "unused", true)).toMatchObject({ calls: 1, exitCode: 1 });
+
+    for (const [name, platform] of [
+      ["ios-testflight", "ios"],
+      ["macos-testflight", "macos"],
+    ] as const) {
+      const job = jobs[name] as { concurrency?: { group?: string; "cancel-in-progress"?: boolean }; needs?: string };
+      expect(job.needs).toBe("release-current");
+      expect(job.concurrency?.["cancel-in-progress"]).toBe(true);
+      expect(job.concurrency?.group).toBe(
+        `app-store-distribute-${platform}-\${{ github.event_name == 'push' && github.ref || github.run_id }}`,
+      );
+    }
   });
   test("Apple main-push jobs fail closed if signing or upload credentials are absent", () => {
     for (const name of ["ios-testflight", "macos-testflight"] as const) {
@@ -82,7 +157,7 @@ describe("App Store release workflow", () => {
         steps?: Array<Record<string, unknown>>;
         "timeout-minutes"?: number;
       };
-      expect(job).not.toHaveProperty("needs");
+      expect(job.needs).toBe("release-current");
       expect(job["timeout-minutes"]).toBe(180);
       expect(job.env?.OMPD_UPLOAD).toContain("github.event_name == 'push'");
       expect(job.env?.OMPD_APP_ID).toContain("OMPD_ASC_APP_ID");
