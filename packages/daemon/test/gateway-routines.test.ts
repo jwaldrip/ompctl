@@ -47,6 +47,7 @@ async function harness(): Promise<Harness> {
   const home = mkdtempSync(join(tmpdir(), "ompd-routines-"));
   scratch.push(home);
   const daemon = new Ompd({
+    mcpAuthVault: "file",
     home,
     sessionsRoot: join(home, "sessions"),
     // Port 0 asks the OS for a free one, so tests never collide with each other
