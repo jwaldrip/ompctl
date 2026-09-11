@@ -590,6 +590,7 @@ async function main(): Promise<number> {
     phase("start a daemon on its own port and home");
     const brokerPort = await freePort();
     daemon = new Ompd({
+      mcpAuthVault: "file",
       home,
       overrides: {
         port: 0,
