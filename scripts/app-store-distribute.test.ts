@@ -108,10 +108,10 @@ describe("App Store release workflow", () => {
     expect(triggers).not.toHaveProperty("tags");
 
     expect(normalizeCondition(jobCondition("ios-testflight"))).toBe(
-      "needs.release-current.outputs.release == 'true' && (github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all')",
+      "needs.release-current.outputs.release == 'true' && (github.event_name != 'push' || github.run_attempt == 1) && (github.event_name == 'push' || contains(github.event.inputs.platforms, 'ios') || github.event.inputs.platforms == 'all')",
     );
     expect(normalizeCondition(jobCondition("macos-testflight"))).toBe(
-      "needs.release-current.outputs.release == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all')))",
+      "needs.release-current.outputs.release == 'true' && (github.event_name != 'push' || github.run_attempt == 1) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'macos') || github.event.inputs.platforms == 'all')))",
     );
     expect(normalizeCondition(jobCondition("android-play-internal"))).toBe(
       "github.event_name == 'workflow_dispatch' && (contains(github.event.inputs.platforms, 'android') || github.event.inputs.platforms == 'all')",

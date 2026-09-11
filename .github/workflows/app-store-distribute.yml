@@ -61,6 +61,7 @@ jobs:
     needs: release-current
     if: >
       needs.release-current.outputs.release == 'true' &&
+      (github.event_name != 'push' || github.run_attempt == 1) &&
       (github.event_name == 'push' ||
       contains(github.event.inputs.platforms, 'ios') ||
       github.event.inputs.platforms == 'all')
@@ -296,6 +297,7 @@ jobs:
     needs: release-current
     if: >
       needs.release-current.outputs.release == 'true' &&
+      (github.event_name != 'push' || github.run_attempt == 1) &&
       (github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && (
         contains(github.event.inputs.platforms, 'macos') ||
