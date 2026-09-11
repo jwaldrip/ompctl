@@ -35,6 +35,7 @@ const dist = resolve(import.meta.dir, "../packages/app/dist");
 const promptFile = join(dist, "spoken-prompt.b64");
 
 const daemon = new Ompd({
+  mcpAuthVault: "file",
   home,
   overrides: { port: 0 },
   repoRoot: home,

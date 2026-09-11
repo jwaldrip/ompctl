@@ -64,6 +64,7 @@ async function report(label: string): Promise<string[]> {
 const home = mkdtempSync(join(tmpdir(), "ompd-awake-check-"));
 const host = createFakeHost();
 const daemon = new Ompd({
+  mcpAuthVault: "file",
   home,
   overrides: { port: 0 },
   spawnHost: host.factory,
@@ -120,3 +121,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log("VERDICT ok: held only for the turn, released at the end of it, gone after stop");
+process.exit(0);

@@ -202,6 +202,7 @@ describe("the daemon holds it across a real turn", () => {
     scratch.push(home);
     const host = createFakeHost();
     const daemon = new Ompd({
+      mcpAuthVault: "file",
       home,
       sessionsRoot: join(home, "sessions"),
       overrides: { port: 0 },
