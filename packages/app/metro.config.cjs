@@ -38,6 +38,7 @@ const repoRoot = path.resolve(projectRoot, "..", "..");
  */
 const ASSISTANT_UI_CLOUD = /@assistant-ui[/\\]core[/\\]dist[/\\]react[/\\]runtimes[/\\]cloud[/\\]/;
 const CLOUD_STUB = path.join(projectRoot, "stubs", "assistant-ui-cloud.js");
+const REACT_NATIVE_PACKAGE = /^react-native(?=\/|$)/;
 
 const config = {
   projectRoot,
@@ -52,12 +53,15 @@ const config = {
      */
     platforms: ["ios", "android", "macos", "windows", "native"],
     /**
-     * The redirect itself. `context.resolveRequest` is Metro's own resolver, so
-     * everything else behaves exactly as before; only the cloud subtree is
-     * swapped, and only when something asks for it.
+     * React Native macOS is a fork, not a platform extension inside the generic
+     * package. Every `react-native` import in a macOS graph must enter that fork;
+     * iOS, Android, and Windows keep their configured packages. The cloud
+     * subtree remains the only resolved-file redirect.
      */
     resolveRequest: (context, moduleName, platform) => {
-      const resolved = context.resolveRequest(context, moduleName, platform);
+      const platformModuleName =
+        platform === "macos" ? moduleName.replace(REACT_NATIVE_PACKAGE, "react-native-macos") : moduleName;
+      const resolved = context.resolveRequest(context, platformModuleName, platform);
       if (resolved.type === "sourceFile" && ASSISTANT_UI_CLOUD.test(resolved.filePath)) {
         return { type: "sourceFile", filePath: CLOUD_STUB };
       }
