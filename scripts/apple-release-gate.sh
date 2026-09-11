@@ -3,7 +3,13 @@ set -euo pipefail
 
 mode="${1:?mode is required}"
 label="${2:-release}"
-
+case "$mode" in
+  select | current) ;;
+  *)
+    echo "::error::Unknown Apple release gate mode: $mode"
+    exit 1
+    ;;
+esac
 if [[ "$GITHUB_EVENT_NAME" != "push" ]]; then
   echo "release=true" >> "$GITHUB_OUTPUT"
   echo "explicit release selected"
@@ -26,10 +32,6 @@ if [[ "$mode" == "current" ]]; then
   exit 0
 fi
 
-if [[ "$mode" != "select" ]]; then
-  echo "::error::Unknown Apple release gate mode: $mode"
-  exit 1
-fi
 
 endpoint="/repos/$GITHUB_REPOSITORY/actions/workflows/app-store-distribute.yml/runs?branch=main&event=push&per_page=100"
 if ! earlier="$(gh api --paginate "$endpoint" --jq ".workflow_runs[] | select(.id < $GITHUB_RUN_ID and .status != \"completed\") | .id")"; then

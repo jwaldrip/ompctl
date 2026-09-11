@@ -1,7 +1,7 @@
 name: App store release tracks
 
-# Every merge to main archives and uploads iOS and macOS to TestFlight. Manual
-# dispatch remains for Android, Windows, or an artifact-only Apple build.
+# The newest main push archives and publishes iOS and macOS to TestFlight.
+# Superseded automatic runs are cancelled; manual dispatch keeps the selected ref.
 # Missing release credentials fail the job; a merge must never report success
 # while publishing nothing.
 
