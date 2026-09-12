@@ -31,6 +31,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import type { MCPServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import type { McpServer } from "@oh-my-pi/pi-utils/acp";
 import { joinAssistantText, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 import {
@@ -63,7 +64,6 @@ import { Filesystem } from "./filesystem/index.ts";
 import { Gateway, GatewayEvents, type VoiceHandler } from "./gateway/index.ts";
 import { homeIdFor } from "./home-id.ts";
 import { HostRegistry } from "./hosts.ts";
-import { forwardOperatorMcpServers } from "./mcp-forwarding.ts";
 import { McpAuthSubsystem } from "./mcpauth/index.ts";
 import type { VaultBackend } from "./mcpauth/types.ts";
 import { DaemonModelAccess } from "./model-broker/index.ts";
@@ -333,7 +333,7 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   containerModel: "",
   containerModelBrokerPort: 7788,
   exposeCollabRelay: false,
-  forwardOperatorMcp: true,
+  forwardOperatorMcp: false,
 };
 
 export interface OmpdOptions {
@@ -385,6 +385,8 @@ export interface OmpdOptions {
   onLog?: (line: string) => void;
   /** Override path to packages/cli/src/main.ts for orchestrator MCP server resolution. */
   cliEntry?: string;
+  /** Optional custom loader for operator MCP configs, used by tests. */
+  loadOperatorMcpConfigs?: (cwd: string) => Promise<{ configs: Record<string, MCPServerConfig> }>;
 }
 
 export interface LocalOperatorBootstrap {
@@ -874,7 +876,9 @@ export class Ompd {
       // has to refuse mounts of *that* directory, and a default cannot know it.
       home: this.#home,
       onLog: this.#onLog,
-      mcpServersFor: async (agentId, host, cwd) => {
+      forwardOperatorMcp: this.#config.forwardOperatorMcp,
+      loadOperatorMcpConfigs: opts.loadOperatorMcpConfigs,
+      mcpServersFor: (agentId, host, _cwd) => {
         const server = this.#webViewMcpServer;
         if (server === undefined) throw new Error("webview MCP server is not started");
         if (host.kind !== "local") {
@@ -898,14 +902,7 @@ export class Ompd {
             servers.push(orchestratorMcpServerDescriptor(this.#home, agentId, { cliEntry: this.#cliEntry }));
           }
         }
-        const operatorServers = await forwardOperatorMcpServers({
-          agentId,
-          host,
-          cwd: cwd ?? process.cwd(),
-          enabled: this.#config.forwardOperatorMcp,
-          onLog: this.#onLog,
-        });
-        return [...operatorServers, ...servers];
+        return servers;
       },
     });
     const intentPeer =
@@ -1358,6 +1355,10 @@ export class Ompd {
   async stop(): Promise<void> {
     this.#stopping ??= this.#stop();
     return this.#stopping;
+  }
+
+  getMcpAttach(agentId: AgentId) {
+    return this.#supervisor.getMcpAttach(agentId);
   }
 
   async #stop(): Promise<void> {

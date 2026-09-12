@@ -64,6 +64,10 @@ export interface AcpLoadSessionResponse {
   configOptions?: AcpSessionConfigOption[];
   modes?: unknown;
 }
+export interface AcpResumeSessionResponse {
+  configOptions?: AcpSessionConfigOption[];
+  modes?: unknown;
+}
 
 export interface AcpSetConfigOptionResponse {
   configOptions?: AcpSessionConfigOption[];
@@ -554,6 +558,9 @@ export class AcpClient {
 
   async loadSession(sessionId: string, cwd: string, mcpServers: unknown[] = []): Promise<AcpLoadSessionResponse> {
     return await this.request<AcpLoadSessionResponse>("session/load", { sessionId, cwd, mcpServers });
+  }
+  async resumeSession(sessionId: string, cwd: string, mcpServers: unknown[] = []): Promise<AcpResumeSessionResponse> {
+    return await this.request<AcpResumeSessionResponse>("session/resume", { sessionId, cwd, mcpServers });
   }
 
   async setConfigOption(sessionId: string, configId: string, value: string): Promise<AcpSetConfigOptionResponse> {
