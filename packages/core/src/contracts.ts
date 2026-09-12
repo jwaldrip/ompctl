@@ -1101,6 +1101,19 @@ export interface ArtifactReference {
 export type TranscriptTailMessage = TranscriptTailEntry;
 
 /**
+ * An HTTP session transcript response served by GET /v1/sessions/:id/transcript.
+ */
+export interface SessionTranscriptResponse {
+  sessionId: string;
+  subagent?: string;
+  entries: TranscriptTailEntry[];
+  messages: TranscriptTailEntry[];
+  truncated: boolean;
+  nextCursor: number | null;
+  cursor?: number;
+}
+
+/**
  * One durable transcript block recovered from an OMP session JSONL.
  *
  * Unlike TranscriptTailMessage this preserves thinking and tool activity.

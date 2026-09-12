@@ -43,11 +43,34 @@ const SCOPE_GUIDANCE =
   "Pair a device with `ompd pair <name>` and approve it with the manage scope, or use " +
   "the local operator token at ~/.ompd/token.";
 
+function scopeGuidance(action?: string): string {
+  if (action?.includes("read") || action?.includes("list")) {
+    return (
+      "the daemon accepted this token and refused the operation: it does not hold the " +
+      "`read` scope, which this operation needs. " +
+      "Pair a device with `ompd pair <name>` and approve it with the read scope, or use " +
+      "the local operator token at ~/.ompd/token."
+    );
+  }
+  if (action?.includes("prompt")) {
+    return (
+      "the daemon accepted this token and refused the operation: it does not hold the " +
+      "`prompt` scope, which sending prompts needs. " +
+      "Pair a device with `ompd pair <name>` and approve it with the prompt scope, or use " +
+      "the local operator token at ~/.ompd/token."
+    );
+  }
+  return SCOPE_GUIDANCE;
+}
+
 const RUNNER_MISSING_GUIDANCE =
   "this daemon has no routine runner wired in, so routines are off rather than broken. " +
   "Nothing is scheduled and nothing can be started until one is configured; the routine " +
   "list and this tool will keep answering the same way until then.";
 
+const SESSIONS_UNAVAILABLE_GUIDANCE =
+  "this daemon has no session index wired in, so sessions are unavailable rather than broken. " +
+  "Start the daemon with session indexing enabled, or point this shell at a running one with OMPD_URL.";
 /**
  * Map a thrown error onto a tool error result.
  *
@@ -56,10 +79,10 @@ const RUNNER_MISSING_GUIDANCE =
  * no subject: "create a routine: no operator token was found".
  */
 export function toolError(action: string, err: unknown): ToolErrorResult {
-  return { content: [{ type: "text", text: `${action}: ${describe(err)}` }], isError: true };
+  return { content: [{ type: "text", text: `${action}: ${describe(err, action)}` }], isError: true };
 }
 
-function describe(err: unknown): string {
+function describe(err: unknown, action?: string): string {
   if (err instanceof TokenMissingError) {
     // The CLI's own guidance text, verbatim, so an operator who reads this in
     // a chat window and then runs the CLI is told the same thing twice rather
@@ -87,7 +110,7 @@ function describe(err: unknown): string {
         // reads as a stutter, and this is the text an operator acts on.
         return err.message;
       case 403:
-        return SCOPE_GUIDANCE;
+        return scopeGuidance(action);
       case 404:
         // The daemon's own reason, because it distinguishes "no such routine"
         // from "that routine is not a webhook routine" and re-wording it here
@@ -98,8 +121,10 @@ function describe(err: unknown): string {
         // be read by whoever sent the bad request, and paraphrasing a
         // validation failure is how a caller ends up fixing the wrong field.
         return `the daemon refused the request as invalid: ${withReason(err)}`;
-      case 503:
+      case 503: {
+        if (errorNameOf(err.body) === "sessions_unavailable") return SESSIONS_UNAVAILABLE_GUIDANCE;
         return RUNNER_MISSING_GUIDANCE;
+      }
       default:
         return err.message;
     }
@@ -126,4 +151,10 @@ function reasonOf(body: unknown): string | null {
   if (body === null || typeof body !== "object" || !("reason" in body)) return null;
   const reason = body.reason;
   return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
+function errorNameOf(body: unknown): string | null {
+  if (body === null || typeof body !== "object" || !("error" in body)) return null;
+  const error = body.error;
+  return typeof error === "string" && error.length > 0 ? error : null;
 }

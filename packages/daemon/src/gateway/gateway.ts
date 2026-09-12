@@ -95,7 +95,7 @@ import { ProviderRefusal, type ProvidersService } from "../providers/index.ts";
 import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { listSubagentTranscripts, subagentTranscriptPath } from "../sessions/subagents.ts";
-import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
+import { readSessionTail, TAIL_DEFAULT_MESSAGES, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
 import { type StatsSubsystem, statsUnavailableReason } from "../stats/index.ts";
 import {
@@ -3147,6 +3147,72 @@ export class Gateway {
       const stats = await this.#stats.getSessionStats(sessionId);
       if (!stats) return Response.json({ error: "session_not_found" }, { status: 404 });
       return Response.json(stats);
+    }
+
+    const sessionTranscriptRoute = /^\/v1\/sessions\/([^/]+)\/transcript$/.exec(path);
+    if (sessionTranscriptRoute && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+
+      const rawId = sessionTranscriptRoute[1] ?? "";
+      let targetSessionId = rawId;
+      if (rawId.startsWith("agt_")) {
+        const agent = this.#store.getAgent(rawId);
+        if (agent?.acpSessionId) {
+          targetSessionId = agent.acpSessionId;
+        }
+      }
+
+      const sessionPath = await index.pathFor(targetSessionId);
+      if (sessionPath === undefined) return Response.json({ error: "session_not_found" }, { status: 404 });
+
+      const limitParam = url.searchParams.get("limit");
+      const requestedLimit = limitParam === null ? TAIL_DEFAULT_MESSAGES : Number(limitParam);
+      const limit = Number.isNaN(requestedLimit)
+        ? TAIL_DEFAULT_MESSAGES
+        : Math.min(Math.max(requestedLimit, 1), TAIL_MAX_MESSAGES);
+
+      const beforeParam = url.searchParams.get("before");
+      let cursor: number | undefined;
+      if (beforeParam !== null) {
+        const parsedBefore = Number(beforeParam);
+        if (!Number.isSafeInteger(parsedBefore) || parsedBefore < 0) {
+          return Response.json({ error: "invalid_before_cursor" }, { status: 400 });
+        }
+        cursor = parsedBefore;
+      }
+
+      const subagent = url.searchParams.get("subagent");
+      let targetPath = sessionPath;
+      if (typeof subagent === "string" && subagent.length > 0) {
+        const resolved = subagentTranscriptPath(sessionPath, subagent);
+        if (!resolved.ok) {
+          return Response.json({ error: resolved.code, message: resolved.message }, { status: 404 });
+        }
+        targetPath = resolved.path;
+      }
+
+      try {
+        const tail = await readSessionTail(targetPath, {
+          limit,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        return Response.json({
+          sessionId: targetSessionId,
+          ...(typeof subagent === "string" && subagent.length > 0 ? { subagent } : {}),
+          entries: tail.entries,
+          messages: tail.entries,
+          truncated: tail.truncated,
+          nextCursor: tail.nextCursor,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+      } catch (err) {
+        return Response.json(
+          { error: "session_tail_failed", message: err instanceof Error ? err.message : "session tail failed" },
+          { status: 500 },
+        );
+      }
     }
 
     const sessionTakeoverRoute = /^\/v1\/sessions\/([^/]+)\/takeover$/.exec(path);
