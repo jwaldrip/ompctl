@@ -189,6 +189,13 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
           connectors={connectors}
           skillsRefusal={props.skillsSlice?.error}
           connectorsRefusal={props.connectorsSlice?.error}
+          skillsStatus={props.skillsSlice?.status}
+          connectorsStatus={props.connectorsSlice?.status}
+          status={
+            props.skillsSlice?.status === "loading" || props.connectorsSlice?.status === "loading"
+              ? "loading"
+              : undefined
+          }
         />
       );
     }

@@ -241,8 +241,23 @@ export function useCowork(
               error: event.message,
             };
           }
+          const nextSkillsSlice: CoworkSlice<SkillSummary[]> =
+            previous.skillsSlice.status === "loading"
+              ? { status: "refused", data: [], error: event.message }
+              : previous.skillsSlice;
+          const nextConnectorsSlice: CoworkSlice<ConnectorSummary[]> =
+            previous.connectorsSlice.status === "loading"
+              ? { status: "refused", data: [], error: event.message }
+              : previous.connectorsSlice;
+          const nextTasksSlice: CoworkSlice<TaskListState> =
+            previous.tasksSlice.status === "loading"
+              ? { status: "refused", data: EMPTY_TASKS, error: event.message }
+              : previous.tasksSlice;
           return {
             ...previous,
+            skillsSlice: nextSkillsSlice,
+            connectorsSlice: nextConnectorsSlice,
+            tasksSlice: nextTasksSlice,
             loading: false,
             error: event.message,
           };
