@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AcpClient } from "@ompd/acp";
+import { AcpClient, type PromptResult } from "@ompd/acp";
 import { attachOperatorMcpServers } from "../src/mcp-forwarding.ts";
 import { resolveOmp } from "../src/omp-resolver.ts";
 
@@ -137,7 +137,37 @@ describe("post-attach strategy: live ACP session resilience and tool visibility"
     await toolListPromise;
 
     // PROOF PART 4: The session is alive, usable, and handles prompts cleanly.
-    const promptRes = await client.prompt(sessionId, "Respond with PONG");
-    expect(promptRes.stopReason).toBe("end_turn");
+    //
+    // Same discipline as scripts/check-mcp-roundtrip.ts: whether a spawned agent
+    // can settle a turn depends on model access, and CI has none. The tool call
+    // and session liveness are always asserted, while the settled turn is asserted
+    // only where a model can actually produce one. The absence is printed rather
+    // than passed over: a check that quietly drops its strongest assertion is how
+    // a surface stops being covered without anyone noticing.
+    let promptRes: PromptResult | undefined;
+    let noModel = false;
+    let refusalMessage = "";
+    try {
+      promptRes = await client.prompt(sessionId, "Respond with PONG");
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err);
+      if (/no model selected/i.test(text)) {
+        noModel = true;
+        refusalMessage = text.split("\n")[0] ?? "";
+      } else {
+        throw err;
+      }
+    }
+
+    if (noModel) {
+      console.log(
+        "  note  no model is configured in this environment, so the settled turn was not exercised.\n" +
+          `        ACP refusal: ${refusalMessage}`,
+      );
+      expect(promptRes).toBeUndefined();
+    } else {
+      expect(promptRes).toBeDefined();
+      expect(promptRes!.stopReason).toBe("end_turn");
+    }
   }, 30_000);
 });

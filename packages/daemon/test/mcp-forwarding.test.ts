@@ -6,6 +6,7 @@ import type { McpServer } from "@oh-my-pi/pi-utils/acp";
 import type { HostRef } from "@ompd/core";
 import { Ompd } from "../src/daemon.ts";
 import {
+  type AttachOperatorMcpResult,
   attachOperatorMcpServers,
   parseFailedServerNames,
   resolveOperatorMcpServers,
@@ -33,6 +34,31 @@ function indexedFakeHost(home: string) {
 
 async function tokenOf(home: string): Promise<string> {
   return (await Bun.file(join(home, "token")).text()).trim();
+}
+async function waitForMcpAttachSettled(
+  daemon: Ompd,
+  agentId: string,
+  timeoutMs = 5_000,
+): Promise<AttachOperatorMcpResult | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const task = daemon.getMcpAttach(agentId);
+    if (task !== undefined) {
+      return await task;
+    }
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    await promise;
+  }
+  throw new Error(`Timed out waiting for MCP attach to register for agent ${agentId} within ${timeoutMs}ms`);
+}
+
+async function waitForMcpAttach(daemon: Ompd, agentId: string, timeoutMs = 5_000): Promise<AttachOperatorMcpResult> {
+  const result = await waitForMcpAttachSettled(daemon, agentId, timeoutMs);
+  if (!result) {
+    throw new Error(`Expected MCP attach to settle with attached servers for agent ${agentId}, got ${String(result)}`);
+  }
+  return result;
 }
 
 afterEach(async () => {
@@ -388,8 +414,8 @@ describe("daemon integration: operator MCP server reachability", () => {
     const { agent } = (await res.json()) as { agent: { id: string } };
 
     // Wait for the post-attach promise
-    const attachResult = await daemon.getMcpAttach(agent.id);
-    expect(attachResult?.attached.find(s => s.name === "myTool")).toBeDefined();
+    const attachResult = await waitForMcpAttach(daemon, agent.id);
+    expect(attachResult.attached.find(s => s.name === "myTool")).toBeDefined();
 
     // Verify session/new had ONLY daemon servers
     const initialServers = (fake.newRequests[0]?.mcpServers ?? []) as Array<{ name: string }>;
@@ -446,9 +472,9 @@ describe("daemon integration: operator MCP server reachability", () => {
     expect(res.status).toBe(201);
     const { agent } = (await res.json()) as { agent: { id: string } };
 
-    const attachResult = await daemon.getMcpAttach(agent.id);
-    expect(attachResult?.attached.find(s => s.name === "safeTool")).toBeDefined();
-    expect(attachResult?.attached.find(s => s.name === "ompctl")).toBeUndefined();
+    const attachResult = await waitForMcpAttach(daemon, agent.id);
+    expect(attachResult.attached.find(s => s.name === "safeTool")).toBeDefined();
+    expect(attachResult.attached.find(s => s.name === "ompctl")).toBeUndefined();
 
     const resumeServers = fake.resumeRequests[0]?.mcpServers as Array<{ name: string }>;
     expect(resumeServers.find(s => s.name === "ompctl")).toBeUndefined();
@@ -492,7 +518,7 @@ describe("daemon integration: operator MCP server reachability", () => {
     });
     expect(res.status).toBe(201);
     const { agent } = (await res.json()) as { agent: { id: string } };
-    await daemon.getMcpAttach(agent.id);
+    await waitForMcpAttachSettled(daemon, agent.id);
 
     // Operator ompd-webview was dropped, so only the daemon-owned server is present
     const sessionServers = (fake.newRequests[0]?.mcpServers ?? []) as Array<{ name: string; url?: string }>;
@@ -543,9 +569,9 @@ describe("daemon integration: operator MCP server reachability", () => {
     expect(res.status).toBe(201);
     const { agent } = (await res.json()) as { agent: { id: string } };
 
-    const attachResult = await daemon.getMcpAttach(agent.id);
-    expect(attachResult?.attached.find(s => s.name === "enabledTool")).toBeDefined();
-    expect(attachResult?.attached.find(s => s.name === "disabledTool")).toBeUndefined();
+    const attachResult = await waitForMcpAttach(daemon, agent.id);
+    expect(attachResult.attached.find(s => s.name === "enabledTool")).toBeDefined();
+    expect(attachResult.attached.find(s => s.name === "disabledTool")).toBeUndefined();
   });
 
   test("connect-time failing server does not block session creation, healthy servers attach, session usable", async () => {
@@ -603,9 +629,9 @@ describe("daemon integration: operator MCP server reachability", () => {
     expect(agent.state).toBe("idle");
 
     // Wait for post-attach to complete
-    const attachResult = await daemon.getMcpAttach(agent.id);
-    expect(attachResult?.attached.find(s => s.name === "healthyServer")).toBeDefined();
-    expect(attachResult?.failed.find(s => s.name === "failingServer")).toBeDefined();
+    const attachResult = await waitForMcpAttach(daemon, agent.id);
+    expect(attachResult.attached.find(s => s.name === "healthyServer")).toBeDefined();
+    expect(attachResult.failed.find(s => s.name === "failingServer")).toBeDefined();
 
     // Verify session is usable for prompts
     const promptRes = await fetch(`${info.url}/v1/agents/${agent.id}/prompt`, {
