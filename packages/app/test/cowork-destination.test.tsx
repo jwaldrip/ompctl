@@ -2,12 +2,13 @@ import "./rnw.ts";
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ClientFrame, ServerFrame } from "@ompd/core/contracts";
-import type { Connection } from "../src/platform/connection.ts";
 import { OmpdClient, type SocketCloseInfo, type SocketLike } from "@ompd/core/ompd-client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import type { Connection } from "../src/platform/connection.ts";
 
 import { resetWindowSize } from "./rnw.ts";
+
 // Dynamic on purpose: bun loads a file's whole static import graph before any module
 // body runs, so a static import here would pull real react-native in before ./rnw.ts.
 const { CoworkSurface } = await import("../src/console/Console.tsx");
