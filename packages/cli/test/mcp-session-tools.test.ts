@@ -352,6 +352,31 @@ describe("ompctl_session_prompt", () => {
 
     await h.close();
   });
+
+  test("refuses prompt addressed to the caller agent when OMPD_AGENT_ID is set in env", async () => {
+    const h = await harness({
+      env: { OMPD_AGENT_ID: "agt_orchestrator_ompd" },
+      routes: {
+        "POST /v1/agents/agt_orchestrator_ompd/prompt": {
+          status: 200,
+          body: { agentId: "agt_orchestrator_ompd", stopReason: "end_turn" },
+        },
+      },
+    });
+
+    const result = await h.call("ompctl_session_prompt", {
+      agentId: "agt_orchestrator_ompd",
+      prompt: "run something",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(
+      "cannot prompt agent agt_orchestrator_ompd: the calling orchestrator is running as this agent, and prompting itself would loop",
+    );
+    expect(h.calls.filter(c => c.method === "POST")).toHaveLength(0);
+
+    await h.close();
+  });
 });
 
 describe("ompctl_session_read", () => {
