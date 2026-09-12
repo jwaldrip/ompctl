@@ -144,6 +144,12 @@ describe("config", () => {
       // an OS-assigned port would not be known in time to seed it.
       containerModelBrokerPort: 7788,
       exposeCollabRelay: false,
+      // Off, and the measurement is the reason rather than caution. Forwarding
+      // the operator's own MCP servers into every session declared 368 tools on
+      // this machine, which bloats the prefix on every turn, defeats prompt
+      // cache reuse, and hard-fails providers that cap declared tools. The
+      // capability is real and opt-in; see `mcp-forwarding.ts`.
+      forwardOperatorMcp: false,
     });
   });
 
