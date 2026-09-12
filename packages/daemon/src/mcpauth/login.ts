@@ -237,11 +237,14 @@ export async function beginLogin(opts: BeginLoginOptions): Promise<PendingLogin>
     else settled.resolve(outcome);
   }
   const timeoutMs = opts.timeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS;
-  const deadline = setTimeout(() => {
-    finish(new Error(`${opts.serverName} login was not completed within ${Math.round(timeoutMs / 1000)}s`));
-  }, timeoutMs);
-  // A login nobody finished must not be why the daemon cannot exit.
-  deadline.unref();
+  // Armed at the return, not here. Everything between this point and the
+  // return is setup the caller is still waiting on, and the dynamic client
+  // registration below is a network round trip. A deadline running during it
+  // can settle `settled` before anyone holds the promise to observe it, which
+  // is exactly the unhandled rejection the registration catch below already
+  // refuses to cause. It is the wrong budget as well: this bounds the wait on
+  // a person finishing the browser flow, not the discovery that precedes it.
+  let deadline: ReturnType<typeof setTimeout> | undefined;
 
   if (clientId === "") {
     try {
@@ -277,6 +280,12 @@ export async function beginLogin(opts: BeginLoginOptions): Promise<PendingLogin>
   // minted for one MCP server being replayed against another behind the same
   // authorization server.
   authorizationUrl.searchParams.set("resource", auth.resource);
+
+  deadline = setTimeout(() => {
+    finish(new Error(`${opts.serverName} login was not completed within ${Math.round(timeoutMs / 1000)}s`));
+  }, timeoutMs);
+  // A login nobody finished must not be why the daemon cannot exit.
+  deadline.unref();
 
   return {
     authorizationUrl: authorizationUrl.toString(),

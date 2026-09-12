@@ -344,6 +344,25 @@ describe("beginLogin: refusing what it should refuse", () => {
     await expect(fetch(`${started.redirectUri}?code=code_1&state=x`)).rejects.toThrow();
   });
 
+  test("a deadline shorter than registration does not settle a promise nobody holds yet", async () => {
+    // The shape that made CI red while every local run stayed green: the
+    // deadline used to be armed before dynamic client registration, which is a
+    // network round trip. On a loaded runner that round trip outran a short
+    // timeout, `finish` rejected `settled`, and nothing held the promise yet,
+    // so it surfaced as an unhandled rejection rather than as this caller's
+    // refusal. Forced here rather than waited for: the delay is longer than
+    // the deadline by construction, so a machine's speed cannot decide it.
+    const fake = serve();
+    fake.registrationDelayMs = 60;
+
+    const started = await login(fake, { timeoutMs: 10 });
+
+    // The point of the assertion: `beginLogin` returned, so the rejection has
+    // an owner, and the caller is the one who hears about the timeout.
+    expect(started.authorizationUrl).toContain("code_challenge_method=S256");
+    await expect(started.completed).rejects.toThrow(/was not completed within/);
+  });
+
   test("refuses a server that cannot do S256", async () => {
     const fake = serve();
     fake.codeChallengeMethods = ["plain"];
