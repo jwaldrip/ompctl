@@ -80,6 +80,7 @@ export interface CoworkScreenProps {
   skillsSlice?: CoworkSlice<readonly SkillSummary[]>;
   connectorsSlice?: CoworkSlice<readonly ConnectorSummary[]>;
   tasksSlice?: CoworkSlice<TaskListState>;
+  targetAgentId?: string | null;
   onStartTask: (input: NewTaskInput) => void;
   onRetryTask?: (task: Task) => void;
   onInvokeSkill: (skill: SkillSummary) => void;
@@ -105,6 +106,9 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
   const [folderState, folderActions] = useCoworkFolders(props.client);
   const [picking, setPicking] = useState(false);
 
+  const activeTargetAgentId =
+    (folderState.start.status === "started" ? folderState.start.agentId : null) ?? props.targetAgentId ?? null;
+
   const listView = useMemo(() => taskListView(tasks), [tasks]);
   const selectedTask = selectedTaskId === null ? null : (tasks.tasks.get(selectedTaskId) ?? null);
 
@@ -115,7 +119,10 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
 
   const startTask = (input: NewTaskInput): void => {
     setSelectedTaskId(null);
-    onStartTask(input);
+    onStartTask({
+      ...input,
+      agentId: input.agentId ?? activeTargetAgentId ?? undefined,
+    });
   };
 
   // Choosing a directory takes the whole screen, on the BrowseScreen brief:
@@ -148,6 +155,15 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
         onOpenSession={onOpenSession}
       />
     );
+  const destinationBanner = (
+    <View style={styles.destination} testID="cowork-task-destination">
+      <Glyph name="tasks" size={13} color={ink.plain} />
+      <Label color={ink.muted}>Target session:</Label>
+      <Code numberOfLines={1} style={styles.destinationCode}>
+        {activeTargetAgentId ?? "None"}
+      </Code>
+    </View>
+  );
 
   const sidebar = (
     <TaskSidebar
@@ -161,7 +177,6 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
       status={props.tasksSlice?.status}
     />
   );
-
   const content = (() => {
     if (view === "skills") {
       return (
@@ -227,7 +242,10 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
     return (
       <View style={styles.wide} testID="cowork-screen">
         <Nav orientation="side" active={view} onSelect={setView} />
-        <View style={styles.sidebarColumn}>{sidebar}</View>
+        <View style={styles.sidebarColumn}>
+          {destinationBanner}
+          {sidebar}
+        </View>
         <View style={styles.contentColumn}>
           {view === "tasks" ? folderBinding : null}
           {content}
@@ -257,6 +275,7 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
           <Label color={ink.plain}>Tasks</Label>
         </Pressable>
       ) : null}
+      {view === "tasks" ? destinationBanner : null}
       {view === "tasks" ? folderBinding : null}
       <View style={styles.narrowContent}>{narrowContent}</View>
       <Nav orientation="bottom" active={view} onSelect={setView} />
@@ -522,6 +541,19 @@ const styles = StyleSheet.create({
   },
   back: { flexDirection: "row", alignItems: "center", gap: space.tight, padding: space.step },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.step },
+  destination: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
+    paddingHorizontal: space.wide,
+    paddingVertical: space.step,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.edge,
+    backgroundColor: ground.surface,
+  },
+  destinationCode: {
+    flex: 1,
+  },
   folders: {
     borderColor: ground.line,
     borderBottomWidth: stroke.hair,
