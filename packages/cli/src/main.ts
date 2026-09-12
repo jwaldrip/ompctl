@@ -37,6 +37,7 @@ import {
   mcpAuthUnapplyCommand,
 } from "./commands/mcp-auth.ts";
 import { openCommand } from "./commands/open.ts";
+import { orchestratorCommand } from "./commands/orchestrator.ts";
 import {
   routineDeleteCommand,
   routinesCommand,
@@ -48,6 +49,9 @@ import {
 export const CLI_USAGE = USAGE.replace(
   "routines\n  routines                list routines\n  run <routineId>         run a routine now",
   "routines\n  routines                list routines\n  runs [<routineId>] [--limit N]\n                          recent routine runs, newest first\n  runs <runId> --detail   one run and its per-action outcomes\n  run <routineId>         run a routine now",
+).replace(
+  "  prompt <id> <text>      send a prompt and wait for the turn to settle",
+  "  orchestrator [<cwd>] [--name N] [--prompt P]\n                          create an orchestrator session with session-control tools\n  prompt <id> <text>      send a prompt and wait for the turn to settle",
 );
 
 import { selfInstallCommand } from "./commands/self-install.ts";
@@ -81,6 +85,13 @@ export async function run(argv: string[], ctx: CliContext = defaultContext()): P
         return 0;
       }
       return await runsCommand(ctx, argv.slice(2));
+    }
+    if (argv[0] === "orchestrator") {
+      if (argv[1] === "--help" || argv[1] === "help" || argv.includes("--help") || argv.includes("-h")) {
+        ctx.out(CLI_USAGE);
+        return 0;
+      }
+      return await orchestratorCommand(ctx, argv.slice(1));
     }
     const command = parseCommand(argv);
 
