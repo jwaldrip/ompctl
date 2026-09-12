@@ -596,31 +596,55 @@ try {
     Array.isArray(foundSessions) && foundSessions.some(s => field(s, "id") === sessionAgentId),
   );
 
-  // Prompt the session and get the model's reply back
+  // Prompt the session and get the model's reply back.
+  //
+  // Same discipline as the routine run above: whether a spawned agent can
+  // settle a turn depends on model access this check has no business
+  // requiring, and CI has none. So the tool call is always asserted, because
+  // reaching the daemon and getting its own verdict back is this surface's
+  // job, while the reply itself is asserted only where a model can actually
+  // produce one. The absence is printed rather than passed over: a check that
+  // quietly drops its strongest assertion is how a surface stops being
+  // covered without anyone noticing.
   console.log(`    prompting session ${sessionAgentId}...`);
   const prompted = await client.call("ompctl_session_prompt", {
     agentId: sessionAgentId,
     prompt: "Reply with exactly the single word: ORCHESTRATION_PONG",
   });
-  check("session prompt completed without error", !prompted.isError, prompted.isError ? prompted.text : "");
-  const stopReason = String(field(prompted.structured, "stopReason") ?? "");
-  check("session prompt settled turn with stopReason", stopReason.length > 0, stopReason);
-
-  // Read the session transcript back
+  const noModel = prompted.isError && /no model selected/i.test(prompted.text);
   const readTranscript = await client.call("ompctl_session_read", {
     sessionId: createdSessionId,
   });
   check("session transcript read accepted", !readTranscript.isError);
   const entries = field(readTranscript.structured, "entries");
-  check(
-    "session transcript returned entries",
-    Array.isArray(entries) && entries.length > 0,
-    Array.isArray(entries) ? `${entries.length} entries` : "no entries",
-  );
-  check(
-    "the prompt text is present in transcript",
-    JSON.stringify(readTranscript.structured).includes("ORCHESTRATION_PONG"),
-  );
+
+  if (noModel) {
+    // The daemon answered, and its answer is that this machine has no model.
+    // That is the tool working: it returned the daemon's verdict rather than
+    // an optimistic echo, which is the property worth pinning here.
+    check(
+      "session prompt returned the daemon's own refusal rather than a success shape",
+      prompted.isError && field(prompted.structured, "stopReason") === undefined,
+      prompted.text.split("\n")[0] ?? "",
+    );
+    console.log(
+      "  note  no model is configured on this machine, so the settled turn and its transcript were not exercised.\n" +
+        "        Run scripts/check-orchestrator-e2e.ts somewhere with model access to cover them.",
+    );
+  } else {
+    check("session prompt completed without error", !prompted.isError, prompted.isError ? prompted.text : "");
+    const stopReason = String(field(prompted.structured, "stopReason") ?? "");
+    check("session prompt settled turn with stopReason", stopReason.length > 0, stopReason);
+    check(
+      "session transcript returned entries",
+      Array.isArray(entries) && entries.length > 0,
+      Array.isArray(entries) ? `${entries.length} entries` : "no entries",
+    );
+    check(
+      "the prompt text is present in transcript",
+      JSON.stringify(readTranscript.structured).includes("ORCHESTRATION_PONG"),
+    );
+  }
 
   // Stop the session
   const stopped = await client.call("ompctl_session_stop", {
