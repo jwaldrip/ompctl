@@ -423,8 +423,26 @@ describe("starting the container", () => {
       },
     ]);
 
+    // An uncorrelated agent_created (missing requestId while a start is in flight)
+    // must not be adopted by the awaiting start.
     h.deliver({
       t: "agent_created",
+      agent: {
+        id: "agt_other",
+        name: "dev",
+        state: "idle",
+        host: { kind: "container", id: "ctr_other", spec: { kind: "container" } },
+        cwd: DEV,
+        createdAt: "2026-02-01T00:00:00.000Z",
+        lastActiveAt: "2026-02-01T00:00:00.000Z",
+        labels: {},
+      },
+    });
+    expect(h.query("cowork-container-open")).toBeNull();
+
+    h.deliver({
+      t: "agent_created",
+      requestId: "req_agent_create_1",
       agent: {
         id: "agt_test",
         name: "dev",
@@ -456,6 +474,7 @@ describe("starting the container", () => {
     // Then the real container start answer arrives
     h.deliver({
       t: "agent_created",
+      requestId: "req_agent_create_1",
       agent: {
         id: "agt_test",
         name: "dev",

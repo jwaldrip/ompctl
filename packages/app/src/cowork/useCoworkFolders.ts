@@ -117,7 +117,7 @@ export function useCoworkFolders(client: CoworkClient | undefined): [CoworkFolde
     if (client === undefined) return;
     const offs = [
       client.on("agent_created", (event: AgentCreatedEvent) => {
-        if (activeRequestId.current !== null && event.requestId !== undefined) {
+        if (activeRequestId.current !== null) {
           if (event.requestId !== activeRequestId.current) return;
         } else if (!awaiting.current) {
           // Re-sync: if the container is running and belongs to a container host,
