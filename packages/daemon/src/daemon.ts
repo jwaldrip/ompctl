@@ -63,6 +63,7 @@ import { Filesystem } from "./filesystem/index.ts";
 import { Gateway, GatewayEvents, type VoiceHandler } from "./gateway/index.ts";
 import { homeIdFor } from "./home-id.ts";
 import { HostRegistry } from "./hosts.ts";
+import { forwardOperatorMcpServers } from "./mcp-forwarding.ts";
 import { McpAuthSubsystem } from "./mcpauth/index.ts";
 import type { VaultBackend } from "./mcpauth/types.ts";
 import { DaemonModelAccess } from "./model-broker/index.ts";
@@ -308,6 +309,8 @@ export interface OmpdConfig {
   containerModelBrokerPort: number;
   /** Whether the collab relay at /r/<roomId> accepts non-loopback connections. */
   exposeCollabRelay: boolean;
+  /** Whether operator-configured MCP servers are forwarded to local ACP sessions. */
+  forwardOperatorMcp: boolean;
 }
 
 export const DEFAULT_CONFIG: OmpdConfig = {
@@ -330,6 +333,7 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   containerModel: "",
   containerModelBrokerPort: 7788,
   exposeCollabRelay: false,
+  forwardOperatorMcp: true,
 };
 
 export interface OmpdOptions {
@@ -606,6 +610,9 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
         `${String(merged.containerModelBrokerPort)}`,
     );
   }
+  if (typeof merged.forwardOperatorMcp !== "boolean") {
+    throw new Error(`${path}: forwardOperatorMcp must be true or false, got ${String(merged.forwardOperatorMcp)}`);
+  }
 
   return merged;
 }
@@ -867,25 +874,9 @@ export class Ompd {
       // has to refuse mounts of *that* directory, and a default cannot know it.
       home: this.#home,
       onLog: this.#onLog,
-      mcpServersFor: (agentId, host) => {
+      mcpServersFor: async (agentId, host, cwd) => {
         const server = this.#webViewMcpServer;
         if (server === undefined) throw new Error("webview MCP server is not started");
-        // Offered only to a host that can actually reach it. The server binds
-        // `127.0.0.1` and `urlFor` hands out `http://127.0.0.1:<port>/...`,
-        // which means the daemon's machine from a local host and the CONTAINER
-        // from a provisioned one. Handing it to a container did not degrade the
-        // browser tool, it failed the whole session: omp answers `session/new`
-        // with `ompd-webview: Unable to connect. Is the computer able to access
-        // the url?`, so every container create returned HTTP 500 while the same
-        // request with no `mcpServers` succeeded.
-        //
-        // Omitted rather than rewritten to a container-reachable address on
-        // purpose. Making it reachable means binding this surface off loopback,
-        // and that is a security decision about a tool that drives the
-        // operator's own browser -- not something to slip in as the fix for a
-        // 500. So the absence is stated here and in the log rather than being
-        // quietly papered over, and `docs/running.md` says the browser tool is
-        // a local-host capability.
         if (host.kind !== "local") {
           this.#onLog?.(
             `agent ${agentId}: no browser tool on this ${host.kind} host. The WebView MCP server is bound to ` +
@@ -907,7 +898,14 @@ export class Ompd {
             servers.push(orchestratorMcpServerDescriptor(this.#home, agentId, { cliEntry: this.#cliEntry }));
           }
         }
-        return servers;
+        const operatorServers = await forwardOperatorMcpServers({
+          agentId,
+          host,
+          cwd: cwd ?? process.cwd(),
+          enabled: this.#config.forwardOperatorMcp,
+          onLog: this.#onLog,
+        });
+        return [...operatorServers, ...servers];
       },
     });
     const intentPeer =

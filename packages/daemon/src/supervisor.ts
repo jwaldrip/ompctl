@@ -188,7 +188,7 @@ export interface SupervisorOptions {
    * layer that knows whether its own URLs are reachable from a given host, so
    * it is the layer that has to decide.
    */
-  mcpServersFor?: (agentId: AgentId, host: HostRef) => unknown[];
+  mcpServersFor?: (agentId: AgentId, host: HostRef, cwd?: string) => unknown[] | Promise<unknown[]>;
   /**
    * The daemon's own state directory, so a requested mount can be refused for
    * naming it. Defaults to `~/.ompd`, the same expression `Ompd` and
@@ -546,7 +546,7 @@ export class Supervisor {
   #onLog: ((line: string) => void) | undefined;
   #spawnHost: (opts: SpawnLocalHostOptions) => LocalHost;
   #provisioner: Provisioner | undefined;
-  #mcpServersFor: ((agentId: AgentId, host: HostRef) => unknown[]) | undefined;
+  #mcpServersFor: ((agentId: AgentId, host: HostRef, cwd?: string) => unknown[] | Promise<unknown[]>) | undefined;
   /** The daemon's state directory, so a mount naming it can be refused. */
   #home: string;
 
@@ -697,10 +697,8 @@ export class Supervisor {
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
     return await this.#bindAgentToSession(input, spec, entry, who, {}, async (sessionEntry, agentId) => {
-      const res = await sessionEntry.host.client.newSession(
-        input.cwd,
-        this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
-      );
+      const mcpServers = (await this.#mcpServersFor?.(agentId, sessionEntry.ref, input.cwd)) ?? [];
+      const res = await sessionEntry.host.client.newSession(input.cwd, mcpServers);
       return res.sessionId;
     });
   }
@@ -744,11 +742,8 @@ export class Supervisor {
     return await this.#bindAgentToSession(input, spec, entry, who, { resumed: true }, async (sessionEntry, agentId) => {
       this.#loadingSessions.add(input.sessionId);
       try {
-        await sessionEntry.host.client.loadSession(
-          input.sessionId,
-          input.cwd,
-          this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
-        );
+        const mcpServers = (await this.#mcpServersFor?.(agentId, sessionEntry.ref, input.cwd)) ?? [];
+        await sessionEntry.host.client.loadSession(input.sessionId, input.cwd, mcpServers);
       } finally {
         this.#loadingSessions.delete(input.sessionId);
       }
