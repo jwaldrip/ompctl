@@ -772,7 +772,6 @@ export class Ompd {
     // or a container agent's session would be the only kind the gateway could
     // not answer a mode query for.
     this.#containerBackend = new ContainerBackend({
-      workspace: opts.repoRoot,
       home: this.#home,
       spawn: this.#hosts.spawn,
       // Not optional in the daemon, only in the type: every container this
