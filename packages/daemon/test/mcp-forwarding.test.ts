@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpServer } from "@oh-my-pi/pi-utils/acp";
@@ -366,15 +366,6 @@ describe("daemon integration: operator MCP server reachability", () => {
     const home = tempDir("ompd-fwd-default-");
     const projectDir = tempDir("ompd-project-def-");
 
-    writeFileSync(
-      join(projectDir, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
-          myTool: { type: "stdio", command: "/bin/sh", args: ["-c", "exit 0"] },
-        },
-      }),
-    );
-
     const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
       mcpAuthVault: "file",
@@ -383,6 +374,11 @@ describe("daemon integration: operator MCP server reachability", () => {
       overrides: { port: 0 },
       spawnHost: fake.factory,
       voice: false,
+      loadOperatorMcpConfigs: async () => ({
+        configs: {
+          myTool: { type: "stdio", command: "/bin/sh", args: ["-c", "exit 0"] },
+        },
+      }),
     });
     runningDaemons.push(daemon);
     const info = await daemon.start();
@@ -407,19 +403,6 @@ describe("daemon integration: operator MCP server reachability", () => {
     const home = tempDir("ompd-fwd-reach-");
     const projectDir = tempDir("ompd-project-");
 
-    writeFileSync(
-      join(projectDir, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
-          myTool: {
-            type: "stdio",
-            command: "/bin/sh",
-            args: ["-c", "exit 0"],
-          },
-        },
-      }),
-    );
-
     const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
       mcpAuthVault: "file",
@@ -428,6 +411,15 @@ describe("daemon integration: operator MCP server reachability", () => {
       overrides: { port: 0, forwardOperatorMcp: true },
       spawnHost: fake.factory,
       voice: false,
+      loadOperatorMcpConfigs: async () => ({
+        configs: {
+          myTool: {
+            type: "stdio",
+            command: "/bin/sh",
+            args: ["-c", "exit 0"],
+          },
+        },
+      }),
     });
     runningDaemons.push(daemon);
     const info = await daemon.start();
@@ -461,24 +453,6 @@ describe("daemon integration: operator MCP server reachability", () => {
     const home = tempDir("ompd-fwd-sec-");
     const projectDir = tempDir("ompd-project-sec-");
 
-    writeFileSync(
-      join(projectDir, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
-          ompctl: {
-            type: "stdio",
-            command: "/bin/sh",
-            args: ["-c", "exit 0"],
-          },
-          safeTool: {
-            type: "stdio",
-            command: "/bin/sh",
-            args: ["-c", "exit 0"],
-          },
-        },
-      }),
-    );
-
     const { fake, sessionsRoot } = indexedFakeHost(home);
     // The daemon says why it withheld a server. Without this the CI failure was
     // a bare timeout, which sent one round trip down a discovery dead end.
@@ -491,6 +465,20 @@ describe("daemon integration: operator MCP server reachability", () => {
       spawnHost: fake.factory,
       voice: false,
       onLog: line => daemonLogs.push(line),
+      loadOperatorMcpConfigs: async () => ({
+        configs: {
+          ompctl: {
+            type: "stdio",
+            command: "/bin/sh",
+            args: ["-c", "exit 0"],
+          },
+          safeTool: {
+            type: "stdio",
+            command: "/bin/sh",
+            args: ["-c", "exit 0"],
+          },
+        },
+      }),
     });
     runningDaemons.push(daemon);
     const info = await daemon.start();
@@ -519,18 +507,6 @@ describe("daemon integration: operator MCP server reachability", () => {
     const home = tempDir("ompd-fwd-collision-");
     const projectDir = tempDir("ompd-project-col-");
 
-    writeFileSync(
-      join(projectDir, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
-          "ompd-webview": {
-            type: "http",
-            url: "http://127.0.0.1:49999/rogue-webview",
-          },
-        },
-      }),
-    );
-
     const { fake, sessionsRoot } = indexedFakeHost(home);
     const daemon = new Ompd({
       mcpAuthVault: "file",
@@ -539,6 +515,14 @@ describe("daemon integration: operator MCP server reachability", () => {
       overrides: { port: 0, forwardOperatorMcp: true },
       spawnHost: fake.factory,
       voice: false,
+      loadOperatorMcpConfigs: async () => ({
+        configs: {
+          "ompd-webview": {
+            type: "http",
+            url: "http://127.0.0.1:49999/rogue-webview",
+          },
+        },
+      }),
     });
     runningDaemons.push(daemon);
     const info = await daemon.start();
@@ -564,10 +548,16 @@ describe("daemon integration: operator MCP server reachability", () => {
     const home = tempDir("ompd-fwd-disabled-");
     const projectDir = tempDir("ompd-project-dis-");
 
-    writeFileSync(
-      join(projectDir, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
+    const { fake, sessionsRoot } = indexedFakeHost(home);
+    const daemon = new Ompd({
+      mcpAuthVault: "file",
+      home,
+      sessionsRoot,
+      overrides: { port: 0, forwardOperatorMcp: true },
+      spawnHost: fake.factory,
+      voice: false,
+      loadOperatorMcpConfigs: async () => ({
+        configs: {
           enabledTool: {
             type: "stdio",
             command: "/bin/sh",
@@ -579,16 +569,6 @@ describe("daemon integration: operator MCP server reachability", () => {
           },
         },
       }),
-    );
-
-    const { fake, sessionsRoot } = indexedFakeHost(home);
-    const daemon = new Ompd({
-      mcpAuthVault: "file",
-      home,
-      sessionsRoot,
-      overrides: { port: 0, forwardOperatorMcp: true },
-      spawnHost: fake.factory,
-      voice: false,
     });
     runningDaemons.push(daemon);
     const info = await daemon.start();
@@ -611,23 +591,6 @@ describe("daemon integration: operator MCP server reachability", () => {
     const home = tempDir("ompd-fwd-resilient-home-");
     const projectDir = tempDir("ompd-fwd-resilient-proj-");
 
-    writeFileSync(
-      join(projectDir, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
-          failingServer: {
-            type: "http",
-            url: "http://127.0.0.1:401/unauthorized",
-          },
-          healthyServer: {
-            type: "stdio",
-            command: "/bin/sh",
-            args: ["-c", "exit 0"],
-          },
-        },
-      }),
-    );
-
     const { fake, sessionsRoot } = indexedFakeHost(home);
 
     // Simulate ACP behavior: failingServer throws HTTP 401 at resume time
@@ -646,6 +609,19 @@ describe("daemon integration: operator MCP server reachability", () => {
       overrides: { port: 0, forwardOperatorMcp: true },
       spawnHost: fake.factory,
       voice: false,
+      loadOperatorMcpConfigs: async () => ({
+        configs: {
+          failingServer: {
+            type: "http",
+            url: "http://127.0.0.1:401/unauthorized",
+          },
+          healthyServer: {
+            type: "stdio",
+            command: "/bin/sh",
+            args: ["-c", "exit 0"],
+          },
+        },
+      }),
     });
     runningDaemons.push(daemon);
     const info = await daemon.start();
