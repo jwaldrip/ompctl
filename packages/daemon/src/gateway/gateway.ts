@@ -95,7 +95,7 @@ import { ProviderRefusal, type ProvidersService } from "../providers/index.ts";
 import { HISTORY_MAX_TURNS, readSessionHistory } from "../sessions/history.ts";
 import type { SessionIndex } from "../sessions/session-index.ts";
 import { listSubagentTranscripts, subagentTranscriptPath } from "../sessions/subagents.ts";
-import { readSessionTail, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
+import { readSessionTail, TAIL_DEFAULT_MESSAGES, TAIL_MAX_MESSAGES } from "../sessions/tail.ts";
 import type { SessionWatch } from "../sessions/watcher.ts";
 import { type StatsSubsystem, statsUnavailableReason } from "../stats/index.ts";
 import {
@@ -968,8 +968,8 @@ function materialiseAction(draft: RoutineActionDraft): RoutineAction {
 
 /** Runs returned beside one routine when the caller names no `runLimit`. */
 const ROUTINE_RUNS_DEFAULT = 10;
-/** Ceiling on `runLimit`: one response answers "show me more", not "show me everything". */
-const ROUTINE_RUNS_MAX = 50;
+/** Ceiling on `runLimit`: one response answers "show me more", bounded against unbounded reads. */
+const ROUTINE_RUNS_MAX = 1000;
 
 function parseSyncDocument(value: unknown): SyncDocument | null {
   if (!isRecord(value) || hasForbiddenSyncField(value)) return null;
@@ -1663,6 +1663,12 @@ export class Gateway {
     });
     this.#unsubscribeRoutineProgress = this.#routines?.onProgress?.(frame => {
       this.#broadcastRoutine(frame);
+      if (frame.t === "routine_run_finished") {
+        const run = this.#store.listRuns(frame.routineId, 10).find(r => r.id === frame.runId);
+        if (run) {
+          this.#broadcastRoutineRan(run);
+        }
+      }
     });
   }
 
@@ -1768,6 +1774,18 @@ export class Gateway {
       if (ws.data.revoked) continue;
       this.#send(ws, frame);
     }
+  }
+
+  #broadcastRunIds = new Set<string>();
+
+  #broadcastRoutineRan(run: Run): void {
+    if (this.#broadcastRunIds.has(run.id)) return;
+    this.#broadcastRunIds.add(run.id);
+    if (this.#broadcastRunIds.size > 1000) {
+      const first = this.#broadcastRunIds.values().next().value;
+      if (first !== undefined) this.#broadcastRunIds.delete(first);
+    }
+    this.#broadcastRoutine({ t: "routine_ran", run });
   }
 
   /**
@@ -2814,9 +2832,10 @@ export class Gateway {
       const runLimit = Number.isNaN(requested)
         ? ROUTINE_RUNS_DEFAULT
         : Math.min(Math.max(requested, 1), ROUTINE_RUNS_MAX);
-      // `listRuns` orders `started_at DESC`, so newest-first comes out of the
-      // store and nothing here reorders it.
-      return Response.json({ routine, runs: this.#store.listRuns(routine.id, runLimit) });
+      const fetched = this.#store.listRuns(routine.id, runLimit + 1);
+      const truncated = fetched.length > runLimit;
+      const runs = truncated ? fetched.slice(0, runLimit) : fetched;
+      return Response.json({ routine, runs, truncated });
     }
 
     if (routineById && req.method === "PATCH") {
@@ -3147,6 +3166,72 @@ export class Gateway {
       const stats = await this.#stats.getSessionStats(sessionId);
       if (!stats) return Response.json({ error: "session_not_found" }, { status: 404 });
       return Response.json(stats);
+    }
+
+    const sessionTranscriptRoute = /^\/v1\/sessions\/([^/]+)\/transcript$/.exec(path);
+    if (sessionTranscriptRoute && req.method === "GET") {
+      if (!scopes.has(SCOPE_READ)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const index = this.#sessionIndex;
+      if (!index) return Response.json({ error: "sessions_unavailable" }, { status: 503 });
+
+      const rawId = sessionTranscriptRoute[1] ?? "";
+      let targetSessionId = rawId;
+      if (rawId.startsWith("agt_")) {
+        const agent = this.#store.getAgent(rawId);
+        if (agent?.acpSessionId) {
+          targetSessionId = agent.acpSessionId;
+        }
+      }
+
+      const sessionPath = await index.pathFor(targetSessionId);
+      if (sessionPath === undefined) return Response.json({ error: "session_not_found" }, { status: 404 });
+
+      const limitParam = url.searchParams.get("limit");
+      const requestedLimit = limitParam === null ? TAIL_DEFAULT_MESSAGES : Number(limitParam);
+      const limit = Number.isNaN(requestedLimit)
+        ? TAIL_DEFAULT_MESSAGES
+        : Math.min(Math.max(requestedLimit, 1), TAIL_MAX_MESSAGES);
+
+      const beforeParam = url.searchParams.get("before");
+      let cursor: number | undefined;
+      if (beforeParam !== null) {
+        const parsedBefore = Number(beforeParam);
+        if (!Number.isSafeInteger(parsedBefore) || parsedBefore < 0) {
+          return Response.json({ error: "invalid_before_cursor" }, { status: 400 });
+        }
+        cursor = parsedBefore;
+      }
+
+      const subagent = url.searchParams.get("subagent");
+      let targetPath = sessionPath;
+      if (typeof subagent === "string" && subagent.length > 0) {
+        const resolved = subagentTranscriptPath(sessionPath, subagent);
+        if (!resolved.ok) {
+          return Response.json({ error: resolved.code, message: resolved.message }, { status: 404 });
+        }
+        targetPath = resolved.path;
+      }
+
+      try {
+        const tail = await readSessionTail(targetPath, {
+          limit,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        return Response.json({
+          sessionId: targetSessionId,
+          ...(typeof subagent === "string" && subagent.length > 0 ? { subagent } : {}),
+          entries: tail.entries,
+          messages: tail.entries,
+          truncated: tail.truncated,
+          nextCursor: tail.nextCursor,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+      } catch (err) {
+        return Response.json(
+          { error: "session_tail_failed", message: err instanceof Error ? err.message : "session tail failed" },
+          { status: 500 },
+        );
+      }
     }
 
     const sessionTakeoverRoute = /^\/v1\/sessions\/([^/]+)\/takeover$/.exec(path);
@@ -5356,7 +5441,33 @@ export class Gateway {
           this.#send(ws, { t: "error", code: "unauthorized", message: "routines_read requires read scope" });
           return;
         }
-        this.#send(ws, this.#routineSnapshot());
+        const limit =
+          typeof frame.runLimit === "number" && frame.runLimit > 0
+            ? Math.min(frame.runLimit, 1000)
+            : ROUTINE_RUNS_DEFAULT;
+        this.#send(ws, this.#routineSnapshot(limit));
+        return;
+      }
+
+      case "routine_runs_read": {
+        if (!ws.data.scopes.has(SCOPE_READ)) {
+          this.#send(ws, { t: "error", code: "unauthorized", message: "routine_runs_read requires read scope" });
+          return;
+        }
+        if (typeof frame.routineId !== "string" || frame.routineId.length === 0) {
+          this.#send(ws, { t: "error", code: "bad_frame", message: "routine_runs_read requires a routineId" });
+          return;
+        }
+        const routine = this.#store.listRoutines().find(r => r.id === frame.routineId);
+        if (!routine) {
+          this.#send(ws, { t: "error", code: "not_found", message: "routine not found" });
+          return;
+        }
+        const limit = typeof frame.limit === "number" && frame.limit > 0 ? Math.min(frame.limit, 1000) : 20;
+        const fetched = this.#store.listRuns(routine.id, limit + 1);
+        const truncated = fetched.length > limit;
+        const runs = truncated ? fetched.slice(0, limit) : fetched;
+        this.#send(ws, { t: "routine_runs", routineId: routine.id, runs, truncated });
         return;
       }
 
@@ -5408,7 +5519,7 @@ export class Gateway {
           return;
         }
         void runner.runNow(frame.routineId, this.#actorOf(ws), frame.fromAction).then(
-          run => this.#send(ws, { t: "routine_ran", run }),
+          run => this.#broadcastRoutineRan(run),
           err =>
             this.#send(ws, {
               t: "error",
@@ -7067,15 +7178,24 @@ export class Gateway {
    * host secret is stripped on the way out: a surface needs to know a webhook
    * exists, never the value that authenticates a caller to it.
    */
-  #routineSnapshot(): Extract<ServerFrame, { t: "routines" }> {
+  #routineSnapshot(limit = ROUTINE_RUNS_DEFAULT): Extract<ServerFrame, { t: "routines" }> {
     const routines = this.#store.listRoutines();
+    const runs: Run[] = [];
+    const truncated: Record<string, boolean> = {};
+    for (const routine of routines) {
+      const fetched = this.#store.listRuns(routine.id, limit + 1);
+      const isTruncated = fetched.length > limit;
+      truncated[routine.id] = isTruncated;
+      runs.push(...(isTruncated ? fetched.slice(0, limit) : fetched));
+    }
     return {
       t: "routines",
       routines: routines.map(routine => ({
         ...routine,
         actions: routine.actions.map(({ host: _host, ...action }) => action),
       })),
-      runs: routines.flatMap(routine => this.#store.listRuns(routine.id, 10)),
+      runs,
+      truncated,
     };
   }
 

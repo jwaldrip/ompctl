@@ -525,17 +525,19 @@ function routineLine(routine: RoutineSummary): string {
 /**
  * One run, as a line.
  *
- * The session count is here and not only in the structured output because the
- * text is what a model reads. A count that appeared solely in
- * `structuredContent` would be a field a caller has to already know to look
- * for, and the whole point of reporting it is that someone asking "why did
- * last night's routine fail" learns there is a session to open.
+ * The session count and the run error are here and not only in the structured
+ * output because the text is what a model reads. A count or an error that
+ * appeared solely in `structuredContent` would be a field a caller has to
+ * already know to look for, and the whole point of reporting them is that
+ * someone asking "why did last night's routine fail" learns why it failed and
+ * whether there is a session to open.
  */
 function runLine(run: RunView): string {
   const failed = run.actions.filter(action => action.state === "failed" || action.state === "timed_out").length;
   const detail = failed === 0 ? "" : `  ${String(failed)} failed`;
   const sessions = run.linkedSessionCount === 1 ? "  1 session" : `  ${String(run.linkedSessionCount)} sessions`;
-  return `  ${run.id}  ${run.state}  started ${run.startedAt}${detail}${sessions}`;
+  const error = run.error === undefined ? "" : `  ${run.error}`;
+  return `  ${run.id}  ${run.state}  started ${run.startedAt}${detail}${sessions}${error}`;
 }
 
 // ---------------------------------------------------------------------------

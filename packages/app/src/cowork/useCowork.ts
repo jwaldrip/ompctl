@@ -41,6 +41,7 @@ export interface CoworkState {
   skillsSlice: CoworkSlice<SkillSummary[]>;
   connectorsSlice: CoworkSlice<ConnectorSummary[]>;
   tasksSlice: CoworkSlice<TaskListState>;
+  targetAgentId: string | null;
   loading: boolean;
   error: string | null;
 }
@@ -56,6 +57,7 @@ const EMPTY_STATE: CoworkState = {
   skillsSlice: EMPTY_SKILLS_SLICE,
   connectorsSlice: EMPTY_CONNECTORS_SLICE,
   tasksSlice: EMPTY_TASKS_SLICE,
+  targetAgentId: null,
   loading: true,
   error: null,
 };
@@ -98,7 +100,15 @@ export function useCowork(
   cwd: string,
   defaultAgentId: string | null,
 ): [CoworkState, CoworkActions] {
-  const [state, setState] = useState<CoworkState>(EMPTY_STATE);
+  const [targetAgentId, setTargetAgentId] = useState<string | null>(defaultAgentId);
+  const [state, setState] = useState<CoworkState>(() => ({
+    ...EMPTY_STATE,
+    targetAgentId: defaultAgentId,
+  }));
+
+  useEffect(() => {
+    setTargetAgentId(previous => previous ?? defaultAgentId);
+  }, [defaultAgentId]);
   const pendingRequests = useRef<{
     skills: string | null;
     connectors: string | null;
@@ -180,6 +190,11 @@ export function useCowork(
           };
         }),
       ),
+      client.on("agent_created", event => {
+        if (event.agent.host?.kind === "container") {
+          setTargetAgentId(event.agent.id);
+        }
+      }),
       // One task as the daemon holds it now: the answer to a start or a
       // cancel, folded in rather than awaited so the roster never depends on
       // this device matching replies to asks.
@@ -241,8 +256,23 @@ export function useCowork(
               error: event.message,
             };
           }
+          const nextSkillsSlice: CoworkSlice<SkillSummary[]> =
+            previous.skillsSlice.status === "loading"
+              ? { status: "refused", data: [], error: event.message }
+              : previous.skillsSlice;
+          const nextConnectorsSlice: CoworkSlice<ConnectorSummary[]> =
+            previous.connectorsSlice.status === "loading"
+              ? { status: "refused", data: [], error: event.message }
+              : previous.connectorsSlice;
+          const nextTasksSlice: CoworkSlice<TaskListState> =
+            previous.tasksSlice.status === "loading"
+              ? { status: "refused", data: EMPTY_TASKS, error: event.message }
+              : previous.tasksSlice;
           return {
             ...previous,
+            skillsSlice: nextSkillsSlice,
+            connectorsSlice: nextConnectorsSlice,
+            tasksSlice: nextTasksSlice,
             loading: false,
             error: event.message,
           };
@@ -270,17 +300,17 @@ export function useCowork(
 
   const startTask = useCallback(
     async (input: NewTaskInput) => {
-      const targetAgentId = input.agentId ?? defaultAgentId;
-      if (!targetAgentId) {
+      const resolvedAgentId = input.agentId ?? targetAgentId ?? defaultAgentId;
+      if (!resolvedAgentId) {
         throw new Error("no session to target: pick or create an agent before starting a task");
       }
       // Fire-and-ask: the created task arrives as the `task` event and a
       // refusal arrives as `error`, both folded into the state above, so
       // there is no promise here that could resolve before the daemon has
       // said anything.
-      client.createTask({ ...input, agentId: targetAgentId });
+      client.createTask({ ...input, agentId: resolvedAgentId });
     },
-    [client, defaultAgentId],
+    [client, targetAgentId, defaultAgentId],
   );
 
   const retryTask = useCallback(
@@ -304,5 +334,8 @@ export function useCowork(
     [client],
   );
 
-  return [state, { startTask, retryTask, cancelTask, refresh: ask }];
+  return [
+    { ...state, targetAgentId },
+    { startTask, retryTask, cancelTask, refresh: ask },
+  ];
 }

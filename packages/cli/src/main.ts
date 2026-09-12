@@ -37,7 +37,23 @@ import {
   mcpAuthUnapplyCommand,
 } from "./commands/mcp-auth.ts";
 import { openCommand } from "./commands/open.ts";
-import { routineDeleteCommand, routinesCommand, runCommand, webhookSecretCommand } from "./commands/routines.ts";
+import { orchestratorCommand } from "./commands/orchestrator.ts";
+import {
+  routineDeleteCommand,
+  routinesCommand,
+  runCommand,
+  runsCommand,
+  webhookSecretCommand,
+} from "./commands/routines.ts";
+
+export const CLI_USAGE = USAGE.replace(
+  "routines\n  routines                list routines\n  run <routineId>         run a routine now",
+  "routines\n  routines                list routines\n  runs [<routineId>] [--limit N]\n                          recent routine runs, newest first\n  runs <runId> --detail   one run and its per-action outcomes\n  run <routineId>         run a routine now",
+).replace(
+  "  prompt <id> <text>      send a prompt and wait for the turn to settle",
+  "  orchestrator [<cwd>] [--name N] [--prompt P]\n                          create an orchestrator session with session-control tools\n  prompt <id> <text>      send a prompt and wait for the turn to settle",
+);
+
 import { selfInstallCommand } from "./commands/self-install.ts";
 import { installCommand, uninstallCommand } from "./commands/service.ts";
 import { syncConfigCommand } from "./commands/sync.ts";
@@ -56,11 +72,32 @@ export async function run(argv: string[], ctx: CliContext = defaultContext()): P
     if (isHostedWorkerSelector(argv[0])) {
       return await runHostedWorker(argv[0]);
     }
+    if (argv[0] === "runs") {
+      if (argv[1] === "--help" || argv[1] === "help" || argv.includes("--help") || argv.includes("-h")) {
+        ctx.out(CLI_USAGE);
+        return 0;
+      }
+      return await runsCommand(ctx, argv.slice(1));
+    }
+    if (argv[0] === "routines" && argv[1] === "runs") {
+      if (argv[2] === "--help" || argv[2] === "help" || argv.includes("--help") || argv.includes("-h")) {
+        ctx.out(CLI_USAGE);
+        return 0;
+      }
+      return await runsCommand(ctx, argv.slice(2));
+    }
+    if (argv[0] === "orchestrator") {
+      if (argv[1] === "--help" || argv[1] === "help" || argv.includes("--help") || argv.includes("-h")) {
+        ctx.out(CLI_USAGE);
+        return 0;
+      }
+      return await orchestratorCommand(ctx, argv.slice(1));
+    }
     const command = parseCommand(argv);
 
     switch (command.kind) {
       case "help":
-        ctx.out(USAGE);
+        ctx.out(CLI_USAGE);
         return 0;
       case "version":
         ctx.out(OMPD_VERSION);
@@ -175,7 +212,7 @@ function report(ctx: CliContext, err: unknown): number {
   if (err instanceof UsageError) {
     ctx.err(`ompd: ${err.message}`);
     ctx.err("");
-    ctx.err(USAGE);
+    ctx.err(CLI_USAGE);
     return 2;
   }
 

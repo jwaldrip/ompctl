@@ -358,9 +358,14 @@ try {
     "ompctl_routine_delete",
     "ompctl_routine_run",
     "ompctl_routine_rotate_webhook_secret",
+    "ompctl_sessions_list",
+    "ompctl_session_create",
+    "ompctl_session_prompt",
+    "ompctl_session_read",
+    "ompctl_session_stop",
   ];
   check(
-    "tools/list is exactly the seven routine tools",
+    "tools/list is the expected twelve tools (seven routine tools plus five session tools)",
     names.length === expected.length && expected.every(n => names.includes(n)),
     `${names.length} tools`,
   );
@@ -570,6 +575,88 @@ try {
   const getGone = await client.call("ompctl_routine_get", { routineId });
   check("get on the deleted routine is an error result", getGone.isError);
 
+  // --- session round trip: create -> list -> prompt -> read -> stop -> gone -
+  console.log("\n  orchestrating session round trip over raw stdio:");
+  const createdSession = await client.call("ompctl_session_create", {
+    cwd: workdir,
+    name: `${marker}-session`,
+  });
+  check("session create accepted", !createdSession.isError, createdSession.isError ? createdSession.text : "");
+  const sessionAgentId = String(field(createdSession.structured, "agentId") ?? "");
+  const createdSessionId = String(field(createdSession.structured, "sessionId") ?? "");
+  check("session create returned an agt_ agentId", sessionAgentId.startsWith("agt_"), sessionAgentId);
+  check("session create returned a session id", createdSessionId.length > 0, createdSessionId);
+
+  // List sessions and confirm our session appears in the fleet
+  const listedSessions = await client.call("ompctl_sessions_list", { cwd: workdir });
+  check("sessions list accepted", !listedSessions.isError);
+  const foundSessions = field(listedSessions.structured, "sessions");
+  check(
+    "sessions list contains the created session",
+    Array.isArray(foundSessions) && foundSessions.some(s => field(s, "id") === sessionAgentId),
+  );
+
+  // Prompt the session and get the model's reply back.
+  //
+  // Same discipline as the routine run above: whether a spawned agent can
+  // settle a turn depends on model access this check has no business
+  // requiring, and CI has none. So the tool call is always asserted, because
+  // reaching the daemon and getting its own verdict back is this surface's
+  // job, while the reply itself is asserted only where a model can actually
+  // produce one. The absence is printed rather than passed over: a check that
+  // quietly drops its strongest assertion is how a surface stops being
+  // covered without anyone noticing.
+  console.log(`    prompting session ${sessionAgentId}...`);
+  const prompted = await client.call("ompctl_session_prompt", {
+    agentId: sessionAgentId,
+    prompt: "Reply with exactly the single word: ORCHESTRATION_PONG",
+  });
+  const noModel = prompted.isError && /no model selected/i.test(prompted.text);
+  const readTranscript = await client.call("ompctl_session_read", {
+    sessionId: createdSessionId,
+  });
+  check("session transcript read accepted", !readTranscript.isError);
+  const entries = field(readTranscript.structured, "entries");
+
+  if (noModel) {
+    // The daemon answered, and its answer is that this machine has no model.
+    // That is the tool working: it returned the daemon's verdict rather than
+    // an optimistic echo, which is the property worth pinning here.
+    check(
+      "session prompt returned the daemon's own refusal rather than a success shape",
+      prompted.isError && field(prompted.structured, "stopReason") === undefined,
+      prompted.text.split("\n")[0] ?? "",
+    );
+    console.log(
+      "  note  no model is configured on this machine, so the settled turn and its transcript were not exercised.\n" +
+        "        Run scripts/check-orchestrator-e2e.ts somewhere with model access to cover them.",
+    );
+  } else {
+    check("session prompt completed without error", !prompted.isError, prompted.isError ? prompted.text : "");
+    const stopReason = String(field(prompted.structured, "stopReason") ?? "");
+    check("session prompt settled turn with stopReason", stopReason.length > 0, stopReason);
+    check(
+      "session transcript returned entries",
+      Array.isArray(entries) && entries.length > 0,
+      Array.isArray(entries) ? `${entries.length} entries` : "no entries",
+    );
+    check(
+      "the prompt text is present in transcript",
+      JSON.stringify(readTranscript.structured).includes("ORCHESTRATION_PONG"),
+    );
+  }
+
+  // Stop the session
+  const stopped = await client.call("ompctl_session_stop", {
+    agentId: sessionAgentId,
+  });
+  check("session stop accepted", !stopped.isError && field(stopped.structured, "stopped") === true);
+
+  // Verify the agent is stopped
+  const afterStopList = await client.call("ompctl_sessions_list", { cwd: workdir });
+  const remaining = field(afterStopList.structured, "sessions");
+  const agentRow = Array.isArray(remaining) ? remaining.find(s => field(s, "id") === sessionAgentId) : null;
+  check("agent is in stopped state after stop", agentRow === null || field(agentRow, "state") === "stopped");
   // The framing assertion, and the reason this check drives raw stdio rather
   // than trusting a client: everything above could pass while the server also
   // printed a banner, a warning, or a stray log line onto the same stream. A
@@ -728,6 +815,24 @@ try {
         console.log(`\nswept ${orphans.length} marked routine(s): HTTP ${cleanup.status}`);
       } else {
         console.log("\nno marked routines left to sweep");
+      }
+      // Sweep any test agents created during the run
+      const agentsRes = await fetch(`${base}/v1/agents`, { headers: { authorization: `Bearer ${token}` } });
+      if (agentsRes.ok) {
+        const body: unknown = await agentsRes.json();
+        const allAgents = field(body, "agents");
+        if (Array.isArray(allAgents)) {
+          for (const a of allAgents) {
+            const name = field(a, "name");
+            const id = field(a, "id");
+            if (typeof name === "string" && name.includes(MARKER_PREFIX) && typeof id === "string") {
+              await fetch(`${base}/v1/agents/${id}`, {
+                method: "DELETE",
+                headers: { authorization: `Bearer ${token}` },
+              });
+            }
+          }
+        }
       }
     }
   } catch (err) {

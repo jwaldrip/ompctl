@@ -211,4 +211,41 @@ describe("Cowork empty catalogue and sidebar absence states", () => {
     root.unmount();
     host.remove();
   });
+  test("loading skills view shows loading indicator and never 'No skills installed'", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(<SkillsView skills={[]} onInvoke={() => {}} status="loading" />);
+    });
+
+    const count = host.querySelector('[data-testid="skills-count"]');
+    expect(count).not.toBeNull();
+    expect(count?.textContent).not.toBe("No skills installed");
+    expect(count?.textContent).toBe("Loading skills...");
+    expect(host.querySelector('[data-testid="cowork-skills-loading"]')).not.toBeNull();
+
+    root.unmount();
+    host.remove();
+  });
+
+  test("loading connectors view shows loading indicator and never 'No connectors installed'", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    act(() => {
+      root.render(<ConnectorsView connectors={[]} status="loading" />);
+    });
+
+    const count = host.querySelector('[data-testid="connectors-count"]');
+    expect(count).not.toBeNull();
+    expect(count?.textContent).not.toBe("No connectors installed");
+    expect(count?.textContent).toBe("Loading connectors...");
+    expect(host.querySelector('[data-testid="cowork-connectors-loading"]')).not.toBeNull();
+
+    root.unmount();
+    host.remove();
+  });
 });

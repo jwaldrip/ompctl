@@ -281,6 +281,7 @@ export function RoutinesScreen({
    * has actually asked for more of.
    */
   const [runsShown, setRunsShown] = useState<Record<string, number>>({});
+  const [truncated, setTruncated] = useState<Record<string, boolean>>({});
   /**
    * The run whose per-action detail is open, or null. One at a time across the
    * whole screen: a card is a routine, and two runs of one routine open at once
@@ -325,7 +326,23 @@ export function RoutinesScreen({
       }),
       client.on("routines", event => {
         setPending(null);
+        if (event.truncated) {
+          setTruncated(event.truncated);
+        }
         setStatus({ kind: "ready", routines: event.routines, runs: event.runs });
+      }),
+      client.on("routine_runs", event => {
+        setPending(null);
+        setTruncated(current => ({ ...current, [event.routineId]: event.truncated }));
+        setStatus(current => {
+          if (current.kind !== "ready") return current;
+          const incomingIds = new Set(event.runs.map(r => r.id));
+          const rest = current.runs.filter(r => r.routineId !== event.routineId || !incomingIds.has(r.id));
+          return {
+            ...current,
+            runs: [...event.runs, ...rest],
+          };
+        });
       }),
       client.on("routine_ran", event => {
         setPending(null);
@@ -452,9 +469,19 @@ export function RoutinesScreen({
     [canManage, client],
   );
 
-  const showMoreRuns = useCallback((routineId: string) => {
-    setRunsShown(current => ({ ...current, [routineId]: (current[routineId] ?? 1) + 10 }));
-  }, []);
+  const showMoreRuns = useCallback(
+    (routineId: string) => {
+      const isTruncated = truncated[routineId] === true;
+      const currentShown = runsShown[routineId] ?? 1;
+      const nextShown = currentShown + 10;
+      setRunsShown(current => ({ ...current, [routineId]: nextShown }));
+      const routineRuns = status.kind === "ready" ? status.runs.filter(r => r.routineId === routineId) : [];
+      if (isTruncated || nextShown >= routineRuns.length) {
+        client.readRoutineRuns(routineId, Math.max(nextShown + 5, 20));
+      }
+    },
+    [client, status, truncated, runsShown],
+  );
 
   const toggleRun = useCallback((runId: string) => {
     setOpenRunId(current => (current === runId ? null : runId));
@@ -718,7 +745,7 @@ export function RoutinesScreen({
                 {routine.actions.map((action, index) => {
                   const outcome = latest?.actions.find(candidate => candidate.actionId === action.id);
                   const failure = outcome?.refusal?.reason ?? outcome?.error;
-                  const sessionId = outcome?.sessionId ?? outcome?.agentId;
+                  const sessionId = outcome?.sessionId;
                   const isActionRunning = activeRun?.runningActionIndex === index;
                   const actionElapsed =
                     isActionRunning && activeRun?.actionStartedAt
@@ -793,6 +820,7 @@ export function RoutinesScreen({
                     setPending(`run:${routineId}`);
                     client.runRoutine(routineId, actionIndex);
                   }}
+                  truncated={truncated[routine.id] ?? false}
                 />
 
                 {routine.trigger.kind === "webhook" ? (

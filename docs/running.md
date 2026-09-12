@@ -631,8 +631,8 @@ delivered as a read-only bind mount at `/opt/ompd`, cached under
 - `omp` itself, downloaded from the public `oh-my-pi` GitHub release for the
   container's architecture. A Linux ELF bind-mounted from macOS runs in the
   guest, which is what makes this work at all.
-- `omp-shim`, the same `scripts/omp-home-shim.sh` that picks up an OMP home
-  seeded on the workspace mount.
+- `omp-shim`, the wrapper script that execs `omp` from the toolchain mount
+  against whatever `HOME` the daemon set in the container run argv.
 - `ca-certificates.crt`, extracted once from `alpine:3.20`, because neither
   `debian:bookworm-slim` nor `debian:bookworm` ships one and omp needs a trust
   store the moment it makes an HTTPS request. `SSL_CERT_FILE` points at it.
@@ -645,9 +645,11 @@ different directory and a stale toolchain cannot be silently reused. The
 download lands in a sibling directory and is renamed into place, so a killed
 process cannot leave a half-written binary that a later run treats as a cache
 hit, and the digest is re-verified after it lands. The shim is compared on every
-cache hit and refreshed if it has changed, because the shim is what decides
-whether a workspace-seeded OMP home is honoured or refused, and that behaviour
-going stale would be a security regression rather than a cosmetic one.
+cache hit and refreshed if it has changed, so the entrypoint in the cached
+toolchain stays current with ompd. Model credentials come from the daemon's own
+broker: the daemon seeds a per-container home directory with a scoped bearer,
+mounts it into the container, and sets `HOME` to it in the run argv. That broker
+home wins over any directory in the workspace.
 
 This is what fixes the failure that prompted the work: the old default was
 `ghcr.io/jwaldrip/omp:latest`, a private image, so every container provision

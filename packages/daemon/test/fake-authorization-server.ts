@@ -125,6 +125,12 @@ export class FakeAuthorizationServer {
   omitRefreshTokenInResponse = false;
   /** When false, every refresh is refused with a non-standard code and the token survives. */
   subjectActive = true;
+  /**
+   * Hold the registration response this long. Models a provider whose dynamic
+   * client registration is slower than a caller's login deadline, which is the
+   * one window where `beginLogin` could settle a promise it had not returned.
+   */
+  registrationDelayMs = 0;
   /** Answer 503 for this many more token requests, consuming nothing. */
   outageResponses = 0;
   /** Quote the presented refresh token in error descriptions, the way a careless provider does. */
@@ -280,6 +286,7 @@ export class FakeAuthorizationServer {
 
   async #register(request: Request): Promise<Response> {
     this.registrations += 1;
+    if (this.registrationDelayMs > 0) await Bun.sleep(this.registrationDelayMs);
     const body = (await request.json()) as { redirect_uris?: unknown; token_endpoint_auth_method?: unknown };
     const redirects = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
     if (redirects.length === 0) return json(400, { error: "invalid_redirect_uri" });

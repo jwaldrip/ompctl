@@ -507,6 +507,75 @@ describe("reading routines", () => {
     expect(JSON.stringify(result.raw)).not.toContain("sessionId");
     await h.close();
   });
+
+  test("an inspected run includes its error text and distinguishes a daemon shutdown from an ordinary failure", async () => {
+    const ordinaryFailure: Run = {
+      id: "run_failed",
+      routineId: "rtn_cron",
+      state: "failed",
+      startedAt: "2026-08-03T02:00:00.000Z",
+      finishedAt: "2026-08-03T02:04:00.000Z",
+      error: "git push was rejected: non-fast-forward",
+      actions: [
+        {
+          actionId: "act_1",
+          actionName: "sweep",
+          index: 0,
+          state: "failed",
+          startedAt: "2026-08-03T02:00:00.000Z",
+          finishedAt: "2026-08-03T02:04:00.000Z",
+          error: "git push was rejected: non-fast-forward",
+        },
+      ],
+    };
+
+    const interruptedRun: Run = {
+      id: "run_interrupted",
+      routineId: "rtn_cron",
+      state: "failed",
+      startedAt: "2026-08-03T03:00:00.000Z",
+      finishedAt: "2026-08-03T03:01:00.000Z",
+      error: "cancelled: the daemon shut down while this run was in flight",
+      actions: [
+        {
+          actionId: "act_1",
+          actionName: "sweep",
+          index: 0,
+          state: "failed",
+          startedAt: "2026-08-03T03:00:00.000Z",
+          finishedAt: "2026-08-03T03:01:00.000Z",
+          error: "cancelled: the daemon shut down while this run was in flight",
+        },
+      ],
+    };
+
+    const h = await harness({
+      routes: {
+        "GET /v1/routines/rtn_cron?runLimit=10": {
+          body: { routine: CRON_ROUTINE, runs: [ordinaryFailure, interruptedRun] },
+        },
+      },
+    });
+
+    const result = await h.call("ompctl_routine_get", { routineId: "rtn_cron" });
+    expect(result.isError).toBe(false);
+
+    // Both errors must be present in the model-visible text.
+    expect(result.text).toContain("git push was rejected: non-fast-forward");
+    expect(result.text).toContain("cancelled: the daemon shut down while this run was in flight");
+
+    // And the model can distinguish a daemon shutdown from an ordinary failure in the text.
+    const lines = result.text.split("\n");
+    const ordinaryLine = lines.find(line => line.includes("run_failed"));
+    const interruptedLine = lines.find(line => line.includes("run_interrupted"));
+    expect(ordinaryLine).toBeDefined();
+    expect(interruptedLine).toBeDefined();
+    expect(ordinaryLine).toContain("git push was rejected: non-fast-forward");
+    expect(interruptedLine).toContain("cancelled: the daemon shut down while this run was in flight");
+    expect(ordinaryLine).not.toContain("daemon shut down");
+
+    await h.close();
+  });
 });
 
 describe("writing routines", () => {

@@ -54,7 +54,7 @@
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { LocalHost, SpawnLocalHostOptions } from "@ompd/acp";
 import { spawnLocalHost } from "@ompd/acp";
 import {
@@ -87,6 +87,13 @@ import {
  * container can write is not somewhere the gate can live. See `GATE_MOUNT`.
  */
 const DEFAULT_SCRATCH_ROOT = "/tmp";
+/**
+ * Returns true if childPath is equal to parentPath or is a descendant of it.
+ */
+function isInsideOrEqual(childPath: string, parentPath: string): boolean {
+  const rel = relative(parentPath, childPath);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
 
 /**
  * Where the daemon's gate directory appears inside the container.
@@ -735,9 +742,22 @@ export class ContainerBackend implements ProvisionerBackend {
       hostPath: resolveMount(mount.hostPath, this.#home),
       mode: mount.mode ?? "ro",
     }));
+    const configuredWorkspace =
+      this.#workspace !== undefined ? resolveMount(this.#workspace, this.#home, "workspace") : undefined;
+
+    // When the caller provides explicit mounts and one is inside or equal to
+    // the configured workspace, mounting the configured workspace would widen
+    // beyond the operator's bound set or override a read-only bound directory
+    // with a read-write parent. In that case the bound folder is the workspace
+    // and the parent is not mounted.
+    const widensWorkspace =
+      configuredWorkspace !== undefined && mounts.some(m => isInsideOrEqual(m.hostPath, configuredWorkspace));
+
     let resolvedWorkspace: string | undefined;
-    if (this.#workspace !== undefined) {
-      resolvedWorkspace = resolveMount(this.#workspace, this.#home, "workspace");
+    if (widensWorkspace || (mounts.length > 0 && configuredWorkspace === undefined)) {
+      resolvedWorkspace = mounts[0]!.hostPath;
+    } else if (configuredWorkspace !== undefined) {
+      resolvedWorkspace = configuredWorkspace;
     } else if (mounts.length > 0) {
       resolvedWorkspace = mounts[0]!.hostPath;
     }
@@ -984,18 +1004,27 @@ export class ContainerBackend implements ProvisionerBackend {
       // Each named mount lands at the identical absolute path inside, the same
       // property `--volume workspace:workspace` already relies on. Read-only
       // unless the operator opted a path into "rw" explicitly.
+      const shouldMountWorkspace =
+        configuredWorkspace !== undefined && !widensWorkspace && !mounts.some(m => m.hostPath === resolvedWorkspace);
+
+      const effectiveMounts: HostMount[] =
+        mounts.length > 0
+          ? mounts
+          : shouldMountWorkspace && resolvedWorkspace !== undefined
+            ? [{ hostPath: resolvedWorkspace, mode: "rw" }]
+            : [];
+
       const mountArgs: string[] = [];
       for (const mount of mounts) {
         mountArgs.push("--volume", `${mount.hostPath}:${mount.hostPath}:${mount.mode}`);
       }
-      if (this.#workspace !== undefined && !mounts.some(m => m.hostPath === resolvedWorkspace)) {
+      if (
+        shouldMountWorkspace &&
+        resolvedWorkspace !== undefined &&
+        !mounts.some(m => m.hostPath === resolvedWorkspace)
+      ) {
         mountArgs.unshift("--volume", `${resolvedWorkspace}:${resolvedWorkspace}`);
       }
-      // The toolchain, read-only. A write into it reports `Read-only file system`
-      // on every runtime here. What is NOT true, and used to be claimed on this
-      // line, is that the container cannot rewrite it: Apple rejects `--cap-drop`
-      // and `--security-opt`, so its guest holds the full capability set and
-      // `mount --bind /tmp/evil /opt/ompd` succeeds from inside. Measured: a
       // binary at that path printed `real-omp`, and after the bind mount the same
       // path printed `SUBSTITUTED-omp`. Under the flags docker and podman accept
       // the same container has `CapEff 0000000000000000` and both `mount -o
@@ -1221,7 +1250,7 @@ export class ContainerBackend implements ProvisionerBackend {
         ref: {
           kind: "container",
           id: containerId,
-          spec: { ...spec, image: toolchain.image, mounts },
+          spec: { ...spec, image: toolchain.image, mounts: effectiveMounts },
           resolved: {
             runtime,
             network: createdNetwork,

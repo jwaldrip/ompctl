@@ -31,13 +31,14 @@ export interface SkillsViewProps {
 
 export function SkillsView({ skills, onInvoke, refusal, status }: SkillsViewProps): JSX.Element {
   const isRefused = status === "refused" || (refusal !== null && refusal !== undefined);
+  const isLoading = status === "loading";
   return (
     <ScrollView testID="skills-view" contentContainerStyle={styles.list}>
       <Head
         glyph="skill"
         count={skills.length}
         noun="skill"
-        emptyLabel={isRefused ? "Skills unavailable" : "No skills installed"}
+        emptyLabel={isRefused ? "Skills unavailable" : isLoading ? "Loading skills..." : "No skills installed"}
         testID="skills-count"
       />
       {isRefused ? (
@@ -46,6 +47,10 @@ export function SkillsView({ skills, onInvoke, refusal, status }: SkillsViewProp
           <Label color={signal.holding} style={styles.refusedText}>
             {refusal ?? "The daemon refused the skills catalogue."}
           </Label>
+        </View>
+      ) : isLoading && skills.length === 0 ? (
+        <View style={styles.loading} testID="cowork-skills-loading">
+          <Label color={ink.muted}>Loading skills...</Label>
         </View>
       ) : skills.length === 0 ? (
         <Empty
@@ -74,6 +79,7 @@ export interface ConnectorsViewProps {
 
 export function ConnectorsView({ connectors, refusal, status }: ConnectorsViewProps): JSX.Element {
   const isRefused = status === "refused" || (refusal !== null && refusal !== undefined);
+  const isLoading = status === "loading";
   const health = connectorHealth(connectors);
 
   return (
@@ -82,7 +88,9 @@ export function ConnectorsView({ connectors, refusal, status }: ConnectorsViewPr
         glyph="connector"
         count={connectors.length}
         noun="connector"
-        emptyLabel={isRefused ? "Connectors unavailable" : "No connectors installed"}
+        emptyLabel={
+          isRefused ? "Connectors unavailable" : isLoading ? "Loading connectors..." : "No connectors installed"
+        }
         testID="connectors-count"
       />
       {isRefused ? (
@@ -91,6 +99,10 @@ export function ConnectorsView({ connectors, refusal, status }: ConnectorsViewPr
           <Label color={signal.holding} style={styles.refusedText}>
             {refusal ?? "The daemon refused the connectors catalogue."}
           </Label>
+        </View>
+      ) : isLoading && connectors.length === 0 ? (
+        <View style={styles.loading} testID="cowork-connectors-loading">
+          <Label color={ink.muted}>Loading connectors...</Label>
         </View>
       ) : connectors.length === 0 ? (
         <Empty
@@ -129,11 +141,23 @@ export interface PluginsViewProps {
   connectors: readonly ConnectorSummary[];
   skillsRefusal?: string | null;
   connectorsRefusal?: string | null;
+  status?: string;
+  skillsStatus?: string;
+  connectorsStatus?: string;
 }
 
-export function PluginsView({ skills, connectors, skillsRefusal, connectorsRefusal }: PluginsViewProps): JSX.Element {
+export function PluginsView({
+  skills,
+  connectors,
+  skillsRefusal,
+  connectorsRefusal,
+  status,
+  skillsStatus,
+  connectorsStatus,
+}: PluginsViewProps): JSX.Element {
   const groups = groupByPlugin(skills, connectors);
   const isRefused = Boolean(skillsRefusal || connectorsRefusal);
+  const isLoading = status === "loading" || skillsStatus === "loading" || connectorsStatus === "loading";
 
   return (
     <ScrollView testID="plugins-view" contentContainerStyle={styles.list}>
@@ -141,7 +165,7 @@ export function PluginsView({ skills, connectors, skillsRefusal, connectorsRefus
         glyph="plugin"
         count={groups.length}
         noun="plugin"
-        emptyLabel={isRefused ? "Plugins unavailable" : "No plugins installed"}
+        emptyLabel={isRefused ? "Plugins unavailable" : isLoading ? "Loading plugins..." : "No plugins installed"}
         testID="plugins-count"
       />
       {isRefused ? (
@@ -155,6 +179,10 @@ export function PluginsView({ skills, connectors, skillsRefusal, connectorsRefus
               .filter(Boolean)
               .join(". ")}
           </Label>
+        </View>
+      ) : isLoading && groups.length === 0 ? (
+        <View style={styles.loading} testID="cowork-plugins-loading">
+          <Label color={ink.muted}>Loading plugins...</Label>
         </View>
       ) : groups.length === 0 ? (
         <Empty glyph="plugin" title="No plugins installed." />
@@ -280,6 +308,7 @@ const styles = StyleSheet.create({
   },
   sectionLabel: { paddingHorizontal: space.wide, paddingTop: space.step, paddingBottom: space.tight, letterSpacing: 1 },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },
+  loading: { alignItems: "center", gap: space.step, padding: space.gulf },
   refused: {
     alignItems: "center",
     backgroundColor: ground.surface,

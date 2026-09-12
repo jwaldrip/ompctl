@@ -40,6 +40,7 @@ import { join } from "node:path";
 import type { HostHandle } from "../packages/daemon/src/provisioner/index.ts";
 import {
   ContainerBackend,
+  capabilityFromHelp,
   ensureToolchain,
   type RuntimeCapability,
   selectRuntime,
@@ -131,9 +132,15 @@ try {
     options.runtime !== undefined || capability.runtime === expected,
     `${capability.runtime} ${capability.version}`,
   );
+  const help = await run([capability.runtime, "run", "--help"]);
+  const fromHelp =
+    help.code === 0
+      ? capabilityFromHelp(capability.runtime, capability.version, `${help.stdout}\n${help.stderr}`)
+      : null;
+  const helpParsedOk = fromHelp !== null && !("reason" in fromHelp);
   record(
     "capability came from its own run --help",
-    true,
+    helpParsedOk,
     `capDrop=${capability.capDrop} readOnly=${capability.readOnly} pidsLimit=${capability.pidsLimit} ` +
       `numericUser=${capability.numericUser} tmpfsOptions=${capability.tmpfsOptions} ` +
       `memory=${capability.memoryLimit} cpus=${capability.cpuLimit} networkNone=${capability.networkNone}`,

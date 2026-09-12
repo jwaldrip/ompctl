@@ -15,10 +15,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { OMPD_VERSION } from "@ompd/daemon";
 import type { CliContext } from "../client.ts";
+import { registerSessionTools } from "./session-tools.ts";
 import { registerRoutineTools } from "./tools.ts";
 
+export { SESSION_TOOL_NAMES } from "./session-tools.ts";
 export { ROUTINE_TOOL_NAMES } from "./tools.ts";
-
 /**
  * Serve the routine tools on stdin and stdout until the client goes away.
  *
@@ -36,6 +37,7 @@ export async function serveRoutinesMcp(ctx: CliContext): Promise<void> {
   // two is comparing one number rather than discovering a second one.
   const server = new McpServer({ name: "ompctl", version: OMPD_VERSION });
   registerRoutineTools(server, quiet);
+  registerSessionTools(server, quiet);
 
   const transport = new StdioServerTransport();
   const closed = new Promise<void>(resolve => {

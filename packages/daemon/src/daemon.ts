@@ -31,6 +31,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import type { McpServer } from "@oh-my-pi/pi-utils/acp";
 import { joinAssistantText, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 import {
   type Actor,
@@ -40,6 +41,7 @@ import {
   DefaultPolicy,
   type Device,
   type EndpointOffer,
+  type HostRef,
   normalizeImageRef,
   SCOPE_APPROVE,
   SCOPE_MANAGE,
@@ -377,6 +379,8 @@ export interface OmpdOptions {
   /** Resolved omp executable seam, for tests. */
   resolvedOmp?: ResolvedOmp;
   onLog?: (line: string) => void;
+  /** Override path to packages/cli/src/main.ts for orchestrator MCP server resolution. */
+  cliEntry?: string;
 }
 
 export interface LocalOperatorBootstrap {
@@ -411,6 +415,48 @@ export interface OmpdStartInfo {
 export interface SignalHandlerOptions {
   /** Defaults to `process.exit`. Injected so a test can watch the code. */
   exit?: (code: number) => void;
+}
+
+export interface OrchestratorMcpOptions {
+  cliEntry?: string;
+}
+
+export function resolveOrchestratorSpawn(opts?: OrchestratorMcpOptions): { command: string; args: string[] } {
+  if (import.meta.dir.startsWith("/$bunfs/")) {
+    return { command: process.execPath, args: ["mcp"] };
+  }
+  const cliEntry = opts?.cliEntry ?? process.env.OMPD_CLI_ENTRY ?? resolve(import.meta.dir, "../../cli/src/main.ts");
+  return { command: process.execPath, args: [cliEntry, "mcp"] };
+}
+
+export function orchestratorMcpServerDescriptor(
+  home: string,
+  agentId: AgentId,
+  opts?: OrchestratorMcpOptions,
+): McpServer {
+  const spawn = resolveOrchestratorSpawn(opts);
+  return {
+    type: "stdio",
+    name: "ompctl",
+    command: spawn.command,
+    args: spawn.args,
+    env: [
+      { name: "OMPD_HOME", value: home },
+      { name: "OMPD_AGENT_ID", value: agentId },
+    ],
+  };
+}
+
+export function orchestratorMcpServersFor(
+  home: string,
+  agentId: AgentId,
+  host: HostRef,
+  labels?: Record<string, string>,
+  opts?: OrchestratorMcpOptions,
+): McpServer[] {
+  if (labels?.role !== "orchestrator") return [];
+  if (host.kind !== "local") return [];
+  return [orchestratorMcpServerDescriptor(home, agentId, opts)];
 }
 
 /**
@@ -660,6 +706,7 @@ export class Ompd {
   #webViewBridge: WebViewBridge;
   #webViewMcpServer: WebViewMcpServer | undefined;
   #mcpAuth: McpAuthSubsystem;
+  #cliEntry: string | undefined;
 
   #stt: SttEngine | undefined;
   #tts: TtsEngine | undefined;
@@ -704,6 +751,7 @@ export class Ompd {
       `using ${this.#resolvedOmp.source} omp at ${this.#resolvedOmp.path}${this.#resolvedOmp.version ? ` (${this.#resolvedOmp.version})` : ""}`,
     );
 
+    this.#cliEntry = opts.cliEntry;
     this.#voiceEnabled = opts.voice ?? true;
     // Set here, not in `start`, because the guard there decides whether to
     // probe by asking whether these are already filled.
@@ -772,7 +820,6 @@ export class Ompd {
     // or a container agent's session would be the only kind the gateway could
     // not answer a mode query for.
     this.#containerBackend = new ContainerBackend({
-      workspace: opts.repoRoot,
       home: this.#home,
       spawn: this.#hosts.spawn,
       // Not optional in the daemon, only in the type: every container this
@@ -846,7 +893,21 @@ export class Ompd {
               `is unaffected.`,
           );
         }
-        return webViewMcpServersFor(server, agentId, host);
+        const servers = webViewMcpServersFor(server, agentId, host);
+        const agent = this.#store.getAgent(agentId);
+        const isOrchestrator = agent?.labels?.role === "orchestrator";
+        if (isOrchestrator) {
+          if (host.kind !== "local") {
+            this.#onLog?.(
+              `agent ${agentId}: no orchestrator tools on this ${host.kind} host. The ompctl MCP server is bound to ` +
+                `the daemon's local credentials and loopback, which a provisioned host cannot reach; everything else about ` +
+                `the session is unaffected.`,
+            );
+          } else {
+            servers.push(orchestratorMcpServerDescriptor(this.#home, agentId, { cliEntry: this.#cliEntry }));
+          }
+        }
+        return servers;
       },
     });
     const intentPeer =

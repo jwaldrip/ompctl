@@ -939,7 +939,7 @@ function coworkTarget(state: ConsoleState): { cwd: string; agentId: AgentId | nu
  * catalogues on screen, which reads as a daemon with no skills installed rather
  * than as a question that never got an answer.
  */
-function CoworkSurface({
+export function CoworkSurface({
   connection,
   target,
   onOpenSession,
@@ -992,6 +992,7 @@ function CoworkSurface({
         skillsSlice={state.skillsSlice}
         connectorsSlice={state.connectorsSlice}
         tasksSlice={state.tasksSlice}
+        targetAgentId={state.targetAgentId ?? target.agentId}
         // The same client the catalogues ride: the folder picker browses with
         // its `fs_list` frames and the binding starts a container with its
         // `agent_create`, so choosing a folder opens no second link.
