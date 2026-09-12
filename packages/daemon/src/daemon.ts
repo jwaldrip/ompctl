@@ -31,6 +31,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import type { MCPServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import type { McpServer } from "@oh-my-pi/pi-utils/acp";
 import { joinAssistantText, type LocalHost, type SpawnLocalHostOptions } from "@ompd/acp";
 import {
@@ -308,6 +309,8 @@ export interface OmpdConfig {
   containerModelBrokerPort: number;
   /** Whether the collab relay at /r/<roomId> accepts non-loopback connections. */
   exposeCollabRelay: boolean;
+  /** Whether operator-configured MCP servers are forwarded to local ACP sessions. */
+  forwardOperatorMcp: boolean;
 }
 
 export const DEFAULT_CONFIG: OmpdConfig = {
@@ -330,6 +333,7 @@ export const DEFAULT_CONFIG: OmpdConfig = {
   containerModel: "",
   containerModelBrokerPort: 7788,
   exposeCollabRelay: false,
+  forwardOperatorMcp: false,
 };
 
 export interface OmpdOptions {
@@ -381,6 +385,8 @@ export interface OmpdOptions {
   onLog?: (line: string) => void;
   /** Override path to packages/cli/src/main.ts for orchestrator MCP server resolution. */
   cliEntry?: string;
+  /** Optional custom loader for operator MCP configs, used by tests. */
+  loadOperatorMcpConfigs?: (cwd: string) => Promise<{ configs: Record<string, MCPServerConfig> }>;
 }
 
 export interface LocalOperatorBootstrap {
@@ -605,6 +611,9 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
       `${path}: containerModelBrokerPort must be an integer between 1 and 65535, got ` +
         `${String(merged.containerModelBrokerPort)}`,
     );
+  }
+  if (typeof merged.forwardOperatorMcp !== "boolean") {
+    throw new Error(`${path}: forwardOperatorMcp must be true or false, got ${String(merged.forwardOperatorMcp)}`);
   }
 
   return merged;
@@ -867,25 +876,11 @@ export class Ompd {
       // has to refuse mounts of *that* directory, and a default cannot know it.
       home: this.#home,
       onLog: this.#onLog,
-      mcpServersFor: (agentId, host) => {
+      forwardOperatorMcp: this.#config.forwardOperatorMcp,
+      loadOperatorMcpConfigs: opts.loadOperatorMcpConfigs,
+      mcpServersFor: (agentId, host, _cwd) => {
         const server = this.#webViewMcpServer;
         if (server === undefined) throw new Error("webview MCP server is not started");
-        // Offered only to a host that can actually reach it. The server binds
-        // `127.0.0.1` and `urlFor` hands out `http://127.0.0.1:<port>/...`,
-        // which means the daemon's machine from a local host and the CONTAINER
-        // from a provisioned one. Handing it to a container did not degrade the
-        // browser tool, it failed the whole session: omp answers `session/new`
-        // with `ompd-webview: Unable to connect. Is the computer able to access
-        // the url?`, so every container create returned HTTP 500 while the same
-        // request with no `mcpServers` succeeded.
-        //
-        // Omitted rather than rewritten to a container-reachable address on
-        // purpose. Making it reachable means binding this surface off loopback,
-        // and that is a security decision about a tool that drives the
-        // operator's own browser -- not something to slip in as the fix for a
-        // 500. So the absence is stated here and in the log rather than being
-        // quietly papered over, and `docs/running.md` says the browser tool is
-        // a local-host capability.
         if (host.kind !== "local") {
           this.#onLog?.(
             `agent ${agentId}: no browser tool on this ${host.kind} host. The WebView MCP server is bound to ` +
@@ -1360,6 +1355,10 @@ export class Ompd {
   async stop(): Promise<void> {
     this.#stopping ??= this.#stop();
     return this.#stopping;
+  }
+
+  getMcpAttach(agentId: AgentId) {
+    return this.#supervisor.getMcpAttach(agentId);
   }
 
   async #stop(): Promise<void> {

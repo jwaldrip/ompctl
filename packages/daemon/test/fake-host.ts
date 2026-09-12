@@ -53,6 +53,10 @@ export interface FakeHostController {
   loads: string[];
   /** Full `session/load` params, used to prove restored tool mounts. */
   loadRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }>;
+  /** Full `session/resume` params, used to prove attached operator MCP servers. */
+  resumeRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }>;
+  /** Set what `session/resume` does. Answers immediately by default. */
+  onResume(fn: (sessionId: string, cwd: string, mcpServers: unknown[]) => Promise<unknown> | unknown): void;
   /**
    * Every `session/prompt` the supervisor sent. `blocks` is the content-block
    * array verbatim, so a test can prove an image reached the wire rather than
@@ -89,6 +93,8 @@ export function createFakeHost(opts: { nextSessionId?: () => string } = {}): Fak
   const newRequests: Array<{ cwd: string; mcpServers: unknown[] }> = [];
   const loads: string[] = [];
   const loadRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }> = [];
+  const resumeRequests: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }> = [];
+  let resumeHandler: (sessionId: string, cwd: string, mcpServers: unknown[]) => Promise<unknown> | unknown = () => ({});
   const prompts: Array<{ sessionId: string; text: string; blocks: unknown[] }> = [];
   let loadReplay: unknown[] = [];
   const waiters = new Map<number | string, (result: unknown) => void>();
@@ -230,6 +236,25 @@ export function createFakeHost(opts: { nextSessionId?: () => string } = {}): Fak
       return;
     }
 
+    if (msg.method === "session/resume") {
+      const sessionId = String(msg.params?.sessionId);
+      const cwd = String(msg.params?.cwd);
+      const mcpServers = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
+      resumeRequests.push({ sessionId, cwd, mcpServers });
+      try {
+        const result = await Promise.resolve(resumeHandler(sessionId, cwd, mcpServers));
+        toClient(client, { jsonrpc: "2.0", id: msg.id, result: result ?? { configOptions: configFor(sessionId) } });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        toClient(client, {
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32603, message: "Internal error", data: { details: message } },
+        });
+      }
+      return;
+    }
+
     if (msg.method === "session/set_mode") {
       const sessionId = String(msg.params?.sessionId);
       const modeId = String(msg.params?.modeId);
@@ -341,6 +366,10 @@ export function createFakeHost(opts: { nextSessionId?: () => string } = {}): Fak
     newRequests,
     loads,
     loadRequests,
+    resumeRequests,
+    onResume: fn => {
+      resumeHandler = fn;
+    },
     prompts,
     cancels,
     modeOf: sessionId => modes.get(sessionId) ?? "default",

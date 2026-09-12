@@ -13,6 +13,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { MCPServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import {
   type AcpAgentRegistrySnapshot,
   AcpClient,
@@ -50,6 +51,7 @@ import {
   TERMINAL_AGENT_STATES,
   toAcpOption,
 } from "@ompd/core";
+import { type AttachOperatorMcpResult, attachOperatorMcpServers, resolveOperatorMcpServers } from "./mcp-forwarding.ts";
 import { type HostHandle, ProvisionError, type Provisioner } from "./provisioner/types.ts";
 
 /** Thrown when an actor lacks the scope for an operation, or its device is revoked. */
@@ -188,7 +190,17 @@ export interface SupervisorOptions {
    * layer that knows whether its own URLs are reachable from a given host, so
    * it is the layer that has to decide.
    */
-  mcpServersFor?: (agentId: AgentId, host: HostRef) => unknown[];
+  mcpServersFor?: (agentId: AgentId, host: HostRef, cwd?: string) => unknown[] | Promise<unknown[]>;
+  /**
+   * Whether operator-configured MCP servers are forwarded to local ACP sessions.
+   * Forwarding attaches servers after session creation via session/resume.
+   */
+  forwardOperatorMcp?: boolean;
+  /**
+   * Optional custom loader for operator MCP configs, used by tests to inject
+   * candidate server configurations without modifying on-disk files.
+   */
+  loadOperatorMcpConfigs?: (cwd: string) => Promise<{ configs: Record<string, MCPServerConfig> }>;
   /**
    * The daemon's own state directory, so a requested mount can be refused for
    * naming it. Defaults to `~/.ompd`, the same expression `Ompd` and
@@ -546,8 +558,11 @@ export class Supervisor {
   #onLog: ((line: string) => void) | undefined;
   #spawnHost: (opts: SpawnLocalHostOptions) => LocalHost;
   #provisioner: Provisioner | undefined;
-  #mcpServersFor: ((agentId: AgentId, host: HostRef) => unknown[]) | undefined;
+  #mcpServersFor: ((agentId: AgentId, host: HostRef, cwd?: string) => unknown[] | Promise<unknown[]>) | undefined;
   /** The daemon's state directory, so a mount naming it can be refused. */
+  #forwardOperatorMcp: boolean;
+  #loadOperatorMcpConfigs: ((cwd: string) => Promise<{ configs: Record<string, MCPServerConfig> }>) | undefined;
+  #mcpAttachPromises = new Map<AgentId, Promise<AttachOperatorMcpResult | null>>();
   #home: string;
 
   /** Keyed by `HostEntry.key`. One `omp acp` process serves many agents. */
@@ -586,6 +601,8 @@ export class Supervisor {
     this.#spawnHost = opts.spawnHost ?? spawnLocalHost;
     this.#provisioner = opts.provisioner;
     this.#mcpServersFor = opts.mcpServersFor;
+    this.#forwardOperatorMcp = opts.forwardOperatorMcp ?? false;
+    this.#loadOperatorMcpConfigs = opts.loadOperatorMcpConfigs;
     this.#home = opts.home ?? join(homedir(), ".ompd");
   }
 
@@ -601,6 +618,10 @@ export class Supervisor {
   ownsAgent(agentId: AgentId): boolean {
     const hostId = this.#agentHost.get(agentId);
     return hostId !== undefined && this.#hosts.has(hostId);
+  }
+
+  getMcpAttach(agentId: AgentId): Promise<AttachOperatorMcpResult | null> | undefined {
+    return this.#mcpAttachPromises.get(agentId);
   }
 
   /**
@@ -696,13 +717,15 @@ export class Supervisor {
       throw new Error(`host kind ${spec.kind} requires the provisioner`);
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
-    return await this.#bindAgentToSession(input, spec, entry, who, {}, async (sessionEntry, agentId) => {
-      const res = await sessionEntry.host.client.newSession(
-        input.cwd,
-        this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
-      );
+    const agent = await this.#bindAgentToSession(input, spec, entry, who, {}, async (sessionEntry, agentId) => {
+      const mcpServers = (await this.#mcpServersFor?.(agentId, sessionEntry.ref, input.cwd)) ?? [];
+      const res = await sessionEntry.host.client.newSession(input.cwd, mcpServers);
       return res.sessionId;
     });
+    if (agent.acpSessionId) {
+      this.#startOperatorMcpAttach(agent.id, entry, agent.acpSessionId, input.cwd);
+    }
+    return agent;
   }
 
   /**
@@ -741,19 +764,27 @@ export class Supervisor {
       throw new Error(`host kind ${spec.kind} requires the provisioner`);
     }
     const entry = await this.#hostFor(spec, input.cwd, who);
-    return await this.#bindAgentToSession(input, spec, entry, who, { resumed: true }, async (sessionEntry, agentId) => {
-      this.#loadingSessions.add(input.sessionId);
-      try {
-        await sessionEntry.host.client.loadSession(
-          input.sessionId,
-          input.cwd,
-          this.#mcpServersFor?.(agentId, sessionEntry.ref) ?? [],
-        );
-      } finally {
-        this.#loadingSessions.delete(input.sessionId);
-      }
-      return input.sessionId;
-    });
+    const agent = await this.#bindAgentToSession(
+      input,
+      spec,
+      entry,
+      who,
+      { resumed: true },
+      async (sessionEntry, agentId) => {
+        this.#loadingSessions.add(input.sessionId);
+        try {
+          const mcpServers = (await this.#mcpServersFor?.(agentId, sessionEntry.ref, input.cwd)) ?? [];
+          await sessionEntry.host.client.loadSession(input.sessionId, input.cwd, mcpServers);
+        } finally {
+          this.#loadingSessions.delete(input.sessionId);
+        }
+        return input.sessionId;
+      },
+    );
+    if (agent.acpSessionId) {
+      this.#startOperatorMcpAttach(agent.id, entry, agent.acpSessionId, input.cwd);
+    }
+    return agent;
   }
 
   /**
@@ -933,6 +964,37 @@ export class Supervisor {
     return agent;
   }
 
+  #startOperatorMcpAttach(agentId: AgentId, entry: HostEntry, sessionId: string, cwd: string): void {
+    if (!sessionId || !this.#forwardOperatorMcp) return;
+    const task = (async () => {
+      const daemonServers = (await this.#mcpServersFor?.(agentId, entry.ref, cwd)) ?? [];
+      const candidateServers = await resolveOperatorMcpServers({
+        agentId,
+        host: entry.ref,
+        cwd,
+        enabled: this.#forwardOperatorMcp,
+        onLog: this.#onLog,
+        loadConfigs: this.#loadOperatorMcpConfigs,
+      });
+      if (candidateServers.length === 0) return null;
+      return await attachOperatorMcpServers({
+        client: entry.host.client,
+        sessionId,
+        cwd,
+        daemonServers,
+        candidateServers,
+        agentId,
+        onLog: this.#onLog,
+      });
+    })().catch(err => {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.#onLog?.(`agent ${agentId}: operator MCP attach error: ${reason}`);
+      return null;
+    });
+
+    this.#mcpAttachPromises.set(agentId, task);
+  }
+
   /**
    * Send a prompt. Resolves when the turn settles, but the agent keeps running
    * regardless of whether the caller is still listening. Images ride the same
@@ -1073,6 +1135,7 @@ export class Supervisor {
     }
     this.#inFlightTurns.delete(agentId);
     this.#promptQueues.delete(agentId);
+    this.#mcpAttachPromises.delete(agentId);
     entry.agents.delete(agentId);
     this.#setState(agentId, "stopped");
     this.#store.audit({ action: "agent.stop", agentId, outcome: "ok" });
