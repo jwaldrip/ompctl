@@ -30,6 +30,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuditEntry, Routine, Run } from "@ompd/core";
+import type { ServerFrame } from "@ompd/core/contracts";
 import { Ompd } from "../src/daemon.ts";
 import { createFakeHost } from "./fake-host.ts";
 
@@ -119,6 +120,70 @@ async function patched(h: Harness, id: string, body: unknown): Promise<Routine> 
 /** The `secretRef` a webhook trigger names, or "" so a failure reads as a mismatch. */
 function refOf(routine: Routine): string {
   return routine.trigger.kind === "webhook" ? routine.trigger.secretRef : "";
+}
+
+async function connectSocket(
+  h: Harness,
+  token: string,
+): Promise<{
+  ws: WebSocket;
+  frames: ServerFrame[];
+  next: (match: (frame: ServerFrame) => boolean, label: string, timeoutMs?: number) => Promise<ServerFrame>;
+  close: () => void;
+}> {
+  const url = `${h.url.replace(/^http/, "ws")}/v1/socket?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  const opened = Promise.withResolvers<boolean>();
+  const frames: ServerFrame[] = [];
+  let cursor = 0;
+  let waiter: {
+    match: (f: ServerFrame) => boolean;
+    settle: (f: ServerFrame) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+
+  const check = () => {
+    if (!waiter) return;
+    while (cursor < frames.length) {
+      const f = frames[cursor]!;
+      cursor++;
+      if (waiter.match(f)) {
+        const w = waiter;
+        waiter = null;
+        clearTimeout(w.timer);
+        w.settle(f);
+        return;
+      }
+    }
+  };
+
+  ws.addEventListener("open", () => opened.resolve(true));
+  ws.addEventListener("error", () => opened.resolve(false));
+  ws.addEventListener("close", () => opened.resolve(false));
+  ws.addEventListener("message", ev => {
+    try {
+      frames.push(JSON.parse(String(ev.data)) as ServerFrame);
+    } catch {}
+    check();
+  });
+
+  if (!(await opened.promise)) throw new Error("websocket failed to open");
+
+  return {
+    ws,
+    frames,
+    close: () => ws.close(),
+    next: (match, label, timeoutMs = 2000) => {
+      const { promise, resolve, reject } = Promise.withResolvers<ServerFrame>();
+      const timer = setTimeout(() => {
+        waiter = null;
+        reject(new Error(`timed out waiting for ${label}`));
+      }, timeoutMs);
+      waiter = { match, settle: resolve, timer };
+      check();
+      return promise;
+    },
+  };
 }
 
 afterEach(async () => {
@@ -902,5 +967,83 @@ describe("a routine write and its record are one transaction", () => {
     // the log accounts for, which is the exact shape this branch set out to
     // remove from the socket frame in the first place.
     expect(store.listRoutines()).toEqual([]);
+  });
+});
+
+describe("routine run broadcast and visibility", () => {
+  test("a cron or webhook fire broadcasts routine_ran to a socket with read scope that did not request it, while a socket without read does not receive it", async () => {
+    const h = await harness();
+    const watcherToken = await tokenWith(h, "watcher", ["read"]);
+    const managerToken = await tokenWith(h, "manager", ["manage", "prompt"]); // NO read scope
+
+    const watcher = await connectSocket(h, watcherToken);
+    const manager = await connectSocket(h, managerToken);
+
+    try {
+      const created = await create(h, {
+        name: "webhook-broadcast",
+        trigger: { kind: "webhook" },
+        actions: [ACTION],
+      });
+
+      // Rotate secret to get the plaintext secret for firing
+      const secretRes = await post(h, `/v1/routines/${created.id}/webhook-secret`, {});
+      const { secret } = (await secretRes.json()) as { secret: string };
+
+      // Fire webhook over HTTP
+      const fireRes = await fetch(`${h.url}/v1/webhooks/${created.id}`, {
+        method: "POST",
+        headers: { "x-webhook-secret": secret },
+      });
+      expect(fireRes.status).toBe(202);
+
+      // Watcher (with read scope) must receive routine_ran
+      const ranFrame = await watcher.next(f => f.t === "routine_ran", "routine_ran broadcast", 3000);
+      expect(ranFrame.t).toBe("routine_ran");
+      if (ranFrame.t === "routine_ran") {
+        expect(ranFrame.run.routineId).toBe(created.id);
+        expect(ranFrame.run.state).toBe("succeeded");
+      }
+
+      // Manager (without read scope) must never receive routine_ran
+      const managerRan = manager.frames.find(f => f.t === "routine_ran");
+      expect(managerRan).toBeUndefined();
+    } finally {
+      watcher.close();
+      manager.close();
+    }
+  });
+
+  test("run truncation is visible in GET /v1/routines/:id wire shape and paging reaches older runs", async () => {
+    const h = await harness();
+    const routine = await create(h, { name: "truncation-check", trigger: { kind: "manual" }, actions: [ACTION] });
+
+    // Store 13 runs (cap is 10)
+    for (let i = 0; i < 13; i++) {
+      const pad = String(i).padStart(2, "0");
+      const startedAt = `2026-08-01T00:${pad}:00.000Z`;
+      h.daemon.store.upsertRun({
+        id: `run_persist_${pad}`,
+        routineId: routine.id,
+        state: "succeeded",
+        startedAt,
+        finishedAt: startedAt,
+        actions: [],
+      });
+    }
+
+    // Default GET /v1/routines/:id (default runLimit 10)
+    const defaultRes = await get(h, `/v1/routines/${routine.id}`);
+    const defaultBody = (await defaultRes.json()) as { routine: Routine; runs: Run[]; truncated: boolean };
+    expect(defaultBody.runs).toHaveLength(10);
+    expect(defaultBody.truncated).toBe(true);
+    expect(defaultBody.runs.map(r => r.id)).not.toContain("run_persist_00");
+
+    // Paging with runLimit=15 reaches the older runs and reports truncated: false
+    const pagedRes = await get(h, `/v1/routines/${routine.id}?runLimit=15`);
+    const pagedBody = (await pagedRes.json()) as { routine: Routine; runs: Run[]; truncated: boolean };
+    expect(pagedBody.runs).toHaveLength(13);
+    expect(pagedBody.truncated).toBe(false);
+    expect(pagedBody.runs.map(r => r.id)).toContain("run_persist_00");
   });
 });

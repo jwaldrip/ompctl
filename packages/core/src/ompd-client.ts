@@ -269,6 +269,7 @@ const LOSS_IS_VISIBLE: Record<ClientFrame["t"], boolean> = {
   routine_run: true,
   routine_secret_rotate: true,
   routines_read: false,
+  routine_runs_read: false,
   // Irreversible and never replayed, exactly `session_delete`'s class: a
   // delete that never left leaves an operator believing a routine is gone
   // while its schedule still fires; re-sending after they may have changed
@@ -626,6 +627,14 @@ export interface SettingsEvent {
 export interface RoutinesEvent {
   routines: RemoteRoutine[];
   runs: Run[];
+  truncated?: Record<string, boolean>;
+}
+
+/** Older or paginated runs for one routine, answering readRoutineRuns. */
+export interface RoutineRunsEvent {
+  routineId: string;
+  runs: Run[];
+  truncated: boolean;
 }
 
 /** One routine run recorded, carrying every action's outcome. */
@@ -791,6 +800,7 @@ export interface ClientEventMap {
   clone_done: CloneDoneEvent;
   settings: SettingsEvent;
   routines: RoutinesEvent;
+  routine_runs: RoutineRunsEvent;
   routine_ran: RoutineRanEvent;
   routines_deleted: RoutinesDeletedEvent;
   routine_secret: RoutineSecretEvent;
@@ -1317,8 +1327,17 @@ export class OmpdClient {
   }
 
   /** Read routines and their recent per-action outcomes over the sealed socket. */
-  readRoutines(): void {
-    this.send({ t: "routines_read" });
+  readRoutines(runLimit?: number): void {
+    this.send({ t: "routines_read", ...(runLimit !== undefined ? { runLimit } : {}) });
+  }
+
+  /** Read older or paginated runs for one routine over the sealed socket. */
+  readRoutineRuns(routineId: string, limit?: number): void {
+    this.send({
+      t: "routine_runs_read",
+      routineId,
+      ...(limit !== undefined ? { limit } : {}),
+    });
   }
 
   /** Replace one routine definition. The daemon supplies local execution hosts. */
@@ -1967,7 +1986,18 @@ export class OmpdClient {
         });
         return;
       case "routines":
-        this.emit("routines", { routines: frame.routines, runs: frame.runs });
+        this.emit("routines", {
+          routines: frame.routines,
+          runs: frame.runs,
+          ...(frame.truncated !== undefined ? { truncated: frame.truncated } : {}),
+        });
+        return;
+      case "routine_runs":
+        this.emit("routine_runs", {
+          routineId: frame.routineId,
+          runs: frame.runs,
+          truncated: frame.truncated,
+        });
         return;
       case "routine_ran":
         this.emit("routine_ran", { run: frame.run });

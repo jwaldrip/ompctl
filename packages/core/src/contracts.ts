@@ -1407,7 +1407,9 @@ export type ClientFrame =
    * A hub-relayed phone has no route to the daemon's HTTP API: the hub's one
    * tunnel fires a webhook and carries nothing else.
    */
-  | { t: "routines_read" }
+  | { t: "routines_read"; runLimit?: number }
+  /** Read older or paginated runs for a routine. Requires read scope. */
+  | { t: "routine_runs_read"; routineId: string; limit?: number }
   /** Replace one complete routine definition. Requires manage scope. */
   | { t: "routine_write"; routine: RemoteRoutine }
   /** Run one enabled routine now. Requires manage and prompt scope. */
@@ -1722,7 +1724,9 @@ export type ServerFrame =
    */
   | { t: "sessions_suggested_ephemeral"; sessionIds: string[] }
   /** Current routine definitions and recent event outcomes, only for the asking socket. */
-  | { t: "routines"; routines: RemoteRoutine[]; runs: Run[] }
+  | { t: "routines"; routines: RemoteRoutine[]; runs: Run[]; truncated?: Record<string, boolean> }
+  /** Older or paginated runs for one routine, answering routine_runs_read. */
+  | { t: "routine_runs"; routineId: string; runs: Run[]; truncated: boolean }
   /** One routine event completed, with every action outcome in configured order. */
   | { t: "routine_ran"; run: Run }
   | { t: "routine_run_started"; routineId: string; runId: string; at: string }

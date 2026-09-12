@@ -850,6 +850,27 @@ const UNLINKED_RUN: Run = {
   ],
 };
 
+/** What a legacy run recorded with agentId but before sessionId existed looks like. */
+const AGENT_ONLY_RUN: Run = {
+  id: "run_agent_only",
+  routineId: ROUTINE.id,
+  state: "succeeded",
+  startedAt: "2026-08-18T09:00:00.000Z",
+  finishedAt: "2026-08-18T09:00:02.000Z",
+  actions: [
+    {
+      actionId: "text-back",
+      actionName: "Text back",
+      index: 0,
+      state: "succeeded",
+      summary: "texted the caller",
+      agentId: "agt_retired",
+      startedAt: "2026-08-18T09:00:00.000Z",
+      finishedAt: "2026-08-18T09:00:02.000Z",
+    },
+  ],
+};
+
 /** Every run row currently mounted, in document order. */
 function runRows(host: HTMLElement): HTMLElement[] {
   return [...host.querySelectorAll<HTMLElement>('[data-testid^="run-"][data-testid$="-toggle"]')];
@@ -943,6 +964,171 @@ describe("RoutinesScreen run history", () => {
     // Present rather than hidden: an omitted row would make an old run look
     // like a run with fewer actions.
     expect(el(host, "run-run_old-action-text-back")).not.toBeNull();
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a run whose action carries only agentId renders no openable session", async () => {
+    forbidFetch();
+    const { socket, host, root, opened } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [AGENT_ONLY_RUN] }));
+    await settle();
+
+    expect(el(host, "run-run_agent_only-sessions")?.textContent).toBe("0 linked sessions");
+    expect(el(host, "routine-rtn_calls-action-text-back-session")).toBeNull();
+    act(() => el(host, "run-run_agent_only-toggle")?.click());
+    await settle();
+
+    const control = field(host, "run-run_agent_only-action-text-back-open");
+    expect(readsDisabled(control)).toBe(true);
+    expect(control.getAttribute("aria-label")).toContain("this run recorded none for it");
+    act(() => control.click());
+    await settle();
+    expect(opened).toEqual([]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("a broadcast routine_ran updates the screen history without sending a routines_read", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+    act(() => socket.deliver({ t: "routines", routines: [ROUTINE], runs: [UNLINKED_RUN] }));
+    await settle();
+
+    expect(el(host, "run-run_old")).not.toBeNull();
+    expect(el(host, "run-run_scheduled")).toBeNull();
+    expect(el(host, "routine-rtn_calls-runs")?.textContent).toContain("1 run");
+
+    const readsBefore = socket.framesOfType("routines_read").length;
+
+    // Daemon broadcasts real progress frames followed by routine_ran
+    const scheduled: Run = {
+      id: "run_scheduled",
+      routineId: ROUTINE.id,
+      state: "succeeded",
+      startedAt: "2026-08-19T10:00:00.000Z",
+      finishedAt: "2026-08-19T10:00:05.000Z",
+      actions: [
+        {
+          actionId: "text-back",
+          actionName: "Text back",
+          index: 0,
+          state: "succeeded",
+          summary: "texted caller",
+          startedAt: "2026-08-19T10:00:00.000Z",
+          finishedAt: "2026-08-19T10:00:05.000Z",
+          sessionId: "sess_scheduled",
+        },
+      ],
+    };
+
+    act(() => {
+      socket.deliver({
+        t: "routine_run_started",
+        routineId: ROUTINE.id,
+        runId: "run_scheduled",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+      socket.deliver({
+        t: "routine_action_started",
+        routineId: ROUTINE.id,
+        runId: "run_scheduled",
+        actionIndex: 0,
+        at: "2026-08-19T10:00:00.000Z",
+      });
+      socket.deliver({
+        t: "routine_action_finished",
+        routineId: ROUTINE.id,
+        runId: "run_scheduled",
+        actionIndex: 0,
+        outcome: "succeeded",
+        at: "2026-08-19T10:00:05.000Z",
+      });
+      socket.deliver({
+        t: "routine_run_finished",
+        routineId: ROUTINE.id,
+        runId: "run_scheduled",
+        outcome: "succeeded",
+        at: "2026-08-19T10:00:05.000Z",
+      });
+      socket.deliver({ t: "routine_ran", run: scheduled });
+    });
+    await settle();
+
+    // The new run is mounted immediately and history counts both
+    expect(el(host, "run-run_scheduled")).not.toBeNull();
+    expect(el(host, "routine-rtn_calls-runs")?.textContent).toContain("2 runs");
+    // No re-read was asked for
+    expect(socket.framesOfType("routines_read").length).toBe(readsBefore);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("truncation is visible on screen as partial and show earlier fetches older runs", async () => {
+    forbidFetch();
+    const { socket, host, root } = await mounted(MANAGER);
+
+    const first10: Run[] = Array.from({ length: 10 }, (_unused, i) => ({
+      ...LINKED_RUN,
+      id: `run_new_${i}`,
+      startedAt: new Date(Date.parse(LINKED_RUN.startedAt) - i * 60_000).toISOString(),
+    }));
+
+    const all13: Run[] = [
+      ...first10,
+      ...Array.from({ length: 3 }, (_unused, i) => ({
+        ...LINKED_RUN,
+        id: `run_old_${i}`,
+        startedAt: new Date(Date.parse(LINKED_RUN.startedAt) - (10 + i) * 60_000).toISOString(),
+      })),
+    ];
+
+    // Deliver snapshot with truncation visible
+    act(() => {
+      socket.deliver({
+        t: "routines",
+        routines: [ROUTINE],
+        runs: first10,
+        truncated: { [ROUTINE.id]: true },
+      });
+    });
+    await settle();
+
+    // Count is labelled partial
+    expect(el(host, "routine-rtn_calls-runs")?.textContent).toContain("10 runs (partial)");
+    expect(el(host, "run-run_old_0")).toBeNull();
+
+    // Click "Show earlier"
+    act(() => el(host, "routine-rtn_calls-runs-more")?.click());
+    await settle();
+
+    // Client sent routine_runs_read frame
+    const readRunsFrames = socket.framesOfType("routine_runs_read");
+    expect(readRunsFrames.length).toBeGreaterThan(0);
+    const firstRead = readRunsFrames[0];
+    expect(firstRead?.t).toBe("routine_runs_read");
+    if (firstRead && firstRead.t === "routine_runs_read") {
+      expect(firstRead.routineId).toBe(ROUTINE.id);
+    }
+
+    // Server answers with full list
+    act(() => {
+      socket.deliver({
+        t: "routine_runs",
+        routineId: ROUTINE.id,
+        runs: all13,
+        truncated: false,
+      });
+    });
+    await settle();
+
+    // Now older run is rendered and count is no longer partial
+    expect(el(host, "run-run_old_0")).not.toBeNull();
+    expect(el(host, "routine-rtn_calls-runs")?.textContent).toContain("13 runs");
+    expect(el(host, "routine-rtn_calls-runs")?.textContent).not.toContain("partial");
 
     act(() => root.unmount());
     host.remove();

@@ -99,7 +99,7 @@ const ACTION_STATE_LABELS: Record<ActionRunState, string> = {
 function linkedSessionIds(run: Run): ReadonlySet<string> {
   const ids = new Set<string>();
   for (const action of run.actions) {
-    const sessionId = action.sessionId ?? action.agentId;
+    const sessionId = action.sessionId;
     if (sessionId !== undefined) ids.add(sessionId);
   }
   return ids;
@@ -137,6 +137,8 @@ export interface RunHistoryProps {
    */
   onOpenSession?: (sessionId: string) => void;
   onRetryAction?: (routineId: string, actionIndex: number) => void;
+  /** True when the server has more runs recorded for this routine than this list holds. */
+  truncated?: boolean;
 }
 
 export function RunHistory({
@@ -148,14 +150,24 @@ export function RunHistory({
   onToggleRun,
   onOpenSession,
   onRetryAction,
+  truncated = false,
 }: RunHistoryProps): JSX.Element {
   const visible = runs.slice(0, shown);
   const withheld = runs.length - visible.length;
+  const hasMore = withheld > 0 || truncated;
+  const countLabel =
+    runs.length === 1
+      ? truncated
+        ? "1 run (partial)"
+        : "1 run"
+      : truncated
+        ? `${runs.length} runs (partial)`
+        : `${runs.length} runs`;
   return (
     <View style={styles.runs} testID={`routine-${routineId}-runs`}>
       <View style={styles.runsHead}>
         <Glyph name="restore" size={12} color={ink.muted} />
-        <Kicker color={ink.muted}>{runs.length === 1 ? "1 run" : `${runs.length} runs`}</Kicker>
+        <Kicker color={ink.muted}>{countLabel}</Kicker>
       </View>
 
       {runs.length === 0 ? (
@@ -175,16 +187,16 @@ export function RunHistory({
         />
       ))}
 
-      {withheld > 0 ? (
+      {hasMore ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Show ${withheld} earlier runs`}
+          accessibilityLabel={withheld > 0 ? `Show ${withheld} earlier runs` : "Show earlier runs"}
           onPress={() => onShowMore(routineId)}
           style={moreStyle}
           testID={`routine-${routineId}-runs-more`}
         >
           <Glyph name="chevron" size={12} color={ink.plain} />
-          <Label color={ink.plain}>{`Show ${withheld} earlier`}</Label>
+          <Label color={ink.plain}>{withheld > 0 ? `Show ${withheld} earlier` : "Show earlier"}</Label>
         </Pressable>
       ) : null}
     </View>
@@ -293,7 +305,7 @@ function RunActionRow({
 }): JSX.Element {
   const tone = signal[ACTION_STATE_SIGNALS[action.state]];
   const outcome = outcomeOf(action);
-  const sessionId = action.sessionId ?? action.agentId;
+  const sessionId = action.sessionId;
   const isFailed = action.state === "failed" || action.state === "timed_out" || action.error !== undefined;
   return (
     <View style={styles.runAction} testID={`run-${run.id}-action-${action.actionId}`}>
