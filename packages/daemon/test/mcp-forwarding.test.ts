@@ -75,6 +75,7 @@ async function waitForMcpAttach(daemon: Ompd, agentId: string, timeoutMs = 5_000
 async function waitForMcpOffer(
   fake: { resumeRequests: Array<{ mcpServers?: unknown }> },
   timeoutMs = 5_000,
+  daemonLogs?: readonly string[],
 ): Promise<Array<{ name: string }>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -84,7 +85,8 @@ async function waitForMcpOffer(
     setTimeout(resolve, 10);
     await promise;
   }
-  throw new Error(`the daemon never offered an mcpServers list within ${timeoutMs}ms`);
+  const why = daemonLogs?.filter(l => l.includes("MCP")).join("\n  ") ?? "(no daemon log captured)";
+  throw new Error(`the daemon never offered an mcpServers list within ${timeoutMs}ms. What it said:\n  ${why}`);
 }
 
 afterEach(async () => {
@@ -478,6 +480,9 @@ describe("daemon integration: operator MCP server reachability", () => {
     );
 
     const { fake, sessionsRoot } = indexedFakeHost(home);
+    // The daemon says why it withheld a server. Without this the CI failure was
+    // a bare timeout, which sent one round trip down a discovery dead end.
+    const daemonLogs: string[] = [];
     const daemon = new Ompd({
       mcpAuthVault: "file",
       home,
@@ -485,6 +490,7 @@ describe("daemon integration: operator MCP server reachability", () => {
       overrides: { port: 0, forwardOperatorMcp: true },
       spawnHost: fake.factory,
       voice: false,
+      onLog: line => daemonLogs.push(line),
     });
     runningDaemons.push(daemon);
     const info = await daemon.start();
@@ -497,11 +503,13 @@ describe("daemon integration: operator MCP server reachability", () => {
     });
     expect(res.status).toBe(201);
     const { agent } = (await res.json()) as { agent: { id: string } };
+    // Dropping a reserved name must not cost the session: creation still lands.
+    expect(agent.id).toStartWith("agt_");
 
     // The offer, not the connection: see `waitForMcpOffer`. `ompctl` must never
     // be handed to a session without the orchestrator label, whether or not it
     // would have connected.
-    const resumeServers = await waitForMcpOffer(fake);
+    const resumeServers = await waitForMcpOffer(fake, 5_000, daemonLogs);
     expect(resumeServers.find(s => s.name === "ompctl")).toBeUndefined();
     expect(resumeServers.find(s => s.name === "safeTool")).toBeDefined();
     expect(resumeServers.find(s => s.name === "ompd-webview")).toBeDefined();
