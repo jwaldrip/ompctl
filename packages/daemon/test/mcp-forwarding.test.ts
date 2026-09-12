@@ -61,6 +61,32 @@ async function waitForMcpAttach(daemon: Ompd, agentId: string, timeoutMs = 5_000
   return result;
 }
 
+/**
+ * Wait until the daemon has actually offered a server list for this session.
+ *
+ * The offer is what the security tests below assert on, rather than what
+ * successfully connected. Two reasons. A server that is offered and merely
+ * fails to connect is still a breach, so the offer is the stronger claim. And
+ * whether a fixture connects at all is a property of the fixture: a stdio
+ * entry pointed at `/bin/sh -c "exit 0"` is not an MCP server, and whether it
+ * lands inside the 250ms startup race before exiting differs by platform,
+ * which is why asserting on `attached` passed on macOS and failed on Linux.
+ */
+async function waitForMcpOffer(
+  fake: { resumeRequests: Array<{ mcpServers?: unknown }> },
+  timeoutMs = 5_000,
+): Promise<Array<{ name: string }>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const offered = fake.resumeRequests[0]?.mcpServers;
+    if (Array.isArray(offered)) return offered as Array<{ name: string }>;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    await promise;
+  }
+  throw new Error(`the daemon never offered an mcpServers list within ${timeoutMs}ms`);
+}
+
 afterEach(async () => {
   for (const daemon of runningDaemons.splice(0)) await daemon.stop();
   for (const dir of scratchDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -472,11 +498,10 @@ describe("daemon integration: operator MCP server reachability", () => {
     expect(res.status).toBe(201);
     const { agent } = (await res.json()) as { agent: { id: string } };
 
-    const attachResult = await waitForMcpAttach(daemon, agent.id);
-    expect(attachResult.attached.find(s => s.name === "safeTool")).toBeDefined();
-    expect(attachResult.attached.find(s => s.name === "ompctl")).toBeUndefined();
-
-    const resumeServers = fake.resumeRequests[0]?.mcpServers as Array<{ name: string }>;
+    // The offer, not the connection: see `waitForMcpOffer`. `ompctl` must never
+    // be handed to a session without the orchestrator label, whether or not it
+    // would have connected.
+    const resumeServers = await waitForMcpOffer(fake);
     expect(resumeServers.find(s => s.name === "ompctl")).toBeUndefined();
     expect(resumeServers.find(s => s.name === "safeTool")).toBeDefined();
     expect(resumeServers.find(s => s.name === "ompd-webview")).toBeDefined();
