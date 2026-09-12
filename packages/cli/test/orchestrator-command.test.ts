@@ -206,6 +206,31 @@ describe("orchestrator command", () => {
     expect(h.calls[1]?.body).toEqual({ text: "test-eq" });
   });
 
+  test("supports short flags -n and -p", async () => {
+    const agent = fakeAgent({ name: "short-orch" });
+    const h = harness({
+      routes: {
+        "POST /v1/agents": {
+          status: 201,
+          body: { agent },
+        },
+        "POST /v1/agents/agt_8da4625aa24a4101/prompt": {
+          status: 200,
+          body: { stopReason: "end_turn" },
+        },
+      },
+    });
+
+    const code = await run(["orchestrator", "/tmp/work", "-n", "short-orch", "-p", "short-prompt"], h.ctx);
+    expect(code).toBe(0);
+    expect(h.calls[0]?.body).toEqual({
+      name: "short-orch",
+      cwd: "/tmp/work",
+      labels: { role: "orchestrator" },
+    });
+    expect(h.calls[1]?.body).toEqual({ text: "short-prompt" });
+  });
+
   test("orchestrator --help prints CLI usage including orchestrator entry", async () => {
     const h = harness();
     const code = await run(["orchestrator", "--help"], h.ctx);
@@ -228,6 +253,21 @@ describe("orchestrator command", () => {
     const code = await run(["orchestrator", "/tmp/work"], h.ctx);
     expect(code).toBe(1);
     expect(h.stderr()).toContain("ompd: agent_creation_failed");
+  });
+
+  test("handles daemon returning empty agent in response body", async () => {
+    const h = harness({
+      routes: {
+        "POST /v1/agents": {
+          status: 200,
+          body: {},
+        },
+      },
+    });
+
+    const code = await run(["orchestrator", "/tmp/work"], h.ctx);
+    expect(code).toBe(1);
+    expect(h.stderr()).toContain("the daemon created no agent");
   });
 
   test("rejects unknown flags", async () => {

@@ -104,6 +104,16 @@ describe("orchestrator wiring", () => {
     ]);
   });
 
+  test("agents with non-orchestrator roles do not get ompctl server", () => {
+    const home = "/test/home";
+    const localHost: HostRef = { kind: "local", id: "1", spec: { kind: "local" } };
+
+    expect(orchestratorMcpServersFor(home, "agt_1", localHost)).toEqual([]);
+    expect(orchestratorMcpServersFor(home, "agt_1", localHost, {})).toEqual([]);
+    expect(orchestratorMcpServersFor(home, "agt_1", localHost, { role: "worker" })).toEqual([]);
+    expect(orchestratorMcpServersFor(home, "agt_1", localHost, { role: "subagent" })).toEqual([]);
+  });
+
   test("a non-local host yields no descriptor", () => {
     const home = tempDir("ompd-orch-nonlocal-");
     const containerHost: HostRef = {
@@ -113,7 +123,10 @@ describe("orchestrator wiring", () => {
     };
     const containerOffered = orchestratorMcpServersFor(home, "agt_orch", containerHost, { role: "orchestrator" });
     expect(containerOffered).toEqual([]);
+  });
 
+  test("any non-local kind yields no descriptor, not just container", () => {
+    const home = tempDir("ompd-orch-cloud-");
     const cloudHost: HostRef = {
       kind: "cloud",
       id: "cld_1",
@@ -121,6 +134,15 @@ describe("orchestrator wiring", () => {
     };
     const cloudOffered = orchestratorMcpServersFor(home, "agt_orch", cloudHost, { role: "orchestrator" });
     expect(cloudOffered).toEqual([]);
+  });
+
+  test("a local host is offered orchestrator descriptor", () => {
+    const home = "/test/home";
+    const localHost: HostRef = { kind: "local", id: "1", spec: { kind: "local" } };
+    const offered = orchestratorMcpServersFor(home, "agt_orch", localHost, { role: "orchestrator" });
+    expect(offered).toHaveLength(1);
+    expect(offered[0]?.name).toBe("ompctl");
+    expect(offered[0]?.type).toBe("stdio");
   });
 
   test("spawn resolution handles bunfs and overrides", () => {
@@ -192,5 +214,11 @@ describe("orchestrator wiring", () => {
         { name: "OMPD_AGENT_ID", value: agentId },
       ]);
     }
+  });
+
+  test("omitting labels returns empty server array", () => {
+    const home = "/test/home";
+    const localHost: HostRef = { kind: "local", id: "1", spec: { kind: "local" } };
+    expect(orchestratorMcpServersFor(home, "agt_1", localHost, undefined)).toEqual([]);
   });
 });
