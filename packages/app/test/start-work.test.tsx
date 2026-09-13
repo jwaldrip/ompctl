@@ -9,12 +9,20 @@ import { EMPTY_BROWSER } from "../src/session/browser.ts";
 // The RNW substitution must load before a screen imports react-native.
 const { FleetScreen } = await import("../src/screens/FleetScreen.tsx");
 
-declare global { var IS_REACT_ACT_ENVIRONMENT: boolean | undefined; }
+declare global {
+  var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
+}
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const SESSION = {
-  id: "work", title: "Repair the build", cwd: "/work/project", status: "dormant" as const,
-  createdAt: "2026-09-01T00:00:00Z", lastActiveAt: "2026-09-01T00:00:00Z", messageCount: 5, sizeBytes: 1000,
+  id: "work",
+  title: "Repair the build",
+  cwd: "/work/project",
+  status: "dormant" as const,
+  createdAt: "2026-09-01T00:00:00Z",
+  lastActiveAt: "2026-09-01T00:00:00Z",
+  messageCount: 5,
+  sizeBytes: 1000,
 };
 
 function mount(initial: Partial<BrowserState>) {
@@ -23,23 +31,51 @@ function mount(initial: Partial<BrowserState>) {
   const root = createRoot(host);
   let state: BrowserState = { ...EMPTY_BROWSER, sessions: [SESSION], ...initial };
   let browsed = false;
-  const update = (patch: Partial<BrowserState>) => { state = { ...state, ...patch }; render(); };
-  const render = () => root.render(
-    <FleetScreen browser={state} link={{ connection: "connected", indexed: true, attempt: 0 }}
-      deleteAccess="granted" onSort={() => {}} onToggleGroup={() => {}} onToggleGrouped={() => {}}
-      onToggleArchived={() => update({ showArchived: !state.showArchived })}
-      onSetQuery={query => update({ query })} onSetProject={project => update({ project })}
-      onOpen={() => {}} onArchive={() => {}} onUnarchive={() => {}} onDelete={() => {}} onNewSession={() => {}}
-      onBrowseFolders={() => { browsed = true; }} />,
-  );
+  const update = (patch: Partial<BrowserState>) => {
+    state = { ...state, ...patch };
+    render();
+  };
+  const render = () =>
+    root.render(
+      <FleetScreen
+        browser={state}
+        link={{ connection: "connected", indexed: true, attempt: 0 }}
+        deleteAccess="granted"
+        onSort={() => {}}
+        onToggleGroup={() => {}}
+        onToggleGrouped={() => {}}
+        onToggleArchived={() => update({ showArchived: !state.showArchived })}
+        onSetQuery={query => update({ query })}
+        onSetProject={project => update({ project })}
+        onOpen={() => {}}
+        onArchive={() => {}}
+        onUnarchive={() => {}}
+        onDelete={() => {}}
+        onNewSession={() => {}}
+        onBrowseFolders={() => {
+          browsed = true;
+        }}
+      />,
+    );
   act(render);
   const find = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`);
   return {
     find,
-    get state() { return state; },
-    get browsed() { return browsed; },
-    click(id: string) { const el = find(id); expect(el).not.toBeNull(); act(() => el?.click()); },
-    close() { act(() => root.unmount()); host.remove(); },
+    get state() {
+      return state;
+    },
+    get browsed() {
+      return browsed;
+    },
+    click(id: string) {
+      const el = find(id);
+      expect(el).not.toBeNull();
+      act(() => el?.click());
+    },
+    close() {
+      act(() => root.unmount());
+      host.remove();
+    },
   };
 }
 
@@ -54,7 +90,9 @@ describe("return to work from Sessions", () => {
       expect(h.state.project).toBeNull();
       expect(h.find("fleet-no-matches")).toBeNull();
       expect(h.find("session-row-work")).not.toBeNull();
-    } finally { h.close(); }
+    } finally {
+      h.close();
+    }
   });
 
   test("an archive-only library offers its existing sessions instead of a CLI dead end", () => {
@@ -64,7 +102,9 @@ describe("return to work from Sessions", () => {
       h.click("fleet-show-archived");
       expect(h.state.showArchived).toBe(true);
       expect(h.find("session-row-work")).not.toBeNull();
-    } finally { h.close(); }
+    } finally {
+      h.close();
+    }
   });
 
   test("Browse folders leaves the recent-project picker for the start-session route", () => {
@@ -75,6 +115,8 @@ describe("return to work from Sessions", () => {
       expect(h.browsed).toBe(true);
       expect(h.find("project-picker-search")).toBeNull();
       expect(h.find("folder-picker-screen")).toBeNull();
-    } finally { h.close(); }
+    } finally {
+      h.close();
+    }
   });
 });

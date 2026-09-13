@@ -12,19 +12,13 @@
 
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
-import {
-  FlatList,
-  Modal,
-  Pressable,
-  type PressableStateCallbackType,
-  StyleSheet,
-  TextInput,
-  View,
-} from "react-native";
+import { FlatList, Modal, Pressable, type PressableStateCallbackType, StyleSheet, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
-import { Body, Kicker, Label } from "../design/text.tsx";
+import { Body, Kicker, Label, Title } from "../design/text.tsx";
 import { brand, ground, ink, radius, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { useKeyboardInset } from "../design/useKeyboardInset.ts";
 import type { BrowserSession } from "../session/browser.ts";
 
 /**
@@ -126,6 +120,8 @@ export function ProjectPicker(props: ProjectPickerProps): JSX.Element {
   };
   const [query, setQuery] = useState(initialQuery);
   const isTablet = useIsTablet();
+  const insets = useSafeAreaInsets();
+  const keyboard = useKeyboardInset();
 
   const allProjects = useMemo(() => summarizeProjects(sessions), [sessions]);
 
@@ -197,156 +193,175 @@ export function ProjectPicker(props: ProjectPickerProps): JSX.Element {
       ) : null}
       {open ? (
         <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
-          <Pressable
-            testID="project-picker-backdrop"
-            accessibilityLabel="Close project picker"
-            accessibilityRole="button"
-            onPress={() => setOpen(false)}
-            style={styles.backdrop}
-          />
           <View
-            testID={isTablet ? "project-picker-popover" : "project-picker-sheet"}
-            style={isTablet ? styles.popoverSurface : styles.sheetSurface}
+            style={[
+              isTablet ? styles.popoverOverlay : styles.sheetOverlay,
+              { paddingTop: insets.top, paddingBottom: keyboard },
+            ]}
+            pointerEvents="box-none"
           >
-            <View style={styles.header}>
-              {title !== undefined || mode === "start" ? (
-                <View style={styles.titleBox}>
-                  <Kicker color={ink.muted}>{title ?? "Start session in project"}</Kicker>
-                </View>
-              ) : null}
-              <View style={styles.searchBox} testID="project-picker-search-bar">
-                <Glyph name="search" size={12} color={ink.faint} />
-                <TextInput
-                  testID="project-picker-search"
-                  style={styles.searchInput}
-                  placeholder="Filter projects..."
-                  placeholderTextColor={ink.faint}
-                  value={query}
-                  onChangeText={setQuery}
-                  accessibilityLabel="Filter projects"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="search"
-                />
-                {query.length > 0 ? (
+            <Pressable
+              testID="project-picker-backdrop"
+              accessibilityLabel="Close project picker"
+              accessibilityRole="button"
+              onPress={() => setOpen(false)}
+              style={styles.backdrop}
+            />
+            <View
+              testID={isTablet ? "project-picker-popover" : "project-picker-sheet"}
+              style={[
+                isTablet ? styles.popoverSurface : styles.sheetSurface,
+                { paddingBottom: keyboard > 0 ? 0 : insets.bottom },
+              ]}
+            >
+              <View style={styles.header}>
+                <View style={styles.heading}>
+                  <View style={styles.titleBox}>
+                    <Kicker color={ink.muted}>{mode === "start" ? "New session" : "Filter sessions"}</Kicker>
+                    <Title heading>{title ?? "Choose a project"}</Title>
+                  </View>
                   <Pressable
-                    testID="project-picker-search-clear"
+                    testID="project-picker-close"
                     accessibilityRole="button"
-                    accessibilityLabel="Clear search"
-                    onPress={() => setQuery("")}
-                    style={styles.clearBtn}
+                    accessibilityLabel="Close"
+                    onPress={() => setOpen(false)}
+                    style={closeBtnStyle}
                   >
-                    <Glyph name="deny" size={10} color={ink.faint} />
+                    <Glyph name="deny" size={12} color={ink.muted} />
                   </Pressable>
-                ) : null}
-              </View>
-              <Pressable
-                testID="project-picker-close"
-                accessibilityRole="button"
-                accessibilityLabel="Close"
-                onPress={() => setOpen(false)}
-                style={closeBtnStyle}
-              >
-                <Glyph name="deny" size={12} color={ink.muted} />
-              </Pressable>
-            </View>
-
-            <FlatList
-              testID="project-picker-list"
-              data={filteredProjects}
-              keyExtractor={item => item.cwd}
-              keyboardShouldPersistTaps="handled"
-              style={styles.list}
-              ListHeaderComponent={
-                mode === "start" ? (
-                  onBrowseFolders !== undefined ? (
+                </View>
+                <View style={styles.searchBox} testID="project-picker-search-bar">
+                  <Glyph name="search" size={12} color={ink.faint} />
+                  <TextInput
+                    testID="project-picker-search"
+                    style={styles.searchInput}
+                    placeholder="Filter projects..."
+                    placeholderTextColor={ink.faint}
+                    value={query}
+                    onChangeText={setQuery}
+                    accessibilityLabel="Filter projects"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="search"
+                  />
+                  {query.length > 0 ? (
                     <Pressable
-                      testID="project-picker-browse-folders"
+                      testID="project-picker-search-clear"
                       accessibilityRole="button"
-                      accessibilityLabel="Browse folders on daemon"
-                      onPress={() => {
-                        handleSelect(null);
-                        onBrowseFolders();
-                      }}
-                      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                      accessibilityLabel="Clear search"
+                      onPress={() => setQuery("")}
+                      style={styles.clearBtn}
+                    >
+                      <Glyph name="deny" size={10} color={ink.faint} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+
+              <FlatList
+                testID="project-picker-list"
+                data={filteredProjects}
+                keyExtractor={item => item.cwd}
+                keyboardShouldPersistTaps="handled"
+                style={styles.list}
+                ListEmptyComponent={
+                  <Label color={ink.muted} style={styles.row}>
+                    {query.trim()
+                      ? "No projects match this search."
+                      : "No recent projects. Browse folders to choose one."}
+                  </Label>
+                }
+                ListHeaderComponent={
+                  mode === "start" ? (
+                    onBrowseFolders !== undefined ? (
+                      <Pressable
+                        testID="project-picker-browse-folders"
+                        accessibilityRole="button"
+                        accessibilityLabel="Browse folders on daemon"
+                        onPress={() => {
+                          handleSelect(null);
+                          onBrowseFolders();
+                        }}
+                        style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                      >
+                        <View style={styles.rowMain}>
+                          <View style={styles.rowNameGroup}>
+                            <Glyph name="folder" size={13} color={brand.azure} />
+                            <Body color={brand.azure} numberOfLines={1}>
+                              Browse other folders...
+                            </Body>
+                          </View>
+                          <Label color={ink.faint} numberOfLines={1}>
+                            Choose any directory on the daemon
+                          </Label>
+                        </View>
+                        <Glyph name="chevron" size={11} color={ink.faint} />
+                      </Pressable>
+                    ) : null
+                  ) : (
+                    <Pressable
+                      testID="project-picker-item-all"
+                      accessibilityRole="button"
+                      accessibilityLabel="All projects"
+                      accessibilityState={{ selected: selectedProject === null }}
+                      onPress={() => handleSelect(null)}
+                      style={({ pressed }) => [
+                        styles.row,
+                        selectedProject === null && styles.rowSelected,
+                        pressed && styles.rowPressed,
+                      ]}
                     >
                       <View style={styles.rowMain}>
                         <View style={styles.rowNameGroup}>
-                          <Glyph name="folder" size={13} color={brand.azure} />
-                          <Body color={brand.azure} numberOfLines={1}>
-                            Browse other folders...
+                          <Glyph name="folder" size={13} color={selectedProject === null ? brand.azure : ink.muted} />
+                          <Body color={selectedProject === null ? brand.azure : ink.bright} numberOfLines={1}>
+                            All projects
                           </Body>
                         </View>
                         <Label color={ink.faint} numberOfLines={1}>
-                          Choose any directory on the daemon
+                          Every session across the fleet
                         </Label>
                       </View>
-                      <Glyph name="chevron" size={11} color={ink.faint} />
+                      <Kicker color={selectedProject === null ? brand.azure : ink.faint}>
+                        {`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`}
+                      </Kicker>
                     </Pressable>
-                  ) : null
-                ) : (
-                  <Pressable
-                    testID="project-picker-item-all"
-                    accessibilityRole="button"
-                    accessibilityLabel="All projects"
-                    accessibilityState={{ selected: selectedProject === null }}
-                    onPress={() => handleSelect(null)}
-                    style={({ pressed }) => [
-                      styles.row,
-                      selectedProject === null && styles.rowSelected,
-                      pressed && styles.rowPressed,
-                    ]}
-                  >
-                    <View style={styles.rowMain}>
-                      <View style={styles.rowNameGroup}>
-                        <Glyph name="folder" size={13} color={selectedProject === null ? brand.azure : ink.muted} />
-                        <Body color={selectedProject === null ? brand.azure : ink.bright} numberOfLines={1}>
-                          All projects
-                        </Body>
+                  )
+                }
+                renderItem={({ item }) => {
+                  const isSelected = selectedProject === item.cwd;
+                  return (
+                    <Pressable
+                      testID={`project-picker-item-${item.basename}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={item.cwd}
+                      accessibilityState={{ selected: isSelected }}
+                      onPress={() => handleSelect(item.cwd)}
+                      style={({ pressed }) => [
+                        styles.row,
+                        isSelected && styles.rowSelected,
+                        pressed && styles.rowPressed,
+                      ]}
+                    >
+                      <View style={styles.rowMain}>
+                        <View style={styles.rowNameGroup}>
+                          <Glyph name="folder" size={13} color={isSelected ? brand.azure : ink.muted} />
+                          <Body color={isSelected ? brand.azure : ink.bright} numberOfLines={1}>
+                            {item.basename}
+                          </Body>
+                        </View>
+                        <Label color={ink.muted} numberOfLines={1}>
+                          {item.cwd}
+                        </Label>
                       </View>
-                      <Label color={ink.faint} numberOfLines={1}>
-                        Every session across the fleet
-                      </Label>
-                    </View>
-                    <Kicker color={selectedProject === null ? brand.azure : ink.faint}>
-                      {`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`}
-                    </Kicker>
-                  </Pressable>
-                )
-              }
-              renderItem={({ item }) => {
-                const isSelected = selectedProject === item.cwd;
-                return (
-                  <Pressable
-                    testID={`project-picker-item-${item.basename}`}
-                    accessibilityRole="button"
-                    accessibilityLabel={item.cwd}
-                    accessibilityState={{ selected: isSelected }}
-                    onPress={() => handleSelect(item.cwd)}
-                    style={({ pressed }) => [
-                      styles.row,
-                      isSelected && styles.rowSelected,
-                      pressed && styles.rowPressed,
-                    ]}
-                  >
-                    <View style={styles.rowMain}>
-                      <View style={styles.rowNameGroup}>
-                        <Glyph name="folder" size={13} color={isSelected ? brand.azure : ink.muted} />
-                        <Body color={isSelected ? brand.azure : ink.bright} numberOfLines={1}>
-                          {item.basename}
-                        </Body>
-                      </View>
-                      <Label color={ink.muted} numberOfLines={1}>
-                        {item.cwd}
-                      </Label>
-                    </View>
-                    <Kicker color={isSelected ? brand.azure : ink.faint}>
-                      {`${item.sessionCount} ${item.sessionCount === 1 ? "session" : "sessions"}`}
-                    </Kicker>
-                  </Pressable>
-                );
-              }}
-            />
+                      <Kicker color={isSelected ? brand.azure : ink.faint}>
+                        {`${item.sessionCount} ${item.sessionCount === 1 ? "session" : "sessions"}`}
+                      </Kicker>
+                    </Pressable>
+                  );
+                }}
+              />
+            </View>
           </View>
         </Modal>
       ) : null}
@@ -444,8 +459,8 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
+    flexDirection: "column",
+    alignItems: "stretch",
     gap: space.snug,
     paddingHorizontal: space.wide,
     paddingVertical: space.snug,
@@ -453,11 +468,11 @@ const styles = StyleSheet.create({
     borderBottomColor: ground.line,
   },
   searchBox: {
-    flex: 1,
+    flexShrink: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: space.tight,
-    height: 34,
+    minHeight: TOUCH_TARGET,
     paddingHorizontal: space.snug,
     borderRadius: radius.control,
     backgroundColor: ground.base,
@@ -466,6 +481,8 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
+    minHeight: TOUCH_TARGET,
     color: ink.bright,
     fontSize: 13,
     paddingVertical: 0,
@@ -515,7 +532,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.tight,
   },
-  titleBox: {
-    paddingBottom: space.hair,
-  },
+  heading: { flexDirection: "row", alignItems: "center", gap: space.snug },
+  titleBox: { flex: 1, minWidth: 0, gap: space.hair },
 });

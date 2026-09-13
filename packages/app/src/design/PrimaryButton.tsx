@@ -7,7 +7,7 @@
  * field — the pair form's own inputs sit directly above it wearing the same
  * outline, and a control that reads as a field gets treated as one. The
  * filled swatch is what the rest of the app already chose for its primary
- * action (BrowseScreen, FolderPickerScreen, CoworkScreen, CloneProgress), so
+ * action (BrowseScreen, CoworkScreen, CloneProgress), so
  * this is that treatment, written once, plus the parked state the pair
  * form's endpoint-and-token gating needs and none of the others had.
  */

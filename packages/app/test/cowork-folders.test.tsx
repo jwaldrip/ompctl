@@ -228,7 +228,9 @@ describe("the folder picker", () => {
       h.deliver({ t: "error", code: "unauthorized", message: "fs_list requires read scope" });
       expect(h.host.textContent).toContain("fs_list requires read scope");
       expect(h.host.textContent).not.toContain("configured to browse nothing");
-    } finally { h.unmount(); }
+    } finally {
+      h.unmount();
+    }
   });
 
   test("a clone can be bound at its actual destination without starting a session in its parent", () => {
@@ -243,7 +245,13 @@ describe("the folder picker", () => {
       const props = Reflect.get(input, key) as { onChange: (event: unknown) => void };
       act(() => {
         input.value = "https://example.com/team/project.git";
-        props.onChange({ target: input, currentTarget: input, nativeEvent: { text: input.value }, preventDefault() {}, stopPropagation() {} });
+        props.onChange({
+          target: input,
+          currentTarget: input,
+          nativeEvent: { text: input.value },
+          preventDefault() {},
+          stopPropagation() {},
+        });
       });
       h.press("browse-clone-here");
       expect(h.socket.framesOfType("repo_clone")).toEqual([
@@ -256,7 +264,9 @@ describe("the folder picker", () => {
       h.deliver({ t: "fs_listing", path: DEV + "/project", parent: DEV, roots: [ROOT], entries: [], bounded: false });
       h.press("browse-bind-folder");
       expect(h.query("cowork-folder-" + DEV + "/project")).not.toBeNull();
-    } finally { h.unmount(); }
+    } finally {
+      h.unmount();
+    }
   });
   test("asks for the roots on open and renders a directory's entries with their kinds", () => {
     const h = mount();

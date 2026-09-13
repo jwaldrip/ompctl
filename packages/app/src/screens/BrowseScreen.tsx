@@ -137,7 +137,9 @@ export function BrowseScreen({
           );
         })}
         {state.loading ? <Label color={ink.muted}>Loading folders.</Label> : null}
-        {!state.listed && !state.loading && state.notice === null ? <Label color={ink.muted}>Waiting for the daemon's folder listing.</Label> : null}
+        {!state.listed && !state.loading && state.notice === null ? (
+          <Label color={ink.muted}>Waiting for the daemon's folder listing.</Label>
+        ) : null}
         {state.listed && state.entries.length === 0 && !state.loading ? (
           <Body color={ink.muted} testID="browse-empty">
             {atRoots ? "This daemon is configured to browse nothing." : "Nothing in here."}
@@ -163,7 +165,7 @@ export function BrowseScreen({
           // name would take that event as the name.
           disabled={binding && atRoots}
           accessibilityState={{ disabled: binding && atRoots }}
-          onPress={() => binding ? onBindFolder(state.path) : onStartHere()}
+          onPress={() => (binding ? onBindFolder(state.path) : onStartHere())}
           style={[styles.start, binding && atRoots && styles.disabled]}
           testID={binding ? "browse-bind-folder" : "browse-start-here"}
         >
@@ -172,8 +174,9 @@ export function BrowseScreen({
         </Pressable>
         {binding ? (
           <Label color={ink.muted} testID="browse-bind-hint">
-            {atRoots ? "Open a directory first: the roots view is a menu, not a folder." : 
-              "The container will mount " + state.path + " read-only, at this same path."}
+            {atRoots
+              ? "Open a directory first: the roots view is a menu, not a folder."
+              : "The container will mount " + state.path + " read-only, at this same path."}
           </Label>
         ) : null}
         <Label color={ink.muted}>Clone using an HTTPS or SSH URL. Git runs on your daemon.</Label>

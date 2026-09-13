@@ -169,7 +169,7 @@ export function FleetScreen({
   const canManage = effectiveManageAccess !== "missing";
 
   const [newSessionPickerOpen, setNewSessionPickerOpen] = useState(false);
-  
+
   const [reviewingEphemerals, setReviewingEphemerals] = useState(false);
   const [selectedEphemeralIds, setSelectedEphemeralIds] = useState<Set<string>>(() => new Set());
   const [confirmingBulkArchive, setConfirmingBulkArchive] = useState(false);
@@ -216,8 +216,15 @@ export function FleetScreen({
   }, [onSetQuery, onSetProject]);
   const empty = useMemo(
     () => (
-      <Empty link={link} filtered={filtered} hiddenArchived={view.hiddenArchived} totalCount={view.totalCount}
-        onResetFilters={resetFilters} onShowArchived={onToggleArchived} canCreate={canManage} />
+      <Empty
+        link={link}
+        filtered={filtered}
+        hiddenArchived={view.hiddenArchived}
+        totalCount={view.totalCount}
+        onResetFilters={resetFilters}
+        onShowArchived={onToggleArchived}
+        canCreate={canManage}
+      />
     ),
     [link, filtered, view.hiddenArchived, view.totalCount, resetFilters, onToggleArchived, canManage],
   );
@@ -661,7 +668,13 @@ export function FleetScreen({
  * recovery from the current view, and only then a genuinely empty daemon.
  */
 function Empty({
-  link, filtered, hiddenArchived, totalCount, onResetFilters, onShowArchived, canCreate,
+  link,
+  filtered,
+  hiddenArchived,
+  totalCount,
+  onResetFilters,
+  onShowArchived,
+  canCreate,
 }: {
   link: FleetLink;
   filtered: boolean;
@@ -699,11 +712,21 @@ function Empty({
       <View style={styles.empty} testID="fleet-no-matches">
         <Glyph name="search" size={26} color={ink.muted} />
         <Body color={ink.plain}>No sessions match these filters.</Body>
-        <Pressable testID="fleet-reset-filters" accessibilityRole="button" onPress={onResetFilters} style={styles.emptyAction}>
+        <Pressable
+          testID="fleet-reset-filters"
+          accessibilityRole="button"
+          onPress={onResetFilters}
+          style={styles.emptyAction}
+        >
           <Label color={brand.azure}>Clear search and project filter</Label>
         </Pressable>
         {hiddenArchived > 0 ? (
-          <Pressable testID="fleet-show-archived" accessibilityRole="button" onPress={onShowArchived} style={styles.emptyAction}>
+          <Pressable
+            testID="fleet-show-archived"
+            accessibilityRole="button"
+            onPress={onShowArchived}
+            style={styles.emptyAction}
+          >
             <Label color={brand.azure}>Include archived sessions</Label>
           </Pressable>
         ) : null}
@@ -715,7 +738,12 @@ function Empty({
       <View style={styles.empty} testID="fleet-archived-only">
         <Glyph name="archive" size={26} color={ink.muted} />
         <Body color={ink.plain}>Your sessions are archived.</Body>
-        <Pressable testID="fleet-show-archived" accessibilityRole="button" onPress={onShowArchived} style={styles.emptyAction}>
+        <Pressable
+          testID="fleet-show-archived"
+          accessibilityRole="button"
+          onPress={onShowArchived}
+          style={styles.emptyAction}
+        >
           <Label color={brand.azure}>Show archived sessions</Label>
         </Pressable>
       </View>
@@ -726,7 +754,9 @@ function Empty({
       <Glyph name="bay" size={26} color={ground.edge} />
       <Body color={ink.plain}>No sessions.</Body>
       <Label color={ink.muted}>
-        {canCreate ? "Choose New session to open a project or clone a repository." : "This pairing needs manage scope to start a session."}
+        {canCreate
+          ? "Choose New session to open a project or clone a repository."
+          : "This pairing needs manage scope to start a session."}
       </Label>
     </View>
   );
