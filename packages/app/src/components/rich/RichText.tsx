@@ -21,12 +21,13 @@
  * owns pixels only.
  */
 
+import { undriveableUrlReason } from "@ompd/core/policy";
 import type { JSX, ReactNode } from "react";
 import { memo } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import { rhythm } from "../../design/rhythm.ts";
 import { Body, Display, Kicker, Label, Title } from "../../design/text.tsx";
-import { face, ground, ink, space, stroke, type } from "../../design/tokens.ts";
+import { brand, face, ground, ink, space, stroke, type } from "../../design/tokens.ts";
 import { AttachmentBlock } from "./AttachmentBlock.tsx";
 import type { RichSpan } from "./blocks.ts";
 import { DiffBlock, isDiffText } from "./DiffBlock.tsx";
@@ -34,6 +35,8 @@ import { highlight } from "./highlight.ts";
 import { tokenColor } from "./highlight-theme.ts";
 import { parseRich, type RichBlock } from "./parse.ts";
 
+/** Standard anchor attributes for web rendering. */
+const LINK_HREF_ATTRS = { target: "_blank", rel: "noreferrer noopener" } as const;
 /** Flat inline runs. Nesting a `Text` per span lets RN inherit the block's size and colour. */
 function Spans({ spans }: { spans: readonly RichSpan[] }): JSX.Element {
   // Content-derived keys: the span's kind and text plus an occurrence count,
@@ -71,15 +74,37 @@ function Spans({ spans }: { spans: readonly RichSpan[] }): JSX.Element {
                 {span.text}
               </Text>
             );
-          case "link":
-            // No new colour: the six signals each mean something else, and a
-            // seventh "link blue" would be the first overlap. Underline is the
-            // affordance; the transcript shows text, it does not navigate.
+          case "link": {
+            // A link whose destination is refused by navigation policy (such
+            // as javascript:, file:, or app schemes) must not look like an
+            // active link. Rendering it as plain text preserves the verbatim
+            // characters on screen without promising interaction that policy
+            // refuses.
+            if (undriveableUrlReason(span.href) !== null) {
+              return <Text key={key}>{span.text}</Text>;
+            }
+            // Working links navigate through the OS. The app icon's brand.azure
+            // token is designated in tokens.ts for actions and links, keeping
+            // the affordance distinct from plain text without colliding with
+            // the six status signals. Underline supplies the typographic cue.
             return (
-              <Text key={key} style={styles.link}>
+              <Text
+                accessibilityHint={`Opens ${span.href}`}
+                accessibilityRole="link"
+                key={key}
+                onPress={e => {
+                  e?.preventDefault?.();
+                  if (undriveableUrlReason(span.href) === null) {
+                    void Linking.openURL(span.href);
+                  }
+                }}
+                style={styles.link}
+                {...(Platform.OS === "web" ? ({ href: span.href, hrefAttrs: LINK_HREF_ATTRS } as object) : undefined)}
+              >
                 {span.text}
               </Text>
             );
+          }
           default:
             // Exhaustive today, so the narrow is `never`. A future span kind
             // renders nothing rather than vanishing the whole run: one
@@ -325,7 +350,10 @@ const styles = StyleSheet.create({
   strong: { fontFamily: face.semibold },
   em: { fontStyle: "italic" },
   codeSpan: { fontFamily: face.mono },
-  link: { textDecorationLine: "underline" },
+  link: {
+    color: brand.azure,
+    textDecorationLine: "underline",
+  },
   list: { gap: space.tight },
   listRow: { flexDirection: "row", gap: space.snug },
   // A floor, not a fixed width, and one step of nesting rather than a number
