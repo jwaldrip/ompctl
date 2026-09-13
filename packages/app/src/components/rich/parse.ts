@@ -18,6 +18,7 @@
  * it returns.
  */
 
+import { undriveableUrlReason } from "@ompd/core/policy";
 import type { AttachmentRef, RichSpan } from "./blocks.ts";
 
 export type TableAlign = "left" | "center" | "right" | null;
@@ -386,6 +387,82 @@ function stripCodeEdges(content: string): string {
 }
 
 /**
+ * Detects and trims a bare http or https URL starting at index `at`.
+ *
+ * URLs must begin at a word boundary so substrings like `wordhttp://` are not
+ * mistaken for links. Punctuation trailing the URL (periods, commas, colons,
+ * quotes, angle brackets) is stripped so surrounding sentence prose stays in
+ * the text run. Grouping delimiters (parentheses, square brackets, braces) are
+ * stripped when unbalanced, which lets `(https://example.com)` stay outside the
+ * link while Wikipedia titles like `https://en.wikipedia.org/wiki/Function_(mathematics)`
+ * keep their balanced internal parens.
+ */
+function matchBareUrl(text: string, at: number): string | null {
+  if (at > 0 && /[A-Za-z0-9]/.test(text[at - 1] as string)) {
+    return null;
+  }
+  if (!text.startsWith("http://", at) && !text.startsWith("https://", at)) {
+    return null;
+  }
+
+  let end = at;
+  while (end < text.length) {
+    const ch = text[end] as string;
+    if (ch <= " " || ch === '"' || ch === "'" || ch === "`" || ch === "<" || ch === ">") {
+      break;
+    }
+    end += 1;
+  }
+
+  let raw = text.slice(at, end);
+  if (raw.length === 0) return null;
+
+  while (raw.length > 0) {
+    const last = raw[raw.length - 1] as string;
+
+    if (/[.,;:!?"'<>]/.test(last)) {
+      raw = raw.slice(0, -1);
+      continue;
+    }
+
+    if (last === ")") {
+      const openCount = (raw.match(/\(/g) ?? []).length;
+      const closeCount = (raw.match(/\)/g) ?? []).length;
+      if (closeCount > openCount) {
+        raw = raw.slice(0, -1);
+        continue;
+      }
+    }
+
+    if (last === "]") {
+      const openCount = (raw.match(/\[/g) ?? []).length;
+      const closeCount = (raw.match(/\]/g) ?? []).length;
+      if (closeCount > openCount) {
+        raw = raw.slice(0, -1);
+        continue;
+      }
+    }
+
+    if (last === "}") {
+      const openCount = (raw.match(/\{/g) ?? []).length;
+      const closeCount = (raw.match(/\}/g) ?? []).length;
+      if (closeCount > openCount) {
+        raw = raw.slice(0, -1);
+        continue;
+      }
+    }
+
+    break;
+  }
+
+  if (undriveableUrlReason(raw) !== null) {
+    return null;
+  }
+
+  return raw;
+}
+
+/**
  * Inline runs: `**strong**`, `*em*`, `_em_`, `` `code` ``, `[text](href)`.
  *
  * Spans are deliberately flat (see `blocks.ts`), so a bold phrase containing
@@ -473,16 +550,32 @@ function parseSpans(text: string): RichSpan[] {
       const match = LINK.exec(text);
       // `![alt](uri)` is an image, not a link with a stray bang, so a bracket
       // preceded by `!` stays literal and the image survives verbatim for the
-      // attachment renderer to find when it is on a line of its own.
-      if (match !== null && text[at - 1] !== "!") {
-        flush();
-        spans.push({ kind: "link", text: match[1] as string, href: match[2] as string });
+      // attachment renderer to find when it is on a line of its own. When inline,
+      // the whole `[alt](uri)` is consumed into literal so its URI is not
+      // mangled by bare URL autolinking.
+      if (match !== null) {
+        if (text[at - 1] !== "!") {
+          flush();
+          spans.push({ kind: "link", text: match[1] as string, href: match[2] as string });
+          at = LINK.lastIndex;
+          continue;
+        }
+        literal += match[0];
         at = LINK.lastIndex;
         continue;
       }
       literal += ch;
       at += 1;
       continue;
+    }
+    if (ch === "h" && (text.startsWith("https://", at) || text.startsWith("http://", at))) {
+      const url = matchBareUrl(text, at);
+      if (url !== null) {
+        flush();
+        spans.push({ kind: "link", text: url, href: url });
+        at += url.length;
+        continue;
+      }
     }
 
     literal += ch;
