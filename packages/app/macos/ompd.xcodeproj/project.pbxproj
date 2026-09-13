@@ -11,6 +11,8 @@
 		514201522437B4B40078DB4F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 514201512437B4B40078DB4F /* Assets.xcassets */; };
 		514201552437B4B40078DB4F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 514201532437B4B40078DB4F /* Main.storyboard */; };
 		514201582437B4B40078DB4F /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 514201572437B4B40078DB4F /* main.m */; };
+		514201612437B4B40078DB4F /* OmpctlCamera.m in Sources */ = {isa = PBXBuildFile; fileRef = 514201602437B4B40078DB4F /* OmpctlCamera.m */; };
+		514201632437B4B40078DB4F /* OmpctlCamera.swift in Sources */ = {isa = PBXBuildFile; fileRef = 514201622437B4B40078DB4F /* OmpctlCamera.swift */; };
 		8734904EB026EE21AF80F813 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BECAD8CAF34A8ABDF84CCA45 /* PrivacyInfo.xcprivacy */; };
 		94AEF361C197E44F598ED498 /* libPods-ompd-macOS.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BAB39550094FEDE271430EE3 /* libPods-ompd-macOS.a */; };
 		9A70ADC235B68F900372406B /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BECAD8CAF34A8ABDF84CCA45 /* PrivacyInfo.xcprivacy */; };
@@ -26,6 +28,8 @@
 		514201562437B4B40078DB4F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		514201572437B4B40078DB4F /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		514201592437B4B40078DB4F /* ompd.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ompd.entitlements; sourceTree = "<group>"; };
+		514201602437B4B40078DB4F /* OmpctlCamera.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OmpctlCamera.m; sourceTree = "<group>"; };
+		514201622437B4B40078DB4F /* OmpctlCamera.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmpctlCamera.swift; sourceTree = "<group>"; };
 		6E2C587C1F834496BC0CFC74 /* Pods-ompd-macOS.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ompd-macOS.debug.xcconfig"; path = "Target Support Files/Pods-ompd-macOS/Pods-ompd-macOS.debug.xcconfig"; sourceTree = "<group>"; };
 		B1D1EA32571B792EF59CCA5A /* Pods-ompd-macOS.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ompd-macOS.release.xcconfig"; path = "Target Support Files/Pods-ompd-macOS/Pods-ompd-macOS.release.xcconfig"; sourceTree = "<group>"; };
 		BAB39550094FEDE271430EE3 /* libPods-ompd-macOS.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-ompd-macOS.a"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -81,6 +85,8 @@
 				514201562437B4B40078DB4F /* Info.plist */,
 				514201572437B4B40078DB4F /* main.m */,
 				514201592437B4B40078DB4F /* ompd.entitlements */,
+				514201602437B4B40078DB4F /* OmpctlCamera.m */,
+				514201622437B4B40078DB4F /* OmpctlCamera.swift */,
 			);
 			path = "ompd-macOS";
 			sourceTree = "<group>";
@@ -334,6 +340,8 @@
 			files = (
 				514201582437B4B40078DB4F /* main.m in Sources */,
 				5142014D2437B4B30078DB4F /* AppDelegate.mm in Sources */,
+				514201612437B4B40078DB4F /* OmpctlCamera.m in Sources */,
+				514201632437B4B40078DB4F /* OmpctlCamera.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -356,6 +364,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = "ompd-macOS/ompd.entitlements";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = "ompd-iOS/Info.plist";
@@ -366,7 +375,6 @@
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ai.ompctl.app;
-				CODE_SIGN_ENTITLEMENTS = "ompd-macOS/ompd.entitlements";
 				PRODUCT_NAME = ompctl;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
@@ -379,6 +387,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = "ompd-macOS/ompd.entitlements";
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = "ompd-iOS/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
@@ -388,7 +397,6 @@
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ai.ompctl.app;
-				CODE_SIGN_ENTITLEMENTS = "ompd-macOS/ompd.entitlements";
 				PRODUCT_NAME = ompctl;
 				SWIFT_VERSION = 5.0;
 				VERSIONING_SYSTEM = "apple-generic";
@@ -401,19 +409,19 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = "ompd-macOS/ompd.entitlements";
 				CURRENT_PROJECT_VERSION = 1;
-				MARKETING_VERSION = 1.0;
 				DEAD_CODE_STRIPPING = NO;
 				INFOPLIST_FILE = "ompd-macos/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ai.ompctl.app;
-				CODE_SIGN_ENTITLEMENTS = "ompd-macOS/ompd.entitlements";
 				PRODUCT_NAME = ompctl;
 				SDKROOT = macosx;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -427,18 +435,18 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = "ompd-macOS/ompd.entitlements";
 				CURRENT_PROJECT_VERSION = 1;
-				MARKETING_VERSION = 1.0;
 				INFOPLIST_FILE = "ompd-macos/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ai.ompctl.app;
-				CODE_SIGN_ENTITLEMENTS = "ompd-macOS/ompd.entitlements";
 				PRODUCT_NAME = ompctl;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.0;
