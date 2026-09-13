@@ -200,6 +200,32 @@ Not fixed on 2026-08-23, and deliberately not guessed at further then. It cost a
 
 **Fixed 2026-09-05.** The floating promise was found by making it worse: closing the backplane before the server raised the rate from 3 of 6 runs to 7 of 10, which said the in-flight commands belonged to the socket close handlers, not to `close()` itself. `Bun.serve` calls `message`/`close` synchronously and discards what they return; the hub registered them as `void this.#close(ws)`, so a daemon leg closing during teardown issued its lease release and "close" envelopes through the backplane, `stop()` closed the redis clients a tick later, and every command still in flight rejected on a promise nothing awaited. `Hub#detached` now owns those handlers' rejections (dropped once `stop()` has begun, logged before), the subscriber no longer auto-reconnects (a reconnected socket carries no subscription, and a client caught mid-reconnect rejects the same way), and the process-level `unhandledRejection` swallow in `RedisBackplane.close()` is gone because Bun's runner reports a floating rejection before any listener sees it, which is why it never caught one. Against `redis:7` on a spare port: 3 of 6 runs red before, 18 of 18 green after.
 
+## Start-work pass verified on the branch, 2026-09-12
+
+The entry is Sessions -> New session -> a recent project, or Browse folders -> optional clone -> open its destination -> start. Cowork uses that same directory browser to bind a read-only folder. Opening a clone there never starts a local agent in its parent.
+
+A scratch gateway with a real filesystem, Git process, store and session index ran that entry from the rendered Console. It cloned a fixture containing `start-work-sentinel`, created exactly one agent at the clone, served history and kept SessionScreen open. The ACP host was scripted, with no model invocation. Stats were unconfigured in that scratch daemon. No live daemon or operator configuration was changed.
+
+The smoke reproduced `webview_not_attached`. Popping New session was treated as backing out of a detail that had never appeared, detaching the agent between attach and WebView registration. The navigator now clears only a selection whose own detail actually left the stack. The separate start socket also carries its returned session id into the initial history request. The regression failed first with no SessionScreen, then on missing history after the navigation-only fix. Both corrections pass, including Back still detaching.
+
+The project picker also had a measured layout defect: its phone sheet ended at y=233 on an 844px viewport, and the search input overlapped the close target by 37.72px. It now ends at y=844, with a separate 44px search row. At 1024x768 its 480x288 popover is centered at (272, 240). A rendered 300px keyboard event moves the phone sheet bottom to 544 and the clone controls to 532. Physical iOS and Android keyboards were not exercised.
+
+Screenshots and full geometry are in [the proof directory](docs/screens/experience-2026-09-12/measurements.json). The actual RNW screens and bundled fonts render at 390x844 and 1024x768 with synthetic records. The measured app frames have no overflow; browser-extension nodes are outside that measurement.
+
+From `packages/app`, regenerate frames with `OMPCTL_RENDER_DIR=/absolute/output/path bun --preload ./test/preload-react.ts test/render-start-work.tsx`.
+
+Run the behavioral regressions there with `bun test --preload ./test/preload-react.ts test/start-work.test.tsx test/nav-shell.test.tsx test/cowork-folders.test.tsx`.
+
+### Provider sign-in remains blocked
+
+The static repository list was removed because no app path fetched or authorized it. URL cloning remains. Three separate responses are archived verbatim in the proof JSON:
+
+- GitHub: `/login/device/code` with shipped client id `Iv1.802871b6354446b7` returned HTTP 404, `{"error":"Not Found"}`. No device code was issued. This does not establish why that client was rejected.
+- GitLab: the shipped `/oauth/device/code` request returned HTTP 404 HTML. Its [official documentation](https://docs.gitlab.com/api/oauth2/#device-authorization-grant-flow) names `/oauth/authorize_device`; `packages/daemon/src/providers/service.ts:129` still uses the wrong endpoint.
+- The documented GitLab endpoint, with shipped client id `ompctl_daemon`, returned HTTP 401, `invalid_client`: "Client authentication failed due to unknown client, no client authentication included, or unsupported authentication method."
+
+Each provider needs an accepted application identity and a successful device-code request, followed by authorization and repository-list proof. GitLab also needs its endpoint corrected. No provider-auth code was changed. The upstream collab-hosting dependency, terminal microphone wiring, daemon settings coverage and the remaining historical queue below were deliberately left out of this start-work path.
+
 ## Queue
 
 Everything Jason has asked for, in exactly one state. Parked is not dropped.

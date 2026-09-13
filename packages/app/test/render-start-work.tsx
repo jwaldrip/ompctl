@@ -2,8 +2,8 @@
 import "./rnw.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ReactNode } from "react";
-import { act } from "react";
+import type { ComponentProps, ReactElement, ReactNode } from "react";
+import { act, cloneElement } from "react";
 import { createRoot } from "react-dom/client";
 import { EMPTY_REMOTE_START } from "../src/remote/model.ts";
 import { EMPTY_BROWSER } from "../src/session/browser.ts";
@@ -13,6 +13,17 @@ import { resetSafeAreaInsets, setSafeAreaInsets, setWindowSize } from "./rnw.ts"
 const { FleetScreen } = await import("../src/screens/FleetScreen.tsx");
 const { BrowseScreen } = await import("../src/screens/BrowseScreen.tsx");
 const { ProjectPicker } = await import("../src/components/ProjectPicker.tsx");
+const { Keyboard } = await import("react-native");
+const keyboardListeners = new Set<(event: { endCoordinates: { height: number } }) => void>();
+const addKeyboardListener = Keyboard.addListener;
+Reflect.set(
+  Keyboard,
+  "addListener",
+  (name: string, listener: (event: { endCoordinates: { height: number } }) => void) => {
+    if (name === "keyboardWillShow") keyboardListeners.add(listener);
+    return { remove: () => keyboardListeners.delete(listener) };
+  },
+);
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -129,12 +140,27 @@ for (const [width, height] of [
       />,
     ],
   ];
+  const fleet = frames[0]?.[1] as ReactElement<ComponentProps<typeof FleetScreen>>;
+  frames.push(
+    [
+      "archived-only",
+      cloneElement(fleet, { browser: { ...EMPTY_BROWSER, sessions: [{ ...session, status: "archived" }] } }),
+    ],
+    ["empty-library", cloneElement(fleet, { browser: EMPTY_BROWSER })],
+  );
+  if (width === 390) {
+    for (const [name, node] of frames.slice(1, 4)) frames.push([name + "-keyboard", node]);
+  }
   for (const [name, node] of frames) {
     const host = document.createElement("div");
     host.id = "frame";
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => root.render(node));
+    if (name.endsWith("-keyboard"))
+      act(() => {
+        for (const listener of keyboardListeners) listener({ endCoordinates: { height: 300 } });
+      });
     const css = [...document.styleSheets].flatMap(sheet => [...sheet.cssRules].map(rule => rule.cssText)).join("\n");
     const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${name}-${width}</title>
 <style>${css}</style><style>${documentCss}</style><style>html,body{margin:0!important;padding:0!important;background:#0a0c10}#frame{width:${width}px;height:${height}px;display:flex;flex-direction:column}#frame>*{flex:1;min-height:0}</style>
@@ -145,4 +171,5 @@ for (const [width, height] of [
     host.remove();
   }
 }
+Keyboard.addListener = addKeyboardListener;
 resetSafeAreaInsets();

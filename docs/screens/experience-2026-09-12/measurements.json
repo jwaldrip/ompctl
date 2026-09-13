@@ -1,0 +1,630 @@
+{
+  "date": "2026-09-12",
+  "base": "9527b58",
+  "renderer": "packages/app/test/render-start-work.tsx",
+  "browser": "user Chrome through relay; dedicated tabs closed after capture",
+  "fonts": "bundled Archivo and IBM Plex Mono from app index.html",
+  "scope": "Real React Native Web DOM and CSS, synthetic records. Keyboard geometry uses a 300px keyboardWillShow event; physical keyboard behavior unproven. App frame bounds exclude Speechify browser-extension nodes.",
+  "before": {
+    "picker": [
+      {
+        "close": {
+          "height": 44,
+          "width": 44,
+          "x": 330,
+          "y": 9
+        },
+        "fonts": [
+          {
+            "family": "Open-Dyslexic",
+            "status": "unloaded"
+          },
+          {
+            "family": "Inter",
+            "status": "unloaded"
+          },
+          {
+            "family": "Archivo-Regular",
+            "status": "loaded"
+          },
+          {
+            "family": "Archivo-Medium",
+            "status": "loaded"
+          },
+          {
+            "family": "Archivo-SemiBold",
+            "status": "unloaded"
+          },
+          {
+            "family": "IBMPlexMono-Regular",
+            "status": "unloaded"
+          },
+          {
+            "family": "IBMPlexMono-Medium",
+            "status": "unloaded"
+          }
+        ],
+        "input": {
+          "height": 16,
+          "width": 150,
+          "x": 217.71875,
+          "y": 23
+        },
+        "sheet": {
+          "height": 233,
+          "width": 390,
+          "x": 0,
+          "y": 0
+        },
+        "width": 390
+      },
+      {
+        "close": {
+          "height": 44,
+          "width": 44,
+          "x": 419,
+          "y": 9
+        },
+        "fonts": [
+          {
+            "family": "Open-Dyslexic",
+            "status": "unloaded"
+          },
+          {
+            "family": "Inter",
+            "status": "unloaded"
+          },
+          {
+            "family": "Archivo-Regular",
+            "status": "loaded"
+          },
+          {
+            "family": "Archivo-Medium",
+            "status": "loaded"
+          },
+          {
+            "family": "Archivo-SemiBold",
+            "status": "unloaded"
+          },
+          {
+            "family": "IBMPlexMono-Regular",
+            "status": "unloaded"
+          },
+          {
+            "family": "IBMPlexMono-Medium",
+            "status": "unloaded"
+          }
+        ],
+        "input": {
+          "height": 16,
+          "width": 171.28125,
+          "x": 230.71875,
+          "y": 23
+        },
+        "sheet": {
+          "height": 234,
+          "width": 480,
+          "x": 0,
+          "y": 0
+        },
+        "width": 1024
+      }
+    ]
+  },
+  "after": [
+    {
+      "archive": null,
+      "bind": null,
+      "clone": null,
+      "close": null,
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": null,
+      "name": "no-matches",
+      "reset": {
+        "bottom": 571.5,
+        "h": 44,
+        "right": 286.140625,
+        "w": 182.296875,
+        "x": 103.84375,
+        "y": 527.5
+      },
+      "sheet": null,
+      "start": null,
+      "url": null,
+      "width": 390
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": null,
+      "close": null,
+      "frameScrollHeight": 768,
+      "frameScrollWidth": 1024,
+      "height": 768,
+      "input": null,
+      "name": "no-matches",
+      "reset": {
+        "bottom": 550.5,
+        "h": 44,
+        "right": 603.140625,
+        "w": 182.296875,
+        "x": 420.84375,
+        "y": 506.5
+      },
+      "sheet": null,
+      "start": null,
+      "url": null,
+      "width": 1024
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": null,
+      "close": {
+        "bottom": 576,
+        "h": 44,
+        "right": 374,
+        "w": 44,
+        "x": 330,
+        "y": 532
+      },
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": {
+        "bottom": 629,
+        "h": 44,
+        "right": 365,
+        "w": 324,
+        "x": 41,
+        "y": 585
+      },
+      "name": "project-picker",
+      "reset": null,
+      "sheet": {
+        "bottom": 844,
+        "h": 321,
+        "right": 390,
+        "w": 390,
+        "x": 0,
+        "y": 523
+      },
+      "start": null,
+      "url": null,
+      "width": 390
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": null,
+      "close": {
+        "bottom": 293,
+        "h": 44,
+        "right": 735,
+        "w": 44,
+        "x": 691,
+        "y": 249
+      },
+      "frameScrollHeight": 768,
+      "frameScrollWidth": 1024,
+      "height": 768,
+      "input": {
+        "bottom": 346,
+        "h": 44,
+        "right": 726,
+        "w": 412,
+        "x": 314,
+        "y": 302
+      },
+      "name": "project-picker",
+      "reset": null,
+      "sheet": {
+        "bottom": 528,
+        "h": 288,
+        "right": 752,
+        "w": 480,
+        "x": 272,
+        "y": 240
+      },
+      "start": null,
+      "url": null,
+      "width": 1024
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": {
+        "bottom": 798,
+        "h": 44,
+        "right": 374,
+        "w": 80.578125,
+        "x": 293.421875,
+        "y": 754
+      },
+      "close": null,
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": null,
+      "name": "new-session",
+      "reset": null,
+      "sheet": null,
+      "start": {
+        "bottom": 722,
+        "h": 44,
+        "right": 374,
+        "w": 358,
+        "x": 16,
+        "y": 678
+      },
+      "url": {
+        "bottom": 798,
+        "h": 44,
+        "right": 285.421875,
+        "w": 269.421875,
+        "x": 16,
+        "y": 754
+      },
+      "width": 390
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": {
+        "bottom": 756,
+        "h": 44,
+        "right": 1008,
+        "w": 80.578125,
+        "x": 927.421875,
+        "y": 712
+      },
+      "close": null,
+      "frameScrollHeight": 768,
+      "frameScrollWidth": 1024,
+      "height": 768,
+      "input": null,
+      "name": "new-session",
+      "reset": null,
+      "sheet": null,
+      "start": {
+        "bottom": 680,
+        "h": 44,
+        "right": 1008,
+        "w": 992,
+        "x": 16,
+        "y": 636
+      },
+      "url": {
+        "bottom": 756,
+        "h": 44,
+        "right": 919.421875,
+        "w": 903.421875,
+        "x": 16,
+        "y": 712
+      },
+      "width": 1024
+    },
+    {
+      "archive": null,
+      "bind": {
+        "bottom": 698,
+        "h": 44,
+        "right": 374,
+        "w": 358,
+        "x": 16,
+        "y": 654
+      },
+      "clone": {
+        "bottom": 798,
+        "h": 44,
+        "right": 374,
+        "w": 80.578125,
+        "x": 293.421875,
+        "y": 754
+      },
+      "close": null,
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": null,
+      "name": "bound-folder",
+      "reset": null,
+      "sheet": null,
+      "start": null,
+      "url": {
+        "bottom": 798,
+        "h": 44,
+        "right": 285.421875,
+        "w": 269.421875,
+        "x": 16,
+        "y": 754
+      },
+      "width": 390
+    },
+    {
+      "archive": null,
+      "bind": {
+        "bottom": 656,
+        "h": 44,
+        "right": 1008,
+        "w": 992,
+        "x": 16,
+        "y": 612
+      },
+      "clone": {
+        "bottom": 756,
+        "h": 44,
+        "right": 1008,
+        "w": 80.578125,
+        "x": 927.421875,
+        "y": 712
+      },
+      "close": null,
+      "frameScrollHeight": 768,
+      "frameScrollWidth": 1024,
+      "height": 768,
+      "input": null,
+      "name": "bound-folder",
+      "reset": null,
+      "sheet": null,
+      "start": null,
+      "url": {
+        "bottom": 756,
+        "h": 44,
+        "right": 919.421875,
+        "w": 903.421875,
+        "x": 16,
+        "y": 712
+      },
+      "width": 1024
+    },
+    {
+      "archive": {
+        "bottom": 571.5,
+        "h": 44,
+        "right": 271.65625,
+        "w": 153.328125,
+        "x": 118.328125,
+        "y": 527.5
+      },
+      "bind": null,
+      "clone": null,
+      "close": null,
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": null,
+      "name": "archived-only",
+      "reset": null,
+      "sheet": null,
+      "start": null,
+      "url": null,
+      "width": 390
+    },
+    {
+      "archive": {
+        "bottom": 550.5,
+        "h": 44,
+        "right": 588.65625,
+        "w": 153.328125,
+        "x": 435.328125,
+        "y": 506.5
+      },
+      "bind": null,
+      "clone": null,
+      "close": null,
+      "frameScrollHeight": 768,
+      "frameScrollWidth": 1024,
+      "height": 768,
+      "input": null,
+      "name": "archived-only",
+      "reset": null,
+      "sheet": null,
+      "start": null,
+      "url": null,
+      "width": 1024
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": null,
+      "close": null,
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": null,
+      "name": "empty-library",
+      "reset": null,
+      "sheet": null,
+      "start": null,
+      "url": null,
+      "width": 390
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": null,
+      "close": null,
+      "frameScrollHeight": 768,
+      "frameScrollWidth": 1024,
+      "height": 768,
+      "input": null,
+      "name": "empty-library",
+      "reset": null,
+      "sheet": null,
+      "start": null,
+      "url": null,
+      "width": 1024
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": null,
+      "close": {
+        "bottom": 310,
+        "h": 44,
+        "right": 374,
+        "w": 44,
+        "x": 330,
+        "y": 266
+      },
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": {
+        "bottom": 363,
+        "h": 44,
+        "right": 365,
+        "w": 324,
+        "x": 41,
+        "y": 319
+      },
+      "name": "project-picker-keyboard",
+      "reset": null,
+      "sheet": {
+        "bottom": 544,
+        "h": 287,
+        "right": 390,
+        "w": 390,
+        "x": 0,
+        "y": 257
+      },
+      "start": null,
+      "url": null,
+      "width": 390
+    },
+    {
+      "archive": null,
+      "bind": null,
+      "clone": {
+        "bottom": 532,
+        "h": 44,
+        "right": 374,
+        "w": 80.578125,
+        "x": 293.421875,
+        "y": 488
+      },
+      "close": null,
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": null,
+      "name": "new-session-keyboard",
+      "reset": null,
+      "sheet": null,
+      "start": {
+        "bottom": 456,
+        "h": 44,
+        "right": 374,
+        "w": 358,
+        "x": 16,
+        "y": 412
+      },
+      "url": {
+        "bottom": 532,
+        "h": 44,
+        "right": 285.421875,
+        "w": 269.421875,
+        "x": 16,
+        "y": 488
+      },
+      "width": 390
+    },
+    {
+      "archive": null,
+      "bind": {
+        "bottom": 432,
+        "h": 44,
+        "right": 374,
+        "w": 358,
+        "x": 16,
+        "y": 388
+      },
+      "clone": {
+        "bottom": 532,
+        "h": 44,
+        "right": 374,
+        "w": 80.578125,
+        "x": 293.421875,
+        "y": 488
+      },
+      "close": null,
+      "frameScrollHeight": 844,
+      "frameScrollWidth": 390,
+      "height": 844,
+      "input": null,
+      "name": "bound-folder-keyboard",
+      "reset": null,
+      "sheet": null,
+      "start": null,
+      "url": {
+        "bottom": 532,
+        "h": 44,
+        "right": 285.421875,
+        "w": 269.421875,
+        "x": 16,
+        "y": 488
+      },
+      "width": 390
+    }
+  ],
+  "providerEvidence": [
+    {
+      "provider": "github",
+      "url": "https://github.com/login/device/code",
+      "clientId": "Iv1.802871b6354446b7",
+      "status": 404,
+      "contentType": "application/json; charset=utf-8",
+      "body": "{\"error\":\"Not Found\"}"
+    },
+    {
+      "provider": "gitlab-shipped",
+      "url": "https://gitlab.com/oauth/device/code",
+      "clientId": "ompctl_daemon",
+      "status": 404,
+      "contentType": "text/html; charset=utf-8",
+      "body": "<!DOCTYPE html>\n<html>\n<head>\n  <meta content=\"width=device-width, initial-scale=1\" name=\"viewport\">\n  <title>The page you're looking for could not be found (404)</title>\n  <style>\n    body {\n      color: #333238;\n      text-align: center;\n      font-family: \"Nunito Sans\", -apple-system, \".SFNSText-Regular\", \"San Francisco\", BlinkMacSystemFont, \"Segoe UI\", \"Helvetica Neue\", Helvetica, Arial, sans-serif;\n    }\n\n    h1 {\n      font-size: 1.75rem;\n      line-height: 2.25rem;\n      margin: 1rem 0;\n    }\n\n    p {\n      margin-bottom: .5rem;\n    }\n\n    img {\n      display: block;\n      margin: 0 auto;\n    }\n\n    a {\n      text-decoration: none;\n      color: #1068bf;\n    }\n\n    a:hover {\n      text-decoration: underline;\n    }\n\n    .error-container {\n      max-width: 65ch;\n      margin: auto;\n      padding: 1rem 0;\n    }\n\n    .action-container {\n      margin-top: 1.5rem;\n    }\n\n    .go-back {\n      display: none;\n    }\n  </style>\n</head>\n\n<body>\n  <div class=\"error-container\">\n    <img src='/-/error-illustrations/error-404-lg.svg' alt=\"404 error\"/>\n    <h1>404: Page not found</h1>\n    <p>Make sure the address is correct and the page has not moved.</p>\n    <p>Please contact your GitLab administrator if you think this is a mistake.</p>\n    <div class=\"action-container\">\n      <a href=\"javascript:history.back()\" class=\"js-go-back go-back\">Go back</a>\n    </div>\n  </div>\n  <script>\n    (function () {\n      var goBack = document.querySelector('.js-go-back');\n\n      if (history.length > 1) {\n        goBack.style.display = 'inline';\n      }\n    })();\n  </script>\n</body>\n</html>\n"
+    },
+    {
+      "provider": "gitlab-documented",
+      "url": "https://gitlab.com/oauth/authorize_device",
+      "clientId": "ompctl_daemon",
+      "status": 401,
+      "contentType": "application/json; charset=utf-8",
+      "body": "{\"error\":\"invalid_client\",\"error_description\":\"Client authentication failed due to unknown client, no client authentication included, or unsupported authentication method.\"}"
+    }
+  ],
+  "gitlabDocs": "https://docs.gitlab.com/api/oauth2/#device-authorization-grant-flow",
+  "scratchSmoke": {
+    "gatewayPort": 62983,
+    "clonedFile": "start-work-sentinel",
+    "agentCount": 1,
+    "cwdMatchesClone": true,
+    "openedSessionSurface": true,
+    "historyRead": true,
+    "webviewNotAttached": false,
+    "errors": [
+      "stats_unavailable"
+    ],
+    "acpHost": "scripted fixture, no model invocation"
+  },
+  "regressionsBefore": [
+    {
+      "artifact": "artifact://10855",
+      "pass": 0,
+      "fail": 3
+    },
+    {
+      "artifact": "artifact://10876",
+      "pass": 0,
+      "fail": 2
+    },
+    {
+      "command": "bun test --preload ./test/preload-react.ts test/nav-shell.test.tsx --test-name-pattern \"created on the start route\"",
+      "failure": "Expected SessionScreen to exist; received null. After navigation guard alone: expected initial history request; received [].",
+      "intermediateArtifact": "artifact://10947"
+    }
+  ]
+}
