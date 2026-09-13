@@ -10,23 +10,15 @@
  * selection).
  */
 
-import type { GitProvider, ProviderRepo } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
-import {
-  FlatList,
-  Modal,
-  Pressable,
-  type PressableStateCallbackType,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { FlatList, Modal, Pressable, type PressableStateCallbackType, StyleSheet, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
 import { Body, Kicker, Label, Title } from "../design/text.tsx";
-import { brand, ground, ink, radius, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+import { brand, ground, ink, radius, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
+import { useKeyboardInset } from "../design/useKeyboardInset.ts";
 import type { BrowserSession } from "../session/browser.ts";
 
 /**
@@ -128,6 +120,8 @@ export function ProjectPicker(props: ProjectPickerProps): JSX.Element {
   };
   const [query, setQuery] = useState(initialQuery);
   const isTablet = useIsTablet();
+  const insets = useSafeAreaInsets();
+  const keyboard = useKeyboardInset();
 
   const allProjects = useMemo(() => summarizeProjects(sessions), [sessions]);
 
@@ -199,156 +193,175 @@ export function ProjectPicker(props: ProjectPickerProps): JSX.Element {
       ) : null}
       {open ? (
         <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
-          <Pressable
-            testID="project-picker-backdrop"
-            accessibilityLabel="Close project picker"
-            accessibilityRole="button"
-            onPress={() => setOpen(false)}
-            style={styles.backdrop}
-          />
           <View
-            testID={isTablet ? "project-picker-popover" : "project-picker-sheet"}
-            style={isTablet ? styles.popoverSurface : styles.sheetSurface}
+            style={[
+              isTablet ? styles.popoverOverlay : styles.sheetOverlay,
+              { paddingTop: insets.top, paddingBottom: keyboard },
+            ]}
+            pointerEvents="box-none"
           >
-            <View style={styles.header}>
-              {title !== undefined || mode === "start" ? (
-                <View style={styles.titleBox}>
-                  <Kicker color={ink.muted}>{title ?? "Start session in project"}</Kicker>
-                </View>
-              ) : null}
-              <View style={styles.searchBox} testID="project-picker-search-bar">
-                <Glyph name="search" size={12} color={ink.faint} />
-                <TextInput
-                  testID="project-picker-search"
-                  style={styles.searchInput}
-                  placeholder="Filter projects..."
-                  placeholderTextColor={ink.faint}
-                  value={query}
-                  onChangeText={setQuery}
-                  accessibilityLabel="Filter projects"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="search"
-                />
-                {query.length > 0 ? (
+            <Pressable
+              testID="project-picker-backdrop"
+              accessibilityLabel="Close project picker"
+              accessibilityRole="button"
+              onPress={() => setOpen(false)}
+              style={styles.backdrop}
+            />
+            <View
+              testID={isTablet ? "project-picker-popover" : "project-picker-sheet"}
+              style={[
+                isTablet ? styles.popoverSurface : styles.sheetSurface,
+                { paddingBottom: keyboard > 0 ? 0 : insets.bottom },
+              ]}
+            >
+              <View style={styles.header}>
+                <View style={styles.heading}>
+                  <View style={styles.titleBox}>
+                    <Kicker color={ink.muted}>{mode === "start" ? "New session" : "Filter sessions"}</Kicker>
+                    <Title heading>{title ?? "Choose a project"}</Title>
+                  </View>
                   <Pressable
-                    testID="project-picker-search-clear"
+                    testID="project-picker-close"
                     accessibilityRole="button"
-                    accessibilityLabel="Clear search"
-                    onPress={() => setQuery("")}
-                    style={styles.clearBtn}
+                    accessibilityLabel="Close"
+                    onPress={() => setOpen(false)}
+                    style={closeBtnStyle}
                   >
-                    <Glyph name="deny" size={10} color={ink.faint} />
+                    <Glyph name="deny" size={12} color={ink.muted} />
                   </Pressable>
-                ) : null}
-              </View>
-              <Pressable
-                testID="project-picker-close"
-                accessibilityRole="button"
-                accessibilityLabel="Close"
-                onPress={() => setOpen(false)}
-                style={closeBtnStyle}
-              >
-                <Glyph name="deny" size={12} color={ink.muted} />
-              </Pressable>
-            </View>
-
-            <FlatList
-              testID="project-picker-list"
-              data={filteredProjects}
-              keyExtractor={item => item.cwd}
-              keyboardShouldPersistTaps="handled"
-              style={styles.list}
-              ListHeaderComponent={
-                mode === "start" ? (
-                  onBrowseFolders !== undefined ? (
+                </View>
+                <View style={styles.searchBox} testID="project-picker-search-bar">
+                  <Glyph name="search" size={12} color={ink.faint} />
+                  <TextInput
+                    testID="project-picker-search"
+                    style={styles.searchInput}
+                    placeholder="Filter projects..."
+                    placeholderTextColor={ink.faint}
+                    value={query}
+                    onChangeText={setQuery}
+                    accessibilityLabel="Filter projects"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="search"
+                  />
+                  {query.length > 0 ? (
                     <Pressable
-                      testID="project-picker-browse-folders"
+                      testID="project-picker-search-clear"
                       accessibilityRole="button"
-                      accessibilityLabel="Browse folders on daemon"
-                      onPress={() => {
-                        handleSelect(null);
-                        onBrowseFolders();
-                      }}
-                      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                      accessibilityLabel="Clear search"
+                      onPress={() => setQuery("")}
+                      style={styles.clearBtn}
+                    >
+                      <Glyph name="deny" size={10} color={ink.faint} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+
+              <FlatList
+                testID="project-picker-list"
+                data={filteredProjects}
+                keyExtractor={item => item.cwd}
+                keyboardShouldPersistTaps="handled"
+                style={styles.list}
+                ListEmptyComponent={
+                  <Label color={ink.muted} style={styles.row}>
+                    {query.trim()
+                      ? "No projects match this search."
+                      : "No recent projects. Browse folders to choose one."}
+                  </Label>
+                }
+                ListHeaderComponent={
+                  mode === "start" ? (
+                    onBrowseFolders !== undefined ? (
+                      <Pressable
+                        testID="project-picker-browse-folders"
+                        accessibilityRole="button"
+                        accessibilityLabel="Browse folders on daemon"
+                        onPress={() => {
+                          handleSelect(null);
+                          onBrowseFolders();
+                        }}
+                        style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                      >
+                        <View style={styles.rowMain}>
+                          <View style={styles.rowNameGroup}>
+                            <Glyph name="folder" size={13} color={brand.azure} />
+                            <Body color={brand.azure} numberOfLines={1}>
+                              Browse other folders...
+                            </Body>
+                          </View>
+                          <Label color={ink.faint} numberOfLines={1}>
+                            Choose any directory on the daemon
+                          </Label>
+                        </View>
+                        <Glyph name="chevron" size={11} color={ink.faint} />
+                      </Pressable>
+                    ) : null
+                  ) : (
+                    <Pressable
+                      testID="project-picker-item-all"
+                      accessibilityRole="button"
+                      accessibilityLabel="All projects"
+                      accessibilityState={{ selected: selectedProject === null }}
+                      onPress={() => handleSelect(null)}
+                      style={({ pressed }) => [
+                        styles.row,
+                        selectedProject === null && styles.rowSelected,
+                        pressed && styles.rowPressed,
+                      ]}
                     >
                       <View style={styles.rowMain}>
                         <View style={styles.rowNameGroup}>
-                          <Glyph name="folder" size={13} color={brand.azure} />
-                          <Body color={brand.azure} numberOfLines={1}>
-                            Browse other folders...
+                          <Glyph name="folder" size={13} color={selectedProject === null ? brand.azure : ink.muted} />
+                          <Body color={selectedProject === null ? brand.azure : ink.bright} numberOfLines={1}>
+                            All projects
                           </Body>
                         </View>
                         <Label color={ink.faint} numberOfLines={1}>
-                          Choose any directory on the daemon
+                          Every session across the fleet
                         </Label>
                       </View>
-                      <Glyph name="chevron" size={11} color={ink.faint} />
+                      <Kicker color={selectedProject === null ? brand.azure : ink.faint}>
+                        {`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`}
+                      </Kicker>
                     </Pressable>
-                  ) : null
-                ) : (
-                  <Pressable
-                    testID="project-picker-item-all"
-                    accessibilityRole="button"
-                    accessibilityLabel="All projects"
-                    accessibilityState={{ selected: selectedProject === null }}
-                    onPress={() => handleSelect(null)}
-                    style={({ pressed }) => [
-                      styles.row,
-                      selectedProject === null && styles.rowSelected,
-                      pressed && styles.rowPressed,
-                    ]}
-                  >
-                    <View style={styles.rowMain}>
-                      <View style={styles.rowNameGroup}>
-                        <Glyph name="folder" size={13} color={selectedProject === null ? brand.azure : ink.muted} />
-                        <Body color={selectedProject === null ? brand.azure : ink.bright} numberOfLines={1}>
-                          All projects
-                        </Body>
+                  )
+                }
+                renderItem={({ item }) => {
+                  const isSelected = selectedProject === item.cwd;
+                  return (
+                    <Pressable
+                      testID={`project-picker-item-${item.basename}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={item.cwd}
+                      accessibilityState={{ selected: isSelected }}
+                      onPress={() => handleSelect(item.cwd)}
+                      style={({ pressed }) => [
+                        styles.row,
+                        isSelected && styles.rowSelected,
+                        pressed && styles.rowPressed,
+                      ]}
+                    >
+                      <View style={styles.rowMain}>
+                        <View style={styles.rowNameGroup}>
+                          <Glyph name="folder" size={13} color={isSelected ? brand.azure : ink.muted} />
+                          <Body color={isSelected ? brand.azure : ink.bright} numberOfLines={1}>
+                            {item.basename}
+                          </Body>
+                        </View>
+                        <Label color={ink.muted} numberOfLines={1}>
+                          {item.cwd}
+                        </Label>
                       </View>
-                      <Label color={ink.faint} numberOfLines={1}>
-                        Every session across the fleet
-                      </Label>
-                    </View>
-                    <Kicker color={selectedProject === null ? brand.azure : ink.faint}>
-                      {`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`}
-                    </Kicker>
-                  </Pressable>
-                )
-              }
-              renderItem={({ item }) => {
-                const isSelected = selectedProject === item.cwd;
-                return (
-                  <Pressable
-                    testID={`project-picker-item-${item.basename}`}
-                    accessibilityRole="button"
-                    accessibilityLabel={item.cwd}
-                    accessibilityState={{ selected: isSelected }}
-                    onPress={() => handleSelect(item.cwd)}
-                    style={({ pressed }) => [
-                      styles.row,
-                      isSelected && styles.rowSelected,
-                      pressed && styles.rowPressed,
-                    ]}
-                  >
-                    <View style={styles.rowMain}>
-                      <View style={styles.rowNameGroup}>
-                        <Glyph name="folder" size={13} color={isSelected ? brand.azure : ink.muted} />
-                        <Body color={isSelected ? brand.azure : ink.bright} numberOfLines={1}>
-                          {item.basename}
-                        </Body>
-                      </View>
-                      <Label color={ink.muted} numberOfLines={1}>
-                        {item.cwd}
-                      </Label>
-                    </View>
-                    <Kicker color={isSelected ? brand.azure : ink.faint}>
-                      {`${item.sessionCount} ${item.sessionCount === 1 ? "session" : "sessions"}`}
-                    </Kicker>
-                  </Pressable>
-                );
-              }}
-            />
+                      <Kicker color={isSelected ? brand.azure : ink.faint}>
+                        {`${item.sessionCount} ${item.sessionCount === 1 ? "session" : "sessions"}`}
+                      </Kicker>
+                    </Pressable>
+                  );
+                }}
+              />
+            </View>
           </View>
         </Modal>
       ) : null}
@@ -446,8 +459,8 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
+    flexDirection: "column",
+    alignItems: "stretch",
     gap: space.snug,
     paddingHorizontal: space.wide,
     paddingVertical: space.snug,
@@ -455,11 +468,11 @@ const styles = StyleSheet.create({
     borderBottomColor: ground.line,
   },
   searchBox: {
-    flex: 1,
+    flexShrink: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: space.tight,
-    height: 34,
+    minHeight: TOUCH_TARGET,
     paddingHorizontal: space.snug,
     borderRadius: radius.control,
     backgroundColor: ground.base,
@@ -468,6 +481,8 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
+    minHeight: TOUCH_TARGET,
     color: ink.bright,
     fontSize: 13,
     paddingVertical: 0,
@@ -517,309 +532,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.tight,
   },
-  titleBox: {
-    paddingBottom: space.hair,
-  },
-});
-
-export interface RepositoryPickerProps {
-  /** Injected list of repositories, for testing or static feeds. */
-  repos?: readonly ProviderRepo[];
-  /** Whether a Git provider is connected. If false, falls back to URL entry. */
-  connected?: boolean;
-  /** Active provider, default "github". */
-  provider?: GitProvider;
-  /** Force open state for testing or inline render. */
-  defaultOpen?: boolean;
-  /** Render inline without Modal wrapper (for testing or embedding in screens). */
-  inline?: boolean;
-  initialQuery?: string;
-  onSelectRepo?: (repo: ProviderRepo) => void;
-  onSelectUrl?: (url: string) => void;
-  onBack?: () => void;
-}
-
-export function RepositoryPicker({
-  repos = [],
-  connected = true,
-  provider = "github",
-  defaultOpen = false,
-  inline = false,
-  initialQuery = "",
-  onSelectRepo,
-  onSelectUrl,
-  onBack,
-}: RepositoryPickerProps): JSX.Element {
-  const [open, setOpen] = useState(defaultOpen);
-  const [query, setQuery] = useState(initialQuery);
-  const [urlMode, setUrlMode] = useState(!connected);
-  const [manualUrl, setManualUrl] = useState("");
-  const isTablet = useIsTablet();
-
-  const filteredRepos = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return repos;
-    return repos.filter(
-      r =>
-        r.name.toLowerCase().includes(q) ||
-        r.fullName.toLowerCase().includes(q) ||
-        (r.description?.toLowerCase().includes(q) ?? false),
-    );
-  }, [repos, query]);
-
-  const showUrlInput = !connected || urlMode;
-
-  const content = (
-    <View
-      testID={isTablet ? "repo-picker-popover" : "repo-picker-sheet"}
-      style={isTablet ? styles.popoverSurface : styles.sheetSurface}
-    >
-      <View style={styles.header}>
-        <View style={repoStyles.headerCopy}>
-          <Kicker>
-            {showUrlInput ? "Clone from URL" : `Clone from ${provider === "gitlab" ? "GitLab" : "GitHub"}`}
-          </Kicker>
-          <Title heading numberOfLines={1}>
-            {showUrlInput ? "Enter repository URL" : "Choose a repository"}
-          </Title>
-        </View>
-        <Pressable
-          testID="repo-picker-close"
-          accessibilityRole="button"
-          accessibilityLabel="Close"
-          onPress={() => {
-            setOpen(false);
-            onBack?.();
-          }}
-          style={closeBtnStyle}
-        >
-          <Glyph name="deny" size={12} color={ink.muted} />
-        </Pressable>
-      </View>
-
-      {showUrlInput ? (
-        <View style={repoStyles.urlContainer} testID="repo-picker-url-fallback">
-          <Label color={ink.muted} style={repoStyles.urlHelpText}>
-            {!connected
-              ? "No GitHub or GitLab account is connected. You can still clone any repository by pasting its URL."
-              : "Paste the repository clone URL below."}
-          </Label>
-          <View style={repoStyles.urlInputRow}>
-            <TextInput
-              testID="repo-picker-url-input"
-              style={repoStyles.urlInput}
-              placeholder="git@github.com:you/repo.git"
-              placeholderTextColor={ink.faint}
-              value={manualUrl}
-              onChangeText={setManualUrl}
-              accessibilityLabel="Repository URL to clone"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Pressable
-              testID="repo-picker-url-submit"
-              accessibilityRole="button"
-              accessibilityState={{ disabled: manualUrl.trim().length === 0 }}
-              disabled={manualUrl.trim().length === 0}
-              onPress={() => {
-                onSelectUrl?.(manualUrl.trim());
-                setOpen(false);
-              }}
-              style={[repoStyles.urlSubmitBtn, manualUrl.trim().length === 0 && repoStyles.disabled]}
-            >
-              <Glyph name="repo" color={ink.inverse} size={12} />
-              <Text style={repoStyles.urlSubmitText}>Clone URL</Text>
-            </Pressable>
-          </View>
-          {connected ? (
-            <Pressable
-              testID="repo-picker-toggle-list"
-              accessibilityRole="button"
-              onPress={() => setUrlMode(false)}
-              style={repoStyles.switchModeBtn}
-            >
-              <Label color={brand.azure}>Back to repository list</Label>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : (
-        <>
-          <View style={styles.searchBox} testID="repo-picker-search-bar">
-            <Glyph name="search" size={12} color={ink.faint} />
-            <TextInput
-              testID="repo-picker-search"
-              style={styles.searchInput}
-              placeholder="Filter repositories..."
-              placeholderTextColor={ink.faint}
-              value={query}
-              onChangeText={setQuery}
-              accessibilityLabel="Filter repositories"
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="search"
-            />
-            {query.length > 0 ? (
-              <Pressable
-                testID="repo-picker-search-clear"
-                accessibilityRole="button"
-                accessibilityLabel="Clear search"
-                onPress={() => setQuery("")}
-                style={styles.clearBtn}
-              >
-                <Glyph name="deny" size={10} color={ink.faint} />
-              </Pressable>
-            ) : null}
-          </View>
-
-          <FlatList
-            testID="repo-picker-list"
-            data={filteredRepos}
-            keyExtractor={item => item.id || item.fullName}
-            keyboardShouldPersistTaps="handled"
-            style={styles.list}
-            ListFooterComponent={
-              <Pressable
-                testID="repo-picker-toggle-url"
-                accessibilityRole="button"
-                onPress={() => setUrlMode(true)}
-                style={repoStyles.footerUrlBtn}
-              >
-                <Label color={brand.azure}>Paste a clone URL instead</Label>
-              </Pressable>
-            }
-            renderItem={({ item }) => (
-              <Pressable
-                testID={`repo-picker-item-${item.name}`}
-                accessibilityRole="button"
-                accessibilityLabel={`${item.fullName}, ${item.isPrivate ? "private" : "public"}`}
-                onPress={() => {
-                  onSelectRepo?.(item);
-                  setOpen(false);
-                }}
-                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-              >
-                <View style={styles.rowMain}>
-                  <View style={styles.rowNameGroup}>
-                    <Glyph name="repo" size={13} color={item.isPrivate ? brand.azure : ink.plain} />
-                    <Body color={ink.bright} numberOfLines={1}>
-                      {item.name}
-                    </Body>
-                    <Label color={item.isPrivate ? signal.holding : signal.ready} style={repoStyles.badge}>
-                      {item.isPrivate ? "private" : "public"}
-                    </Label>
-                  </View>
-                  {item.description ? (
-                    <Label color={ink.muted} numberOfLines={1}>
-                      {item.description}
-                    </Label>
-                  ) : null}
-                  <View style={repoStyles.metaRow}>
-                    <Kicker color={ink.faint}>{item.fullName}</Kicker>
-                    <Label color={ink.faint}>•</Label>
-                    <Label color={ink.faint}>{item.defaultBranch}</Label>
-                  </View>
-                </View>
-                <Glyph name="chevron" size={11} color={ink.faint} />
-              </Pressable>
-            )}
-          />
-        </>
-      )}
-    </View>
-  );
-
-  if (inline) {
-    return content;
-  }
-
-  return (
-    <View style={styles.container}>
-      {open ? (
-        <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
-          <Pressable
-            testID="repo-picker-backdrop"
-            accessibilityLabel="Close repository picker"
-            accessibilityRole="button"
-            onPress={() => setOpen(false)}
-            style={styles.backdrop}
-          />
-          {content}
-        </Modal>
-      ) : null}
-    </View>
-  );
-}
-
-export { RepositoryPicker as RepoPicker };
-
-const repoStyles = StyleSheet.create({
-  headerCopy: {
-    flex: 1,
-    gap: space.hair,
-  },
-  urlContainer: {
-    padding: space.step,
-    gap: space.snug,
-  },
-  urlHelpText: {
-    marginBottom: space.hair,
-  },
-  urlInputRow: {
-    flexDirection: "row",
-    gap: space.snug,
-    alignItems: "center",
-  },
-  urlInput: {
-    flex: 1,
-    height: TOUCH_TARGET,
-    backgroundColor: ground.base,
-    borderColor: ground.edge,
-    borderWidth: stroke.hair,
-    borderRadius: radius.control,
-    paddingHorizontal: space.snug,
-    color: ink.bright,
-    ...type.body,
-  },
-  urlSubmitBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.tight,
-    backgroundColor: brand.azure,
-    height: TOUCH_TARGET,
-    paddingHorizontal: space.step,
-    borderRadius: radius.control,
-    justifyContent: "center",
-  },
-  urlSubmitText: {
-    ...type.label,
-    color: ink.inverse,
-    fontWeight: "600",
-  },
-  disabled: {
-    opacity: 0.45,
-  },
-  switchModeBtn: {
-    paddingVertical: space.snug,
-    alignItems: "center",
-  },
-  footerUrlBtn: {
-    paddingVertical: space.step,
-    alignItems: "center",
-    borderTopColor: ground.line,
-    borderTopWidth: stroke.hair,
-  },
-  badge: {
-    fontSize: 10,
-    textTransform: "uppercase",
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 3,
-    backgroundColor: ground.surface,
-  },
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.tight,
-    marginTop: 2,
-  },
+  heading: { flexDirection: "row", alignItems: "center", gap: space.snug },
+  titleBox: { flex: 1, minWidth: 0, gap: space.hair },
 });

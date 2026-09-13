@@ -181,6 +181,7 @@ describe("every scroll field in the rendered screens is flush", () => {
               { name: "b", kind: "dir", gitRepo: true },
             ],
             loading: false,
+            listed: true,
             bounded: false,
             notice: "a notice, so that band renders too",
             clone: null,

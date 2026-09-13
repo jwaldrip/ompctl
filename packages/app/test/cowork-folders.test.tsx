@@ -188,7 +188,7 @@ function mount(withClient: boolean = true): Harness {
 function browseToDev(h: Harness): void {
   h.press("cowork-folder-add");
   h.deliver(ROOTS_LISTING);
-  h.press(`folder-picker-entry-${ROOT}`);
+  h.press(`browse-entry-${ROOT}`);
   h.deliver(DEV_LISTING);
 }
 
@@ -221,6 +221,53 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("the folder picker", () => {
+  test("a failed first listing never claims the daemon has no browsable directories", () => {
+    const h = mount();
+    try {
+      h.press("cowork-folder-add");
+      h.deliver({ t: "error", code: "unauthorized", message: "fs_list requires read scope" });
+      expect(h.host.textContent).toContain("fs_list requires read scope");
+      expect(h.host.textContent).not.toContain("configured to browse nothing");
+    } finally {
+      h.unmount();
+    }
+  });
+
+  test("a clone can be bound at its actual destination without starting a session in its parent", () => {
+    const h = mount();
+    try {
+      browseToDev(h);
+      const input = h.host.querySelector<HTMLInputElement>('[aria-label="Repository url to clone"]');
+      expect(input).not.toBeNull();
+      if (input === null) throw new Error("No clone URL field on the directory chooser");
+      const key = Object.keys(input).find(name => name.startsWith("__reactProps$"));
+      if (key === undefined) throw new Error("Input has no React props");
+      const props = Reflect.get(input, key) as { onChange: (event: unknown) => void };
+      act(() => {
+        input.value = "https://example.com/team/project.git";
+        props.onChange({
+          target: input,
+          currentTarget: input,
+          nativeEvent: { text: input.value },
+          preventDefault() {},
+          stopPropagation() {},
+        });
+      });
+      h.press("browse-clone-here");
+      expect(h.socket.framesOfType("repo_clone")).toEqual([
+        { t: "repo_clone", url: "https://example.com/team/project.git", parent: DEV },
+      ]);
+      h.deliver({ t: "clone_done", cloneId: "clone-1", path: DEV + "/project" });
+      h.press("clone-open");
+      expect(h.socket.framesOfType("session_create")).toEqual([]);
+      expect(h.socket.framesOfType("fs_list").at(-1)).toEqual({ t: "fs_list", path: DEV + "/project" });
+      h.deliver({ t: "fs_listing", path: DEV + "/project", parent: DEV, roots: [ROOT], entries: [], bounded: false });
+      h.press("browse-bind-folder");
+      expect(h.query("cowork-folder-" + DEV + "/project")).not.toBeNull();
+    } finally {
+      h.unmount();
+    }
+  });
   test("asks for the roots on open and renders a directory's entries with their kinds", () => {
     const h = mount();
     h.press("cowork-folder-add");
@@ -228,16 +275,16 @@ describe("the folder picker", () => {
     expect(h.socket.framesOfType("fs_list")).toEqual([{ t: "fs_list" }]);
 
     h.deliver(ROOTS_LISTING);
-    h.press(`folder-picker-entry-${ROOT}`);
+    h.press(`browse-entry-${ROOT}`);
     expect(h.socket.framesOfType("fs_list").at(-1)).toEqual({ t: "fs_list", path: ROOT });
 
     h.deliver(DEV_LISTING);
-    expect(h.text("folder-picker-title")).toBe("dev");
-    expect(h.text("folder-picker-path")).toBe(DEV);
-    expect(h.query("folder-picker-entry-ompctl")).not.toBeNull();
-    expect(h.query("folder-picker-entry-scratch")).not.toBeNull();
-    expect(h.query("folder-picker-entry-pointer")).not.toBeNull();
-    expect(h.query("folder-picker-entry-notes.md")).not.toBeNull();
+    expect(h.text("browse-title")).toBe("dev");
+    expect(h.text("browse-path")).toBe(DEV);
+    expect(h.query("browse-entry-ompctl")).not.toBeNull();
+    expect(h.query("browse-entry-scratch")).not.toBeNull();
+    expect(h.query("browse-entry-pointer")).not.toBeNull();
+    expect(h.query("browse-entry-notes.md")).not.toBeNull();
 
     h.unmount();
   });
@@ -249,10 +296,10 @@ describe("the folder picker", () => {
     const h = mount();
     browseToDev(h);
     const before = h.socket.framesOfType("fs_list").length;
-    h.press("folder-picker-entry-pointer");
-    h.press("folder-picker-entry-notes.md");
+    h.press("browse-entry-pointer");
+    h.press("browse-entry-notes.md");
     expect(h.socket.framesOfType("fs_list").length).toBe(before);
-    expect(h.text("folder-picker-entry-pointer")).toContain("not followed");
+    expect(h.text("browse-entry-pointer")).toContain("not followed");
 
     h.unmount();
   });
@@ -261,7 +308,7 @@ describe("the folder picker", () => {
     const h = mount();
     browseToDev(h);
 
-    h.press("folder-picker-up");
+    h.press("browse-up");
     expect(h.socket.framesOfType("fs_list").at(-1)).toEqual({ t: "fs_list", path: ROOT });
 
     h.unmount();
@@ -270,10 +317,10 @@ describe("the folder picker", () => {
   test("names an empty directory rather than showing a blank list", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-entry-scratch");
+    h.press("browse-entry-scratch");
     h.deliver({ t: "fs_listing", path: `${DEV}/scratch`, parent: DEV, roots: [ROOT], entries: [], bounded: false });
 
-    expect(h.text("folder-picker-empty")).toContain("Nothing in here.");
+    expect(h.text("browse-empty")).toContain("Nothing in here.");
 
     h.unmount();
   });
@@ -283,10 +330,10 @@ describe("the folder picker", () => {
     browseToDev(h);
 
     h.deliver({ t: "error", code: "out_of_roots", message: "/etc resolves outside this daemon's directories" });
-    expect(h.text("folder-picker-notice")).toContain("outside this daemon's directories");
+    expect(h.text("browse-notice")).toContain("outside this daemon's directories");
 
-    h.press("folder-picker-refresh");
-    expect(h.query("folder-picker-notice")).toBeNull();
+    h.press("browse-refresh");
+    expect(h.query("browse-notice")).toBeNull();
 
     h.unmount();
   });
@@ -296,13 +343,13 @@ describe("the folder picker", () => {
     h.press("cowork-folder-add");
     h.deliver(ROOTS_LISTING);
 
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     // Still in the picker, nothing bound: the roots view is a menu, and the
     // control answered the tap with its reason rather than a path.
-    expect(h.query("folder-picker-screen")).not.toBeNull();
+    expect(h.query("browse-screen")).not.toBeNull();
     expect(h.query(`cowork-folder-${ROOT}`)).toBeNull();
-    expect(h.text("folder-picker-confirm-hint")).toContain("Open a directory first");
+    expect(h.text("browse-bind-hint")).toContain("Open a directory first");
 
     h.unmount();
   });
@@ -311,8 +358,8 @@ describe("the folder picker", () => {
     const h = mount();
     browseToDev(h);
 
-    h.press("folder-picker-back");
-    expect(h.query("folder-picker-screen")).toBeNull();
+    h.press("browse-back");
+    expect(h.query("browse-screen")).toBeNull();
     expect(h.query(`cowork-folder-${DEV}`)).toBeNull();
 
     h.unmount();
@@ -328,9 +375,9 @@ describe("binding on the cowork screen", () => {
     const h = mount();
     browseToDev(h);
 
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
-    expect(h.query("folder-picker-screen")).toBeNull();
+    expect(h.query("browse-screen")).toBeNull();
     expect(h.text(`cowork-folder-${DEV}`)).toContain(DEV);
     // The mode the daemon will mount is on the row, not buried in a payload.
     expect(h.text(`cowork-folder-${DEV}`)).toContain("ro");
@@ -341,7 +388,7 @@ describe("binding on the cowork screen", () => {
   test("an unbind asks first and removes the folder once confirmed", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.press(`cowork-folder-unbind-${DEV}`);
 
@@ -370,9 +417,9 @@ describe("binding on the cowork screen", () => {
   test("binding the same folder twice mounts it once", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     expect(h.host.querySelectorAll(`[data-testid="cowork-folder-${DEV}"]`).length).toBe(1);
 
@@ -406,7 +453,7 @@ describe("starting the container", () => {
   test("sends the exact mounts shape the provisioner validates and reports the agent", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.press("cowork-container-start");
 
@@ -464,7 +511,7 @@ describe("starting the container", () => {
   test("a catalogue error in flight does not abort a container start", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.press("cowork-container-start");
 
@@ -496,13 +543,13 @@ describe("starting the container", () => {
   test("mounts every bound folder, in binding order, with the first as cwd", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
     // A second binding, made by browsing back up to the root and confirming it.
     h.press("cowork-folder-add");
     h.deliver(ROOTS_LISTING);
-    h.press(`folder-picker-entry-${ROOT}`);
+    h.press(`browse-entry-${ROOT}`);
     h.deliver({ t: "fs_listing", path: ROOT, parent: null, roots: [ROOT], entries: [], bounded: false });
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.press("cowork-container-start");
 
@@ -526,7 +573,7 @@ describe("starting the container", () => {
   test("a scope refusal is a named state, not a silent one", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.press("cowork-container-start");
     h.deliver({ t: "error", code: "unauthorized", message: "agent_create requires manage scope" });
@@ -541,7 +588,7 @@ describe("starting the container", () => {
   test("a validation refusal carries the daemon's own reason", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.press("cowork-container-start");
     h.deliver({
@@ -563,7 +610,7 @@ describe("starting the container", () => {
   test("a dead link is named and marked worth retrying", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     // What the client itself reports when a frame cannot leave: `agent_create`
     // is one of the losses it makes visible, so the surface hears it as an
@@ -580,7 +627,7 @@ describe("starting the container", () => {
   test("a replica names its own limit rather than pretending to start", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.press("cowork-container-start");
     h.deliver({
@@ -624,7 +671,7 @@ describe("starting the container", () => {
   test("a daemon with no container runtime says so before the button is tapped", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.deliver({
       t: "container_state",
@@ -660,7 +707,7 @@ describe("starting the container", () => {
     // would disable a container that daemon would have run.
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.deliver({ t: "container_state", modelBroker: { ready: true, reason: null } });
 
@@ -674,7 +721,7 @@ describe("starting the container", () => {
   test("broker state line renders from a fixture frame and disables start when not ready", () => {
     const h = mount();
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
 
     h.deliver({
       t: "container_state",

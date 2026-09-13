@@ -68,6 +68,15 @@ class CannedClient {
   readonly subagentAsks: string[] = [];
   readonly collabOpens: string[] = [];
   readonly attached: AgentId[] = [];
+  readonly detached: AgentId[] = [];
+  readonly createdPaths: string[] = [];
+  detach(agentId: AgentId): void {
+    this.detached.push(agentId);
+  }
+  listDirectory(): void {}
+  createSession(cwd: string): void {
+    this.createdPaths.push(cwd);
+  }
   readonly resumes: Array<{ sessionId: string; cwd: string }> = [];
   readonly agentPrompts: Array<{ agentId: AgentId; text: string; options?: { deliverAs?: "followUp" } }> = [];
   readonly histories: Array<{ agentId: AgentId; sessionId: string; before?: number }> = [];
@@ -172,7 +181,8 @@ interface Shell {
 }
 
 /** Mounts the real shell over a canned socket, already connected and indexed. */
-function mountShell(rows: readonly SessionSummary[] = [summary("sess_live")]): Shell {
+function mountShell(rows: readonly SessionSummary[] = [summary("sess_live")], routeClient?: CannedClient): Shell {
+  let createdMain = false;
   const client = new CannedClient();
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -187,7 +197,11 @@ function mountShell(rows: readonly SessionSummary[] = [summary("sess_live")]): S
         onAddConnection={() => {}}
         onSelectConnection={() => {}}
         onUnpair={() => {}}
-        createClient={() => client as unknown as OmpdClient}
+        createClient={() => {
+          if (createdMain && routeClient !== undefined) return routeClient as unknown as OmpdClient;
+          createdMain = true;
+          return client as unknown as OmpdClient;
+        }}
       />,
     );
   });
@@ -258,6 +272,31 @@ function padding(element: HTMLElement | null): { top: string; bottom: string; le
 }
 
 describe("the stack opens on the fleet and comes back to it", () => {
+  test("a session created on the start route stays open without a roster push", async () => {
+    const routeClient = new CannedClient();
+    const shell = mountShell([], routeClient);
+    try {
+      shell.press("sessions-new");
+      shell.press("project-picker-browse-folders");
+      act(() =>
+        routeClient.emit("fs_listing", { path: "/work", parent: null, roots: ["/work"], entries: [], bounded: false }),
+      );
+      shell.press("browse-start-here");
+      expect(routeClient.createdPaths).toEqual(["/work"]);
+      await act(async () => {
+        routeClient.emit("session_opened", { agentId: "agt_new", sessionId: "sess_new" });
+        await Promise.resolve();
+      });
+      expect(shell.el("session")).not.toBeNull();
+      expect(shell.client.attached).toContain("agt_new");
+      expect(shell.client.detached).not.toContain("agt_new");
+      expect(shell.client.histories).toContainEqual({ agentId: "agt_new", sessionId: "sess_new" });
+      shell.press("session-back");
+      expect(shell.client.detached).toContain("agt_new");
+    } finally {
+      shell.unmount();
+    }
+  });
   test("the initial route is the sessions list, not a detail surface", () => {
     const shell = mountShell();
     try {

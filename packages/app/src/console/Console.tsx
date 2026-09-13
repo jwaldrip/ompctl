@@ -680,7 +680,7 @@ export function Console({
   const surfaces: ShellSurfaces = {
     daemonLabel,
     canInvite: canInvite(state, connection.scopes),
-    fleet: () => (
+    fleet: newSession => (
       // One inset owner per column, not one per screen. The shell always
       // owns the top edge, so the agent hub and the list sit inside the safe
       // area rather than under the status bar. The fleet list is a scrollable
@@ -713,7 +713,7 @@ export function Console({
               onDelete={onDelete}
               deleteAccess={manageScopeAccess(state, connection.scopes)}
               manageAccess={manageScopeAccess(state, connection.scopes)}
-              connection={connection}
+              onBrowseFolders={newSession}
               link={fleetLink}
               onSetProject={onSetProject}
               onSetQuery={onSetQuery}
@@ -807,10 +807,12 @@ export function Console({
     newSession: done => (
       <RemoteStartScreen
         connection={connection}
+        createClient={createClient}
         onBack={done}
-        onOpened={agentId => {
+        onOpened={(agentId, sessionId) => {
           done();
-          actions.select(agentId);
+          setOpenedFromRoute(true);
+          actions.select(agentId, sessionId);
         }}
       />
     ),

@@ -76,6 +76,8 @@ export interface RemoteStartState {
   bounded: boolean;
   /** A request is out and the answer has not arrived. */
   loading: boolean;
+  /** An empty listing is only known after the daemon has answered at least once. */
+  listed: boolean;
   /** The last refusal or failure, for the operator to read. */
   notice: string | null;
   clone: CloneState | null;
@@ -90,6 +92,7 @@ export const EMPTY_REMOTE_START: RemoteStartState = {
   entries: [],
   bounded: false,
   loading: false,
+  listed: false,
   notice: null,
   clone: null,
   started: [],
@@ -126,6 +129,7 @@ export function remoteStartReduce(state: RemoteStartState, event: RemoteStartEve
         entries: event.listing.entries,
         bounded: event.listing.bounded,
         loading: false,
+        listed: true,
       };
     case "clone_asked":
       return {

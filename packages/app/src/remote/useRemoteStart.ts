@@ -65,7 +65,7 @@ export interface RemoteStartClient extends RemoteStartPort {
 
 export function useRemoteStart(
   client: RemoteStartClient,
-  onOpened?: (agentId: AgentId) => void,
+  onOpened?: (agentId: AgentId, sessionId: string) => void,
 ): [RemoteStartState, RemoteStartActions] {
   const [state, dispatch] = useReducer(remoteStartReduce, EMPTY_REMOTE_START);
 
@@ -133,7 +133,7 @@ export function useRemoteStart(
         if (!awaitingSession.current) return;
         awaitingSession.current = false;
         dispatch({ t: "session_started", agentId: event.agentId });
-        opened.current?.(event.agentId);
+        opened.current?.(event.agentId, event.sessionId);
       }),
       client.on("status", event => {
         // Every `connected` is a link that has just become usable, and the

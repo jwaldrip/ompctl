@@ -23,9 +23,10 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 import { CloneProgress } from "../components/CloneProgress.tsx";
 import { Glyph, type GlyphName } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
-import { SafeScreen } from "../design/SafeScreen.tsx";
+import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Code, Kicker, Label, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
+import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { directoryLabel, type RemoteStartState } from "../remote/model.ts";
 
 export interface BrowseScreenProps {
@@ -37,6 +38,8 @@ export interface BrowseScreenProps {
   onUp: () => void;
   onRefresh: () => void;
   onStartHere: () => void;
+  /** The same directory browser selects a read-only mount for Cowork. */
+  onBindFolder?: (path: string) => void;
   onCloneHere: (url: string) => void;
   onDismissNotice: () => void;
   onDismissClone: () => void;
@@ -53,6 +56,7 @@ export function BrowseScreen({
   onUp,
   onRefresh,
   onStartHere,
+  onBindFolder,
   onCloneHere,
   onDismissNotice,
   onDismissClone,
@@ -61,9 +65,12 @@ export function BrowseScreen({
 }: BrowseScreenProps): JSX.Element {
   const [url, setUrl] = useState("");
   const atRoots = state.path === "";
+  const keyboard = useKeyboardInset();
+  const bottom = useOwnedBottomInset();
+  const binding = onBindFolder !== undefined;
 
   return (
-    <SafeScreen style={styles.screen} testID="browse-screen">
+    <SafeScreen edges={{ bottom: false }} style={styles.screen} testID="browse-screen">
       <View style={styles.header}>
         <View style={styles.headerRow}>
           {onBack === undefined ? null : (
@@ -72,7 +79,7 @@ export function BrowseScreen({
             </Pressable>
           )}
           <View style={styles.headerCopy}>
-            <Kicker>New session</Kicker>
+            <Kicker>{binding ? "Bound folders" : "New session"}</Kicker>
             <Title heading numberOfLines={1} testID="browse-title">
               {directoryLabel(state.path)}
             </Title>
@@ -129,7 +136,11 @@ export function BrowseScreen({
             />
           );
         })}
-        {state.entries.length === 0 && !state.loading ? (
+        {state.loading ? <Label color={ink.muted}>Loading folders.</Label> : null}
+        {!state.listed && !state.loading && state.notice === null ? (
+          <Label color={ink.muted}>Waiting for the daemon's folder listing.</Label>
+        ) : null}
+        {state.listed && state.entries.length === 0 && !state.loading ? (
           <Body color={ink.muted} testID="browse-empty">
             {atRoots ? "This daemon is configured to browse nothing." : "Nothing in here."}
           </Body>
@@ -143,23 +154,32 @@ export function BrowseScreen({
         ) : null}
       </ScrollView>
 
-      <View style={styles.actions}>
-        {/* Never disabled, including at the roots view: a control that
-            swallows the tap leaves an operator staring at a button that
-            neither acted nor explained, which on a phone reads as broken. The
-            hook answers a start with nowhere to start by saying so. */}
+      <View style={[styles.actions, { paddingBottom: rhythm.rowGap + bottomInsetFor(keyboard, bottom) }]}>
+        {/* Starting at the roots still explains the refusal through the hook.
+            A binding has no daemon request, so its unavailable state must be
+            explained here before a path can leave this screen. */}
         <Pressable
           accessibilityRole="button"
           // Wrapped rather than passed through: `onPress` hands its handler a
           // gesture event, and a handler whose first parameter is an optional
           // name would take that event as the name.
-          onPress={() => onStartHere()}
-          style={styles.start}
-          testID="browse-start-here"
+          disabled={binding && atRoots}
+          accessibilityState={{ disabled: binding && atRoots }}
+          onPress={() => (binding ? onBindFolder(state.path) : onStartHere())}
+          style={[styles.start, binding && atRoots && styles.disabled]}
+          testID={binding ? "browse-bind-folder" : "browse-start-here"}
         >
           <Glyph name="newTask" color={ink.inverse} size={13} />
-          <Text style={styles.startText}>Start a session here</Text>
+          <Text style={styles.startText}>{binding ? "Bind this folder" : "Start a session here"}</Text>
         </Pressable>
+        {binding ? (
+          <Label color={ink.muted} testID="browse-bind-hint">
+            {atRoots
+              ? "Open a directory first: the roots view is a menu, not a folder."
+              : "The container will mount " + state.path + " read-only, at this same path."}
+          </Label>
+        ) : null}
+        <Label color={ink.muted}>Clone using an HTTPS or SSH URL. Git runs on your daemon.</Label>
         <View style={styles.cloneRow}>
           <TextInput
             accessibilityLabel="Repository url to clone"
@@ -223,7 +243,7 @@ function EntryRow({
   showFullPath: boolean;
   canOpenFile?: boolean;
 }): JSX.Element {
-  const openable = entry.kind !== "file" || canOpenFile;
+  const openable = entry.kind === "dir" || (entry.kind === "file" && canOpenFile);
   const glyphName: GlyphName =
     entry.kind === "dir" ? "folder" : entry.kind === "link" ? "symlink" : getFileGlyph(entry.name);
   return (
@@ -244,6 +264,7 @@ function EntryRow({
       >
         {entry.name}
       </Label>
+      {entry.kind === "link" ? <Label color={ink.faint}>not followed</Label> : null}
       {entry.gitRepo === true ? (
         <View style={styles.repoTag} testID={`browse-repo-${entry.name}`}>
           <Glyph name="repo" color={signal.ready} size={11} />

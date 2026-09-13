@@ -193,7 +193,7 @@ function mount(target = { cwd: DEV, agentId: "agt_prior_session" }): Harness {
 function browseToDev(h: Harness): void {
   h.press("cowork-folder-add");
   h.deliver(ROOTS_LISTING);
-  h.press(`folder-picker-entry-${ROOT}`);
+  h.press(`browse-entry-${ROOT}`);
   h.deliver(DEV_LISTING);
 }
 
@@ -205,7 +205,7 @@ describe("Cowork task destination targeting", () => {
   test("a task typed after starting a container runs in the new container, not the prior session", () => {
     const h = mount({ cwd: DEV, agentId: "agt_prior_session" });
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
     h.press("cowork-container-start");
 
     expect(h.socket.framesOfType("agent_create")).toHaveLength(1);
@@ -244,7 +244,7 @@ describe("Cowork task destination targeting", () => {
     expect(destination?.textContent).toContain("agt_prior_session");
 
     browseToDev(h);
-    h.press("folder-picker-confirm");
+    h.press("browse-bind-folder");
     h.press("cowork-container-start");
 
     h.deliver({
