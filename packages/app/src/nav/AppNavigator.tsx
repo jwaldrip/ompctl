@@ -82,7 +82,7 @@ export interface ShellSurfaces {
    * the daemon would refuse is worse than no entry, so it is absent instead.
    */
   canInvite: boolean;
-  fleet: () => JSX.Element;
+  fleet: (newSession: () => void) => JSX.Element;
   /**
    * The two detail surfaces take the way back rather than closing themselves.
    * There is one way out of a pushed route and it is the stack: the screen's own
@@ -282,8 +282,8 @@ const SETTINGS_OPTIONS = { title: "Daemon settings" } as const;
 const ROUTINES_OPTIONS = { title: "Routines" } as const;
 const STATS_OPTIONS = { title: "Stats" } as const;
 
-function FleetRoute(): JSX.Element {
-  return useSurfaces().fleet();
+function FleetRoute({ navigation }: NativeStackScreenProps<ShellParamList, "fleet">): JSX.Element {
+  return useSurfaces().fleet(() => navigation.navigate("newSession"));
 }
 
 function SessionRoute({ route, navigation }: NativeStackScreenProps<ShellParamList, "session">): JSX.Element {

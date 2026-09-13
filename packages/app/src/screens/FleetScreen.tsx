@@ -52,10 +52,9 @@ import { useIsTablet } from "../design/layout.ts";
 import { useOwnedBottomInset } from "../design/SafeScreen.tsx";
 import { Body, Display, Kicker, Label, Title } from "../design/text.tsx";
 import { brand, ground, ink, radius, signal, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
-import type { Connection } from "../platform/connection.ts";
 import type { BrowserSession, BrowserState, SessionGroup, SortField } from "../session/browser.ts";
 import { browserView } from "../session/browser.ts";
-import { FolderPickerScreen } from "./FolderPickerScreen.tsx";
+
 /**
  * What the bay may honestly claim about the daemon.
  *
@@ -87,8 +86,8 @@ export interface FleetScreenProps {
   onArchiveBulk?: (sessionIds: readonly string[]) => void;
   /** Start a new session in a working directory. */
   onNewSession?: (cwd: string) => void;
-  /** Optional pairing connection for folder browsing. */
-  connection?: Connection;
+  /** Open the same start-session route the app menu uses. */
+  onBrowseFolders?: () => void;
   /** Destroy one session's transcript. The row takes the operator through a confirmation first. */
   onDelete: (session: BrowserSession) => void;
   /**
@@ -154,7 +153,7 @@ export function FleetScreen({
   manageAccess,
   onArchiveBulk,
   onNewSession,
-  connection,
+  onBrowseFolders,
   link,
   now,
   onSetProject,
@@ -170,7 +169,7 @@ export function FleetScreen({
   const canManage = effectiveManageAccess !== "missing";
 
   const [newSessionPickerOpen, setNewSessionPickerOpen] = useState(false);
-  const [browsingFolders, setBrowsingFolders] = useState(false);
+  
   const [reviewingEphemerals, setReviewingEphemerals] = useState(false);
   const [selectedEphemeralIds, setSelectedEphemeralIds] = useState<Set<string>>(() => new Set());
   const [confirmingBulkArchive, setConfirmingBulkArchive] = useState(false);
@@ -210,7 +209,18 @@ export function FleetScreen({
   // Memoised on the link rather than hoisted: the empty state is a claim
   // about the daemon, and it changes when the link does. The console builds
   // `link` from its three fields, so its identity changes only with them.
-  const empty = useMemo(() => <Empty link={link} />, [link]);
+  const filtered = browser.query.trim().length > 0 || browser.project !== null;
+  const resetFilters = useCallback(() => {
+    onSetQuery?.("");
+    onSetProject?.(null);
+  }, [onSetQuery, onSetProject]);
+  const empty = useMemo(
+    () => (
+      <Empty link={link} filtered={filtered} hiddenArchived={view.hiddenArchived} totalCount={view.totalCount}
+        onResetFilters={resetFilters} onShowArchived={onToggleArchived} canCreate={canManage} />
+    ),
+    [link, filtered, view.hiddenArchived, view.totalCount, resetFilters, onToggleArchived, canManage],
+  );
 
   const renderGrouped = useCallback(
     ({ item }: { item: BrowserSession }) => (
@@ -472,28 +482,8 @@ export function FleetScreen({
               onNewSession?.(cwd);
             }
           }}
-          onBrowseFolders={
-            connection !== undefined
-              ? () => {
-                  setNewSessionPickerOpen(false);
-                  setBrowsingFolders(true);
-                }
-              : undefined
-          }
+          onBrowseFolders={onBrowseFolders}
         />
-      ) : null}
-
-      {browsingFolders && connection ? (
-        <Modal visible={browsingFolders} animationType="slide" onRequestClose={() => setBrowsingFolders(false)}>
-          <FolderPickerScreen
-            connection={connection}
-            onPick={path => {
-              setBrowsingFolders(false);
-              onNewSession?.(path);
-            }}
-            onBack={() => setBrowsingFolders(false)}
-          />
-        </Modal>
       ) : null}
 
       {reviewingEphemerals ? (
@@ -667,10 +657,20 @@ export function FleetScreen({
 }
 
 /**
- * Three different absences. Only the last is a daemon saying it has nothing;
- * the first two are this device not knowing, and say so.
+ * Filters can hide a populated library. Connection truth wins first, then
+ * recovery from the current view, and only then a genuinely empty daemon.
  */
-function Empty({ link }: { link: FleetLink }): JSX.Element {
+function Empty({
+  link, filtered, hiddenArchived, totalCount, onResetFilters, onShowArchived, canCreate,
+}: {
+  link: FleetLink;
+  filtered: boolean;
+  hiddenArchived: number;
+  totalCount: number;
+  onResetFilters: () => void;
+  onShowArchived: () => void;
+  canCreate: boolean;
+}): JSX.Element {
   if (link.connection !== "connected") {
     return (
       <View style={styles.empty} testID="fleet-unreachable">
@@ -694,11 +694,40 @@ function Empty({ link }: { link: FleetLink }): JSX.Element {
       </View>
     );
   }
+  if (filtered && totalCount > 0) {
+    return (
+      <View style={styles.empty} testID="fleet-no-matches">
+        <Glyph name="search" size={26} color={ink.muted} />
+        <Body color={ink.plain}>No sessions match these filters.</Body>
+        <Pressable testID="fleet-reset-filters" accessibilityRole="button" onPress={onResetFilters} style={styles.emptyAction}>
+          <Label color={brand.azure}>Clear search and project filter</Label>
+        </Pressable>
+        {hiddenArchived > 0 ? (
+          <Pressable testID="fleet-show-archived" accessibilityRole="button" onPress={onShowArchived} style={styles.emptyAction}>
+            <Label color={brand.azure}>Include archived sessions</Label>
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  }
+  if (hiddenArchived > 0) {
+    return (
+      <View style={styles.empty} testID="fleet-archived-only">
+        <Glyph name="archive" size={26} color={ink.muted} />
+        <Body color={ink.plain}>Your sessions are archived.</Body>
+        <Pressable testID="fleet-show-archived" accessibilityRole="button" onPress={onShowArchived} style={styles.emptyAction}>
+          <Label color={brand.azure}>Show archived sessions</Label>
+        </Pressable>
+      </View>
+    );
+  }
   return (
     <View style={styles.empty} testID="fleet-empty">
       <Glyph name="bay" size={26} color={ground.edge} />
       <Body color={ink.plain}>No sessions.</Body>
-      <Label color={ink.muted}>Start one with ompd agents create on the machine running the daemon.</Label>
+      <Label color={ink.muted}>
+        {canCreate ? "Choose New session to open a project or clone a repository." : "This pairing needs manage scope to start a session."}
+      </Label>
     </View>
   );
 }
@@ -758,6 +787,7 @@ const styles = StyleSheet.create({
   // of it and under whatever draws next.
   scopeNoticeText: { flex: 1, minWidth: 0 },
   empty: { alignItems: "center", gap: space.step, padding: space.gulf },
+  emptyAction: { minHeight: TOUCH_TARGET, justifyContent: "center", paddingHorizontal: space.snug },
   searchBar: {
     flexDirection: "row",
     alignItems: "center",

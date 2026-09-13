@@ -25,6 +25,8 @@ import { type RemoteStartClient, useRemoteStart } from "../remote/useRemoteStart
 import { BrowseScreen } from "./BrowseScreen.tsx";
 
 interface CommonProps {
+  /** The same transport factory the console uses, including its test seam. */
+  createClient?: (connection: Connection) => OmpdClient;
   onBack?: () => void;
   /** Called with the agent the daemon created for a session started here. */
   onOpened?: (agentId: AgentId) => void;
@@ -74,7 +76,7 @@ export function RemoteStartScreen(props: RemoteStartScreenProps): JSX.Element {
 function useScreenClient(props: RemoteStartScreenProps): RemoteStartClient {
   const owned = useRef<OmpdClient | null>(null);
   if (props.client === undefined && owned.current === null) {
-    owned.current = createOmpdClient(props.connection);
+    owned.current = (props.createClient ?? createOmpdClient)(props.connection);
   }
 
   useEffect(() => {
