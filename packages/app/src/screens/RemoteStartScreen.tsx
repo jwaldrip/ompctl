@@ -28,6 +28,8 @@ interface CommonProps {
   /** The same transport factory the console uses, including its test seam. */
   createClient?: (connection: Connection) => OmpdClient;
   onBack?: () => void;
+  /** Cowork selects the served path instead of starting a local agent. */
+  onBindFolder?: (path: string) => void;
   /** Called with the agent the daemon created for a session started here. */
   onOpened?: (agentId: AgentId) => void;
 }
@@ -58,6 +60,7 @@ export function RemoteStartScreen(props: RemoteStartScreenProps): JSX.Element {
       onUp={actions.up}
       onRefresh={actions.refresh}
       onStartHere={actions.startHere}
+      onBindFolder={props.onBindFolder}
       onCloneHere={actions.cloneHere}
       onDismissNotice={actions.dismissNotice}
       onDismissClone={actions.dismissClone}

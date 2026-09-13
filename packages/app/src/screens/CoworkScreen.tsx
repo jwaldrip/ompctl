@@ -48,7 +48,7 @@ import { useSplitLayout } from "../design/layout.ts";
 import { Code, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { RemoteStartClient } from "../remote/useRemoteStart.ts";
-import { FolderPickerScreen } from "./FolderPickerScreen.tsx";
+import { RemoteStartScreen } from "./RemoteStartScreen.tsx";
 
 export type CoworkView = "tasks" | "skills" | "connectors" | "plugins";
 
@@ -135,7 +135,7 @@ export function CoworkScreen(props: CoworkScreenProps): JSX.Element {
       folderActions.bind(path);
       setPicking(false);
     };
-    return <FolderPickerScreen client={props.client} onPick={pick} onBack={() => setPicking(false)} />;
+    return <RemoteStartScreen client={props.client} onBindFolder={pick} onBack={() => setPicking(false)} />;
   }
 
   // The binding rides the tasks tab in both layouts, above whatever else the
