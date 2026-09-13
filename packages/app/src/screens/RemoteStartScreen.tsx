@@ -31,7 +31,7 @@ interface CommonProps {
   /** Cowork selects the served path instead of starting a local agent. */
   onBindFolder?: (path: string) => void;
   /** Called with the agent the daemon created for a session started here. */
-  onOpened?: (agentId: AgentId) => void;
+  onOpened?: (agentId: AgentId, sessionId: string) => void;
 }
 
 /** The navigator hands over a pairing and this screen owns one socket for its lifetime. */

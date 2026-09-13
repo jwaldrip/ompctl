@@ -809,10 +809,10 @@ export function Console({
         connection={connection}
         createClient={createClient}
         onBack={done}
-        onOpened={agentId => {
+        onOpened={(agentId, sessionId) => {
           done();
           setOpenedFromRoute(true);
-          actions.select(agentId);
+          actions.select(agentId, sessionId);
         }}
       />
     ),

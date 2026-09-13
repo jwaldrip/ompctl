@@ -43,7 +43,8 @@ import { NO_MOUNTED_WEBVIEW } from "./webview.ts";
 
 export type { WebViewTarget } from "./webview.ts";
 export interface ConsoleActions {
-  select: (agentId: AgentId) => void;
+  /** A route may know the new session id before the console receives its roster row. */
+  select: (agentId: AgentId, sessionId?: string) => void;
   back: () => void;
   /**
    * Send one prompt. With `deliverAs: "followUp"` the daemon holds it until
@@ -349,7 +350,7 @@ export function useConsole(
    * only the replies that arrive after it.
    */
   const selectAgent = useCallback(
-    (agentId: AgentId | null): void => {
+    (agentId: AgentId | null, openedSessionId?: string): void => {
       const current = stateRef.current;
       if (current.selected !== null && current.selected !== agentId) {
         client.detach?.(current.selected);
@@ -373,16 +374,16 @@ export function useConsole(
       // from flashing a spinner over the log the operator can already read:
       // its cache is live, not a leftover from a previous run.
       const replaying = !current.watermarks.has(agentId);
-      const fetchingHistory = agent?.acpSessionId !== undefined && !current.historyBefore.has(agentId);
+      const sessionId = openedSessionId ?? agent?.acpSessionId ?? current.sessionIds.get(agentId);
+      const fetchingHistory = sessionId !== undefined && !current.historyBefore.has(agentId);
       dispatch({ t: "select", agentId, awaiting: replaying && fetchingHistory });
       client.attach(agentId, replaying ? { sinceSeq: 0 } : {});
-      if (agent?.acpSessionId !== undefined && fetchingHistory) {
-        requestHistory(agentId, agent.acpSessionId);
+      if (sessionId !== undefined && fetchingHistory) {
+        requestHistory(agentId, sessionId);
       }
-      const statsSessionId = agent?.acpSessionId ?? current.sessionIds.get(agentId);
-      if (statsSessionId !== undefined) {
-        requestStats(statsSessionId, agentId);
-        requestSubagents(statsSessionId);
+      if (sessionId !== undefined) {
+        requestStats(sessionId, agentId);
+        requestSubagents(sessionId);
       }
     },
     [client, leaveCollab, requestHistory, requestStats, requestSubagents],
@@ -729,8 +730,8 @@ export function useConsole(
 
   const actions = useMemo<ConsoleActions>(
     () => ({
-      select(agentId) {
-        selectAgent(agentId);
+      select(agentId, sessionId) {
+        selectAgent(agentId, sessionId);
       },
       back() {
         const current = stateRef.current;

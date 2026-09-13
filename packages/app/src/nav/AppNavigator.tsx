@@ -164,6 +164,7 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
   leave.current = onLeaveSelection;
   const openSelection = useRef(selection);
   openSelection.current = selection;
+  const lastPresentedDetail = useRef<ReturnType<typeof navigation.getRootState>["routes"][number] | null>(null);
 
   useEffect(() => {
     if (!navigation.isReady()) return;
@@ -221,11 +222,31 @@ export function AppNavigator({ surfaces, selection, onLeaveSelection }: AppNavig
   }, [selection, navigation]);
 
   const onStateChange = useCallback(() => {
-    if (openSelection.current === null || !navigation.isReady()) return;
-    const stackHasDetail = navigation.getRootState().routes.some(route => DETAIL_ROUTES[route.name] === true);
-    // A detail route still under an open menu is not a closed session, which is
-    // why this asks the whole stack rather than the focused route.
-    if (!stackHasDetail) leave.current();
+    if (!navigation.isReady()) return;
+    const previous = lastPresentedDetail.current;
+    const routes = navigation.getRootState().routes;
+    lastPresentedDetail.current = null;
+    for (let i = routes.length - 1; i >= 0; i--) {
+      const route = routes[i];
+      if (route !== undefined && DETAIL_ROUTES[route.name] === true) {
+        lastPresentedDetail.current = route;
+        return;
+      }
+    }
+    // Popping New session precedes presenting the session it just created.
+    // Only leaving a detail that actually showed this selection is a Back.
+    // Otherwise this callback detaches the new agent between its attach and
+    // the screen's WebView registration.
+    const current = openSelection.current;
+    if (previous === null || current === null) return;
+    const params = previous.params as { agentId?: AgentId; sessionId?: string; name?: string } | undefined;
+    const leftCurrent =
+      current.kind === "session"
+        ? (previous.name === "session" || previous.name === "agentConfig") && params?.agentId === current.agentId
+        : current.kind === "terminal"
+          ? previous.name === "terminal" && params?.sessionId === current.sessionId
+          : previous.name === "subagent" && params?.sessionId === current.sessionId && params?.name === current.name;
+    if (leftCurrent) leave.current();
   }, [navigation]);
 
   return (
