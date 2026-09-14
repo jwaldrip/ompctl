@@ -9,13 +9,44 @@
 
 import "./rnw.ts";
 
-import { afterEach, describe, expect, test } from "bun:test";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { CameraSeam } from "../src/platform/camera.ts";
 import { resetCameraMock } from "./rnw.ts";
 
+/**
+ * An in-memory store rather than the real package, matching `view-prefs.test.ts`
+ * and `secrets.test.ts`. Importing the real module worked on this machine and
+ * failed on CI with `AsyncStorage.clear is not a function`, because the harness
+ * there supplies a partial module. Owning the fake removes the dependency on
+ * whichever shape the environment happens to provide, and gives the reset a
+ * `Map` to clear instead of an API call that may not exist.
+ */
+function makeFakeAsyncStorage() {
+  const store = new Map<string, string>();
+  return {
+    store,
+    module: {
+      default: {
+        getItem: (key: string) => Promise.resolve(store.get(key) ?? null),
+        setItem: (key: string, value: string) => {
+          store.set(key, value);
+          return Promise.resolve();
+        },
+        removeItem: (key: string) => {
+          store.delete(key);
+          return Promise.resolve();
+        },
+      },
+    },
+  };
+}
+
+const fakeAsyncStorage = makeFakeAsyncStorage();
+mock.module("@react-native-async-storage/async-storage", () => fakeAsyncStorage.module);
+
+// Dynamic imports so the mock above is registered before anything reads storage.
 const { createCameraSeam: createVisionSeam } = await import("../src/platform/camera.ts");
 const { createCameraSeam: createWebSeam } = await import("../src/platform/camera.web.ts");
 const { createCameraSeam: createMacSeam } = await import("../src/platform/camera.macos.ts");
@@ -27,9 +58,9 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-afterEach(async () => {
+afterEach(() => {
   resetCameraMock();
-  await AsyncStorage.clear();
+  fakeAsyncStorage.store.clear();
 });
 
 interface Harness {
