@@ -99,7 +99,7 @@ interface StubNativeModule {
   checkPermission: () => Promise<string>;
   requestPermission: () => Promise<boolean>;
   startSession: () => Promise<void>;
-  startSessionWithDevice?: (deviceId: string | null) => Promise<void>;
+  startSessionWithDevice: (deviceId: string | null) => Promise<void>;
   stopSession: () => Promise<void>;
   addListener: (event: string, listener: (data: unknown) => void) => { remove: () => void };
   emit: (event: string, data: unknown) => void;
@@ -309,7 +309,11 @@ describe("macOS QR Scanner: end to end through the seam", () => {
 
     act(() => {
       root.render(
-        <Camera isActive={true} device={{ id: "external-usb-camera", label: "USB Cam", position: "back" }} />,
+        <Camera
+          isActive={true}
+          device={{ id: "external-usb-camera", label: "USB Cam", position: "back" }}
+          codeScanner={undefined}
+        />,
       );
     });
 

@@ -40,7 +40,7 @@ export interface OmpctlCameraNativeModule {
   startSession?: () => Promise<void>;
   startSessionWithDevice: (deviceId: string | null) => Promise<void>;
   stopSession: () => Promise<void>;
-  addListener(eventName: string, listener?: (data: unknown) => void): { remove?(): void } | void;
+  addListener(eventName: string, listener: (data: unknown) => void): { remove(): void };
   removeListeners?(count: number): void;
 }
 
