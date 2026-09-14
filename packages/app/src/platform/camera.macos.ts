@@ -31,15 +31,16 @@ export type {
 } from "./camera.ts";
 
 export interface OmpctlCameraNativeModule {
-  hasCamera?: boolean;
+  hasCamera?: boolean | (() => Promise<boolean>);
   hasPermission?: boolean;
   permissionStatus?: string;
   checkPermission?: () => Promise<string>;
   requestPermission: () => Promise<boolean>;
   getAvailableDevices?: () => Promise<Array<{ id: string; name: string }>>;
-  startSession: (deviceId?: string) => Promise<void>;
+  startSession?: () => Promise<void>;
+  startSessionWithDevice: (deviceId: string | null) => Promise<void>;
   stopSession: () => Promise<void>;
-  addListener(eventName: string, listener: (data: unknown) => void): { remove(): void };
+  addListener(eventName: string, listener?: (data: unknown) => void): { remove?(): void } | void;
   removeListeners?(count: number): void;
 }
 
@@ -176,7 +177,8 @@ export function createCameraSeam(
 
     useEffect(() => {
       if (isActive) {
-        void activeModule.startSession(selectedDeviceId === "default" ? undefined : selectedDeviceId).catch(() => {});
+        const targetDeviceId = selectedDeviceId && selectedDeviceId !== "default" ? selectedDeviceId : null;
+        void activeModule.startSessionWithDevice(targetDeviceId).catch(() => {});
         return () => {
           void activeModule.stopSession().catch(() => {});
         };
