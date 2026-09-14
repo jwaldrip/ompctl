@@ -21,6 +21,13 @@ export type { Code };
 
 export type CameraAvailability = { readonly available: true } | { readonly available: false; readonly reason: string };
 
+export interface CameraDeviceInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly position?: "back" | "front" | "external" | "unspecified";
+  readonly rawDevice?: unknown;
+}
+
 export interface CameraViewfinderProps {
   style?: unknown;
   device: unknown;
@@ -35,16 +42,20 @@ export interface CameraHooks {
     requestPermission: () => Promise<boolean>;
   };
   useCameraDevice: (position: "back" | "front") => unknown;
+  useCameraDevices?: () => CameraDeviceInfo[];
   useCodeScanner: (options: { codeTypes: string[]; onCodeScanned: (codes: Code[]) => void }) => unknown;
 }
 
 export interface VisionCameraExports {
-  Camera: ComponentType<CameraViewfinderProps>;
+  Camera: ComponentType<CameraViewfinderProps> & {
+    getAvailableCameraDevices?: () => Array<{ id: string; name?: string; position?: "back" | "front" | "external" }>;
+  };
   useCameraPermission: () => {
     hasPermission: boolean;
     requestPermission: () => Promise<boolean>;
   };
   useCameraDevice: (position: "back" | "front") => unknown;
+  useCameraDevices?: () => Array<{ id: string; name?: string; position?: "back" | "front" | "external" }>;
   useCodeScanner: (options: { codeTypes: string[]; onCodeScanned: (codes: Code[]) => void }) => unknown;
 }
 
@@ -123,6 +134,52 @@ export async function loadVisionCamera(): Promise<VisionCameraExports | undefine
 /**
  * Bind camera scanning to an optional native module.
  */
+function createVisionCameraDevicesHook(rawModule: VisionCameraExports): () => CameraDeviceInfo[] {
+  if (typeof rawModule.useCameraDevices === "function") {
+    const useDevices = rawModule.useCameraDevices;
+    return () => {
+      const list = useDevices();
+      return Array.isArray(list)
+        ? list.map(d => ({
+            id: d.id,
+            label: d.name ?? (d.position ? `${d.position.charAt(0).toUpperCase() + d.position.slice(1)} Camera` : d.id),
+            position: d.position,
+            rawDevice: d,
+          }))
+        : [];
+    };
+  }
+
+  const useDevice = rawModule.useCameraDevice;
+  return () => {
+    const back = useDevice("back");
+    const front = useDevice("front");
+    const devices: CameraDeviceInfo[] = [];
+    if (back) {
+      const backObj = back as { id?: string; name?: string };
+      devices.push({
+        id: backObj.id ?? "back",
+        label: backObj.name ?? "Back Camera",
+        position: "back",
+        rawDevice: back,
+      });
+    }
+    if (front) {
+      const frontObj = front as { id?: string; name?: string };
+      const frontId = frontObj.id ?? "front";
+      if (!devices.some(d => d.id === frontId)) {
+        devices.push({
+          id: frontId,
+          label: frontObj.name ?? "Front Camera",
+          position: "front",
+          rawDevice: front,
+        });
+      }
+    }
+    return devices;
+  };
+}
+
 export function createCameraSeam(
   rawModule: VisionCameraExports | undefined,
   platform: string = Platform.OS,
@@ -143,6 +200,7 @@ export function createCameraSeam(
     hooks: {
       useCameraPermission: rawModule.useCameraPermission,
       useCameraDevice: rawModule.useCameraDevice,
+      useCameraDevices: createVisionCameraDevicesHook(rawModule),
       useCodeScanner: rawModule.useCodeScanner,
     },
     loadModule: async () => rawModule,
