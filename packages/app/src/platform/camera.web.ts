@@ -15,10 +15,18 @@ import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
 import { StyleSheet, View } from "react-native";
 import { ground } from "../design/tokens.ts";
-import type { CameraAvailability, CameraSeam, CameraViewfinderProps, Code, VisionCameraExports } from "./camera.ts";
+import type {
+  CameraAvailability,
+  CameraDeviceInfo,
+  CameraSeam,
+  CameraViewfinderProps,
+  Code,
+  VisionCameraExports,
+} from "./camera.ts";
 
 export type {
   CameraAvailability,
+  CameraDeviceInfo,
   CameraHooks,
   CameraSeam,
   CameraViewfinderProps,
@@ -46,6 +54,8 @@ export interface WebCameraOptions {
   mediaDevices?: {
     getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
     enumerateDevices?: () => Promise<MediaDeviceInfo[]>;
+    addEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+    removeEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
   } | null;
   BarcodeDetector?: BarcodeDetectorConstructor | null;
   devices?: Array<{ deviceId?: string; kind: string; label?: string }>;
@@ -139,10 +149,15 @@ export function WebCameraViewfinder({
   codeScanner,
   testID,
   options,
+  device,
 }: CameraViewfinderProps & { options?: WebCameraOptions }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  const selectedDeviceId =
+    device !== null && typeof device === "object" && "id" in device && typeof device.id === "string"
+      ? device.id
+      : undefined;
   const scannerOptions =
     codeScanner !== null && typeof codeScanner === "object" && "onCodeScanned" in codeScanner
       ? (codeScanner as { onCodeScanned?: (codes: Code[]) => void })
@@ -163,7 +178,10 @@ export function WebCameraViewfinder({
 
     let cancelled = false;
     const constraints: MediaStreamConstraints = {
-      video: { facingMode: "environment" },
+      video:
+        selectedDeviceId && selectedDeviceId !== "web-camera"
+          ? { deviceId: { exact: selectedDeviceId } }
+          : { facingMode: "environment" },
       audio: false,
     };
 
@@ -206,7 +224,7 @@ export function WebCameraViewfinder({
       }
       setVideoSrcObject(videoRef.current, null);
     };
-  }, [isActive, options]);
+  }, [isActive, options, selectedDeviceId]);
 
   useEffect(() => {
     if (!isActive || !onCodeScanned) return;
@@ -417,6 +435,75 @@ function useWebCameraDevice(position: "back" | "front", options?: WebCameraOptio
   return device;
 }
 
+function mapWebDevices(list: Array<{ deviceId?: string; kind: string; label?: string }>): CameraDeviceInfo[] {
+  return list
+    .filter(d => d.kind === "videoinput")
+    .map((d, index) => {
+      const id = d.deviceId && d.deviceId.length > 0 ? d.deviceId : `web-camera-${index}`;
+      const label = d.label && d.label.trim().length > 0 ? d.label.trim() : `Camera ${index + 1}`;
+      return {
+        id,
+        label,
+        position: "unspecified" as const,
+      };
+    });
+}
+
+export function useWebCameraDevices(options?: WebCameraOptions): CameraDeviceInfo[] {
+  const [devices, setDevices] = useState<CameraDeviceInfo[]>(() => {
+    if (options?.devices !== undefined) {
+      return mapWebDevices(options.devices);
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    if (options?.devices !== undefined) {
+      setDevices(mapWebDevices(options.devices));
+      return;
+    }
+
+    const mediaDevices =
+      options?.mediaDevices !== undefined
+        ? options.mediaDevices
+        : typeof navigator !== "undefined"
+          ? navigator.mediaDevices
+          : undefined;
+
+    if (!mediaDevices?.enumerateDevices) return;
+
+    let active = true;
+
+    const refresh = () => {
+      void mediaDevices
+        .enumerateDevices?.()
+        .then(rawList => {
+          if (!active || !rawList) return;
+          setDevices(mapWebDevices(rawList));
+        })
+        .catch(() => {});
+    };
+
+    refresh();
+
+    if (typeof mediaDevices.addEventListener === "function") {
+      mediaDevices.addEventListener("devicechange", refresh);
+      return () => {
+        active = false;
+        if (typeof mediaDevices.removeEventListener === "function") {
+          mediaDevices.removeEventListener("devicechange", refresh);
+        }
+      };
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [options]);
+
+  return devices;
+}
+
 function useWebCodeScanner(options: { codeTypes: string[]; onCodeScanned: (codes: Code[]) => void }) {
   return options;
 }
@@ -462,6 +549,7 @@ export function createCameraSeam(rawModuleOrOptions?: VisionCameraExports | WebC
     hooks: {
       useCameraPermission: () => useWebCameraPermission(options),
       useCameraDevice: pos => useWebCameraDevice(pos, options),
+      useCameraDevices: () => useWebCameraDevices(options),
       useCodeScanner: useWebCodeScanner,
     },
   };

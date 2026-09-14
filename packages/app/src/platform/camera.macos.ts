@@ -11,10 +11,18 @@ import { createElement, useCallback, useEffect, useState } from "react";
 import type { NativeModule } from "react-native";
 import * as ReactNative from "react-native";
 import { NativeEventEmitter, NativeModules, Platform, View } from "react-native";
-import type { CameraAvailability, CameraHooks, CameraSeam, CameraViewfinderProps, Code } from "./camera.ts";
+import type {
+  CameraAvailability,
+  CameraDeviceInfo,
+  CameraHooks,
+  CameraSeam,
+  CameraViewfinderProps,
+  Code,
+} from "./camera.ts";
 
 export type {
   CameraAvailability,
+  CameraDeviceInfo,
   CameraHooks,
   CameraSeam,
   CameraViewfinderProps,
@@ -28,7 +36,8 @@ export interface OmpctlCameraNativeModule {
   permissionStatus?: string;
   checkPermission?: () => Promise<string>;
   requestPermission: () => Promise<boolean>;
-  startSession: () => Promise<void>;
+  getAvailableDevices?: () => Promise<Array<{ id: string; name: string }>>;
+  startSession: (deviceId?: string) => Promise<void>;
   stopSession: () => Promise<void>;
   addListener(eventName: string, listener: (data: unknown) => void): { remove(): void };
   removeListeners?(count: number): void;
@@ -38,6 +47,7 @@ export interface CameraSeamOptions {
   hasCamera?: boolean;
   hasPermission?: boolean;
   permissionStatus?: string;
+  devices?: Array<{ id: string; name: string }>;
 }
 
 /**
@@ -158,15 +168,20 @@ export function createCameraSeam(
 
   const activeModule = withEventStream(rawModule);
 
-  const Camera: ComponentType<CameraViewfinderProps> = ({ style, isActive, codeScanner, testID }) => {
+  const Camera: ComponentType<CameraViewfinderProps> = ({ style, isActive, codeScanner, testID, device }) => {
+    const selectedDeviceId =
+      device !== null && typeof device === "object" && "id" in device && typeof device.id === "string"
+        ? device.id
+        : undefined;
+
     useEffect(() => {
       if (isActive) {
-        void activeModule.startSession().catch(() => {});
+        void activeModule.startSession(selectedDeviceId === "default" ? undefined : selectedDeviceId).catch(() => {});
         return () => {
           void activeModule.stopSession().catch(() => {});
         };
       }
-    }, [isActive]);
+    }, [isActive, selectedDeviceId]);
 
     useEffect(() => {
       const scanner = codeScanner as { onCodeScanned?: (codes: Code[]) => void } | undefined;
@@ -228,6 +243,71 @@ export function createCameraSeam(
         name: "Mac Camera",
         position: "back" as const,
       };
+    },
+    useCameraDevices: () => {
+      const [devices, setDevices] = useState<CameraDeviceInfo[]>(() => {
+        if (options?.devices !== undefined) {
+          return options.devices.map((d, index) => ({
+            id: d.id,
+            label: d.name && d.name.trim().length > 0 ? d.name : `Camera ${index + 1}`,
+            position: "unspecified" as const,
+          }));
+        }
+        const hasCam =
+          options?.hasCamera ?? (typeof activeModule.hasCamera === "boolean" ? activeModule.hasCamera : true);
+        if (!hasCam) return [];
+        return [{ id: "default", label: "Mac Camera", position: "unspecified" as const }];
+      });
+
+      useEffect(() => {
+        if (options?.devices !== undefined) {
+          setDevices(
+            options.devices.map((d, index) => ({
+              id: d.id,
+              label: d.name && d.name.trim().length > 0 ? d.name : `Camera ${index + 1}`,
+              position: "unspecified" as const,
+            })),
+          );
+          return;
+        }
+
+        let active = true;
+
+        const refresh = () => {
+          if (typeof activeModule.getAvailableDevices === "function") {
+            void activeModule
+              .getAvailableDevices()
+              .then(list => {
+                if (!active) return;
+                if (Array.isArray(list) && list.length > 0) {
+                  setDevices(
+                    list.map((d, index) => ({
+                      id: d.id,
+                      label: d.name && d.name.trim().length > 0 ? d.name : `Camera ${index + 1}`,
+                      position: "unspecified" as const,
+                    })),
+                  );
+                } else {
+                  setDevices([]);
+                }
+              })
+              .catch(() => {});
+          }
+        };
+
+        refresh();
+
+        const sub = activeModule.addListener("onCameraDevicesChanged", () => {
+          refresh();
+        });
+
+        return () => {
+          active = false;
+          sub.remove();
+        };
+      }, []);
+
+      return devices;
     },
 
     useCodeScanner: (opts: { codeTypes: string[]; onCodeScanned: (codes: Code[]) => void }) => {

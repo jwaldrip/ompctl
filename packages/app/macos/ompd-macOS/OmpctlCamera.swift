@@ -25,10 +25,30 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
   override init() {
     super.init()
     OmpctlCamera.shared = self
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleDeviceChange(_:)),
+      name: AVCaptureDevice.wasConnectedNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleDeviceChange(_:)),
+      name: AVCaptureDevice.wasDisconnectedNotification,
+      object: nil
+    )
   }
 
   deinit {
+    NotificationCenter.default.removeObserver(self)
     tearDownSessionSync()
+  }
+
+  @objc private func handleDeviceChange(_: Notification) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self, let modules = self.callableJSModules else { return }
+      modules.invokeModule("RCTDeviceEventEmitter", method: "emit", withArgs: ["onCameraDevicesChanged", []])
+    }
   }
 
   private func statusString(_ status: AVAuthorizationStatus) -> String {
@@ -55,6 +75,32 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
     resolve(device != nil)
   }
 
+  @objc(getAvailableDevices:rejecter:)
+  func getAvailableDevices(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    rejecter _: @escaping RCTPromiseRejectBlock
+  ) {
+    var deviceTypes: [AVCaptureDevice.DeviceType] = [
+      .builtInWideAngleCamera,
+      .externalUnknown,
+    ]
+    if #available(macOS 14.0, *) {
+      deviceTypes.append(.continuityCamera)
+    }
+    let discoverySession = AVCaptureDevice.DiscoverySession(
+      deviceTypes: deviceTypes,
+      mediaType: .video,
+      position: .unspecified
+    )
+    let devices = discoverySession.devices.map { device in
+      [
+        "id": device.uniqueID,
+        "name": device.localizedName,
+      ]
+    }
+    resolve(devices)
+  }
+
   @objc(checkPermission:rejecter:)
   func checkPermission(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -79,13 +125,17 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
     _ resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
+    startSessionWithDevice(nil, resolver: resolve, rejecter: reject)
+  }
+
+  @objc(startSessionWithDevice:resolver:rejecter:)
+  func startSessionWithDevice(
+    _ deviceId: String?,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
     sessionQueue.async { [weak self] in
       guard let self = self else {
-        resolve(nil)
-        return
-      }
-
-      if let currentSession = self.session, currentSession.isRunning {
         resolve(nil)
         return
       }
@@ -96,9 +146,25 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
         return
       }
 
-      guard let device = AVCaptureDevice.default(for: .video) else {
+      let device: AVCaptureDevice?
+      if let requestedId = deviceId, !requestedId.isEmpty {
+        device = AVCaptureDevice(uniqueID: requestedId) ?? AVCaptureDevice.default(for: .video)
+      } else {
+        device = AVCaptureDevice.default(for: .video)
+      }
+
+      guard let targetDevice = device else {
         reject("E_NO_CAMERA", "No camera device available on this Mac", nil)
         return
+      }
+
+      if let currentSession = self.session, currentSession.isRunning {
+        if let currentInput = currentSession.inputs.first as? AVCaptureDeviceInput,
+           currentInput.device.uniqueID == targetDevice.uniqueID {
+          resolve(nil)
+          return
+        }
+        self.tearDownSessionSync()
       }
 
       let captureSession = self.session ?? AVCaptureSession()
@@ -113,7 +179,7 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
       }
 
       do {
-        let input = try AVCaptureDeviceInput(device: device)
+        let input = try AVCaptureDeviceInput(device: targetDevice)
         guard captureSession.canAddInput(input) else {
           captureSession.commitConfiguration()
           reject("E_INPUT_FAILED", "Could not add camera input to capture session", nil)

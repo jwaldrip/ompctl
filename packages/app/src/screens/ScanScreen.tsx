@@ -15,7 +15,7 @@
 
 import { parseDeviceCredential, parsePairingBundle } from "@ompd/core/pairing";
 import type { JSX } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
@@ -23,9 +23,9 @@ import { Body, Display, Kicker, Label } from "../design/text.tsx";
 import { ground, ink, signal, signalWash, space, stroke, TOUCH_TARGET } from "../design/tokens.ts";
 import type { CameraSeam, Code } from "../platform/camera";
 import { cameraSeam, createCameraSeam } from "../platform/camera";
+import { loadCameraPrefs, saveCameraPrefs } from "../platform/camera-prefs.ts";
 import type { Connection } from "../platform/connection.ts";
 import { parsePairDeepLink } from "../platform/deeplink.ts";
-
 export function ScanScreen({
   onCancel,
   onScanned,
@@ -104,7 +104,49 @@ function LiveScanScreen({
   onScanned: (connection: Connection, label: string) => void;
 }): JSX.Element {
   const { hasPermission, requestPermission } = hooks.useCameraPermission();
-  const device = hooks.useCameraDevice("back");
+  const defaultDevice = hooks.useCameraDevice("back");
+  const devices = hooks.useCameraDevices?.() ?? [];
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void loadCameraPrefs().then(prefs => {
+      if (active && prefs.deviceId !== null) {
+        setSelectedDeviceId(prefs.deviceId);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSelectCamera = useCallback((id: string) => {
+    setSelectedDeviceId(id);
+    void saveCameraPrefs({ deviceId: id });
+  }, []);
+
+  const activeDevice = useMemo(() => {
+    if (devices.length > 0) {
+      if (selectedDeviceId !== null) {
+        const found = devices.find(d => d.id === selectedDeviceId);
+        if (found !== undefined) {
+          return found.rawDevice ?? found;
+        }
+      }
+      return devices[0]?.rawDevice ?? devices[0] ?? defaultDevice;
+    }
+    return defaultDevice;
+  }, [devices, selectedDeviceId, defaultDevice]);
+
+  const currentActiveId = useMemo(() => {
+    if (devices.length > 0) {
+      if (selectedDeviceId !== null && devices.some(d => d.id === selectedDeviceId)) {
+        return selectedDeviceId;
+      }
+      return devices[0]?.id ?? null;
+    }
+    return null;
+  }, [devices, selectedDeviceId]);
   const [invalid, setInvalid] = useState(false);
   // Set once a decode parses, cleared on cancel: the camera keeps running
   // underneath so declining a mistaken scan costs nothing.
@@ -153,6 +195,26 @@ function LiveScanScreen({
           Scan to pair
         </Display>
         <Body color={ink.bright}>Point the camera at the QR code an approved device is showing.</Body>
+        {hasPermission && devices.length > 1 ? (
+          <View style={styles.cameraSelector} testID="scan-camera-selector">
+            {devices.map(dev => {
+              const isSelected = dev.id === currentActiveId;
+              return (
+                <Pressable
+                  accessibilityLabel={`Switch to ${dev.label}`}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isSelected }}
+                  key={dev.id}
+                  onPress={() => handleSelectCamera(dev.id)}
+                  style={[styles.cameraOption, isSelected && styles.cameraOptionActive]}
+                  testID={`scan-camera-option-${dev.id}`}
+                >
+                  <Label color={isSelected ? ink.bright : ink.muted}>{dev.label}</Label>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
       </View>
 
       {!hasPermission ? (
@@ -167,7 +229,7 @@ function LiveScanScreen({
             <Label color={signal.ready}>Allow camera access</Label>
           </Pressable>
         </View>
-      ) : device === undefined ? (
+      ) : activeDevice === undefined ? (
         <View style={styles.centered} testID="scan-no-device">
           <Body color={ink.bright}>No usable camera was found on this device.</Body>
         </View>
@@ -175,7 +237,7 @@ function LiveScanScreen({
         <>
           <Camera
             codeScanner={codeScanner}
-            device={device}
+            device={activeDevice}
             isActive={pending === null}
             style={StyleSheet.absoluteFill}
             testID="scan-camera"
@@ -226,6 +288,26 @@ const styles = StyleSheet.create({
   screen: { backgroundColor: ground.base, justifyContent: "space-between" },
   header: { gap: space.tight, padding: space.loose },
   centered: { alignItems: "center", flex: 1, gap: space.step, justifyContent: "center", padding: space.loose },
+  cameraSelector: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space.step,
+    marginTop: space.tight,
+  },
+  cameraOption: {
+    alignItems: "center",
+    backgroundColor: ground.surface,
+    borderColor: ground.edge,
+    borderWidth: 1,
+    justifyContent: "center",
+    minHeight: TOUCH_TARGET,
+    paddingHorizontal: space.step,
+    paddingVertical: space.snug,
+  },
+  cameraOptionActive: {
+    backgroundColor: ground.active,
+    borderColor: signal.ready,
+  },
   action: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET, paddingHorizontal: space.wide },
   notice: {
     alignItems: "center",

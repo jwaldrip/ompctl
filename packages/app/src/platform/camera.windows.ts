@@ -9,6 +9,7 @@ import type { CameraAvailability, CameraSeam } from "./camera.ts";
 
 export type {
   CameraAvailability,
+  CameraDeviceInfo,
   CameraHooks,
   CameraSeam,
   CameraViewfinderProps,
