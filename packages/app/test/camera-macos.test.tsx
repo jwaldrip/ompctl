@@ -21,6 +21,8 @@ import type { CameraSeam } from "../src/platform/camera.ts";
 import type { Connection } from "../src/platform/connection.ts";
 import { resetCameraMock } from "./rnw.ts";
 
+// Dynamic imports ensure rnw.ts registers module mocks before React Native is imported.
+const { DeviceEventEmitter } = await import("react-native");
 const { ScanScreen } = await import("../src/screens/ScanScreen.tsx");
 const macCamera = await import("../src/platform/camera.macos.ts");
 declare global {
@@ -95,18 +97,17 @@ interface StubNativeModule {
   lastDeviceIdStarted: string | null | undefined;
   stopSessionCalls: number;
   requestPermissionCalls: number;
-  listeners: Record<string, Set<(data: unknown) => void>>;
   checkPermission: () => Promise<string>;
   requestPermission: () => Promise<boolean>;
   startSession: () => Promise<void>;
   startSessionWithDevice: (deviceId: string | null) => Promise<void>;
   stopSession: () => Promise<void>;
-  addListener: (event: string, listener: (data: unknown) => void) => { remove: () => void };
+  addListener?: (eventName: string) => void;
+  removeListeners?: (count: number) => void;
   emit: (event: string, data: unknown) => void;
 }
 
 function createStubNativeModule(overrides?: Partial<StubNativeModule>): StubNativeModule {
-  const listeners: Record<string, Set<(data: unknown) => void>> = {};
   const stub: StubNativeModule = {
     hasCamera: true,
     hasPermission: true,
@@ -114,7 +115,6 @@ function createStubNativeModule(overrides?: Partial<StubNativeModule>): StubNati
     startSessionCalls: 0,
     stopSessionCalls: 0,
     requestPermissionCalls: 0,
-    listeners,
     checkPermission: async () => stub.permissionStatus,
     requestPermission: async () => {
       stub.requestPermissionCalls += 1;
@@ -134,19 +134,10 @@ function createStubNativeModule(overrides?: Partial<StubNativeModule>): StubNati
     stopSession: async () => {
       stub.stopSessionCalls += 1;
     },
-    addListener: (event: string, listener: (data: unknown) => void) => {
-      listeners[event] = listeners[event] ?? new Set();
-      listeners[event].add(listener);
-      return {
-        remove: () => {
-          listeners[event]?.delete(listener);
-        },
-      };
-    },
+    addListener: (_eventName: string) => {},
+    removeListeners: (_count: number) => {},
     emit: (event: string, data: unknown) => {
-      listeners[event]?.forEach(fn => {
-        fn(data);
-      });
+      DeviceEventEmitter.emit(event, data);
     },
     ...overrides,
   };
@@ -326,5 +317,24 @@ describe("macOS QR Scanner: end to end through the seam", () => {
       root.unmount();
     });
     host.remove();
+  });
+
+  test("subscriptions receive events through DeviceEventEmitter with single-arg bridge listener", () => {
+    const stub = createStubNativeModule();
+    const seam = macCamera.createCameraSeam(stub);
+    const h = mountScanScreen(seam);
+
+    // Emitter delivers QR scan event through DeviceEventEmitter
+    const encoded = encodePairingBundle(VALID_BUNDLE);
+    act(() => {
+      DeviceEventEmitter.emit("onCodeScanned", [{ type: "qr", value: encoded }]);
+    });
+
+    // Confirmation card appears
+    const confirmCard = el(h.host, "scan-confirm");
+    expect(confirmCard).not.toBeNull();
+    expect(confirmCard?.textContent).toContain("Pair with Mac Mini Studio?");
+
+    h.unmount();
   });
 });

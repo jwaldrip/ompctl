@@ -59,8 +59,8 @@ describe("macOS Camera Bridge Contract", () => {
     expect(methods.get("stopSession")?.isPromise).toBe(true);
 
     expect(methods.has("addListener")).toBe(true);
+    expect(methods.get("addListener")?.jsArity).toBe(1);
     expect(methods.get("addListener")?.isPromise).toBe(false);
-
     expect(methods.has("removeListeners")).toBe(true);
     expect(methods.get("removeListeners")?.jsArity).toBe(1);
     expect(methods.get("removeListeners")?.isPromise).toBe(false);
@@ -111,6 +111,58 @@ describe("macOS Camera Bridge Contract", () => {
     expect(ifaceMismatch?.message).toContain("accepts up to 1 argument(s), but OmpctlCamera.m declares JS arity 0");
   });
 
+  test("detects and rejects call-site arity mismatch when addListener is called with 2 arguments", () => {
+    const mSource = readFileSync(mPath, "utf8");
+    const brokenTsSource = `
+      export interface OmpctlCameraNativeModule {
+        addListener?: (eventName: string) => void;
+      }
+      function subscribe(activeModule: OmpctlCameraNativeModule) {
+        activeModule.addListener("onCodeScanned", () => {});
+      }
+    `;
+
+    const report = verifyBridgeContract(mSource, brokenTsSource);
+    expect(report.passed).toBe(false);
+    const callMismatch = report.violations.find(v => v.kind === "call-site-mismatch" && v.method === "addListener");
+    expect(callMismatch).toBeDefined();
+    expect(callMismatch?.message).toContain("passes 2 argument(s), but OmpctlCamera.m declares JS arity 1");
+  });
+
+  test("detects and rejects interface mismatch when addListener declares two arguments in TypeScript", () => {
+    const mSource = readFileSync(mPath, "utf8");
+    const brokenTsSource = `
+      export interface OmpctlCameraNativeModule {
+        addListener(eventName: string, listener: (data: unknown) => void): { remove(): void };
+      }
+    `;
+
+    const report = verifyBridgeContract(mSource, brokenTsSource);
+    expect(report.passed).toBe(false);
+    const ifaceMismatch = report.violations.find(v => v.kind === "interface-mismatch" && v.method === "addListener");
+    expect(ifaceMismatch).toBeDefined();
+    expect(ifaceMismatch?.message).toContain("accepts 2 argument(s), but OmpctlCamera.m declares JS arity 1");
+  });
+
+  test("detects native call-site mismatch when native.addListener is probed with two arguments", () => {
+    const mSource = readFileSync(mPath, "utf8");
+    const brokenTsSource = `
+      export interface OmpctlCameraNativeModule {
+        addListener?: (eventName: string) => void;
+      }
+      function probe(native: OmpctlCameraNativeModule) {
+        native.addListener("test_probe", () => {});
+      }
+    `;
+
+    const report = verifyBridgeContract(mSource, brokenTsSource);
+    expect(report.passed).toBe(false);
+    const callMismatch = report.violations.find(v => v.kind === "call-site-mismatch" && v.method === "addListener");
+    expect(callMismatch).toBeDefined();
+    expect(callMismatch?.message).toContain("Call site native.addListener");
+    expect(callMismatch?.message).toContain("passes 2 argument(s), but OmpctlCamera.m declares JS arity 1");
+  });
+
   test("createBridgeCheckedStub proxy intercepts arity violations before native dispatch", async () => {
     const startSessionHistory: unknown[][] = [];
     const startSessionWithDeviceHistory: Array<string | null> = [];
@@ -122,6 +174,7 @@ describe("macOS Camera Bridge Contract", () => {
       startSessionWithDevice: async (deviceId: string | null) => {
         startSessionWithDeviceHistory.push(deviceId);
       },
+      addListener: (_eventName: string) => {},
     };
 
     const guardedStub = createBridgeCheckedStub(rawStub);
@@ -142,5 +195,11 @@ describe("macOS Camera Bridge Contract", () => {
       const untyped = guardedStub as { startSession: (arg: string) => Promise<void> };
       untyped.startSession("unsupported-device-id");
     }).toThrow(/Native bridge contract violation: OmpctlCamera.startSession expects 0 arguments/);
+
+    // addListener called with 2 arguments throws immediately
+    expect(() => {
+      const untyped = guardedStub as unknown as { addListener: (event: string, cb: () => void) => void };
+      untyped.addListener("onCodeScanned", () => {});
+    }).toThrow(/Native bridge contract violation: OmpctlCamera.addListener expects 1 argument\(s\)/);
   });
 });

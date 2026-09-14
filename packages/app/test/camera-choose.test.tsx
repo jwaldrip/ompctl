@@ -206,7 +206,8 @@ describe("Camera selection: device choice and capture surface", () => {
         sessionHistory.push({ action: "stop" });
       },
       requestPermission: async () => true,
-      addListener: () => ({ remove: () => {} }),
+      addListener: (_eventName: string) => {},
+      removeListeners: (_count: number) => {},
       getAvailableDevices: async () => [
         { id: "built-in", name: "FaceTime HD Camera" },
         { id: "studio-display", name: "Studio Display Camera" },

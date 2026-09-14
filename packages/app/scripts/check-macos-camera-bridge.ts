@@ -37,6 +37,7 @@ export interface TsInterfaceMethod {
 }
 
 export interface ActiveModuleCall {
+  readonly receiver?: string;
   readonly method: string;
   readonly argCount: number;
   readonly line: number;
@@ -195,12 +196,13 @@ export function parseTsInterfaceMethods(
  * Locates all activeModule.<method>(...) invocations in camera.macos.ts.
  */
 export function parseActiveModuleCalls(source: string): ActiveModuleCall[] {
-  const callRegex = /\bactiveModule\.([a-zA-Z0-9_]+)\s*\(/g;
+  const callRegex = /\b(activeModule|native|rawModule|probedModule)\.([a-zA-Z0-9_]+)\s*\(/g;
   const calls: ActiveModuleCall[] = [];
 
   for (const match of source.matchAll(callRegex)) {
     const matchIndex = match.index ?? 0;
-    const method = match[1] ?? "";
+    const receiver = match[1] ?? "activeModule";
+    const method = match[2] ?? "";
     const openParen = matchIndex + match[0].length - 1;
     let depth = 1;
     let curr = openParen + 1;
@@ -248,7 +250,7 @@ export function parseActiveModuleCalls(source: string): ActiveModuleCall[] {
     }
 
     const line = source.slice(0, matchIndex).split("\n").length;
-    calls.push({ method, argCount, line, argsText });
+    calls.push({ receiver, method, argCount, line, argsText });
   }
 
   return calls;
@@ -265,9 +267,6 @@ export function verifyBridgeContract(mSource: string, tsSource: string): BridgeC
 
   // 1. Check TypeScript interface definitions against declared native methods
   for (const [name, tsMethod] of interfaceMethods) {
-    // addListener on withEventStream is augmented to return an event subscription in JS
-    if (name === "addListener") continue;
-
     const nativeMethod = methods.get(name);
     if (!nativeMethod) {
       violations.push({
@@ -287,30 +286,25 @@ export function verifyBridgeContract(mSource: string, tsSource: string): BridgeC
         line: tsMethod.line,
         message: `TypeScript interface for "${name}" accepts up to ${tsMethod.maxArity} argument(s), but OmpctlCamera.m declares JS arity 0. Passing arguments to a zero-arity bridge method causes an NSRangeException crash.`,
       });
-    }
-    // A method expecting N JS arguments must accept at least N arguments
-    if (nativeMethod.jsArity > 0 && tsMethod.maxArity < nativeMethod.jsArity) {
+    } else if (nativeMethod.jsArity > 0 && tsMethod.maxArity !== nativeMethod.jsArity) {
       violations.push({
         kind: "interface-mismatch",
         method: name,
         line: tsMethod.line,
-        message: `TypeScript interface for "${name}" only accepts ${tsMethod.maxArity} argument(s), but OmpctlCamera.m declares JS arity ${nativeMethod.jsArity}.`,
+        message: `TypeScript interface for "${name}" accepts ${tsMethod.maxArity} argument(s), but OmpctlCamera.m declares JS arity ${nativeMethod.jsArity}. Calling a bridge method with unexpected argument counts causes bridge dispatch failure.`,
       });
     }
   }
 
   // 2. Check call sites in camera.macos.ts
   for (const call of callSites) {
-    // addListener on activeModule is called through the wrapped event stream
-    if (call.method === "addListener") continue;
-
     const nativeMethod = methods.get(call.method);
     if (!nativeMethod) {
       violations.push({
         kind: "missing-bridge-method",
         method: call.method,
         line: call.line,
-        message: `Call site calls activeModule.${call.method}(), but OmpctlCamera.m declares no such method.`,
+        message: `Call site calls ${call.receiver ?? "activeModule"}.${call.method}(), but OmpctlCamera.m declares no such method.`,
       });
       continue;
     }
@@ -320,11 +314,10 @@ export function verifyBridgeContract(mSource: string, tsSource: string): BridgeC
         kind: "call-site-mismatch",
         method: call.method,
         line: call.line,
-        message: `Call site activeModule.${call.method}(${call.argsText}) passes ${call.argCount} argument(s), but OmpctlCamera.m declares JS arity ${nativeMethod.jsArity}.`,
+        message: `Call site ${call.receiver ?? "activeModule"}.${call.method}(${call.argsText}) passes ${call.argCount} argument(s), but OmpctlCamera.m declares JS arity ${nativeMethod.jsArity}.`,
       });
     }
   }
-
   return {
     methods,
     interfaceMethods,
@@ -360,7 +353,7 @@ export function createBridgeCheckedStub<T extends object>(
       }
 
       // Allow test-only helper methods and event emitter subscriptions
-      if (prop === "emit" || prop === "listeners" || prop === "addListener") {
+      if (prop === "emit" || prop === "listeners") {
         return orig;
       }
 
