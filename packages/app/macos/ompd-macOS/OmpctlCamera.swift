@@ -282,8 +282,8 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
     }
   }
 
-  @objc(addListener:callback:)
-  func addListener(_: String, callback _: @escaping RCTResponseSenderBlock) {}
+  @objc(addListener:)
+  func addListener(_: String) {}
 
   @objc(removeListeners:)
   func removeListeners(_: Double) {}

@@ -12,6 +12,7 @@ import "./rnw.ts";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { createBridgeCheckedStub } from "../scripts/check-macos-camera-bridge.ts";
 import type { CameraSeam } from "../src/platform/camera.ts";
 import { resetCameraMock } from "./rnw.ts";
 
@@ -191,23 +192,28 @@ describe("Camera selection: device choice and capture surface", () => {
   test("macOS seam starts session with chosen deviceId and tears down previous session", async () => {
     const sessionHistory: Array<{ action: "start" | "stop"; deviceId?: string }> = [];
 
-    const stub = {
+    const rawStub = {
       hasPermission: true,
       hasCamera: true,
       permissionStatus: "authorized",
-      startSession: async (deviceId?: string) => {
-        sessionHistory.push({ action: "start", deviceId });
+      startSession: async () => {
+        sessionHistory.push({ action: "start" });
+      },
+      startSessionWithDevice: async (deviceId: string | null) => {
+        sessionHistory.push({ action: "start", deviceId: deviceId ?? undefined });
       },
       stopSession: async () => {
         sessionHistory.push({ action: "stop" });
       },
       requestPermission: async () => true,
-      addListener: () => ({ remove: () => {} }),
+      addListener: (_eventName: string) => {},
+      removeListeners: (_count: number) => {},
       getAvailableDevices: async () => [
         { id: "built-in", name: "FaceTime HD Camera" },
         { id: "studio-display", name: "Studio Display Camera" },
       ],
     };
+    const stub = createBridgeCheckedStub(rawStub);
 
     const seam = createMacSeam(stub as unknown as Parameters<typeof createMacSeam>[0], {
       devices: [

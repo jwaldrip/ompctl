@@ -8,9 +8,8 @@
 
 import type { ComponentType } from "react";
 import { createElement, useCallback, useEffect, useState } from "react";
-import type { NativeModule } from "react-native";
 import * as ReactNative from "react-native";
-import { NativeEventEmitter, NativeModules, Platform, View } from "react-native";
+import { DeviceEventEmitter, NativeModules, Platform, View } from "react-native";
 import type {
   CameraAvailability,
   CameraDeviceInfo,
@@ -31,15 +30,16 @@ export type {
 } from "./camera.ts";
 
 export interface OmpctlCameraNativeModule {
-  hasCamera?: boolean;
+  hasCamera?: boolean | (() => Promise<boolean>);
   hasPermission?: boolean;
   permissionStatus?: string;
   checkPermission?: () => Promise<string>;
   requestPermission: () => Promise<boolean>;
   getAvailableDevices?: () => Promise<Array<{ id: string; name: string }>>;
-  startSession: (deviceId?: string) => Promise<void>;
+  startSession?: () => Promise<void>;
+  startSessionWithDevice: (deviceId: string | null) => Promise<void>;
   stopSession: () => Promise<void>;
-  addListener(eventName: string, listener: (data: unknown) => void): { remove(): void };
+  addListener?(eventName: string): void;
   removeListeners?(count: number): void;
 }
 
@@ -84,23 +84,6 @@ export function probeCameraModule(): OmpctlCameraNativeModule | undefined {
 
 export async function loadVisionCamera(): Promise<undefined> {
   return undefined;
-}
-
-function withEventStream(native: OmpctlCameraNativeModule): OmpctlCameraNativeModule {
-  try {
-    const testSub = native.addListener("test_probe", () => {});
-    if (testSub && typeof testSub.remove === "function") {
-      testSub.remove();
-      return native;
-    }
-  } catch {
-    // Fall back to NativeEventEmitter wrapping
-  }
-  const emitter = new NativeEventEmitter(native as unknown as NativeModule);
-  return {
-    ...native,
-    addListener: (eventName, listener) => emitter.addListener(eventName, listener),
-  };
 }
 
 function resolveNativePreviewComponent(): ComponentType<{ style?: unknown; testID?: string }> | null {
@@ -166,7 +149,7 @@ export function createCameraSeam(
     };
   }
 
-  const activeModule = withEventStream(rawModule);
+  const activeModule = rawModule;
 
   const Camera: ComponentType<CameraViewfinderProps> = ({ style, isActive, codeScanner, testID, device }) => {
     const selectedDeviceId =
@@ -176,7 +159,8 @@ export function createCameraSeam(
 
     useEffect(() => {
       if (isActive) {
-        void activeModule.startSession(selectedDeviceId === "default" ? undefined : selectedDeviceId).catch(() => {});
+        const targetDeviceId = selectedDeviceId && selectedDeviceId !== "default" ? selectedDeviceId : null;
+        void activeModule.startSessionWithDevice(targetDeviceId).catch(() => {});
         return () => {
           void activeModule.stopSession().catch(() => {});
         };
@@ -187,7 +171,7 @@ export function createCameraSeam(
       const scanner = codeScanner as { onCodeScanned?: (codes: Code[]) => void } | undefined;
       if (!scanner?.onCodeScanned) return;
 
-      const sub = activeModule.addListener("onCodeScanned", (event: unknown) => {
+      const sub = DeviceEventEmitter.addListener("onCodeScanned", (event: unknown) => {
         if (!isActive) return;
         let codes: Code[] = [];
         if (Array.isArray(event)) {
@@ -297,7 +281,7 @@ export function createCameraSeam(
 
         refresh();
 
-        const sub = activeModule.addListener("onCameraDevicesChanged", () => {
+        const sub = DeviceEventEmitter.addListener("onCameraDevicesChanged", () => {
           refresh();
         });
 

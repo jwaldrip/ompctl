@@ -28,8 +28,7 @@ RCT_EXTERN_METHOD(startSessionWithDevice:(nullable NSString *)deviceId
 RCT_EXTERN_METHOD(stopSession:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(addListener:(NSString *)eventName
-                  callback:(RCTResponseSenderBlock)callback)
+RCT_EXTERN_METHOD(addListener:(NSString *)eventName)
 
 RCT_EXTERN_METHOD(removeListeners:(double)count)
 
