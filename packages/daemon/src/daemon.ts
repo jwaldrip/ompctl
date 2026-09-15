@@ -67,6 +67,17 @@ import { HostRegistry } from "./hosts.ts";
 import { McpAuthSubsystem } from "./mcpauth/index.ts";
 import type { VaultBackend } from "./mcpauth/types.ts";
 import { DaemonModelAccess } from "./model-broker/index.ts";
+import {
+  approvalModeToPolicyMode,
+  determinePolicyMode,
+  getPolicyModeSource,
+  type LoadConfigOptions,
+  type OmpApprovalMode,
+  type OmpApprovalResolveOptions,
+  type PolicyModeSource,
+  resolveOmpApprovalMode,
+  resolveOmpApprovalModeSync,
+} from "./omp-approval.ts";
 import { type ResolvedOmp, resolveOmp } from "./omp-resolver.ts";
 import { ContainerBackend, HostProvisioner, KNOWN_RUNTIMES, LocalBackend } from "./provisioner/index.ts";
 import { Scheduler } from "./routines/index.ts";
@@ -385,6 +396,8 @@ export interface OmpdOptions {
   onLog?: (line: string) => void;
   /** Override path to packages/cli/src/main.ts for orchestrator MCP server resolution. */
   cliEntry?: string;
+  /** Override OMP agent directory (~/.omp/agent) for approval mode resolution, used by tests. */
+  ompAgentDir?: string;
   /** Optional custom loader for operator MCP configs, used by tests. */
   loadOperatorMcpConfigs?: (cwd: string) => Promise<{ configs: Record<string, MCPServerConfig> }>;
 }
@@ -472,7 +485,11 @@ export function orchestratorMcpServersFor(
  * daemon that quietly ran under `standard` because someone typoed `strict`
  * would be enforcing a policy nobody chose.
  */
-export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): OmpdConfig {
+export function loadConfig(
+  home: string,
+  overrides: Partial<OmpdConfig> = {},
+  options: LoadConfigOptions = {},
+): OmpdConfig {
   const path = join(home, "config.json");
   let fromFile: Partial<OmpdConfig> = {};
 
@@ -489,7 +506,14 @@ export function loadConfig(home: string, overrides: Partial<OmpdConfig> = {}): O
     fromFile = parsed as Partial<OmpdConfig>;
   }
 
+  const { policyMode } = determinePolicyMode(fromFile.policyMode, overrides.policyMode, {
+    agentDir: options.ompAgentDir,
+    cwd: options.cwd,
+    configFiles: options.configFiles,
+  });
+
   const merged: OmpdConfig = { ...DEFAULT_CONFIG, ...fromFile, ...overrides };
+  merged.policyMode = policyMode;
 
   if (typeof merged.host !== "string" || merged.host.length === 0) {
     throw new Error(`${path}: host must be a non-empty string`);
@@ -668,11 +692,26 @@ export function ensureHome(home: string): string {
 
 // In `endpoint.ts` and re-exported, so the tunnel's pre-start guard can read
 // the published address without importing the composition root.
-export { endpointPath };
+export {
+  approvalModeToPolicyMode,
+  determinePolicyMode,
+  endpointPath,
+  getPolicyModeSource,
+  type LoadConfigOptions,
+  type OmpApprovalMode,
+  type OmpApprovalResolveOptions,
+  type PolicyModeSource,
+  resolveOmpApprovalMode,
+  resolveOmpApprovalModeSync,
+};
 
 export class Ompd {
   #home: string;
   #config: OmpdConfig;
+  #policy: DefaultPolicy;
+  #policyModeSource: PolicyModeSource;
+  #ompAgentDir: string | undefined;
+  #repoRoot: string | undefined;
   #onLog: (line: string) => void;
   #voiceEnabled: boolean;
 
@@ -747,8 +786,17 @@ export class Ompd {
    */
   constructor(opts: OmpdOptions = {}) {
     this.#home = ensureHome(opts.home ?? join(homedir(), ".ompd"));
+    this.#ompAgentDir = opts.ompAgentDir;
+    this.#repoRoot = opts.repoRoot;
 
-    this.#config = loadConfig(this.#home, opts.overrides);
+    this.#config = loadConfig(this.#home, opts.overrides, {
+      ompAgentDir: this.#ompAgentDir,
+      cwd: this.#repoRoot,
+    });
+    this.#policyModeSource = getPolicyModeSource(this.#home, opts.overrides, {
+      ompAgentDir: this.#ompAgentDir,
+      cwd: this.#repoRoot,
+    });
     this.#onLog = opts.onLog ?? (() => {});
     this.#resolvedOmp =
       opts.resolvedOmp ??
@@ -759,6 +807,15 @@ export class Ompd {
     this.#onLog(
       `using ${this.#resolvedOmp.source} omp at ${this.#resolvedOmp.path}${this.#resolvedOmp.version ? ` (${this.#resolvedOmp.version})` : ""}`,
     );
+    const sourceDesc =
+      this.#policyModeSource === "omp"
+        ? "derived from OMP tools.approvalMode"
+        : this.#policyModeSource === "file"
+          ? `configured in ${join(this.#home, "config.json")}`
+          : this.#policyModeSource === "override"
+            ? "explicit override"
+            : "default";
+    this.#onLog(`approval policy mode: ${this.#config.policyMode} (${sourceDesc})`);
 
     this.#cliEntry = opts.cliEntry;
     this.#voiceEnabled = opts.voice ?? true;
@@ -849,6 +906,7 @@ export class Ompd {
     });
 
     const policy = new DefaultPolicy({ mode: this.#config.policyMode });
+    this.#policy = policy;
     let sendWebViewAction: WebViewDispatch["send"] = () => false;
     let requestWebViewApproval: WebViewApprovalGate["request"] = () =>
       Promise.resolve({ allowed: false, reason: "approval supervisor is not available" });
@@ -991,7 +1049,10 @@ export class Ompd {
       }),
       syncConfig: {
         read: () => {
-          const config = loadConfig(this.#home);
+          const config = loadConfig(this.#home, undefined, {
+            ompAgentDir: this.#ompAgentDir,
+            cwd: this.#repoRoot,
+          });
           return { policyMode: config.policyMode, keepAwake: config.keepAwake };
         },
         apply: settings => this.#applySyncConfig(settings),
@@ -1187,6 +1248,14 @@ export class Ompd {
 
   get config(): OmpdConfig {
     return { ...this.#config };
+  }
+
+  get policy(): DefaultPolicy {
+    return this.#policy;
+  }
+
+  get policyModeSource(): PolicyModeSource {
+    return this.#policyModeSource;
   }
 
   get tokenPath(): string {

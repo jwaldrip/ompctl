@@ -134,11 +134,37 @@ Every field is optional, and every default is the conservative one.
 }
 ```
 
-`policyMode` is `strict`, `standard`, or `trusted`. A value outside that set is
-an error at startup rather than a fallback, because a daemon that quietly ran
-under `standard` because someone typoed `strict` is enforcing a policy nobody
-chose. There is deliberately no mode that auto-allows critical commands or
-reads of secret paths.
+`policyMode` is `strict`, `standard`, or `trusted`. When omitted from `config.json`,
+the daemon derives it from the operator's OMP `tools.approvalMode`:
+- `yolo` maps to `trusted`
+- `write` maps to `standard`
+- `always-ask` maps to `strict`
+
+If OMP's setting cannot be read, or is absent entirely, the daemon defaults to
+`standard`. Absence is not an instruction, and ompd is reachable over a network while a
+TUI has a human at the keyboard; a fresh machine does not silently become `trusted` just
+because OMP's schema default is `yolo`.
+
+Note the deliberate divergence between OMP's TUI `yolo` and the daemon's `trusted` mode:
+the TUI's `yolo` has no floor, while the daemon's `trusted` mode maintains a safety floor.
+In `trusted` mode, the daemon still prompts for explicit human approval on critical commands:
+- destructive deletions (`rm -rf`)
+- disk formatting (`mkfs`)
+- raw device writes (`dd of=/dev/`)
+- shutdowns and reboots
+- recursive world-writable permissions (`chmod 777`)
+- piped remote shells (`curl | sh`, `wget | sh`)
+- unleased force pushes (`git push --force`)
+- cloud and infrastructure deletions (`aws|gcloud|az delete|destroy|rm`, `terraform apply|destroy`, `kubectl delete`)
+- touching private keys or `.ssh/`
+- exfiltrating credential environment variables (`AWS_SECRET`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`)
+
+Writes targeting secret paths (such as `.ssh`, `.aws`, `.env`, and daemon state) remain denied.
+
+A value outside `strict`, `standard`, or `trusted` is an error at startup rather than a
+fallback, because a daemon that quietly ran under `standard` because someone typoed `strict`
+is enforcing a policy nobody chose. There is deliberately no mode that auto-allows critical
+commands or reads of secret paths.
 
 `keepAwake` holds a macOS idle-sleep assertion while any agent is working, so
 the machine does not sleep through a turn. See "The Mac has to be awake".

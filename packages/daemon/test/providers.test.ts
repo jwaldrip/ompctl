@@ -86,7 +86,7 @@ describe("providers daemon service", () => {
         }
 
         if (url.pathname === "/user/repos") {
-          if (!authHeader || !authHeader.includes("valid_token")) {
+          if (!authHeader?.includes("valid_token")) {
             return Response.json({ message: "Requires authentication" }, { status: 401 });
           }
           const page = Number.parseInt(url.searchParams.get("page") ?? "1", 10);

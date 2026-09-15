@@ -165,10 +165,20 @@ export function commandSegments(command: string): string[] {
 
 export interface PolicyConfig {
   /**
-   * `strict`  - everything except non-filesystem read-only tools needs a human.
-   * `standard`- reads and writes inside the workspace are allowed; everything
+   * `strict`  : everything except non-filesystem read-only tools needs a human.
+   * `standard`: reads and writes inside the workspace are allowed; everything
    *             else prompts.
-   * `trusted` - additionally auto-allows non-critical shell commands.
+   * `trusted` : additionally auto-allows non-critical shell commands.
+   *
+   * Following OMP's `yolo` approval mode maps to `trusted`. However, unlike the
+   * TUI's unconfined `yolo`, `trusted` maintains a security floor:
+   *   - Critical commands (destructive deletes `rm -rf`, disk format `mkfs`, raw device
+   *     writes `dd of=/dev/`, shutdowns, recursive world-writable permissions `chmod 777`,
+   *     piped remote shells `curl | sh`, unleased force pushes `git push --force`, cloud
+   *     resource deletion `aws|gcloud|az delete|destroy|rm`, `terraform apply|destroy`,
+   *     `kubectl delete`, touching private keys or `.ssh/`, or exfiltrating credential env vars)
+   *     still require explicit human approval (action: prompt).
+   *   - Writes targeting secret paths (e.g. `.ssh`, `.aws`, `.env`, daemon state) are denied.
    *
    * There is deliberately no mode that auto-allows critical commands or secret
    * paths, because such a mode is indistinguishable from having no policy.

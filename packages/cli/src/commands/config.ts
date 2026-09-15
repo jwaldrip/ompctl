@@ -15,7 +15,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, ensureHome, loadConfig, type OmpdConfig } from "@ompd/daemon";
+import { DEFAULT_CONFIG, ensureHome, getPolicyModeSource, loadConfig, type OmpdConfig } from "@ompd/daemon";
 import { type Command, UsageError } from "../args.ts";
 import type { CliContext } from "../client.ts";
 import { table } from "../format.ts";
@@ -43,7 +43,18 @@ function requireKnownKey(key: string): void {
 export async function configListCommand(ctx: CliContext): Promise<number> {
   const fromFile = readFileConfig(ctx.home);
   const effective = loadConfig(ctx.home);
-  const rows = CONFIG_KEYS.map(key => [key, String(effective[key]), key in fromFile ? "file" : "default"]);
+  const policyModeSource = getPolicyModeSource(ctx.home);
+  const rows = CONFIG_KEYS.map(key => {
+    let source: string;
+    if (key in fromFile) {
+      source = "file";
+    } else if (key === "policyMode") {
+      source = policyModeSource;
+    } else {
+      source = "default";
+    }
+    return [key, String(effective[key]), source];
+  });
   for (const line of table(["KEY", "VALUE", "SOURCE"], rows)) ctx.out(line);
   return 0;
 }

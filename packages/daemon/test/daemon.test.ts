@@ -19,7 +19,7 @@
  * and voice is off so no test shells out to probe for a speech binary.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -48,6 +48,19 @@ import { createFakeHost } from "./fake-host.ts";
 
 const scratch: string[] = [];
 const running: Ompd[] = [];
+const originalCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+beforeAll(() => {
+  process.env.PI_CODING_AGENT_DIR = tempDir("ompd-test-omp-");
+});
+
+afterAll(() => {
+  if (originalCodingAgentDir !== undefined) {
+    process.env.PI_CODING_AGENT_DIR = originalCodingAgentDir;
+  } else {
+    delete process.env.PI_CODING_AGENT_DIR;
+  }
+});
 
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
