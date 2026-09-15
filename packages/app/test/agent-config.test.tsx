@@ -286,6 +286,33 @@ describe("the options a session offers", () => {
     m.unmount();
   });
 
+  test("renders options on mobile runtimes where Array.prototype.toSorted is undefined", async () => {
+    interface ArrayPrototypeWithToSorted {
+      toSorted?: unknown;
+    }
+    const proto: ArrayPrototypeWithToSorted = Array.prototype;
+    const originalToSorted = proto.toSorted;
+    try {
+      delete proto.toSorted;
+      const client = new CannedClient(() => config("default"));
+      const m = mountConfig(DIRECT, client);
+      await settle();
+
+      expect(m.el("agent-config-group-model")).not.toBeNull();
+      expect(m.el("agent-config-group-mode")).not.toBeNull();
+      expect(m.el("agent-config-group-thinking")).not.toBeNull();
+      m.unmount();
+    } finally {
+      if (originalToSorted !== undefined) {
+        Object.defineProperty(Array.prototype, "toSorted", {
+          value: originalToSorted,
+          writable: true,
+          configurable: true,
+        });
+      }
+    }
+  });
+
   test("a hub pairing renders the same pickers, because the socket is the road every pairing has", async () => {
     // Before 2026-09-07 this screen read config over HTTP and told a hub
     // pairing it had no road; the portal at app.ompctl.ai is a hub pairing.

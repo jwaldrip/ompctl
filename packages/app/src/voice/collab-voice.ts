@@ -45,9 +45,12 @@ export class CollabVoiceQueue {
   /** Resolves after all notes already accepted by the queue have been played. */
   whenIdle(): Promise<void> {
     if (!this.#scheduled && !this.#playing && this.#pending.length === 0) return Promise.resolve();
-    const waiter = Promise.withResolvers<void>();
-    this.#idle.add(waiter.resolve);
-    return waiter.promise;
+    let resolve!: () => void;
+    const promise = new Promise<void>(res => {
+      resolve = res;
+    });
+    this.#idle.add(resolve);
+    return promise;
   }
 
   #schedule(): void {

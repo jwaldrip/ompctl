@@ -63,7 +63,7 @@ function groupByCategory(options: readonly ConfigOption[]): Array<{ category: st
         : category === "thought_level" || category === "thinking"
           ? 2
           : 3;
-  return groups.toSorted((a, b) => rank(a.category) - rank(b.category));
+  return groups.sort((a, b) => rank(a.category) - rank(b.category));
 }
 
 /** A wire category id (`thought_level`) as the words an operator reads (`thought level`). */

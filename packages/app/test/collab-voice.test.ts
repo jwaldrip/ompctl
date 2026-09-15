@@ -52,6 +52,30 @@ describe("CollabVoiceQueue", () => {
     await queue.whenIdle();
     expect(player.played).toEqual([]);
   });
+
+  test("whenIdle works on mobile runtimes where Promise.withResolvers is undefined", async () => {
+    interface PromiseWithResolversType {
+      withResolvers?: unknown;
+    }
+    const promiseConstructor: PromiseWithResolversType = Promise;
+    const originalWithResolvers = promiseConstructor.withResolvers;
+    try {
+      delete promiseConstructor.withResolvers;
+      const player = new RecordingPlayer();
+      const queue = new CollabVoiceQueue(player);
+      expect(queue.enqueue(note("note-1", 1, "human"))).toBe(true);
+      await queue.whenIdle();
+      expect(player.played).toHaveLength(1);
+    } finally {
+      if (originalWithResolvers !== undefined) {
+        Object.defineProperty(Promise, "withResolvers", {
+          value: originalWithResolvers,
+          writable: true,
+          configurable: true,
+        });
+      }
+    }
+  });
 });
 
 class RecordingPlayer implements CollabAudioPlayer {
