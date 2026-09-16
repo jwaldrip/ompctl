@@ -1,22 +1,41 @@
 import AVFoundation
 import AppKit
 import React
+import Vision
 
 /**
  * Native macOS camera capture and QR decoding module.
  *
- * Provides AVCaptureSession and AVCaptureMetadataOutput scanning on macOS
- * where react-native-vision-camera lacks native platform support.
+ * Provides AVCaptureSession capture with Vision QR decoding on macOS, where
+ * react-native-vision-camera has no native platform support.
  */
 @objc(OmpctlCamera)
-final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObjectsDelegate {
+final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureVideoDataOutputSampleBufferDelegate {
   static let sessionDidChangeNotification = Notification.Name("ai.ompctl.camera.sessionDidChange")
   static weak var shared: OmpctlCamera?
 
   @objc var callableJSModules: RCTCallableJSModules!
 
   private let sessionQueue = DispatchQueue(label: "ai.ompctl.camera.session")
-  private var session: AVCaptureSession?
+  private let sessionLock = NSLock()
+  private var storedSession: AVCaptureSession?
+  private let detectionQueue = DispatchQueue(label: "ai.ompctl.camera.detect")
+  private let detectionLock = NSLock()
+  private var isDetecting = false
+
+  /// Written on `sessionQueue`, read from the main thread by the viewfinder.
+  private var session: AVCaptureSession? {
+    get {
+      sessionLock.lock()
+      defer { sessionLock.unlock() }
+      return storedSession
+    }
+    set {
+      sessionLock.lock()
+      storedSession = newValue
+      sessionLock.unlock()
+    }
+  }
 
   var currentSession: AVCaptureSession? {
     return session
@@ -158,17 +177,22 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
         return
       }
 
-      if let currentSession = self.session, currentSession.isRunning {
-        if let currentInput = currentSession.inputs.first as? AVCaptureDeviceInput,
-           currentInput.device.uniqueID == targetDevice.uniqueID {
-          resolve(nil)
-          return
-        }
-        self.tearDownSessionSync()
+      // Reconfigure the existing session rather than replacing it. Tearing it
+      // down here would post a `nil` session change and drop the viewfinder's
+      // preview layer, and the JS seam restarts this on every device change.
+      if let currentSession = self.session,
+         currentSession.isRunning,
+         let currentInput = currentSession.inputs.first as? AVCaptureDeviceInput,
+         currentInput.device.uniqueID == targetDevice.uniqueID {
+        resolve(nil)
+        return
       }
 
       let captureSession = self.session ?? AVCaptureSession()
       self.session = captureSession
+      if captureSession.isRunning {
+        captureSession.stopRunning()
+      }
 
       captureSession.beginConfiguration()
       for input in captureSession.inputs {
@@ -182,28 +206,26 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
         let input = try AVCaptureDeviceInput(device: targetDevice)
         guard captureSession.canAddInput(input) else {
           captureSession.commitConfiguration()
+          self.tearDownSessionSync()
           reject("E_INPUT_FAILED", "Could not add camera input to capture session", nil)
           return
         }
         captureSession.addInput(input)
 
-        let metadataOutput = AVCaptureMetadataOutput()
-        guard captureSession.canAddOutput(metadataOutput) else {
+        let frameOutput = AVCaptureVideoDataOutput()
+        guard captureSession.canAddOutput(frameOutput) else {
           captureSession.commitConfiguration()
-          reject("E_OUTPUT_FAILED", "Could not add metadata output to capture session", nil)
+          self.tearDownSessionSync()
+          reject("E_OUTPUT_FAILED", "Could not add video output to capture session", nil)
           return
         }
-        captureSession.addOutput(metadataOutput)
+        frameOutput.alwaysDiscardsLateVideoFrames = true
+        frameOutput.setSampleBufferDelegate(self, queue: self.detectionQueue)
+        captureSession.addOutput(frameOutput)
 
-        metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
-        if metadataOutput.availableMetadataObjectTypes.contains(.qr) {
-          metadataOutput.metadataObjectTypes = [.qr]
-        } else {
-          captureSession.commitConfiguration()
-          reject("E_QR_UNSUPPORTED", "QR metadata decoding not supported by capture output", nil)
-          return
-        }
-
+        // No QR capability check here: macOS AVFoundation has no barcode
+        // metadata types to check for, and Vision decodes every camera's
+        // frames. The old check rejected every camera on this platform.
         captureSession.commitConfiguration()
         captureSession.startRunning()
 
@@ -216,6 +238,7 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
         resolve(nil)
       } catch {
         captureSession.commitConfiguration()
+        self.tearDownSessionSync()
         reject("E_SETUP_FAILED", "Failed to start camera capture session: \(error.localizedDescription)", error)
       }
     }
@@ -259,18 +282,50 @@ final class OmpctlCamera: NSObject, RCTInvalidating, AVCaptureMetadataOutputObje
     }
   }
 
-  func metadataOutput(
-    _: AVCaptureMetadataOutput,
-    didOutput metadataObjects: [AVMetadataObject],
+  /**
+   * Decode QR codes out of video frames.
+   *
+   * macOS has no barcode support in `AVCaptureMetadataOutput`: measured on this
+   * hardware, `availableMetadataObjectTypes` offers only face and body types
+   * (built-in camera), or nothing at all (external USB). Machine-readable code
+   * types are iOS-only, so detection has to run over frames through Vision.
+   */
+  func captureOutput(
+    _: AVCaptureOutput,
+    didOutput sampleBuffer: CMSampleBuffer,
     from _: AVCaptureConnection
   ) {
-    for metadataObject in metadataObjects {
-      guard let readable = metadataObject as? AVMetadataMachineReadableCodeObject,
-            readable.type == .qr,
-            let stringValue = readable.stringValue else {
-        continue
-      }
-      emitCodeScanned(stringValue)
+    guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+    // One detection in flight at a time; frames arrive far faster than Vision
+    // completes and a backlog would only ever decode stale pictures.
+    detectionLock.lock()
+    if isDetecting {
+      detectionLock.unlock()
+      return
+    }
+    isDetecting = true
+    detectionLock.unlock()
+
+    defer {
+      detectionLock.lock()
+      isDetecting = false
+      detectionLock.unlock()
+    }
+
+    let request = VNDetectBarcodesRequest()
+    request.symbologies = [.qr]
+    let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
+    do {
+      try handler.perform([request])
+    } catch {
+      return
+    }
+
+    for observation in request.results ?? [] {
+      guard let payload = observation.payloadStringValue, !payload.isEmpty else { continue }
+      emitCodeScanned(payload)
+      return
     }
   }
 
@@ -340,9 +395,16 @@ final class OmpctlCameraPreviewView: NSView {
     )
   }
 
-  @objc private func handleSessionChange(_ notification: Notification) {
-    let session = notification.object as? AVCaptureSession
-    updateSession(session)
+  /**
+   * Rebind to whatever session the module holds *now*, ignoring the payload.
+   *
+   * Both the start and the teardown paths post from `DispatchQueue.main.async`,
+   * so a teardown's `nil` can be delivered after a later start's session and
+   * would leave this layer bound to nothing for the rest of the screen's life.
+   * The module's `currentSession` is the only authority on what is running.
+   */
+  @objc private func handleSessionChange(_: Notification) {
+    updateSession(OmpctlCamera.shared?.currentSession)
   }
 
   private func updateSession(_ session: AVCaptureSession?) {

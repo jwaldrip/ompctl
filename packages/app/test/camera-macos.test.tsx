@@ -337,4 +337,62 @@ describe("macOS QR Scanner: end to end through the seam", () => {
 
     h.unmount();
   });
+
+  test("a camera that refuses to start says so instead of showing a blank viewfinder", async () => {
+    const stub = createStubNativeModule({
+      startSessionWithDevice: async () => {
+        throw Object.assign(new Error("Camera access is not authorized: denied"), { code: "E_PERMISSION" });
+      },
+    });
+
+    const seam = macCamera.createCameraSeam(stub);
+    const h = mountScanScreen(seam);
+
+    // The rejection resolves a microtask after mount.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const notice = el(h.host, "scan-camera-error");
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain("Camera access is not authorized: denied");
+
+    h.unmount();
+  });
+
+  test("a start failure with nothing useful in it still explains itself", () => {
+    expect(macCamera.describeStartFailure(new Error("no camera"))).toBe("no camera");
+    expect(macCamera.describeStartFailure("E_NO_CAMERA")).toBe("E_NO_CAMERA");
+    expect(macCamera.describeStartFailure(new Error("   "))).toBe("The camera did not start.");
+    expect(macCamera.describeStartFailure(undefined)).toBe("The camera did not start.");
+  });
+
+  test("the viewfinder paints behind the header and the cancel control", () => {
+    const devices = [
+      { id: "built-in", name: "FaceTime HD Camera" },
+      { id: "studio-display", name: "Studio Display Camera" },
+    ];
+    const stub = createStubNativeModule();
+    const seam = macCamera.createCameraSeam(stub, { devices });
+    const h = mountScanScreen(seam);
+
+    const viewfinder = el(h.host, "scan-camera");
+    const picker = el(h.host, "scan-camera-selector");
+    const cancel = el(h.host, "scan-cancel");
+    expect(viewfinder).not.toBeNull();
+    // Both must exist for this to mean anything: a fixture with one camera
+    // renders no picker, and the assertion would pass by being skipped.
+    expect(picker).not.toBeNull();
+    expect(cancel).not.toBeNull();
+
+    // Later siblings paint over earlier ones, and the viewfinder fills the
+    // screen, so anything the operator reads or presses must follow it.
+    const follows = (later: HTMLElement | null): boolean =>
+      later !== null && ((viewfinder?.compareDocumentPosition(later) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+    expect(follows(picker)).toBe(true);
+    expect(follows(cancel)).toBe(true);
+
+    h.unmount();
+  });
 });

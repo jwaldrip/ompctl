@@ -9,7 +9,7 @@
 import type { ComponentType } from "react";
 import { createElement, useCallback, useEffect, useState } from "react";
 import * as ReactNative from "react-native";
-import { DeviceEventEmitter, NativeModules, Platform, View } from "react-native";
+import { DeviceEventEmitter, NativeModules, Platform, StyleSheet, Text, View } from "react-native";
 import type {
   CameraAvailability,
   CameraDeviceInfo,
@@ -101,6 +101,26 @@ function resolveNativePreviewComponent(): ComponentType<{ style?: unknown; testI
 }
 const NativePreviewComponent = resolveNativePreviewComponent();
 
+const startFailureTextStyle = StyleSheet.create({
+  text: { color: "#f2f2f2", padding: 16, textAlign: "center" },
+}).text;
+
+/**
+ * Turns a rejected `startSessionWithDevice` into something a person can act on.
+ *
+ * The native module rejects with codes like `E_PERMISSION` and `E_NO_CAMERA`;
+ * anything else still beats an unexplained black rectangle.
+ */
+export function describeStartFailure(error: unknown): string {
+  const message =
+    error !== null && typeof error === "object" && "message" in error && typeof error.message === "string"
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  return message.trim().length > 0 ? message : "The camera did not start.";
+}
+
 function determineAvailability(
   rawModule: OmpctlCameraNativeModule | undefined,
   options?: CameraSeamOptions,
@@ -157,11 +177,21 @@ export function createCameraSeam(
         ? device.id
         : undefined;
 
+    const [startFailure, setStartFailure] = useState<string | null>(null);
+
     useEffect(() => {
       if (isActive) {
         const targetDeviceId = selectedDeviceId && selectedDeviceId !== "default" ? selectedDeviceId : null;
-        void activeModule.startSessionWithDevice(targetDeviceId).catch(() => {});
+        let cancelled = false;
+        setStartFailure(null);
+        // A rejected start used to be swallowed here, so a camera that never
+        // opened looked exactly like one that opened onto a dark room.
+        void activeModule.startSessionWithDevice(targetDeviceId).catch((error: unknown) => {
+          if (cancelled) return;
+          setStartFailure(describeStartFailure(error));
+        });
         return () => {
+          cancelled = true;
           void activeModule.stopSession().catch(() => {});
         };
       }
@@ -191,6 +221,26 @@ export function createCameraSeam(
         sub.remove();
       };
     }, [codeScanner, isActive]);
+
+    if (startFailure !== null) {
+      // Same cast as the viewfinder below: `style` arrives from the shared
+      // viewfinder props as an opaque value, not a resolved RN style.
+      const Box = View as unknown as ComponentType<{
+        style?: unknown;
+        testID?: string;
+        children?: unknown;
+      }>;
+      const Message = Text as unknown as ComponentType<{
+        style?: unknown;
+        testID?: string;
+        children?: unknown;
+      }>;
+      return createElement(
+        Box,
+        { style, testID },
+        createElement(Message, { style: startFailureTextStyle, testID: `${testID ?? "camera"}-error` }, startFailure),
+      );
+    }
 
     const TargetView = (NativePreviewComponent ?? View) as ComponentType<{ style?: unknown; testID?: string }>;
     return createElement(TargetView, { style, testID });

@@ -189,6 +189,22 @@ function LiveScanScreen({
   });
   return (
     <SafeScreen style={styles.screen} testID="scan">
+      {/*
+       * The viewfinder is the background, so it is the first child: it fills
+       * the screen, and later siblings paint over it. Rendered after the
+       * header it covered the title, the camera picker and the cancel
+       * control, which nobody saw while it was painting nothing at all.
+       */}
+      {hasPermission && activeDevice !== undefined ? (
+        <Camera
+          codeScanner={codeScanner}
+          device={activeDevice}
+          isActive={pending === null}
+          style={StyleSheet.absoluteFill}
+          testID="scan-camera"
+        />
+      ) : null}
+
       <View style={styles.header}>
         <Kicker color={ink.faint}>ompctl</Kicker>
         <Display color={ink.bright} heading>
@@ -233,25 +249,14 @@ function LiveScanScreen({
         <View style={styles.centered} testID="scan-no-device">
           <Body color={ink.bright}>No usable camera was found on this device.</Body>
         </View>
-      ) : (
-        <>
-          <Camera
-            codeScanner={codeScanner}
-            device={activeDevice}
-            isActive={pending === null}
-            style={StyleSheet.absoluteFill}
-            testID="scan-camera"
-          />
-          {invalid && pending === null ? (
-            <View style={styles.notice} testID="scan-invalid">
-              <Glyph color={signal.holding} name="unpair" size={12} />
-              <Label color={signal.holding} style={styles.noticeText}>
-                That code isn't an ompd pairing code.
-              </Label>
-            </View>
-          ) : null}
-        </>
-      )}
+      ) : invalid && pending === null ? (
+        <View style={styles.notice} testID="scan-invalid">
+          <Glyph color={signal.holding} name="unpair" size={12} />
+          <Label color={signal.holding} style={styles.noticeText}>
+            That code isn't an ompd pairing code.
+          </Label>
+        </View>
+      ) : null}
 
       {pending === null ? null : (
         <View style={styles.confirm} testID="scan-confirm">
@@ -286,7 +291,15 @@ function LiveScanScreen({
 
 const styles = StyleSheet.create({
   screen: { backgroundColor: ground.base, justifyContent: "space-between" },
-  header: { gap: space.tight, padding: space.loose },
+  // Opaque, because the viewfinder is live behind it: matches the `confirm`
+  // panel's treatment rather than leaving text floating over moving video.
+  header: {
+    backgroundColor: ground.raised,
+    borderBottomColor: ground.edge,
+    borderBottomWidth: stroke.hair,
+    gap: space.tight,
+    padding: space.loose,
+  },
   centered: { alignItems: "center", flex: 1, gap: space.step, justifyContent: "center", padding: space.loose },
   cameraSelector: {
     flexDirection: "row",
@@ -337,5 +350,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: TOUCH_TARGET,
   },
-  cancel: { alignItems: "center", justifyContent: "center", minHeight: TOUCH_TARGET, padding: space.step },
+  cancel: {
+    alignItems: "center",
+    backgroundColor: ground.raised,
+    borderTopColor: ground.edge,
+    borderTopWidth: stroke.hair,
+    justifyContent: "center",
+    minHeight: TOUCH_TARGET,
+    padding: space.step,
+  },
 });
