@@ -83,29 +83,46 @@ function settledStateLabel(entry: ApprovalEntry): string {
   if (entry.settledBy === "policy") {
     return entry.decision === "allow" ? "Allowed by policy" : "Denied by policy";
   }
-  return entry.decision === "allow" ? "allowed" : "rejected";
+  if (entry.decision === "allow") {
+    const scope = "scope" in entry && typeof entry.scope === "string" ? entry.scope : undefined;
+    return scope === "always" ? "always allowed" : "allowed";
+  }
+  return "rejected";
+}
+
+function isDeadlineExpired(deadlineAt: string | null | undefined, now: number): boolean {
+  if (!deadlineAt) return false;
+  const deadline = new Date(deadlineAt).getTime();
+  return !Number.isNaN(deadline) && deadline <= now;
 }
 
 export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalCardProps): JSX.Element {
   const { ground, ink, signal, signalWash } = useOmpTheme();
-  const settled = entry.decision !== null;
-  const tone = settled ? (entry.decision === "allow" ? signal.ready : signal.failed) : signal.holding;
   const preview = describeInput(entry.input);
   const [now, setNow] = useState(() => Date.now());
+  const settled = entry.decision !== null;
+  const expired = !settled && isDeadlineExpired(entry.deadlineAt, now);
+  const tone = settled
+    ? (entry.decision === "allow" ? signal.ready : signal.failed)
+    : expired
+      ? signal.failed
+      : signal.holding;
 
   useEffect(() => {
-    if (settled || !entry.deadlineAt) return;
+    if (settled || expired || !entry.deadlineAt) return;
     const interval = setInterval(() => {
       setNow(Date.now());
     }, 1000);
     return () => clearInterval(interval);
-  }, [settled, entry.deadlineAt]);
+  }, [settled, expired, entry.deadlineAt]);
 
   const stateLabel = settled
     ? settledStateLabel(entry)
-    : entry.deadlineAt
-      ? formatCountdown(entry.deadlineAt, now)
-      : "clearance";
+    : expired
+      ? "Denied: no answer in time"
+      : entry.deadlineAt
+        ? formatCountdown(entry.deadlineAt, now)
+        : "clearance";
   return (
     <Surface
       mode="flat"
@@ -114,7 +131,7 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
       style={[styles.card, { backgroundColor: ground.surface, borderColor: tone }]}
       testID={`approval-${entry.requestId}`}
     >
-      <View style={[styles.head, { backgroundColor: settled ? ground.raised : signalWash.holding }]}>
+      <View style={[styles.head, { backgroundColor: settled || expired ? ground.raised : signalWash.holding }]}>
         <Glyph name="clearance" size={13} color={tone} />
         <Kicker color={tone} testID={`approval-state-${entry.requestId}`}>
           {stateLabel}
@@ -137,7 +154,7 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
         ) : null}
       </View>
 
-      {settled ? null : canApprove ? (
+      {settled || expired ? null : canApprove ? (
         <View style={styles.actions}>
           <Button
             compact

@@ -5,7 +5,10 @@ import type { Agent, ClientFrame, ServerFrame } from "@ompd/core/contracts";
 import { OmpdClient, type SocketLike } from "@ompd/core/ompd-client";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { type ConsoleActions, useConsole } from "../src/console/useConsole.ts";
+import type { ConsoleActions } from "../src/console/useConsole.ts";
+
+// Dynamic import on purpose: bun evaluates static imports before ./rnw.ts can substitute react-native-web
+const { useConsole } = await import("../src/console/useConsole.ts");
 import type { Connection } from "../src/platform/connection.ts";
 
 declare global {
@@ -137,6 +140,90 @@ describe("defect 2: detach on switch", () => {
     if (!sock2) throw new Error("sock2 missing");
     const attaches2 = sock2.framesOfType("attach");
     expect(attaches2.map(f => f.agentId)).toEqual(["a2"]);
+
+    act(() => {
+      root.unmount();
+    });
+    host.remove();
+  });
+});
+
+describe("decide preserves scope", () => {
+  test("deciding with scope always sends scope on wire and dispatches scope", () => {
+    const sockets: FakeSocket[] = [];
+    const client = new OmpdClient({
+      url: "ws://127.0.0.1:7777/v1/socket",
+      token: "tok_test",
+      isOnline: () => true,
+      createSocket: url => {
+        const s = new FakeSocket(url);
+        sockets.push(s);
+        return s as unknown as SocketLike;
+      },
+    });
+
+    let actions!: ConsoleActions;
+    function Probe() {
+      const conn: Connection = {
+        transport: "direct",
+        url: "ws://127.0.0.1:7777/v1/socket",
+        token: "tok_test",
+        scopes: ["read", "prompt", "approve"],
+      };
+      [, actions] = useConsole(conn, () => client);
+      return null;
+    }
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => {
+      root.render(createElement(Probe));
+    });
+
+    const sock = sockets[0];
+    if (!sock) throw new Error("sock missing");
+    act(() => {
+      sock.accept();
+      sock.deliver({
+        t: "hello",
+        deviceId: "dev_1",
+        agents: [
+          {
+            id: "a1",
+            name: "Agent 1",
+            state: "waiting",
+            host: { kind: "local", id: "0", spec: { kind: "local" } },
+            cwd: "",
+            createdAt: "",
+            lastActiveAt: "",
+            labels: {},
+          },
+        ],
+      });
+      sock.deliver({
+        t: "approval",
+        agentId: "a1",
+        requestId: "r_always",
+        tool: "shell",
+        title: "npm install",
+        input: {},
+        deadlineAt: "2026-01-01T00:02:00.000Z",
+      });
+    });
+
+    act(() => {
+      actions.decide("a1", "r_always", "allow", "always");
+    });
+
+    const frames = sock.framesOfType("decide");
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toEqual({
+      t: "decide",
+      agentId: "a1",
+      requestId: "r_always",
+      choice: "allow",
+      scope: "always",
+    });
 
     act(() => {
       root.unmount();

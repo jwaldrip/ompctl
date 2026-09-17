@@ -784,7 +784,7 @@ export function useConsole(
       },
       decide(agentId, requestId, choice, scope) {
         client.decide(agentId, requestId, choice, scope);
-        dispatch({ t: "decide", agentId, requestId, choice });
+        dispatch({ t: "decide", agentId, requestId, choice, scope });
       },
       decidePlan(agentId, requestId, choice) {
         client.decidePlan(agentId, requestId, choice);

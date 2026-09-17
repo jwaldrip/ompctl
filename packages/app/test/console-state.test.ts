@@ -198,6 +198,40 @@ describe("clearances", () => {
     const card = sessionFor(state, "a1").entries.find(entry => entry.kind === "approval");
     expect(card).toMatchObject({ decision: "allow", settledBy: "policy" });
   });
+
+  test("stale clearance and plan review are cleared when agent reconnects as idle", () => {
+    const stateWithPlan = drive([
+      ...asked,
+      {
+        t: "plan_review",
+        event: {
+          agentId: "a1",
+          requestId: "p1",
+          message: "Approve plan?",
+          choices: ["Approve and execute", "Refine plan"],
+        },
+      },
+    ]);
+    expect(sessionFor(stateWithPlan, "a1").pendingApprovals).toHaveLength(1);
+    expect(sessionFor(stateWithPlan, "a1").planReview).not.toBeNull();
+
+    // Reconnect: daemon reports a1 is idle, while a2 is still waiting
+    const reconnected = apply(stateWithPlan, {
+      t: "agents",
+      event: { agents: [agent("a1", { state: "idle" }), agent("a2", { state: "waiting" })] },
+    });
+
+    // a1 clearances must be cleared because daemon no longer holds them
+    expect(stripStats(sessionFor(reconnected, "a1")).clearances).toBe(0);
+    expect(sessionFor(reconnected, "a1").planReview).toBeNull();
+    expect(sessionFor(reconnected, "a1").pendingApprovals).toHaveLength(0);
+    const cardA1 = sessionFor(reconnected, "a1").entries.find(entry => entry.kind === "approval");
+    expect(cardA1).toMatchObject({ decision: "deny" });
+
+    // a2 was reported waiting, so its clearance must survive
+    expect(stripStats(sessionFor(reconnected, "a2")).clearances).toBe(1);
+    expect(sessionFor(reconnected, "a2").pendingApprovals).toHaveLength(1);
+  });
 });
 
 describe("what the daemon says", () => {
