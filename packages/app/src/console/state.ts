@@ -698,13 +698,15 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     case "approval_settled": {
       const { agentId, requestId, decision, by, scope } = event.event;
       return withSession(state, agentId, session =>
-        (resolveApproval as (
-          state: SessionState,
-          requestId: string,
-          decision: ApprovalChoice,
-          settledBy?: ApprovalSettledBy,
-          scope?: ApprovalScope,
-        ) => SessionState)(session, requestId, decision, by, scope),
+        (
+          resolveApproval as (
+            state: SessionState,
+            requestId: string,
+            decision: ApprovalChoice,
+            settledBy?: ApprovalSettledBy,
+            scope?: ApprovalScope,
+          ) => SessionState
+        )(session, requestId, decision, by, scope),
       );
     }
 
@@ -1059,13 +1061,15 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "decide":
       return withSession(state, event.agentId, session =>
-        (resolveApproval as (
-          state: SessionState,
-          requestId: string,
-          decision: ApprovalChoice,
-          settledBy?: ApprovalSettledBy,
-          scope?: ApprovalScope,
-        ) => SessionState)(session, event.requestId, event.choice, "operator", event.scope),
+        (
+          resolveApproval as (
+            state: SessionState,
+            requestId: string,
+            decision: ApprovalChoice,
+            settledBy?: ApprovalSettledBy,
+            scope?: ApprovalScope,
+          ) => SessionState
+        )(session, event.requestId, event.choice, "operator", event.scope),
       );
     case "plan_decide":
       return withSession(state, event.agentId, session => resolvePlanReview(session, event.requestId));

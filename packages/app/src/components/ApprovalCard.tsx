@@ -103,7 +103,9 @@ export function ApprovalCard({ entry, canApprove, refusal, onDecide }: ApprovalC
   const settled = entry.decision !== null;
   const expired = !settled && isDeadlineExpired(entry.deadlineAt, now);
   const tone = settled
-    ? (entry.decision === "allow" ? signal.ready : signal.failed)
+    ? entry.decision === "allow"
+      ? signal.ready
+      : signal.failed
     : expired
       ? signal.failed
       : signal.holding;

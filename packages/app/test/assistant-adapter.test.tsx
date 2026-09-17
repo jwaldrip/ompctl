@@ -773,7 +773,7 @@ describe("assistant-ui renders ompctl's rows, and it is really assistant-ui doin
       });
       const fiberKey = Object.keys(input).find(name => name.startsWith("__reactFiber$"));
       if (!fiberKey) throw new Error("no fiber key");
-      let fiber = Reflect.get(input, fiberKey);
+      const fiber = Reflect.get(input, fiberKey);
       let onKeyPressHandler: ((e: unknown) => void) | null = null;
       let onSubmitEditingHandler: (() => void) | null = null;
       interface FiberLike {

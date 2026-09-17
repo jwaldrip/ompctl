@@ -393,11 +393,7 @@ export function ompStore(input: OmpStoreInput) {
      * An agent waiting for approval is in a turn in flight, so interrupt
      * remains enabled while sending is held.
      */
-    isRunning:
-      agent.state === "busy" ||
-      agent.state === "waiting" ||
-      streaming ||
-      session.activity.running > 0,
+    isRunning: agent.state === "busy" || agent.state === "waiting" || streaming || session.activity.running > 0,
     isLoading: load.phase === "loading",
 
     /**

@@ -391,9 +391,6 @@ export function OmpComposer({
       micNotice === "no microphone in this test");
   const hasNotes = isRecording || isRefusalNotice || voice.dictation !== null || refusal !== undefined;
   const queueingRef = useRef(false);
-  useEffect(() => {
-    queueingRef.current = false;
-  }, [text, images]);
 
   const handleQueue = () => {
     if (queueingRef.current || queueHeld) return;

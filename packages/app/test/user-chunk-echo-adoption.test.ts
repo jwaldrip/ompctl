@@ -79,7 +79,9 @@ describe("item 13: user_message_chunk echo adoption and position preservation", 
     expect(session.entries).toHaveLength(1);
     expect(session.entries[0]?.id).toBe("prompt-0");
     const promptEntry = session.entries[0];
-    expect(promptEntry?.kind === "user" ? promptEntry.text : undefined).toBe("analyze this screenshot [1 image attached]");
+    expect(promptEntry?.kind === "user" ? promptEntry.text : undefined).toBe(
+      "analyze this screenshot [1 image attached]",
+    );
 
     // Daemon accepts and emits user_message_chunk with raw text
     const next = reduce(session, {

@@ -36,7 +36,7 @@ export interface PlanCardProps {
   review: PlanReview | null;
   canApprove: boolean;
   refusal?: string;
-  onRespond: (requestId: string, choice: PlanReviewChoice | (string & {})) => void;
+  onRespond: (requestId: string, choice: PlanReviewChoice) => void;
 }
 
 /**
@@ -73,8 +73,14 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
   const { question, plan: planText } = splitPlanMessage(review.message);
   const canRespond = canApprove;
   const choices = review.choices && review.choices.length > 0 ? review.choices : DEFAULT_PLAN_CHOICES;
-  const respond = (choice: string): void => {
-    onRespond(review.requestId, choice as PlanReviewChoice);
+  /**
+   * The choices come from the daemon rather than from a hardcoded pair, but
+   * they are protocol values, not free text: `PlanReviewChoice` is the closed
+   * set ACP's enum-shaped elicitation response accepts. Widening this to
+   * `string` would let this card offer an answer the daemon cannot take.
+   */
+  const respond = (choice: PlanReviewChoice): void => {
+    onRespond(review.requestId, choice);
   };
   return (
     <Surface
@@ -127,7 +133,7 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
       <View style={styles.actions}>
         {choices.map((choice, index) => (
           <Button
-            key={`${index}-${choice}`}
+            key={choice}
             accessibilityLabel={choice}
             compact
             contentStyle={styles.decisionContent}

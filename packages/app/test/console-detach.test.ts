@@ -9,6 +9,7 @@ import type { ConsoleActions } from "../src/console/useConsole.ts";
 
 // Dynamic import on purpose: bun evaluates static imports before ./rnw.ts can substitute react-native-web
 const { useConsole } = await import("../src/console/useConsole.ts");
+
 import type { Connection } from "../src/platform/connection.ts";
 
 declare global {

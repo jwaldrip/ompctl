@@ -179,11 +179,7 @@ export interface OmpThreadProviderProps extends OmpStoreInput {
   follow?: FollowNewest;
 }
 
-export function OmpThreadProvider({
-  children,
-  follow: explicitFollow,
-  ...input
-}: OmpThreadProviderProps): JSX.Element {
+export function OmpThreadProvider({ children, follow: explicitFollow, ...input }: OmpThreadProviderProps): JSX.Element {
   const internalFollow = useFollowNewest();
   const follow = explicitFollow ?? internalFollow;
   const onUserSend = useCallback(() => {

@@ -1,5 +1,5 @@
-import type { PlanReviewChoice } from "@ompd/core/contracts";
 import { describe, expect, test } from "bun:test";
+import type { PlanReviewChoice } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { resetWindowSize, setWindowSize } from "./rnw.ts";

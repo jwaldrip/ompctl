@@ -472,7 +472,9 @@ function reduceChunk(
             kind: "user",
             id: messageId ?? current.id,
             text: current.id.startsWith("prompt-")
-              ? (stripEchoImageSuffix(current.text) !== current.text ? current.text : text)
+              ? stripEchoImageSuffix(current.text) !== current.text
+                ? current.text
+                : text
               : current.text + text,
           }
         : {
