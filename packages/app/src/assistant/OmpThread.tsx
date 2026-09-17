@@ -37,9 +37,10 @@
 
 import { AssistantRuntimeProvider, ThreadPrimitive } from "@assistant-ui/react-native";
 import type { JSX, ReactElement, ReactNode } from "react";
-import { useMemo, useRef } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { Button, Surface } from "react-native-paper";
+import type { FollowNewest } from "../components/useFollowNewest.ts";
 import { useFollowNewest } from "../components/useFollowNewest.ts";
 import { MAINTAIN_VISIBLE_CONTENT_POSITION, useTopHistoryPagination } from "../components/useTopHistoryPagination.ts";
 import { Glyph } from "../design/icons.tsx";
@@ -73,6 +74,13 @@ function resumeGlyph({ size, color }: { size: number; color: string }): JSX.Elem
 }
 
 /**
+ * Shared follow machine provided across the thread surface.
+ * Allows a user-initiated send from the composer to return the transcript list
+ * to the live end, while leaving background arrivals alone.
+ */
+const OmpThreadScrollContext = createContext<FollowNewest | null>(null);
+
+/**
  * The runtime, built once per meaningful state change.
  *
  * The actions go through a ref rather than the dependency list, and that is a
@@ -83,9 +91,9 @@ function resumeGlyph({ size, color }: { size: number; color: string }): JSX.Elem
  * the only shape that is both stable and current: the store identity survives a
  * re-render, and a press always reaches the newest handler.
  */
-export function useOmpAssistantRuntime(input: OmpStoreInput) {
-  const actions = useRef(input);
-  actions.current = input;
+export function useOmpAssistantRuntime(input: OmpStoreInput, onUserSend?: () => void) {
+  const actions = useRef({ input, onUserSend });
+  actions.current = { input, onUserSend };
 
   const { agent, session, connection, load, promptAccess, canApprove, refusal } = input;
   const groupedEntries = useMemo(() => groupEntries(session.entries), [session.entries]);
@@ -102,10 +110,13 @@ export function useOmpAssistantRuntime(input: OmpStoreInput) {
         promptAccess,
         canApprove,
         refusal,
-        onSubmit: (text, images) => actions.current.onSubmit(text, images),
-        onCancel: () => actions.current.onCancel(),
-        onDecide: (requestId, choice, scope) => actions.current.onDecide(requestId, choice, scope),
-        onDecidePlan: (requestId, choice) => actions.current.onDecidePlan(requestId, choice),
+        onSubmit: (text, images) => {
+          actions.current.onUserSend?.();
+          return actions.current.input.onSubmit(text, images);
+        },
+        onCancel: () => actions.current.input.onCancel(),
+        onDecide: (requestId, choice, scope) => actions.current.input.onDecide(requestId, choice, scope),
+        onDecidePlan: (requestId, choice) => actions.current.input.onDecidePlan(requestId, choice),
       }),
     [agent, session, groupedEntries, connection, load, promptAccess, canApprove, refusal],
   );
@@ -145,8 +156,12 @@ export interface OmpThreadListProps {
   canLoadEarlier?: boolean;
   loadingEarlier?: boolean;
   onLoadEarlier?: () => void;
-  /** The cursor identifying the page on screen, which makes a repeat detectable. */
   historyCursor?: number | null;
+  /**
+   * Explicit follower for the list. When omitted, reads from the enclosing
+   * `OmpThreadProvider`, falling back to an internal follower if unprovided.
+   */
+  follow?: FollowNewest;
 }
 
 /**
@@ -158,16 +173,38 @@ export interface OmpThreadListProps {
  * that readout below the composer. So the provider spans the body and the two
  * surfaces stay where they were.
  */
-export function OmpThreadProvider({ children, ...input }: OmpStoreInput & { children: ReactNode }): JSX.Element {
-  const runtime = useOmpAssistantRuntime(input);
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
+export interface OmpThreadProviderProps extends OmpStoreInput {
+  children: ReactNode;
+  /** Explicit follower, e.g. for testing. */
+  follow?: FollowNewest;
+}
+
+export function OmpThreadProvider({
+  children,
+  follow: explicitFollow,
+  ...input
+}: OmpThreadProviderProps): JSX.Element {
+  const internalFollow = useFollowNewest();
+  const follow = explicitFollow ?? internalFollow;
+  const onUserSend = useCallback(() => {
+    follow.scrollToBottom();
+  }, [follow]);
+  const runtime = useOmpAssistantRuntime(input, onUserSend);
+  return (
+    <OmpThreadScrollContext.Provider value={follow}>
+      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+    </OmpThreadScrollContext.Provider>
+  );
 }
 
 /** The log itself. Must be rendered inside `OmpThreadProvider`. */
 export function OmpThreadList(props: OmpThreadListProps): JSX.Element {
   // Opening a session lands on the newest entry, and a streaming turn keeps it
-  // there, unless the operator has scrolled up to read.
-  const follow = useFollowNewest();
+  // there, unless the operator has scrolled up to read. A user-initiated send
+  // explicitly returns the view to the live end.
+  const contextFollow = useContext(OmpThreadScrollContext);
+  const internalFollow = useFollowNewest();
+  const follow = props.follow ?? contextFollow ?? internalFollow;
   // The ground the log sits on is the one runtime-varying value here: every
   // measurement below is structural and lives in the StyleSheet as a rhythm
   // job, but the base changes with the device's scheme.

@@ -108,6 +108,8 @@ mock.module("react-native", () => ({
 // and its own ref plumbing, so every scroll and anchor prop reaching the list is
 // still ours.
 const { OmpThreadList, OmpThreadProvider } = await import("../src/assistant/OmpThread.tsx");
+// Dynamic import: must resolve after mock.module registers the React Native mock.
+const { useAui } = await import("@assistant-ui/react-native");
 const { EMPTY_SESSION } = await import("../src/session/model.ts");
 // Dynamic for the same reason as the two above, which is the one exception this
 // file's static-import rule names: this module imports `react-native`, so a
@@ -161,6 +163,7 @@ interface Harness {
   scrollTo: (y: number, contentHeight?: number) => void;
   contentSize: (height: number) => void;
   pressLoadEarlier: () => void;
+  send: (text?: string) => Promise<void>;
   unmount: () => void;
 }
 
@@ -175,6 +178,17 @@ function mount(initial: {
   const root: Root = createRoot(host);
   const list = recorderList();
   let calls = 0;
+  let sendFn: ((text: string) => Promise<void>) | null = null;
+  function Sender(): null {
+    const aui = useAui();
+    sendFn = async (text: string) => {
+      await (aui.thread.append({
+        role: "user",
+        content: [{ type: "text", text }],
+      }) as unknown as Promise<void>);
+    };
+    return null;
+  }
   let current: OmpThreadListProps = {
     entries: initial.entries,
     canApprove: false,
@@ -217,6 +231,7 @@ function mount(initial: {
           onDecidePlan={() => {}}
         >
           <OmpThreadList {...current} />
+          <Sender />
         </OmpThreadProvider>,
       );
     });
@@ -261,6 +276,13 @@ function mount(initial: {
       if (press === null) throw new Error("no Load earlier control was rendered");
       act(() => {
         press();
+      });
+    },
+    send: async (text = "hello") => {
+      const fn = sendFn;
+      if (fn === null) throw new Error("no sender available");
+      await act(async () => {
+        await fn(text);
       });
     },
     unmount: () => {
@@ -571,6 +593,44 @@ describe("owned thread follow-newest composition", () => {
     h.contentSize(1300);
 
     expect(h.list.scrollToEnd.length).toBeGreaterThan(1);
+    h.unmount();
+  });
+
+  test("an arriving background turn leaves a reader scrolled up alone", () => {
+    const h = mount({ entries: [entry("a")], historyCursor: 100 });
+    h.contentSize(4000);
+    expect(h.list.scrollToEnd).toHaveLength(1);
+
+    // Operator scrolls up to read history
+    h.scrollTo(200, 4000);
+
+    // Background turn arrives without user send
+    h.render({ entries: [entry("a"), entry("b")] });
+    h.contentSize(4500);
+
+    // View is not dragged to the end
+    expect(h.list.scrollToEnd).toHaveLength(1);
+    h.unmount();
+  });
+
+  test("a user-initiated send scrolls to the end while scrolled up and follows subsequent growth", async () => {
+    const h = mount({ entries: [entry("a")], historyCursor: 100 });
+    h.contentSize(4000);
+    expect(h.list.scrollToEnd).toHaveLength(1);
+
+    // Operator scrolls up to read history
+    h.scrollTo(200, 4000);
+
+    // Operator sends a prompt while scrolled up
+    await h.send("what is the status?");
+    expect(h.list.scrollToEnd).toHaveLength(2);
+
+    // Arriving turn grows the transcript
+    h.render({ entries: [entry("a"), entry("b")] });
+    h.contentSize(4500);
+
+    // View follows to the end
+    expect(h.list.scrollToEnd).toHaveLength(3);
     h.unmount();
   });
 });
