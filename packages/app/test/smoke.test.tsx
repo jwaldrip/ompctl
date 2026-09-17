@@ -80,7 +80,7 @@ function board(): ConsoleState {
         tool: "shell",
         title: "rm -rf ./dist",
         input: { command: "rm -rf ./dist" },
-        deadlineAt: "2026-01-01T00:02:00.000Z",
+        deadlineAt: new Date(Date.now() + 120_000).toISOString(),
       },
     },
     {
@@ -410,6 +410,17 @@ describe("the approval card is wired to a decision", () => {
     const deadlineAt = new Date(Date.now() + 92_000).toISOString();
     const html = renderToStaticMarkup(<ApprovalCard entry={{ ...entry, deadlineAt }} canApprove onDecide={() => {}} />);
     expect(html).toContain("Times out in 1:32");
+  });
+
+  test("an expired clearance stops offering decision buttons and explains why it is gone", () => {
+    const expiredDeadline = new Date(Date.now() - 5000).toISOString();
+    const html = renderToStaticMarkup(
+      <ApprovalCard entry={{ ...entry, deadlineAt: expiredDeadline }} canApprove onDecide={() => {}} />,
+    );
+    expect(html).toContain("Denied: no answer in time");
+    expect(html).not.toContain("Allow");
+    expect(html).not.toContain("Reject");
+    expect(html).not.toContain("Always");
   });
 
   test("a timeout-settled card displays the timeout refusal copy", () => {
