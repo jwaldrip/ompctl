@@ -390,10 +390,10 @@ export function ompStore(input: OmpStoreInput) {
      * `isRunning` is the thread's own claim that work is in flight, and it is
      * derived from the same facts `agentActivity` uses rather than from a
      * timer: a state that has gone idle reads idle on this very render.
+     * An agent waiting for approval is in a turn in flight, so interrupt
+     * remains enabled while sending is held.
      */
-    isRunning: agent.state === "busy" || streaming || session.activity.running > 0,
-
-    /** The pane is still waiting for its first authoritative answer. */
+    isRunning: agent.state === "busy" || agent.state === "waiting" || streaming || session.activity.running > 0,
     isLoading: load.phase === "loading",
 
     /**

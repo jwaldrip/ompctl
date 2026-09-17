@@ -111,6 +111,7 @@ export interface FollowNewest {
   onContentSizeChange: (width?: number, height?: number) => void;
   onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   scrollEventThrottle: number;
+  scrollToBottom: (options?: { animated?: boolean }) => void;
 }
 
 /**
@@ -124,7 +125,34 @@ export function createFollower(): FollowNewest {
   let list: ScrollsToEnd | null = null;
   let painted = false;
   let nearBottom = true;
+  let userSent = false;
   let targetBottomHeight = 0;
+
+  function scroll(animated = false): void {
+    try {
+      // In web / DOM environments, VirtualizedList.scrollToEnd approximates
+      // metrics for unmeasured rows, landing hundreds of points short of the
+      // real end. Setting scrollTop directly on the scrollable node pins to
+      // the exact floor, and scrollToEnd updates the virtualizer's window.
+      const node =
+        typeof list?.getScrollableNode === "function" ? (list.getScrollableNode() as HTMLElement | null) : null;
+      if (node && typeof node.scrollTop === "number" && typeof node.scrollHeight === "number") {
+        node.scrollTop = node.scrollHeight - node.clientHeight;
+      }
+      list?.scrollToEnd({ animated });
+      if (node && typeof node.scrollTop === "number" && typeof node.scrollHeight === "number") {
+        requestAnimationFrame(() => {
+          if (nearBottom && node) {
+            node.scrollTop = node.scrollHeight - node.clientHeight;
+          }
+        });
+      }
+    } catch {
+      // A host with no real scroller has nothing to scroll, and the newest
+      // entry is already the last thing drawn. A missing scroller must not
+      // take the surface down with it.
+    }
+  }
 
   return {
     ref: (next: ScrollsToEnd | null): void => {
@@ -134,6 +162,7 @@ export function createFollower(): FollowNewest {
       if (next === null) {
         painted = false;
         nearBottom = true;
+        userSent = false;
         targetBottomHeight = 0;
       }
     },
@@ -152,35 +181,24 @@ export function createFollower(): FollowNewest {
     onContentSizeChange: (_width?: number, height?: number): void => {
       // The first paint has no reading position to protect; every later growth
       // follows only from the bottom, which is what leaves a prepend alone.
-      if (painted && !nearBottom) return;
+      // An operator's own send returns them to the live end.
+      if (painted && !nearBottom && !userSent) return;
       painted = true;
+      nearBottom = true;
+      userSent = false;
       if (typeof height === "number" && height > 0) {
         targetBottomHeight = height;
       }
-      try {
-        // In web / DOM environments, VirtualizedList.scrollToEnd approximates
-        // metrics for unmeasured rows, landing hundreds of points short of the
-        // real end. Setting scrollTop directly on the scrollable node pins to
-        // the exact floor, and scrollToEnd updates the virtualizer's window.
-        const node =
-          typeof list?.getScrollableNode === "function" ? (list.getScrollableNode() as HTMLElement | null) : null;
-        if (node && typeof node.scrollTop === "number" && typeof node.scrollHeight === "number") {
-          node.scrollTop = node.scrollHeight - node.clientHeight;
-        }
-        list?.scrollToEnd({ animated: false });
-        if (node && typeof node.scrollTop === "number" && typeof node.scrollHeight === "number") {
-          requestAnimationFrame(() => {
-            if (nearBottom && node) {
-              node.scrollTop = node.scrollHeight - node.clientHeight;
-            }
-          });
-        }
-      } catch {
-        // A host with no real scroller has nothing to scroll, and the newest
-        // entry is already the last thing drawn. A missing scroller must not
-        // take the surface down with it.
-      }
+      scroll(false);
     },
+
+    scrollToBottom: (options?: { animated?: boolean }): void => {
+      nearBottom = true;
+      userSent = true;
+      targetBottomHeight = 0;
+      scroll(options?.animated ?? false);
+    },
+
     scrollEventThrottle: SCROLL_EVENT_THROTTLE_MS,
   };
 }

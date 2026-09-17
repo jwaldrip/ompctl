@@ -17,6 +17,7 @@ import type {
   Agent,
   AgentId,
   ApprovalChoice,
+  ApprovalScope,
   PlanReviewChoice,
   SessionDeleteResult,
   SessionSummary,
@@ -52,7 +53,7 @@ import type {
   UpdateEvent,
 } from "@ompd/core/ompd-client";
 import type { BrowserSession } from "../session/browser.ts";
-import type { SessionState } from "../session/model.ts";
+import type { ApprovalSettledBy, SessionState } from "../session/model.ts";
 import {
   appendApproval,
   appendPrompt,
@@ -568,7 +569,7 @@ export type ConsoleEvent =
   /** Local: echo of a prompt this device just sent. */
   | { t: "prompt"; agentId: AgentId; text: string; imageCount?: number }
   /** Local: a clearance this device just settled. */
-  | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice }
+  | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice; scope?: ApprovalScope }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
   /** Daemon: an already-authorized action for this agent's registered WebView. */
   | { t: "webview_action"; agentId: AgentId; requestId: string; action: WebViewAction }
@@ -695,8 +696,18 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     }
 
     case "approval_settled": {
-      const { agentId, requestId, decision, by } = event.event;
-      return withSession(state, agentId, session => resolveApproval(session, requestId, decision, by));
+      const { agentId, requestId, decision, by, scope } = event.event;
+      return withSession(state, agentId, session =>
+        (
+          resolveApproval as (
+            state: SessionState,
+            requestId: string,
+            decision: ApprovalChoice,
+            settledBy?: ApprovalSettledBy,
+            scope?: ApprovalScope,
+          ) => SessionState
+        )(session, requestId, decision, by, scope),
+      );
     }
 
     case "plan_review": {
@@ -1049,8 +1060,17 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       return withSession(state, event.agentId, session => appendPrompt(session, event.text, event.imageCount ?? 0));
 
     case "decide":
-      return withSession(state, event.agentId, session => resolveApproval(session, event.requestId, event.choice));
-
+      return withSession(state, event.agentId, session =>
+        (
+          resolveApproval as (
+            state: SessionState,
+            requestId: string,
+            decision: ApprovalChoice,
+            settledBy?: ApprovalSettledBy,
+            scope?: ApprovalScope,
+          ) => SessionState
+        )(session, event.requestId, event.choice, "operator", event.scope),
+      );
     case "plan_decide":
       return withSession(state, event.agentId, session => resolvePlanReview(session, event.requestId));
     case "webview_action": {
@@ -1094,6 +1114,34 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
  * file, which keeps the resume race honest; two misses only make the stand-in
  * terminal and retire actions that need a live host.
  */
+/**
+ * Clear clearances that the daemon no longer holds.
+ *
+ * When an agent's reported state is not "waiting", the daemon is no longer
+ * waiting on any approval or plan review for it. If an approval timed out or
+ * was answered while this client was disconnected, the settle frame was missed.
+ * Reconciling against the daemon's actual liveness clears pending clearances so
+ * the composer is not permanently disabled with unanswerable cards.
+ */
+function clearStaleClearances(session: SessionState): SessionState {
+  if (session.pendingApprovals.length === 0 && session.planReview === null) {
+    return session;
+  }
+  let next = session;
+  if (next.planReview !== null) {
+    next = resolvePlanReview(next, next.planReview.requestId);
+  }
+  const now = Date.now();
+  for (const pending of next.pendingApprovals) {
+    const timedOut = typeof pending.deadlineAt === "string" && new Date(pending.deadlineAt).getTime() <= now;
+    next = resolveApproval(next, pending.requestId, "deny", timedOut ? "timeout" : "operator");
+  }
+  if (next.pendingApprovals.length > 0) {
+    next = { ...next, pendingApprovals: [] };
+  }
+  return next;
+}
+
 function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleState {
   const before = new Map(state.agents.map(agent => [agent.id, agent]));
   const live = new Set(agents.map(agent => agent.id));
@@ -1126,9 +1174,18 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
     //
     // `endTurn` returns the same object when nothing is streaming, so running
     // it on every non-busy agent every roster frame costs an identity check.
-    if (agent.state !== "busy") {
-      const session = sessions.get(agent.id);
-      if (session !== undefined) sessions.set(agent.id, endTurn(session));
+    const session = sessions.get(agent.id);
+    if (session !== undefined) {
+      let updated = session;
+      if (agent.state !== "busy") {
+        updated = endTurn(updated);
+      }
+      if (agent.state !== "waiting") {
+        updated = clearStaleClearances(updated);
+      }
+      if (updated !== session) {
+        sessions.set(agent.id, updated);
+      }
     }
   }
 
@@ -1157,7 +1214,11 @@ function applyAgents(state: ConsoleState, agents: readonly Agent[]): ConsoleStat
     // nobody can steer either way.
     collabAgents.delete(agentId);
     const session = sessions.get(agentId);
-    if (session !== undefined) sessions.set(agentId, endTurn(session));
+    if (session !== undefined) {
+      const ended = endTurn(session);
+      const cleared = clearStaleClearances(ended);
+      sessions.set(agentId, cleared);
+    }
   }
 
   return {
@@ -1791,7 +1852,7 @@ export function stripStats(session: SessionState): StripStats {
     costCurrency: usage?.costCurrency ?? "USD",
     tools: session.activity.tools,
     running: session.activity.running,
-    clearances: session.pendingApprovals.length,
+    clearances: session.pendingApprovals.length + (session.planReview === null ? 0 : 1),
   };
 }
 
@@ -1808,7 +1869,9 @@ export function allStats(state: ConsoleState): Map<AgentId, StripStats> {
  */
 export function fleetClearances(state: ConsoleState): number {
   let total = 0;
-  for (const session of state.sessions.values()) total += session.pendingApprovals.length;
+  for (const session of state.sessions.values()) {
+    total += session.pendingApprovals.length + (session.planReview === null ? 0 : 1);
+  }
   return total;
 }
 

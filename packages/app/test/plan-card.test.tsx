@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { PlanReviewChoice } from "@ompd/core/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { resetWindowSize, setWindowSize } from "./rnw.ts";
@@ -56,6 +57,69 @@ describe("PlanCard", () => {
       (host.querySelector('[data-testid="plan-refine"]') as HTMLElement).click();
     });
     expect(responses).toEqual([["pln_review", "Refine plan"]]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("renders the daemon's actual choices when provided", () => {
+    const responses: Array<[string, string]> = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => {
+      root.render(
+        <PlanCard
+          canApprove
+          onRespond={(requestId, choice) => responses.push([requestId, choice])}
+          plan={[]}
+          review={{
+            requestId: "pln_custom",
+            message: "Proceed with deployment?",
+            choices: ["Deploy now", "Deploy to staging first", "Abort"] as unknown as readonly PlanReviewChoice[],
+          }}
+        />,
+      );
+    });
+
+    expect(host.textContent).toContain("Deploy now");
+    expect(host.textContent).toContain("Deploy to staging first");
+    expect(host.textContent).toContain("Abort");
+    expect(host.textContent).not.toContain("Approve and execute");
+    expect(host.textContent).not.toContain("Refine plan");
+
+    const abortButton = host.querySelector('[data-testid="plan-choice-2"]') as HTMLElement;
+    expect(abortButton).not.toBeNull();
+    act(() => {
+      abortButton.click();
+    });
+    expect(responses).toEqual([["pln_custom", "Abort"]]);
+
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  test("falls back to default choices when review.choices is empty or missing", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => {
+      root.render(
+        <PlanCard
+          canApprove
+          onRespond={() => {}}
+          plan={[]}
+          review={{
+            requestId: "pln_empty_choices",
+            message: "Approve plan?",
+            choices: [],
+          }}
+        />,
+      );
+    });
+
+    expect(host.textContent).toContain("Approve and execute");
+    expect(host.textContent).toContain("Refine plan");
 
     act(() => root.unmount());
     host.remove();

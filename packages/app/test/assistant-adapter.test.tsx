@@ -29,10 +29,10 @@ import { resetWindowSize } from "./rnw.ts";
 const { convertEntry, entryOf, ompStore } = await import("../src/assistant/adapter.ts");
 const { OmpThreadList, OmpThreadProvider, useOmpAssistantRuntime } = await import("../src/assistant/OmpThread.tsx");
 const { OmpComposer } = await import("../src/assistant/OmpComposer.tsx");
-const { EMPTY_SESSION, reduce } = await import("../src/session/model.ts");
+const { EMPTY_SESSION, appendApproval, reduce } = await import("../src/session/model.ts");
 type SessionState = ReturnType<typeof reduce>;
 const { READY_LOAD } = await import("../src/console/state.ts");
-
+const { SessionScreen } = await import("../src/screens/SessionScreen.tsx");
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }
@@ -363,6 +363,7 @@ interface ThreadOverrides {
   loadingEarlier?: boolean;
   onLoadEarlier?: () => void;
   historyCursor?: number | null;
+  onQueue?: (text: string) => void;
 }
 
 function thread(session: SessionState, extra: ThreadOverrides = {}) {
@@ -417,6 +418,7 @@ function thread(session: SessionState, extra: ThreadOverrides = {}) {
         }}
         model="claude-opus-5"
         refusal={store.refusal}
+        onQueue={extra.onQueue}
       />
     </OmpThreadProvider>
   );
@@ -747,6 +749,165 @@ describe("assistant-ui renders ompctl's rows, and it is really assistant-ui doin
       expect(filled.el("transcript-empty")).toBeNull();
     } finally {
       filled.unmount();
+    }
+  });
+
+  test("Enter while a turn is in flight queues prompt", async () => {
+    const queued: string[] = [];
+    const view = mount(
+      thread(EMPTY_SESSION, {
+        agent: agent({ state: "busy" }),
+        onQueue: text => queued.push(text),
+      }),
+    );
+    try {
+      const input = view.el("composer-input");
+      if (!input) throw new Error("no input");
+      act(() => {
+        typeInto(input, "fix the build");
+      });
+      await act(async () => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 0);
+        await promise;
+      });
+      const fiberKey = Object.keys(input).find(name => name.startsWith("__reactFiber$"));
+      if (!fiberKey) throw new Error("no fiber key");
+      const fiber = Reflect.get(input, fiberKey);
+      let onKeyPressHandler: ((e: unknown) => void) | null = null;
+      let onSubmitEditingHandler: (() => void) | null = null;
+      interface FiberLike {
+        memoizedProps?: {
+          onSubmitEditing?: () => void;
+          onKeyPress?: (e: unknown) => void;
+        };
+        return?: FiberLike | null;
+        alternate?: FiberLike | null;
+      }
+      function findHandlers(f: FiberLike | null | undefined) {
+        let curr: FiberLike | null | undefined = f;
+        while (curr) {
+          const props = curr.memoizedProps;
+          if (props?.onSubmitEditing && typeof props.onSubmitEditing === "function") {
+            return {
+              onSubmitEditing: props.onSubmitEditing,
+              onKeyPress: props.onKeyPress,
+            };
+          }
+          curr = curr.return;
+        }
+        return null;
+      }
+      const typedFiber = fiber as unknown as FiberLike;
+      const h1 = findHandlers(typedFiber);
+      const h2 = findHandlers(typedFiber.alternate);
+      const handlers = h2 ?? h1;
+      onKeyPressHandler = handlers?.onKeyPress ?? null;
+      onSubmitEditingHandler = handlers?.onSubmitEditing ?? null;
+      if (!onKeyPressHandler || !onSubmitEditingHandler) {
+        throw new Error("could not find onKeyPress / onSubmitEditing handlers");
+      }
+      await act(async () => {
+        let prevented = false;
+        onKeyPressHandler({
+          nativeEvent: { key: "Enter", shiftKey: false },
+          preventDefault: () => {
+            prevented = true;
+          },
+          isDefaultPrevented: () => prevented,
+        });
+        onSubmitEditingHandler();
+      });
+
+      // On unfixed code, this fails because queued has 2 identical items
+      expect(queued).toEqual(["fix the build"]);
+    } finally {
+      view.unmount();
+    }
+  });
+
+  test("a prompt-only device with clearance pending retains interrupt and truthful refusal", () => {
+    const clearanceSession = appendApproval(EMPTY_SESSION, {
+      requestId: "r1",
+      tool: "bash",
+      title: "rm -rf build",
+      input: {},
+    });
+
+    // 1. ompStore must compute isRunning: true when waiting on clearance
+    const store = ompStore({
+      agent: agent({ state: "waiting" }),
+      session: clearanceSession,
+      connection: "connected",
+      load: READY_LOAD,
+      promptAccess: "granted",
+      canApprove: false,
+      onSubmit: () => {},
+      onCancel: () => {},
+      onDecide: () => {},
+      onDecidePlan: () => {},
+    });
+    expect(store.isRunning).toBe(true);
+    // 2. The mounted composer must show the interrupt control and allow cancelling
+    const cancels = { count: 0 };
+    const view = mount(
+      thread(clearanceSession, {
+        agent: agent({ state: "waiting" }),
+        canApprove: false,
+        onCancel: () => {
+          cancels.count += 1;
+        },
+      }),
+    );
+    try {
+      expect(view.el("composer-cancel")).not.toBeNull();
+      expect(view.el("composer-send")).toBeNull();
+      act(() => {
+        view.el("composer-cancel")?.click();
+      });
+      expect(cancels.count).toBe(1);
+    } finally {
+      view.unmount();
+    }
+
+    // 3. In SessionScreen, the refusal text must tell the truth about what this device can do
+    const screen = mount(
+      <SessionScreen
+        agent={agent({ state: "waiting" })}
+        session={clearanceSession}
+        load={{ phase: "ready", generation: 0, error: null }}
+        context={{ agents: [], origin: "owned", onOpenSubagent: () => {} }}
+        connection="connected"
+        attempt={0}
+        voice={{
+          access: "granted",
+          mic: { available: false, reason: "no microphone in this test" },
+          speech: { available: false, reason: "no playback in this test" },
+          dictation: null,
+          capturing: false,
+          busyElsewhere: false,
+          onToggle: () => {},
+        }}
+        spoken={null}
+        fleetClearances={0}
+        canApprove={false}
+        onBack={() => {}}
+        onOpenConfig={() => {}}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+        onDecide={() => {}}
+        onDecidePlan={() => {}}
+      />,
+    );
+    try {
+      const refusal = screen.el("composer-refusal")?.textContent ?? "";
+      // Must not instruct the operator to answer a clearance they have no scope to answer
+      expect(refusal).not.toContain("Answer the clearance above");
+      // Must name the missing approve scope and the fact they can interrupt
+      expect(refusal).toContain("approve scope");
+      expect(refusal).toContain("Interrupt");
+    } finally {
+      screen.unmount();
     }
   });
 });

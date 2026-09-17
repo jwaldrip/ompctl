@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { AssistantEntry, SessionState, ToolEntry } from "../src/session/model.ts";
+import type { ApprovalEntry, AssistantEntry, SessionState, ToolEntry } from "../src/session/model.ts";
 import {
   appendApproval,
   appendPrompt,
@@ -115,6 +115,78 @@ describe("a captured turn", () => {
     expect(streaming.length).toBe(0);
   });
 
+  test("endTurn reconciles in-progress tool entries and running activity so the session does not latch running forever", () => {
+    let state = reduce(EMPTY_SESSION, {
+      sessionUpdate: "tool_call",
+      toolCallId: "tool-pending-1",
+      kind: "execute",
+      title: "pending command",
+      rawInput: { command: "sleep 10" },
+      status: "pending",
+    });
+    state = reduce(state, {
+      sessionUpdate: "tool_call",
+      toolCallId: "tool-running-2",
+      kind: "read",
+      title: "running read",
+      rawInput: { path: "foo.txt" },
+      status: "in_progress",
+    });
+    expect(state.activity.running).toBe(2);
+    expect(state.activity.runningByKind.execute).toBe(1);
+    expect(state.activity.runningByKind.read).toBe(1);
+
+    const ended = endTurn(state);
+
+    // When the turn ends without terminal tool updates, running count must cease to be > 0
+    expect(ended.activity.running).toBe(0);
+    expect(ended.activity.runningByKind).toEqual({});
+    const tools = ended.entries.filter((e): e is ToolEntry => e.kind === "tool");
+    expect(tools).toHaveLength(2);
+    expect(tools.every(t => t.status !== "pending" && t.status !== "in_progress")).toBe(true);
+    expect(tools.map(t => t.status)).toEqual(["failed", "failed"]);
+    expect(ended.activity.failed).toBe(2);
+  });
+
+  test("mergeSessionHistory dedups assistant message when id rotated across chunks", () => {
+    let session = EMPTY_SESSION;
+    // Assistant reply arrives in two chunks with rotating messageId
+    session = reduce(session, {
+      sessionUpdate: "agent_message_chunk",
+      channel: "message",
+      messageId: "wire-chunk-1",
+      content: { type: "text", text: "Hello " },
+    });
+    session = reduce(session, {
+      sessionUpdate: "agent_message_chunk",
+      channel: "message",
+      messageId: "wire-chunk-2",
+      content: { type: "text", text: "world!" },
+    });
+
+    const liveAssistant = session.entries.find((e): e is AssistantEntry => e.kind === "assistant");
+    expect(liveAssistant?.id).toBe("wire-chunk-2");
+    expect(liveAssistant?.rowId).toBe("wire-chunk-1");
+
+    // On reconnect or history load, history arrives carrying the stable initial turn messageId
+    const history = [
+      {
+        kind: "assistant" as const,
+        id: "wire-chunk-1",
+        text: "Hello world!",
+        thought: false,
+        at: "2026-09-01T00:00:00.000Z",
+      },
+    ];
+
+    const merged = mergeSessionHistory(session, history);
+    const assistants = merged.entries.filter((e): e is AssistantEntry => e.kind === "assistant");
+    // Pre-fix failure: transcriptRowKey keyed on rotating entry.id ("wire-chunk-2"),
+    // so history ("wire-chunk-1") didn't match existing.has(key) and duplicated into length 2!
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]?.text).toBe("Hello world!");
+  });
+
   test("usage survives the replay", () => {
     const state = reduceAll(EMPTY_SESSION, STREAM);
     expect(state.usage).not.toBeNull();
@@ -203,6 +275,25 @@ describe("locally originated state", () => {
       decision: "allow",
       settledBy: "policy",
     });
+  });
+
+  test("resolveApproval sets chosen scope on settled ApprovalEntry", () => {
+    const asked = appendApproval(EMPTY_SESSION, {
+      requestId: "req-scope-1",
+      tool: "bash",
+      title: "rm -rf build",
+      input: { command: "rm -rf build" },
+    });
+    const pending = asked.entries.find((e): e is ApprovalEntry => e.kind === "approval");
+    expect(pending).toBeDefined();
+    expect(pending?.scope).toBeNull();
+
+    const settled = resolveApproval(asked, "req-scope-1", "allow", "operator", "always");
+    const entry = settled.entries.find((e): e is ApprovalEntry => e.kind === "approval");
+    expect(entry).toBeDefined();
+    expect(entry?.decision).toBe("allow");
+    expect(entry?.settledBy).toBe("operator");
+    expect(entry?.scope).toBe("always");
   });
 
   test("the same clearance asked twice is one card", () => {

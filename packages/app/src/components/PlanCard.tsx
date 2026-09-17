@@ -57,6 +57,14 @@ export function splitPlanMessage(message: string): { question: string; plan: str
   return { question: message.slice(0, cut).trim(), plan: message.slice(cut).trim() };
 }
 
+const DEFAULT_PLAN_CHOICES = ["Approve and execute", "Refine plan"] as const;
+
+function planChoiceTestID(choice: string, index: number): string {
+  if (choice === "Approve and execute") return "plan-approve";
+  if (choice === "Refine plan") return "plan-refine";
+  return `plan-choice-${index}`;
+}
+
 export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanCardProps): JSX.Element | null {
   const theme = useOmpTheme();
   const { height: windowHeight } = useWindowDimensions();
@@ -64,10 +72,16 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
 
   const { question, plan: planText } = splitPlanMessage(review.message);
   const canRespond = canApprove;
+  const choices = review.choices && review.choices.length > 0 ? review.choices : DEFAULT_PLAN_CHOICES;
+  /**
+   * The choices come from the daemon rather than from a hardcoded pair, but
+   * they are protocol values, not free text: `PlanReviewChoice` is the closed
+   * set ACP's enum-shaped elicitation response accepts. Widening this to
+   * `string` would let this card offer an answer the daemon cannot take.
+   */
   const respond = (choice: PlanReviewChoice): void => {
     onRespond(review.requestId, choice);
   };
-
   return (
     <Surface
       elevation={0}
@@ -117,33 +131,23 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
        * itself. A second row is a worse layout than a cut word is a defect.
        */}
       <View style={styles.actions}>
-        <Button
-          accessibilityLabel="Approve and execute"
-          compact
-          contentStyle={styles.decisionContent}
-          disabled={!canRespond}
-          mode="contained"
-          onPress={() => {
-            respond("Approve and execute");
-          }}
-          testID="plan-approve"
-        >
-          Approve and execute
-        </Button>
-        <Button
-          accessibilityLabel="Refine plan"
-          compact
-          contentStyle={styles.decisionContent}
-          disabled={!canRespond}
-          mode="outlined"
-          onPress={() => {
-            respond("Refine plan");
-          }}
-          testID="plan-refine"
-          textColor={theme.signal.holding}
-        >
-          Refine plan
-        </Button>
+        {choices.map((choice, index) => (
+          <Button
+            key={choice}
+            accessibilityLabel={choice}
+            compact
+            contentStyle={styles.decisionContent}
+            disabled={!canRespond}
+            mode={index === 0 ? "contained" : "outlined"}
+            onPress={() => {
+              respond(choice);
+            }}
+            testID={planChoiceTestID(choice, index)}
+            textColor={index === 0 ? undefined : theme.signal.holding}
+          >
+            {choice}
+          </Button>
+        ))}
       </View>
       {!canApprove ? (
         <Label color={theme.ink.muted}>{refusal ?? "This device does not hold the approve scope."}</Label>

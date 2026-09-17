@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionHistoryEntry } from "@ompd/core/contracts";
+import type { UserEntry } from "../src/session/model.ts";
 import { appendPrompt, EMPTY_SESSION, mergeSessionHistory, reduce } from "../src/session/model.ts";
 
 describe("item 13: user_message_chunk echo adoption and position preservation", () => {
@@ -70,5 +71,48 @@ describe("item 13: user_message_chunk echo adoption and position preservation", 
     const shipEntries = merged.entries.filter(e => e.kind === "user" && (e as any).text === "ship the feature");
     expect(shipEntries).toHaveLength(1);
     expect(shipEntries[0]?.id).toBe("durable_ship");
+  });
+
+  test("user chunk adopts prompt echo carrying image attachment suffix without duplicating", () => {
+    let session = EMPTY_SESSION;
+    session = appendPrompt(session, "analyze this screenshot", 1);
+    expect(session.entries).toHaveLength(1);
+    expect(session.entries[0]?.id).toBe("prompt-0");
+    const promptEntry = session.entries[0];
+    expect(promptEntry?.kind === "user" ? promptEntry.text : undefined).toBe(
+      "analyze this screenshot [1 image attached]",
+    );
+
+    // Daemon accepts and emits user_message_chunk with raw text
+    const next = reduce(session, {
+      sessionUpdate: "user_message_chunk",
+      channel: "user",
+      messageId: "durable_user_msg_img",
+      content: { type: "text", text: "analyze this screenshot" },
+    });
+
+    // Pre-fix failure: findChunkTarget exact text match failed due to [1 image attached],
+    // appending a second user entry!
+    const userEntries = next.entries.filter((e): e is UserEntry => e.kind === "user");
+    expect(userEntries).toHaveLength(1);
+    expect(userEntries[0]?.id).toBe("durable_user_msg_img");
+    expect(userEntries[0]?.text).toContain("analyze this screenshot");
+  });
+
+  test("user chunk with different text does not adopt image prompt echo", () => {
+    let session = EMPTY_SESSION;
+    session = appendPrompt(session, "analyze this screenshot", 1);
+
+    const next = reduce(session, {
+      sessionUpdate: "user_message_chunk",
+      channel: "user",
+      messageId: "other_device_prompt",
+      content: { type: "text", text: "unrelated prompt from elsewhere" },
+    });
+
+    const userEntries = next.entries.filter((e): e is UserEntry => e.kind === "user");
+    expect(userEntries).toHaveLength(2);
+    expect(userEntries[0]?.id).toBe("prompt-0");
+    expect(userEntries[1]?.id).toBe("other_device_prompt");
   });
 });

@@ -47,4 +47,22 @@ describe("item 3: echo reconciliation must correlate by position/turn, not globa
     expect(userEntries).toHaveLength(1);
     expect(userEntries[0]?.id).toBe("durable-hello");
   });
+
+  test("durable user row with raw text reconciles trailing echo carrying image attachment suffix", () => {
+    let session = EMPTY_SESSION;
+    session = appendPrompt(session, "hello", 2);
+    expect(session.entries).toHaveLength(1);
+    expect(session.entries[0]?.id).toBe("prompt-0");
+
+    const history: SessionHistoryEntry[] = [
+      { kind: "user", id: "durable-hello-img", text: "hello", at: "2026-09-01T00:00:00.000Z" },
+    ];
+
+    const merged = mergeSessionHistory(session, history);
+    const userEntries = merged.entries.filter(e => e.kind === "user");
+    // Pre-fix failure: remaining[0].text === entry.text failed due to [2 images attached],
+    // leaving both prompt-0 and durable-hello-img!
+    expect(userEntries).toHaveLength(1);
+    expect(userEntries[0]?.id).toBe("durable-hello-img");
+  });
 });
