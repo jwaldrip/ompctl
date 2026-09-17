@@ -12,6 +12,8 @@ import {
   type ApprovalScope,
   type PlanReviewChoice,
   type PromptImage,
+  SCOPE_APPROVE,
+  SCOPE_PROMPT,
   TERMINAL_AGENT_STATES,
   type WebViewActionResult,
 } from "@ompd/core/contracts";
@@ -220,9 +222,11 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
   );
   const sendRefusal =
     props.voice.access === "missing"
-      ? "This device does not hold the prompt scope. Pair it again with prompt access to steer this agent."
+      ? `This device does not hold the ${SCOPE_PROMPT} scope. Pair it again with ${SCOPE_PROMPT} access to steer this agent.`
       : clearances > 0
-        ? "Answer the clearance above before sending."
+        ? props.canApprove
+          ? "Answer the clearance above before sending."
+          : `This device does not hold the ${SCOPE_APPROVE} scope. Interrupt the turn or answer from a device holding that scope.`
         : undefined;
 
   /**

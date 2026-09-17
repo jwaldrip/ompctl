@@ -98,7 +98,7 @@
 import type { Attachment, CreateAttachment } from "@assistant-ui/core";
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react-native";
 import type { AgentId, FsListing, PromptImage } from "@ompd/core/contracts";
-import { type JSX, useEffect, useMemo, useState } from "react";
+import { type JSX, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { IconButton, Surface, TouchableRipple } from "react-native-paper";
 import { AttachmentsBar, useImageAttachments } from "../components/AttachmentsBar.tsx";
@@ -390,11 +390,21 @@ export function OmpComposer({
       isDisabled ||
       micNotice === "no microphone in this test");
   const hasNotes = isRecording || isRefusalNotice || voice.dictation !== null || refusal !== undefined;
+  const queueingRef = useRef(false);
+  useEffect(() => {
+    queueingRef.current = false;
+  }, [text, images]);
+
   const handleQueue = () => {
-    if (queueHeld) return;
+    if (queueingRef.current || queueHeld) return;
     const promptText = text.trim();
     const promptImages = images.length > 0 ? images : undefined;
     if (promptText.length === 0 && (!promptImages || promptImages.length === 0)) return;
+
+    queueingRef.current = true;
+    setTimeout(() => {
+      queueingRef.current = false;
+    }, 0);
 
     const id = `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     setLocalQueued(prev => [...prev, { id, text: promptText }]);
@@ -534,10 +544,8 @@ export function OmpComposer({
             const shift = "shiftKey" in native && native.shiftKey === true;
             if (native.key === "Enter" && !shift) {
               if (canCancel) {
-                if (queueHeld) {
-                  event.preventDefault();
-                } else {
-                  event.preventDefault();
+                event.preventDefault();
+                if (!queueHeld && !queueingRef.current) {
                   handleQueue();
                 }
               } else if (sendHeld) {
@@ -547,7 +555,7 @@ export function OmpComposer({
           }}
           onSubmitEditing={() => {
             if (canCancel) {
-              if (!queueHeld) handleQueue();
+              if (!queueHeld && !queueingRef.current) handleQueue();
             } else if (!sendHeld) {
               aui.composer.send();
             }
