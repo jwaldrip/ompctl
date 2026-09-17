@@ -17,6 +17,7 @@ import type {
   Agent,
   AgentId,
   ApprovalChoice,
+  ApprovalScope,
   PlanReviewChoice,
   SessionDeleteResult,
   SessionSummary,
@@ -52,7 +53,7 @@ import type {
   UpdateEvent,
 } from "@ompd/core/ompd-client";
 import type { BrowserSession } from "../session/browser.ts";
-import type { SessionState } from "../session/model.ts";
+import type { ApprovalSettledBy, SessionState } from "../session/model.ts";
 import {
   appendApproval,
   appendPrompt,
@@ -568,7 +569,7 @@ export type ConsoleEvent =
   /** Local: echo of a prompt this device just sent. */
   | { t: "prompt"; agentId: AgentId; text: string; imageCount?: number }
   /** Local: a clearance this device just settled. */
-  | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice }
+  | { t: "decide"; agentId: AgentId; requestId: string; choice: ApprovalChoice; scope?: ApprovalScope }
   | { t: "plan_decide"; agentId: AgentId; requestId: string; choice: PlanReviewChoice }
   /** Daemon: an already-authorized action for this agent's registered WebView. */
   | { t: "webview_action"; agentId: AgentId; requestId: string; action: WebViewAction }
@@ -695,8 +696,16 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
     }
 
     case "approval_settled": {
-      const { agentId, requestId, decision, by } = event.event;
-      return withSession(state, agentId, session => resolveApproval(session, requestId, decision, by));
+      const { agentId, requestId, decision, by, scope } = event.event;
+      return withSession(state, agentId, session =>
+        (resolveApproval as (
+          state: SessionState,
+          requestId: string,
+          decision: ApprovalChoice,
+          settledBy?: ApprovalSettledBy,
+          scope?: ApprovalScope,
+        ) => SessionState)(session, requestId, decision, by, scope),
+      );
     }
 
     case "plan_review": {
@@ -1049,8 +1058,15 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
       return withSession(state, event.agentId, session => appendPrompt(session, event.text, event.imageCount ?? 0));
 
     case "decide":
-      return withSession(state, event.agentId, session => resolveApproval(session, event.requestId, event.choice));
-
+      return withSession(state, event.agentId, session =>
+        (resolveApproval as (
+          state: SessionState,
+          requestId: string,
+          decision: ApprovalChoice,
+          settledBy?: ApprovalSettledBy,
+          scope?: ApprovalScope,
+        ) => SessionState)(session, event.requestId, event.choice, "operator", event.scope),
+      );
     case "plan_decide":
       return withSession(state, event.agentId, session => resolvePlanReview(session, event.requestId));
     case "webview_action": {

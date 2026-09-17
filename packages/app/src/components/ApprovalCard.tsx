@@ -83,7 +83,11 @@ function settledStateLabel(entry: ApprovalEntry): string {
   if (entry.settledBy === "policy") {
     return entry.decision === "allow" ? "Allowed by policy" : "Denied by policy";
   }
-  return entry.decision === "allow" ? "allowed" : "rejected";
+  if (entry.decision === "allow") {
+    const scope = "scope" in entry && typeof entry.scope === "string" ? entry.scope : undefined;
+    return scope === "always" ? "always allowed" : "allowed";
+  }
+  return "rejected";
 }
 
 function isDeadlineExpired(deadlineAt: string | null | undefined, now: number): boolean {

@@ -423,6 +423,15 @@ describe("the approval card is wired to a decision", () => {
     expect(html).not.toContain("Always");
   });
 
+  test("a card with scope always renders as always allowed", () => {
+    const entryWithScope = { ...entry, decision: "allow" as const, scope: "always" as const };
+    const html = renderToStaticMarkup(
+      <ApprovalCard entry={entryWithScope as unknown as typeof entry} canApprove onDecide={() => {}} />,
+    );
+    expect(html).toContain("always allowed");
+    expect(html).not.toContain("Allow");
+  });
+
   test("a timeout-settled card displays the timeout refusal copy", () => {
     const html = renderToStaticMarkup(
       <ApprovalCard entry={{ ...entry, decision: "deny", settledBy: "timeout" }} canApprove onDecide={() => {}} />,
