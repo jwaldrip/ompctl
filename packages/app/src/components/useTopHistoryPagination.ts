@@ -169,9 +169,9 @@ export function useTopHistoryPagination(options: TopHistoryPaginationOptions): T
         pendingAnchor.current = null;
         // iOS holds the reader natively through
         // `maintainVisibleContentPosition`; adjusting there would move them
-        // twice. Android has no such support, so the offset is restored by
-        // hand from the growth this callback just measured.
-        if (platformOS === "android" && previous > 0 && height > previous) {
+        // twice. Android and web have no such support, so the offset is restored
+        // by hand from the growth this callback just measured.
+        if ((platformOS === "android" || platformOS === "web") && previous > 0 && height > previous) {
           listRef.current?.scrollToOffset?.({ offset: lastScrollY.current + (height - previous), animated: false });
         }
       }

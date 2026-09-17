@@ -494,6 +494,19 @@ describe("owned thread prepend anchor", () => {
     expect(h.list.scrollToOffset).toEqual([]);
     h.unmount();
   });
+
+  test("web restores scroll offset from prepend growth", () => {
+    platformOS = "web";
+    const h = mount({ entries: [entry("b")], historyCursor: 100 });
+
+    h.scrollTo(20);
+    h.contentSize(1000);
+    h.render({ entries: [entry("a"), entry("b")], historyCursor: 50 });
+    h.contentSize(1400);
+
+    expect(h.list.scrollToOffset).toEqual([{ offset: 420, animated: false }]);
+    h.unmount();
+  });
 });
 
 describe("owned thread list configuration", () => {
