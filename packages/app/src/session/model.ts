@@ -17,9 +17,15 @@
  * is owed the truth that something happened, even when we cannot name it.
  */
 
-import type { ApprovalChoice, ApprovalSettledBy, PlanReviewChoice, SessionHistoryEntry } from "@ompd/core/contracts";
+import type {
+  ApprovalChoice,
+  ApprovalScope,
+  ApprovalSettledBy,
+  PlanReviewChoice,
+  SessionHistoryEntry,
+} from "@ompd/core/contracts";
 
-export type { ApprovalSettledBy };
+export type { ApprovalScope, ApprovalSettledBy };
 
 // ---------------------------------------------------------------------------
 // State
@@ -191,6 +197,8 @@ export interface ApprovalEntry {
   input: unknown;
   /** Null until this device, or another one, settles it. */
   decision: ApprovalChoice | null;
+  /** The approval scope chosen by the operator or policy. */
+  scope?: ApprovalScope | null;
   settledBy?: ApprovalSettledBy | null;
   deadlineAt?: string | null;
 }
@@ -218,7 +226,7 @@ export type Entry = UserEntry | AssistantEntry | ToolEntry | ApprovalEntry | Unk
  * two rows. Other kinds already have unique ids of their own.
  */
 export function transcriptRowKey(entry: Entry): string {
-  if (entry.kind === "assistant") return `assistant:${entry.thought ? "thought" : "message"}:${entry.id}`;
+  if (entry.kind === "assistant") return `assistant:${entry.thought ? "thought" : "message"}:${entry.rowId}`;
   return `${entry.kind}:${entry.id}`;
 }
 export const MAX_SESSION_ENTRIES = 2000;
@@ -233,6 +241,24 @@ function trimEntries(entries: readonly Entry[]): { entries: readonly Entry[]; tr
   };
 }
 
+const IMAGE_ATTACHED_SUFFIX_RE = / \[\d+ images? attached\]$/;
+const IMAGE_ATTACHED_ONLY_RE = /^\[\d+ images? attached\]$/;
+
+export function stripEchoImageSuffix(text: string): string {
+  if (IMAGE_ATTACHED_ONLY_RE.test(text)) return "";
+  return text.replace(IMAGE_ATTACHED_SUFFIX_RE, "");
+}
+
+export function isPromptEchoMatch(echoText: string, chunkOrHistoryText: string): boolean {
+  if (echoText === chunkOrHistoryText) return true;
+  const stripped = stripEchoImageSuffix(echoText);
+  if (stripped === chunkOrHistoryText) return true;
+  const trimmed = chunkOrHistoryText.trim();
+  if (trimmed.length > 0 && stripped === trimmed) return true;
+  if (trimmed.length === 0 && stripped === "") return true;
+  return false;
+}
+
 /** Prepend one durable history page without duplicating live/replayed rows. */
 export function mergeSessionHistory(state: SessionState, history: readonly SessionHistoryEntry[]): SessionState {
   if (history.length === 0) return state;
@@ -242,7 +268,7 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
   for (let i = 0; i < history.length; i++) {
     const item = history[i];
     if (item === undefined) continue;
-    const entry: Entry =
+    let entry: Entry =
       item.kind === "user"
         ? { kind: "user", id: item.id, text: item.text }
         : item.kind === "assistant"
@@ -265,8 +291,15 @@ export function mergeSessionHistory(state: SessionState, history: readonly Sessi
     // immediately adjacent to the echo at the boundary (e.g. initial history landing on an echoed prompt).
     // It must never search globally across the transcript to remove live echoes at the tail.
     if (entry.kind === "user" && i === history.length - 1) {
-      if (remaining[0]?.kind === "user" && remaining[0].id.startsWith("prompt-") && remaining[0].text === entry.text) {
-        remaining.shift();
+      if (
+        remaining[0]?.kind === "user" &&
+        remaining[0].id.startsWith("prompt-") &&
+        isPromptEchoMatch(remaining[0].text, entry.text)
+      ) {
+        const echo = remaining.shift();
+        if (echo?.kind === "user" && stripEchoImageSuffix(echo.text) !== echo.text) {
+          entry = { ...entry, text: echo.text };
+        }
       }
     }
 
@@ -438,7 +471,9 @@ function reduceChunk(
         ? {
             kind: "user",
             id: messageId ?? current.id,
-            text: current.id.startsWith("prompt-") ? text : current.text + text,
+            text: current.id.startsWith("prompt-")
+              ? (stripEchoImageSuffix(current.text) !== current.text ? current.text : text)
+              : current.text + text,
           }
         : {
             ...(current as AssistantEntry),
@@ -502,7 +537,7 @@ function findChunkTarget(
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const entry = entries[index];
       if (entry?.kind === "user") {
-        if (entry.id.startsWith("prompt-") && entry.text === text) {
+        if (entry.id.startsWith("prompt-") && isPromptEchoMatch(entry.text, text)) {
           return index;
         }
         break;
@@ -823,6 +858,7 @@ export function appendApproval(state: SessionState, approval: Approval): Session
     title: approval.title,
     input: approval.input,
     decision: null,
+    scope: null,
     settledBy: null,
     deadlineAt: approval.deadlineAt ?? null,
   };
@@ -853,6 +889,7 @@ export function resolveApproval(
   requestId: string,
   decision: ApprovalChoice,
   settledBy: ApprovalSettledBy = "operator",
+  scope?: ApprovalScope | null,
 ): SessionState {
   const index = state.entries.findIndex(entry => entry.kind === "approval" && entry.requestId === requestId);
   const pending = state.pendingApprovals.filter(approval => approval.requestId !== requestId);
@@ -864,16 +901,58 @@ export function resolveApproval(
   if (before === undefined || before.kind !== "approval") return state;
   return {
     ...state,
-    entries: replaceAt(state.entries, index, { ...before, decision, settledBy }),
+    entries: replaceAt(state.entries, index, {
+      ...before,
+      decision,
+      settledBy,
+      scope: scope ?? before.scope ?? null,
+    }),
     pendingApprovals: pending,
   };
 }
 
-/** The turn ended. Nothing is streaming any more, whatever the last chunk said. */
+/**
+ * The turn ended. Nothing is streaming any more, whatever the last chunk said.
+ *
+ * In-progress or pending tool calls that never received terminal events are
+ * transitioned to "failed", and activity.running is reconciled to 0.
+ * Why failed rather than leaving them in-progress or simply clearing activity counts:
+ * 1. ToolStatus union only permits "pending" | "in_progress" | "completed" | "failed"
+ *    (there is no "aborted" status in the domain model or in tokens.ts).
+ * 2. Downstream consumers (adapter.ts messageRepository, ToolCard chip signal,
+ *    worstToolStatus in grouping.ts) inspect entry.status directly. Leaving
+ *    status as "in_progress" or "pending" would show a permanent "Running..."
+ *    state and spinning indicators on an idle agent.
+ * 3. An incomplete tool call when the turn ends was interrupted, abandoned, or
+ *    crashed. Marking it "failed" honestly reports that it did not complete,
+ *    clears running spinners across the UI, and reconciles activity.running to 0
+ *    while updating activity.failed.
+ */
 export function endTurn(state: SessionState): SessionState {
-  const entries = closeStreams(state.entries);
-  if (entries === state.entries) return state;
-  return { ...state, entries };
+  const closedStreams = closeStreams(state.entries);
+  let toolsChanged = false;
+  let newlyFailed = 0;
+  const entries = closedStreams.map(entry => {
+    if (entry.kind !== "tool") return entry;
+    if (entry.status !== "pending" && entry.status !== "in_progress") return entry;
+    toolsChanged = true;
+    newlyFailed += 1;
+    return { ...entry, status: "failed" as const };
+  });
+
+  const runningNeedsReset = state.activity.running > 0 || Object.keys(state.activity.runningByKind).length > 0;
+  if (!toolsChanged && !runningNeedsReset && entries === state.entries) {
+    return state;
+  }
+
+  const activity: Activity = {
+    tools: state.activity.tools,
+    running: 0,
+    failed: state.activity.failed + newlyFailed,
+    runningByKind: {},
+  };
+
+  return { ...state, entries, activity };
 }
 
 /**
