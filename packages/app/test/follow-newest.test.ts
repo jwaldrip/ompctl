@@ -105,6 +105,22 @@ describe("following the newest entry", () => {
     expect(f.ends).toBe(1);
   });
 
+  test("a user-initiated send scrolls to the end while scrolled up", () => {
+    const f = follower();
+    f.follow.onContentSizeChange();
+    // Scrolled well up: operator is reading history
+    f.follow.onScroll(scrollTo(200, 2000, 800));
+    expect(f.ends).toBe(1);
+
+    // Operator sends while scrolled up
+    f.follow.scrollToBottom();
+    expect(f.ends).toBe(2);
+
+    // Arriving turn / prompt entry grows the list
+    f.follow.onContentSizeChange(390, 2400);
+    expect(f.ends).toBe(3);
+  });
+
   test("a Load earlier prepend does not jump to the bottom", () => {
     const f = follower();
     f.follow.onContentSizeChange();
