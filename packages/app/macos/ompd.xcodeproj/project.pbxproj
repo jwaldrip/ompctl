@@ -13,6 +13,7 @@
 		514201582437B4B40078DB4F /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 514201572437B4B40078DB4F /* main.m */; };
 		514201612437B4B40078DB4F /* OmpctlCamera.m in Sources */ = {isa = PBXBuildFile; fileRef = 514201602437B4B40078DB4F /* OmpctlCamera.m */; };
 		514201632437B4B40078DB4F /* OmpctlCamera.swift in Sources */ = {isa = PBXBuildFile; fileRef = 514201622437B4B40078DB4F /* OmpctlCamera.swift */; };
+		514201652437B4B40078DB4F /* OmpctlRandomValues.m in Sources */ = {isa = PBXBuildFile; fileRef = 514201642437B4B40078DB4F /* OmpctlRandomValues.m */; };
 		8734904EB026EE21AF80F813 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BECAD8CAF34A8ABDF84CCA45 /* PrivacyInfo.xcprivacy */; };
 		94AEF361C197E44F598ED498 /* libPods-ompd-macOS.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BAB39550094FEDE271430EE3 /* libPods-ompd-macOS.a */; };
 		9A70ADC235B68F900372406B /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BECAD8CAF34A8ABDF84CCA45 /* PrivacyInfo.xcprivacy */; };
@@ -30,6 +31,7 @@
 		514201592437B4B40078DB4F /* ompd.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ompd.entitlements; sourceTree = "<group>"; };
 		514201602437B4B40078DB4F /* OmpctlCamera.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OmpctlCamera.m; sourceTree = "<group>"; };
 		514201622437B4B40078DB4F /* OmpctlCamera.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmpctlCamera.swift; sourceTree = "<group>"; };
+		514201642437B4B40078DB4F /* OmpctlRandomValues.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OmpctlRandomValues.m; sourceTree = "<group>"; };
 		6E2C587C1F834496BC0CFC74 /* Pods-ompd-macOS.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ompd-macOS.debug.xcconfig"; path = "Target Support Files/Pods-ompd-macOS/Pods-ompd-macOS.debug.xcconfig"; sourceTree = "<group>"; };
 		B1D1EA32571B792EF59CCA5A /* Pods-ompd-macOS.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ompd-macOS.release.xcconfig"; path = "Target Support Files/Pods-ompd-macOS/Pods-ompd-macOS.release.xcconfig"; sourceTree = "<group>"; };
 		BAB39550094FEDE271430EE3 /* libPods-ompd-macOS.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-ompd-macOS.a"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -87,6 +89,7 @@
 				514201592437B4B40078DB4F /* ompd.entitlements */,
 				514201602437B4B40078DB4F /* OmpctlCamera.m */,
 				514201622437B4B40078DB4F /* OmpctlCamera.swift */,
+				514201642437B4B40078DB4F /* OmpctlRandomValues.m */,
 			);
 			path = "ompd-macOS";
 			sourceTree = "<group>";
@@ -342,6 +345,7 @@
 				5142014D2437B4B30078DB4F /* AppDelegate.mm in Sources */,
 				514201612437B4B40078DB4F /* OmpctlCamera.m in Sources */,
 				514201632437B4B40078DB4F /* OmpctlCamera.swift in Sources */,
+				514201652437B4B40078DB4F /* OmpctlRandomValues.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

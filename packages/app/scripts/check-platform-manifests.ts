@@ -10,6 +10,15 @@
  *      Identity Version attribute references $(PackageVersion).
  *   4. Android build.gradle: versionCode reads from OMPD_BUILD_NUMBER or
  *      OMPD_VERSION_CODE project property rather than a hardcoded integer.
+ *   5. The macOS host still provides `RNGetRandomValues` itself. That is the
+ *      consequence of (2): under the old architecture a module registers
+ *      through `RCT_EXPORT_MODULE` and nothing else, and
+ *      react-native-get-random-values 2.x ships a TurboModule with no such
+ *      registration, so without the host's own module the app has no
+ *      `crypto.getRandomValues`, every socket it opens dies on the tunnel's
+ *      handshake, and the Mac can reach no daemon at all. A source file alone
+ *      is not the check: it has to be compiled into the target, because a file
+ *      the target never builds registers nothing.
  *
  * Exits nonzero with the exact problem if any manifest carries a forbidden value.
  */
@@ -52,6 +61,29 @@ export function inspectAndroidGradleContent(content: string): { versionCodeExpr:
   const expr = codeLineMatch[1]!.trim();
   const isLiteral = /^\d+$/.test(expr);
   return { versionCodeExpr: expr, isLiteral };
+}
+
+/**
+ * The three facts that together mean the macOS binary answers
+ * `TurboModuleRegistry.getEnforcing("RNGetRandomValues")`: a module exported
+ * under that exact name, a synchronous export (WebCrypto has nowhere to
+ * await), and that source compiled into the host target rather than merely
+ * sitting in the folder.
+ */
+export function inspectMacosRandomBridge(sources: { module: string | null; pbxproj: string }): {
+  exportsModule: boolean;
+  exportsSyncMethod: boolean;
+  compiled: boolean;
+} {
+  const module = sources.module ?? "";
+  // The macro's argument is the JavaScript-visible name, which is the whole
+  // point here: the class may be called anything, the module may not.
+  const exportsModule = /RCT_EXPORT_MODULE\(\s*RNGetRandomValues\s*\)/.test(module);
+  const exportsSyncMethod = /RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD\(\s*getRandomBase64:/.test(module);
+  // Listed in the target's Sources build phase, not merely present on disk:
+  // an uncompiled file registers nothing.
+  const compiled = /OmpctlRandomValues\.m in Sources/.test(sources.pbxproj);
+  return { exportsModule, exportsSyncMethod, compiled };
 }
 
 export function findAppDir(start: string = process.cwd()): string {
@@ -171,11 +203,44 @@ export function checkPlatformManifests(appDir: string = findAppDir()): Violation
     }
   };
 
+  const checkMacosRandomBridge = () => {
+    const modulePath = join(appDir, "macos/ompd-macOS/OmpctlRandomValues.m");
+    const bridge = inspectMacosRandomBridge({
+      module: existsSync(modulePath) ? readFileSync(modulePath, "utf8") : null,
+      pbxproj: readFileSync(join(appDir, "macos/ompd.xcodeproj/project.pbxproj"), "utf8"),
+    });
+    if (!bridge.exportsModule) {
+      violations.push({
+        file: "macos/ompd-macOS/OmpctlRandomValues.m",
+        field: "RCT_EXPORT_MODULE",
+        expected: "RCT_EXPORT_MODULE(RNGetRandomValues)",
+        actual: "missing: nothing registers crypto.getRandomValues on macOS",
+      });
+    }
+    if (!bridge.exportsSyncMethod) {
+      violations.push({
+        file: "macos/ompd-macOS/OmpctlRandomValues.m",
+        field: "getRandomBase64",
+        expected: "RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(getRandomBase64:...)",
+        actual: "missing: WebCrypto cannot await, so an async export cannot serve it",
+      });
+    }
+    if (!bridge.compiled) {
+      violations.push({
+        file: "macos/ompd.xcodeproj/project.pbxproj",
+        field: "Sources build phase",
+        expected: "OmpctlRandomValues.m in Sources",
+        actual: "missing: a file the target does not compile registers nothing",
+      });
+    }
+  };
+
   checkPlist("ios/ompd/Info.plist", true);
   checkPlist("macos/ompd-macOS/Info.plist", false);
   checkWindows("windows/ompd/Package.appxmanifest");
   checkWindows("windows/ompd.Package/Package.appxmanifest");
   checkGradle("android/app/build.gradle");
+  checkMacosRandomBridge();
 
   return violations;
 }

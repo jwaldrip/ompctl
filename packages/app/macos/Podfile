@@ -29,5 +29,18 @@ target 'ompd-macOS' do
 
   post_install do |installer|
     react_native_post_install(installer, react_native_path.to_s)
+
+    # Every pod target, including the resource bundles React Native's own
+    # post-install pass does not visit, builds against the same floor this
+    # target declares above. react-native-svg's RNSVGFilters bundle ships
+    # `:osx => '10.14'` in its podspec, and Xcode 27 refuses any deployment
+    # target below 12.0 outright: `xcodebuild` failed the whole workspace
+    # with "the range of supported deployment target versions is 12.0 to
+    # 27.0.x" before compiling a single file of this app.
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+        config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
+      end
+    end
   end
 end
