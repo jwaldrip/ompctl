@@ -188,7 +188,12 @@ export function FleetScreen({
   // memoised on the inset for the same reason the renderers above are: a fresh
   // identity per render would re-render the whole mounted window.
   const ownedBottom = useOwnedBottomInset();
-  const listContentStyle = useMemo(() => ({ paddingBottom: ownedBottom }), [ownedBottom]);
+  // `flexGrow: 1` so the scroll surface is the whole column rather than the
+  // height of whatever it currently holds. Without it an empty list is the
+  // size of its empty state, which on a 752pt Mac window left the bay's
+  // surface stopping a third of the way down and the message stranded on the
+  // base colour underneath it.
+  const listContentStyle = useMemo(() => ({ flexGrow: 1, paddingBottom: ownedBottom }), [ownedBottom]);
   const activeView = browser.view ?? "list";
   const view = useMemo(() => browserView(browser), [browser]);
   // The sections array, both row renderers, and the section header renderer
@@ -816,7 +821,10 @@ const styles = StyleSheet.create({
   // Shrinkable, so the sentence wraps inside the band instead of running out
   // of it and under whatever draws next.
   scopeNoticeText: { flex: 1, minWidth: 0 },
-  empty: { alignItems: "center", gap: space.step, padding: space.gulf },
+  // `flex: 1` pairs with the list's `flexGrow: 1` content style: the empty
+  // state is the column's whole remaining height, so its message sits in the
+  // middle of the bay rather than tucked under the sort bar.
+  empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.step, padding: space.gulf },
   emptyAction: { minHeight: TOUCH_TARGET, justifyContent: "center", paddingHorizontal: space.snug },
   searchBar: {
     flexDirection: "row",

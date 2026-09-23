@@ -106,7 +106,17 @@ export function SortBar({ sort, onChange }: SortBarProps): JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  scroll: { borderBottomWidth: stroke.hair, borderBottomColor: ground.line, backgroundColor: ground.surface },
+  // `flexGrow: 0`, because a `ScrollView` grows by default and this one is a
+  // band, not a pane. In a column with room to spare -- a 752pt Mac window
+  // whose list is empty or filtered to nothing -- the default made this bar
+  // claim the leftover height and paint it `ground.surface`, so the bay ended
+  // in a blank grey slab with the list's own message stranded below it.
+  scroll: {
+    flexGrow: 0,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.line,
+    backgroundColor: ground.surface,
+  },
   row: { flexDirection: "row", paddingHorizontal: space.snug, gap: space.tight },
   chip: {
     flexDirection: "row",

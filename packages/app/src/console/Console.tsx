@@ -732,7 +732,14 @@ export function Console({
             rule between two panes, and Paper draws it.
           */}
           {split ? <Divider style={styles.splitSeam} testID="split-seam" /> : null}
-          {split ? <View style={styles.splitDetail}>{splitPane()}</View> : null}
+          {/*
+            The detail pane always draws something. `splitPane` answers null
+            whenever no session is open, and a null pane is not "nothing" on a
+            desktop window: it is two thirds of a 1280pt Mac window left as
+            bare base colour with no explanation, which is what the Mac build
+            showed on every launch before a session was picked.
+          */}
+          {split ? <View style={styles.splitDetail}>{splitPane() ?? <NoDetail />}</View> : null}
         </View>
         {nudgedSession !== null ? (
           <ResumeNudge
@@ -874,6 +881,23 @@ function selectionOf(state: ConsoleState): ShellSelection | null {
   if (state.selected !== null) return { kind: "session", agentId: state.selected };
   if (state.selectedTui !== null) return { kind: "terminal", sessionId: state.selectedTui };
   return null;
+}
+
+/**
+ * What the detail pane says when no session is open.
+ *
+ * A phone never needs this: there the list is the screen, and a session is a
+ * pushed route. A split window always has the pane, so the pane always has to
+ * read as a place rather than as a rendering failure.
+ */
+function NoDetail(): JSX.Element {
+  return (
+    <View style={styles.noDetail} testID="split-detail-empty">
+      <Glyph name="bay" size={28} color={ground.edge} />
+      <Body color={ink.plain}>No session open.</Body>
+      <Label color={ink.muted}>Pick one from the list, or start a new session.</Label>
+    </View>
+  );
 }
 
 /**
@@ -1057,6 +1081,7 @@ const styles = StyleSheet.create({
   // same value for exactly this reason: the pane gutter is paid by each pane.
   splitSeam: { width: stroke.heavy, backgroundColor: ground.edge },
   splitDetail: { flex: 1 },
+  noDetail: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.step, padding: space.gulf },
   gone: { alignItems: "center", justifyContent: "center", padding: space.gulf },
   limit: { gap: space.step, justifyContent: "center", padding: space.gulf },
   coworkNotice: { padding: space.step, backgroundColor: ground.surface },
