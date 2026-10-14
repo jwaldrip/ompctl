@@ -15,6 +15,7 @@
 import type { JSX } from "react";
 import { useCallback, useState } from "react";
 import { Image, Modal, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Glyph } from "../../design/icons.tsx";
 import { Body, Data, Kicker, Label } from "../../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET } from "../../design/tokens.ts";
@@ -123,7 +124,7 @@ export function AttachmentBlock({ ref }: { ref: AttachmentRef }): JSX.Element {
   const [attempt, setAttempt] = useState(0);
   const [fullSize, setFullSize] = useState(false);
   const { height: windowHeight } = useWindowDimensions();
-
+  const insets = useSafeAreaInsets();
   const onLoad = useCallback((event: ImageEvent): void => {
     const size = dimensionsFrom(event);
     if (size !== null) setRatio(size.width / size.height);
@@ -211,7 +212,15 @@ export function AttachmentBlock({ ref }: { ref: AttachmentRef }): JSX.Element {
           onPress={() => {
             setFullSize(false);
           }}
-          style={styles.fullBackdrop}
+          style={[
+            styles.fullBackdrop,
+            {
+              paddingTop: space.loose + insets.top,
+              paddingBottom: space.loose + insets.bottom,
+              paddingLeft: space.loose + insets.left,
+              paddingRight: space.loose + insets.right,
+            },
+          ]}
           testID="attachment-full"
         >
           <Image
