@@ -519,10 +519,7 @@ export function FleetScreen({
           />
           <View
             testID="ephemeral-review-sheet"
-            style={[
-              isTablet ? styles.reviewPopover : styles.reviewSheet,
-              !isTablet && { maxHeight: sheetMaxHeight },
-            ]}
+            style={[isTablet ? styles.reviewPopover : styles.reviewSheet, !isTablet && { maxHeight: sheetMaxHeight }]}
           >
             <View
               testID="ephemeral-review-header"
