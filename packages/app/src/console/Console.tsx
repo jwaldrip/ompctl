@@ -508,30 +508,6 @@ export function Console({
     const isLiveTui = row?.status === "live-tui";
     return (
       <View style={styles.terminalContainer}>
-        {isLiveTui ? (
-          <View style={styles.takeoverBar} testID="terminal-takeover-bar">
-            <Label color={ink.muted} style={styles.takeoverLabel}>
-              Running in terminal
-            </Label>
-            <Pressable
-              testID="terminal-takeover-button"
-              accessibilityRole="button"
-              accessibilityLabel="Take over session from terminal"
-              onPress={() => {
-                if (row?.cwd) {
-                  setTakeoverTarget({
-                    sessionId,
-                    cwd: row.cwd,
-                    title: row.title || "Terminal session",
-                  });
-                }
-              }}
-              style={takeoverButtonStyle}
-            >
-              <Label color={signal.holding}>Take over</Label>
-            </Pressable>
-          </View>
-        ) : null}
         <TerminalSessionScreen
           key={sessionId}
           title={row?.title ?? "Terminal session"}
@@ -544,6 +520,19 @@ export function Console({
           tui={tuiSessionFor(state, sessionId)}
           connection={state.connection}
           onBack={back}
+          onTakeOver={
+            isLiveTui
+              ? () => {
+                  if (row?.cwd) {
+                    setTakeoverTarget({
+                      sessionId,
+                      cwd: row.cwd,
+                      title: row.title || "Terminal session",
+                    });
+                  }
+                }
+              : undefined
+          }
           onSubmit={(text, images) => actions.promptTui(sessionId, text, images)}
           onLoadEarlier={() => {
             actions.loadEarlierTui(sessionId);
@@ -1086,24 +1075,6 @@ const styles = StyleSheet.create({
   limit: { gap: space.step, justifyContent: "center", padding: space.gulf },
   coworkNotice: { padding: space.step, backgroundColor: ground.surface },
   terminalContainer: { flex: 1 },
-  takeoverBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: space.wide,
-    paddingVertical: space.snug,
-    backgroundColor: ground.surface,
-    borderBottomWidth: stroke.hair,
-    borderBottomColor: ground.edge,
-  },
-  takeoverLabel: { fontSize: 12 },
-  takeoverButton: {
-    paddingHorizontal: space.step,
-    paddingVertical: space.tight,
-    borderRadius: radius.control,
-    backgroundColor: ground.raised,
-  },
-  takeoverButtonPressed: { opacity: 0.7 },
   takeoverOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
@@ -1157,10 +1128,6 @@ const styles = StyleSheet.create({
   takeoverConfirmText: { fontWeight: "600" },
 });
 
-const takeoverButtonStyle = ({ pressed }: { pressed: boolean }) => [
-  styles.takeoverButton,
-  pressed && styles.takeoverButtonPressed,
-];
 const takeoverConfirmStyle = ({ pressed }: { pressed: boolean }) => [
   styles.takeoverConfirmButton,
   pressed && styles.takeoverConfirmPressed,
