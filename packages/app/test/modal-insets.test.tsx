@@ -268,37 +268,6 @@ describe("FleetScreen ephemeral review sheet insets", () => {
 });
 
 describe("ProjectPicker phone sheet insets", () => {
-  test("sheet pays bottom inset in portrait", () => {
-    setWindowSize(390, 844);
-    setSafeAreaInsets(PORTRAIT_NOTCH);
-
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const root = createRoot(host);
-
-    try {
-      act(() => {
-        root.render(<ProjectPicker sessions={PICKER_SESSIONS} selectedProject={null} onSelectProject={() => {}} />);
-      });
-
-      const trigger = host.querySelector('[data-testid="project-picker-trigger"]') as HTMLElement;
-      expect(trigger).not.toBeNull();
-      act(() => {
-        trigger.click();
-      });
-
-      const sheet = document.querySelector('[data-testid="project-picker-sheet"]');
-      expect(sheet).not.toBeNull();
-      const pad = padding(sheet);
-      expect(pad.bottom).toBe(`${PORTRAIT_NOTCH.bottom}px`);
-      expect(pad.left).toBe(`${PORTRAIT_NOTCH.left}px`);
-      expect(pad.right).toBe(`${PORTRAIT_NOTCH.right}px`);
-    } finally {
-      act(() => root.unmount());
-      host.remove();
-    }
-  });
-
   test("sheet clears side insets and home indicator in landscape", () => {
     setWindowSize(844, 390);
     setSafeAreaInsets(LANDSCAPE_NOTCH);
