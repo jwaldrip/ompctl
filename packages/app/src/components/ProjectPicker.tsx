@@ -211,7 +211,11 @@ export function ProjectPicker(props: ProjectPickerProps): JSX.Element {
               testID={isTablet ? "project-picker-popover" : "project-picker-sheet"}
               style={[
                 isTablet ? styles.popoverSurface : styles.sheetSurface,
-                { paddingBottom: keyboard > 0 ? 0 : insets.bottom },
+                {
+                  paddingBottom: keyboard > 0 ? 0 : insets.bottom,
+                  paddingLeft: isTablet ? 0 : insets.left,
+                  paddingRight: isTablet ? 0 : insets.right,
+                },
               ]}
             >
               <View style={styles.header}>
