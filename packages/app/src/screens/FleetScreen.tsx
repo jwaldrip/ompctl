@@ -38,8 +38,10 @@ import {
   SectionList,
   StyleSheet,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GroupHeader } from "../components/GroupHeader.tsx";
 import { ProjectPicker } from "../components/ProjectPicker.tsx";
 import { SessionBoard } from "../components/SessionBoard.tsx";
@@ -163,8 +165,11 @@ export function FleetScreen({
   pendingClearances,
   tuiSessions,
 }: FleetScreenProps): JSX.Element {
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   // The list is the bottom-most surface in the bay, with no composer beneath
   const isTablet = useIsTablet();
+  const sheetMaxHeight = isTablet ? undefined : Math.min(windowHeight * 0.85, windowHeight - insets.top);
   const effectiveManageAccess = manageAccess ?? deleteAccess;
   const canManage = effectiveManageAccess !== "missing";
 
@@ -512,8 +517,20 @@ export function FleetScreen({
             onPress={() => setReviewingEphemerals(false)}
             style={styles.backdrop}
           />
-          <View testID="ephemeral-review-sheet" style={isTablet ? styles.reviewPopover : styles.reviewSheet}>
-            <View style={styles.reviewHeader}>
+          <View
+            testID="ephemeral-review-sheet"
+            style={[isTablet ? styles.reviewPopover : styles.reviewSheet, !isTablet && { maxHeight: sheetMaxHeight }]}
+          >
+            <View
+              testID="ephemeral-review-header"
+              style={[
+                styles.reviewHeader,
+                !isTablet && {
+                  paddingLeft: space.wide + insets.left,
+                  paddingRight: space.wide + insets.right,
+                },
+              ]}
+            >
               <View style={styles.reviewHeaderLead}>
                 <Kicker color={ink.muted}>Cleanup</Kicker>
                 <Title heading testID="ephemeral-review-title">
@@ -535,7 +552,16 @@ export function FleetScreen({
               </Pressable>
             </View>
 
-            <View style={styles.reviewToolbar}>
+            <View
+              testID="ephemeral-review-toolbar"
+              style={[
+                styles.reviewToolbar,
+                !isTablet && {
+                  paddingLeft: space.wide + insets.left,
+                  paddingRight: space.wide + insets.right,
+                },
+              ]}
+            >
               <Label color={ink.muted} testID="ephemeral-selected-count">
                 {`${selectedEphemeralIds.size} of ${ephemeralCandidates.length} selected`}
               </Label>
@@ -574,7 +600,14 @@ export function FleetScreen({
                         return next;
                       });
                     }}
-                    style={[styles.reviewRow, isSelected && styles.reviewRowSelected]}
+                    style={[
+                      styles.reviewRow,
+                      isSelected && styles.reviewRowSelected,
+                      !isTablet && {
+                        paddingLeft: space.wide + insets.left,
+                        paddingRight: space.wide + insets.right,
+                      },
+                    ]}
                   >
                     <Pressable
                       testID={`ephemeral-select-${s.id}`}
@@ -606,7 +639,17 @@ export function FleetScreen({
               })}
             </ScrollView>
 
-            <View style={styles.reviewFooter}>
+            <View
+              testID="ephemeral-review-footer"
+              style={[
+                styles.reviewFooter,
+                !isTablet && {
+                  paddingBottom: space.wide + insets.bottom,
+                  paddingLeft: space.wide + insets.left,
+                  paddingRight: space.wide + insets.right,
+                },
+              ]}
+            >
               {confirmingBulkArchive ? (
                 <View style={styles.confirmDialog} testID="ephemeral-confirm-dialog">
                   <Label color={ink.bright} style={styles.confirmCopy} testID="ephemeral-confirm-copy">

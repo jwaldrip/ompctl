@@ -104,6 +104,12 @@ export interface TerminalSessionScreenProps {
   connection: ConnectionState;
   onBack: () => void;
   /**
+   * Called when the operator taps Take over on a live terminal session.
+   * When defined, the screen renders the takeover bar directly beneath
+   * its header, inside SafeScreen so it clears the status bar and notch.
+   */
+  onTakeOver?: () => void;
+  /**
    * Ask for the page of turns older than the ones on screen. The screen
    * offers this only while `tui.historyCursor` names one, so a press always
    * has a page to ask for.
@@ -572,6 +578,22 @@ export function TerminalSessionScreen(props: TerminalSessionScreenProps): JSX.El
           </View>
         ) : null}
       </View>
+      {props.onTakeOver ? (
+        <View style={styles.takeoverBar} testID="terminal-takeover-bar">
+          <Label color={theme.ink.muted} style={styles.takeoverLabel}>
+            Running in terminal
+          </Label>
+          <Pressable
+            testID="terminal-takeover-button"
+            accessibilityRole="button"
+            accessibilityLabel="Take over session from terminal"
+            onPress={props.onTakeOver}
+            style={takeoverButtonStyle}
+          >
+            <Label color={signal.holding}>Take over</Label>
+          </Pressable>
+        </View>
+      ) : null}
 
       {isTablet ? (
         <View
@@ -1048,4 +1070,30 @@ const styles = StyleSheet.create({
     marginBottom: space.snug,
   },
   spokenText: { flex: 1 },
+  takeoverBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: space.wide,
+    paddingVertical: space.snug,
+    backgroundColor: ground.surface,
+    borderBottomWidth: stroke.hair,
+    borderBottomColor: ground.edge,
+  },
+  takeoverLabel: { fontSize: 12 },
+  takeoverButton: {
+    minHeight: TOUCH_TARGET,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: space.step,
+    paddingVertical: space.tight,
+    borderRadius: radius.control,
+    backgroundColor: ground.raised,
+  },
+  takeoverButtonPressed: { opacity: 0.7 },
 });
+
+const takeoverButtonStyle = ({ pressed }: { pressed: boolean }) => [
+  styles.takeoverButton,
+  pressed && styles.takeoverButtonPressed,
+];

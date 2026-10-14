@@ -528,8 +528,148 @@ describe("the system insets are honoured at both edges", () => {
       expect(padding(terminal).bottom).toBe("0px");
       const composer = shell.el("terminal-composer-safe");
       expect(padding(composer).bottom).toBe(`${NOTCH.bottom}px`);
+
+      // The takeover bar renders inside the terminal screen's inset owner, under its header:
+      // no element precedes the SafeScreen shell in the terminal route.
+      const takeoverBar = shell.el("terminal-takeover-bar");
+      expect(takeoverBar).not.toBeNull();
+      expect(terminal?.contains(takeoverBar)).toBe(true);
+
+      const terminalHead = shell.el("terminal-head");
+      expect(terminalHead).not.toBeNull();
+      const isFollowing = Boolean(
+        terminalHead &&
+          takeoverBar &&
+          terminalHead.compareDocumentPosition(takeoverBar) & Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      expect(isFollowing).toBe(true);
     } finally {
       shell.unmount();
+    }
+  });
+
+  test("every button rendered on an own-chrome phone route sits inside the top inset owner", () => {
+    setSafeAreaInsets(NOTCH);
+
+    const isInsideModal = (el: HTMLElement): boolean =>
+      el.closest('[aria-modal="true"]') !== null || el.closest('[role="dialog"]') !== null;
+
+    const isVisible = (el: HTMLElement, root: HTMLElement): boolean => {
+      let curr: HTMLElement | null = el;
+      while (curr && curr !== root.parentElement) {
+        if (curr.style.display === "none") return false;
+        curr = curr.parentElement;
+      }
+      return true;
+    };
+
+    const assertRouteButtonsClearNotch = (shell: Shell, routeName: string): void => {
+      const buttons = [...shell.host.querySelectorAll<HTMLElement>('[role="button"], button')].filter(
+        el => isVisible(el, shell.host) && !isInsideModal(el),
+      );
+
+      expect(buttons.length).toBeGreaterThan(0);
+
+      const offenders: string[] = [];
+      const expectedValue = `${NOTCH.top}px`;
+
+      for (const button of buttons) {
+        let hasInsetAncestor = false;
+        let curr: HTMLElement | null = button.parentElement;
+        while (curr && curr !== shell.host.parentElement) {
+          if (curr.style.paddingTop === expectedValue) {
+            hasInsetAncestor = true;
+            break;
+          }
+          curr = curr.parentElement;
+        }
+        if (!hasInsetAncestor) {
+          const id =
+            button.getAttribute("data-testid") ||
+            button.getAttribute("aria-label") ||
+            button.textContent?.trim() ||
+            button.tagName.toLowerCase();
+          offenders.push(id);
+        }
+      }
+
+      expect(
+        offenders,
+        `Route "${routeName}" rendered buttons outside notch top inset (${expectedValue}): ${offenders.join(", ")}`,
+      ).toEqual([]);
+    };
+
+    // Route 1: terminal (live-tui)
+    const terminalShell = mountShell([summary("sess_live", { status: "live-tui", cwd: "/work" })]);
+    try {
+      terminalShell.press("session-open-sess_live");
+      expect(terminalShell.el("terminal-session")).not.toBeNull();
+      assertRouteButtonsClearNotch(terminalShell, "terminal");
+    } finally {
+      terminalShell.unmount();
+    }
+
+    // Routes 2, 3, 4: session, subagent, and agentConfig
+    const agentId = "agt_parent" as AgentId;
+    const parentAgent: Agent = {
+      id: agentId,
+      name: "ParentAgent",
+      host: { kind: "local" as const, id: "1", spec: { kind: "local" as const } },
+      cwd: "/Users/op/dev/src/github.com/op/alpha",
+      state: "idle",
+      acpSessionId: "sess_agent",
+      createdAt: "2026-09-08T00:00:00.000Z",
+      lastActiveAt: "2026-09-08T00:00:00.000Z",
+      labels: {},
+    };
+    const agentShell = mountShell([summary("sess_agent", { agentId, status: "live-ompd" })]);
+    try {
+      act(() => {
+        agentShell.client.emit("agents", { t: "agents", agents: [parentAgent] });
+      });
+      agentShell.press("session-open-sess_agent");
+      act(() => {
+        agentShell.client.emit("session_history", {
+          agentId,
+          sessionId: "sess_agent",
+          entries: [],
+          nextBefore: null,
+        });
+      });
+      expect(agentShell.el("session")).not.toBeNull();
+      assertRouteButtonsClearNotch(agentShell, "session");
+
+      // Subagent route
+      act(() => {
+        agentShell.client.emit("session_subagents", {
+          sessionId: "sess_agent",
+          subagents: [
+            {
+              name: "SubAgentAlpha",
+              path: "/path/to/transcript.jsonl",
+              createdAt: "2026-09-08T00:00:00.000Z",
+              updatedAt: "2026-09-08T00:00:00.000Z",
+              byteSize: 4096,
+              hasReport: false,
+              state: "done",
+            },
+          ],
+        });
+      });
+      if (agentShell.el("subagent-transcript-SubAgentAlpha") === null) {
+        agentShell.press("session-context-toggle");
+      }
+      agentShell.press("subagent-transcript-SubAgentAlpha");
+      expect(agentShell.el("terminal-session")).not.toBeNull();
+      assertRouteButtonsClearNotch(agentShell, "subagent");
+
+      // Agent config route
+      agentShell.press("terminal-back");
+      agentShell.press("session-open-config");
+      expect(agentShell.el("agent-config")).not.toBeNull();
+      assertRouteButtonsClearNotch(agentShell, "agentConfig");
+    } finally {
+      agentShell.unmount();
     }
   });
 });

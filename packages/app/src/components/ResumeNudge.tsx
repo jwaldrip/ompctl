@@ -10,6 +10,7 @@
 import type { JSX } from "react";
 import { memo } from "react";
 import { Modal, Pressable, type PressableStateCallbackType, StyleSheet, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Glyph } from "../design/icons.tsx";
 import { useIsTablet } from "../design/layout.ts";
 import { Body, Label, Title } from "../design/text.tsx";
@@ -88,6 +89,7 @@ export const ResumeNudge = memo(function ResumeNudge({
   now,
 }: ResumeNudgeProps): JSX.Element {
   const isTablet = useIsTablet();
+  const insets = useSafeAreaInsets();
   const sentence = formatResumeNudgeSentence(session, now);
 
   return (
@@ -102,7 +104,14 @@ export const ResumeNudge = memo(function ResumeNudge({
         />
         <View
           testID={isTablet ? "resume-nudge-dialog" : "resume-nudge-sheet"}
-          style={isTablet ? styles.popoverSurface : styles.sheetSurface}
+          style={[
+            isTablet ? styles.popoverSurface : styles.sheetSurface,
+            !isTablet && {
+              paddingBottom: space.loose + insets.bottom,
+              paddingLeft: space.wide + insets.left,
+              paddingRight: space.wide + insets.right,
+            },
+          ]}
         >
           {!isTablet ? <View style={styles.sheetHandle} /> : null}
           <View style={styles.header}>
