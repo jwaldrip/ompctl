@@ -23,6 +23,7 @@ permissions:
 jobs:
   build:
     name: Build React Native Windows app
+    if: github.event_name != 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -81,3 +82,242 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
+
+  proof:
+    name: Build, install, and prove packaged Windows app
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3"
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Windows native autolink and codegen
+        shell: pwsh
+        working-directory: packages/app
+        run: |
+          npx --yes @react-native-community/cli autolink-windows --sln windows/ompd.sln --proj windows/ompd/ompd.vcxproj
+          npx --yes @react-native-community/cli codegen-windows
+      - name: Patch pair screen heading for glyph verification
+        shell: pwsh
+        working-directory: packages/app
+        run: |
+          $screenFile = "src/screens/PairScreen.tsx"
+          $content = Get-Content $screenFile -Raw
+          $target = '<Display heading>Take the position</Display>'
+          $replacement = '<Display heading>{"\u{F011C} \u{E711} Take the position"}</Display>'
+          if (-not $content.Contains($target)) {
+            throw "Target heading string not found in $screenFile"
+          }
+          $content = $content.Replace($target, $replacement)
+          Set-Content $screenFile -Value $content -NoNewline
+          Write-Host "Patched PairScreen heading with Nerd Font glyphs."
+      - name: Build Release MSIX package
+        shell: pwsh
+        working-directory: packages/app
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+          if (-not $msbuild) { throw "MSBuild is not installed on this runner." }
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Include"
+          $sdkVersion = Get-ChildItem $sdkRoot -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName "um\Windows.h") } |
+            Sort-Object { [version]$_.Name } -Descending |
+            Select-Object -First 1 -ExpandProperty Name
+          if (-not $sdkVersion) { throw "No Windows SDK installed." }
+          Write-Host "Using MSBuild: $msbuild"
+          Write-Host "Using Windows SDK: $sdkVersion"
+          $env:MSBUILD_PATH = $msbuild
+          $env:OMPD_WINDOWS_CONFIG = "Release"
+          $env:OMPD_WINDOWS_PLATFORM = "x64"
+          $env:OMPD_APPX_BUNDLE = "Never"
+          $env:MSBUILD_ARGS = "/p:WindowsTargetPlatformVersion=$sdkVersion /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false"
+          bash scripts/windows-msix.sh
+      - name: Verify font assets inside Release package
+        shell: pwsh
+        working-directory: packages/app
+        run: |
+          $pkg = Get-ChildItem -Path windows -Recurse -Include *.msix, *.msixbundle, *.appx, *.appxbundle |
+            Where-Object { $_.FullName -notmatch "Microsoft\.ReactNative" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $pkg) { throw "No built package found in windows/" }
+          Write-Host "Found package: $($pkg.FullName) ($($pkg.Length) bytes)"
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($pkg.FullName)
+          Write-Host "Listing Assets/Fonts inside package:"
+          $fontsFound = @()
+          foreach ($entry in $zip.Entries) {
+            if ($entry.FullName -match "Assets[/\\]Fonts") {
+              Write-Host "  $($entry.FullName) ($($entry.Length) bytes)"
+              $fontsFound += $entry.Name
+            }
+          }
+          $zip.Dispose()
+
+          $expectedFonts = @(
+            "Archivo-Regular.ttf",
+            "Archivo-Medium.ttf",
+            "Archivo-SemiBold.ttf",
+            "IBMPlexMono-Regular.ttf",
+            "IBMPlexMono-Medium.ttf",
+            "SymbolsNF.ttf"
+          )
+          $missing = @()
+          foreach ($f in $expectedFonts) {
+            if ($fontsFound -notcontains $f) {
+              $missing += $f
+            }
+          }
+          if ($missing.Count -gt 0) {
+            throw "Missing expected fonts in package: $($missing -join ', ')"
+          }
+          Write-Host "All six font faces successfully verified inside MSIX package."
+      - name: Sign MSIX package and trust certificate
+        shell: pwsh
+        working-directory: packages/app
+        run: |
+          $pkg = Get-ChildItem -Path windows -Recurse -Include *.msix, *.msixbundle, *.appx, *.appxbundle |
+            Where-Object { $_.FullName -notmatch "Microsoft\.ReactNative" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $pkg) { throw "Package not found" }
+
+          Write-Host "Creating self-signed certificate with Subject CN=jwaldrip..."
+          $cert = New-SelfSignedCertificate -Type Custom `
+            -Subject "CN=jwaldrip" `
+            -KeyUsage DigitalSignature `
+            -FriendlyName "ompctl test cert" `
+            -CertStoreLocation "Cert:\LocalMachine\My" `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
+
+          Write-Host "Installing certificate to TrustedPeople store..."
+          $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPeople", "LocalMachine")
+          $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+          $store.Add($cert)
+          $store.Close()
+
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1).FullName
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Write-Host "Using signtool: $signtool"
+
+          Write-Host "Signing package $($pkg.FullName)..."
+          & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /v $pkg.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
+
+          Write-Host "Verifying signature..."
+          & $signtool verify /pa /v $pkg.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+      - name: Install packaged app
+        shell: pwsh
+        working-directory: packages/app
+        run: |
+          $pkg = Get-ChildItem -Path windows -Recurse -Include *.msix, *.msixbundle, *.appx, *.appxbundle |
+            Where-Object { $_.FullName -notmatch "Microsoft\.ReactNative" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          Write-Host "Enabling developer mode and sideloading..."
+          reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
+          reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowAllTrustedApps" /d "1"
+
+          Write-Host "Installing package via Add-AppxPackage..."
+          Add-AppxPackage -Path $pkg.FullName -Verbose
+          $installed = Get-AppxPackage -Name "ompctl"
+          if (-not $installed) { throw "Get-AppxPackage did not find ompctl after installation" }
+          Write-Host "Successfully installed package: $($installed.PackageFullName)"
+          Write-Host "PackageFamilyName: $($installed.PackageFamilyName)"
+          "PACKAGE_FAMILY_NAME=$($installed.PackageFamilyName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Dump installed font families
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $families = (New-Object System.Drawing.Text.InstalledFontCollection).Families
+          Write-Host "Total font families: $($families.Count)"
+          $matched = $families | Where-Object { $_.Name -match "Archivo|Plex|Symbols" }
+          Write-Host "Matched bundled font families:"
+          $matched | ForEach-Object { Write-Host "  $($_.Name)" }
+      - name: Launch packaged app and capture screenshot
+        shell: pwsh
+        working-directory: packages/app
+        run: |
+          $screenshotDir = "windows\screenshots"
+          New-Item -ItemType Directory -Force -Path $screenshotDir | Out-Null
+          $screenshotPath = Join-Path $screenshotDir "packaged-app-screen.png"
+          $aumid = "$env:PACKAGE_FAMILY_NAME!App"
+          Write-Host "Launching app via shell:AppsFolder\$aumid..."
+          Start-Process "shell:AppsFolder\$aumid"
+
+          Write-Host "Waiting for ompd process..."
+          $proc = $null
+          for ($i = 0; $i -lt 30; $i++) {
+            $proc = Get-Process -Name "ompd" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($proc) { break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $proc) {
+            Write-Warning "ompd process was not found after 30 seconds."
+          } else {
+            Write-Host "ompd process running with PID $($proc.Id)."
+          }
+
+          Write-Host "Waiting 25 seconds for app window render..."
+          Start-Sleep -Seconds 25
+
+          Add-Type -TypeDefinition '
+            using System;
+            using System.Runtime.InteropServices;
+            public class Win32 {
+              [DllImport("user32.dll")]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              public static extern bool SetForegroundWindow(IntPtr hWnd);
+              [DllImport("user32.dll")]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+            }
+          '
+
+          if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
+            Write-Host "MainWindowHandle: $($proc.MainWindowHandle), restoring and bringing to foreground..."
+            [Win32]::ShowWindowAsync($proc.MainWindowHandle, 9) | Out-Null
+            [Win32]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+            Start-Sleep -Seconds 2
+          }
+
+          try {
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -AssemblyName System.Drawing
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            Write-Host "Screen bounds: $($bounds.Width) x $($bounds.Height)"
+            $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bmp.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose()
+            $bmp.Dispose()
+            Write-Host "Screenshot saved to $screenshotPath"
+          } catch {
+            Write-Warning "Screenshot capture failed: $_"
+          }
+
+          Get-Process | Where-Object { $_.Name -match "ompd|node" } | Format-Table -AutoSize
+          Get-EventLog -LogName Application -Newest 30 -EntryType Error, Warning | Format-Table -Wrap
+      - name: Upload screenshot and logs artifact
+        if: always()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: windows-packaged-proof
+          path: |
+            packages/app/windows/screenshots/*.png
+          if-no-files-found: ignore
