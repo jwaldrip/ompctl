@@ -102,4 +102,12 @@
              Value="$(PackageVersion)"
              Namespaces="&lt;Namespace Prefix='ns' Uri='http://schemas.microsoft.com/appx/manifest/foundation/windows10' /&gt;" />
   </Target>
+  <Target Name="IncludeBundleInPackage" BeforeTargets="_GetPackageFiles;BeforePackageFiles">
+    <ItemGroup>
+      <_BundleFiles Include="$(MSBuildThisFileDirectory)..\ompd\Bundle\**\*" />
+      <Content Include="@(_BundleFiles)">
+        <Link>Bundle\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      </Content>
+    </ItemGroup>
+  </Target>
 </Project>
