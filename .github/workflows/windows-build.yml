@@ -139,7 +139,8 @@ jobs:
           $env:OMPD_WINDOWS_CONFIG = "Release"
           $env:OMPD_WINDOWS_PLATFORM = "x64"
           $env:OMPD_APPX_BUNDLE = "Never"
-          $env:MSBUILD_ARGS = "/p:WindowsTargetPlatformVersion=$sdkVersion /p:PlatformToolset=v145 /p:WindowsAppSDKVerifyTransitiveDependencies=false /p:RunCodegenWindows=false"
+          $env:MSYS_NO_PATHCONV = "1"
+          $env:MSBUILD_ARGS = "-restore -p:WindowsTargetPlatformVersion=$sdkVersion -p:PlatformToolset=v145 -p:WindowsAppSDKVerifyTransitiveDependencies=false -p:RunCodegenWindows=false"
           bash scripts/windows-msix.sh
       - name: Verify font assets inside Release package
         shell: pwsh
