@@ -5,6 +5,7 @@ import {
   inspectMacosRandomBridge,
   inspectPlistContent,
   inspectWindowsManifestContent,
+  missingFontRegistrations,
 } from "../scripts/check-platform-manifests.ts";
 
 const REAL_MODULE = `
@@ -127,5 +128,150 @@ defaultConfig {
       });
       expect(res.compiled).toBe(false);
     });
+  });
+});
+
+describe("missingFontRegistrations", () => {
+  const VALID_SOURCES = {
+    iosPlist: `
+<plist version="1.0">
+<dict>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Archivo-Regular.ttf</string>
+		<string>SymbolsNF.ttf</string>
+	</array>
+</dict>
+</plist>`,
+    iosPbxproj: `
+		F04700010000000000000011 /* Archivo-Regular.ttf in Resources */ = {isa = PBXBuildFile; };
+		F04700010000000000000012 /* SymbolsNF.ttf in Resources */ = {isa = PBXBuildFile; };
+`,
+    macosPbxproj: `
+		F04700020000000000000011 /* Archivo-Regular.ttf in Resources */ = {isa = PBXBuildFile; };
+		F04700020000000000000012 /* SymbolsNF.ttf in Resources */ = {isa = PBXBuildFile; };
+`,
+    macosPlist: `
+<plist version="1.0">
+<dict>
+	<key>ATSApplicationFontsPath</key>
+	<string>.</string>
+</dict>
+</plist>`,
+    indexHtml: `
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      @font-face {
+        font-family: "Archivo-Regular";
+        src: url("/src/design/fonts/Archivo-Regular.ttf") format("truetype");
+      }
+      @font-face {
+        font-family: "SymbolsNF";
+        src: url("/src/design/fonts/SymbolsNF.ttf") format("truetype");
+      }
+    </style>
+  </head>
+</html>`,
+  };
+
+  test("all registered gives no violations", () => {
+    const violations = missingFontRegistrations(["Archivo-Regular.ttf", "SymbolsNF.ttf"], VALID_SOURCES);
+    expect(violations).toEqual([]);
+  });
+
+  test("a font missing from only UIAppFonts gives exactly that one violation, not fooled by comments or other keys", () => {
+    const sources = {
+      ...VALID_SOURCES,
+      iosPlist: `
+<plist version="1.0">
+<dict>
+	<!-- Mentioning SymbolsNF.ttf here in a comment must not register it -->
+	<key>CommentNote</key>
+	<string>SymbolsNF.ttf</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Archivo-Regular.ttf</string>
+	</array>
+</dict>
+</plist>`,
+    };
+    const violations = missingFontRegistrations(["Archivo-Regular.ttf", "SymbolsNF.ttf"], sources);
+    expect(violations).toEqual([
+      {
+        file: "ios/ompd/Info.plist",
+        field: "UIAppFonts",
+        expected: "SymbolsNF.ttf",
+        actual: "missing",
+      },
+    ]);
+  });
+
+  test("a font missing from macOS Resources", () => {
+    const sources = {
+      ...VALID_SOURCES,
+      macosPbxproj: `
+		F04700020000000000000011 /* Archivo-Regular.ttf in Resources */ = {isa = PBXBuildFile; };
+`,
+    };
+    const violations = missingFontRegistrations(["Archivo-Regular.ttf", "SymbolsNF.ttf"], sources);
+    expect(violations).toEqual([
+      {
+        file: "macos/ompd.xcodeproj/project.pbxproj",
+        field: "Resources",
+        expected: "SymbolsNF.ttf",
+        actual: "missing",
+      },
+    ]);
+  });
+
+  test("missing @font-face", () => {
+    const sources = {
+      ...VALID_SOURCES,
+      indexHtml: `
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      @font-face {
+        font-family: "Archivo-Regular";
+        src: url("/src/design/fonts/Archivo-Regular.ttf") format("truetype");
+      }
+    </style>
+  </head>
+</html>`,
+    };
+    const violations = missingFontRegistrations(["Archivo-Regular.ttf", "SymbolsNF.ttf"], sources);
+    expect(violations).toEqual([
+      {
+        file: "index.html",
+        field: "@font-face",
+        expected: "SymbolsNF.ttf",
+        actual: "missing",
+      },
+    ]);
+  });
+
+  test("missing ATSApplicationFontsPath", () => {
+    const sources = {
+      ...VALID_SOURCES,
+      macosPlist: `
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>ompd</string>
+</dict>
+</plist>`,
+    };
+    const violations = missingFontRegistrations(["Archivo-Regular.ttf", "SymbolsNF.ttf"], sources);
+    expect(violations).toEqual([
+      {
+        file: "macos/ompd-macOS/Info.plist",
+        field: "ATSApplicationFontsPath",
+        expected: ".",
+        actual: "missing",
+      },
+    ]);
   });
 });

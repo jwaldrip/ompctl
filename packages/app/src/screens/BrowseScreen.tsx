@@ -19,12 +19,12 @@
 import type { FsEntry } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { CloneProgress } from "../components/CloneProgress.tsx";
 import { Glyph, type GlyphName } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { SafeScreen, useOwnedBottomInset } from "../design/SafeScreen.tsx";
-import { Body, Code, Kicker, Label, Title } from "../design/text.tsx";
+import { Body, Code, Kicker, Label, Text, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import { bottomInsetFor, useKeyboardInset } from "../design/useKeyboardInset.ts";
 import { directoryLabel, type RemoteStartState } from "../remote/model.ts";

@@ -31,7 +31,7 @@
 import type { ContainerRuntimeStatus, ModelBrokerStatus } from "@ompd/core/contracts";
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { ConnectorsView, PluginsView, SkillsView } from "../components/CoworkCatalogueViews.tsx";
 import { TaskDetail } from "../components/TaskDetail.tsx";
 import type { NewTaskInput } from "../components/TaskSidebar.tsx";
@@ -45,7 +45,7 @@ import { useCoworkFolders } from "../cowork/useCoworkFolders.ts";
 import type { GlyphName } from "../design/icons.tsx";
 import { Glyph } from "../design/icons.tsx";
 import { useSplitLayout } from "../design/layout.ts";
-import { Code, Kicker, Label } from "../design/text.tsx";
+import { Code, Kicker, Label, Text } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { RemoteStartClient } from "../remote/useRemoteStart.ts";
 import { RemoteStartScreen } from "./RemoteStartScreen.tsx";

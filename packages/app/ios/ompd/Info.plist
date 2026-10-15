@@ -135,5 +135,14 @@
 			</dict>
 		</dict>
 	</array>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Archivo-Medium.ttf</string>
+		<string>Archivo-Regular.ttf</string>
+		<string>Archivo-SemiBold.ttf</string>
+		<string>IBMPlexMono-Medium.ttf</string>
+		<string>IBMPlexMono-Regular.ttf</string>
+		<string>SymbolsNF.ttf</string>
+	</array>
 </dict>
 </plist>

@@ -24,9 +24,9 @@
 import { undriveableUrlReason } from "@ompd/core/policy";
 import type { JSX, ReactNode } from "react";
 import { memo } from "react";
-import { Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Linking, Platform, ScrollView, StyleSheet, View } from "react-native";
 import { rhythm } from "../../design/rhythm.ts";
-import { Body, Display, Kicker, Label, Title } from "../../design/text.tsx";
+import { Body, Display, Kicker, Label, Text, Title } from "../../design/text.tsx";
 import { brand, face, ground, ink, space, stroke, type } from "../../design/tokens.ts";
 import { AttachmentBlock } from "./AttachmentBlock.tsx";
 import type { RichSpan } from "./blocks.ts";
