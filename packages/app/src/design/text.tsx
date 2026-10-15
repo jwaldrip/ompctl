@@ -20,8 +20,9 @@ import { face, ink, type } from "./tokens.ts";
 export interface GlyphRun {
   text: string;
   isSymbol: boolean;
-  isPua: boolean;
 }
+
+const PUA_PATTERN = /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
 
 /**
  * Unicode Private Use Area (PUA) code points:
@@ -30,14 +31,11 @@ export interface GlyphRun {
  * - Plane 16 (Supplementary Private Use Area-B): U+100000 to U+10FFFD
  */
 export function isPuaCodePoint(codePoint: number): boolean {
-  return (
-    (codePoint >= 0xe000 && codePoint <= 0xf8ff) ||
-    (codePoint >= 0xf0000 && codePoint <= 0xffffd) ||
-    (codePoint >= 0x100000 && codePoint <= 0x10fffd)
-  );
+  if (codePoint < 0 || codePoint > 0x10ffff || !Number.isInteger(codePoint)) {
+    return false;
+  }
+  return PUA_PATTERN.test(String.fromCodePoint(codePoint));
 }
-
-const PUA_PATTERN = /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
 
 /**
  * Splits a string into alternating plain and PUA symbol runs.
@@ -47,7 +45,7 @@ const PUA_PATTERN = /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
 export function splitGlyphRuns(text: string): GlyphRun[] {
   if (text.length === 0) return [];
   if (!PUA_PATTERN.test(text)) {
-    return [{ text, isSymbol: false, isPua: false }];
+    return [{ text, isSymbol: false }];
   }
 
   const runs: GlyphRun[] = [];
@@ -55,8 +53,7 @@ export function splitGlyphRuns(text: string): GlyphRun[] {
   let currentIsSymbol = false;
 
   for (const char of text) {
-    const cp = char.codePointAt(0);
-    const isSymbol = cp !== undefined && isPuaCodePoint(cp);
+    const isSymbol = PUA_PATTERN.test(char);
 
     if (currentText.length === 0) {
       currentText = char;
@@ -64,20 +61,18 @@ export function splitGlyphRuns(text: string): GlyphRun[] {
     } else if (currentIsSymbol === isSymbol) {
       currentText += char;
     } else {
-      runs.push({ text: currentText, isSymbol: currentIsSymbol, isPua: currentIsSymbol });
+      runs.push({ text: currentText, isSymbol: currentIsSymbol });
       currentText = char;
       currentIsSymbol = isSymbol;
     }
   }
 
   if (currentText.length > 0) {
-    runs.push({ text: currentText, isSymbol: currentIsSymbol, isPua: currentIsSymbol });
+    runs.push({ text: currentText, isSymbol: currentIsSymbol });
   }
 
   return runs;
 }
-
-export const splitPuaRuns = splitGlyphRuns;
 
 const SYMBOL_STYLE: TextStyle = { fontFamily: face.symbols };
 
@@ -88,9 +83,6 @@ function processChild(child: ReactNode, keyPrefix: string): ReactNode {
   if (typeof child === "string") {
     if (!PUA_PATTERN.test(child)) return child;
     const runs = splitGlyphRuns(child);
-    const first = runs[0];
-    if (runs.length === 0) return child;
-    if (runs.length === 1 && first && !first.isSymbol) return first.text;
     let offset = 0;
     return runs.map(run => {
       const key = `${keyPrefix}-${offset}`;

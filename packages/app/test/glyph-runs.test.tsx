@@ -52,7 +52,6 @@ describe("splitGlyphRuns", () => {
       {
         text: "\uE711",
         isSymbol: true,
-        isPua: true,
       },
     ]);
   });
@@ -63,7 +62,6 @@ describe("splitGlyphRuns", () => {
       {
         text: "\u{F011C}",
         isSymbol: true,
-        isPua: true,
       },
     ]);
   });
@@ -74,12 +72,10 @@ describe("splitGlyphRuns", () => {
       {
         text: "\u{F011C}",
         isSymbol: true,
-        isPua: true,
       },
       {
         text: " NOTCH: Setup",
         isSymbol: false,
-        isPua: false,
       },
     ]);
   });
@@ -90,7 +86,6 @@ describe("splitGlyphRuns", () => {
       {
         text: "\u{F011C}\u{F0FCE}",
         isSymbol: true,
-        isPua: true,
       },
     ]);
   });
@@ -101,7 +96,6 @@ describe("splitGlyphRuns", () => {
       {
         text: "NOTCH: Setup",
         isSymbol: false,
-        isPua: false,
       },
     ]);
   });
