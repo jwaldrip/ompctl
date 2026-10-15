@@ -45,11 +45,6 @@ const NATIVE_STACK_ROOT = path.dirname(
 );
 const NATIVE_STACK_SOURCE_VIEW = path.join(NATIVE_STACK_ROOT, "src", "views", "NativeStackView.tsx");
 const NATIVE_STACK_MODULE_VIEW = path.join(NATIVE_STACK_ROOT, "lib", "module", "views", "NativeStackView.js");
-const fs = require("node:fs");
-const REACT_NATIVE_DIR = path.dirname(require.resolve("react-native/package.json", { paths: [projectRoot] }));
-const REACT_NATIVE_WINDOWS_DIR = path.dirname(
-  require.resolve("react-native-windows/package.json", { paths: [projectRoot] }),
-);
 
 const config = {
   projectRoot,
@@ -64,10 +59,13 @@ const config = {
      */
     platforms: ["ios", "android", "macos", "windows", "native"],
     /**
-     * React Native macOS is a fork, not a platform extension inside the generic
-     * package. Every `react-native` import in a macOS graph enters that fork.
-     * Native Stack has a JavaScript view for unsupported platforms; macOS must
-     * use it because react-native-screens ships no AppKit component views.
+     * React Native macOS and React Native Windows are forks, not platform
+     * extensions inside the generic package. Every `react-native` import in a
+     * macOS or Windows graph enters its fork; on Windows, letting it reach the
+     * generic package resolves `Platform` back to itself and the release
+     * bundle dies on startup with `select` of undefined. Native Stack has a
+     * JavaScript view for unsupported platforms; both must use it because
+     * react-native-screens ships no AppKit or Windows component views.
      */
     resolveRequest: (context, moduleName, platform) => {
       const nativeStackViewRequest =
@@ -88,22 +86,6 @@ const config = {
       const resolved = context.resolveRequest(context, platformModuleName, platform);
       if (resolved.type === "sourceFile" && ASSISTANT_UI_CLOUD.test(resolved.filePath)) {
         return { type: "sourceFile", filePath: CLOUD_STUB };
-      }
-      if (
-        platform === "windows" &&
-        resolved.type === "sourceFile" &&
-        resolved.filePath.startsWith(REACT_NATIVE_DIR + path.sep)
-      ) {
-        const rel = path.relative(REACT_NATIVE_DIR, resolved.filePath);
-        const winExt = rel.replace(/\.(js|jsx|ts|tsx)$/, ".windows.$1");
-        const winPath = path.join(REACT_NATIVE_WINDOWS_DIR, winExt);
-        if (fs.existsSync(winPath)) {
-          return { type: "sourceFile", filePath: winPath };
-        }
-        const rnwDirect = path.join(REACT_NATIVE_WINDOWS_DIR, rel);
-        if (fs.existsSync(rnwDirect)) {
-          return { type: "sourceFile", filePath: rnwDirect };
-        }
       }
       return resolved;
     },
