@@ -12,6 +12,7 @@
  */
 
 import type { AgentState } from "@ompd/core/contracts";
+import { Platform } from "react-native";
 import type { ToolStatus } from "../session/model.ts";
 
 // ---------------------------------------------------------------------------
@@ -116,28 +117,75 @@ export const signalWash = {
 // ---------------------------------------------------------------------------
 
 /**
- * Faces are referenced by their PostScript name, which is what iOS and macOS
- * match on. Android matches the filename, and the vendored files are named to
- * agree with their PostScript name for exactly that reason.
- *
- * `weight` is deliberately absent from the styles below: naming a face and a
- * numeric weight at the same time makes Android synthesise a bold on top of a
- * face that already is one.
+ * Font face style contract: a family name and optional numeric weight.
  */
-export const face = {
-  regular: "Archivo-Regular",
-  medium: "Archivo-Medium",
-  semibold: "Archivo-SemiBold",
-  mono: "IBMPlexMono-Regular",
-  monoMedium: "IBMPlexMono-Medium",
-  /**
-   * Symbols Nerd Font (v3.5.1, symbols only): the private-use glyphs omp puts
-   * in session titles and tool output. No platform falls back to a bundled
-   * face on its own, so text runs carrying those code points are set in this
-   * face explicitly rather than left to the system cascade, which has none.
-   */
-  symbols: "SymbolsNF",
-} as const;
+export interface FontFace {
+  readonly fontFamily: string;
+  readonly fontWeight?: "100" | "200" | "300" | "400" | "500" | "600" | "700" | "800" | "900" | "normal" | "bold";
+}
+
+/**
+ * Per-face font style objects.
+ *
+ * On iOS, macOS, Android, and web, fonts are referenced by their PostScript
+ * name, which is what Apple platforms match on, and the Android assets agree.
+ * On those platforms, numeric weights are deliberately omitted: naming a face
+ * and a numeric weight at the same time makes Android synthesise a bold on top
+ * of a face that already is one.
+ *
+ * On Windows, React Native Windows Fabric text layout resolves font families
+ * against DirectWrite's system font collection via CreateTextFormat.
+ * Family names follow OpenType name table rules and DirectWrite's WWS
+ * (weight-width-slope) family model (OpenType specification:
+ * https://learn.microsoft.com/en-us/typography/opentype/spec/name and
+ * https://learn.microsoft.com/en-us/windows/win32/api/dwrite_3/ne-dwrite_3-dwrite_font_family_model):
+ *
+ * - Archivo Regular: ID 1 "Archivo", no ID 16. Family "Archivo", weight 400.
+ * - Archivo Medium: ID 1 "Archivo Medium", ID 16 "Archivo", ID 17 "Medium".
+ *   DirectWrite groups this under typographic family "Archivo" with weight 500.
+ * - Archivo SemiBold: ID 1 "Archivo SemiBold", ID 16 "Archivo", ID 17 "SemiBold".
+ *   DirectWrite groups this under typographic family "Archivo" with weight 600.
+ * - IBM Plex Mono Regular: ID 1 "IBM Plex Mono", no ID 16. Family "IBM Plex Mono", weight 400.
+ * - IBM Plex Mono Medium: ID 1 "IBM Plex Mono Medium", no ID 16.
+ *   Under the OpenType specification, when name ID 16 is absent, name ID 1 is
+ *   considered to be the typographic family name. DirectWrite therefore treats
+ *   it as a distinct family named "IBM Plex Mono Medium" with weight 500.
+ * - Symbols Nerd Font: ID 1 "Symbols Nerd Font", no ID 16. Family "Symbols Nerd Font".
+ */
+export interface PlatformFontSelector {
+  select<T>(specifics: { windows?: T; default: T }): T;
+}
+
+export function resolveFontTokens(platform: PlatformFontSelector) {
+  return {
+    regular: platform.select<FontFace>({
+      windows: { fontFamily: "Archivo", fontWeight: "400" },
+      default: { fontFamily: "Archivo-Regular" },
+    }),
+    medium: platform.select<FontFace>({
+      windows: { fontFamily: "Archivo", fontWeight: "500" },
+      default: { fontFamily: "Archivo-Medium" },
+    }),
+    semibold: platform.select<FontFace>({
+      windows: { fontFamily: "Archivo", fontWeight: "600" },
+      default: { fontFamily: "Archivo-SemiBold" },
+    }),
+    mono: platform.select<FontFace>({
+      windows: { fontFamily: "IBM Plex Mono", fontWeight: "400" },
+      default: { fontFamily: "IBMPlexMono-Regular" },
+    }),
+    monoMedium: platform.select<FontFace>({
+      windows: { fontFamily: "IBM Plex Mono Medium", fontWeight: "500" },
+      default: { fontFamily: "IBMPlexMono-Medium" },
+    }),
+    symbols: platform.select<FontFace>({
+      windows: { fontFamily: "Symbols Nerd Font" },
+      default: { fontFamily: "SymbolsNF" },
+    }),
+  } as const;
+}
+
+export const font = resolveFontTokens(Platform);
 
 /**
  * A type scale, not a set of sizes. Every entry names the job it does, so a
@@ -146,19 +194,19 @@ export const face = {
  */
 export const type = {
   /** Section kickers and the smallest labels. Tracked out to stay legible. */
-  kicker: { fontFamily: face.medium, fontSize: 11, letterSpacing: 1.1, lineHeight: 14 },
+  kicker: { ...font.medium, fontSize: 11, letterSpacing: 1.1, lineHeight: 14 },
   /** Field labels and chip text. */
-  label: { fontFamily: face.medium, fontSize: 12, letterSpacing: 0.3, lineHeight: 16 },
+  label: { ...font.medium, fontSize: 12, letterSpacing: 0.3, lineHeight: 16 },
   /** Body prose: transcript messages, descriptions. */
-  body: { fontFamily: face.regular, fontSize: 15, lineHeight: 22 },
+  body: { ...font.regular, fontSize: 15, lineHeight: 22 },
   /** A card's headline: an agent name, a tool title. */
-  title: { fontFamily: face.semibold, fontSize: 16, lineHeight: 22 },
+  title: { ...font.semibold, fontSize: 16, lineHeight: 22 },
   /** The one thing on a screen that is the screen. */
-  display: { fontFamily: face.semibold, fontSize: 22, lineHeight: 28 },
+  display: { ...font.semibold, fontSize: 22, lineHeight: 28 },
   /** Numbers a person compares against other numbers. */
-  data: { fontFamily: face.monoMedium, fontSize: 13, letterSpacing: 0.2, lineHeight: 18 },
+  data: { ...font.monoMedium, fontSize: 13, letterSpacing: 0.2, lineHeight: 18 },
   /** Command output, paths, anything where alignment carries meaning. */
-  code: { fontFamily: face.mono, fontSize: 12, lineHeight: 18 },
+  code: { ...font.mono, fontSize: 12, lineHeight: 18 },
 } as const;
 
 // ---------------------------------------------------------------------------

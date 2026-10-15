@@ -59,14 +59,17 @@ const config = {
      */
     platforms: ["ios", "android", "macos", "windows", "native"],
     /**
-     * React Native macOS is a fork, not a platform extension inside the generic
-     * package. Every `react-native` import in a macOS graph enters that fork.
-     * Native Stack has a JavaScript view for unsupported platforms; macOS must
-     * use it because react-native-screens ships no AppKit component views.
+     * React Native macOS and React Native Windows are forks, not platform
+     * extensions inside the generic package. Every `react-native` import in a
+     * macOS or Windows graph enters its fork; on Windows, letting it reach the
+     * generic package resolves `Platform` back to itself and the release
+     * bundle dies on startup with `select` of undefined. Native Stack has a
+     * JavaScript view for unsupported platforms; both must use it because
+     * react-native-screens ships no AppKit or Windows component views.
      */
     resolveRequest: (context, moduleName, platform) => {
       const nativeStackViewRequest =
-        platform === "macos" &&
+        (platform === "macos" || platform === "windows") &&
         NATIVE_STACK_VIEW_REQUEST.test(moduleName) &&
         context.originModulePath.startsWith(`${NATIVE_STACK_ROOT}${path.sep}`);
       if (nativeStackViewRequest) {
@@ -75,7 +78,11 @@ const config = {
       }
 
       const platformModuleName =
-        platform === "macos" ? moduleName.replace(REACT_NATIVE_PACKAGE, "react-native-macos") : moduleName;
+        platform === "macos"
+          ? moduleName.replace(REACT_NATIVE_PACKAGE, "react-native-macos")
+          : platform === "windows"
+            ? moduleName.replace(REACT_NATIVE_PACKAGE, "react-native-windows")
+            : moduleName;
       const resolved = context.resolveRequest(context, platformModuleName, platform);
       if (resolved.type === "sourceFile" && ASSISTANT_UI_CLOUD.test(resolved.filePath)) {
         return { type: "sourceFile", filePath: CLOUD_STUB };

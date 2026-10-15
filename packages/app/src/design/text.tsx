@@ -15,7 +15,7 @@ import type { JSX, ReactNode } from "react";
 import { cloneElement, Fragment, forwardRef, isValidElement } from "react";
 import type { TextProps as NativeTextProps, StyleProp, TextStyle } from "react-native";
 import { Text as NativeText, useWindowDimensions } from "react-native";
-import { face, ink, type } from "./tokens.ts";
+import { font, ink, type } from "./tokens.ts";
 
 export interface GlyphRun {
   text: string;
@@ -74,7 +74,7 @@ export function splitGlyphRuns(text: string): GlyphRun[] {
   return runs;
 }
 
-const SYMBOL_STYLE: TextStyle = { fontFamily: face.symbols };
+const SYMBOL_STYLE: TextStyle = { ...font.symbols };
 
 function processChild(child: ReactNode, keyPrefix: string): ReactNode {
   if (child == null || typeof child === "boolean") {

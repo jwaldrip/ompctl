@@ -13,7 +13,7 @@ import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Glyph, type GlyphName } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { Label, Text, Title } from "../design/text.tsx";
-import { face, ground, ink, radius, space, stroke } from "../design/tokens.ts";
+import { font, ground, ink, radius, space, stroke } from "../design/tokens.ts";
 import type { ArtifactItem, ArtifactKind } from "./types.ts";
 import { formatByteSize } from "./types.ts";
 
@@ -197,7 +197,7 @@ const styles = StyleSheet.create({
     borderColor: ground.line,
   },
   countText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 11,
     color: ink.muted,
     fontVariant: ["tabular-nums"],

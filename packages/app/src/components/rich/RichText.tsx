@@ -27,7 +27,7 @@ import { memo } from "react";
 import { Linking, Platform, ScrollView, StyleSheet, View } from "react-native";
 import { rhythm } from "../../design/rhythm.ts";
 import { Body, Display, Kicker, Label, Text, Title } from "../../design/text.tsx";
-import { brand, face, ground, ink, space, stroke, type } from "../../design/tokens.ts";
+import { brand, font, ground, ink, space, stroke, type } from "../../design/tokens.ts";
 import { AttachmentBlock } from "./AttachmentBlock.tsx";
 import type { RichSpan } from "./blocks.ts";
 import { DiffBlock, isDiffText } from "./DiffBlock.tsx";
@@ -347,9 +347,9 @@ const styles = StyleSheet.create({
   // and its list: consecutive pieces of ONE reply, not siblings in a list, so
   // the tight step rather than the row rhythm.
   stack: { flex: 1, gap: rhythm.rowGapTight },
-  strong: { fontFamily: face.semibold },
+  strong: { ...font.semibold },
   em: { fontStyle: "italic" },
-  codeSpan: { fontFamily: face.mono },
+  codeSpan: { ...font.mono },
   link: {
     color: brand.azure,
     textDecorationLine: "underline",
@@ -399,7 +399,7 @@ const styles = StyleSheet.create({
     paddingVertical: space.snug,
   },
   tableHeaderText: {
-    fontFamily: face.semibold,
+    ...font.semibold,
   },
   alignLeft: {
     alignItems: "flex-start",

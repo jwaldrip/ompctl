@@ -14,7 +14,7 @@ import { computeLineDiff } from "../components/diff.ts";
 
 import { rhythm } from "../design/rhythm.ts";
 import { Label, Text } from "../design/text.tsx";
-import { face, ground, ink, radius, signal, signalWash, space, stroke } from "../design/tokens.ts";
+import { font, ground, ink, radius, signal, signalWash, space, stroke } from "../design/tokens.ts";
 import type { ArtifactItem } from "./types.ts";
 
 export interface DiffViewerProps {
@@ -207,7 +207,7 @@ const styles = StyleSheet.create({
     borderColor: ground.line,
   },
   statText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 12,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
@@ -229,7 +229,7 @@ const styles = StyleSheet.create({
     borderBottomColor: ground.line,
   },
   headerText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 11,
     color: ink.muted,
   },
@@ -242,7 +242,7 @@ const styles = StyleSheet.create({
     borderColor: ground.line,
   },
   hunkText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 11,
     color: ink.faint,
   },
@@ -257,7 +257,7 @@ const styles = StyleSheet.create({
     paddingRight: space.tight,
   },
   lineNum: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 11,
     color: ink.faint,
     fontVariant: ["tabular-nums"],
@@ -267,7 +267,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   signText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 12,
     fontWeight: "600",
   },
@@ -276,7 +276,7 @@ const styles = StyleSheet.create({
     paddingRight: space.snug,
   },
   codeText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 12,
     lineHeight: LINE_HEIGHT,
   },

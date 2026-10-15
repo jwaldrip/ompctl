@@ -138,8 +138,6 @@
     <PackageReference Update="Microsoft.ReactNative" Version="[0.81.35]" />
     <PackageReference Update="Microsoft.ReactNative.Cxx" Version="[0.81.35]" />
   </ItemGroup>
-  <ItemGroup>
-  </ItemGroup>
   <Target Name="EnsureReactNativeWindowsTargets" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references targets in your node_modules\react-native-windows folder. The missing file is {0}.</ErrorText>

@@ -30,7 +30,11 @@ done
 cd "$ROOT"
 CONFIG="${OMPD_WINDOWS_CONFIG:-Release}"
 PLATFORM="${OMPD_WINDOWS_PLATFORM:-x64}"
-
+APPX_BUNDLE="${OMPD_APPX_BUNDLE:-Always}"
+EXTRA_ARGS=()
+if [[ -n "${MSBUILD_ARGS:-}" ]]; then
+  read -ra EXTRA_ARGS <<< "$MSBUILD_ARGS"
+fi
 if command -v msbuild.exe >/dev/null 2>&1; then
   MSBUILD=(msbuild.exe)
 elif [[ -n "${MSBUILD_PATH:-}" ]]; then
@@ -43,10 +47,11 @@ fi
 "${MSBUILD[@]}" windows/ompd.sln \
   -p:Configuration="$CONFIG" \
   -p:Platform="$PLATFORM" \
-  -p:AppxBundle=Always \
+  -p:AppxBundle="$APPX_BUNDLE" \
   -p:AppxBundlePlatforms="$PLATFORM" \
   -p:AppxPackageSigningEnabled=false \
   -p:PackageVersion="$OMPD_WINDOWS_VERSION" \
+  "${EXTRA_ARGS[@]}" \
   -t:ompd_Package
 
 echo "Look for Appx/MSIX under windows/ompd.Package/AppPackages"

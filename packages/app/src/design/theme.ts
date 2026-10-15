@@ -50,7 +50,7 @@ import type { MD3Type, MD3TypescaleKey } from "react-native-paper/lib/typescript
 import { rhythm } from "./rhythm.ts";
 import {
   brand,
-  face,
+  font,
   ground,
   ink,
   radius,
@@ -67,13 +67,19 @@ import {
  *
  * `fontWeight: "normal"` on every one of them, always. See the file header.
  */
-function variant(entry: { fontFamily: string; fontSize: number; lineHeight: number; letterSpacing?: number }): MD3Type {
+function variant(entry: {
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+  letterSpacing?: number;
+  fontWeight?: MD3Type["fontWeight"];
+}): MD3Type {
   return {
     fontFamily: entry.fontFamily,
     fontSize: entry.fontSize,
     lineHeight: entry.lineHeight,
     letterSpacing: entry.letterSpacing ?? 0,
-    fontWeight: "normal",
+    fontWeight: entry.fontWeight ?? "normal",
   };
 }
 
@@ -137,7 +143,7 @@ const shared = {
   signal,
   signalWash,
   brand,
-  face,
+  font,
 } as const;
 
 /**

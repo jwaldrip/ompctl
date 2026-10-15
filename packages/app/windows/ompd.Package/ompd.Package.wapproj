@@ -7,8 +7,8 @@
     <EntryPointProjectUniqueName>..\ompd\ompd.vcxproj</EntryPointProjectUniqueName>
     <DebuggerType>NativeOnly</DebuggerType>
     <BackgroundTaskDebugEngines>NativeOnly</BackgroundTaskDebugEngines>
-  </PropertyGroup>
     <PackageVersion Condition="'$(PackageVersion)' == ''">0.1.0.0</PackageVersion>
+  </PropertyGroup>
   <PropertyGroup Label="ReactNativeWindowsProps">
     <ReactNativeWindowsDir Condition="'$(ReactNativeWindowsDir)' == ''">$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory), 'node_modules\react-native-windows\package.json'))\node_modules\react-native-windows\</ReactNativeWindowsDir>
   </PropertyGroup>
@@ -61,6 +61,26 @@
     <Content Include="Images\Wide310x150Logo.scale-200.png" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="..\..\src\design\fonts\Archivo-Regular.ttf">
+      <Link>Assets\Fonts\Archivo-Regular.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\Archivo-Medium.ttf">
+      <Link>Assets\Fonts\Archivo-Medium.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\Archivo-SemiBold.ttf">
+      <Link>Assets\Fonts\Archivo-SemiBold.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\IBMPlexMono-Regular.ttf">
+      <Link>Assets\Fonts\IBMPlexMono-Regular.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\IBMPlexMono-Medium.ttf">
+      <Link>Assets\Fonts\IBMPlexMono-Medium.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\SymbolsNF.ttf">
+      <Link>Assets\Fonts\SymbolsNF.ttf</Link>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\ompd\ompd.vcxproj">
       <SkipGetTargetFrameworkProperties>True</SkipGetTargetFrameworkProperties>
     </ProjectReference>
@@ -81,5 +101,13 @@
              Query="/ns:Package/ns:Identity/@Version"
              Value="$(PackageVersion)"
              Namespaces="&lt;Namespace Prefix='ns' Uri='http://schemas.microsoft.com/appx/manifest/foundation/windows10' /&gt;" />
+  </Target>
+  <Target Name="IncludeBundleInPackage" BeforeTargets="_GetPackageFiles;BeforePackageFiles">
+    <ItemGroup>
+      <_BundleFiles Include="$(MSBuildThisFileDirectory)..\ompd\Bundle\**\*" />
+      <Content Include="@(_BundleFiles)">
+        <Link>Bundle\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      </Content>
+    </ItemGroup>
   </Target>
 </Project>

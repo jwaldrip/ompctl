@@ -14,7 +14,7 @@ import { FlatList, Pressable, ScrollView, StyleSheet, View } from "react-native"
 import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { Label, Text } from "../design/text.tsx";
-import { face, ground, ink, radius, space, stroke } from "../design/tokens.ts";
+import { font, ground, ink, radius, space, stroke } from "../design/tokens.ts";
 import type { ArtifactItem } from "./types.ts";
 import { formatByteSize } from "./types.ts";
 
@@ -199,7 +199,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   lineNumber: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 11,
     color: ink.faint,
     fontVariant: ["tabular-nums"],
@@ -210,7 +210,7 @@ const styles = StyleSheet.create({
     height: LINE_HEIGHT,
   },
   codeText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 12,
     lineHeight: LINE_HEIGHT,
     color: ink.bright,
