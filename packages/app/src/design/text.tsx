@@ -12,9 +12,120 @@
  */
 
 import type { JSX, ReactNode } from "react";
-import type { StyleProp, TextStyle } from "react-native";
-import { Text, useWindowDimensions } from "react-native";
-import { ink, type } from "./tokens.ts";
+import { cloneElement, Fragment, forwardRef, isValidElement } from "react";
+import type { TextProps as NativeTextProps, StyleProp, TextStyle } from "react-native";
+import { Text as NativeText, useWindowDimensions } from "react-native";
+import { face, ink, type } from "./tokens.ts";
+
+export interface GlyphRun {
+  text: string;
+  isSymbol: boolean;
+}
+
+const PUA_PATTERN = /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
+
+/**
+ * Unicode Private Use Area (PUA) code points:
+ * - BMP (Plane 0): U+E000 to U+F8FF
+ * - Plane 15 (Supplementary Private Use Area-A): U+F0000 to U+FFFFD
+ * - Plane 16 (Supplementary Private Use Area-B): U+100000 to U+10FFFD
+ */
+export function isPuaCodePoint(codePoint: number): boolean {
+  if (codePoint < 0 || codePoint > 0x10ffff || !Number.isInteger(codePoint)) {
+    return false;
+  }
+  return PUA_PATTERN.test(String.fromCodePoint(codePoint));
+}
+
+/**
+ * Splits a string into alternating plain and PUA symbol runs.
+ * Adjacent glyphs are merged into one run.
+ * Surrogate pairs are preserved via code-point iteration.
+ */
+export function splitGlyphRuns(text: string): GlyphRun[] {
+  if (text.length === 0) return [];
+  if (!PUA_PATTERN.test(text)) {
+    return [{ text, isSymbol: false }];
+  }
+
+  const runs: GlyphRun[] = [];
+  let currentText = "";
+  let currentIsSymbol = false;
+
+  for (const char of text) {
+    const isSymbol = PUA_PATTERN.test(char);
+
+    if (currentText.length === 0) {
+      currentText = char;
+      currentIsSymbol = isSymbol;
+    } else if (currentIsSymbol === isSymbol) {
+      currentText += char;
+    } else {
+      runs.push({ text: currentText, isSymbol: currentIsSymbol });
+      currentText = char;
+      currentIsSymbol = isSymbol;
+    }
+  }
+
+  if (currentText.length > 0) {
+    runs.push({ text: currentText, isSymbol: currentIsSymbol });
+  }
+
+  return runs;
+}
+
+const SYMBOL_STYLE: TextStyle = { fontFamily: face.symbols };
+
+function processChild(child: ReactNode, keyPrefix: string): ReactNode {
+  if (child == null || typeof child === "boolean") {
+    return child;
+  }
+  if (typeof child === "string") {
+    if (!PUA_PATTERN.test(child)) return child;
+    const runs = splitGlyphRuns(child);
+    let offset = 0;
+    return runs.map(run => {
+      const key = `${keyPrefix}-${offset}`;
+      offset += run.text.length;
+      if (run.isSymbol) {
+        return (
+          <NativeText key={key} style={SYMBOL_STYLE}>
+            {run.text}
+          </NativeText>
+        );
+      }
+      return run.text;
+    });
+  }
+  if (typeof child === "number") {
+    return child;
+  }
+  if (Array.isArray(child)) {
+    return child.map((nested, idx) => processChild(nested, `${keyPrefix}.${idx}`));
+  }
+  if (isValidElement(child) && child.type === Fragment) {
+    const props = child.props;
+    if (props && typeof props === "object" && "children" in props) {
+      return cloneElement(child, undefined, processChild(props.children as ReactNode, `${keyPrefix}.f`));
+    }
+  }
+  return child;
+}
+
+export type TextProps = NativeTextProps;
+
+/**
+ * Top-level Text wrapper that intercepts PUA glyph runs and sets them in the
+ * symbols font, so Nerd Font glyphs render across native and web.
+ */
+export const Text = forwardRef<NativeText, TextProps>(function Text({ children, ...rest }, ref): JSX.Element {
+  const processed = processChild(children, "r");
+  return (
+    <NativeText ref={ref} {...rest}>
+      {processed}
+    </NativeText>
+  );
+});
 
 interface LineProps {
   children: ReactNode;

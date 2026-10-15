@@ -9,11 +9,11 @@
 import type { JSX } from "react";
 import { useMemo } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
 import { computeLineDiff } from "../components/diff.ts";
 
 import { rhythm } from "../design/rhythm.ts";
-import { Label } from "../design/text.tsx";
+import { Label, Text } from "../design/text.tsx";
 import { face, ground, ink, radius, signal, signalWash, space, stroke } from "../design/tokens.ts";
 import type { ArtifactItem } from "./types.ts";
 

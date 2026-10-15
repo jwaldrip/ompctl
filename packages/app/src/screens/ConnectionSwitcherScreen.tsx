@@ -1,10 +1,10 @@
 /** Choose the daemon this device's Console is currently attached to. */
 
 import type { JSX } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { PrimaryButton } from "../design/PrimaryButton.tsx";
 import { SafeScreen } from "../design/SafeScreen.tsx";
-import { Body, Display, Kicker, Label } from "../design/text.tsx";
+import { Body, Display, Kicker, Label, Text } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { ConnectionList, SavedConnection } from "../platform/connection.ts";
 
