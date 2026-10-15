@@ -18,6 +18,12 @@
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		87F19ADE3FC4E22E6DD21F41 /* PairingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7447C492347B48399A5C6E9D /* PairingUITests.swift */; };
 		D1E3657E5B7B4AC383CC94F1 /* LaunchSmokeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D5DC395512D4408AC076F09 /* LaunchSmokeUITests.swift */; };
+		F04700010000000000000011 /* Archivo-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F04700010000000000000001 /* Archivo-Medium.ttf */; };
+		F04700010000000000000012 /* Archivo-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F04700010000000000000002 /* Archivo-Regular.ttf */; };
+		F04700010000000000000013 /* Archivo-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F04700010000000000000003 /* Archivo-SemiBold.ttf */; };
+		F04700010000000000000014 /* IBMPlexMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F04700010000000000000004 /* IBMPlexMono-Medium.ttf */; };
+		F04700010000000000000015 /* IBMPlexMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F04700010000000000000005 /* IBMPlexMono-Regular.ttf */; };
+		F04700010000000000000016 /* SymbolsNF.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F04700010000000000000006 /* SymbolsNF.ttf */; };
 		F5FFF68EB761642F798DA35E /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
@@ -50,6 +56,12 @@
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = ompd/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		8EB1714DD9D82BD87C694FE2 /* ompdUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ompdUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
+		F04700010000000000000001 /* Archivo-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "Archivo-Medium.ttf"; path = "Archivo-Medium.ttf"; sourceTree = "<group>"; };
+		F04700010000000000000002 /* Archivo-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "Archivo-Regular.ttf"; path = "Archivo-Regular.ttf"; sourceTree = "<group>"; };
+		F04700010000000000000003 /* Archivo-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "Archivo-SemiBold.ttf"; path = "Archivo-SemiBold.ttf"; sourceTree = "<group>"; };
+		F04700010000000000000004 /* IBMPlexMono-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "IBMPlexMono-Medium.ttf"; path = "IBMPlexMono-Medium.ttf"; sourceTree = "<group>"; };
+		F04700010000000000000005 /* IBMPlexMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "IBMPlexMono-Regular.ttf"; path = "IBMPlexMono-Regular.ttf"; sourceTree = "<group>"; };
+		F04700010000000000000006 /* SymbolsNF.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = SymbolsNF.ttf; path = SymbolsNF.ttf; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -123,6 +135,7 @@
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				BBD78D7AC51CEA395F1C20DB /* Pods */,
 				3798E6ECCD4F8BD32131132E /* ompdUITests */,
+				F04700010000000000000000 /* Fonts */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -145,6 +158,20 @@
 				5709B34CF0A7D63546082F79 /* Pods-ompd.release.xcconfig */,
 			);
 			path = Pods;
+			sourceTree = "<group>";
+		};
+		F04700010000000000000000 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				F04700010000000000000001 /* Archivo-Medium.ttf */,
+				F04700010000000000000002 /* Archivo-Regular.ttf */,
+				F04700010000000000000003 /* Archivo-SemiBold.ttf */,
+				F04700010000000000000004 /* IBMPlexMono-Medium.ttf */,
+				F04700010000000000000005 /* IBMPlexMono-Regular.ttf */,
+				F04700010000000000000006 /* SymbolsNF.ttf */,
+			);
+			name = Fonts;
+			path = ../src/design/fonts;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -233,6 +260,12 @@
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				F5FFF68EB761642F798DA35E /* PrivacyInfo.xcprivacy in Resources */,
+				F04700010000000000000011 /* Archivo-Medium.ttf in Resources */,
+				F04700010000000000000012 /* Archivo-Regular.ttf in Resources */,
+				F04700010000000000000013 /* Archivo-SemiBold.ttf in Resources */,
+				F04700010000000000000014 /* IBMPlexMono-Medium.ttf in Resources */,
+				F04700010000000000000015 /* IBMPlexMono-Regular.ttf in Resources */,
+				F04700010000000000000016 /* SymbolsNF.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
