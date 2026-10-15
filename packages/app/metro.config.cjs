@@ -45,6 +45,11 @@ const NATIVE_STACK_ROOT = path.dirname(
 );
 const NATIVE_STACK_SOURCE_VIEW = path.join(NATIVE_STACK_ROOT, "src", "views", "NativeStackView.tsx");
 const NATIVE_STACK_MODULE_VIEW = path.join(NATIVE_STACK_ROOT, "lib", "module", "views", "NativeStackView.js");
+const fs = require("node:fs");
+const REACT_NATIVE_DIR = path.dirname(require.resolve("react-native/package.json", { paths: [projectRoot] }));
+const REACT_NATIVE_WINDOWS_DIR = path.dirname(
+  require.resolve("react-native-windows/package.json", { paths: [projectRoot] }),
+);
 
 const config = {
   projectRoot,
@@ -66,7 +71,7 @@ const config = {
      */
     resolveRequest: (context, moduleName, platform) => {
       const nativeStackViewRequest =
-        platform === "macos" &&
+        (platform === "macos" || platform === "windows") &&
         NATIVE_STACK_VIEW_REQUEST.test(moduleName) &&
         context.originModulePath.startsWith(`${NATIVE_STACK_ROOT}${path.sep}`);
       if (nativeStackViewRequest) {
@@ -75,10 +80,30 @@ const config = {
       }
 
       const platformModuleName =
-        platform === "macos" ? moduleName.replace(REACT_NATIVE_PACKAGE, "react-native-macos") : moduleName;
+        platform === "macos"
+          ? moduleName.replace(REACT_NATIVE_PACKAGE, "react-native-macos")
+          : platform === "windows"
+            ? moduleName.replace(REACT_NATIVE_PACKAGE, "react-native-windows")
+            : moduleName;
       const resolved = context.resolveRequest(context, platformModuleName, platform);
       if (resolved.type === "sourceFile" && ASSISTANT_UI_CLOUD.test(resolved.filePath)) {
         return { type: "sourceFile", filePath: CLOUD_STUB };
+      }
+      if (
+        platform === "windows" &&
+        resolved.type === "sourceFile" &&
+        resolved.filePath.startsWith(REACT_NATIVE_DIR + path.sep)
+      ) {
+        const rel = path.relative(REACT_NATIVE_DIR, resolved.filePath);
+        const winExt = rel.replace(/\.(js|jsx|ts|tsx)$/, ".windows.$1");
+        const winPath = path.join(REACT_NATIVE_WINDOWS_DIR, winExt);
+        if (fs.existsSync(winPath)) {
+          return { type: "sourceFile", filePath: winPath };
+        }
+        const rnwDirect = path.join(REACT_NATIVE_WINDOWS_DIR, rel);
+        if (fs.existsSync(rnwDirect)) {
+          return { type: "sourceFile", filePath: rnwDirect };
+        }
       }
       return resolved;
     },
