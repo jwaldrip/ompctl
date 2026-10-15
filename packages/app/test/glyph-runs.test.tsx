@@ -11,7 +11,7 @@ import "./rnw.ts";
 import { describe, expect, test } from "bun:test";
 import { act, Fragment } from "react";
 import { createRoot } from "react-dom/client";
-import { face } from "../src/design/tokens.ts";
+import { font } from "../src/design/tokens.ts";
 
 // Dynamic import to allow rnw.ts to stub react-native before text.tsx evaluates.
 const { Title, Text, splitGlyphRuns, isPuaCodePoint } = await import("../src/design/text.tsx");
@@ -124,7 +124,7 @@ describe("Text render integration", () => {
 
     const symbolElement = nestedElements[0] as HTMLElement;
     expect(symbolElement.textContent).toBe("\u{F011C}");
-    expect(symbolElement.style.fontFamily).toBe(face.symbols);
+    expect(symbolElement.style.fontFamily).toBe(font.symbols.fontFamily);
 
     // Verify surrounding text stays in parent
     const childNodes = Array.from(outer?.childNodes ?? []);
@@ -171,7 +171,7 @@ describe("Text render integration", () => {
     expect(nested.length).toBe(1);
     const symbolElement = nested[0] as HTMLElement;
     expect(symbolElement.textContent).toBe("\u{F011C}");
-    expect(symbolElement.style.fontFamily).toBe(face.symbols);
+    expect(symbolElement.style.fontFamily).toBe(font.symbols.fontFamily);
   });
 
   test("Text handles top-level Fragment children with PUA", () => {
@@ -196,6 +196,6 @@ describe("Text render integration", () => {
     expect(nested.length).toBe(1);
     const symbolElement = nested[0] as HTMLElement;
     expect(symbolElement.textContent).toBe("\u{F011C}");
-    expect(symbolElement.style.fontFamily).toBe(face.symbols);
+    expect(symbolElement.style.fontFamily).toBe(font.symbols.fontFamily);
   });
 });

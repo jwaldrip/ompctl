@@ -138,44 +138,6 @@
     <PackageReference Update="Microsoft.ReactNative" Version="[0.81.35]" />
     <PackageReference Update="Microsoft.ReactNative.Cxx" Version="[0.81.35]" />
   </ItemGroup>
-  <ItemGroup>
-    <Content Include="..\..\src\design\fonts\Archivo-Regular.ttf">
-      <Link>Assets\Fonts\Archivo-Regular.ttf</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <DeploymentContent>true</DeploymentContent>
-    </Content>
-    <Content Include="..\..\src\design\fonts\Archivo-Medium.ttf">
-      <Link>Assets\Fonts\Archivo-Medium.ttf</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <DeploymentContent>true</DeploymentContent>
-    </Content>
-    <Content Include="..\..\src\design\fonts\Archivo-SemiBold.ttf">
-      <Link>Assets\Fonts\Archivo-SemiBold.ttf</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <DeploymentContent>true</DeploymentContent>
-    </Content>
-    <Content Include="..\..\src\design\fonts\IBMPlexMono-Regular.ttf">
-      <Link>Assets\Fonts\IBMPlexMono-Regular.ttf</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <DeploymentContent>true</DeploymentContent>
-    </Content>
-    <Content Include="..\..\src\design\fonts\IBMPlexMono-Medium.ttf">
-      <Link>Assets\Fonts\IBMPlexMono-Medium.ttf</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <DeploymentContent>true</DeploymentContent>
-    </Content>
-    <Content Include="..\..\src\design\fonts\SymbolsNF.ttf">
-      <Link>Assets\Fonts\SymbolsNF.ttf</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <DeploymentContent>true</DeploymentContent>
-    </Content>
-  </ItemGroup>
-  <Target Name="CopyAppFonts" AfterTargets="Build">
-    <ItemGroup>
-      <_FontFiles Include="..\..\src\design\fonts\*.ttf" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_FontFiles)" DestinationFolder="$(OutDir)Assets\Fonts\" SkipUnchangedFiles="true" />
-  </Target>
   <Target Name="EnsureReactNativeWindowsTargets" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references targets in your node_modules\react-native-windows folder. The missing file is {0}.</ErrorText>

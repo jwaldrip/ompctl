@@ -15,7 +15,7 @@
 
 import type { Theme } from "@react-navigation/native";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { face, ground, ink, signal, type } from "../design/tokens.ts";
+import { font, ground, ink, signal, type } from "../design/tokens.ts";
 
 export const SHELL_THEME: Theme = {
   dark: true,
@@ -28,17 +28,17 @@ export const SHELL_THEME: Theme = {
     notification: signal.failed,
   },
   fonts: {
-    regular: { fontFamily: face.regular, fontWeight: "400" },
-    medium: { fontFamily: face.medium, fontWeight: "500" },
-    bold: { fontFamily: face.semibold, fontWeight: "600" },
-    heavy: { fontFamily: face.semibold, fontWeight: "700" },
+    regular: { ...font.regular, fontWeight: "400" },
+    medium: { ...font.medium, fontWeight: "500" },
+    bold: { ...font.semibold, fontWeight: "600" },
+    heavy: { ...font.semibold, fontWeight: "700" },
   },
 };
 
 export const SHELL_SCREEN_OPTIONS: NativeStackNavigationOptions = {
   headerStyle: { backgroundColor: ground.raised },
   headerTintColor: ink.bright,
-  headerTitleStyle: { fontFamily: face.semibold, fontSize: type.title.fontSize },
+  headerTitleStyle: { ...font.semibold, fontSize: type.title.fontSize },
   // A drop shadow under a hairline-ruled design is a second border in a
   // different language.
   headerShadowVisible: false,

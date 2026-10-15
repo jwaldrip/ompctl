@@ -15,7 +15,7 @@ import { TouchableRipple } from "react-native-paper";
 import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { Label, Text } from "../design/text.tsx";
-import { face, radius, stroke } from "../design/tokens.ts";
+import { font, radius, stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import { buildHunks, computeLineDiff, type DiffOp } from "./diff.ts";
 
@@ -208,12 +208,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: stroke.hair,
   },
   headerText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 12,
     flex: 1,
   },
   basename: {
-    fontFamily: face.monoMedium,
+    ...font.monoMedium,
     fontWeight: "600",
   },
   empty: {
@@ -230,7 +230,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: stroke.hair,
   },
   hunkHeaderText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 10,
     letterSpacing: 0.2,
   },
@@ -242,7 +242,7 @@ const styles = StyleSheet.create({
   lineNumber: {
     width: 28,
     textAlign: "right",
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 10,
     paddingRight: 4,
   },
@@ -253,7 +253,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   signText: {
-    fontFamily: face.monoMedium,
+    ...font.monoMedium,
     fontSize: 11,
     fontWeight: "bold",
     textAlign: "center",
@@ -265,7 +265,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   codeText: {
-    fontFamily: face.mono,
+    ...font.mono,
     fontSize: 11,
     lineHeight: 16,
   },

@@ -16,9 +16,6 @@
     <Filter Include="Assets">
       <UniqueIdentifier>{6d9fb7d2-7c9c-44cb-bcbe-8e27c1341c27}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Assets\Fonts">
-      <UniqueIdentifier>{a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="targetver.h">
@@ -60,25 +57,5 @@
     <Image Include="ompd.ico">
       <Filter>Resource Files</Filter>
     </Image>
-  </ItemGroup>
-  <ItemGroup>
-    <Content Include="..\..\src\design\fonts\Archivo-Regular.ttf">
-      <Filter>Assets\Fonts</Filter>
-    </Content>
-    <Content Include="..\..\src\design\fonts\Archivo-Medium.ttf">
-      <Filter>Assets\Fonts</Filter>
-    </Content>
-    <Content Include="..\..\src\design\fonts\Archivo-SemiBold.ttf">
-      <Filter>Assets\Fonts</Filter>
-    </Content>
-    <Content Include="..\..\src\design\fonts\IBMPlexMono-Regular.ttf">
-      <Filter>Assets\Fonts</Filter>
-    </Content>
-    <Content Include="..\..\src\design\fonts\IBMPlexMono-Medium.ttf">
-      <Filter>Assets\Fonts</Filter>
-    </Content>
-    <Content Include="..\..\src\design\fonts\SymbolsNF.ttf">
-      <Filter>Assets\Fonts</Filter>
-    </Content>
   </ItemGroup>
 </Project>
