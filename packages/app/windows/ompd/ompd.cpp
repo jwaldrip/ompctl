@@ -7,6 +7,29 @@
 #include "AutolinkedNativeModules.g.h"
 
 #include "NativeModules.h"
+#include <fstream>
+
+static void LogDiagnostic(const std::wstring &line) {
+  WCHAR tempPath[MAX_PATH];
+  if (GetTempPathW(MAX_PATH, tempPath)) {
+    std::wstring logFile = std::wstring(tempPath) + L"ompd_diagnostics.log";
+    std::wofstream out(logFile, std::ios::app);
+    if (out.is_open()) {
+      out << line << L"\n";
+      out.flush();
+    }
+  }
+  OutputDebugStringW((line + L"\n").c_str());
+}
+
+struct CustomRedBoxHandler : winrt::implements<CustomRedBoxHandler, winrt::Microsoft::ReactNative::IRedBoxHandler> {
+  void ShowNewError(winrt::Microsoft::ReactNative::IRedBoxErrorInfo const &info, winrt::Microsoft::ReactNative::RedBoxErrorType) noexcept {
+    LogDiagnostic(std::wstring(L"[RedBox Error] ") + info.Message().c_str());
+  }
+  bool IsDevSupportEnabled() const noexcept { return true; }
+  void UpdateError(winrt::Microsoft::ReactNative::IRedBoxErrorInfo const &) noexcept {}
+  void DismissRedBox() noexcept {}
+};
 
 // A PackageProvider containing any turbo modules you define within this app project
 struct CompReactPackageProvider
@@ -40,12 +63,39 @@ _Use_decl_annotations_ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE, PSTR 
   // Register any native modules defined within this app project
   settings.PackageProviders().Append(winrt::make<CompReactPackageProvider>());
 
-  // When loading the JS bundle from a file (not Metro):
-  // Set the path (on disk) where the .bundle file is located.
-  // Use a plain filesystem path without a "file://" prefix so LocalBundleReader.cpp
-  // takes the StorageFile::GetFileFromPathAsync branch, which accepts absolute Win32
-  // paths and works both inside packaged MSIX containers and in unpackaged builds.
-  settings.BundleRootPath(std::wstring(appDirectory).append(L"\\Bundle\\").c_str());
+  LogDiagnostic(L"ompd WinMain started");
+  LogDiagnostic(std::wstring(L"appDirectory: ") + appDirectory);
+
+  std::wstring directBundle = std::wstring(appDirectory) + L"\\Bundle\\index.windows.bundle";
+  DWORD directAttr = GetFileAttributesW(directBundle.c_str());
+  LogDiagnostic(std::wstring(L"direct bundle exists=") + (directAttr != INVALID_FILE_ATTRIBUTES ? L"yes: " : L"no: ") + directBundle);
+
+  std::wstring parentBundle = std::wstring(appDirectory) + L"\\..\\Bundle\\index.windows.bundle";
+  DWORD parentAttr = GetFileAttributesW(parentBundle.c_str());
+  LogDiagnostic(std::wstring(L"parent bundle exists=") + (parentAttr != INVALID_FILE_ATTRIBUTES ? L"yes: " : L"no: ") + parentBundle);
+
+  if (directAttr != INVALID_FILE_ATTRIBUTES) {
+    settings.BundleRootPath(std::wstring(appDirectory).append(L"\\Bundle\\").c_str());
+  } else if (parentAttr != INVALID_FILE_ATTRIBUTES) {
+    WCHAR canonical[MAX_PATH];
+    if (PathCchCanonicalize(canonical, MAX_PATH, (std::wstring(appDirectory) + L"\\..\\Bundle\\").c_str()) == S_OK) {
+      settings.BundleRootPath(canonical);
+    } else {
+      settings.BundleRootPath(L"ms-appx:///Bundle/");
+    }
+  } else {
+    settings.BundleRootPath(L"ms-appx:///Bundle/");
+  }
+
+  settings.NativeLogger([](winrt::Microsoft::ReactNative::LogLevel level, winrt::hstring const &message) {
+    LogDiagnostic(std::wstring(L"[RN Log] ") + message.c_str());
+  });
+
+  settings.InstanceLoaded([](auto const &, winrt::Microsoft::ReactNative::InstanceLoadedEventArgs const &args) {
+    LogDiagnostic(std::wstring(L"[RN InstanceLoaded] failed=") + (args.Failed() ? L"true" : L"false"));
+  });
+
+  settings.RedBoxHandler(winrt::make<CustomRedBoxHandler>());
 
   // Set the name of the bundle file (without the .bundle extension)
   settings.JavaScriptBundleFile(L"index.windows");

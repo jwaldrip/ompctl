@@ -307,6 +307,16 @@ jobs:
 
           Get-Process | Where-Object { $_.Name -match "ompd|node" } | Format-Table -AutoSize
           Get-EventLog -LogName Application -Newest 30 -EntryType Error, Warning | Format-Table -Wrap
+
+          Write-Host "--- Checking for ompd diagnostic logs ---"
+          Get-ChildItem -Path "$env:LOCALAPPDATA\Packages" -Recurse -Filter "*ompd_diagnostics*" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "=== AppData Diagnostic Log: $($_.FullName) ==="
+            Get-Content $_.FullName
+          }
+          Get-ChildItem -Path $env:TEMP -Filter "*ompd_diagnostics*" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "=== Temp Diagnostic Log: $($_.FullName) ==="
+            Get-Content $_.FullName
+          }
       - name: Upload screenshot and logs artifact
         if: always()
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
