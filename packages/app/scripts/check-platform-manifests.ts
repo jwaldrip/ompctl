@@ -19,11 +19,16 @@
  *      handshake, and the Mac can reach no daemon at all. A source file alone
  *      is not the check: it has to be compiled into the target, because a file
  *      the target never builds registers nothing.
+ *   6. Bundled fonts (*.ttf in src/design/fonts) are registered on every platform.
+ *      The native apps shipped for months drawing system fonts while the files
+ *      sat in the repo, because copying assets to the source tree does not
+ *      register them with platform font loaders (iOS UIAppFonts and Resources,
+ *      macOS Resources and ATSApplicationFontsPath, and web @font-face).
  *
  * Exits nonzero with the exact problem if any manifest carries a forbidden value.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export interface Violation {
@@ -84,6 +89,112 @@ export function inspectMacosRandomBridge(sources: { module: string | null; pbxpr
   // an uncompiled file registers nothing.
   const compiled = /OmpctlRandomValues\.m in Sources/.test(sources.pbxproj);
   return { exportsModule, exportsSyncMethod, compiled };
+}
+
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Every bundled font that a platform does not register, one violation per
+ * font per surface. Check 6 in the header says why this exists.
+ */
+export function missingFontRegistrations(
+  fonts: string[],
+  sources: {
+    iosPlist: string;
+    iosPbxproj: string;
+    macosPbxproj: string;
+    macosPlist: string;
+    indexHtml: string;
+  },
+): Violation[] {
+  const violations: Violation[] = [];
+
+  // Parse iOS UIAppFonts array entries. Only strings inside the UIAppFonts array
+  // count as registrations; comments and strings under other keys are ignored.
+  const registeredIosFonts = new Set<string>();
+  const uiAppFontsMatch = sources.iosPlist.match(/<key>UIAppFonts<\/key>\s*<array>([\s\S]*?)<\/array>/);
+  if (uiAppFontsMatch) {
+    const arrayBody = uiAppFontsMatch[1]!.replace(/<!--[\s\S]*?-->/g, "");
+    for (const match of arrayBody.matchAll(/<string>([^<]+)<\/string>/g)) {
+      registeredIosFonts.add(match[1]!.trim());
+    }
+  }
+
+  // Parse web @font-face declarations from index.html.
+  const registeredWebFonts = new Set<string>();
+  const fontFaceBlocks = sources.indexHtml.match(/@font-face\s*\{[\s\S]*?\}/gi) ?? [];
+  for (const block of fontFaceBlocks) {
+    const cleanBlock = block.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const match of cleanBlock.matchAll(
+      /url\(\s*['"]?(?:[^'")\n?#]*\/)?([^'")\n?#]+\.ttf)(?:[?#][^'")\n]*)?['"]?\s*\)/gi,
+    )) {
+      registeredWebFonts.add(match[1]!);
+    }
+  }
+
+  // A file reference alone copies nothing; only a Resources build phase entry
+  // puts the font in the bundle, and Xcode names that entry in this comment.
+  const inResources = (pbxproj: string, font: string) =>
+    new RegExp(`/\\*\\s*${escapeRegex(font)}\\s+in\\s+Resources\\s*\\*/`).test(pbxproj);
+
+  for (const font of fonts) {
+    if (!registeredIosFonts.has(font)) {
+      violations.push({
+        file: "ios/ompd/Info.plist",
+        field: "UIAppFonts",
+        expected: font,
+        actual: "missing",
+      });
+    }
+    if (!inResources(sources.iosPbxproj, font)) {
+      violations.push({
+        file: "ios/ompd.xcodeproj/project.pbxproj",
+        field: "Resources",
+        expected: font,
+        actual: "missing",
+      });
+    }
+    if (!inResources(sources.macosPbxproj, font)) {
+      violations.push({
+        file: "macos/ompd.xcodeproj/project.pbxproj",
+        field: "Resources",
+        expected: font,
+        actual: "missing",
+      });
+    }
+    if (!registeredWebFonts.has(font)) {
+      violations.push({
+        file: "index.html",
+        field: "@font-face",
+        expected: font,
+        actual: "missing",
+      });
+    }
+  }
+
+  // macOS requires ATSApplicationFontsPath set to "." in Info.plist so that
+  // font files copied into bundle resources are discovered by CoreText.
+  const cleanMacosPlist = sources.macosPlist.replace(/<!--[\s\S]*?-->/g, "");
+  const atsMatch = cleanMacosPlist.match(/<key>ATSApplicationFontsPath<\/key>\s*<string>([^<]*)<\/string>/);
+  if (!atsMatch) {
+    violations.push({
+      file: "macos/ompd-macOS/Info.plist",
+      field: "ATSApplicationFontsPath",
+      expected: ".",
+      actual: "missing",
+    });
+  } else if (atsMatch[1] !== ".") {
+    violations.push({
+      file: "macos/ompd-macOS/Info.plist",
+      field: "ATSApplicationFontsPath",
+      expected: ".",
+      actual: atsMatch[1]!,
+    });
+  }
+
+  return violations;
 }
 
 export function findAppDir(start: string = process.cwd()): string {
@@ -235,12 +346,38 @@ export function checkPlatformManifests(appDir: string = findAppDir()): Violation
     }
   };
 
+  const checkFonts = () => {
+    const fontsDir = join(appDir, "src/design/fonts");
+    const fonts = existsSync(fontsDir)
+      ? readdirSync(fontsDir, { withFileTypes: true })
+          .filter(d => d.isFile() && d.name.endsWith(".ttf"))
+          .map(d => d.name)
+          .sort()
+      : [];
+
+    const readSource = (relPath: string) => {
+      const fullPath = join(appDir, relPath);
+      return existsSync(fullPath) ? readFileSync(fullPath, "utf8") : "";
+    };
+
+    const fontViolations = missingFontRegistrations(fonts, {
+      iosPlist: readSource("ios/ompd/Info.plist"),
+      iosPbxproj: readSource("ios/ompd.xcodeproj/project.pbxproj"),
+      macosPbxproj: readSource("macos/ompd.xcodeproj/project.pbxproj"),
+      macosPlist: readSource("macos/ompd-macOS/Info.plist"),
+      indexHtml: readSource("index.html"),
+    });
+
+    violations.push(...fontViolations);
+  };
+
   checkPlist("ios/ompd/Info.plist", true);
   checkPlist("macos/ompd-macOS/Info.plist", false);
   checkWindows("windows/ompd/Package.appxmanifest");
   checkWindows("windows/ompd.Package/Package.appxmanifest");
   checkGradle("android/app/build.gradle");
   checkMacosRandomBridge();
+  checkFonts();
 
   return violations;
 }
