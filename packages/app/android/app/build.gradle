@@ -105,6 +105,25 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+/**
+ * Fonts from packages/app/src/design/fonts are the single source of truth.
+ * React Native on Android resolves custom fonts via ReactFontManager by reading
+ * assets/fonts/<family>.ttf from the APK asset manager. We copy all *.ttf files
+ * into a generated assets directory under fonts/ and register it with the app's
+ * main assets source set so every variant packages them without committing copies.
+ */
+def fontSourceDir = file("../../src/design/fonts")
+def generatedFontsAssetDir = file("${buildDir}/generated/assets/fonts")
+
+def copyDesignFonts = tasks.register("copyDesignFonts", Copy) {
+    description = "Copies design fonts into a generated asset directory for Android packaging."
+    from(fontSourceDir) {
+        include("*.ttf")
+        exclude("licenses/**")
+    }
+    into(new File(generatedFontsAssetDir, "fonts"))
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -123,6 +142,11 @@ android {
         // Overridable so a CI job can build the same tests against a different
         // variant without editing this file.
         testBuildType System.getProperty("testBuildType", "debug")
+    }
+    sourceSets {
+        main {
+            assets.srcDirs += [generatedFontsAssetDir]
+        }
     }
     signingConfigs {
         debug {
@@ -157,6 +181,20 @@ android {
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
+    }
+}
+
+// Wire font asset generation before asset merging for every variant
+// (debug, release, and test variants).
+android.applicationVariants.all { variant ->
+    variant.mergeAssetsProvider.configure {
+        dependsOn(copyDesignFonts)
+    }
+}
+
+tasks.configureEach { task ->
+    if ((task.name.startsWith("merge") || task.name.startsWith("generate")) && task.name.endsWith("Assets")) {
+        task.dependsOn(copyDesignFonts)
     }
 }
 
