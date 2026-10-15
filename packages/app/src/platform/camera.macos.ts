@@ -9,7 +9,8 @@
 import type { ComponentType } from "react";
 import { createElement, useCallback, useEffect, useState } from "react";
 import * as ReactNative from "react-native";
-import { DeviceEventEmitter, NativeModules, Platform, StyleSheet, Text, View } from "react-native";
+import { DeviceEventEmitter, NativeModules, Platform, StyleSheet, View } from "react-native";
+import { Text } from "../design/text.tsx";
 import type {
   CameraAvailability,
   CameraDeviceInfo,

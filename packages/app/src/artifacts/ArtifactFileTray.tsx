@@ -9,10 +9,10 @@
 import type { JSX } from "react";
 import { useMemo, useState } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Glyph, type GlyphName } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
-import { Label, Title } from "../design/text.tsx";
+import { Label, Text, Title } from "../design/text.tsx";
 import { face, ground, ink, radius, space, stroke } from "../design/tokens.ts";
 import type { ArtifactItem, ArtifactKind } from "./types.ts";
 import { formatByteSize } from "./types.ts";

@@ -10,9 +10,9 @@
  */
 
 import type { JSX } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Glyph } from "../design/icons.tsx";
-import { Code, Kicker, Label, Title } from "../design/text.tsx";
+import { Code, Kicker, Label, Text, Title } from "../design/text.tsx";
 import { ground, ink, signal, space, stroke, TOUCH_TARGET, type } from "../design/tokens.ts";
 import type { CloneState } from "../remote/model.ts";
 

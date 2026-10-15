@@ -10,11 +10,11 @@
 
 import type { JSX, ReactNode } from "react";
 import { useMemo, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 import { TouchableRipple } from "react-native-paper";
 import { Glyph } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
-import { Label } from "../design/text.tsx";
+import { Label, Text } from "../design/text.tsx";
 import { face, radius, stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import { buildHunks, computeLineDiff, type DiffOp } from "./diff.ts";
