@@ -201,11 +201,14 @@ jobs:
             -CertStoreLocation "Cert:\LocalMachine\My" `
             -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
 
-          Write-Host "Installing certificate to TrustedPeople store..."
-          $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPeople", "LocalMachine")
-          $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-          $store.Add($cert)
-          $store.Close()
+          Write-Host "Exporting and installing certificate to TrustedPeople store..."
+          $cerPath = Join-Path $PWD "testcert.cer"
+          Export-Certificate -Cert $cert -FilePath $cerPath | Out-Null
+          Import-Certificate -FilePath $cerPath -CertStoreLocation "Cert:\LocalMachine\TrustedPeople" | Out-Null
+
+          $pfxPath = Join-Path $PWD "testcert.pfx"
+          $pfxPassword = ConvertTo-SecureString -String "ThrowawayPass123!" -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $pfxPassword | Out-Null
 
           $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName -Descending |
@@ -214,7 +217,7 @@ jobs:
           Write-Host "Using signtool: $signtool"
 
           Write-Host "Signing package $($pkg.FullName)..."
-          & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /v $pkg.FullName
+          & $signtool sign /fd SHA256 /f $pfxPath /p "ThrowawayPass123!" /v $pkg.FullName
           if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
 
           Write-Host "Verifying signature..."
