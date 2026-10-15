@@ -89,7 +89,7 @@ jobs:
           if (-not (Test-Path $fontDir)) {
             throw "Deployed font directory '$fontDir' not found in build output."
           }
-          Write-Host "Listing deployed fonts in $fontDir:"
+          Write-Host "Listing deployed fonts in ${fontDir}:"
           $fonts = Get-ChildItem -Path $fontDir -File
           $fonts | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
           $expected = @(
