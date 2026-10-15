@@ -61,6 +61,26 @@
     <Content Include="Images\Wide310x150Logo.scale-200.png" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="..\..\src\design\fonts\Archivo-Regular.ttf">
+      <Link>Assets\Fonts\Archivo-Regular.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\Archivo-Medium.ttf">
+      <Link>Assets\Fonts\Archivo-Medium.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\Archivo-SemiBold.ttf">
+      <Link>Assets\Fonts\Archivo-SemiBold.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\IBMPlexMono-Regular.ttf">
+      <Link>Assets\Fonts\IBMPlexMono-Regular.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\IBMPlexMono-Medium.ttf">
+      <Link>Assets\Fonts\IBMPlexMono-Medium.ttf</Link>
+    </Content>
+    <Content Include="..\..\src\design\fonts\SymbolsNF.ttf">
+      <Link>Assets\Fonts\SymbolsNF.ttf</Link>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\ompd\ompd.vcxproj">
       <SkipGetTargetFrameworkProperties>True</SkipGetTargetFrameworkProperties>
     </ProjectReference>
