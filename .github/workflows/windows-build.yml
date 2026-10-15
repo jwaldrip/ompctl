@@ -236,6 +236,37 @@ jobs:
           reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
           reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowAllTrustedApps" /d "1"
 
+          Write-Host "Checking for runtime framework dependencies..."
+          $depPackages = Get-ChildItem -Path windows -Recurse -Include *.msix, *.appx |
+            Where-Object { $_.FullName -ne $pkg.FullName -and $_.FullName -match "Dependencies" }
+          foreach ($dep in $depPackages) {
+            Write-Host "Installing dependency from build output: $($dep.Name)"
+            Add-AppxPackage -Path $dep.FullName -ErrorAction SilentlyContinue
+          }
+
+          $nugetPackages = Get-ChildItem -Path "${env:USERPROFILE}\.nuget\packages\microsoft.windowsappsdk" -Recurse -Include "*.msix" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "win10-x64" }
+          foreach ($dep in $nugetPackages) {
+            Write-Host "Installing WindowsAppSDK dependency from NuGet: $($dep.Name)"
+            Add-AppxPackage -Path $dep.FullName -ErrorAction SilentlyContinue
+          }
+
+          $vclibs = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs" -Recurse -Include "*.appx" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "x64" }
+          foreach ($dep in $vclibs) {
+            Write-Host "Installing VCLibs dependency: $($dep.Name)"
+            Add-AppxPackage -Path $dep.FullName -ErrorAction SilentlyContinue
+          }
+
+          if (-not (Get-AppxPackage -Name "*WindowsAppRuntime.1.8*")) {
+            Write-Host "Installing Windows App SDK 1.8 via official installer..."
+            $installerUrl = "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe"
+            $installerPath = Join-Path $env:TEMP "windowsappruntimeinstall-x64.exe"
+            Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+            $instProc = Start-Process -FilePath $installerPath -ArgumentList "--quiet" -PassThru -Wait
+            Write-Host "Installer finished with exit code: $($instProc.ExitCode)"
+          }
+
           Write-Host "Installing package via Add-AppxPackage..."
           Add-AppxPackage -Path $pkg.FullName -Verbose
           $installed = Get-AppxPackage -Name "ompctl"
