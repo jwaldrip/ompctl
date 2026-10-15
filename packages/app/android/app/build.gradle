@@ -113,13 +113,12 @@ def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
  * main assets source set so every variant packages them without committing copies.
  */
 def fontSourceDir = file("../../src/design/fonts")
-def generatedFontsAssetDir = file("${buildDir}/generated/assets/fonts")
+def generatedFontsAssetDir = layout.buildDirectory.dir("generated/assets/fonts").get().asFile
 
 def copyDesignFonts = tasks.register("copyDesignFonts", Copy) {
     description = "Copies design fonts into a generated asset directory for Android packaging."
     from(fontSourceDir) {
         include("*.ttf")
-        exclude("licenses/**")
     }
     into(new File(generatedFontsAssetDir, "fonts"))
 }
@@ -184,14 +183,9 @@ android {
     }
 }
 
-// Wire font asset generation before asset merging for every variant
-// (debug, release, and test variants).
-android.applicationVariants.all { variant ->
-    variant.mergeAssetsProvider.configure {
-        dependsOn(copyDesignFonts)
-    }
-}
-
+// Every task that reads or merges assets runs after the copy: merge*Assets for
+// each variant (debug, release, androidTest) and the generate*Assets tasks lint
+// reads, which Gradle rejects as implicit dependencies otherwise.
 tasks.configureEach { task ->
     if ((task.name.startsWith("merge") || task.name.startsWith("generate")) && task.name.endsWith("Assets")) {
         task.dependsOn(copyDesignFonts)
