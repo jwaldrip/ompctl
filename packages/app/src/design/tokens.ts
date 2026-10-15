@@ -130,6 +130,13 @@ export const face = {
   semibold: "Archivo-SemiBold",
   mono: "IBMPlexMono-Regular",
   monoMedium: "IBMPlexMono-Medium",
+  /**
+   * Symbols Nerd Font (v3.5.1, symbols only): the private-use glyphs omp puts
+   * in session titles and tool output. No platform falls back to a bundled
+   * face on its own, so text runs carrying those code points are set in this
+   * face explicitly rather than left to the system cascade, which has none.
+   */
+  symbols: "SymbolsNF",
 } as const;
 
 /**
