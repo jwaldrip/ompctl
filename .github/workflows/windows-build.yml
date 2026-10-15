@@ -307,8 +307,8 @@ jobs:
             Write-Host "ompd process running with PID $($proc.Id)."
           }
 
-          Write-Host "Waiting 25 seconds for app window render..."
-          Start-Sleep -Seconds 25
+          Write-Host "Waiting 45 seconds for app window render..."
+          Start-Sleep -Seconds 45
 
           Add-Type -TypeDefinition '
             using System;

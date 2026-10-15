@@ -40,9 +40,12 @@ _Use_decl_annotations_ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE, PSTR 
   // Register any native modules defined within this app project
   settings.PackageProviders().Append(winrt::make<CompReactPackageProvider>());
 
-    // When loading the JS bundle from a file (not Metro):
-  // Set the path (on disk) where the .bundle file is located
-  settings.BundleRootPath(std::wstring(L"file://").append(appDirectory).append(L"\\Bundle\\").c_str());
+  // When loading the JS bundle from a file (not Metro):
+  // Set the path (on disk) where the .bundle file is located.
+  // Use a plain filesystem path without a "file://" prefix so LocalBundleReader.cpp
+  // takes the StorageFile::GetFileFromPathAsync branch, which accepts absolute Win32
+  // paths and works both inside packaged MSIX containers and in unpackaged builds.
+  settings.BundleRootPath(std::wstring(appDirectory).append(L"\\Bundle\\").c_str());
 
   // Set the name of the bundle file (without the .bundle extension)
   settings.JavaScriptBundleFile(L"index.windows");
