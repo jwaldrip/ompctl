@@ -15,24 +15,30 @@ import { rhythm } from "../design/rhythm.ts";
 import { Body, Kicker, Label } from "../design/text.tsx";
 import { radius, stroke } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
-import type { PlanEntry, PlanReview } from "../session/model.ts";
+import type { PlanReview } from "../session/model.ts";
 
 export interface PlanCardProps {
-  plan: readonly PlanEntry[];
   review: PlanReview | null;
   canApprove: boolean;
   refusal?: string;
   onRespond: (requestId: string, choice: PlanReviewChoice) => void;
 }
 
-export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanCardProps): JSX.Element | null {
+/**
+ * A review is an action surface, not a second rendering of the current plan.
+ *
+ * `SessionContext` owns the readable, expandable todo list. Repeating that
+ * list immediately above the transcript made an iPad detail pane start with
+ * two competing cards and two copies of the same work. This card appears only
+ * when the daemon asks for a decision, and keeps only the decision's own prose
+ * and controls.
+ */
+export function PlanCard({ review, canApprove, refusal, onRespond }: PlanCardProps): JSX.Element | null {
   const theme = useOmpTheme();
-  const hasPendingPlan = review !== null || plan.some(entry => entry.status === "pending");
-  if (!hasPendingPlan) return null;
+  if (review === null) return null;
 
-  const canRespond = review !== null && canApprove;
+  const canRespond = canApprove;
   const respond = (choice: PlanReviewChoice): void => {
-    if (review === null) return;
     onRespond(review.requestId, choice);
   };
 
@@ -40,22 +46,9 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
     <Surface elevation={0} mode="flat" style={[styles.card, { borderColor: theme.signal.ochre }]} testID="plan-review">
       <View style={styles.head}>
         <Kicker color={theme.signal.ochre}>plan review</Kicker>
-        <Label color={theme.ink.muted}>{review === null ? "waiting for plan details" : "approval required"}</Label>
+        <Label color={theme.ink.muted}>approval required</Label>
       </View>
-      {review === null ? null : <Body color={theme.ink.plain}>{review.message}</Body>}
-      {plan.length === 0 ? null : (
-        <View style={[styles.steps, { borderLeftColor: theme.ground.edge }]}>
-          {plan.map((entry, index) => (
-            <Label
-              color={entry.status === "completed" ? theme.ink.muted : theme.ink.plain}
-              // biome-ignore lint/suspicious/noArrayIndexKey: PlanEntry carries no stable id; the plan list is replaced wholesale, never reordered.
-              key={`${index}-${entry.content}`}
-            >
-              {entry.status === "completed" ? "Done" : "Plan"} {entry.content}
-            </Label>
-          ))}
-        </View>
-      )}
+      <Body color={theme.ink.plain}>{review.message}</Body>
       {/*
        * Contained then outlined, the approval card's order and its geometry:
        * one filled control per surface says which press ends the wait, and the
@@ -107,22 +100,17 @@ export function PlanCard({ plan, review, canApprove, refusal, onRespond }: PlanC
 }
 
 const styles = StyleSheet.create({
-  // No top margin. `SessionScreen`'s body pays `rhythm.rowGap` between every
-  // instrument in the working area, so a margin here is the second charge for
-  // one gap: 12 plus 8 is 20, which is a step on nothing. `cardStack` would be
-  // right if this card sat in a run of cards, and it does not -- the context
-  // strip above it is a band and the transcript below it is a list. The
-  // horizontal gutter stays, because that body pays no inset of its own and
-  // this card has to line up with the strip and the transcript.
+  // This card is the list header. The list owns the screen gutter, so paying
+  // another one here made the review visibly narrower than every transcript
+  // row. Its border separates one required decision, not a second information
+  // surface.
   card: {
     borderRadius: radius.control,
     borderWidth: stroke.heavy,
     gap: rhythm.cardGap,
-    marginHorizontal: rhythm.gutter,
     padding: rhythm.cardPad,
   },
   head: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
-  steps: { borderLeftWidth: stroke.hair, gap: rhythm.cardGap, paddingLeft: rhythm.indent },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: rhythm.cardGap },
   // Paper's own button is 36 tall at md3, which is not a finger target. A floor
   // rather than a height, so dynamic type grows the control instead of clipping

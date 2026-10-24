@@ -21,10 +21,9 @@ function renderCard(onRespond: (requestId: string, choice: "Approve and execute"
       <PlanCard
         canApprove
         onRespond={onRespond}
-        plan={[{ content: "Inspect the live path", priority: "high", status: "pending" }]}
         review={{
           requestId: "pln_review",
-          message: 'Approve plan "Inspect the live path"?',
+          message: "Review the proposed work before execution.",
           choices: ["Approve and execute", "Refine plan"],
         }}
       />,
@@ -60,5 +59,17 @@ describe("PlanCard", () => {
 
     act(() => root.unmount());
     host.remove();
+  });
+
+  test("renders only the decision request and its choices", () => {
+    const { host, root } = renderCard(() => {});
+    try {
+      expect(host.textContent).toBe(
+        "plan reviewapproval requiredReview the proposed work before execution.Approve and executeRefine plan",
+      );
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+    }
   });
 });

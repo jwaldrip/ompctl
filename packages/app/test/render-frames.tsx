@@ -320,6 +320,59 @@ const FRAMES: Frame[] = [
     },
   },
   {
+    name: "ipad-owned-loading",
+    width: 1024,
+    height: 1366,
+    drive: emit => {
+      emit("agents", { agents: [AGENT] });
+    },
+  },
+  {
+    name: "ipad-owned-context-collapsed",
+    width: 1024,
+    height: 1366,
+    drive: emit => {
+      emit("agents", { agents: [AGENT] });
+      emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: 20 });
+      emit("update", {
+        agentId: "agt_a",
+        seq: 1,
+        update: {
+          sessionUpdate: "plan",
+          entries: [
+            { content: "Trace the loading boundary", status: "completed", phase: "Audit" },
+            { content: "Inspect the context rhythm", status: "in_progress", phase: "Audit" },
+            { content: "Keep chat space primary", status: "pending", phase: "Repair" },
+            { content: "Capture the iPad result", status: "blocked", phase: "Repair", blocker: "waiting on simulator proof" },
+          ],
+        },
+      });
+    },
+  },
+  {
+    name: "ipad-owned-context-expanded",
+    width: 1024,
+    height: 1366,
+    drive: (emit, press) => {
+      emit("agents", { agents: [AGENT] });
+      emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: 20 });
+      emit("update", {
+        agentId: "agt_a",
+        seq: 1,
+        update: {
+          sessionUpdate: "plan",
+          entries: [
+            { content: "Trace the loading boundary", status: "completed", phase: "Audit" },
+            { content: "Inspect the context rhythm", status: "in_progress", phase: "Audit" },
+            { content: "Keep chat space primary", status: "pending", phase: "Repair" },
+            { content: "Capture the iPad result", status: "blocked", phase: "Repair", blocker: "waiting on simulator proof" },
+          ],
+        },
+      });
+      press("session-context-toggle");
+    },
+  },
+  {
     name: "ipad-owned-working",
     width: 1024,
     height: 1366,

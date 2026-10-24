@@ -9,9 +9,9 @@
  * It is a band, never a rail. Collapsed it is one row, so the transcript
  * keeps every point it had; the split's detail pane is not wide enough on any
  * iPad to give a third column real width without starving the log, and a
- * column that starves the log is the layout this deliberately is not. The
- * tablet opens it by default because it has the vertical room; a phone does
- * not, so the phone starts collapsed with the counts already on the header.
+ * column that starves the log is the layout this deliberately is not. Every
+ * screen starts collapsed because extra tablet height still belongs to the
+ * conversation. One deliberate tap reveals the bounded detail.
  *
  * Every section is absent when it has nothing. A "0 todos" row and a "no
  * subagents" card are the same defect: chrome that reads as a measurement.
@@ -23,13 +23,12 @@
 import type { Agent } from "@ompd/core/contracts";
 import { type JSX, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
-import { Chip, Divider, Surface } from "react-native-paper";
+import { Divider, Surface } from "react-native-paper";
 import { shortenPath } from "../design/format.ts";
-import { Glyph } from "../design/icons.tsx";
-import { useIsTablet } from "../design/layout.ts";
+import { Glyph, type GlyphName } from "../design/icons.tsx";
 import { rhythm } from "../design/rhythm.ts";
 import { Body, Data, Kicker, Label } from "../design/text.tsx";
-import { radius, type SignalName, space, type as typeScale } from "../design/tokens.ts";
+import { type SignalName } from "../design/tokens.ts";
 import { useOmpTheme } from "../design/useOmpTheme.ts";
 import type { PlanEntry, PlanStatus, SessionState } from "../session/model.ts";
 import { AgentHubBranch, type AgentHubNode, subagentsOf } from "./AgentHub.tsx";
@@ -128,6 +127,14 @@ const TODO_SIGNALS: Record<PlanStatus, SignalName> = {
   abandoned: "slate",
 };
 
+const TODO_GLYPHS: Record<PlanStatus, GlyphName> = {
+  pending: "tasks",
+  in_progress: "activity",
+  completed: "allow",
+  blocked: "warning",
+  abandoned: "interrupt",
+};
+
 /**
  * Why a co-driven session lists no todos, in the one case where silence is a
  * claim rather than an absence.
@@ -143,8 +150,10 @@ export const TODO_ABSENT_WHILE_BUSY = "No todo list yet. One appears as soon as 
 export function SessionContext(props: SessionContextProps): JSX.Element | null {
   const { agent, session } = props;
   const theme = useOmpTheme();
-  const tablet = useIsTablet();
-  const [open, setOpen] = useState(props.defaultOpen ?? tablet);
+  // The log is the iPad detail pane's primary surface too. A tablet has more
+  // room than a phone, not spare room for a second scroll surface above every
+  // transcript, so context opens only on an explicit tap.
+  const [open, setOpen] = useState(props.defaultOpen ?? false);
 
   /**
    * Keyed on the roster's identity and this session's id, because those are
@@ -213,7 +222,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
            */}
           <ScrollView
             contentContainerStyle={styles.bodyContent}
-            style={tablet ? styles.bodyTablet : styles.bodyPhone}
+            style={styles.body}
             testID="session-context-body"
           >
             {session.plan.length === 0 ? (
@@ -227,18 +236,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
               ) : null
             ) : (
               <View style={styles.section} testID="session-context-todos">
-                <View style={styles.sectionHead}>
-                  <Kicker color={theme.ink.muted}>Todos</Kicker>
-                  <Chip
-                    accessibilityRole="text"
-                    compact
-                    style={[styles.countChip, { backgroundColor: theme.ground.raised }]}
-                    testID="session-context-todo-progress"
-                    textStyle={[typeScale.data, { color: theme.ink.plain }]}
-                  >
-                    {`${progress.done}/${progress.total}`}
-                  </Chip>
-                </View>
+                <Kicker color={theme.ink.muted}>Todos</Kicker>
                 {phases.map((phase, index) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: a phase has no id and the same heading may legitimately appear twice, so position is its only identity; the whole list is replaced on every change and never reordered in place.
                   <View key={`${index}-${phase.name ?? ""}`} style={styles.phase}>
@@ -261,18 +259,7 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
 
             {subagents.length === 0 ? null : (
               <View style={styles.section} testID="session-context-subagents">
-                <View style={styles.sectionHead}>
-                  <Kicker color={theme.ink.muted}>Subagents</Kicker>
-                  <Chip
-                    accessibilityRole="text"
-                    compact
-                    style={[styles.countChip, { backgroundColor: theme.ground.raised }]}
-                    testID="session-context-subagent-count"
-                    textStyle={[typeScale.data, { color: theme.ink.plain }]}
-                  >
-                    {String(subagents.length)}
-                  </Chip>
-                </View>
+                <Kicker color={theme.ink.muted}>Subagents</Kicker>
                 {subagents.map((node: AgentHubNode) => (
                   <AgentHubBranch
                     key={node.agent.id}
@@ -310,18 +297,14 @@ export function SessionContext(props: SessionContextProps): JSX.Element | null {
                         {row.value}
                       </Label>
                     ) : (
-                      // A count the operator may have to act on. Not a
-                      // control: it reads as a chip and announces as text,
-                      // because tapping it does nothing.
-                      <Chip
-                        accessibilityRole="text"
-                        compact
-                        style={[styles.countChip, { backgroundColor: theme.signalWash[row.tone] }]}
+                      <Label
+                        color={theme.signal[row.tone]}
+                        numberOfLines={1}
+                        style={styles.rowValue}
                         testID={`session-context-${row.testID}`}
-                        textStyle={{ color: theme.signal[row.tone] }}
                       >
                         {row.value}
-                      </Chip>
+                      </Label>
                     )}
                   </View>
                 ))}
@@ -351,8 +334,8 @@ function TodoRow({ todo }: { todo: PlanEntry }): JSX.Element {
       style={styles.todo}
     >
       <View style={styles.todoHead}>
-        <View style={[styles.todoState, { backgroundColor: theme.signalWash[tone] }]}>
-          <Kicker color={theme.signal[tone]}>{label}</Kicker>
+        <View style={styles.todoMarker}>
+          <Glyph name={TODO_GLYPHS[todo.status]} size={12} color={theme.signal[tone]} />
         </View>
         <Body
           color={todo.status === "completed" || todo.status === "abandoned" ? theme.ink.muted : theme.ink.bright}
@@ -360,6 +343,9 @@ function TodoRow({ todo }: { todo: PlanEntry }): JSX.Element {
         >
           {todo.content}
         </Body>
+        <Label color={theme.signal[tone]} style={styles.todoStatus}>
+          {label}
+        </Label>
       </View>
       {todo.blocker === undefined ? null : (
         <Label color={theme.signal.ochre} style={styles.blocker}>
@@ -442,13 +428,6 @@ const ORIGIN_LABELS: Record<SessionOrigin, string> = {
   watching: "watching a shared terminal",
 };
 
-/**
- * The state swatch's column, so the blocker line under a todo starts where the
- * todo's own words do. Not a rhythm job: it is the width of the widest state
- * word at `type.kicker`, and a `minWidth` so a longer one grows the swatch
- * rather than being cut by it.
- */
-const TODO_STATE_COLUMN = 78;
 
 const styles = StyleSheet.create({
   // One row, collapsed or open: a `minHeight` so dynamic type grows the header
@@ -465,32 +444,22 @@ const styles = StyleSheet.create({
   summary: { flexShrink: 1 },
   chevron: { transform: [{ rotate: "0deg" }] },
   chevronClosed: { transform: [{ rotate: "-90deg" }] },
-  // A ceiling, not a height: a one-todo session takes one todo's worth of
-  // space, and only a long list ever scrolls. Neither number is a rhythm job:
-  // they are how much of a phone and of a tablet this band may ever take.
-  bodyPhone: { maxHeight: 220 },
-  bodyTablet: { maxHeight: 360 },
+  // Context remains a reveal, not a competing feed. The ceiling leaves the
+  // transcript as the larger scroll target even for a long plan at tablet
+  // size, while a short plan retains its natural height.
+  body: { maxHeight: 288 },
   bodyContent: { gap: rhythm.sectionGap, padding: rhythm.gutter },
   section: { gap: rhythm.rowGap },
-  sectionHead: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   phase: { gap: rhythm.rowGapTight },
   todo: { gap: rhythm.pairGap },
-  todoHead: { flexDirection: "row", gap: rhythm.rowGapTight, alignItems: "flex-start" },
-  todoState: {
-    alignItems: "center",
-    minWidth: TODO_STATE_COLUMN,
-    paddingHorizontal: space.tight,
-    paddingVertical: space.hair,
-  },
+  todoHead: { alignItems: "flex-start", flexDirection: "row", gap: rhythm.rowGapTight },
+  todoMarker: { alignItems: "center", width: rhythm.indent },
   todoText: { flex: 1 },
-  blocker: { paddingLeft: TODO_STATE_COLUMN + rhythm.rowGapTight },
+  todoStatus: { flexShrink: 0 },
+  blocker: { paddingLeft: rhythm.indent + rhythm.rowGapTight },
   row: { alignItems: "center", flexDirection: "row", gap: rhythm.rowGapTight },
   // A floor, not a width: the labels are a closed set today, and a floor keeps
   // the column aligned without cutting one at a larger type size.
   rowLabel: { minWidth: 96 },
   rowValue: { flex: 1 },
-  // Paper's chip rounds to twice the theme's roundness, which on a count badge
-  // is a Material pill. A count is a small object in this app, so it takes the
-  // same corner every other one does.
-  countChip: { borderRadius: radius.control },
 });

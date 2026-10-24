@@ -432,7 +432,6 @@ export function SessionScreen(props: SessionScreenProps): JSX.Element {
                   <PlanCard
                     canApprove={props.canApprove}
                     onRespond={props.onDecidePlan}
-                    plan={session.plan}
                     refusal={props.refusal}
                     review={session.planReview}
                   />

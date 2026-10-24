@@ -280,7 +280,7 @@ describe("the panel renders what the session actually reported", () => {
     );
     try {
       expect(view.el("session-context-todos")).not.toBeNull();
-      expect(view.el("session-context-todo-progress")?.textContent).toBe("1/3");
+      expect(view.el("session-context-summary")?.textContent).toBe("1/3 todos");
       expect(view.el("session-context-phase-0")?.textContent).toBe("Audit");
       expect(view.el("session-context-phase-1")?.textContent).toBe("Build");
       const text = view.host.textContent ?? "";
@@ -519,7 +519,7 @@ describe("the collapse default follows the screen class", () => {
     }
   });
 
-  test("a tablet starts open, because it has the vertical room a phone does not", () => {
+  test("a tablet starts collapsed, so the transcript owns the detail pane until context is requested", () => {
     setWindowSize(1024, 1366);
     const main = agent("agt_main");
     const view = mount(
@@ -533,16 +533,20 @@ describe("the collapse default follows the screen class", () => {
       />,
     );
     try {
+      expect(view.el("session-context-body")).toBeNull();
+      expect(view.el("session-context-summary")?.textContent).toBe("0/1 todos");
+      view.press("session-context-toggle");
       expect(view.el("session-context-body")).not.toBeNull();
       expect(view.el("session-context-todos")).not.toBeNull();
-      view.press("session-context-toggle");
-      expect(view.el("session-context-body")).toBeNull();
+      // The header is the one progress summary. A second count badge makes the
+      // expanded state read as a wall of status chrome.
+      expect(view.el("session-context-todo-progress")).toBeNull();
     } finally {
       view.unmount();
     }
   });
 
-  test("an iPad in portrait is still a tablet: the default is decided by the shortest side", () => {
+  test("an iPad in portrait keeps the chat primary until context is opened", () => {
     setWindowSize(820, 1180);
     const main = agent("agt_main");
     const view = mount(
@@ -556,6 +560,8 @@ describe("the collapse default follows the screen class", () => {
       />,
     );
     try {
+      expect(view.el("session-context-body")).toBeNull();
+      view.press("session-context-toggle");
       expect(view.el("session-context-body")).not.toBeNull();
     } finally {
       view.unmount();
@@ -857,20 +863,20 @@ function planUpdate(agentId: AgentId, seq: number, entries: readonly Record<stri
 }
 
 describe("the panel belongs to the open session and to no other", () => {
-  test("live frames move a todo and a subagent without the operator reselecting anything", () => {
-    // A tablet, so the detail pane is beside the list and the panel is open
-    // by default: what is under test is the frame arriving, not a tap.
+  test("live frames move revealed context without the operator reselecting anything", () => {
     setWindowSize(1024, 1366);
     const shell = mountShell();
     try {
       shell.emit("agents", { agents: TWO_SESSIONS });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      shell.press("session-context-toggle");
       shell.emit("update", planUpdate("agt_a", 1, [{ content: "Wire the panel", status: "in_progress" }]));
-      expect(shell.el("session-context-todo-progress")?.textContent).toBe("0/1");
+      expect(shell.el("session-context-summary")?.textContent).toBe("0/1 todos · 1 subagent");
       expect(shell.panelText()).toContain("in progress");
       expect(shell.panelText()).toContain("Alpha Scout");
 
-      // The same list, one status moved on, plus a second todo: the panel
-      // follows without the operator touching the screen.
+      // The same list, one status moved on, plus a second todo: the revealed
+      // detail follows without the operator tapping again.
       shell.emit(
         "update",
         planUpdate("agt_a", 2, [
@@ -878,7 +884,7 @@ describe("the panel belongs to the open session and to no other", () => {
           { content: "Prove the switch", status: "in_progress" },
         ]),
       );
-      expect(shell.el("session-context-todo-progress")?.textContent).toBe("1/2");
+      expect(shell.el("session-context-summary")?.textContent).toBe("1/2 todos · 1 subagent");
       expect(shell.panelText()).toContain("Prove the switch");
 
       // And the roster is the authority on the subagent's state.
@@ -897,7 +903,9 @@ describe("the panel belongs to the open session and to no other", () => {
     const shell = mountShell();
     try {
       shell.emit("agents", { agents: TWO_SESSIONS });
+      shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
       shell.emit("update", planUpdate("agt_a", 1, [{ content: "Alpha's only todo", status: "in_progress" }]));
+      shell.press("session-context-toggle");
       expect(shell.el("session-name")?.textContent).toBe("Alpha");
       expect(shell.panelText()).toContain("Alpha's only todo");
       expect(shell.panelText()).toContain("Alpha Scout");
@@ -921,6 +929,7 @@ describe("the panel belongs to the open session and to no other", () => {
       // And Alpha still has both when the operator goes back, so "cleared"
       // meant cleared from the view, never destroyed.
       shell.press("session-open-sess_a");
+      shell.press("session-context-toggle");
       expect(shell.el("session-name")?.textContent).toBe("Alpha");
       expect(shell.panelText()).toContain("Alpha's late todo");
     } finally {
@@ -960,8 +969,9 @@ describe("a row press commits its own session before the daemon answers", () => 
       shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
       shell.emit("update", planUpdate("agt_a", 1, [{ content: "Alpha's only todo", status: "in_progress" }]));
       expect(shell.el("session-loading")).toBeNull();
+      expect(shell.el("session-context-summary")?.textContent).toBe("0/1 todos · 1 subagent");
+      shell.press("session-context-toggle");
       expect(shell.panelText()).toContain("Alpha's only todo");
-
       // The press, and nothing else. No frame has answered for Bravo yet.
       shell.press("session-open-sess_b");
       expect(shell.el("session-loading")).not.toBeNull();
@@ -1055,11 +1065,11 @@ describe("a row press commits its own session before the daemon answers", () => 
       shell.emit("session_history", { agentId: "agt_c", sessionId: "sess_c", entries: [], nextBefore: null });
       expect(shell.el("session-loading")).toBeNull();
       expect(shell.el("session-name")?.textContent).toBe("Charlie");
-
       // B kept the data that arrived while it was off screen, so going back
       // is instant rather than a second wait.
       shell.press("session-open-sess_b");
       expect(shell.el("session-loading")).toBeNull();
+      shell.press("session-context-toggle");
       expect(shell.panelText()).toContain("Bravo's late todo");
     } finally {
       shell.unmount();
@@ -1111,6 +1121,7 @@ describe("a row press commits its own session before the daemon answers", () => 
       expect(shell.el("session-context")).toBeNull();
 
       shell.emit("session_history", { agentId: "agt_guest", sessionId: "sess_tui", entries: [], nextBefore: null });
+      shell.press("session-context-toggle");
       expect(shell.el("session-loading")).toBeNull();
       // And the context panel names the link the console recorded for it.
       expect(shell.el("session-context-origin")?.textContent).toBe("co-driving a shared terminal");

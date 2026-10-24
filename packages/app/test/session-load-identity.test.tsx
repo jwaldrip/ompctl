@@ -241,6 +241,35 @@ function withAlphaOnScreen(shell: Shell): void {
   });
 }
 
+describe("the history page is the owned session's loading boundary", () => {
+  test("an update arriving before history keeps the named loading surface visible", () => {
+    setWindowSize(1024, 1366);
+    const shell = mountShell();
+    try {
+      withAlphaOnScreen(shell);
+      const bravo = agent("agt_b", { name: "Bravo", acpSessionId: "sess_b" });
+      shell.emit("agents", { agents: [...ALPHA, bravo] });
+      shell.press("session-open-sess_b");
+
+      shell.emit("update", {
+        agentId: "agt_b",
+        seq: 1,
+        update: { sessionUpdate: "plan", entries: [{ content: "Arrived before history", status: "in_progress" }] },
+      });
+
+      expect(shell.el("session-loading-title")?.textContent).toBe("Bravo");
+      expect(shell.el("session-context")).toBeNull();
+
+      shell.emit("session_history", { agentId: "agt_b", sessionId: "sess_b", entries: [], nextBefore: null });
+      expect(shell.el("session-loading")).toBeNull();
+      shell.press("session-context-toggle");
+      expect(shell.detailText()).toContain("Arrived before history");
+    } finally {
+      shell.unmount();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Blocker 1
 // ---------------------------------------------------------------------------
@@ -254,6 +283,7 @@ describe("a terminal row this device may not read still commits its own pane", (
     try {
       withAlphaOnScreen(shell);
       shell.emit("sessions", { sessions: [tuiRow("sess_tui", "terminal work")] });
+      shell.press("session-context-toggle");
       expect(shell.detailText()).toContain("Alpha's only todo");
 
       shell.press("session-open-sess_tui");
@@ -418,6 +448,7 @@ describe("a link lost mid-open never leaves a pane spinning", () => {
       // screen and correct.
       expect(shell.el("session-load-stalled")).toBeNull();
       expect(shell.el("session-loading")).toBeNull();
+      shell.press("session-context-toggle");
       expect(shell.detailText()).toContain("Alpha's only todo");
     } finally {
       shell.unmount();
@@ -441,6 +472,7 @@ describe("a streaming turn does not rebuild the subagent forest", () => {
       ];
       shell.emit("agents", { agents: roster });
       shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      shell.press("session-context-toggle");
       expect(shell.el("session-context-subagents")).not.toBeNull();
 
       // The band is on screen and its rows have rendered. From here the
@@ -476,6 +508,7 @@ describe("a streaming turn does not rebuild the subagent forest", () => {
       const scout = agent("agt_a:sub:1", { name: "Scout", parentAgentId: "agt_a", acpSessionId: "s1" });
       shell.emit("agents", { agents: [...ALPHA, scout] });
       shell.emit("session_history", { agentId: "agt_a", sessionId: "sess_a", entries: [], nextBefore: null });
+      shell.press("session-context-toggle");
       builds.subagentsOf = 0;
 
       shell.emit("agents", { agents: [...ALPHA, { ...scout, state: "stopped" as const }] });

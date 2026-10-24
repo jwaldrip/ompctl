@@ -144,10 +144,11 @@ export type SessionLoadPhase = "loading" | "ready" | "failed" | "stalled";
  *
  * What arms it: a fleet row press, a resume the daemon answered, or a join
  * the daemon answered, each of which sends a request whose answer always
- * comes back. What settles it: that subject's own authoritative data --
- * a `session_history` page, an `update`, a `session_tail` page, a terminal's
- * turn progress, or a refusal addressed to it. What stalls it: the link
- * dropping before any of those arrived.
+ * comes back. What settles it: a `session_history` page for an owned agent;
+ * a terminal's own `session_tail` / turn progress; or a refusal addressed to
+ * it. An owned session's history page is the load boundary even when update
+ * frames arrive first, because it is the only reply that establishes an
+ * honestly empty log.
  *
  * Never armed by a frame, only by a selection or by the reconnect that
  * re-asks for a stalled subject. A late answer for a subject the operator
@@ -619,14 +620,16 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
         live !== undefined && live.state !== "busy"
           ? withSession(applied, agentId, session => endTurn(session))
           : applied;
-      return { ...settleLoad(next, agentId), watermarks, rosterMisses };
+      // A replayed update can arrive before the explicit history page. It
+      // belongs to the incoming session, but it cannot end the named loading
+      // state: otherwise an optimistic assistant placeholder can leave the
+      // user staring at a blank transcript before the page establishes what
+      // history exists.
+      return { ...next, watermarks, rosterMisses };
     }
     case "approval": {
       const { agentId, requestId, tool, title, input } = event.event;
-      const next = settleLoad(
-        withSession(state, agentId, session => appendApproval(session, { requestId, tool, title, input })),
-        agentId,
-      );
+      const next = withSession(state, agentId, session => appendApproval(session, { requestId, tool, title, input }));
       if (agentId === state.selected) return next;
       const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
       return { ...next, notice: `${name} needs a clearance.`, noticeAboutLink: false };
@@ -634,10 +637,7 @@ export function apply(state: ConsoleState, event: ConsoleEvent): ConsoleState {
 
     case "plan_review": {
       const { agentId, requestId, message, choices } = event.event;
-      const next = settleLoad(
-        withSession(state, agentId, session => setPlanReview(session, { requestId, message, choices })),
-        agentId,
-      );
+      const next = withSession(state, agentId, session => setPlanReview(session, { requestId, message, choices }));
       if (agentId === state.selected) return next;
       const name = state.agents.find(agent => agent.id === agentId)?.name ?? "An agent";
       return { ...next, notice: `${name} needs a plan review.`, noticeAboutLink: false };

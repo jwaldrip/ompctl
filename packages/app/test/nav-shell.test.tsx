@@ -479,6 +479,17 @@ describe("the agent hub does not reserve space it has nothing to say in", () => 
       shell.press("agent-hub-open-agt_scout");
       expect(shell.client.attached).toContain("agt_scout");
       expect(shell.el("session-name")?.textContent).toBe("Policy Scout");
+      // A replay can race ahead of the history page. The opened screen keeps
+      // its named loading surface until this authoritative page arrives.
+      act(() => {
+        shell.client.emit("session_history", {
+          t: "session_history",
+          agentId: "agt_scout",
+          sessionId: "sub-session",
+          entries: [],
+          nextBefore: null,
+        });
+      });
 
       act(() => {
         shell.client.emit("update", {
