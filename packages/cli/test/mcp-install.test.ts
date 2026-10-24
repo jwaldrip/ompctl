@@ -199,6 +199,47 @@ describe("registering ompd with omp", () => {
     expect(readFileSync(`${path}.bak`, "utf8")).toBe(REAL_CONFIG);
   });
 
+  test("the .bak carries the config's own mode, never a mode already sitting at that name", () => {
+    const dir = scratchDir();
+    const path = join(dir, "mcp.json");
+    writeFileSync(path, REAL_CONFIG);
+    chmodSync(path, 0o600);
+    // A file already at the backup name, left loose. `copyFileSync` opens an
+    // existing destination O_TRUNC on Linux and ignores its mode argument, so
+    // the copy would keep these bits and hold a config that carries
+    // credentials in its server URLs.
+    writeFileSync(`${path}.bak`, "stale");
+    chmodSync(`${path}.bak`, 0o666);
+
+    install(path, "/opt/bin/ompd");
+
+    expect(readFileSync(`${path}.bak`, "utf8")).toBe(REAL_CONFIG);
+    expect(statSync(`${path}.bak`).mode & 0o777).toBe(0o600);
+  });
+
+  test("a config that cannot be read is refused rather than overwritten with no backup", () => {
+    const dir = scratchDir();
+    // A directory at the config path: statSync succeeds, so this is not the
+    // errno under test. Point at a path whose PARENT is unreadable instead,
+    // which is the shape that yields EACCES on the stat and used to read as
+    // "no file yet", skipping the backup and renaming over whatever was there.
+    const locked = join(dir, "locked");
+    mkdirSync(locked, { recursive: true });
+    const path = join(locked, "mcp.json");
+    writeFileSync(path, REAL_CONFIG);
+    chmodSync(locked, 0o000);
+
+    try {
+      expect(() => install(path, "/opt/bin/ompd")).toThrow(/refusing to overwrite a config this command cannot copy/);
+    } finally {
+      // Restore before the scratch teardown, or rmSync cannot descend.
+      chmodSync(locked, 0o700);
+    }
+
+    expect(readFileSync(path, "utf8")).toBe(REAL_CONFIG);
+    expect(existsSync(`${path}.bak`)).toBe(false);
+  });
+
   test("a fresh config is created 0600, and a tightened one keeps its mode", () => {
     const dir = scratchDir();
     const fresh = join(dir, "fresh", "mcp.json");
