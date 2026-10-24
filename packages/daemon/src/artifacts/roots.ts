@@ -41,7 +41,6 @@
  *   files cannot exhaust daemon or phone memory.
  */
 
-import type { Stats } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, sep } from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
@@ -143,7 +142,7 @@ export async function verifyArtifactPath(path: string, allowedRoots: readonly st
     throw new ArtifactRefusal("out_of_roots", `${path} resolves outside allowed roots`);
   }
 
-  let info: Stats;
+  let info;
   try {
     info = await stat(real);
   } catch {

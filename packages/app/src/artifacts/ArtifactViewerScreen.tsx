@@ -103,6 +103,7 @@ export function ArtifactViewerScreen({
         return <DiffViewer artifact={activeArtifact} />;
       case "html":
         return <HtmlViewer artifact={activeArtifact} />;
+      case "fallback":
       default:
         return <FallbackViewer artifact={activeArtifact} />;
     }

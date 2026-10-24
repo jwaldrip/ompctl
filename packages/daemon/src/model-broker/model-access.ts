@@ -85,19 +85,6 @@ const DEFAULT_GRANT_TTL_MS = 24 * 60 * 60 * 1_000;
 const THINKING_LEVEL = /:[^:/]+$/;
 
 /**
- * The one normalization from a configured model reference to the id the
- * gateway matches. Exported because it was not, and a proof script
- * reimplemented it and then drifted: `scripts/check-container-model-turn.ts`
- * trimmed without stripping the level, so a host configured
- * `anthropic/claude-opus-5:xhigh` made the proof expect an id the broker never
- * grants, and the script reported a failure the product did not have. One
- * implementation, imported by both, is what stops that recurring.
- */
-export function normalizeModelReference(candidate: string): string {
-  return candidate.trim().replace(THINKING_LEVEL, "");
-}
-
-/**
  * The two lifecycle events this class records.
  *
  * Narrow on purpose. The daemon's audit trail takes a closed union, so a literal
@@ -699,7 +686,7 @@ export class DaemonModelAccess implements ModelAccessProvider {
       ]);
     }
 
-    const model = normalizeModelReference(candidate);
+    const model = candidate.trim().replace(THINKING_LEVEL, "");
     if (model === "") {
       this.#fail("model.grant", { model: null, network }, [
         `\`modelRoles.default\` in ${path} is only a thinking level and names no model. Set it to a`,
@@ -712,7 +699,7 @@ export class DaemonModelAccess implements ModelAccessProvider {
 
   /** The daemon's own `containerModel`, or null when it is unset. */
   #configuredModel(): string | null {
-    const configured = normalizeModelReference(this.#model);
+    const configured = this.#model.trim().replace(THINKING_LEVEL, "");
     return configured === "" ? null : configured;
   }
 

@@ -211,7 +211,13 @@ describe("the transcript seam", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => {
-      root.render(entries.map(entry => <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />));
+      root.render(
+        <>
+          {entries.map(entry => (
+            <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+          ))}
+        </>,
+      );
     });
     return {
       host,
@@ -281,7 +287,13 @@ describe("repeated blocks keep distinct keys", () => {
     const root = createRoot(host);
     try {
       act(() => {
-        root.render(entries.map(entry => <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />));
+        root.render(
+          <>
+            {entries.map(entry => (
+              <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+            ))}
+          </>,
+        );
       });
     } finally {
       console.error = original;

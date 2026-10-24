@@ -8,9 +8,7 @@
  */
 
 import { existsSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { dangerousMountReason } from "@ompd/core";
 import { describeEndpoint, type EndpointOffer } from "@ompd/core/pairing";
 import {
   alreadyRunningLines,
@@ -150,15 +148,10 @@ export async function startCommand(ctx: CliContext, cmd: Extract<Command, { kind
 
   if (!cmd.foreground) return backgroundStart(ctx, cmd, overrides);
 
-  const home = ctx.env.HOME ?? homedir();
-  const isProtectedOrHome =
-    ctx.cwd === home || ctx.env.OMPD_MANAGED_PLIST === "1" || dangerousMountReason(ctx.cwd) !== null;
-  const repoRoot = isProtectedOrHome ? undefined : ctx.cwd;
-
   const daemon = (ctx.createDaemon ?? ((opts: OmpdOptions) => new Ompd(opts)))({
     home: ctx.home,
     overrides,
-    repoRoot,
+    repoRoot: ctx.cwd,
     onLog: line => ctx.out(line),
   });
 

@@ -51,7 +51,11 @@ describe("composer submit", () => {
     const root = createRoot(host);
     act(() => {
       root.render(
-        session.entries.map(entry => <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />),
+        <>
+          {session.entries.map(entry => (
+            <OmpEntryRow key={entry.id} entry={entry} canApprove onDecide={() => {}} />
+          ))}
+        </>,
       );
     });
 
