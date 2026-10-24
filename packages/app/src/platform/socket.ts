@@ -83,22 +83,29 @@ class WebSocketWire implements TunnelSocketLike {
   readonly #ws: WebSocket;
 
   constructor(url: string) {
+    // TEMPORARY DIAGNOSTIC
+    console.warn(`[SOCKDIAG] open ${url.replace(/token=[^&]*/, "token=<redacted>")}`);
     this.#ws = new WebSocket(url);
     this.readyState = this.#ws.readyState;
     this.#ws.onopen = () => {
       this.readyState = this.#ws.readyState;
+      console.warn("[SOCKDIAG] wire open");
       this.onopen?.();
     };
     this.#ws.onclose = event => {
       this.readyState = this.#ws.readyState;
+      console.warn(`[SOCKDIAG] wire close code=${event.code} reason=${String(event.reason).slice(0, 160)}`);
       this.onclose?.({ code: event.code, reason: event.reason });
     };
     this.#ws.onerror = event => {
       const message: unknown = Reflect.get(event, "message");
+      console.warn(`[SOCKDIAG] wire error ${String(message).slice(0, 200)}`);
       this.onerror?.({ message: typeof message === "string" ? message : "hub socket error" });
     };
     this.#ws.onmessage = event => {
-      this.onmessage?.(typeof event.data === "string" ? event.data : String(event.data));
+      const raw = typeof event.data === "string" ? event.data : String(event.data);
+      console.warn(`[SOCKDIAG] wire msg bytes=${raw.length} head=${raw.slice(0, 60)}`);
+      this.onmessage?.(raw);
     };
   }
 

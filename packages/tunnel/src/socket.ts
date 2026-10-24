@@ -352,6 +352,8 @@ class TunnelSocket implements TunnelSocketLike {
   }
 
   #fail(message: string, code = 4500): void {
+    // TEMPORARY DIAGNOSTIC
+    console.warn(`[TUNDIAG] fail code=${code} phase=${this.#phase} expected=${this.#expected} ${message.slice(0, 200)}`);
     this.onerror?.({ message });
     this.#finish(code, message);
     this.#wire.close(code, "tunnel failed");
