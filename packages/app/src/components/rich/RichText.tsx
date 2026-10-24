@@ -32,7 +32,7 @@ import type { RichSpan } from "./blocks.ts";
 import { DiffBlock, isDiffText } from "./DiffBlock.tsx";
 import { highlight } from "./highlight.ts";
 import { tokenColor } from "./highlight-theme.ts";
-import { type RichBlock, parseRich } from "./parse.ts";
+import { parseRich, type RichBlock } from "./parse.ts";
 
 /** Flat inline runs. Nesting a `Text` per span lets RN inherit the block's size and colour. */
 function Spans({ spans }: { spans: readonly RichSpan[] }): JSX.Element {
