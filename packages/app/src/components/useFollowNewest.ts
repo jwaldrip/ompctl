@@ -90,16 +90,51 @@ export interface FollowNewest {
 }
 
 /**
+ * When the deferred settling pass runs.
+ *
+ * Injectable only so a test can run it on demand. Production always uses the
+ * next frame, which is the earliest point the list has measured the row that
+ * arrived with this content-size change.
+ */
+export type Schedule = (run: () => void) => void;
+
+const nextFrame: Schedule = run => {
+  requestAnimationFrame(run);
+};
+
+/**
  * The follow decision, as ordinary state.
  *
  * One per surface, held across renders by the hook below. Everything a caller
  * needs is bound here rather than recreated per render, so the handlers keep
  * stable identities without a memo.
  */
-export function createFollower(): FollowNewest {
+export function createFollower(schedule: Schedule = nextFrame): FollowNewest {
   let list: ScrollsToEnd | null = null;
   let painted = false;
   let nearBottom = true;
+  let settling = false;
+
+  // A `scrollToEnd` reaches only the end the list knows about, and on iOS a
+  // `VirtualizedList` has not measured the row that arrived with this very
+  // content-size change: it is estimating. Measured on an iPad, the transcript
+  // scrolled 27 rows and stopped one short, leaving the newest agent reply
+  // mounted just below the fold with no gap under it, which is the row the
+  // operator opened the session for. So the immediate pass keeps the common
+  // case instant, and one deferred pass afterwards reaches the end the list
+  // has since measured.
+  const toEnd = (): void => {
+    try {
+      // Never animated. This runs on the first paint and on every arriving
+      // entry of a streaming turn, where an animation would be a permanent
+      // slide rather than a transition.
+      list?.scrollToEnd({ animated: false });
+    } catch {
+      // A host with no real scroller has nothing to scroll, and the newest
+      // entry is already the last thing drawn. A missing scroller must not
+      // take the surface down with it.
+    }
+  };
 
   return {
     ref: (next: ScrollsToEnd | null): void => {
@@ -119,16 +154,19 @@ export function createFollower(): FollowNewest {
       // follows only from the bottom, which is what leaves a prepend alone.
       if (painted && !nearBottom) return;
       painted = true;
-      try {
-        // Never animated. This runs on the first paint and on every arriving
-        // entry of a streaming turn, where an animation would be a permanent
-        // slide rather than a transition.
-        list?.scrollToEnd({ animated: false });
-      } catch {
-        // A host with no real scroller has nothing to scroll, and the newest
-        // entry is already the last thing drawn. A missing scroller must not
-        // take the surface down with it.
-      }
+      toEnd();
+      // One pass in flight is enough: a streaming turn changes content size
+      // faster than a frame, and stacking a pass per change would scroll long
+      // after the operator's own scroll had taken over.
+      if (settling) return;
+      settling = true;
+      schedule(() => {
+        settling = false;
+        // Re-checked rather than assumed: the operator may have scrolled away
+        // during the frame, and their position outranks a pass scheduled
+        // before it.
+        if (nearBottom) toEnd();
+      });
     },
 
     scrollEventThrottle: SCROLL_EVENT_THROTTLE_MS,

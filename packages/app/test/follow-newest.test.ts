@@ -45,9 +45,12 @@ function scrollTo(
  * outside a component, and rendering a host component to reach one would put a
  * renderer between the assertion and the rule.
  */
-function follower(): { follow: FollowNewest; ends: number } {
+function follower(): { follow: FollowNewest; ends: number; settle: () => void } {
   const state = { ends: 0 };
-  const follow = createFollower();
+  const deferred: (() => void)[] = [];
+  const follow = createFollower(run => {
+    deferred.push(run);
+  });
   follow.ref({
     scrollToEnd: () => {
       state.ends += 1;
@@ -57,6 +60,11 @@ function follower(): { follow: FollowNewest; ends: number } {
     follow,
     get ends() {
       return state.ends;
+    },
+    // Runs whatever the follower deferred, standing in for the next frame.
+    settle: () => {
+      const queued = deferred.splice(0, deferred.length);
+      for (const run of queued) run();
     },
   };
 }
@@ -112,6 +120,36 @@ describe("following the newest entry", () => {
     // away from the bottom first. The older page then grows the content.
     f.follow.onScroll(scrollTo(0, 2000, 800));
     f.follow.onContentSizeChange();
+    expect(f.ends).toBe(1);
+  });
+
+  test("the first paint scrolls again once the list has measured the row that arrived", () => {
+    // Measured on an iPad: one pass reached the end the list knew about and
+    // stopped one row short, leaving the newest agent reply below the fold.
+    const f = follower();
+    f.follow.onContentSizeChange();
+    expect(f.ends).toBe(1);
+    f.settle();
+    expect(f.ends).toBe(2);
+  });
+
+  test("a burst of arriving entries settles once, not once per change", () => {
+    // A streaming turn changes content size faster than a frame, and a pass
+    // per change would keep scrolling after the operator had taken over.
+    const f = follower();
+    f.follow.onContentSizeChange();
+    f.follow.onContentSizeChange();
+    f.follow.onContentSizeChange();
+    expect(f.ends).toBe(3);
+    f.settle();
+    expect(f.ends).toBe(4);
+  });
+
+  test("a settling pass yields to an operator who scrolled away during the frame", () => {
+    const f = follower();
+    f.follow.onContentSizeChange();
+    f.follow.onScroll(scrollTo(0, 2000, 800));
+    f.settle();
     expect(f.ends).toBe(1);
   });
 
