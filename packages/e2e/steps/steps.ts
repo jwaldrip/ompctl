@@ -10,12 +10,32 @@ import { Given, Then, When } from "@cucumber/cucumber";
 import { strict as assert } from "node:assert";
 import type { OmpctlWorld } from "../support/world.ts";
 
+const nonceByWorld = new WeakMap<OmpctlWorld, string>();
+
+/**
+ * Resolves the usual World placeholders, plus the per-scenario nonce used by
+ * the path prompt and its reply assertion. The WeakMap follows Cucumber's
+ * scenario lifetime without broadening the World contract, and a fresh value
+ * prevents an earlier run's transcript from satisfying this run.
+ */
+function resolveFeatureValue(world: OmpctlWorld, value: string): string {
+  const resolved = world.resolve(value);
+  if (!resolved.includes("<nonce>")) return resolved;
+
+  let nonce = nonceByWorld.get(world);
+  if (nonce === undefined) {
+    nonce = `ompctl-path-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    nonceByWorld.set(world, nonce);
+  }
+  return resolved.replaceAll("<nonce>", nonce);
+}
+
 When("I select {string}", async function (this: OmpctlWorld, testId: string) {
   await this.app.tap(testId);
 });
 
 When("I fill in {string} with {string}", async function (this: OmpctlWorld, testId: string, value: string) {
-  await this.app.fill(testId, this.resolve(value));
+  await this.app.fill(testId, resolveFeatureValue(this, value));
 });
 
 When("I dismiss the keyboard", async function (this: OmpctlWorld) {
@@ -86,7 +106,7 @@ Then("the agent replies in {string} echoing {string}", async function (
   listId: string,
   needle: string,
 ) {
-  const expected = this.resolve(needle);
+  const expected = resolveFeatureValue(this, needle);
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     await this.app.scrollToEnd(listId);
