@@ -24,6 +24,7 @@ ompctl puts the sessions already running on your machine onto whatever device yo
 - **Open one and talk to it.** Including a session you started yourself in a terminal, which keeps rendering exactly where it is while your message lands in it.
 - **Answer the thing that is blocking it.** Approvals, plan reviews, elicitations. The decision, not the transcript.
 - **Say it out loud.** Dictate into a session and hear the reply read back, on device, no cloud speech.
+- **Inspect the work, not its filename.** Images, video, code, diffs and sandboxed HTML open in purpose-built viewers, including range-backed video seeking and a safe way to hand HTML to a real browser.
 - **Start work without you.** Routines run on a schedule or a webhook and hand you sessions to look at afterward.
 - **From anywhere.** Your laptop is behind NAT and asleep half the time. The daemon dials out, so no port forwarding, no VPN, no static IP.
 
@@ -97,7 +98,6 @@ Stated plainly, because a README that only lists wins is a sales page.
 - **No push notifications.** Nothing can tell you a decision is waiting. You have to open the app. This is the biggest gap.
 - **No true co-drive.** A phone and a terminal cannot both hold one session at once. Steering a live terminal works; sharing it does not, and it waits on upstream OMP collab.
 - **Model is visible, not settable.** Every control frame is keyed to a daemon-owned agent, and a terminal session has none.
-- **Artifacts render as text.** Images, video, diffs and HTML that a session produces are on their way, not landed.
 
 ## Repository
 
@@ -123,7 +123,7 @@ bun run test     # the suite
 bun run build:cli
 ```
 
-Requires [Bun](https://bun.sh) and a working `omp` on your PATH.
+Requires [Bun](https://bun.sh). If `omp` is installed, ompd uses it. Otherwise the packaged daemon falls back to the bundled OMP version after checking that its major version is compatible with the existing `~/.omp` state.
 
 ## License
 
