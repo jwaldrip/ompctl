@@ -11,10 +11,31 @@ import {
   type SanitizedManifest,
 } from "./types.ts";
 
+/**
+ * Deterministically serialize any JSON-serializable value with keys sorted
+ * at every nesting depth.
+ */
+export function canonicalJson(val: unknown): string {
+  if (val === null || typeof val !== "object") {
+    return JSON.stringify(val);
+  }
+
+  if (Array.isArray(val)) {
+    return `[${val.map(canonicalJson).join(",")}]`;
+  }
+
+  const obj = val as Record<string, unknown>;
+  const sortedKeys = Object.keys(obj).sort();
+  const entries = sortedKeys.map(
+    (k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`
+  );
+  return `{${entries.join(",")}}`;
+}
+
 export function computeManifestChecksum(
   manifest: Omit<SanitizedManifest, "checksum">
 ): string {
-  const canonical = JSON.stringify(manifest, Object.keys(manifest).sort());
+  const canonical = canonicalJson(manifest);
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(canonical);
   return hasher.digest("hex");
@@ -61,7 +82,10 @@ export function createSanitizedManifest(params: {
   };
 }
 
-export function verifyManifest(manifest: unknown): SanitizedManifest {
+export function verifyManifest(
+  manifest: unknown,
+  expectedSha?: string
+): SanitizedManifest {
   if (!manifest || typeof manifest !== "object") {
     throw new Error("Invalid manifest: must be an object");
   }
@@ -106,12 +130,14 @@ export function verifyManifest(manifest: unknown): SanitizedManifest {
   if (!Array.isArray(addresses)) {
     throw new Error("Manifest terraformAddresses must be an array");
   }
-  const allowedAddresses = new Set<string>(BASELINE_TERRAFORM_ADDRESSES);
+  const allowedAddresses: Record<string, true> = Object.fromEntries(
+    BASELINE_TERRAFORM_ADDRESSES.map((a) => [a, true])
+  );
   for (const addr of addresses) {
     if (typeof addr !== "string") {
       throw new Error(`Invalid terraform address in manifest: ${String(addr)}`);
     }
-    if (!allowedAddresses.has(addr)) {
+    if (!allowedAddresses[addr]) {
       throw new Error(`Unpermitted address in manifest: ${addr}`);
     }
   }
@@ -120,9 +146,11 @@ export function verifyManifest(manifest: unknown): SanitizedManifest {
   if (!Array.isArray(mappings)) {
     throw new Error("Manifest outOfStateDomainMappings must be an array");
   }
-  const allowedMappings = new Set<string>(CONFIRMED_CLOUD_RUN_MAPPINGS);
+  const allowedMappings: Record<string, true> = Object.fromEntries(
+    CONFIRMED_CLOUD_RUN_MAPPINGS.map((m) => [m, true])
+  );
   for (const mapping of mappings) {
-    if (typeof mapping !== "string" || !allowedMappings.has(mapping)) {
+    if (typeof mapping !== "string" || !allowedMappings[mapping]) {
       throw new Error(`Unpermitted domain mapping in manifest: ${String(mapping)}`);
     }
   }
@@ -130,6 +158,14 @@ export function verifyManifest(manifest: unknown): SanitizedManifest {
   const claimedChecksum = m.checksum;
   if (typeof claimedChecksum !== "string" || claimedChecksum.length !== 64) {
     throw new Error("Manifest checksum missing or invalid format");
+  }
+
+  if (expectedSha && expectedSha.trim() !== "") {
+    if (claimedChecksum !== expectedSha.trim()) {
+      throw new Error(
+        `Manifest approval mismatch: operator supplied manifest_sha '${expectedSha.trim()}', but manifest carries '${claimedChecksum}'. Mutation aborted.`
+      );
+    }
   }
 
   const { checksum: _discard, ...rest } = m;

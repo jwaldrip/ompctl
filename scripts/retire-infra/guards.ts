@@ -18,6 +18,7 @@ export interface PlanValidationResult {
     create: number;
     update: number;
     delete: number;
+    noOpOrRead: number;
   };
 }
 
@@ -33,6 +34,14 @@ export function validateProjectIdentity(
   if (!projectNumber || projectNumber.trim() !== EXPECTED_PROJECT_NUMBER) {
     throw new Error(
       `Project number guard failed: expected '${EXPECTED_PROJECT_NUMBER}', got '${projectNumber}'`
+    );
+  }
+}
+
+export function validateProjectDeleterPermission(hasPermission: boolean): void {
+  if (!hasPermission) {
+    throw new Error(
+      "Project deletion permission guard failed: caller identity lacks 'resourcemanager.projects.delete' on project 'ompctl'. Project shutdown cannot succeed. Grant 'roles/resourcemanager.projectDeleter' before proceeding."
     );
   }
 }
@@ -69,28 +78,40 @@ export function validateTerraformPlanForPrepare(
   let createCount = 0;
   let deleteCount = 0;
   let updateCount = 0;
+  let noOpCount = 0;
   const affected: string[] = [];
 
-  const allowedToUpdate = new Set<string>([
-    "google_cloud_run_v2_service.hub",
-    "google_cloud_run_v2_service.web",
-  ]);
+  const allowedServices: Record<string, true> = {
+    "google_cloud_run_v2_service.hub": true,
+    "google_cloud_run_v2_service.web": true,
+  };
+
+  const preparedServices: Record<string, true> = {};
 
   for (const rc of changes) {
     const actions = rc.change.actions;
-    if (actions.includes("create")) createCount++;
-    if (actions.includes("delete")) deleteCount++;
-    if (actions.includes("update")) updateCount++;
-
     const isNoOp =
       actions.length === 1 && (actions[0] === "no-op" || actions[0] === "read");
+
+    if (actions.includes("create")) createCount++;
+    if (actions.includes("delete")) deleteCount++;
+
     if (isNoOp) {
+      noOpCount++;
+      // If service is already prepared (deletion_protection is already false), record it as prepared
+      if (allowedServices[rc.address]) {
+        const before = (rc.change.before ?? {}) as Record<string, unknown>;
+        if (before.deletion_protection === false) {
+          preparedServices[rc.address] = true;
+        }
+      }
       continue;
     }
 
+    if (actions.includes("update")) updateCount++;
     affected.push(rc.address);
 
-    if (!allowedToUpdate.has(rc.address)) {
+    if (!allowedServices[rc.address]) {
       throw new Error(
         `Prepare plan drift: unexpected resource change for '${rc.address}' with actions [${actions.join(
           ", "
@@ -106,7 +127,6 @@ export function validateTerraformPlanForPrepare(
       );
     }
 
-    // Verify that ONLY deletion_protection is changing to false
     const before = (rc.change.before ?? {}) as Record<string, unknown>;
     const after = (rc.change.after ?? {}) as Record<string, unknown>;
 
@@ -118,9 +138,20 @@ export function validateTerraformPlanForPrepare(
       );
     }
 
-    // Assert that runtime definitions did not drift
-    assertPropertyUnchanged(rc.address, "template", before.template, after.template);
-    assertPropertyUnchanged(rc.address, "ingress", before.ingress, after.ingress);
+    // Comprehensive field comparison: only deletion_protection is allowed to change.
+    // Every other property in before and after must remain identical.
+    const allKeys = Array.from(
+      new Set([...Object.keys(before), ...Object.keys(after)])
+    );
+
+    for (const key of allKeys) {
+      if (key === "deletion_protection") {
+        continue;
+      }
+      assertPropertyUnchanged(rc.address, key, before[key], after[key]);
+    }
+
+    preparedServices[rc.address] = true;
   }
 
   if (createCount > 0 || deleteCount > 0) {
@@ -129,11 +160,10 @@ export function validateTerraformPlanForPrepare(
     );
   }
 
-  const updatedSet = new Set(affected);
-  for (const required of allowedToUpdate) {
-    if (!updatedSet.has(required)) {
+  for (const requiredService of Object.keys(allowedServices)) {
+    if (!preparedServices[requiredService]) {
       throw new Error(
-        `Prepare plan missing expected update for '${required}'. Both services must have deletion_protection flipped to false.`
+        `Prepare plan missing expected update for '${requiredService}'. Both services must have deletion_protection flipped to false.`
       );
     }
   }
@@ -145,6 +175,7 @@ export function validateTerraformPlanForPrepare(
       create: createCount,
       update: updateCount,
       delete: deleteCount,
+      noOpOrRead: noOpCount,
     },
   };
 }
@@ -155,7 +186,6 @@ function assertPropertyUnchanged(
   beforeVal: unknown,
   afterVal: unknown
 ): void {
-  // If both are undefined/null, no change
   if (beforeVal === afterVal) return;
 
   const beforeStr = JSON.stringify(beforeVal ?? {});
@@ -178,12 +208,17 @@ export function validateTerraformPlanForDestroy(
   const plan = planJson as TerraformPlanJson;
   const changes = plan.resource_changes ?? [];
 
-  const allowedAddresses = new Set<string>(manifest.terraformAddresses);
-  const baselineAddresses = new Set<string>(BASELINE_TERRAFORM_ADDRESSES);
+  const allowedAddresses: Record<string, true> = Object.fromEntries(
+    manifest.terraformAddresses.map((a) => [a, true])
+  );
+  const baselineAddresses: Record<string, true> = Object.fromEntries(
+    BASELINE_TERRAFORM_ADDRESSES.map((a) => [a, true])
+  );
 
   let deleteCount = 0;
   let createCount = 0;
   let updateCount = 0;
+  let noOpCount = 0;
   const affected: string[] = [];
 
   for (const rc of changes) {
@@ -191,6 +226,7 @@ export function validateTerraformPlanForDestroy(
     const isNoOp =
       actions.length === 1 && (actions[0] === "no-op" || actions[0] === "read");
     if (isNoOp) {
+      noOpCount++;
       continue;
     }
 
@@ -208,13 +244,13 @@ export function validateTerraformPlanForDestroy(
       );
     }
 
-    if (!allowedAddresses.has(rc.address)) {
+    if (!allowedAddresses[rc.address]) {
       throw new Error(
         `Destroy plan rejected: resource '${rc.address}' is not present in the approved manifest deletion set.`
       );
     }
 
-    if (!baselineAddresses.has(rc.address)) {
+    if (!baselineAddresses[rc.address]) {
       throw new Error(
         `Destroy plan rejected: resource '${rc.address}' is not in the baseline 19 addresses.`
       );
@@ -238,6 +274,7 @@ export function validateTerraformPlanForDestroy(
       create: createCount,
       update: updateCount,
       delete: deleteCount,
+      noOpOrRead: noOpCount,
     },
   };
 }
@@ -265,39 +302,105 @@ export function validateNameserverDelegation(
     throw new Error(
       `Nameserver guard failed: registrar nameservers for ompctl.ai still delegate to Cloud DNS (${currentNameservers.join(
         ", "
-      )}). Destroying the Cloud DNS zone while parent delegation is active creates a dangling nameserver hijacking vulnerability. Switch nameservers at Squarespace before running destroy, or pass skip_nameserver_check=true with verified justification.`
+      )}). Destroying the Cloud DNS zone or deleting the project while parent delegation is active creates a dangling nameserver hijacking vulnerability. Switch nameservers at Squarespace to dormant/default DNS before running destroy, or pass skip_nameserver_check=true with verified justification.`
     );
   }
 }
 
-interface TerraformStateResource {
+export interface ExtractedResource {
+  address: string;
   type: string;
   name: string;
-  instances?: Array<{
-    attributes?: Record<string, unknown>;
-  }>;
+  mode: string;
+  attributes: Record<string, unknown>;
 }
 
-interface TerraformStateJson {
-  resources?: TerraformStateResource[];
+/**
+ * Robustly extract state resources from both 'terraform show -json' representation
+ * (where resources live under values.root_module.resources[].values) and legacy
+ * raw state files (resources[].instances[].attributes).
+ */
+export function extractStateResources(stateJson: unknown): ExtractedResource[] {
+  if (!stateJson || typeof stateJson !== "object") {
+    return [];
+  }
+
+  const result: ExtractedResource[] = [];
+  const root = stateJson as Record<string, unknown>;
+
+  // Format A: terraform show -json format (values.root_module)
+  if (root.values && typeof root.values === "object") {
+    const valuesObj = root.values as Record<string, unknown>;
+    const collectModule = (mod: Record<string, unknown>) => {
+      const resources = mod.resources;
+      if (Array.isArray(resources)) {
+        for (const res of resources) {
+          if (res && typeof res === "object") {
+            const r = res as Record<string, unknown>;
+            result.push({
+              address: typeof r.address === "string" ? r.address : `${String(r.type)}.${String(r.name)}`,
+              type: typeof r.type === "string" ? r.type : "",
+              name: typeof r.name === "string" ? r.name : "",
+              mode: typeof r.mode === "string" ? r.mode : "managed",
+              attributes: (r.values ?? {}) as Record<string, unknown>,
+            });
+          }
+        }
+      }
+      const childModules = mod.child_modules;
+      if (Array.isArray(childModules)) {
+        for (const child of childModules) {
+          if (child && typeof child === "object") {
+            collectModule(child as Record<string, unknown>);
+          }
+        }
+      }
+    };
+
+    if (valuesObj.root_module && typeof valuesObj.root_module === "object") {
+      collectModule(valuesObj.root_module as Record<string, unknown>);
+    }
+    return result;
+  }
+
+  // Format B: raw state format (resources[].instances[].attributes)
+  if (Array.isArray(root.resources)) {
+    for (const res of root.resources) {
+      if (res && typeof res === "object") {
+        const r = res as Record<string, unknown>;
+        const typeStr = typeof r.type === "string" ? r.type : "";
+        const nameStr = typeof r.name === "string" ? r.name : "";
+        const modeStr = typeof r.mode === "string" ? r.mode : "managed";
+        const instances = r.instances;
+        if (Array.isArray(instances) && instances.length > 0) {
+          for (const inst of instances) {
+            if (inst && typeof inst === "object") {
+              const instObj = inst as Record<string, unknown>;
+              result.push({
+                address: `${typeStr}.${nameStr}`,
+                type: typeStr,
+                name: nameStr,
+                mode: modeStr,
+                attributes: (instObj.attributes ?? {}) as Record<string, unknown>,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return result;
 }
 
 export function validateCloudRunStateProtection(stateJson: unknown): void {
-  if (!stateJson || typeof stateJson !== "object") {
-    throw new Error("Invalid state JSON");
-  }
-
-  const state = stateJson as TerraformStateJson;
-  const resources = state.resources ?? [];
-
-  const checked = new Set<string>();
+  const resources = extractStateResources(stateJson);
+  const checked: Record<string, true> = {};
 
   for (const res of resources) {
     if (res.type === "google_cloud_run_v2_service") {
       const name = res.name;
-      const instance = res.instances?.[0];
-      const attrs = instance?.attributes ?? {};
-      const deletionProtection = attrs.deletion_protection;
+      const deletionProtection = res.attributes.deletion_protection;
 
       if (deletionProtection !== false) {
         throw new Error(
@@ -306,13 +409,13 @@ export function validateCloudRunStateProtection(stateJson: unknown): void {
           )}, expected false.`
         );
       }
-      checked.add(name);
+      checked[name] = true;
     }
   }
 
-  if (!checked.has("hub") || !checked.has("web")) {
+  if (!checked.hub || !checked.web) {
     throw new Error(
-      `Cloud Run deletion protection validation failed: expected state to contain both 'hub' and 'web' services, found [${Array.from(
+      `Cloud Run deletion protection validation failed: expected state to contain both 'hub' and 'web' services, found [${Object.keys(
         checked
       ).join(", ")}]`
     );
@@ -320,18 +423,13 @@ export function validateCloudRunStateProtection(stateJson: unknown): void {
 }
 
 export function validateEmptyTerraformState(stateJson: unknown): void {
-  if (!stateJson || typeof stateJson !== "object") {
-    throw new Error("Invalid state JSON");
-  }
-
-  const state = stateJson as TerraformStateJson;
-  const resources = state.resources ?? [];
-  const managedResources = resources.filter(
-    (r) => r.type !== "terraform_data" && (r.instances?.length ?? 0) > 0
+  const resources = extractStateResources(stateJson);
+  const managed = resources.filter(
+    (r) => r.mode === "managed" && r.type !== "terraform_data"
   );
 
-  if (managedResources.length > 0) {
-    const addresses = managedResources.map((r) => `${r.type}.${r.name}`).join(", ");
+  if (managed.length > 0) {
+    const addresses = managed.map((r) => r.address).join(", ");
     throw new Error(
       `Terraform state is not empty after destroy! Remaining managed resources: ${addresses}`
     );

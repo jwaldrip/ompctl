@@ -2,7 +2,8 @@ name: retire-infra
 
 # Guarded decommissioning pipeline for ompctl hosted infrastructure.
 # Manual execution only on the default branch.
-# Destructive operations require explicit confirmation token 'CONFIRM-RETIRE-OMPCTL'.
+# Destructive operations require explicit confirmation token 'CONFIRM-RETIRE-OMPCTL'
+# and the approved inventory manifest checksum and run ID.
 
 on:
   workflow_dispatch:
@@ -29,6 +30,11 @@ on:
         required: false
         type: string
         default: ""
+      inventory_run_id:
+        description: "GitHub Actions Run ID of the successful inventory run (required for mutation stages)"
+        required: false
+        type: string
+        default: ""
       target_project_id:
         description: "Target Google Cloud Project ID (must be ompctl)"
         required: true
@@ -52,6 +58,8 @@ concurrency:
 permissions:
   contents: read
   id-token: write
+  pages: write
+  actions: read
 
 jobs:
   retire:
@@ -61,20 +69,23 @@ jobs:
     environment: production
     steps:
       - name: Verify Default Branch Guard
+        env:
+          REF: ${{ github.ref }}
         run: |
-          if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+          if [[ "$REF" != "refs/heads/main" ]]; then
             echo "::error::Retirement pipeline can only be executed on refs/heads/main"
             exit 1
           fi
 
       - name: Preflight Input Safety Assertions
+        env:
+          OP: ${{ inputs.operation }}
+          PID: ${{ inputs.target_project_id }}
+          PNUM: ${{ inputs.target_project_number }}
+          CONF: ${{ inputs.confirmation }}
+          SHA: ${{ inputs.manifest_sha }}
+          RUN_ID: ${{ inputs.inventory_run_id }}
         run: |
-          OP="${{ inputs.operation }}"
-          PID="${{ inputs.target_project_id }}"
-          PNUM="${{ inputs.target_project_number }}"
-          CONF="${{ inputs.confirmation }}"
-          SHA="${{ inputs.manifest_sha }}"
-
           echo "Target operation: ${OP}"
           echo "Target project:   ${PID} (${PNUM})"
 
@@ -97,11 +108,23 @@ jobs:
               echo "::error::Destructive operation '${OP}' rejected: manifest_sha is required"
               exit 1
             fi
+            if [[ -z "$RUN_ID" ]]; then
+              echo "::error::Destructive operation '${OP}' rejected: inventory_run_id is required"
+              exit 1
+            fi
           fi
 
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Restore Approved Inventory Manifest Artifact
+        if: inputs.operation != 'inventory'
+        uses: actions/download-artifact@v4
+        with:
+          name: ompctl-sanitized-manifest
+          run-id: ${{ inputs.inventory_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -118,6 +141,12 @@ jobs:
 
       - name: Execute Retirement Stage Guard
         env:
+          OP: ${{ inputs.operation }}
+          PID: ${{ inputs.target_project_id }}
+          PNUM: ${{ inputs.target_project_number }}
+          CONF: ${{ inputs.confirmation }}
+          SHA: ${{ inputs.manifest_sha }}
+          SKIP_NS: ${{ inputs.skip_nameserver_check }}
           GCP_PROJECT_ID: ${{ inputs.target_project_id }}
           GCP_PROJECT_NUMBER: ${{ inputs.target_project_number }}
           GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
@@ -125,17 +154,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ARGS=(
-            "${{ inputs.operation }}"
+            "$OP"
             --manifest-path "sanitized-manifest.json"
-            --project-id "${{ inputs.target_project_id }}"
-            --project-number "${{ inputs.target_project_number }}"
+            --project-id "$PID"
+            --project-number "$PNUM"
           )
 
-          if [[ "${{ inputs.operation }}" != "inventory" ]]; then
-            ARGS+=(--confirm "${{ inputs.confirmation }}")
+          if [[ "$OP" != "inventory" ]]; then
+            ARGS+=(--confirm "$CONF")
+            ARGS+=(--manifest-sha "$SHA")
           fi
 
-          if [[ "${{ inputs.skip_nameserver_check }}" == "true" ]]; then
+          if [[ "$SKIP_NS" == "true" ]]; then
             ARGS+=(--skip-nameserver-check)
           fi
 

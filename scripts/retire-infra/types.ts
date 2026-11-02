@@ -11,26 +11,30 @@ export const EXPECTED_ZONE_NAME = "ompctl-ai" as const;
 export const EXPECTED_DNS_NAME = "ompctl.ai." as const;
 export const EXPECTED_ROOT_DOMAIN = "ompctl.ai" as const;
 
+/**
+ * Exactly 19 baseline managed Terraform addresses confirmed from deployment
+ * run 38706883329 and packages/hub/deploy/main.tf.
+ */
 export const BASELINE_TERRAFORM_ADDRESSES = [
   "google_cloud_run_v2_service.hub",
   "google_cloud_run_v2_service.web",
   "google_cloud_run_v2_service_iam_member.hub_public",
   "google_cloud_run_v2_service_iam_member.web_public",
-  "google_compute_global_address.private_ip_address",
   "google_dns_managed_zone.ompctl",
   "google_dns_record_set.apex_txt",
   "google_dns_record_set.app",
+  "google_dns_record_set.dmarc",
+  "google_dns_record_set.domainkey",
   "google_dns_record_set.hub",
   "google_dns_record_set.root_a",
   "google_dns_record_set.root_aaaa",
   "google_dns_record_set.www",
   "google_project_iam_member.deployer_dns",
-  "google_redis_instance.cache",
+  "google_redis_instance.hub",
   "google_secret_manager_secret.operator_token",
   "google_secret_manager_secret_iam_member.hub_reads_operator_token",
   "google_service_account.hub",
   "google_service_account.web",
-  "google_service_networking_connection.private_vpc_connection",
 ] as const;
 
 export type TerraformAddress = (typeof BASELINE_TERRAFORM_ADDRESSES)[number];
