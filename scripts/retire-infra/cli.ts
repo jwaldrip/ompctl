@@ -481,8 +481,51 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
     };
     validateNoActiveDeployRuns(runsData.workflow_runs ?? [], currentRunId);
     console.log("✓ Zero active deployment workflow runs confirmed.");
+    // Guard 5: Query and validate live Resource Manager v1 project identity
+    console.log("Validating live project identity via Resource Manager v1...");
+    const projectRes = await transport.fetch(
+      `https://cloudresourcemanager.googleapis.com/v1/projects/${projectId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${gcpToken}`,
+          Accept: "application/json",
+        },
+      }
+    );
 
-    // Guard 5: Check deletion liens FIRST via official Resource Manager v1 endpoint
+    if (!projectRes.ok) {
+      const errBody = await projectRes.text();
+      throw new Error(
+        `Failed to read project '${projectId}' from Resource Manager v1 (HTTP ${projectRes.status}): ${errBody}`
+      );
+    }
+
+    const projectData = (await projectRes.json()) as {
+      projectId: string;
+      projectNumber: string;
+      lifecycleState: string;
+    };
+
+    if (projectData.projectId !== EXPECTED_PROJECT_ID) {
+      throw new Error(
+        `Project ID mismatch: live reported '${projectData.projectId}', expected '${EXPECTED_PROJECT_ID}'`
+      );
+    }
+    if (projectData.projectNumber !== EXPECTED_PROJECT_NUMBER) {
+      throw new Error(
+        `Project number mismatch: live reported '${projectData.projectNumber}', expected '${EXPECTED_PROJECT_NUMBER}'`
+      );
+    }
+    if (projectData.lifecycleState !== "ACTIVE") {
+      throw new Error(
+        `Project lifecycle state is not ACTIVE: live reported '${projectData.lifecycleState}'`
+      );
+    }
+    console.log(
+      `✓ Live project identity confirmed: ${projectData.projectId} (${projectData.projectNumber}, state: ${projectData.lifecycleState})`
+    );
+
+    // Guard 6: Check deletion liens via official Resource Manager v1 endpoint
     console.log("Checking project deletion liens via Resource Manager v1 (/v1/liens)...");
     let pageToken: string | undefined;
     const allLiens: unknown[] = [];
