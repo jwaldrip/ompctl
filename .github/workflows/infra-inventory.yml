@@ -1,0 +1,197 @@
+name: Cloud Infrastructure Inventory
+
+on:
+  push:
+    branches:
+      - ops/ompctl-retire-infra
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inventory:
+    name: GCP & Terraform Read-Only Inventory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/782181616134/locations/global/workloadIdentityPools/ompctl-github/providers/github' }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT || 'ompctl-deployer@ompctl.iam.gserviceaccount.com' }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Execute Cloud Infrastructure and Terraform State Inventory
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'ompctl' }}
+          REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'ompctl-terraform-state' }}
+        run: |
+          set -u
+          set -o pipefail
+
+          run_inventory() {
+            local title="$1"
+            shift
+            echo "================================================================"
+            echo "INVENTORY: ${title}"
+            echo "COMMAND: $*"
+            echo "----------------------------------------------------------------"
+            local output
+            local rc=0
+            output="$("$@" 2>&1)" || rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "STATUS: UNKNOWN (API/Command failed with exit code ${rc})"
+              echo "ERROR:"
+              echo "${output}"
+            else
+              echo "STATUS: SUCCESS"
+              if [ -z "${output}" ]; then
+                echo "(0 items found / empty response)"
+              else
+                echo "${output}"
+              fi
+            fi
+            echo "================================================================"
+            echo ""
+          }
+
+          echo "################################################################"
+          echo "STARTING GCP CLOUD INFRASTRUCTURE & TERRAFORM STATE INVENTORY"
+          echo "Target Project: ${PROJECT_ID}"
+          echo "Target Region: ${REGION}"
+          echo "State Bucket: ${TF_STATE_BUCKET}"
+          echo "################################################################"
+          echo ""
+
+          # 1. Identity and Project
+          run_inventory "Active GCP Identity" gcloud auth list
+          run_inventory "Active gcloud Config" gcloud config list
+          run_inventory "Project Metadata" gcloud projects describe "${PROJECT_ID}" --format="yaml(projectId,projectNumber,name,createTime,lifecycleState)"
+
+          # 2. Project IAM and Permissions
+          run_inventory "Project IAM Policy" gcloud projects get-iam-policy "${PROJECT_ID}" --format=json
+          run_inventory "Enabled Services / APIs" gcloud services list --enabled --project="${PROJECT_ID}"
+          run_inventory "Service Accounts" gcloud iam service-accounts list --project="${PROJECT_ID}"
+          run_inventory "Workload Identity Pools" gcloud iam workload-identity-pools list --project="${PROJECT_ID}" --location=global
+          run_inventory "Workload Identity Pool Providers (ompctl-github)" gcloud iam workload-identity-pools providers list --workload-identity-pool="ompctl-github" --project="${PROJECT_ID}" --location=global
+
+          # Service account details
+          sa_list="$(gcloud iam service-accounts list --project="${PROJECT_ID}" --format="value(email)" 2>/dev/null || true)"
+          for sa in $sa_list; do
+            run_inventory "Service Account Keys Metadata (${sa})" gcloud iam service-accounts keys list --iam-account="${sa}" --project="${PROJECT_ID}"
+            run_inventory "Service Account IAM Policy (${sa})" gcloud iam service-accounts get-iam-policy "${sa}" --project="${PROJECT_ID}"
+          done
+
+          # 3. Cloud Run
+          run_inventory "Cloud Run Services (${REGION})" gcloud run services list --project="${PROJECT_ID}" --region="${REGION}"
+          run_inventory "Cloud Run Services (All Regions)" gcloud run services list --project="${PROJECT_ID}"
+          run_inventory "Cloud Run Domain Mappings (${REGION})" gcloud run domain-mappings list --project="${PROJECT_ID}" --region="${REGION}"
+          run_inventory "Cloud Run Domain Mappings (All Regions)" gcloud run domain-mappings list --project="${PROJECT_ID}"
+          run_inventory "Cloud Run Jobs" gcloud run jobs list --project="${PROJECT_ID}"
+          run_inventory "Cloud Run Revisions (${REGION})" gcloud run revisions list --project="${PROJECT_ID}" --region="${REGION}"
+
+          cr_services="$(gcloud run services list --project="${PROJECT_ID}" --region="${REGION}" --format="value(metadata.name)" 2>/dev/null || true)"
+          for cr in $cr_services; do
+            run_inventory "Cloud Run Service Describe (${cr})" gcloud run services describe "${cr}" --project="${PROJECT_ID}" --region="${REGION}" --format="yaml(metadata.name,metadata.creationTimestamp,spec.template.spec.containers[0].image,status.url,status.conditions)"
+            run_inventory "Cloud Run Service IAM (${cr})" gcloud run services get-iam-policy "${cr}" --project="${PROJECT_ID}" --region="${REGION}"
+          done
+
+          # 4. Memorystore (Redis)
+          run_inventory "Redis Instances (${REGION})" gcloud redis instances list --project="${PROJECT_ID}" --region="${REGION}"
+          run_inventory "Redis Instances (All Regions)" gcloud redis instances list --project="${PROJECT_ID}"
+
+          redis_instances="$(gcloud redis instances list --project="${PROJECT_ID}" --region="${REGION}" --format="value(name)" 2>/dev/null || true)"
+          for r in $redis_instances; do
+            run_inventory "Redis Instance Describe (${r})" gcloud redis instances describe "${r}" --project="${PROJECT_ID}" --region="${REGION}"
+          done
+
+          # 5. Networking & VPC Access
+          run_inventory "Serverless VPC Connectors (${REGION})" gcloud compute networks vpc-access connectors list --project="${PROJECT_ID}" --region="${REGION}"
+          run_inventory "VPC Networks" gcloud compute networks list --project="${PROJECT_ID}"
+          run_inventory "VPC Subnets" gcloud compute networks subnets list --project="${PROJECT_ID}"
+          run_inventory "Firewall Rules" gcloud compute firewall-rules list --project="${PROJECT_ID}"
+          run_inventory "Static IP Addresses" gcloud compute addresses list --project="${PROJECT_ID}"
+          run_inventory "Cloud Routers" gcloud compute routers list --project="${PROJECT_ID}"
+
+          # 6. Cloud DNS
+          run_inventory "Cloud DNS Managed Zones" gcloud dns managed-zones list --project="${PROJECT_ID}"
+          dns_zones="$(gcloud dns managed-zones list --project="${PROJECT_ID}" --format="value(name)" 2>/dev/null || true)"
+          for z in $dns_zones; do
+            run_inventory "Cloud DNS Record Sets (${z})" gcloud dns record-sets list --project="${PROJECT_ID}" --zone="${z}"
+          done
+
+          # 7. Artifact Registry
+          run_inventory "Artifact Registry Repositories" gcloud artifacts repositories list --project="${PROJECT_ID}"
+          ar_repos="$(gcloud artifacts repositories list --project="${PROJECT_ID}" --format="value(name)" 2>/dev/null || true)"
+          for r in $ar_repos; do
+            repo_name="$(basename "${r}")"
+            repo_loc="$(echo "${r}" | awk -F'/locations/' '{print $2}' | awk -F'/' '{print $1}')"
+            run_inventory "Artifact Registry Images (${r})" gcloud artifacts docker images list "${repo_loc}-docker.pkg.dev/${PROJECT_ID}/${repo_name}" --limit=20
+          done
+
+          # 8. Secret Manager (Metadata only, NO payload access)
+          run_inventory "Secret Manager Secrets" gcloud secrets list --project="${PROJECT_ID}"
+          sec_list="$(gcloud secrets list --project="${PROJECT_ID}" --format="value(name)" 2>/dev/null || true)"
+          for s in $sec_list; do
+            sec_id="$(basename "${s}")"
+            run_inventory "Secret Metadata (${sec_id})" gcloud secrets describe "${sec_id}" --project="${PROJECT_ID}"
+            run_inventory "Secret Versions Metadata (${sec_id})" gcloud secrets versions list "${sec_id}" --project="${PROJECT_ID}"
+            run_inventory "Secret IAM Policy (${sec_id})" gcloud secrets get-iam-policy "${sec_id}" --project="${PROJECT_ID}"
+          done
+
+          # 9. Cloud Storage Buckets & Terraform State
+          run_inventory "Storage Buckets in Project" gcloud storage buckets list --project="${PROJECT_ID}"
+          bucket_list="$(gcloud storage buckets list --project="${PROJECT_ID}" --format="value(name)" 2>/dev/null || true)"
+          for b in $bucket_list; do
+            run_inventory "Storage Bucket Describe (${b})" gcloud storage buckets describe "gs://${b}"
+            run_inventory "Storage Bucket Objects (${b})" gcloud storage ls --long --recursive "gs://${b}/**"
+          done
+
+          # Terraform State Object and Metadata
+          run_inventory "Terraform State Object Describe" gcloud storage objects describe "gs://${TF_STATE_BUCKET}/hub/default.tfstate"
+          run_inventory "Terraform State Versions List" gcloud storage objects list --long --versions "gs://${TF_STATE_BUCKET}/hub/**"
+
+          echo "================================================================"
+          echo "INVENTORY: Terraform State Content (Sanitized & Redacted)"
+          echo "COMMAND: Inspect gs://${TF_STATE_BUCKET}/hub/default.tfstate via jq"
+          echo "----------------------------------------------------------------"
+          local_state="/tmp/tfstate.json"
+          local_rc=0
+          gcloud storage cp "gs://${TF_STATE_BUCKET}/hub/default.tfstate" "$local_state" 2>&1 || local_rc=$?
+          if [ $local_rc -ne 0 ]; then
+            echo "STATUS: UNKNOWN (Failed to download gs://${TF_STATE_BUCKET}/hub/default.tfstate with exit code ${local_rc})"
+          else
+            echo "STATUS: SUCCESS"
+            echo ""
+            echo "--- Terraform State Metadata ---"
+            jq '{version: .version, terraform_version: .terraform_version, serial: .serial, lineage: .lineage}' "$local_state"
+            echo ""
+            echo "--- Terraform State Output Names (Keys only) ---"
+            jq '.outputs | keys' "$local_state"
+            echo ""
+            echo "--- Terraform Managed Resource Addresses & Identifiers ---"
+            jq -r '.resources[] | "\(.mode) \(.type).\(.name) [provider: \(.provider)] [instances: \(.instances | length)] (id: \(.instances[0].attributes.id // "none"))"' "$local_state"
+            echo ""
+            echo "--- Full Sanitized Resource List from Terraform State ---"
+            jq '[.resources[] | {mode: .mode, type: .type, name: .name, provider: .provider, count: (.instances | length), id: .instances[0].attributes.id, address: (if .module then .module + "." else "" end + (if .mode == "data" then "data." else "" end) + .type + "." + .name)}]' "$local_state"
+          fi
+          echo "================================================================"
+          echo ""
+
+          # 10. Compute Engine & Other Services
+          run_inventory "Compute Engine Instances" gcloud compute instances list --project="${PROJECT_ID}"
+          run_inventory "Compute Engine Disks" gcloud compute disks list --project="${PROJECT_ID}"
+
+          # 11. Cloud Build
+          run_inventory "Cloud Build Triggers" gcloud builds triggers list --project="${PROJECT_ID}"
+          run_inventory "Cloud Build History (recent 10)" gcloud builds list --project="${PROJECT_ID}" --limit=10
+
+          echo "################################################################"
+          echo "GCP CLOUD INFRASTRUCTURE & TERRAFORM STATE INVENTORY COMPLETE"
+          echo "################################################################"
