@@ -91,8 +91,8 @@ jobs:
           # 3. Cloud Run
           run_inventory "Cloud Run Services (${REGION})" gcloud run services list --project="${PROJECT_ID}" --region="${REGION}"
           run_inventory "Cloud Run Services (All Regions)" gcloud run services list --project="${PROJECT_ID}"
-          run_inventory "Cloud Run Domain Mappings (${REGION})" gcloud run domain-mappings list --project="${PROJECT_ID}" --region="${REGION}"
-          run_inventory "Cloud Run Domain Mappings (All Regions)" gcloud run domain-mappings list --project="${PROJECT_ID}"
+          run_inventory "Cloud Run Domain Mappings (${REGION})" gcloud beta run domain-mappings list --project="${PROJECT_ID}" --region="${REGION}"
+          run_inventory "Cloud Run Domain Mappings (All Regions)" gcloud beta run domain-mappings list --project="${PROJECT_ID}"
           run_inventory "Cloud Run Jobs" gcloud run jobs list --project="${PROJECT_ID}"
           run_inventory "Cloud Run Revisions (${REGION})" gcloud run revisions list --project="${PROJECT_ID}" --region="${REGION}"
 
@@ -104,7 +104,7 @@ jobs:
 
           # 4. Memorystore (Redis)
           run_inventory "Redis Instances (${REGION})" gcloud redis instances list --project="${PROJECT_ID}" --region="${REGION}"
-          run_inventory "Redis Instances (All Regions)" gcloud redis instances list --project="${PROJECT_ID}"
+          # Redis instances list requires --region
 
           redis_instances="$(gcloud redis instances list --project="${PROJECT_ID}" --region="${REGION}" --format="value(name)" 2>/dev/null || true)"
           for r in $redis_instances; do
@@ -131,8 +131,7 @@ jobs:
           ar_repos="$(gcloud artifacts repositories list --project="${PROJECT_ID}" --format="value(name)" 2>/dev/null || true)"
           for r in $ar_repos; do
             repo_name="$(basename "${r}")"
-            repo_loc="$(echo "${r}" | awk -F'/locations/' '{print $2}' | awk -F'/' '{print $1}')"
-            run_inventory "Artifact Registry Images (${r})" gcloud artifacts docker images list "${repo_loc}-docker.pkg.dev/${PROJECT_ID}/${repo_name}" --limit=20
+            run_inventory "Artifact Registry Images (${repo_name})" gcloud artifacts docker images list "${REGION}-docker.pkg.dev/${PROJECT_ID}/${repo_name}" --limit=20
           done
 
           # 8. Secret Manager (Metadata only, NO payload access)
@@ -155,7 +154,7 @@ jobs:
 
           # Terraform State Object and Metadata
           run_inventory "Terraform State Object Describe" gcloud storage objects describe "gs://${TF_STATE_BUCKET}/hub/default.tfstate"
-          run_inventory "Terraform State Versions List" gcloud storage objects list --long --versions "gs://${TF_STATE_BUCKET}/hub/**"
+          run_inventory "Terraform State Versions List" gcloud storage ls --long --versions "gs://${TF_STATE_BUCKET}/hub/**"
 
           echo "================================================================"
           echo "INVENTORY: Terraform State Content (Sanitized & Redacted)"
