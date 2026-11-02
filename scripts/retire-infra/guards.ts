@@ -4,10 +4,12 @@
  */
 
 import {
+  DEPLOYMENT_WORKFLOW_FILENAMES,
   EXPECTED_PROJECT_ID,
   EXPECTED_PROJECT_NUMBER,
   OLD_CLOUD_DNS_PATTERN,
-  RETIRED_HOSTNAMES,
+  RETIRED_DESTINATION_IPS,
+  RETIRED_DESTINATION_PATTERNS,
   type DnsObservation,
 } from "./types.ts";
 
@@ -62,14 +64,57 @@ export function validateNoLiens(liens: unknown[]): void {
   }
 }
 
+export interface WorkflowRunItem {
+  id: number;
+  name?: string;
+  path?: string;
+  status: string;
+  conclusion: string | null;
+}
+
 export function validateNoActiveDeployRuns(
-  runs: Array<{ id: number; name: string; status: string; conclusion: string | null }>
+  runs: WorkflowRunItem[],
+  currentRunId?: string
 ): void {
-  const active = runs.filter(
-    (r) => r.status === "in_progress" || r.status === "queued" || r.status === "waiting"
+  const deploymentWorkflowSet: Record<string, true> = Object.fromEntries(
+    DEPLOYMENT_WORKFLOW_FILENAMES.map((f) => [f, true])
   );
+
+  const active = runs.filter((r) => {
+    // Exclude the currently running retirement execution
+    if (currentRunId && String(r.id) === String(currentRunId)) {
+      return false;
+    }
+
+    const isNonTerminal =
+      r.status === "in_progress" ||
+      r.status === "queued" ||
+      r.status === "waiting" ||
+      r.status === "pending" ||
+      r.status === "requested";
+
+    if (!isNonTerminal) {
+      return false;
+    }
+
+    // Check if run belongs to deployment workflows
+    const filename = r.path?.split("/").pop() || "";
+    if (deploymentWorkflowSet[filename]) {
+      return true;
+    }
+
+    const nameLower = (r.name || "").toLowerCase();
+    return (
+      nameLower.includes("hub-deploy") ||
+      nameLower.includes("site-pages") ||
+      nameLower.includes("app store")
+    );
+  });
+
   if (active.length > 0) {
-    const list = active.map((r) => `${r.name} (#${r.id}: ${r.status})`).join(", ");
+    const list = active
+      .map((r) => `${r.name || r.path} (#${r.id}: ${r.status})`)
+      .join(", ");
     throw new Error(
       `Active deployment or publication runs detected: [${list}]. All deployment workflows must be inactive before retirement.`
     );
@@ -86,16 +131,27 @@ export interface DnsCutoverGateInput {
 }
 
 export function validateDnsCutoverAndTtl(params: DnsCutoverGateInput): void {
-  const { baseline, cutover, currentObservations, cutoverTimestampMs, currentTimestampMs, expectedSha } = params;
+  const {
+    baseline,
+    cutover,
+    currentObservations,
+    cutoverTimestampMs,
+    currentTimestampMs,
+    expectedSha,
+  } = params;
 
   if (baseline.observationKind !== "baseline") {
-    throw new Error("DNS guard failed: baseline artifact must have observationKind='baseline'");
+    throw new Error(
+      "DNS guard failed: baseline artifact must have observationKind='baseline'"
+    );
   }
   if (cutover.observationKind !== "cutover") {
-    throw new Error("DNS guard failed: cutover artifact must have observationKind='cutover'");
+    throw new Error(
+      "DNS guard failed: cutover artifact must have observationKind='cutover'"
+    );
   }
 
-  if (expectedSha) {
+  if (expectedSha && expectedSha.trim() !== "") {
     if (baseline.gitSha !== expectedSha) {
       throw new Error(
         `DNS guard failed: baseline gitSha '${baseline.gitSha}' does not match expected '${expectedSha}'`
@@ -109,21 +165,38 @@ export function validateDnsCutoverAndTtl(params: DnsCutoverGateInput): void {
   }
 
   if (!baseline.delegatesToCloudDns) {
-    throw new Error("DNS guard failed: baseline observation must confirm delegation to Cloud DNS");
+    throw new Error(
+      "DNS guard failed: baseline observation must confirm delegation to Cloud DNS"
+    );
   }
 
   if (cutover.delegatesToCloudDns) {
-    throw new Error("DNS guard failed: cutover observation indicates domain still delegates to Cloud DNS");
+    throw new Error(
+      "DNS guard failed: cutover observation indicates domain still delegates to Cloud DNS"
+    );
   }
 
   if (!cutover.allParentsAgree) {
-    throw new Error("DNS guard failed: cutover observation has mixed parent delegation (not all parents agree)");
+    throw new Error(
+      "DNS guard failed: cutover observation has mixed parent delegation (not all parents agree)"
+    );
   }
 
-  // Verify all authoritative parent servers in cutover report non-Cloud-DNS nameservers
+  // Validate cutover parent queries
+  if (cutover.parentQueries.length === 0) {
+    throw new Error("DNS guard failed: cutover observation contains zero parent queries");
+  }
+
   for (const q of cutover.parentQueries) {
     if (q.status !== "NOERROR") {
-      throw new Error(`DNS guard failed: cutover query to parent '${q.server}' returned status '${q.status}'`);
+      throw new Error(
+        `DNS guard failed: cutover query to parent '${q.server}' returned status '${q.status}'`
+      );
+    }
+    if (q.nameservers.length === 0) {
+      throw new Error(
+        `DNS guard failed: cutover query to parent '${q.server}' returned zero nameservers`
+      );
     }
     for (const ns of q.nameservers) {
       if (OLD_CLOUD_DNS_PATTERN.test(ns.name)) {
@@ -132,14 +205,31 @@ export function validateDnsCutoverAndTtl(params: DnsCutoverGateInput): void {
         );
       }
     }
-    if (q.dsRecords.length > 0) {
-      throw new Error(`DNS guard failed: unexpected DS record present on parent '${q.server}'`);
+    if (q.dsRecords && q.dsRecords.length > 0) {
+      throw new Error(
+        `DNS guard failed: unexpected DS record present on parent '${q.server}' in cutover artifact`
+      );
     }
+  }
+
+  // Validate cutover timestamp
+  if (!Number.isFinite(cutoverTimestampMs) || cutoverTimestampMs <= 0) {
+    throw new Error(
+      `DNS guard failed: invalid cutover timestamp '${String(cutoverTimestampMs)}'`
+    );
+  }
+
+  if (currentTimestampMs < cutoverTimestampMs) {
+    throw new Error(
+      "DNS guard failed: clock anomaly, current timestamp is before cutover timestamp"
+    );
   }
 
   // Old TTL expiry check
   const requiredElapsedSeconds = Math.max(baseline.oldMaxChildNsTtl, 21600);
-  const actualElapsedSeconds = Math.floor((currentTimestampMs - cutoverTimestampMs) / 1000);
+  const actualElapsedSeconds = Math.floor(
+    (currentTimestampMs - cutoverTimestampMs) / 1000
+  );
 
   if (actualElapsedSeconds < requiredElapsedSeconds) {
     throw new Error(
@@ -160,15 +250,45 @@ export function validateDnsCutoverAndTtl(params: DnsCutoverGateInput): void {
     );
   }
 
-  // Host record checks
-  for (const hostObs of currentObservations.hostRecordObservations) {
-    if (!RETIRED_HOSTNAMES.includes(hostObs.host as (typeof RETIRED_HOSTNAMES)[number])) {
-      continue;
+  for (const q of currentObservations.parentQueries) {
+    if (q.status !== "NOERROR") {
+      throw new Error(
+        `DNS guard failed: real-time query to parent '${q.server}' returned status '${q.status}'`
+      );
     }
+    if (q.dsRecords && q.dsRecords.length > 0) {
+      throw new Error(
+        `DNS guard failed: unexpected DS record present on parent '${q.server}' during real-time check`
+      );
+    }
+  }
+
+  // Host record checks against retired destinations (CNAMEs, IPs, and query errors)
+  const retiredIpSet: Record<string, true> = Object.fromEntries(
+    RETIRED_DESTINATION_IPS.map((ip) => [ip, true])
+  );
+
+  for (const hostObs of currentObservations.hostRecordObservations) {
+    if (hostObs.status !== "NOERROR" && hostObs.status !== "NXDOMAIN") {
+      throw new Error(
+        `DNS guard failed: host query for '${hostObs.host}' (${hostObs.recordType}) failed with status '${hostObs.status}': ${hostObs.error || "unresolved"}`
+      );
+    }
+
     for (const rec of hostObs.records) {
-      if (/googlehosted\.com/i.test(rec.value) || /github\.io/i.test(rec.value)) {
+      // Check for CNAME matching retired destinations
+      for (const pat of RETIRED_DESTINATION_PATTERNS) {
+        if (pat.test(rec.value)) {
+          throw new Error(
+            `DNS guard failed: retired host '${hostObs.host}' still points to retired cloud service target '${rec.value}'`
+          );
+        }
+      }
+
+      // Check for A/AAAA matching retired GitHub Pages or Google Cloud Run IPs
+      if (retiredIpSet[rec.value]) {
         throw new Error(
-          `DNS guard failed: retired host '${hostObs.host}' still points to retired cloud service target '${rec.value}'`
+          `DNS guard failed: retired host '${hostObs.host}' still resolves to retired IP destination '${rec.value}'`
         );
       }
     }

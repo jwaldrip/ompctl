@@ -16,6 +16,14 @@ on:
         options:
           - "observe"
           - "retire"
+      observation_kind:
+        description: "For 'observe': 'baseline' (initial Cloud DNS) or 'cutover' (post-registrar switch)"
+        required: false
+        type: choice
+        default: "baseline"
+        options:
+          - "baseline"
+          - "cutover"
       confirmation:
         description: "Type 'CONFIRM-RETIRE-OMPCTL' to authorize destructive retirement"
         required: false
@@ -90,11 +98,13 @@ jobs:
         with:
           bun-version: "1.3.14"
 
-      - uses: google-github-actions/auth@v2
+      - id: auth
+        uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
-          scopes: "https://www.googleapis.com/auth/cloud-platform"
+          token_format: "access_token"
+          access_token_scopes: "https://www.googleapis.com/auth/cloud-platform"
 
       - name: Download Baseline DNS Artifact
         if: inputs.operation == 'retire'
@@ -118,22 +128,32 @@ jobs:
         id: exec
         env:
           OP: ${{ inputs.operation }}
+          KIND: ${{ inputs.observation_kind }}
           CONF: ${{ inputs.confirmation }}
           BASE_ID: ${{ inputs.baseline_run_id }}
           CUT_ID: ${{ inputs.cutover_run_id }}
+          GCP_TOKEN: ${{ steps.auth.outputs.access_token }}
           GH_TOKEN: ${{ github.token }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           if [[ "$OP" == "observe" ]]; then
-            bun scripts/retire-infra/cli.ts observe
+            bun scripts/retire-infra/cli.ts observe --kind "$KIND"
           elif [[ "$OP" == "retire" ]]; then
             # Extract actual cutover completion timestamp from GitHub API
             CUTOVER_UPDATED_AT="$(gh run view "$CUT_ID" --json updatedAt --jq .updatedAt)"
-            echo "Cutover run $CUT_ID completion timestamp: $CUTOVER_UPDATED_AT"
+            CUTOVER_TS_MS="$(node -e 'console.log(Date.parse(process.argv[1]))' "$CUTOVER_UPDATED_AT")"
+            echo "Cutover run $CUT_ID completion timestamp: $CUTOVER_UPDATED_AT ($CUTOVER_TS_MS ms)"
 
-            bun scripts/retire-infra/cli.ts retire \
+            GOOGLE_OAUTH_ACCESS_TOKEN="$GCP_TOKEN" bun scripts/retire-infra/cli.ts retire \
               --confirm "$CONF" \
               --baseline-artifact artifacts/baseline/dns-observation.json \
-              --cutover-artifact artifacts/cutover/dns-observation.json
+              --cutover-artifact artifacts/cutover/dns-observation.json \
+              --baseline-run-id "$BASE_ID" \
+              --cutover-run-id "$CUT_ID" \
+              --cutover-timestamp-ms "$CUTOVER_TS_MS" \
+              --expected-sha "$GITHUB_SHA" \
+              --current-run-id "$GITHUB_RUN_ID"
           fi
 
       - name: Upload DNS Observation Artifact

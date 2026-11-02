@@ -1,6 +1,7 @@
 /**
- * Stateful in-memory HTTP mirror for Google Cloud Resource Manager v1 and GitHub Pages API.
- * Used for deterministic offline execution proof of the direct shutdown orchestrator.
+ * Stateful in-memory HTTP mirror for Google Cloud Resource Manager v1 and GitHub Actions/Pages API.
+ * Accurately implements official REST contracts, bearer token authentication,
+ * etags, liens pagination, and project lifecycle transitions.
  */
 
 import type { HttpTransport } from "./types.ts";
@@ -12,15 +13,28 @@ export interface LoggedRequest {
   headers: Record<string, string>;
 }
 
+export interface MirrorWorkflowRun {
+  id: number;
+  name: string;
+  path: string;
+  head_branch: string;
+  head_sha: string;
+  status: string;
+  conclusion: string | null;
+  updated_at: string;
+}
+
 export interface MirrorConfig {
   projectId?: string;
   projectNumber?: string;
   lifecycleState?: "ACTIVE" | "DELETE_REQUESTED";
+  expectedBearerToken?: string;
   initialPermissions?: string[];
   initialBindings?: Array<{ role: string; members: string[]; condition?: Record<string, unknown> }>;
   initialLiens?: Array<{ name: string; reason: string; parent: string }>;
   liensPageSize?: number;
   initialPagesPublished?: boolean;
+  initialWorkflowRuns?: MirrorWorkflowRun[];
 
   // Failure simulation switches
   failGetProject?: { status: number; body: unknown };
@@ -33,12 +47,14 @@ export interface MirrorConfig {
   failPagesDelete?: { status: number; body: unknown };
   failPagesGet?: { status: number; body: unknown };
   failProjectDelete?: { status: number; body: unknown };
+  failRunsGet?: { status: number; body: unknown };
 }
 
 export class StatefulHttpMirror implements HttpTransport {
   public projectId: string;
   public projectNumber: string;
   public lifecycleState: "ACTIVE" | "DELETE_REQUESTED";
+  public expectedBearerToken: string;
   public permissions: Set<string>;
   public iamPolicy: {
     version: number;
@@ -48,6 +64,7 @@ export class StatefulHttpMirror implements HttpTransport {
   public liens: Array<{ name: string; reason: string; parent: string }>;
   public liensPageSize: number;
   public pagesPublished: boolean;
+  public workflowRuns: MirrorWorkflowRun[];
   public requestLog: LoggedRequest[] = [];
   public config: MirrorConfig;
 
@@ -56,9 +73,10 @@ export class StatefulHttpMirror implements HttpTransport {
     this.projectId = config.projectId ?? "ompctl";
     this.projectNumber = config.projectNumber ?? "782181616134";
     this.lifecycleState = config.lifecycleState ?? "ACTIVE";
+    this.expectedBearerToken = config.expectedBearerToken ?? "valid-gcp-token";
     this.permissions = new Set(config.initialPermissions ?? []);
     this.iamPolicy = {
-      version: 1,
+      version: 3,
       etag: "BwY12345678=",
       bindings: config.initialBindings ?? [
         {
@@ -82,6 +100,7 @@ export class StatefulHttpMirror implements HttpTransport {
     this.liens = config.initialLiens ?? [];
     this.liensPageSize = config.liensPageSize ?? 100;
     this.pagesPublished = config.initialPagesPublished ?? true;
+    this.workflowRuns = config.initialWorkflowRuns ?? [];
   }
 
   async fetch(input: string | URL, init?: RequestInit): Promise<Response> {
@@ -123,6 +142,36 @@ export class StatefulHttpMirror implements HttpTransport {
     });
 
     const pathname = parsedUrl.pathname;
+    const isGoogle = parsedUrl.hostname === "cloudresourcemanager.googleapis.com";
+    const isGithub = parsedUrl.hostname === "api.github.com";
+
+    // Enforce Authentication for Google Cloud endpoints
+    if (isGoogle) {
+      const authHeader = headers["authorization"] || "";
+      if (!authHeader.startsWith("Bearer ") || authHeader.slice(7).trim().length === 0) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 401,
+              message: "Request had invalid authentication credentials. Expected OAuth 2 access token.",
+              status: "UNAUTHENTICATED",
+            },
+          }),
+          { status: 401, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // Enforce Authentication for GitHub endpoints
+    if (isGithub) {
+      const authHeader = headers["authorization"] || "";
+      if (!authHeader.startsWith("Bearer ") || authHeader.slice(7).trim().length === 0) {
+        return new Response(
+          JSON.stringify({ message: "Requires authentication" }),
+          { status: 401, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
 
     // 1. GET /v1/projects/:projectId
     if (method === "GET" && pathname === `/v1/projects/${this.projectId}`) {
@@ -182,7 +231,13 @@ export class StatefulHttpMirror implements HttpTransport {
           headers: { "Content-Type": "application/json" },
         });
       }
-      const bodyObj = parsedBody as { policy?: { version?: number; etag?: string; bindings?: Array<{ role: string; members: string[]; condition?: Record<string, unknown> }> } };
+      const bodyObj = parsedBody as {
+        policy?: {
+          version?: number;
+          etag?: string;
+          bindings?: Array<{ role: string; members: string[]; condition?: Record<string, unknown> }>;
+        };
+      };
       const newPolicy = bodyObj?.policy;
       if (this.config.simulateEtagMismatch || (newPolicy?.etag && newPolicy.etag !== this.iamPolicy.etag)) {
         return new Response(
@@ -203,7 +258,6 @@ export class StatefulHttpMirror implements HttpTransport {
           etag: `etag-${Date.now()}`,
           bindings: newPolicy.bindings ?? [],
         };
-        // If deleter role was granted and not configured to simulate failure, add permission
         const hasDeleterRole = this.iamPolicy.bindings.some(
           (b) =>
             b.role === "roles/resourcemanager.projectDeleter" &&
@@ -220,13 +274,27 @@ export class StatefulHttpMirror implements HttpTransport {
       });
     }
 
-    // 5. GET /v1/projects/:projectId/liens
-    if (method === "GET" && pathname === `/v1/projects/${this.projectId}/liens`) {
+    // 5. GET /v1/liens?parent=projects/:projectNumber (Official Resource Manager v1 liens.list contract)
+    if (method === "GET" && pathname === "/v1/liens") {
       if (this.config.failLiens) {
         return new Response(JSON.stringify(this.config.failLiens.body), {
           status: this.config.failLiens.status,
           headers: { "Content-Type": "application/json" },
         });
+      }
+
+      const parent = parsedUrl.searchParams.get("parent");
+      if (!parent || parent !== `projects/${this.projectNumber}`) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 400,
+              message: `Field 'parent' is required and must match 'projects/${this.projectNumber}'. Got: '${parent}'`,
+              status: "INVALID_ARGUMENT",
+            },
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
       }
 
       const pageToken = parsedUrl.searchParams.get("pageToken");
@@ -282,16 +350,46 @@ export class StatefulHttpMirror implements HttpTransport {
 
     // 8. GET /repos/jwaldrip/ompctl/actions/runs
     if (method === "GET" && pathname === "/repos/jwaldrip/ompctl/actions/runs") {
+      if (this.config.failRunsGet) {
+        return new Response(JSON.stringify(this.config.failRunsGet.body), {
+          status: this.config.failRunsGet.status,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      const statusFilter = parsedUrl.searchParams.get("status");
+      let matchedRuns = this.workflowRuns;
+      if (statusFilter) {
+        matchedRuns = matchedRuns.filter((r) => r.status === statusFilter);
+      }
+
       return new Response(
         JSON.stringify({
-          total_count: 0,
-          workflow_runs: [],
+          total_count: matchedRuns.length,
+          workflow_runs: matchedRuns,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    // 9. DELETE /v1/projects/:projectId
+    // 9. GET /repos/jwaldrip/ompctl/actions/runs/:runId
+    const runMatch = pathname.match(/^\/repos\/jwaldrip\/ompctl\/actions\/runs\/(\d+)$/);
+    if (method === "GET" && runMatch) {
+      const runId = parseInt(runMatch[1], 10);
+      const run = this.workflowRuns.find((r) => r.id === runId);
+      if (!run) {
+        return new Response(JSON.stringify({ message: "Not Found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify(run), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 10. DELETE /v1/projects/:projectId
     if (method === "DELETE" && pathname === `/v1/projects/${this.projectId}`) {
       if (this.config.failProjectDelete) {
         return new Response(JSON.stringify(this.config.failProjectDelete.body), {

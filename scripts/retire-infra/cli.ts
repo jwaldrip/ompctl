@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Direct Resource Manager v1 shutdown orchestrator for ompctl (782181616134).
- * Supports injected transport and DNS resolver for stateful offline testing.
+ * Supports injected transport and DNS resolver for deterministic offline testing.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -33,15 +33,19 @@ import {
 
 export interface RetireInfraOptions {
   operation: RetirementOperation;
+  observationKind?: "baseline" | "cutover";
   targetProjectId?: string;
   targetProjectNumber?: string;
   confirmation?: string;
   executionRef?: string;
   baselineArtifactPath?: string;
   cutoverArtifactPath?: string;
+  baselineRunId?: string;
+  cutoverRunId?: string;
   cutoverTimestampMs?: number;
   outObservationPath?: string;
   expectedSha?: string;
+  currentRunId?: string;
   gcpToken?: string;
   githubToken?: string;
   transport?: HttpTransport;
@@ -53,31 +57,21 @@ const DEFAULT_TRANSPORT: HttpTransport = {
 };
 
 const DEFAULT_RESOLVER: DnsResolver = {
-  async queryParentNs(server: string, domain: string): Promise<ParentServerQuery> {
+  async queryParentNsAndDs(server: string, domain: string): Promise<ParentServerQuery> {
     try {
-      const proc = Bun.spawn(["dig", `@${server}`, "+norecurse", "+time=3", "+tries=2", "NS", domain], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const stdout = await new Response(proc.stdout).text();
-      const code = await proc.exited;
+      // Query NS
+      const nsProc = Bun.spawn(
+        ["dig", `@${server}`, "+norecurse", "+time=3", "+tries=2", "NS", domain],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+      const nsStdout = await new Response(nsProc.stdout).text();
+      const nsCode = await nsProc.exited;
 
-      if (code !== 0) {
-        return {
-          server,
-          status: `ERROR_${code}`,
-          nameservers: [],
-          dsRecords: [],
-          error: "dig exited with nonzero status",
-        };
-      }
-
-      const statusMatch = stdout.match(/status:\s*([A-Z]+)/);
-      const status = statusMatch ? statusMatch[1] : "UNKNOWN";
+      const statusMatch = nsStdout.match(/status:\s*([A-Z]+)/);
+      const status = statusMatch ? statusMatch[1] : nsCode === 0 ? "NOERROR" : `ERROR_${nsCode}`;
 
       const nameservers: Array<{ name: string; ttl: number }> = [];
-      const lines = stdout.split("\n");
-      for (const line of lines) {
+      for (const line of nsStdout.split("\n")) {
         const parts = line.trim().split(/\s+/);
         if (parts.length >= 5 && parts[3] === "NS") {
           nameservers.push({
@@ -87,11 +81,36 @@ const DEFAULT_RESOLVER: DnsResolver = {
         }
       }
 
+      // Query DS
+      const dsProc = Bun.spawn(
+        ["dig", `@${server}`, "+norecurse", "+time=3", "+tries=2", "DS", domain],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+      const dsStdout = await new Response(dsProc.stdout).text();
+      await dsProc.exited;
+
+      const dsRecords: Array<{ data: string; ttl: number }> = [];
+      let hasAuthoritativeDenial = false;
+
+      for (const line of dsStdout.split("\n")) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 5 && parts[3] === "DS") {
+          dsRecords.push({
+            data: parts.slice(4).join(" "),
+            ttl: parseInt(parts[1], 10) || 0,
+          });
+        }
+        if (parts.length >= 5 && parts[3] === "SOA") {
+          hasAuthoritativeDenial = true;
+        }
+      }
+
       return {
         server,
         status,
         nameservers,
-        dsRecords: [],
+        dsRecords,
+        hasAuthoritativeDenial,
       };
     } catch (err) {
       return {
@@ -104,29 +123,69 @@ const DEFAULT_RESOLVER: DnsResolver = {
     }
   },
 
-  async queryHost(host: string): Promise<DnsRecordEntry[]> {
+  async queryChildNs(server: string, domain: string): Promise<Array<{ name: string; ttl: number }>> {
     try {
-      const proc = Bun.spawn(["dig", "+time=3", "+tries=2", host, "ANY"], {
+      const proc = Bun.spawn(
+        ["dig", `@${server}`, "+norecurse", "+time=3", "+tries=2", "NS", domain],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+      const stdout = await new Response(proc.stdout).text();
+      await proc.exited;
+
+      const results: Array<{ name: string; ttl: number }> = [];
+      for (const line of stdout.split("\n")) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 5 && parts[3] === "NS") {
+          results.push({
+            name: parts[4].replace(/\.$/, "").toLowerCase(),
+            ttl: parseInt(parts[1], 10) || 0,
+          });
+        }
+      }
+      return results;
+    } catch {
+      return [];
+    }
+  },
+
+  async queryHostRecord(host: string, type: string): Promise<HostRecordObservation> {
+    try {
+      const proc = Bun.spawn(["dig", "+time=3", "+tries=2", host, type], {
         stdout: "pipe",
         stderr: "pipe",
       });
       const stdout = await new Response(proc.stdout).text();
-      await proc.exited;
+      const code = await proc.exited;
+
+      const statusMatch = stdout.match(/status:\s*([A-Z]+)/);
+      const status = statusMatch ? statusMatch[1] : code === 0 ? "NOERROR" : `ERROR_${code}`;
 
       const records: DnsRecordEntry[] = [];
       for (const line of stdout.split("\n")) {
         const parts = line.trim().split(/\s+/);
-        if (parts.length >= 5 && (parts[3] === "A" || parts[3] === "AAAA" || parts[3] === "CNAME")) {
+        if (parts.length >= 5 && parts[3] === type) {
           records.push({
-            type: parts[3],
+            type,
             value: parts[4].replace(/\.$/, "").toLowerCase(),
             ttl: parseInt(parts[1], 10) || 0,
           });
         }
       }
-      return records;
-    } catch {
-      return [];
+
+      return {
+        host,
+        recordType: type,
+        status,
+        records,
+      };
+    } catch (err) {
+      return {
+        host,
+        recordType: type,
+        status: "EXCEPTION",
+        records: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   },
 };
@@ -141,18 +200,56 @@ export async function captureDnsObservation(params: {
   const parentQueries: ParentServerQuery[] = [];
 
   for (const server of AUTHORITATIVE_PARENT_SERVERS) {
-    const q = await resolver.queryParentNs(server, EXPECTED_ROOT_DOMAIN);
+    const q = await resolver.queryParentNsAndDs(server, EXPECTED_ROOT_DOMAIN);
     parentQueries.push(q);
   }
 
+  // Query child nameservers on Cloud DNS to discover real child NS TTL
+  const childNsQueries: Array<{ server: string; nameservers: Array<{ name: string; ttl: number }> }> = [];
+  const cloudDnsServers = [
+    "ns-cloud-c1.googledomains.com",
+    "ns-cloud-c2.googledomains.com",
+    "ns-cloud-c3.googledomains.com",
+    "ns-cloud-c4.googledomains.com",
+  ];
+
+  for (const cServer of cloudDnsServers) {
+    const childRecords = await resolver.queryChildNs(cServer, EXPECTED_ROOT_DOMAIN);
+    if (childRecords.length > 0) {
+      childNsQueries.push({ server: cServer, nameservers: childRecords });
+    }
+  }
+
+  // Query explicit record types (A, AAAA, CNAME) for all retired hostnames
   const hostRecordObservations: HostRecordObservation[] = [];
   for (const host of RETIRED_HOSTNAMES) {
-    const recs = await resolver.queryHost(host);
-    hostRecordObservations.push({ host, records: recs });
+    for (const type of ["A", "AAAA", "CNAME"]) {
+      const obs = await resolver.queryHostRecord(host, type);
+      hostRecordObservations.push(obs);
+    }
+  }
+
+  // Calculate actual observed old TTLs from parent, child, and host records
+  let maxObservedOldTtl = 21600; // Historical baseline minimum
+  for (const q of parentQueries) {
+    for (const ns of q.nameservers) {
+      if (ns.ttl > maxObservedOldTtl) maxObservedOldTtl = ns.ttl;
+    }
+  }
+  for (const cq of childNsQueries) {
+    for (const ns of cq.nameservers) {
+      if (ns.ttl > maxObservedOldTtl) maxObservedOldTtl = ns.ttl;
+    }
+  }
+  for (const h of hostRecordObservations) {
+    for (const r of h.records) {
+      if (r.ttl > maxObservedOldTtl) maxObservedOldTtl = r.ttl;
+    }
   }
 
   // Check agreement across all parent servers
-  const firstNsList = parentQueries[0]?.nameservers.map((n) => n.name).sort().join(",") || "";
+  const firstNsList =
+    parentQueries[0]?.nameservers.map((n) => n.name).sort().join(",") || "";
   let allAgree = true;
   let delegatesToCloudDns = false;
 
@@ -166,16 +263,14 @@ export async function captureDnsObservation(params: {
     }
   }
 
-  // Child NS TTL baseline is historically 21600 seconds
-  const oldMaxChildNsTtl = 21600;
-
   return {
     observationKind: kind,
     capturedAt: new Date().toISOString(),
     gitSha,
     workflowRunId,
     parentQueries,
-    oldMaxChildNsTtl,
+    childNsQueries,
+    oldMaxChildNsTtl: maxObservedOldTtl,
     hostRecordObservations,
     allParentsAgree: allAgree,
     delegatesToCloudDns,
@@ -196,16 +291,18 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
   const resolver = options.dnsResolver || DEFAULT_RESOLVER;
   const gcpToken = options.gcpToken || process.env.GOOGLE_OAUTH_ACCESS_TOKEN || "";
   const githubToken = options.githubToken || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
+  const currentRunId = options.currentRunId || process.env.GITHUB_RUN_ID || "";
 
   validateProjectIdentity(projectId, projectNumber);
 
   if (op === "observe") {
-    console.log(`==> Operation: OBSERVE (Capturing DNS and authority observations)`);
+    const kind = options.observationKind || "baseline";
+    console.log(`==> Operation: OBSERVE (kind: ${kind})`);
     const gitSha = options.expectedSha || process.env.GITHUB_SHA || "unknown-sha";
-    const runId = process.env.GITHUB_RUN_ID || "local-run";
+    const runId = currentRunId || "local-run";
 
     const observation = await captureDnsObservation({
-      kind: "baseline",
+      kind,
       gitSha,
       workflowRunId: runId,
       resolver,
@@ -214,7 +311,7 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
     const outPath = options.outObservationPath || "dns-observation.json";
     writeFileSync(outPath, JSON.stringify(observation, null, 2), "utf8");
 
-    console.log(`Observation captured to: ${outPath}`);
+    console.log(`Observation (${kind}) captured to: ${outPath}`);
     console.log(`Delegates to Cloud DNS: ${observation.delegatesToCloudDns}`);
     console.log(`All parent servers agree: ${observation.allParentsAgree}`);
     console.log("Read-only observation complete. Zero mutation calls executed.");
@@ -251,19 +348,18 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
       throw new Error(`Cutover artifact not found at '${options.cutoverArtifactPath}'`);
     }
 
-    const baseline = JSON.parse(readFileSync(options.baselineArtifactPath, "utf8")) as DnsObservation;
-    const cutover = JSON.parse(readFileSync(options.cutoverArtifactPath, "utf8")) as DnsObservation;
+    const baseline = JSON.parse(
+      readFileSync(options.baselineArtifactPath, "utf8")
+    ) as DnsObservation;
+    const cutover = JSON.parse(
+      readFileSync(options.cutoverArtifactPath, "utf8")
+    ) as DnsObservation;
 
-    const currentObs = await captureDnsObservation({
-      kind: "cutover",
-      gitSha: options.expectedSha || process.env.GITHUB_SHA || "",
-      workflowRunId: process.env.GITHUB_RUN_ID || "current",
-      resolver,
-    });
-    // Guard 3.5: Confirm no active deployment runs
-    try {
-      const runsRes = await transport.fetch(
-        "https://api.github.com/repos/jwaldrip/ompctl/actions/runs?status=in_progress",
+    // Validate provenance of cutover and baseline runs via GitHub API if run IDs supplied
+    if (options.baselineRunId) {
+      console.log(`Verifying baseline run #${options.baselineRunId} provenance...`);
+      const baseRunRes = await transport.fetch(
+        `https://api.github.com/repos/jwaldrip/ompctl/actions/runs/${options.baselineRunId}`,
         {
           headers: {
             Authorization: `Bearer ${githubToken}`,
@@ -271,19 +367,78 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
           },
         }
       );
-      if (runsRes.ok) {
-        const runsData = (await runsRes.json()) as {
-          workflow_runs?: Array<{ id: number; name: string; status: string; conclusion: string | null }>;
-        };
-        validateNoActiveDeployRuns(runsData.workflow_runs ?? []);
+      if (!baseRunRes.ok) {
+        throw new Error(
+          `Failed to read baseline run #${options.baselineRunId} provenance (HTTP ${baseRunRes.status})`
+        );
       }
-    } catch (err) {
-      if (err instanceof Error && err.message.includes("Active deployment")) {
-        throw err;
+      const baseRun = (await baseRunRes.json()) as {
+        status: string;
+        conclusion: string | null;
+        head_branch: string;
+        head_sha: string;
+      };
+      if (baseRun.status !== "completed" || baseRun.conclusion !== "success") {
+        throw new Error(`Baseline run #${options.baselineRunId} was not a successful completed run`);
       }
-      // If token cannot read runs, log notice
+      if (baseRun.head_branch !== "main") {
+        throw new Error(`Baseline run #${options.baselineRunId} was not on branch 'main'`);
+      }
+      if (options.expectedSha && baseRun.head_sha !== options.expectedSha) {
+        throw new Error(
+          `Baseline run SHA '${baseRun.head_sha}' does not match expected SHA '${options.expectedSha}'`
+        );
+      }
     }
-    const cutoverTimestampMs = options.cutoverTimestampMs || new Date(cutover.capturedAt).getTime();
+
+    if (options.cutoverRunId) {
+      console.log(`Verifying cutover run #${options.cutoverRunId} provenance...`);
+      const cutRunRes = await transport.fetch(
+        `https://api.github.com/repos/jwaldrip/ompctl/actions/runs/${options.cutoverRunId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${githubToken}`,
+            Accept: "application/vnd.github+json",
+          },
+        }
+      );
+      if (!cutRunRes.ok) {
+        throw new Error(
+          `Failed to read cutover run #${options.cutoverRunId} provenance (HTTP ${cutRunRes.status})`
+        );
+      }
+      const cutRun = (await cutRunRes.json()) as {
+        status: string;
+        conclusion: string | null;
+        head_branch: string;
+        head_sha: string;
+        updated_at?: string;
+      };
+      if (cutRun.status !== "completed" || cutRun.conclusion !== "success") {
+        throw new Error(`Cutover run #${options.cutoverRunId} was not a successful completed run`);
+      }
+      if (cutRun.head_branch !== "main") {
+        throw new Error(`Cutover run #${options.cutoverRunId} was not on branch 'main'`);
+      }
+      if (options.expectedSha && cutRun.head_sha !== options.expectedSha) {
+        throw new Error(
+          `Cutover run SHA '${cutRun.head_sha}' does not match expected SHA '${options.expectedSha}'`
+        );
+      }
+      if (!options.cutoverTimestampMs && cutRun.updated_at) {
+        options.cutoverTimestampMs = new Date(cutRun.updated_at).getTime();
+      }
+    }
+
+    const currentObs = await captureDnsObservation({
+      kind: "cutover",
+      gitSha: options.expectedSha || process.env.GITHUB_SHA || "",
+      workflowRunId: currentRunId || "current",
+      resolver,
+    });
+
+    const cutoverTimestampMs =
+      options.cutoverTimestampMs || new Date(cutover.capturedAt).getTime();
     const currentTimestampMs = Date.now();
 
     validateDnsCutoverAndTtl({
@@ -296,44 +451,74 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
     });
     console.log("✓ DNS cutover and TTL expiration verified.");
 
-    // Guard 4: Query live Resource Manager v1 project identity
-    console.log("Reading live project status via Resource Manager v1...");
-    const projectRes = await transport.fetch(
-      `https://cloudresourcemanager.googleapis.com/v1/projects/${projectId}`,
+    // Guard 4: Confirm no active deployment runs
+    console.log("Checking for active deployment or publication runs...");
+    const runsRes = await transport.fetch(
+      "https://api.github.com/repos/jwaldrip/ompctl/actions/runs",
       {
         headers: {
-          Authorization: `Bearer ${gcpToken}`,
-          Accept: "application/json",
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
         },
       }
     );
 
-    if (!projectRes.ok) {
-      const errBody = await projectRes.text();
+    if (!runsRes.ok) {
+      const errBody = await runsRes.text();
       throw new Error(
-        `Failed to read project '${projectId}' from Resource Manager v1 (HTTP ${projectRes.status}): ${errBody}`
+        `Failed to query GitHub Actions runs to verify deployment cessation (HTTP ${runsRes.status}): ${errBody}`
       );
     }
 
-    const projectData = (await projectRes.json()) as {
-      projectId: string;
-      projectNumber: string;
-      lifecycleState: string;
+    const runsData = (await runsRes.json()) as {
+      workflow_runs?: Array<{
+        id: number;
+        name: string;
+        path: string;
+        status: string;
+        conclusion: string | null;
+      }>;
     };
+    validateNoActiveDeployRuns(runsData.workflow_runs ?? [], currentRunId);
+    console.log("✓ Zero active deployment workflow runs confirmed.");
 
-    if (projectData.projectId !== EXPECTED_PROJECT_ID) {
-      throw new Error(
-        `Project ID mismatch: live reported '${projectData.projectId}', expected '${EXPECTED_PROJECT_ID}'`
-      );
-    }
-    if (projectData.projectNumber !== EXPECTED_PROJECT_NUMBER) {
-      throw new Error(
-        `Project number mismatch: live reported '${projectData.projectNumber}', expected '${EXPECTED_PROJECT_NUMBER}'`
-      );
-    }
-    console.log(`✓ Project identity confirmed: ${projectData.projectId} (${projectData.projectNumber})`);
+    // Guard 5: Check deletion liens FIRST via official Resource Manager v1 endpoint
+    console.log("Checking project deletion liens via Resource Manager v1 (/v1/liens)...");
+    let pageToken: string | undefined;
+    const allLiens: unknown[] = [];
 
-    // Guard 5: Test and ensure project deletion permissions
+    do {
+      const liensUrl = new URL("https://cloudresourcemanager.googleapis.com/v1/liens");
+      liensUrl.searchParams.set("parent", `projects/${projectNumber}`);
+      if (pageToken) {
+        liensUrl.searchParams.set("pageToken", pageToken);
+      }
+
+      const liensRes = await transport.fetch(liensUrl.toString(), {
+        headers: {
+          Authorization: `Bearer ${gcpToken}`,
+          Accept: "application/json",
+        },
+      });
+
+      if (!liensRes.ok) {
+        const errBody = await liensRes.text();
+        throw new Error(
+          `Failed to query liens for project '${projectId}' (HTTP ${liensRes.status}): ${errBody}`
+        );
+      }
+
+      const liensData = (await liensRes.json()) as { liens?: unknown[]; nextPageToken?: string };
+      if (Array.isArray(liensData.liens)) {
+        allLiens.push(...liensData.liens);
+      }
+      pageToken = liensData.nextPageToken;
+    } while (pageToken);
+
+    validateNoLiens(allLiens);
+    console.log("✓ Zero project deletion liens confirmed.");
+
+    // Guard 6: Test and ensure project deletion permissions
     console.log("Checking project deletion permissions via Resource Manager v1 testIamPermissions...");
     const testIamRes = await transport.fetch(
       `https://cloudresourcemanager.googleapis.com/v1/projects/${projectId}:testIamPermissions`,
@@ -371,7 +556,11 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
             "Content-Type": "application/json",
             Accept: "application/json",
           },
-          body: JSON.stringify({}),
+          body: JSON.stringify({
+            options: {
+              requestedPolicyVersion: 3,
+            },
+          }),
         }
       );
 
@@ -419,7 +608,7 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
           },
           body: JSON.stringify({
             policy: {
-              version: policy.version,
+              version: policy.version || 3,
               etag: policy.etag,
               bindings,
             },
@@ -456,41 +645,6 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
     validateProjectDeleterPermission(hasDelete);
     console.log("✓ Project deletion permission verified.");
 
-    // Guard 6: Verify zero project deletion liens (handling pagination)
-    console.log("Checking project deletion liens via Resource Manager v1...");
-    let pageToken: string | undefined;
-    const allLiens: unknown[] = [];
-
-    do {
-      const liensUrl = new URL(`https://cloudresourcemanager.googleapis.com/v1/projects/${projectId}/liens`);
-      if (pageToken) {
-        liensUrl.searchParams.set("pageToken", pageToken);
-      }
-
-      const liensRes = await transport.fetch(liensUrl.toString(), {
-        headers: {
-          Authorization: `Bearer ${gcpToken}`,
-          Accept: "application/json",
-        },
-      });
-
-      if (!liensRes.ok) {
-        const errBody = await liensRes.text();
-        throw new Error(
-          `Failed to query liens for project '${projectId}' (HTTP ${liensRes.status}): ${errBody}`
-        );
-      }
-
-      const liensData = (await liensRes.json()) as { liens?: unknown[]; nextPageToken?: string };
-      if (Array.isArray(liensData.liens)) {
-        allLiens.push(...liensData.liens);
-      }
-      pageToken = liensData.nextPageToken;
-    } while (pageToken);
-
-    validateNoLiens(allLiens);
-    console.log("✓ Zero project liens confirmed.");
-
     // Mutation 1: Unpublish GitHub Pages
     console.log("Unpublishing GitHub Pages site...");
     const pagesDelRes = await transport.fetch(
@@ -505,7 +659,9 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
     );
 
     if (pagesDelRes.status === 204 || pagesDelRes.status === 404) {
-      console.log(`✓ GitHub Pages deletion status: HTTP ${pagesDelRes.status} (unpublish accepted).`);
+      console.log(
+        `✓ GitHub Pages deletion status: HTTP ${pagesDelRes.status} (unpublish accepted).`
+      );
     } else {
       const errBody = await pagesDelRes.text();
       throw new Error(
@@ -546,9 +702,7 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
 
     if (!deleteProjRes.ok) {
       const errBody = await deleteProjRes.text();
-      throw new Error(
-        `Project shutdown failed (HTTP ${deleteProjRes.status}): ${errBody}`
-      );
+      throw new Error(`Project shutdown failed (HTTP ${deleteProjRes.status}): ${errBody}`);
     }
 
     console.log("\n========================================================");
@@ -581,26 +735,50 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  let kind: "baseline" | "cutover" = "baseline";
   let confirmation = "";
   let baselinePath = "";
   let cutoverPath = "";
+  let baselineRunId = "";
+  let cutoverRunId = "";
+  let cutoverTimestampMs: number | undefined;
+  let expectedSha = "";
+  let currentRunId = process.env.GITHUB_RUN_ID || "";
 
   for (let i = 1; i < args.length; i++) {
-    if (args[i] === "--confirm") {
+    if (args[i] === "--kind") {
+      kind = args[++i] as "baseline" | "cutover";
+    } else if (args[i] === "--confirm") {
       confirmation = args[++i];
     } else if (args[i] === "--baseline-artifact") {
       baselinePath = args[++i];
     } else if (args[i] === "--cutover-artifact") {
       cutoverPath = args[++i];
+    } else if (args[i] === "--baseline-run-id") {
+      baselineRunId = args[++i];
+    } else if (args[i] === "--cutover-run-id") {
+      cutoverRunId = args[++i];
+    } else if (args[i] === "--cutover-timestamp-ms") {
+      cutoverTimestampMs = parseInt(args[++i], 10);
+    } else if (args[i] === "--expected-sha") {
+      expectedSha = args[++i];
+    } else if (args[i] === "--current-run-id") {
+      currentRunId = args[++i];
     }
   }
 
   try {
     await retireInfra({
       operation: op,
+      observationKind: kind,
       confirmation,
       baselineArtifactPath: baselinePath,
       cutoverArtifactPath: cutoverPath,
+      baselineRunId,
+      cutoverRunId,
+      cutoverTimestampMs,
+      expectedSha,
+      currentRunId,
     });
   } catch (err) {
     console.error("\n[FATAL RETIREMENT FAILURE]");
