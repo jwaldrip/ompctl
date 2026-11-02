@@ -78,7 +78,7 @@ gh workflow run retire-infra.yml \
 ### Step 2: Execute Registrar Cutover at Squarespace
 
 1. Switch nameservers in the Squarespace admin console to registrar default/dormant DNS.
-2. Verify via \`dig @a.nic.ai NS ompctl.ai +norecurse\` that parent servers report the new nameservers.
+2. Verify via \`dig @v0n0.nic.ai NS ompctl.ai +norecurse\` that parent servers report the new nameservers.
 
 ---
 
@@ -89,7 +89,8 @@ Once all six parent servers reflect the updated delegation, record the cutover o
 ```bash
 gh workflow run retire-infra.yml \
   --ref main \
-  -f operation=observe
+  -f operation=observe \
+  -f observation_kind=cutover
 ```
 
 **Actions:**

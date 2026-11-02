@@ -65,17 +65,27 @@ export interface DnsRecordEntry {
 
 export interface ParentServerQuery {
   server: string;
-  status: string;
+  nsStatus: string;
+  dsStatus: string;
   nameservers: Array<{ name: string; ttl: number }>;
   dsRecords: Array<{ data: string; ttl: number }>;
-  hasAuthoritativeDenial?: boolean;
+  hasAuthoritativeDenial: boolean;
+  error?: string;
+}
+
+export interface ChildNsQuery {
+  server: string;
+  status: string;
+  nameservers: Array<{ name: string; ttl: number }>;
   error?: string;
 }
 
 export interface HostRecordObservation {
   host: string;
   recordType: string;
+  queryServer?: string;
   status: string;
+  isAuthoritative?: boolean;
   records: DnsRecordEntry[];
   error?: string;
 }
@@ -86,10 +96,7 @@ export interface DnsObservation {
   gitSha: string;
   workflowRunId: string;
   parentQueries: ParentServerQuery[];
-  childNsQueries: Array<{
-    server: string;
-    nameservers: Array<{ name: string; ttl: number }>;
-  }>;
+  childNsQueries: ChildNsQuery[];
   oldMaxChildNsTtl: number;
   hostRecordObservations: HostRecordObservation[];
   allParentsAgree: boolean;
@@ -102,8 +109,16 @@ export interface HttpTransport {
   fetch(input: string | URL, init?: RequestInit): Promise<Response>;
 }
 
+export type CommandRunner = (
+  cmd: string[]
+) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+
 export interface DnsResolver {
   queryParentNsAndDs(server: string, domain: string): Promise<ParentServerQuery>;
-  queryChildNs(server: string, domain: string): Promise<Array<{ name: string; ttl: number }>>;
-  queryHostRecord(host: string, type: string): Promise<HostRecordObservation>;
+  queryChildNs(server: string, domain: string): Promise<ChildNsQuery>;
+  queryHostRecord(
+    host: string,
+    type: string,
+    queryServer?: string
+  ): Promise<HostRecordObservation>;
 }

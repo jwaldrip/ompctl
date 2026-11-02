@@ -1,7 +1,7 @@
 /**
  * Stateful in-memory HTTP mirror for Google Cloud Resource Manager v1 and GitHub Actions/Pages API.
  * Accurately implements official REST contracts, bearer token authentication,
- * etags, liens pagination, and project lifecycle transitions.
+ * etags, liens pagination, actions run pagination, and project lifecycle transitions.
  */
 
 import type { HttpTransport } from "./types.ts";
@@ -357,16 +357,18 @@ export class StatefulHttpMirror implements HttpTransport {
         });
       }
 
-      const statusFilter = parsedUrl.searchParams.get("status");
-      let matchedRuns = this.workflowRuns;
-      if (statusFilter) {
-        matchedRuns = matchedRuns.filter((r) => r.status === statusFilter);
-      }
+      const pageParam = parsedUrl.searchParams.get("page");
+      const perPageParam = parsedUrl.searchParams.get("per_page");
+      const page = pageParam ? Math.max(1, parseInt(pageParam, 10) || 1) : 1;
+      const perPage = perPageParam ? Math.max(1, parseInt(perPageParam, 10) || 30) : 30;
+
+      const startIndex = (page - 1) * perPage;
+      const pageRuns = this.workflowRuns.slice(startIndex, startIndex + perPage);
 
       return new Response(
         JSON.stringify({
-          total_count: matchedRuns.length,
-          workflow_runs: matchedRuns,
+          total_count: this.workflowRuns.length,
+          workflow_runs: pageRuns,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );

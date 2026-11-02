@@ -4,6 +4,7 @@
  */
 
 import {
+  AUTHORITATIVE_PARENT_SERVERS,
   DEPLOYMENT_WORKFLOW_FILENAMES,
   EXPECTED_PROJECT_ID,
   EXPECTED_PROJECT_NUMBER,
@@ -164,55 +165,87 @@ export function validateDnsCutoverAndTtl(params: DnsCutoverGateInput): void {
     }
   }
 
-  if (!baseline.delegatesToCloudDns) {
+  // 1. Validate baseline child-authority TTL evidence
+  if (!Array.isArray(baseline.childNsQueries) || baseline.childNsQueries.length === 0) {
     throw new Error(
-      "DNS guard failed: baseline observation must confirm delegation to Cloud DNS"
+      "DNS guard failed: baseline artifact lacks required child-authority NS query evidence"
     );
   }
 
-  if (cutover.delegatesToCloudDns) {
-    throw new Error(
-      "DNS guard failed: cutover observation indicates domain still delegates to Cloud DNS"
-    );
-  }
-
-  if (!cutover.allParentsAgree) {
-    throw new Error(
-      "DNS guard failed: cutover observation has mixed parent delegation (not all parents agree)"
-    );
-  }
-
-  // Validate cutover parent queries
-  if (cutover.parentQueries.length === 0) {
-    throw new Error("DNS guard failed: cutover observation contains zero parent queries");
-  }
-
-  for (const q of cutover.parentQueries) {
-    if (q.status !== "NOERROR") {
+  for (const cq of baseline.childNsQueries) {
+    if (cq.status !== "NOERROR") {
       throw new Error(
-        `DNS guard failed: cutover query to parent '${q.server}' returned status '${q.status}'`
+        `DNS guard failed: baseline child-authority query to '${cq.server}' failed with status '${cq.status}'`
       );
     }
-    if (q.nameservers.length === 0) {
+    if (!Array.isArray(cq.nameservers) || cq.nameservers.length === 0) {
+      throw new Error(
+        `DNS guard failed: baseline child-authority query to '${cq.server}' returned zero nameservers`
+      );
+    }
+  }
+
+  // 2. Validate cutover parent queries across all 6 IANA parent servers
+  if (!Array.isArray(cutover.parentQueries) || cutover.parentQueries.length < AUTHORITATIVE_PARENT_SERVERS.length) {
+    throw new Error(
+      `DNS guard failed: cutover artifact must contain queries for all ${AUTHORITATIVE_PARENT_SERVERS.length} authoritative parent servers`
+    );
+  }
+
+  const expectedServers: Record<string, true> = Object.fromEntries(
+    AUTHORITATIVE_PARENT_SERVERS.map((s) => [s, true])
+  );
+
+  let cutoverFirstNs = "";
+  for (const q of cutover.parentQueries) {
+    if (!expectedServers[q.server]) {
+      throw new Error(`DNS guard failed: unrecognized parent server in cutover: '${q.server}'`);
+    }
+    if (q.nsStatus !== "NOERROR") {
+      throw new Error(
+        `DNS guard failed: cutover NS query to parent '${q.server}' failed with status '${q.nsStatus}'`
+      );
+    }
+    if (!Array.isArray(q.nameservers) || q.nameservers.length === 0) {
       throw new Error(
         `DNS guard failed: cutover query to parent '${q.server}' returned zero nameservers`
       );
     }
+
+    const currentNs = q.nameservers.map((n) => n.name).sort().join(",");
+    if (!cutoverFirstNs) {
+      cutoverFirstNs = currentNs;
+    } else if (currentNs !== cutoverFirstNs) {
+      throw new Error("DNS guard failed: cutover parent queries do not agree on replacement nameservers");
+    }
+
     for (const ns of q.nameservers) {
       if (OLD_CLOUD_DNS_PATTERN.test(ns.name)) {
         throw new Error(
-          `DNS guard failed: parent server '${q.server}' still returned Cloud DNS nameserver '${ns.name}' in cutover artifact`
+          `DNS guard failed: parent server '${q.server}' still delegates to Cloud DNS nameserver '${ns.name}' in cutover artifact`
         );
       }
     }
-    if (q.dsRecords && q.dsRecords.length > 0) {
+
+    // DS query validation
+    if (q.dsStatus !== "NOERROR") {
+      throw new Error(
+        `DNS guard failed: cutover DS query to parent '${q.server}' failed with status '${q.dsStatus}'`
+      );
+    }
+    if (!q.hasAuthoritativeDenial) {
+      throw new Error(
+        `DNS guard failed: cutover DS query to parent '${q.server}' lacked authoritative denial of DS`
+      );
+    }
+    if (Array.isArray(q.dsRecords) && q.dsRecords.length > 0) {
       throw new Error(
         `DNS guard failed: unexpected DS record present on parent '${q.server}' in cutover artifact`
       );
     }
   }
 
-  // Validate cutover timestamp
+  // 3. Validate cutover timestamp & TTL elapsed time
   if (!Number.isFinite(cutoverTimestampMs) || cutoverTimestampMs <= 0) {
     throw new Error(
       `DNS guard failed: invalid cutover timestamp '${String(cutoverTimestampMs)}'`
@@ -225,7 +258,6 @@ export function validateDnsCutoverAndTtl(params: DnsCutoverGateInput): void {
     );
   }
 
-  // Old TTL expiry check
   const requiredElapsedSeconds = Math.max(baseline.oldMaxChildNsTtl, 21600);
   const actualElapsedSeconds = Math.floor(
     (currentTimestampMs - cutoverTimestampMs) / 1000
@@ -237,41 +269,77 @@ export function validateDnsCutoverAndTtl(params: DnsCutoverGateInput): void {
     );
   }
 
-  // Real-time parent check at execution time
-  if (currentObservations.delegatesToCloudDns) {
-    throw new Error(
-      "DNS guard failed: real-time parent nameserver check confirms delegation is still pointing to Cloud DNS"
-    );
+  // 4. Real-time parent check at execution time
+  if (!Array.isArray(currentObservations.parentQueries) || currentObservations.parentQueries.length === 0) {
+    throw new Error("DNS guard failed: real-time parent queries are missing");
   }
 
-  if (!currentObservations.allParentsAgree) {
-    throw new Error(
-      "DNS guard failed: real-time parent nameserver check shows mixed delegation across authoritative parent servers"
-    );
-  }
-
+  let realTimeFirstNs = "";
   for (const q of currentObservations.parentQueries) {
-    if (q.status !== "NOERROR") {
+    if (q.nsStatus !== "NOERROR") {
       throw new Error(
-        `DNS guard failed: real-time query to parent '${q.server}' returned status '${q.status}'`
+        `DNS guard failed: real-time NS query to parent '${q.server}' failed with status '${q.nsStatus}'`
       );
     }
-    if (q.dsRecords && q.dsRecords.length > 0) {
+    if (!Array.isArray(q.nameservers) || q.nameservers.length === 0) {
+      throw new Error(
+        `DNS guard failed: real-time query to parent '${q.server}' returned zero nameservers`
+      );
+    }
+
+    const currentNs = q.nameservers.map((n) => n.name).sort().join(",");
+    if (!realTimeFirstNs) {
+      realTimeFirstNs = currentNs;
+    } else if (currentNs !== realTimeFirstNs) {
+      throw new Error(
+        "DNS guard failed: real-time parent nameserver check shows mixed delegation across authoritative parent servers"
+      );
+    }
+
+    for (const ns of q.nameservers) {
+      if (OLD_CLOUD_DNS_PATTERN.test(ns.name)) {
+        throw new Error(
+          `DNS guard failed: real-time parent nameserver check confirms delegation is still pointing to Cloud DNS (${ns.name})`
+        );
+      }
+    }
+
+    if (q.dsStatus !== "NOERROR") {
+      throw new Error(
+        `DNS guard failed: real-time DS query to parent '${q.server}' failed with status '${q.dsStatus}'`
+      );
+    }
+    if (!q.hasAuthoritativeDenial) {
+      throw new Error(
+        `DNS guard failed: real-time DS query to parent '${q.server}' lacked authoritative denial of DS`
+      );
+    }
+    if (Array.isArray(q.dsRecords) && q.dsRecords.length > 0) {
       throw new Error(
         `DNS guard failed: unexpected DS record present on parent '${q.server}' during real-time check`
       );
     }
   }
 
-  // Host record checks against retired destinations (CNAMEs, IPs, and query errors)
+  // 5. Host record checks against replacement authority
   const retiredIpSet: Record<string, true> = Object.fromEntries(
     RETIRED_DESTINATION_IPS.map((ip) => [ip, true])
   );
+
+  if (!Array.isArray(currentObservations.hostRecordObservations) || currentObservations.hostRecordObservations.length === 0) {
+    throw new Error("DNS guard failed: replacement authority host record observations are missing");
+  }
 
   for (const hostObs of currentObservations.hostRecordObservations) {
     if (hostObs.status !== "NOERROR" && hostObs.status !== "NXDOMAIN") {
       throw new Error(
         `DNS guard failed: host query for '${hostObs.host}' (${hostObs.recordType}) failed with status '${hostObs.status}': ${hostObs.error || "unresolved"}`
+      );
+    }
+
+    if (hostObs.isAuthoritative === false) {
+      throw new Error(
+        `DNS guard failed: host query for '${hostObs.host}' was not answered authoritatively by the replacement nameserver`
       );
     }
 

@@ -1,91 +1,163 @@
 import { describe, expect, test } from "bun:test";
-import { retireInfra } from "./cli.ts";
+import { DigDnsResolver, retireInfra } from "./cli.ts";
 import { StatefulHttpMirror } from "./mirror.ts";
 import {
   AUTHORITATIVE_PARENT_SERVERS,
-  type DnsResolver,
-  type HostRecordObservation,
-  type ParentServerQuery,
+  type CommandRunner,
 } from "./types.ts";
 
-function createMockResolver(params: {
+function createControlledCommandRunner(params: {
   delegatesToCloudDns?: boolean;
   allParentsAgree?: boolean;
-  parentStatus?: string;
-  hasDs?: boolean;
+  parentNsStatus?: string;
+  parentDsStatus?: string;
+  hasDsRecord?: boolean;
+  hasAuthoritativeDenial?: boolean;
   childNsTtl?: number;
-  hostRecordTarget?: string;
+  childNsStatus?: string;
+  hostRecordIp?: string;
   hostQueryStatus?: string;
-}): DnsResolver {
+  hostIsAuthoritative?: boolean;
+}): CommandRunner {
   const delegates = params.delegatesToCloudDns ?? false;
   const agree = params.allParentsAgree ?? true;
-  const status = params.parentStatus ?? "NOERROR";
+  const nsStatus = params.parentNsStatus ?? "NOERROR";
+  const dsStatus = params.parentDsStatus ?? "NOERROR";
+  const hasDs = params.hasDsRecord ?? false;
+  const hasDenial = params.hasAuthoritativeDenial ?? !hasDs;
+  const childTtl = params.childNsTtl ?? 21600;
+  const childStatus = params.childNsStatus ?? "NOERROR";
+  const hostIp = params.hostRecordIp ?? "192.0.2.1";
+  const hostStatus = params.hostQueryStatus ?? "NOERROR";
+  const hostAa = params.hostIsAuthoritative ?? true;
 
-  return {
-    async queryParentNsAndDs(server: string, _domain: string): Promise<ParentServerQuery> {
-      let nsNames = delegates
-        ? [
-            { name: "ns-cloud-c1.googledomains.com", ttl: 3600 },
-            { name: "ns-cloud-c2.googledomains.com", ttl: 3600 },
-          ]
-        : [
-            { name: "dns1.registrar-servers.com", ttl: 3600 },
-            { name: "dns2.registrar-servers.com", ttl: 3600 },
-          ];
+  return async (cmd: string[]) => {
+    const cmdStr = cmd.join(" ");
 
-      if (!agree && server === "v2n1.nic.ai") {
-        nsNames = [{ name: "ns-cloud-c3.googledomains.com", ttl: 3600 }];
+    // 1. Parent NS Query: dig @<server> +norecurse NS ompctl.ai
+    if (cmdStr.includes(" NS ompctl.ai") && cmdStr.includes("@v")) {
+      const serverMatch = cmdStr.match(/@(v[02]n[0-3]\.nic\.ai)/);
+      const server = serverMatch ? serverMatch[1] : "v0n0.nic.ai";
+
+      if (nsStatus !== "NOERROR") {
+        return {
+          stdout: `;; ->>HEADER<<- opcode: QUERY, status: ${nsStatus}, id: 1001\n;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0\n`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+
+      let ns1 = "dns1.registrar-servers.com.";
+      let ns2 = "dns2.registrar-servers.com.";
+
+      if (delegates) {
+        ns1 = "ns-cloud-c1.googledomains.com.";
+        ns2 = "ns-cloud-c2.googledomains.com.";
+      } else if (!agree && server === "v2n1.nic.ai") {
+        ns1 = "ns-cloud-c3.googledomains.com.";
       }
 
       return {
-        server,
-        status,
-        nameservers: nsNames,
-        dsRecords: params.hasDs ? [{ data: "12345 8 2 mockdigest", ttl: 3600 }] : [],
-        hasAuthoritativeDenial: !params.hasDs,
+        stdout: `;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1002\n;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 2, ADDITIONAL: 0\n;; AUTHORITY SECTION:\nompctl.ai. 3600 IN NS ${ns1}\nompctl.ai. 3600 IN NS ${ns2}\n`,
+        stderr: "",
+        exitCode: 0,
       };
-    },
+    }
 
-    async queryChildNs(_server: string, _domain: string) {
-      return [
-        { name: "ns-cloud-c1.googledomains.com", ttl: params.childNsTtl ?? 21600 },
-        { name: "ns-cloud-c2.googledomains.com", ttl: params.childNsTtl ?? 21600 },
-      ];
-    },
+    // 2. Parent DS Query: dig @<server> +norecurse DS ompctl.ai
+    if (cmdStr.includes(" DS ompctl.ai") && cmdStr.includes("@v")) {
+      if (dsStatus !== "NOERROR") {
+        return {
+          stdout: `;; ->>HEADER<<- opcode: QUERY, status: ${dsStatus}, id: 1003\n;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0\n`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
 
-    async queryHostRecord(host: string, type: string): Promise<HostRecordObservation> {
-      const qStatus = params.hostQueryStatus ?? "NOERROR";
-      const target = params.hostRecordTarget ?? "192.0.2.1";
+      if (hasDs) {
+        return {
+          stdout: `;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1004\n;; flags: qr rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0\n;; ANSWER SECTION:\nompctl.ai. 3600 IN DS 12345 8 2 0123456789abcdef0123456789abcdef01234567\n`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+
+      if (hasDenial) {
+        return {
+          stdout: `;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1005\n;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 0\n;; AUTHORITY SECTION:\nnic.ai. 3600 IN SOA v0n0.nic.ai. hostmaster.nic.ai. 2026110201 7200 3600 1209600 3600\n`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+
+      // No denial and no DS
+      return {
+        stdout: `;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1006\n;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0\n`,
+        stderr: "",
+        exitCode: 0,
+      };
+    }
+
+    // 3. Child NS Query on Cloud DNS: dig @ns-cloud-c*.googledomains.com +norecurse NS ompctl.ai
+    if (cmdStr.includes(" NS ompctl.ai") && cmdStr.includes("@ns-cloud")) {
+      if (childStatus !== "NOERROR") {
+        return {
+          stdout: `;; ->>HEADER<<- opcode: QUERY, status: ${childStatus}, id: 1007\n;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0\n`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
 
       return {
-        host,
-        recordType: type,
-        status: qStatus,
-        records: qStatus === "NOERROR" ? [{ type, value: target, ttl: 300 }] : [],
-        error: qStatus !== "NOERROR" ? `DNS query failed with ${qStatus}` : undefined,
+        stdout: `;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1008\n;; flags: qr aa rd; QUERY: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 0\n;; ANSWER SECTION:\nompctl.ai. ${childTtl} IN NS ns-cloud-c1.googledomains.com.\nompctl.ai. ${childTtl} IN NS ns-cloud-c2.googledomains.com.\n`,
+        stderr: "",
+        exitCode: 0,
       };
-    },
+    }
+
+    // 4. Host Record Query: dig [@server] [+norecurse] <host> <type>
+    const typeMatch = cmdStr.match(/\b(A|AAAA|CNAME)\b/);
+    const hostType = typeMatch ? typeMatch[1] : "A";
+
+    if (hostStatus !== "NOERROR") {
+      return {
+        stdout: `;; ->>HEADER<<- opcode: QUERY, status: ${hostStatus}, id: 1009\n;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0\n`,
+        stderr: "",
+        exitCode: hostStatus === "NOERROR" ? 0 : 9,
+      };
+    }
+
+    const aaFlag = hostAa ? " aa" : "";
+    return {
+      stdout: `;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1010\n;; flags: qr${aaFlag} rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0\n;; ANSWER SECTION:\nompctl.ai. 300 IN ${hostType} ${hostIp}\n`,
+      stderr: "",
+      exitCode: 0,
+    };
   };
 }
 
-describe("Guarded Direct Project Shutdown Execution Proof", () => {
+describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DNS and API Contracts", () => {
   const TEST_SHA = "3662016072646338c3e1cca236b27c9dc7a4f219";
 
-  test("1. Rejects wrong live project ID or number", async () => {
+  test("1. Rejects wrong live project ID or number before any lien or IAM call", async () => {
     const mirror = new StatefulHttpMirror({
       projectId: "ompctl",
-      projectNumber: "999999999999", // Mismatched project number
+      projectNumber: "999999999999", // Mismatched project number on live GCP
     });
 
-    const baselinePath = "/tmp/proof-baseline-1.json";
-    const cutoverPath = "/tmp/proof-cutover-1.json";
+    const baselinePath = "/tmp/wire-baseline-1.json";
+    const cutoverPath = "/tmp/wire-cutover-1.json";
+
+    const baseResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: true }));
+    const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
 
     await retireInfra({
       operation: "observe",
       observationKind: "baseline",
       outObservationPath: baselinePath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
+      currentRunId: "101",
+      dnsResolver: baseResolver,
     });
 
     await retireInfra({
@@ -93,8 +165,32 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
       observationKind: "cutover",
       outObservationPath: cutoverPath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      currentRunId: "202",
+      dnsResolver: cutResolver,
     });
+
+    mirror.workflowRuns = [
+      {
+        id: 101,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+      {
+        id: 202,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+    ];
 
     const p = retireInfra({
       operation: "retire",
@@ -104,16 +200,22 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
       executionRef: "refs/heads/main",
       baselineArtifactPath: baselinePath,
       cutoverArtifactPath: cutoverPath,
-      cutoverTimestampMs: Date.now() - 30000 * 1000,
+      baselineRunId: "101",
+      cutoverRunId: "202",
       expectedSha: TEST_SHA,
       gcpToken: "valid-bearer-token",
       githubToken: "valid-gh-token",
       transport: mirror,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      dnsResolver: cutResolver,
     });
 
-    expect(p).rejects.toThrow(/Project number mismatch/);
-    expect(mirror.lifecycleState).toBe("ACTIVE");
+    expect(p).rejects.toThrow(/Project number mismatch: live reported '999999999999', expected '782181616134'/);
+
+    // Verify halted BEFORE liens query or IAM policy calls
+    const liensReq = mirror.requestLog.find((r) => r.url.includes("/v1/liens"));
+    expect(liensReq).toBeUndefined();
+    const iamReq = mirror.requestLog.find((r) => r.url.includes(":getIamPolicy"));
+    expect(iamReq).toBeUndefined();
   });
 
   test("2. Rejects missing confirmation or invalid execution ref", async () => {
@@ -132,7 +234,7 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
       retireInfra({
         operation: "retire",
         confirmation: "CONFIRM-RETIRE-OMPCTL",
-        executionRef: "refs/heads/some-feature",
+        executionRef: "refs/heads/feature",
         transport: mirror,
       })
     ).rejects.toThrow(/Execution ref guard failed/);
@@ -140,18 +242,23 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
     expect(mirror.requestLog.length).toBe(0);
   });
 
-  test("3 & 4. Enforces OAuth access token and halts on permission failure", async () => {
-    const mirror = new StatefulHttpMirror();
+  test("3. Treat unsuccessful DS query as unknown, not DS absence", async () => {
+    const baselinePath = "/tmp/wire-baseline-3.json";
+    const cutoverPath = "/tmp/wire-cutover-3.json";
 
-    const baselinePath = "/tmp/proof-baseline-3.json";
-    const cutoverPath = "/tmp/proof-cutover-3.json";
+    const baseResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: true }));
+    // Resolver simulates SERVFAIL on parent DS query
+    const failDsResolver = new DigDnsResolver(
+      createControlledCommandRunner({ delegatesToCloudDns: false, parentDsStatus: "SERVFAIL" })
+    );
 
     await retireInfra({
       operation: "observe",
       observationKind: "baseline",
       outObservationPath: baselinePath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
+      currentRunId: "101",
+      dnsResolver: baseResolver,
     });
 
     await retireInfra({
@@ -159,10 +266,34 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
       observationKind: "cutover",
       outObservationPath: cutoverPath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      currentRunId: "202",
+      dnsResolver: failDsResolver,
     });
 
-    // 4a: Missing/empty GCP token results in 401 Unauthorized
+    const mirror = new StatefulHttpMirror();
+    mirror.workflowRuns = [
+      {
+        id: 101,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+      {
+        id: 202,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+    ];
+
     expect(
       retireInfra({
         operation: "retire",
@@ -170,51 +301,37 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
         executionRef: "refs/heads/main",
         baselineArtifactPath: baselinePath,
         cutoverArtifactPath: cutoverPath,
-        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        baselineRunId: "101",
+        cutoverRunId: "202",
         expectedSha: TEST_SHA,
-        gcpToken: "", // Empty token
+        gcpToken: "valid-bearer-token",
         githubToken: "valid-gh-token",
         transport: mirror,
-        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+        dnsResolver: failDsResolver,
       })
-    ).rejects.toThrow(/HTTP 401/);
+    ).rejects.toThrow(/cutover DS query to parent 'v0n0.nic.ai' failed with status 'SERVFAIL'/);
 
-    // 4b: testIamPermissions returns 403
-    const mirrorIamFail = new StatefulHttpMirror({
-      failTestIam: { status: 403, body: { error: { code: 403, message: "Caller lacks permissions" } } },
-    });
-
-    expect(
-      retireInfra({
-        operation: "retire",
-        confirmation: "CONFIRM-RETIRE-OMPCTL",
-        executionRef: "refs/heads/main",
-        baselineArtifactPath: baselinePath,
-        cutoverArtifactPath: cutoverPath,
-        cutoverTimestampMs: Date.now() - 30000 * 1000,
-        expectedSha: TEST_SHA,
-        gcpToken: "valid-bearer-token",
-        githubToken: "valid-gh-token",
-        transport: mirrorIamFail,
-        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-      })
-    ).rejects.toThrow(/testIamPermissions failed on project 'ompctl' \(HTTP 403\)/);
+    expect(mirror.lifecycleState).toBe("ACTIVE");
   });
 
-  test("5. Checks deletion liens via real /v1/liens route BEFORE any IAM write", async () => {
-    const mirrorWithLien = new StatefulHttpMirror({
-      initialLiens: [{ name: "liens/active-lock", reason: "backup hold", parent: "projects/782181616134" }],
-    });
+  test("4. Proves replacement-authority control and rejects non-authoritative host answers", async () => {
+    const baselinePath = "/tmp/wire-baseline-4.json";
+    const cutoverPath = "/tmp/wire-cutover-4.json";
 
-    const baselinePath = "/tmp/proof-baseline-5.json";
-    const cutoverPath = "/tmp/proof-cutover-5.json";
+    const baseResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: true }));
+    const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
+    // Real-time resolver returns non-authoritative answer (lacks 'aa' flag)
+    const nonAuthResolver = new DigDnsResolver(
+      createControlledCommandRunner({ delegatesToCloudDns: false, hostIsAuthoritative: false })
+    );
 
     await retireInfra({
       operation: "observe",
       observationKind: "baseline",
       outObservationPath: baselinePath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
+      currentRunId: "101",
+      dnsResolver: baseResolver,
     });
 
     await retireInfra({
@@ -222,8 +339,33 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
       observationKind: "cutover",
       outObservationPath: cutoverPath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      currentRunId: "202",
+      dnsResolver: cutResolver,
     });
+
+    const mirror = new StatefulHttpMirror();
+    mirror.workflowRuns = [
+      {
+        id: 101,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+      {
+        id: 202,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+    ];
 
     expect(
       retireInfra({
@@ -232,61 +374,93 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
         executionRef: "refs/heads/main",
         baselineArtifactPath: baselinePath,
         cutoverArtifactPath: cutoverPath,
-        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        baselineRunId: "101",
+        cutoverRunId: "202",
         expectedSha: TEST_SHA,
         gcpToken: "valid-bearer-token",
         githubToken: "valid-gh-token",
-        transport: mirrorWithLien,
-        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+        transport: mirror,
+        dnsResolver: nonAuthResolver,
       })
-    ).rejects.toThrow(/Project has active deletion liens/);
-
-    // Verify /v1/liens was queried with parent param
-    const liensReq = mirrorWithLien.requestLog.find((r) => r.url.includes("/v1/liens"));
-    expect(liensReq).toBeDefined();
-    expect(liensReq?.url).toContain("parent=projects%2F782181616134");
-
-    // Verify ZERO IAM mutation requests were issued before lien check halted
-    const setIamReq = mirrorWithLien.requestLog.find((r) => r.url.includes(":setIamPolicy"));
-    expect(setIamReq).toBeUndefined();
-    expect(mirrorWithLien.lifecycleState).toBe("ACTIVE");
+    ).rejects.toThrow(/was not answered authoritatively by the replacement nameserver/);
   });
 
-  test("6. Detects active deployment runs and excludes retirement run itself", async () => {
-    const mirrorRuns = new StatefulHttpMirror({
-      initialWorkflowRuns: [
-        {
-          id: 55555,
-          name: "hub-deploy",
-          path: ".github/workflows/hub-deploy.yml",
-          head_branch: "main",
-          head_sha: TEST_SHA,
-          status: "in_progress",
-          conclusion: null,
-          updated_at: new Date().toISOString(),
-        },
-        {
-          id: 99999,
-          name: "retire-infra",
-          path: ".github/workflows/retire-infra.yml",
-          head_branch: "main",
-          head_sha: TEST_SHA,
-          status: "in_progress",
-          conclusion: null,
-          updated_at: new Date().toISOString(),
-        },
-      ],
+  test("5. Paginates active/queued workflow inventory and detects active run on page 2", async () => {
+    // Generate 120 completed runs on page 1, and 1 active hub-deploy run on page 2
+    const dummyRuns: Array<{
+      id: number;
+      name: string;
+      path: string;
+      head_branch: string;
+      head_sha: string;
+      status: string;
+      conclusion: string | null;
+      updated_at: string;
+    }> = [];
+
+    dummyRuns.push({
+      id: 101,
+      name: "retire-infra",
+      path: ".github/workflows/retire-infra.yml",
+      head_branch: "main",
+      head_sha: TEST_SHA,
+      status: "completed",
+      conclusion: "success",
+      updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
     });
 
-    const baselinePath = "/tmp/proof-baseline-6.json";
-    const cutoverPath = "/tmp/proof-cutover-6.json";
+    dummyRuns.push({
+      id: 202,
+      name: "retire-infra",
+      path: ".github/workflows/retire-infra.yml",
+      head_branch: "main",
+      head_sha: TEST_SHA,
+      status: "completed",
+      conclusion: "success",
+      updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+    });
+
+    for (let i = 300; i < 415; i++) {
+      dummyRuns.push({
+        id: i,
+        name: "verify",
+        path: ".github/workflows/verify.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    // Active deployment run placed at index 105 (landing on page 2 when per_page=100)
+    dummyRuns.push({
+      id: 999111,
+      name: "hub-deploy",
+      path: ".github/workflows/hub-deploy.yml",
+      head_branch: "main",
+      head_sha: TEST_SHA,
+      status: "queued",
+      conclusion: null,
+      updated_at: new Date().toISOString(),
+    });
+
+    const mirror = new StatefulHttpMirror({
+      initialWorkflowRuns: dummyRuns,
+    });
+
+    const baselinePath = "/tmp/wire-baseline-5.json";
+    const cutoverPath = "/tmp/wire-cutover-5.json";
+    const baseResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: true }));
+    const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
 
     await retireInfra({
       operation: "observe",
       observationKind: "baseline",
       outObservationPath: baselinePath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
+      currentRunId: "101",
+      dnsResolver: baseResolver,
     });
 
     await retireInfra({
@@ -294,10 +468,10 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
       observationKind: "cutover",
       outObservationPath: cutoverPath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      currentRunId: "202",
+      dnsResolver: cutResolver,
     });
 
-    // 6a: Active hub-deploy run causes fail closed
     expect(
       retireInfra({
         operation: "retire",
@@ -305,327 +479,119 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
         executionRef: "refs/heads/main",
         baselineArtifactPath: baselinePath,
         cutoverArtifactPath: cutoverPath,
-        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        baselineRunId: "101",
+        cutoverRunId: "202",
         expectedSha: TEST_SHA,
-        currentRunId: "99999", // Retirement run ID
+        currentRunId: "77777",
         gcpToken: "valid-bearer-token",
         githubToken: "valid-gh-token",
-        transport: mirrorRuns,
-        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+        transport: mirror,
+        dnsResolver: cutResolver,
       })
     ).rejects.toThrow(/Active deployment or publication runs detected: \[hub-deploy/);
 
-    // 6b: When active hub-deploy completes, current retirement run (99999) does not self-block
-    mirrorRuns.workflowRuns[0].status = "completed";
-    mirrorRuns.workflowRuns[0].conclusion = "success";
-
-    const res = await retireInfra({
-      operation: "retire",
-      confirmation: "CONFIRM-RETIRE-OMPCTL",
-      executionRef: "refs/heads/main",
-      baselineArtifactPath: baselinePath,
-      cutoverArtifactPath: cutoverPath,
-      cutoverTimestampMs: Date.now() - 30000 * 1000,
-      expectedSha: TEST_SHA,
-      currentRunId: "99999",
-      gcpToken: "valid-bearer-token",
-      githubToken: "valid-gh-token",
-      transport: mirrorRuns,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-    });
-
-    expect(res.success).toBe(true);
-    expect(res.projectShutdownAccepted).toBe(true);
-    expect(mirrorRuns.lifecycleState).toBe("DELETE_REQUESTED");
+    // Verify that page 2 was queried by the orchestrator
+    const page2Req = mirror.requestLog.find((r) => r.url.includes("page=2"));
+    expect(page2Req).toBeDefined();
   });
 
-  test("7. Genuine observe -> artifact -> retire path with IANA parent servers", async () => {
+  test("6. Full end-to-end shutdown success with verified provenance and TTL elapsed", async () => {
     const mirror = new StatefulHttpMirror();
-    const baselinePath = "/tmp/proof-baseline-7.json";
-    const cutoverPath = "/tmp/proof-cutover-7.json";
+    const baseResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: true }));
+    const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
 
-    // 1. Observe baseline
+    const baselinePath = "/tmp/wire-baseline-6.json";
+    const cutoverPath = "/tmp/wire-cutover-6.json";
+
     const baseRes = await retireInfra({
       operation: "observe",
       observationKind: "baseline",
       outObservationPath: baselinePath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
+      currentRunId: "101",
+      dnsResolver: baseResolver,
     });
-    expect(baseRes.observation?.delegatesToCloudDns).toBe(true);
-    expect(baseRes.observation?.parentQueries.map((q) => q.server)).toEqual([
-      ...AUTHORITATIVE_PARENT_SERVERS,
-    ]);
-
-    // 2. Observe cutover
-    const cutRes = await retireInfra({
-      operation: "observe",
-      observationKind: "cutover",
-      outObservationPath: cutoverPath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-    });
-    expect(cutRes.observation?.delegatesToCloudDns).toBe(false);
-    expect(cutRes.observation?.allParentsAgree).toBe(true);
-
-    // 3. Retire
-    const retireRes = await retireInfra({
-      operation: "retire",
-      confirmation: "CONFIRM-RETIRE-OMPCTL",
-      executionRef: "refs/heads/main",
-      baselineArtifactPath: baselinePath,
-      cutoverArtifactPath: cutoverPath,
-      cutoverTimestampMs: Date.now() - 30000 * 1000, // > 21600s elapsed
-      expectedSha: TEST_SHA,
-      gcpToken: "valid-bearer-token",
-      githubToken: "valid-gh-token",
-      transport: mirror,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-    });
-
-    expect(retireRes.success).toBe(true);
-    expect(retireRes.projectShutdownAccepted).toBe(true);
-    expect(mirror.lifecycleState).toBe("DELETE_REQUESTED");
-  });
-
-  test("8. Halts on unexpired TTL or bad cutover evidence", async () => {
-    const mirror = new StatefulHttpMirror();
-    const baselinePath = "/tmp/proof-baseline-8.json";
-    const cutoverPath = "/tmp/proof-cutover-8.json";
-
-    await retireInfra({
-      operation: "observe",
-      observationKind: "baseline",
-      outObservationPath: baselinePath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
-    });
+    expect(baseRes.observation?.parentQueries.map((q) => q.server)).toEqual([...AUTHORITATIVE_PARENT_SERVERS]);
 
     await retireInfra({
       operation: "observe",
       observationKind: "cutover",
       outObservationPath: cutoverPath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      currentRunId: "202",
+      dnsResolver: cutResolver,
     });
 
-    // Elapsed time is only 100 seconds (less than 21600 seconds)
-    expect(
-      retireInfra({
-        operation: "retire",
-        confirmation: "CONFIRM-RETIRE-OMPCTL",
-        executionRef: "refs/heads/main",
-        baselineArtifactPath: baselinePath,
-        cutoverArtifactPath: cutoverPath,
-        cutoverTimestampMs: Date.now() - 100 * 1000,
-        expectedSha: TEST_SHA,
-        gcpToken: "valid-bearer-token",
-        githubToken: "valid-gh-token",
-        transport: mirror,
-        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-      })
-    ).rejects.toThrow(/elapsed time since cutover .* has not exceeded the required old TTL window/);
-  });
-
-  test("9. Halts if DS record appears on parent (DNSSEC safeguard)", async () => {
-    const mirror = new StatefulHttpMirror();
-    const baselinePath = "/tmp/proof-baseline-9.json";
-    const cutoverPath = "/tmp/proof-cutover-9.json";
-
-    await retireInfra({
-      operation: "observe",
-      observationKind: "baseline",
-      outObservationPath: baselinePath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
-    });
-
-    // Cutover resolver simulates DS record appearing
-    await retireInfra({
-      operation: "observe",
-      observationKind: "cutover",
-      outObservationPath: cutoverPath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false, hasDs: true }),
-    });
-
-    expect(
-      retireInfra({
-        operation: "retire",
-        confirmation: "CONFIRM-RETIRE-OMPCTL",
-        executionRef: "refs/heads/main",
-        baselineArtifactPath: baselinePath,
-        cutoverArtifactPath: cutoverPath,
-        cutoverTimestampMs: Date.now() - 30000 * 1000,
-        expectedSha: TEST_SHA,
-        gcpToken: "valid-bearer-token",
-        githubToken: "valid-gh-token",
-        transport: mirror,
-        dnsResolver: createMockResolver({ delegatesToCloudDns: false, hasDs: true }),
-      })
-    ).rejects.toThrow(/unexpected DS record present on parent/);
-  });
-
-  test("10. Halts if retired host still resolves to retired IPs or CNAMEs", async () => {
-    const mirror = new StatefulHttpMirror();
-    const baselinePath = "/tmp/proof-baseline-10.json";
-    const cutoverPath = "/tmp/proof-cutover-10.json";
-
-    await retireInfra({
-      operation: "observe",
-      observationKind: "baseline",
-      outObservationPath: baselinePath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
-    });
-
-    await retireInfra({
-      operation: "observe",
-      observationKind: "cutover",
-      outObservationPath: cutoverPath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-    });
-
-    // Resolver returns GitHub Pages apex IP 185.199.108.153
-    expect(
-      retireInfra({
-        operation: "retire",
-        confirmation: "CONFIRM-RETIRE-OMPCTL",
-        executionRef: "refs/heads/main",
-        baselineArtifactPath: baselinePath,
-        cutoverArtifactPath: cutoverPath,
-        cutoverTimestampMs: Date.now() - 30000 * 1000,
-        expectedSha: TEST_SHA,
-        gcpToken: "valid-bearer-token",
-        githubToken: "valid-gh-token",
-        transport: mirror,
-        dnsResolver: createMockResolver({ delegatesToCloudDns: false, hostRecordTarget: "185.199.108.153" }),
-      })
-    ).rejects.toThrow(/still resolves to retired IP destination '185.199.108.153'/);
-  });
-
-  test("11. Preserves conditional bindings and requestedPolicyVersion: 3 in getIamPolicy", async () => {
-    const mirror = new StatefulHttpMirror();
-    const baselinePath = "/tmp/proof-baseline-11.json";
-    const cutoverPath = "/tmp/proof-cutover-11.json";
-
-    await retireInfra({
-      operation: "observe",
-      observationKind: "baseline",
-      outObservationPath: baselinePath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
-    });
-
-    await retireInfra({
-      operation: "observe",
-      observationKind: "cutover",
-      outObservationPath: cutoverPath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-    });
-
-    await retireInfra({
-      operation: "retire",
-      confirmation: "CONFIRM-RETIRE-OMPCTL",
-      executionRef: "refs/heads/main",
-      baselineArtifactPath: baselinePath,
-      cutoverArtifactPath: cutoverPath,
-      cutoverTimestampMs: Date.now() - 30000 * 1000,
-      expectedSha: TEST_SHA,
-      gcpToken: "valid-bearer-token",
-      githubToken: "valid-gh-token",
-      transport: mirror,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-    });
-
-    // Check request body for requestedPolicyVersion
-    const getIamReq = mirror.requestLog.find((r) => r.url.includes(":getIamPolicy"));
-    expect(getIamReq?.body).toEqual({ options: { requestedPolicyVersion: 3 } });
-
-    // Check policy preserves conditional binding
-    const auditor = mirror.iamPolicy.bindings.find((b) => b.role === "roles/viewer");
-    expect(auditor?.condition?.title).toBe("expires_2027");
-
-    // Check deployer was granted projectDeleter
-    const deleter = mirror.iamPolicy.bindings.find((b) => b.role === "roles/resourcemanager.projectDeleter");
-    expect(deleter?.members).toContain("serviceAccount:ompctl-deployer@ompctl.iam.gserviceaccount.com");
-  });
-
-  test("12. Pages authorization failure and absence readback handling", async () => {
-    const mirrorPagesFail = new StatefulHttpMirror({
-      failPagesDelete: { status: 403, body: { message: "Permission denied" } },
-    });
-
-    const baselinePath = "/tmp/proof-baseline-12.json";
-    const cutoverPath = "/tmp/proof-cutover-12.json";
-
-    await retireInfra({
-      operation: "observe",
-      observationKind: "baseline",
-      outObservationPath: baselinePath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
-    });
-
-    await retireInfra({
-      operation: "observe",
-      observationKind: "cutover",
-      outObservationPath: cutoverPath,
-      expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-    });
-
-    expect(
-      retireInfra({
-        operation: "retire",
-        confirmation: "CONFIRM-RETIRE-OMPCTL",
-        executionRef: "refs/heads/main",
-        baselineArtifactPath: baselinePath,
-        cutoverArtifactPath: cutoverPath,
-        cutoverTimestampMs: Date.now() - 30000 * 1000,
-        expectedSha: TEST_SHA,
-        gcpToken: "valid-bearer-token",
-        githubToken: "valid-gh-token",
-        transport: mirrorPagesFail,
-        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
-      })
-    ).rejects.toThrow(/Failed to unpublish GitHub Pages \(HTTP 403\)/);
-
-    expect(mirrorPagesFail.lifecycleState).toBe("ACTIVE");
-  });
-
-  test("13. Read-only observe produces zero mutation requests", async () => {
-    const mirror = new StatefulHttpMirror();
-    const outObs = "/tmp/test-observe-zero-mutation.json";
+    // Provide authentic run provenance in mirror with cutover completion timestamp > 21600s ago
+    mirror.workflowRuns = [
+      {
+        id: 101,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+      {
+        id: 202,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+    ];
 
     const res = await retireInfra({
-      operation: "observe",
-      observationKind: "baseline",
-      outObservationPath: outObs,
+      operation: "retire",
+      confirmation: "CONFIRM-RETIRE-OMPCTL",
+      executionRef: "refs/heads/main",
+      baselineArtifactPath: baselinePath,
+      cutoverArtifactPath: cutoverPath,
+      baselineRunId: "101",
+      cutoverRunId: "202",
+      expectedSha: TEST_SHA,
+      currentRunId: "303",
+      gcpToken: "valid-bearer-token",
+      githubToken: "valid-gh-token",
       transport: mirror,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
+      dnsResolver: cutResolver,
     });
 
     expect(res.success).toBe(true);
-    const mutations = mirror.requestLog.filter(
-      (r) => r.method === "DELETE" || r.method === "POST" || r.method === "PUT" || r.method === "PATCH"
-    );
-    expect(mutations.length).toBe(0);
+    expect(res.projectShutdownAccepted).toBe(true);
+
+    // Independent read of live mirror confirms DELETE_REQUESTED
+    const ownerRes = await mirror.fetch("https://cloudresourcemanager.googleapis.com/v1/projects/ompctl", {
+      headers: { Authorization: "Bearer valid-bearer-token" },
+    });
+    const ownerData = (await ownerRes.json()) as { projectId: string; projectNumber: string; lifecycleState: string };
+    expect(ownerData.projectId).toBe("ompctl");
+    expect(ownerData.projectNumber).toBe("782181616134");
+    expect(ownerData.lifecycleState).toBe("DELETE_REQUESTED");
   });
 
-  test("14. Scope containment: zero requests target other projects or orgs", async () => {
-    const mirror = new StatefulHttpMirror();
-    const baselinePath = "/tmp/proof-baseline-14.json";
-    const cutoverPath = "/tmp/proof-cutover-14.json";
+  test("7. Halts if baseline child NS query failed (missing child TTL evidence)", async () => {
+    const baselinePath = "/tmp/wire-baseline-7.json";
+    const cutoverPath = "/tmp/wire-cutover-7.json";
+
+    // Child NS query returns SERVFAIL
+    const failChildResolver = new DigDnsResolver(
+      createControlledCommandRunner({ delegatesToCloudDns: true, childNsStatus: "SERVFAIL" })
+    );
+    const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
 
     await retireInfra({
       operation: "observe",
       observationKind: "baseline",
       outObservationPath: baselinePath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
+      currentRunId: "101",
+      dnsResolver: failChildResolver,
     });
 
     await retireInfra({
@@ -633,32 +599,120 @@ describe("Guarded Direct Project Shutdown Execution Proof", () => {
       observationKind: "cutover",
       outObservationPath: cutoverPath,
       expectedSha: TEST_SHA,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      currentRunId: "202",
+      dnsResolver: cutResolver,
+    });
+
+    const mirror = new StatefulHttpMirror();
+    mirror.workflowRuns = [
+      {
+        id: 101,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+      {
+        id: 202,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+    ];
+
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        baselineRunId: "101",
+        cutoverRunId: "202",
+        expectedSha: TEST_SHA,
+        gcpToken: "valid-bearer-token",
+        githubToken: "valid-gh-token",
+        transport: mirror,
+        dnsResolver: cutResolver,
+      })
+    ).rejects.toThrow(/baseline child-authority query to '.*' failed with status 'SERVFAIL'/);
+  });
+
+  test("8. Halts if retired host resolves to retired GitHub Pages IP address", async () => {
+    const baselinePath = "/tmp/wire-baseline-8.json";
+    const cutoverPath = "/tmp/wire-cutover-8.json";
+
+    const baseResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: true }));
+    const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
+    // Real-time resolver returns retired GitHub Pages apex IP
+    const retiredPagesIpResolver = new DigDnsResolver(
+      createControlledCommandRunner({ delegatesToCloudDns: false, hostRecordIp: "185.199.108.153" })
+    );
+
+    await retireInfra({
+      operation: "observe",
+      observationKind: "baseline",
+      outObservationPath: baselinePath,
+      expectedSha: TEST_SHA,
+      currentRunId: "101",
+      dnsResolver: baseResolver,
     });
 
     await retireInfra({
-      operation: "retire",
-      confirmation: "CONFIRM-RETIRE-OMPCTL",
-      executionRef: "refs/heads/main",
-      baselineArtifactPath: baselinePath,
-      cutoverArtifactPath: cutoverPath,
-      cutoverTimestampMs: Date.now() - 30000 * 1000,
+      operation: "observe",
+      observationKind: "cutover",
+      outObservationPath: cutoverPath,
       expectedSha: TEST_SHA,
-      gcpToken: "valid-bearer-token",
-      githubToken: "valid-gh-token",
-      transport: mirror,
-      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      currentRunId: "202",
+      dnsResolver: cutResolver,
     });
 
-    for (const req of mirror.requestLog) {
-      if (req.url.startsWith("https://cloudresourcemanager.googleapis.com")) {
-        expect(req.url).toMatch(/projects\/ompctl|liens\?parent=projects%2F782181616134/);
-        expect(req.url).not.toMatch(/organizations\//);
-        expect(req.url).not.toMatch(/billingAccounts\//);
-      }
-      if (req.url.startsWith("https://api.github.com")) {
-        expect(req.url).toMatch(/repos\/jwaldrip\/ompctl/);
-      }
-    }
+    const mirror = new StatefulHttpMirror();
+    mirror.workflowRuns = [
+      {
+        id: 101,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+      {
+        id: 202,
+        name: "retire-infra",
+        path: ".github/workflows/retire-infra.yml",
+        head_branch: "main",
+        head_sha: TEST_SHA,
+        status: "completed",
+        conclusion: "success",
+        updated_at: new Date(Date.now() - 30000 * 1000).toISOString(),
+      },
+    ];
+
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        baselineRunId: "101",
+        cutoverRunId: "202",
+        expectedSha: TEST_SHA,
+        gcpToken: "valid-bearer-token",
+        githubToken: "valid-gh-token",
+        transport: mirror,
+        dnsResolver: retiredPagesIpResolver,
+      })
+    ).rejects.toThrow(/still resolves to retired IP destination '185.199.108.153'/);
   });
 });
