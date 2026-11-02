@@ -89,8 +89,6 @@ resource "google_cloud_run_v2_service" "hub" {
   location = var.region
   name     = "ompd-hub"
 
-  # Explicitly allow service deletion during infrastructure retirement.
-  deletion_protection = false
   # The hub brokers access to machines that execute code, and it authenticates
   # its own callers: daemons by signature, clients by a credential only the
   # daemon can read. IAM in front would break both legs, which arrive as
@@ -252,8 +250,6 @@ resource "google_cloud_run_v2_service" "web" {
   location = var.region
   name     = "ompctl-web"
 
-  # Explicitly allow service deletion during infrastructure retirement.
-  deletion_protection = false
   ingress = "INGRESS_TRAFFIC_ALL"
 
   template {

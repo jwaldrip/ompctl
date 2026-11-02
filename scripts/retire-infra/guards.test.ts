@@ -1,546 +1,539 @@
 import { describe, expect, test } from "bun:test";
-import {
-  extractStateResources,
-  validateCloudRunStateProtection,
-  validateEmptyTerraformState,
-  validateNameserverDelegation,
-  validateNoLiens,
-  validateProjectDeleterPermission,
-  validateProjectIdentity,
-  validateSubstrateParameters,
-  validateTerraformPlanForDestroy,
-  validateTerraformPlanForPrepare,
-} from "./guards.ts";
-import {
-  canonicalJson,
-  computeManifestChecksum,
-  createSanitizedManifest,
-  verifyManifest,
-} from "./manifest.ts";
-import {
-  BASELINE_TERRAFORM_ADDRESSES,
-  CONFIRMED_CLOUD_RUN_MAPPINGS,
-  EXPECTED_PROJECT_ID,
-  EXPECTED_PROJECT_NUMBER,
-  EXPECTED_STATE_BUCKET,
-  EXPECTED_SUBSTRATE_RESOURCES,
-} from "./types.ts";
+import { retireInfra } from "./cli.ts";
+import { StatefulHttpMirror } from "./mirror.ts";
+import type { DnsObservation, DnsResolver, ParentServerQuery } from "./types.ts";
 
-describe("Retirement Guards: Project Identity & Permissions", () => {
-  test("accepts exact project ID and number", () => {
-    expect(() =>
-      validateProjectIdentity(EXPECTED_PROJECT_ID, EXPECTED_PROJECT_NUMBER)
-    ).not.toThrow();
-  });
+function createMockResolver(params: {
+  delegatesToCloudDns?: boolean;
+  allParentsAgree?: boolean;
+  parentStatus?: string;
+  hasDs?: boolean;
+  hostRecordTarget?: string;
+}): DnsResolver {
+  const delegates = params.delegatesToCloudDns ?? false;
+  const agree = params.allParentsAgree ?? true;
+  const status = params.parentStatus ?? "NOERROR";
 
-  test("rejects mismatched project ID", () => {
-    expect(() =>
-      validateProjectIdentity("wrong-project", EXPECTED_PROJECT_NUMBER)
-    ).toThrow(/Project ID guard failed/);
-  });
+  return {
+    async queryParentNs(server: string, _domain: string): Promise<ParentServerQuery> {
+      let nsNames = delegates
+        ? [
+            { name: "ns-cloud-c1.googledomains.com", ttl: 3600 },
+            { name: "ns-cloud-c2.googledomains.com", ttl: 3600 },
+          ]
+        : [
+            { name: "dns1.registrar-servers.com", ttl: 3600 },
+            { name: "dns2.registrar-servers.com", ttl: 3600 },
+          ];
 
-  test("rejects mismatched project number", () => {
-    expect(() =>
-      validateProjectIdentity(EXPECTED_PROJECT_ID, "999999999999")
-    ).toThrow(/Project number guard failed/);
-  });
+      if (!agree && server === "f.nic.ai") {
+        nsNames = [{ name: "ns-cloud-c3.googledomains.com", ttl: 3600 }];
+      }
 
-  test("rejects empty project parameters", () => {
-    expect(() => validateProjectIdentity("", EXPECTED_PROJECT_NUMBER)).toThrow();
-    expect(() => validateProjectIdentity(EXPECTED_PROJECT_ID, "")).toThrow();
-  });
-
-  test("project deleter permission passes when present", () => {
-    expect(() => validateProjectDeleterPermission(true)).not.toThrow();
-  });
-
-  test("project deleter permission fails closed when absent", () => {
-    expect(() => validateProjectDeleterPermission(false)).toThrow(
-      /Project deletion permission guard failed/
-    );
-  });
-});
-
-describe("Retirement Guards: Manifest Integrity, Hashing and Approval", () => {
-  test("generates and verifies a valid sanitized manifest with canonical JSON", () => {
-    const manifest = createSanitizedManifest({
-      sourceSha: "3662016072646338c3e1cca236b27c9dc7a4f219",
-      stateLineage: "mock-lineage-123",
-      stateSerial: 42,
-    });
-
-    const verified = verifyManifest(manifest, manifest.checksum);
-    expect(verified.targetProject.projectId).toBe(EXPECTED_PROJECT_ID);
-    expect(verified.targetProject.projectNumber).toBe(EXPECTED_PROJECT_NUMBER);
-    expect(verified.terraformAddresses.length).toBe(BASELINE_TERRAFORM_ADDRESSES.length);
-    expect(verified.outOfStateDomainMappings.length).toBe(CONFIRMED_CLOUD_RUN_MAPPINGS.length);
-  });
-
-  test("nested field tampering alters manifest checksum", () => {
-    const manifest = createSanitizedManifest({
-      sourceSha: "3662016072646338c3e1cca236b27c9dc7a4f219",
-      stateLineage: "lineage-a",
-    });
-
-    const { checksum: _, ...manifestWithoutChecksum } = manifest;
-    const baseHash = computeManifestChecksum(manifestWithoutChecksum);
-
-    // Tamper with a deeply nested field in stateMetadata
-    const tampered = {
-      ...manifestWithoutChecksum,
-      stateMetadata: {
-        ...manifestWithoutChecksum.stateMetadata,
-        workspace: "malicious-workspace",
-      },
-    };
-    const tamperedHash = computeManifestChecksum(tampered);
-
-    expect(tamperedHash).not.toBe(baseHash);
-  });
-
-  test("rejects manifest with tampered checksum", () => {
-    const manifest = createSanitizedManifest({
-      sourceSha: "3662016072646338c3e1cca236b27c9dc7a4f219",
-    });
-
-    const tampered = { ...manifest, checksum: "0".repeat(64) };
-    expect(() => verifyManifest(tampered)).toThrow(/Manifest checksum verification failed/);
-  });
-
-  test("rejects manifest if operator approval sha does not match", () => {
-    const manifest = createSanitizedManifest({
-      sourceSha: "3662016072646338c3e1cca236b27c9dc7a4f219",
-    });
-
-    expect(() =>
-      verifyManifest(manifest, "1".repeat(64))
-    ).toThrow(/Manifest approval mismatch/);
-  });
-
-  test("rejects manifest with unpermitted terraform address", () => {
-    const manifest = createSanitizedManifest({
-      sourceSha: "3662016072646338c3e1cca236b27c9dc7a4f219",
-      terraformAddresses: [
-        ...BASELINE_TERRAFORM_ADDRESSES,
-        "google_compute_instance.malicious",
-      ],
-    });
-
-    expect(() => verifyManifest(manifest)).toThrow(/Unpermitted address in manifest/);
-  });
-
-  test("canonicalJson produces deterministic sorted output at all nesting levels", () => {
-    const obj1 = { b: 1, a: { z: 2, y: [ { d: 4, c: 3 } ] } };
-    const obj2 = { a: { y: [ { c: 3, d: 4 } ], z: 2 }, b: 1 };
-    expect(canonicalJson(obj1)).toBe(canonicalJson(obj2));
-  });
-});
-
-describe("Retirement Guards: Prepare Plan Validation", () => {
-  const baseServiceBefore = {
-    template: {
-      containers: [{ image: "us-central1-docker.pkg.dev/ompctl/ompd/hub:sha123" }],
-      scaling: { min_instance_count: 1, max_instance_count: 1 },
+      return {
+        server,
+        status,
+        nameservers: nsNames,
+        dsRecords: params.hasDs ? [{ data: "12345 8 2 mockdigest", ttl: 3600 }] : [],
+      };
     },
-    traffic: [{ percent: 100, type: "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST" }],
-    ingress: "INGRESS_TRAFFIC_ALL",
-    deletion_protection: true,
-  };
-
-  const baseServiceAfter = {
-    template: {
-      containers: [{ image: "us-central1-docker.pkg.dev/ompctl/ompd/hub:sha123" }],
-      scaling: { min_instance_count: 1, max_instance_count: 1 },
+    async queryHost(_host: string) {
+      const target = params.hostRecordTarget ?? "192.0.2.1";
+      return [{ type: "A", value: target, ttl: 300 }];
     },
-    traffic: [{ percent: 100, type: "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST" }],
-    ingress: "INGRESS_TRAFFIC_ALL",
-    deletion_protection: false,
   };
+}
 
-  test("approves plan where only deletion_protection is flipped to false", () => {
-    const validPlan = {
-      resource_changes: [
-        {
-          address: "google_cloud_run_v2_service.hub",
-          type: "google_cloud_run_v2_service",
-          name: "hub",
-          change: {
-            actions: ["update"],
-            before: baseServiceBefore,
-            after: baseServiceAfter,
-          },
-        },
-        {
-          address: "google_cloud_run_v2_service.web",
-          type: "google_cloud_run_v2_service",
-          name: "web",
-          change: {
-            actions: ["update"],
-            before: baseServiceBefore,
-            after: baseServiceAfter,
-          },
-        },
-      ],
+function createMockObservation(params: {
+  kind: "baseline" | "cutover";
+  gitSha?: string;
+  delegatesToCloudDns?: boolean;
+  allParentsAgree?: boolean;
+  capturedAt?: string;
+  oldMaxChildNsTtl?: number;
+  hasDs?: boolean;
+}): DnsObservation {
+  const delegates = params.delegatesToCloudDns ?? false;
+  const agree = params.allParentsAgree ?? true;
+
+  const parentQueries: ParentServerQuery[] = [
+    "a.nic.ai",
+    "b.nic.ai",
+    "c.nic.ai",
+    "d.nic.ai",
+    "e.nic.ai",
+    "f.nic.ai",
+  ].map((server) => {
+    let nameservers = delegates
+      ? [{ name: "ns-cloud-c1.googledomains.com", ttl: 3600 }]
+      : [{ name: "dns1.registrar-servers.com", ttl: 3600 }];
+    if (!agree && server === "f.nic.ai") {
+      nameservers = [{ name: "ns-cloud-c2.googledomains.com", ttl: 3600 }];
+    }
+    return {
+      server,
+      status: "NOERROR",
+      nameservers,
+      dsRecords: params.hasDs ? [{ data: "12345 8 2 digest", ttl: 3600 }] : [],
     };
-
-    const res = validateTerraformPlanForPrepare(validPlan);
-    expect(res.valid).toBe(true);
-    expect(res.actionCounts.update).toBe(2);
-    expect(res.actionCounts.create).toBe(0);
-    expect(res.actionCounts.delete).toBe(0);
   });
 
-  test("accepts already-prepared service on retry (resumability)", () => {
-    const alreadyPreparedService = {
-      ...baseServiceBefore,
-      deletion_protection: false,
-    };
+  return {
+    observationKind: params.kind,
+    capturedAt: params.capturedAt ?? new Date().toISOString(),
+    gitSha: params.gitSha ?? "3662016072646338c3e1cca236b27c9dc7a4f219",
+    workflowRunId: "run-100",
+    parentQueries,
+    oldMaxChildNsTtl: params.oldMaxChildNsTtl ?? 21600,
+    hostRecordObservations: [
+      { host: "ompctl.ai", records: [{ type: "A", value: "192.0.2.1", ttl: 300 }] },
+    ],
+    allParentsAgree: agree,
+    delegatesToCloudDns: delegates,
+  };
+}
 
-    const retryPlan = {
-      resource_changes: [
-        {
-          address: "google_cloud_run_v2_service.hub",
-          type: "google_cloud_run_v2_service",
-          name: "hub",
-          change: {
-            actions: ["no-op"],
-            before: alreadyPreparedService,
-            after: alreadyPreparedService,
-          },
-        },
-        {
-          address: "google_cloud_run_v2_service.web",
-          type: "google_cloud_run_v2_service",
-          name: "web",
-          change: {
-            actions: ["update"],
-            before: baseServiceBefore,
-            after: baseServiceAfter,
-          },
-        },
-      ],
-    };
+describe("Retirement Orchestrator & Stateful Mirror Execution Proof", () => {
+  const TEST_SHA = "3662016072646338c3e1cca236b27c9dc7a4f219";
 
-    const res = validateTerraformPlanForPrepare(retryPlan);
-    expect(res.valid).toBe(true);
-    expect(res.actionCounts.update).toBe(1);
-    expect(res.actionCounts.noOpOrRead).toBe(1);
+  test("1. Rejects wrong live project ID or number", async () => {
+    const mirror = new StatefulHttpMirror({
+      projectId: "ompctl",
+      projectNumber: "999999999999", // Mismatched project number
+    });
+
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+
+    const baselinePath = "/tmp/test-baseline-1.json";
+    const cutoverPath = "/tmp/test-cutover-1.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    const p = retireInfra({
+      operation: "retire",
+      targetProjectId: "ompctl",
+      targetProjectNumber: "782181616134",
+      confirmation: "CONFIRM-RETIRE-OMPCTL",
+      executionRef: "refs/heads/main",
+      baselineArtifactPath: baselinePath,
+      cutoverArtifactPath: cutoverPath,
+      cutoverTimestampMs: Date.now() - 30000 * 1000,
+      expectedSha: TEST_SHA,
+      transport: mirror,
+      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+    });
+
+    expect(p).rejects.toThrow(/Project number mismatch/);
+    expect(mirror.lifecycleState).toBe("ACTIVE");
   });
 
-  test("rejects plan if container image drifts during prepare", () => {
-    const driftedPlan = {
-      resource_changes: [
-        {
-          address: "google_cloud_run_v2_service.hub",
-          type: "google_cloud_run_v2_service",
-          name: "hub",
-          change: {
-            actions: ["update"],
-            before: baseServiceBefore,
-            after: {
-              ...baseServiceAfter,
-              template: {
-                containers: [{ image: "us-central1-docker.pkg.dev/ompctl/ompd/hub:new-image" }],
-              },
-            },
-          },
-        },
-        {
-          address: "google_cloud_run_v2_service.web",
-          type: "google_cloud_run_v2_service",
-          name: "web",
-          change: {
-            actions: ["update"],
-            before: baseServiceBefore,
-            after: baseServiceAfter,
-          },
-        },
-      ],
-    };
+  test("2. Rejects missing confirmation or invalid execution ref", async () => {
+    const mirror = new StatefulHttpMirror();
 
-    expect(() => validateTerraformPlanForPrepare(driftedPlan)).toThrow(
-      /field 'template' changed between before and after/
-    );
-  });
-
-  test("rejects plan if traffic routing changes during prepare", () => {
-    const trafficDriftPlan = {
-      resource_changes: [
-        {
-          address: "google_cloud_run_v2_service.hub",
-          type: "google_cloud_run_v2_service",
-          name: "hub",
-          change: {
-            actions: ["update"],
-            before: baseServiceBefore,
-            after: {
-              ...baseServiceAfter,
-              traffic: [{ percent: 50, type: "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION" }],
-            },
-          },
-        },
-        {
-          address: "google_cloud_run_v2_service.web",
-          type: "google_cloud_run_v2_service",
-          name: "web",
-          change: {
-            actions: ["update"],
-            before: baseServiceBefore,
-            after: baseServiceAfter,
-          },
-        },
-      ],
-    };
-
-    expect(() => validateTerraformPlanForPrepare(trafficDriftPlan)).toThrow(
-      /field 'traffic' changed between before and after/
-    );
-  });
-
-  test("rejects plan with unexpected resource changes", () => {
-    const planWithExtra = {
-      resource_changes: [
-        {
-          address: "google_cloud_run_v2_service.hub",
-          change: { actions: ["update"], before: baseServiceBefore, after: baseServiceAfter },
-        },
-        {
-          address: "google_cloud_run_v2_service.web",
-          change: { actions: ["update"], before: baseServiceBefore, after: baseServiceAfter },
-        },
-        {
-          address: "google_dns_managed_zone.ompctl",
-          change: { actions: ["update"], before: {}, after: {} },
-        },
-      ],
-    };
-
-    expect(() => validateTerraformPlanForPrepare(planWithExtra)).toThrow(
-      /unexpected resource change for 'google_dns_managed_zone.ompctl'/
-    );
-  });
-});
-
-describe("Retirement Guards: Destroy Plan Validation", () => {
-  const manifest = createSanitizedManifest({
-    sourceSha: "3662016072646338c3e1cca236b27c9dc7a4f219",
-  });
-
-  test("approves valid destroy plan containing verified baseline 19 addresses", () => {
-    const plan = {
-      resource_changes: BASELINE_TERRAFORM_ADDRESSES.map((address) => ({
-        address,
-        change: { actions: ["delete"] },
-      })),
-    };
-
-    const res = validateTerraformPlanForDestroy(plan, manifest);
-    expect(res.valid).toBe(true);
-    expect(res.actionCounts.delete).toBe(19);
-    expect(res.actionCounts.create).toBe(0);
-    expect(res.actionCounts.update).toBe(0);
-  });
-
-  test("rejects destroy plan if create action appears", () => {
-    const planWithCreate = {
-      resource_changes: [
-        {
-          address: "google_cloud_run_v2_service.hub",
-          change: { actions: ["create"] },
-        },
-      ],
-    };
-
-    expect(() => validateTerraformPlanForDestroy(planWithCreate, manifest)).toThrow(
-      /has non-delete actions/
-    );
-  });
-
-  test("rejects destroy plan if unpermitted resource appears", () => {
-    const planWithForeign = {
-      resource_changes: [
-        {
-          address: "google_compute_instance.foreign",
-          change: { actions: ["delete"] },
-        },
-      ],
-    };
-
-    expect(() => validateTerraformPlanForDestroy(planWithForeign, manifest)).toThrow(
-      /not present in the approved manifest deletion set/
-    );
-  });
-});
-
-describe("Retirement Guards: Nameserver Delegation", () => {
-  test("fails closed when nameservers still point to Cloud DNS", () => {
-    const cloudDnsNs = [
-      "ns-cloud-a1.googledomains.com",
-      "ns-cloud-a2.googledomains.com",
-      "ns-cloud-a3.googledomains.com",
-      "ns-cloud-a4.googledomains.com",
-    ];
-
-    expect(() => validateNameserverDelegation(cloudDnsNs, false)).toThrow(
-      /Nameserver guard failed: registrar nameservers for ompctl.ai still delegate to Cloud DNS/
-    );
-  });
-
-  test("passes when nameservers point to external registrar / dormant DNS", () => {
-    const dormantNs = ["dns1.registrar-servers.com", "dns2.registrar-servers.com"];
-    expect(() => validateNameserverDelegation(dormantNs, false)).not.toThrow();
-  });
-
-  test("allows override when skipCheck is explicitly true", () => {
-    const cloudDnsNs = ["ns-cloud-a1.googledomains.com"];
-    expect(() => validateNameserverDelegation(cloudDnsNs, true)).not.toThrow();
-  });
-});
-
-describe("Retirement Guards: State Readback Parsing (terraform show -json schema)", () => {
-  test("parses terraform show -json format and validates deletion_protection = false", () => {
-    // Realistic terraform show -json format: values.root_module.resources[].values
-    const stateJsonShowFormat = {
-      format_version: "1.0",
-      terraform_version: "1.9.0",
-      values: {
-        root_module: {
-          resources: [
-            {
-              address: "google_cloud_run_v2_service.hub",
-              mode: "managed",
-              type: "google_cloud_run_v2_service",
-              name: "hub",
-              provider_name: "registry.terraform.io/hashicorp/google",
-              values: {
-                name: "ompd-hub",
-                location: "us-central1",
-                deletion_protection: false,
-              },
-            },
-            {
-              address: "google_cloud_run_v2_service.web",
-              mode: "managed",
-              type: "google_cloud_run_v2_service",
-              name: "web",
-              provider_name: "registry.terraform.io/hashicorp/google",
-              values: {
-                name: "ompctl-web",
-                location: "us-central1",
-                deletion_protection: false,
-              },
-            },
-          ],
-        },
-      },
-    };
-
-    const extracted = extractStateResources(stateJsonShowFormat);
-    expect(extracted.length).toBe(2);
-    expect(extracted[0].attributes.deletion_protection).toBe(false);
-    expect(extracted[1].attributes.deletion_protection).toBe(false);
-
-    expect(() => validateCloudRunStateProtection(stateJsonShowFormat)).not.toThrow();
-  });
-
-  test("fails if service has deletion_protection = true in terraform show -json", () => {
-    const stateWithProtection = {
-      values: {
-        root_module: {
-          resources: [
-            {
-              address: "google_cloud_run_v2_service.hub",
-              mode: "managed",
-              type: "google_cloud_run_v2_service",
-              name: "hub",
-              values: {
-                deletion_protection: true,
-              },
-            },
-            {
-              address: "google_cloud_run_v2_service.web",
-              mode: "managed",
-              type: "google_cloud_run_v2_service",
-              name: "web",
-              values: {
-                deletion_protection: false,
-              },
-            },
-          ],
-        },
-      },
-    };
-
-    expect(() => validateCloudRunStateProtection(stateWithProtection)).toThrow(
-      /deletion_protection=true, expected false/
-    );
-  });
-
-  test("validates empty state correctly in terraform show -json format", () => {
-    const emptyShowState = {
-      values: {
-        root_module: {
-          resources: [],
-        },
-      },
-    };
-
-    expect(() => validateEmptyTerraformState(emptyShowState)).not.toThrow();
-  });
-
-  test("fails empty state check if managed resources remain in terraform show -json", () => {
-    const populatedShowState = {
-      values: {
-        root_module: {
-          resources: [
-            {
-              address: "google_redis_instance.hub",
-              mode: "managed",
-              type: "google_redis_instance",
-              name: "hub",
-              values: { id: "projects/ompctl/locations/us-central1/instances/ompd-hub" },
-            },
-          ],
-        },
-      },
-    };
-
-    expect(() => validateEmptyTerraformState(populatedShowState)).toThrow(
-      /Terraform state is not empty after destroy! Remaining managed resources: google_redis_instance.hub/
-    );
-  });
-});
-
-describe("Retirement Guards: Liens and Substrate Boundaries", () => {
-  test("passes when no liens exist", () => {
-    expect(() => validateNoLiens([])).not.toThrow();
-  });
-
-  test("fails closed if liens exist", () => {
-    expect(() => validateNoLiens([{ name: "liens/123" }])).toThrow(
-      /active deletion liens/
-    );
-  });
-
-  test("validates substrate parameters match expected", () => {
-    expect(() =>
-      validateSubstrateParameters({
-        vpcConnector: EXPECTED_SUBSTRATE_RESOURCES.vpcConnector,
-        artifactRepo: EXPECTED_SUBSTRATE_RESOURCES.artifactRepo,
-        cloudBuildBucket: EXPECTED_SUBSTRATE_RESOURCES.cloudBuildBucket,
-        stateBucket: EXPECTED_STATE_BUCKET,
+    // Bad confirmation
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "WRONG-TOKEN",
+        executionRef: "refs/heads/main",
+        transport: mirror,
       })
-    ).not.toThrow();
+    ).rejects.toThrow(/Confirmation guard failed/);
+
+    // Bad ref (e.g. branch or pr)
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/feature-branch",
+        transport: mirror,
+      })
+    ).rejects.toThrow(/Execution ref guard failed/);
+
+    expect(mirror.requestLog.length).toBe(0);
   });
 
-  test("rejects mismatched substrate bucket", () => {
-    expect(() =>
-      validateSubstrateParameters({
-        vpcConnector: EXPECTED_SUBSTRATE_RESOURCES.vpcConnector,
-        artifactRepo: EXPECTED_SUBSTRATE_RESOURCES.artifactRepo,
-        cloudBuildBucket: EXPECTED_SUBSTRATE_RESOURCES.cloudBuildBucket,
-        stateBucket: "foreign-bucket",
+  test("3 & 4. Uses real REST route and halts on testIamPermissions failure", async () => {
+    const mirror = new StatefulHttpMirror({
+      failTestIam: { status: 403, body: { error: { code: 403, message: "Forbidden" } } },
+    });
+
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-3.json";
+    const cutoverPath = "/tmp/test-cutover-3.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    const p = retireInfra({
+      operation: "retire",
+      confirmation: "CONFIRM-RETIRE-OMPCTL",
+      executionRef: "refs/heads/main",
+      baselineArtifactPath: baselinePath,
+      cutoverArtifactPath: cutoverPath,
+      cutoverTimestampMs: Date.now() - 30000 * 1000,
+      expectedSha: TEST_SHA,
+      transport: mirror,
+      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+    });
+
+    expect(p).rejects.toThrow(/testIamPermissions failed on project 'ompctl' \(HTTP 403\)/);
+    // Verify real REST endpoint was targeted
+    const req = mirror.requestLog.find((r) => r.url.includes(":testIamPermissions"));
+    expect(req).toBeDefined();
+    expect(req?.method).toBe("POST");
+    expect(mirror.lifecycleState).toBe("ACTIVE");
+  });
+
+  test("5. Missing IAM-write permission, grant not effective, and conflicting etag", async () => {
+    // 5a: getIamPolicy fails with 403
+    const mirrorGetFail = new StatefulHttpMirror({
+      failGetIamPolicy: { status: 403, body: { error: { message: "Cannot get policy" } } },
+    });
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-5.json";
+    const cutoverPath = "/tmp/test-cutover-5.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        expectedSha: TEST_SHA,
+        transport: mirrorGetFail,
+        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
       })
-    ).toThrow(/State bucket mismatch/);
+    ).rejects.toThrow(/getIamPolicy failed/);
+
+    // 5b: setIamPolicy fails with 409 etag conflict
+    const mirrorEtagConflict = new StatefulHttpMirror({
+      simulateEtagMismatch: true,
+    });
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        expectedSha: TEST_SHA,
+        transport: mirrorEtagConflict,
+        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      })
+    ).rejects.toThrow(/setIamPolicy failed to grant projectDeleter \(HTTP 409\)/);
+
+    // 5c: Grant not effective
+    const mirrorNotEffective = new StatefulHttpMirror({
+      grantNotEffective: true,
+    });
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        expectedSha: TEST_SHA,
+        transport: mirrorNotEffective,
+        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      })
+    ).rejects.toThrow(/Project deletion permission guard failed/);
+  });
+
+  test("6. Preserves unrelated and conditional IAM bindings when granting projectDeleter", async () => {
+    const mirror = new StatefulHttpMirror();
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-6.json";
+    const cutoverPath = "/tmp/test-cutover-6.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    await retireInfra({
+      operation: "retire",
+      confirmation: "CONFIRM-RETIRE-OMPCTL",
+      executionRef: "refs/heads/main",
+      baselineArtifactPath: baselinePath,
+      cutoverArtifactPath: cutoverPath,
+      cutoverTimestampMs: Date.now() - 30000 * 1000,
+      expectedSha: TEST_SHA,
+      transport: mirror,
+      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+    });
+
+    // Check that existing conditional binding (auditor) and owner binding are preserved
+    const bindings = mirror.iamPolicy.bindings;
+    const auditor = bindings.find((b) => b.role === "roles/viewer");
+    expect(auditor?.condition).toBeDefined();
+    expect(auditor?.condition?.title).toBe("expires_2027");
+
+    const owner = bindings.find((b) => b.role === "roles/owner");
+    expect(owner?.members).toContain("user:jason@waldrip.net");
+
+    const deleter = bindings.find((b) => b.role === "roles/resourcemanager.projectDeleter");
+    expect(deleter?.members).toContain("serviceAccount:ompctl-deployer@ompctl.iam.gserviceaccount.com");
+  });
+
+  test("7. Discovers and halts on liens located on later pagination page", async () => {
+    const mirror = new StatefulHttpMirror({
+      liensPageSize: 1,
+      initialLiens: [
+        { name: "liens/notice-only", reason: "not-blocking", parent: "projects/782181616134" },
+        { name: "liens/critical-lien", reason: "disaster recovery lock", parent: "projects/782181616134" },
+      ],
+    });
+
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-7.json";
+    const cutoverPath = "/tmp/test-cutover-7.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        expectedSha: TEST_SHA,
+        transport: mirror,
+        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      })
+    ).rejects.toThrow(/Project has active deletion liens/);
+
+    // Verify pagination requests were made
+    const liensRequests = mirror.requestLog.filter((r) => r.url.includes("/liens"));
+    expect(liensRequests.length).toBeGreaterThanOrEqual(2);
+    expect(mirror.lifecycleState).toBe("ACTIVE");
+  });
+
+  test("8. Halts on unexpired TTL or bad DNS cutover evidence", async () => {
+    const mirror = new StatefulHttpMirror();
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-8.json";
+    const cutoverPath = "/tmp/test-cutover-8.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    // Case 8a: Unexpired TTL (only 10 seconds elapsed)
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        cutoverTimestampMs: Date.now() - 10 * 1000,
+        expectedSha: TEST_SHA,
+        transport: mirror,
+        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      })
+    ).rejects.toThrow(/elapsed time since cutover .* has not exceeded the required old TTL window/);
+
+    // Case 8b: Cutover artifact still delegates to Cloud DNS
+    const badCutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    await Bun.write(cutoverPath, JSON.stringify(badCutover));
+
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        expectedSha: TEST_SHA,
+        transport: mirror,
+        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      })
+    ).rejects.toThrow(/cutover observation indicates domain still delegates to Cloud DNS/);
+  });
+
+  test("9. Pages authorization failure and unsuccessful readback stops execution", async () => {
+    // 9a: Pages DELETE fails with 403
+    const mirrorPagesFail = new StatefulHttpMirror({
+      failPagesDelete: { status: 403, body: { message: "Resource not accessible by integration" } },
+    });
+
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-9.json";
+    const cutoverPath = "/tmp/test-cutover-9.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        expectedSha: TEST_SHA,
+        transport: mirrorPagesFail,
+        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      })
+    ).rejects.toThrow(/Failed to unpublish GitHub Pages \(HTTP 403\)/);
+
+    expect(mirrorPagesFail.lifecycleState).toBe("ACTIVE");
+  });
+
+  test("10. Partial success: Pages already removed (404) allows project shutdown to proceed", async () => {
+    const mirror = new StatefulHttpMirror({
+      initialPagesPublished: false, // Pages already deleted
+    });
+
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-10.json";
+    const cutoverPath = "/tmp/test-cutover-10.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    const res = await retireInfra({
+      operation: "retire",
+      confirmation: "CONFIRM-RETIRE-OMPCTL",
+      executionRef: "refs/heads/main",
+      baselineArtifactPath: baselinePath,
+      cutoverArtifactPath: cutoverPath,
+      cutoverTimestampMs: Date.now() - 30000 * 1000,
+      expectedSha: TEST_SHA,
+      transport: mirror,
+      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.projectShutdownAccepted).toBe(true);
+    expect(mirror.lifecycleState).toBe("DELETE_REQUESTED");
+  });
+
+  test("11. Rejected project delete halts and preserves status details", async () => {
+    const mirror = new StatefulHttpMirror({
+      failProjectDelete: { status: 400, body: { error: { code: 400, message: "Precondition failed" } } },
+    });
+
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-11.json";
+    const cutoverPath = "/tmp/test-cutover-11.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    expect(
+      retireInfra({
+        operation: "retire",
+        confirmation: "CONFIRM-RETIRE-OMPCTL",
+        executionRef: "refs/heads/main",
+        baselineArtifactPath: baselinePath,
+        cutoverArtifactPath: cutoverPath,
+        cutoverTimestampMs: Date.now() - 30000 * 1000,
+        expectedSha: TEST_SHA,
+        transport: mirror,
+        dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+      })
+    ).rejects.toThrow(/Project shutdown failed \(HTTP 400\)/);
+
+    expect(mirror.lifecycleState).toBe("ACTIVE");
+  });
+
+  test("12. Successful v1 delete response followed by independent mirror owner read of DELETE_REQUESTED", async () => {
+    const mirror = new StatefulHttpMirror();
+
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-12.json";
+    const cutoverPath = "/tmp/test-cutover-12.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    const res = await retireInfra({
+      operation: "retire",
+      confirmation: "CONFIRM-RETIRE-OMPCTL",
+      executionRef: "refs/heads/main",
+      baselineArtifactPath: baselinePath,
+      cutoverArtifactPath: cutoverPath,
+      cutoverTimestampMs: Date.now() - 30000 * 1000,
+      expectedSha: TEST_SHA,
+      transport: mirror,
+      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.projectShutdownAccepted).toBe(true);
+
+    // Independent owner read of the mirror
+    const ownerReadRes = await mirror.fetch("https://cloudresourcemanager.googleapis.com/v1/projects/ompctl");
+    const ownerData = (await ownerReadRes.json()) as { projectId: string; projectNumber: string; lifecycleState: string };
+    expect(ownerData.projectId).toBe("ompctl");
+    expect(ownerData.projectNumber).toBe("782181616134");
+    expect(ownerData.lifecycleState).toBe("DELETE_REQUESTED");
+  });
+
+  test("13. Read-only observe operation produces zero mutation requests", async () => {
+    const mirror = new StatefulHttpMirror();
+    const outObs = "/tmp/test-observe-out.json";
+
+    const res = await retireInfra({
+      operation: "observe",
+      outObservationPath: outObs,
+      transport: mirror,
+      dnsResolver: createMockResolver({ delegatesToCloudDns: true }),
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.observation).toBeDefined();
+
+    // Verify ZERO mutation requests in mirror
+    const mutationCalls = mirror.requestLog.filter(
+      (r) => r.method === "DELETE" || r.method === "POST" || r.method === "PUT" || r.method === "PATCH"
+    );
+    expect(mutationCalls.length).toBe(0);
+  });
+
+  test("14. No request targets another project, organization, billing account, or repository", async () => {
+    const mirror = new StatefulHttpMirror();
+    const baseline = createMockObservation({ kind: "baseline", delegatesToCloudDns: true, gitSha: TEST_SHA });
+    const cutover = createMockObservation({ kind: "cutover", delegatesToCloudDns: false, gitSha: TEST_SHA });
+    const baselinePath = "/tmp/test-baseline-14.json";
+    const cutoverPath = "/tmp/test-cutover-14.json";
+    await Bun.write(baselinePath, JSON.stringify(baseline));
+    await Bun.write(cutoverPath, JSON.stringify(cutover));
+
+    await retireInfra({
+      operation: "retire",
+      confirmation: "CONFIRM-RETIRE-OMPCTL",
+      executionRef: "refs/heads/main",
+      baselineArtifactPath: baselinePath,
+      cutoverArtifactPath: cutoverPath,
+      cutoverTimestampMs: Date.now() - 30000 * 1000,
+      expectedSha: TEST_SHA,
+      transport: mirror,
+      dnsResolver: createMockResolver({ delegatesToCloudDns: false }),
+    });
+
+    for (const req of mirror.requestLog) {
+      if (req.url.startsWith("https://cloudresourcemanager.googleapis.com")) {
+        expect(req.url).toMatch(/projects\/ompctl/);
+        expect(req.url).not.toMatch(/organizations\//);
+        expect(req.url).not.toMatch(/billingAccounts\//);
+      }
+      if (req.url.startsWith("https://api.github.com")) {
+        expect(req.url).toMatch(/repos\/jwaldrip\/ompctl/);
+      }
+    }
   });
 });

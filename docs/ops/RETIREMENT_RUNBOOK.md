@@ -1,271 +1,159 @@
-# Operator Runbook: ompctl Infrastructure Retirement
+# Operator Runbook: ompctl Direct Project Retirement
 
-This runbook documents the step-by-step procedure for safely decommissioning ompctl hosted infrastructure, networking, storage, DNS hosting, and the GitHub Pages marketing site.
+This runbook documents the guarded procedure for direct shutdown of Google Cloud project \`ompctl\` (\`782181616134\`) and removal of the GitHub Pages marketing site.
 
-All mutations occur through GitHub Actions CI or authenticated administrative commands. Creation routes and automatic deployment push triggers have been permanently disabled.
+All operational mutations run through GitHub Actions CI on the default branch (\`main\`). Creation routes and automated deployment push triggers are permanently disabled.
 
 ---
 
 ## 1. Identity and Scope Boundaries
 
-The teardown applies exclusively to the following project and resources:
+The teardown applies exclusively to the following fixed project pair:
 
 | Boundary | Value |
 |---|---|
-| Target GCP Project ID | `ompctl` |
-| Target GCP Project Number | `782181616134` |
-| Primary Region | `us-central1` |
-| Pinned Google Provider | `hashicorp/google 6.50.0` |
-| Terraform State Location | `gs://ompctl-terraform-state/hub/default.tfstate` |
-| Managed Terraform Addresses | 19 baseline resources confirmed from CI deployment run 38706883329 (see list below) |
-| Confirmed Out-of-State Mappings | `app.ompctl.ai`, `hub.ompctl.ai`, `ompctl.ai`, `www.ompctl.ai` (all us-central1) |
-| Substrate Resources | VPC connector `ompctl-connector`, Artifact Registry `ompd`, Cloud Build bucket `ompctl_cloudbuild`, State bucket `ompctl-terraform-state` |
+| Target GCP Project ID | \`ompctl\` |
+| Target GCP Project Number | \`782181616134\` |
+| Primary Region | \`us-central1\` |
+| CI Service Account | \`ompctl-deployer@ompctl.iam.gserviceaccount.com\` |
+| WIF Provider | \`projects/782181616134/locations/global/workloadIdentityPools/ompctl-github/providers/github\` |
+| Decommissioning Mechanism | Resource Manager v1 direct project shutdown (\`DELETE /v1/projects/ompctl\`) |
+
+### Contained Assets (Retired with Project)
+- Cloud Run services (\`ompd-hub\`, \`ompctl-web\`) and public invoker bindings.
+- Unmanaged Cloud Run domain mappings (\`app.ompctl.ai\`, \`hub.ompctl.ai\`, \`ompctl.ai\`, \`www.ompctl.ai\`).
+- Google Cloud DNS zone (\`ompctl-ai\`) and all hosted record sets.
+- Memorystore Redis instance (\`ompd-hub\`).
+- Secret Manager secret (\`ompd-hub-operator-token\`).
+- Serverless VPC Access connector (\`ompctl-connector\`).
+- Artifact Registry Docker repository (\`ompd\`).
+- Cloud Storage buckets (\`gs://ompctl_cloudbuild\`, \`gs://ompctl-terraform-state\`).
+- Project-contained service accounts and Workload Identity Pool.
 
 ### Explicit Survivors (Must NOT be destroyed)
-
-- **Domain registration:** `ompctl.ai` remains registered at Squarespace (active through 2028-08-14).
-- **Source repository:** `github.com/jwaldrip/ompctl`, all branches, commits, worktrees, and release tags.
-- **Developer accounts:** Google account `jason@waldrip.net` and unrelated Google Cloud projects.
+- **Domain registration:** \`ompctl.ai\` remains registered at Squarespace (active through 2028-08-14).
+- **Source repository:** \`github.com/jwaldrip/ompctl\`, all branches, commits, worktrees, and release tags.
+- **Developer accounts:** Google account \`jason@waldrip.net\` and unrelated Google Cloud projects.
 - **Local tooling:** Developer workstations, local transcripts, and recovery archives.
 
 ---
 
-## 2. Baseline Managed Terraform Addresses (19 Verified Resources)
+## 2. Active Blocker: Authoritative DNS Cutover & TTL Preservation
 
-The destroy stage strictly permits deletion of only these 19 baseline addresses:
-
-1. `google_cloud_run_v2_service.hub`
-2. `google_cloud_run_v2_service.web`
-3. `google_cloud_run_v2_service_iam_member.hub_public`
-4. `google_cloud_run_v2_service_iam_member.web_public`
-5. `google_dns_managed_zone.ompctl`
-6. `google_dns_record_set.apex_txt`
-7. `google_dns_record_set.app`
-8. `google_dns_record_set.dmarc`
-9. `google_dns_record_set.domainkey`
-10. `google_dns_record_set.hub`
-11. `google_dns_record_set.root_a`
-12. `google_dns_record_set.root_aaaa`
-13. `google_dns_record_set.www`
-14. `google_project_iam_member.deployer_dns`
-15. `google_redis_instance.hub`
-16. `google_secret_manager_secret.operator_token`
-17. `google_secret_manager_secret_iam_member.hub_reads_operator_token`
-18. `google_service_account.hub`
-19. `google_service_account.web`
-
----
-
-## 3. Prerequisites: Registrar Delegation, TTL, and Project IAM
-
-### A. Registrar Delegation and Dangling DNS Safeguard
-
-The `ompctl.ai` domain registration is managed via Squarespace.
-Currently, authoritative nameservers delegate to Google Cloud DNS (`googledomains.com`).
+All six authoritative \`.ai\` parent nameservers (\`a.nic.ai\` through \`f.nic.ai\`) currently delegate \`ompctl.ai\` to Google Cloud DNS (\`googledomains.com\`) with delegation TTL 3600 seconds, and child Cloud DNS NS records have TTL 21600 seconds.
 
 **CRITICAL SAFEGUARD:**
-If the Google Cloud DNS zone is destroyed while Squarespace still delegates to Google nameservers, the domain becomes vulnerable to subdomain and zone hijacking.
+If the project and its Cloud DNS zone are shut down while parent delegation points to Google nameservers, the domain becomes vulnerable to zone and subdomain hijacking.
 
-Before executing Stage 3 (Retire Routing), Stage 4 (Destroy Terraform), or Stage 6 (Delete Project):
-1. Log in to the Squarespace Domain Management console for `ompctl.ai`.
-2. Re-point nameservers to registrar-managed default DNS, or configure a dormant no-service profile.
-3. Allow the previous nameserver TTL (typically 21600 seconds) to expire so recursive resolvers clear old Google Cloud DNS delegations.
-4. Verify with `dig +short NS ompctl.ai` that delegation no longer points to Cloud DNS nameservers.
-5. The pipeline enforces nameserver validation across Stages 3, 4, and 6, and will fail closed if nameservers still delegate to Cloud DNS, unless overridden with explicit operator justification (`skip_nameserver_check=true`).
-
-### B. Preflight Project Deletion Permissions
-
-Google Cloud Project shutdown requires the `resourcemanager.projects.delete` permission on project `ompctl`.
-The deployment service account (`ompctl-deployer@ompctl.iam.gserviceaccount.com`) carries `roles/resourcemanager.projectIamAdmin` but historically lacks `roles/resourcemanager.projectDeleter`.
-
-If Stage 1 (inventory) reports that the CI identity lacks this permission:
-1. An authorized owner (`jason@waldrip.net`) must grant the deleter role:
-   ```bash
-   gcloud projects add-iam-policy-binding ompctl \
-     --member="serviceAccount:ompctl-deployer@ompctl.iam.gserviceaccount.com" \
-     --role="roles/resourcemanager.projectDeleter"
-   ```
-2. The pipeline preflights this permission before project deletion and fails closed if it is absent.
+Before initiating project shutdown:
+1. Log in to the Squarespace Domain Management console for \`ompctl.ai\`.
+2. Move nameservers to registrar-managed default/dormant DNS (no mail, no active routing).
+3. Confirm that all six parent servers delegate away from Google Cloud DNS.
+4. Capture a cutover observation via CI.
+5. The pipeline enforces that elapsed time since cutover must exceed the maximum old TTL (21600 seconds) before project shutdown can be authorized.
 
 ---
 
-## 4. Sequential Execution Stages
+## 3. Operations Sequence
 
-All retirement operations run via `.github/workflows/retire-infra.yml` using `workflow_dispatch`.
-Each destructive stage requires:
-- `confirmation: "CONFIRM-RETIRE-OMPCTL"`
-- `manifest_sha: "<SHA256 from Stage 1>"`
-- `inventory_run_id: "<Run ID of Stage 1>"`
+All operations execute via \`.github/workflows/retire-infra.yml\` using \`workflow_dispatch\`.
 
-### Stage 1: INVENTORY (Read-only Live Resource Discovery)
+### Step 1: Capture Baseline DNS Observation (Read-Only)
 
-This stage performs authenticated reads only. It queries GCP APIs, verifies project identity, checks for liens, reads live Terraform state, preflights project deletion permissions, enumerates Cloud Run domain mappings, and exports a sanitized manifest artifact.
+Run the observation operation to record current authority, parent delegation, and record TTLs:
 
-**Operator Command:**
 ```bash
 gh workflow run retire-infra.yml \
   --ref main \
-  -f operation=inventory \
-  -f target_project_id=ompctl \
-  -f target_project_number=782181616134
+  -f operation=observe
 ```
 
 **Actions:**
 1. Wait for workflow completion.
-2. Note the GitHub Actions Run ID of this run (e.g. `123456789`).
-3. Download the `ompctl-sanitized-manifest` artifact.
-4. Inspect `sanitized-manifest.json` and copy the `checksum` value (`manifest_sha`).
-5. Verify that:
-   - `targetProject.projectId` is `ompctl`
-   - `targetProject.projectNumber` is `782181616134`
-   - `terraformAddresses` contains the 19 verified baseline addresses.
-   - `outOfStateDomainMappings` lists the four confirmed mappings (`app.ompctl.ai`, `hub.ompctl.ai`, `ompctl.ai`, `www.ompctl.ai`).
+2. Note the Run ID (e.g. \`101010101\`).
+3. Download the \`ompctl-dns-observation-101010101\` artifact to inspect captured parent queries.
 
 ---
 
-### Stage 2: PREPARE (Cloud Run Deletion-Protection Removal)
+### Step 2: Execute Registrar Cutover at Squarespace
 
-In Google Cloud provider 6.50.0, Cloud Run services default `deletion_protection = true`.
-Terraform will fail deletion if `deletion_protection = false` has not been applied to state.
-
-This stage plans and applies ONLY the removal of `deletion_protection`. The guard verifies:
-- Exactly 2 updates: `ompd-hub` and `ompctl-web` (or valid no-op if already false on retry).
-- 0 creates, 0 deletes, 0 replacements.
-- No changes to container images, environment variables, scaling, ingress, traffic, or VPC connector.
-- State readback in `values.root_module.resources` proves `deletion_protection = false` on both services.
-
-**Operator Command:**
-```bash
-gh workflow run retire-infra.yml \
-  --ref main \
-  -f operation=prepare \
-  -f confirmation=CONFIRM-RETIRE-OMPCTL \
-  -f manifest_sha=<MANIFEST_CHECKSUM> \
-  -f inventory_run_id=<INVENTORY_RUN_ID> \
-  -f target_project_id=ompctl \
-  -f target_project_number=782181616134
-```
+1. Switch nameservers in the Squarespace admin console to registrar default/dormant DNS.
+2. Verify via \`dig @a.nic.ai NS ompctl.ai +norecurse\` that parent servers report the new nameservers.
 
 ---
 
-### Stage 3: RETIRE-ROUTING (DNS & Routing Teardown)
+### Step 3: Capture Cutover DNS Observation (Read-Only)
 
-This stage retires the public routing layers:
-1. Verifies registrar nameserver delegation has moved away from Cloud DNS.
-2. Unpublishes the GitHub Pages marketing site (`DELETE /repos/jwaldrip/ompctl/pages`).
-3. Deletes the four confirmed unmanaged Cloud Run domain mappings via gcloud.
+Once all six parent servers reflect the updated delegation, record the cutover observation:
 
-**Operator Command:**
 ```bash
 gh workflow run retire-infra.yml \
   --ref main \
-  -f operation=retire-routing \
-  -f confirmation=CONFIRM-RETIRE-OMPCTL \
-  -f manifest_sha=<MANIFEST_CHECKSUM> \
-  -f inventory_run_id=<INVENTORY_RUN_ID> \
-  -f target_project_id=ompctl \
-  -f target_project_number=782181616134
+  -f operation=observe
 ```
 
-*Note: If Squarespace nameserver delegation is intentionally being switched concurrently and the operator has verified ownership, pass `-f skip_nameserver_check=true`.*
+**Actions:**
+1. Wait for workflow completion.
+2. Note the Cutover Run ID (e.g. \`202020202\`).
+3. Verify that \`delegatesToCloudDns: false\` and \`allParentsAgree: true\` in the artifact.
 
 ---
 
-### Stage 4: DESTROY-TERRAFORM (Managed Stack Destruction)
+### Step 4: Execute Guarded Project Retirement
 
-This stage generates a Terraform destroy plan and validates it against the approved manifest:
-- Verifies nameserver delegation before zone destruction.
-- Initializes Terraform backend with provider lock.
-- Requires 0 creates and 0 updates.
-- Verifies every resource marked for deletion belongs to the 19 verified baseline addresses.
-- Applies the destroy plan.
-- Verifies that post-apply Terraform state contains 0 managed resources in `values.root_module.resources`.
+After the 21600-second old TTL window has elapsed from the cutover run:
 
-**Operator Command:**
 ```bash
 gh workflow run retire-infra.yml \
   --ref main \
-  -f operation=destroy-terraform \
+  -f operation=retire \
   -f confirmation=CONFIRM-RETIRE-OMPCTL \
-  -f manifest_sha=<MANIFEST_CHECKSUM> \
-  -f inventory_run_id=<INVENTORY_RUN_ID> \
-  -f target_project_id=ompctl \
-  -f target_project_number=782181616134
+  -f baseline_run_id=101010101 \
+  -f cutover_run_id=202020202
 ```
+
+**Automated Guard Validations in this step:**
+1. Asserts execution ref is \`refs/heads/main\`.
+2. Asserts confirmation token is \`CONFIRM-RETIRE-OMPCTL\`.
+3. Validates baseline and cutover artifacts, confirming SHA match, Cloud DNS delegation in baseline, non-Cloud-DNS delegation in cutover, and elapsed time > 21600 seconds.
+4. Performs real-time check of parent nameservers and retired hostname targets.
+5. Verifies no active deployment workflow runs exist.
+6. Tests \`resourcemanager.projects.delete\` permission via Resource Manager v1 REST API. If missing, automatically binds \`roles/resourcemanager.projectDeleter\` to the CI service account and re-verifies.
+7. Queries deletion liens (following pagination) and verifies zero liens.
+8. Unpublishes GitHub Pages (\`DELETE /repos/jwaldrip/ompctl/pages\`) and reads back absence (HTTP 404).
+9. Executes \`DELETE https://cloudresourcemanager.googleapis.com/v1/projects/ompctl\`.
+10. Validates HTTP 200 \`{}\` response indicating shutdown request accepted.
 
 ---
 
-### Stage 5: CLEANUP-SUBSTRATE (Substrate and State Cleanup)
+## 4. Post-Retirement Verification by Owner
 
-After all managed infrastructure is destroyed, this stage deletes the bootstrap substrate:
-1. Verifies that the Terraform state backend contains 0 managed resources before any deletion.
-2. Serverless VPC Access connector: `ompctl-connector` in `us-central1`.
-3. Artifact Registry repository: `ompd` in `us-central1`.
-4. Cloud Build staging bucket: `gs://ompctl_cloudbuild`.
-5. Terraform state bucket: `gs://ompctl-terraform-state`.
+After workflow completion, the owner (\`jason@waldrip.net\`) reads live status directly:
 
-**Operator Command:**
 ```bash
-gh workflow run retire-infra.yml \
-  --ref main \
-  -f operation=cleanup-substrate \
-  -f confirmation=CONFIRM-RETIRE-OMPCTL \
-  -f manifest_sha=<MANIFEST_CHECKSUM> \
-  -f inventory_run_id=<INVENTORY_RUN_ID> \
-  -f target_project_id=ompctl \
-  -f target_project_number=782181616134
+gcloud projects describe ompctl \
+  --account=jason@waldrip.net \
+  --format='json(projectId,projectNumber,lifecycleState)'
 ```
 
----
-
-### Stage 6: DELETE-PROJECT (Terminal Project Deletion)
-
-This is the final cloud mutation.
-1. Verifies nameserver delegation to avoid leaving dangling NS records at Squarespace.
-2. Checks for active project deletion liens (fails closed if any exist).
-3. Preflights `resourcemanager.projects.delete` permission (fails closed if absent).
-4. Requests Google Cloud project deletion: `gcloud projects delete ompctl --quiet`.
-
-**Operator Command:**
-```bash
-gh workflow run retire-infra.yml \
-  --ref main \
-  -f operation=delete-project \
-  -f confirmation=CONFIRM-RETIRE-OMPCTL \
-  -f manifest_sha=<MANIFEST_CHECKSUM> \
-  -f inventory_run_id=<INVENTORY_RUN_ID> \
-  -f target_project_id=ompctl \
-  -f target_project_number=782181616134
-```
+**Required Evidence:**
+\`\`\`json
+{
+  "lifecycleState": "DELETE_REQUESTED",
+  "projectId": "ompctl",
+  "projectNumber": "782181616134"
+}
+\`\`\`
 
 **Lifecycle Semantics:**
-- Google Cloud projects enter the `DELETE_REQUESTED` state.
+- Google Cloud projects enter the \`DELETE_REQUESTED\` state immediately upon deletion request.
 - Resources within the project immediately cease billing and become inaccessible.
-- Google maintains a 30-day recovery window during which project restoration is possible.
-- After 30 days, the project and its contents are permanently erased, and the project ID `ompctl` is permanently released.
+- Google retains project data for a 30-day recovery window.
+- After 30 days, the project and its contents are permanently deleted.
+- Per Google Cloud Resource Manager policy, project IDs cannot be reused after deletion.
 
----
-
-## 5. Post-Retirement Verification
-
-Run these verification checks from an identity external to the `ompctl` project:
-
-1. **Verify Project Status:**
-   ```bash
-   gcloud projects describe ompctl --format="value(lifecycleState)"
-   ```
-   *Expected output:* `DELETE_REQUESTED`
-
-2. **Verify Public Endpoints Ceased Serving:**
-   ```bash
-   curl -I https://app.ompctl.ai
-   curl -I https://hub.ompctl.ai
-   curl -I https://ompctl.ai
-   ```
-   *Expected result:* DNS resolution failure or connection refusal.
-
-3. **Verify GitHub Pages Inactive:**
-   ```bash
-   gh api /repos/jwaldrip/ompctl/pages || echo "Pages disabled"
-   ```
-   *Expected result:* HTTP 404 Not Found.
+**Pages Absence Readback:**
+\`\`\`bash
+gh api /repos/jwaldrip/ompctl/pages
+\`\`\`
+Expected response: HTTP 404 Not Found.

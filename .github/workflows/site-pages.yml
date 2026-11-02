@@ -1,22 +1,8 @@
-# Deploys the ompctl marketing site (ompctl.ai) to GitHub Pages.
-#
-# Tradeoff against the retired Cloud Run origin:
-# its static server set explicit Cache-Control headers:
-#   - public, max-age=86400 for screenshots in shots/
-#   - public, max-age=300 for index.html and styles.css
-# GitHub Pages serves static assets through its own CDN edge with managed cache headers
-# (typically 10 minutes / 600s TTL) and does not permit custom Cache-Control headers.
-# Custom cache-control headers are lost with this move.
-#
-# Build gate invariant:
-# The site is built via `bun run build` in packages/site, producing packages/site/dist.
-# The build script verifies every referenced asset exists, every screenshot is
-# used, every anchor resolves, CNAME exists, and no app association files are
-# included. The job publishes packages/site/dist, never public/.
 name: site-pages
 
-# AUTOMATIC DEPLOYMENT DISABLED DURING INFRASTRUCTURE RETIREMENT
-# Automatic push triggers are removed. Pages site unpublishing is handled via retirement pipeline.
+# Verifies marketing site assets build cleanly.
+# Automatic Pages publication and upload capabilities are removed during infrastructure retirement.
+
 on:
   pull_request:
     paths:
@@ -26,16 +12,10 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   build:
-    name: Build marketing site
+    name: Build marketing site verification
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,21 +25,3 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build site and verify assets
         run: bun run --cwd packages/site build
-      - name: Upload Pages artifact
-        if: false # Disabled during retirement
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: packages/site/dist
-
-  deploy:
-    name: Deploy to GitHub Pages
-    if: false # Disabled during retirement; site unpublishing in progress per docs/ops/RETIREMENT_RUNBOOK.md
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
