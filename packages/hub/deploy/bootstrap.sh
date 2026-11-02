@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
+# RETIRED: ompctl infrastructure is undergoing decommission.
+# Creation of new ompctl cloud infrastructure is prohibited.
+# See docs/ops/RETIREMENT_RUNBOOK.md for the decommissioning procedure.
+set -euo pipefail
+
+echo "ERROR: packages/hub/deploy/bootstrap.sh is RETIRED." >&2
+echo "Creation of new ompctl cloud infrastructure is prohibited per the retirement plan." >&2
+echo "Refer to docs/ops/RETIREMENT_RUNBOOK.md for infrastructure teardown operations." >&2
+exit 1
+
+# Historical reference preserved below:
 # One-time identity + project bootstrap so CI can deploy ompctl to its own
 # GCP project. Run once, by hand, by a human holding the billing account this
 # project should bill to. Everything after this is Terraform, applied by
 # GitHub Actions, never from a workstation.
-#
-# Creates NO application infrastructure (no Cloud Run service, no Redis, no
-# Cloud Run domain mappings -- those are control-plane/packages/hub/deploy's
-# main.tf, applied by CI). This script creates only what Terraform cannot
-# create for itself: the project, the identity CI uses, and the substrate a
-# first `terraform apply` needs already present (Artifact Registry, a VPC
-# connector for private Redis access, state bucket access).
-#
-# Federated OIDC only: no service account key is created here, and none
-# should be. GitHub proves its identity to Google per run, scoped to this one
-# repository.
-#
-#   BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX ./control-plane/packages/hub/deploy/bootstrap.sh
-set -euo pipefail
-
 : "${BILLING_ACCOUNT_ID:?Set BILLING_ACCOUNT_ID to the billing account this project bills to (gcloud billing accounts list)}"
 
 PROJECT="${OMPCTL_GCP_PROJECT:-ompctl}"

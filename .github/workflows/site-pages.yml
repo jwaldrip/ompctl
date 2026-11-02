@@ -15,12 +15,9 @@
 # included. The job publishes packages/site/dist, never public/.
 name: site-pages
 
+# AUTOMATIC DEPLOYMENT DISABLED DURING INFRASTRUCTURE RETIREMENT
+# Automatic push triggers are removed. Pages site unpublishing is handled via retirement pipeline.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "packages/site/**"
-      - ".github/workflows/site-pages.yml"
   pull_request:
     paths:
       - "packages/site/**"
@@ -49,14 +46,14 @@ jobs:
       - name: Build site and verify assets
         run: bun run --cwd packages/site build
       - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main'
+        if: false # Disabled during retirement
         uses: actions/upload-pages-artifact@v3
         with:
           path: packages/site/dist
 
   deploy:
     name: Deploy to GitHub Pages
-    if: github.ref == 'refs/heads/main'
+    if: false # Disabled during retirement; site unpublishing in progress per docs/ops/RETIREMENT_RUNBOOK.md
     needs: build
     runs-on: ubuntu-latest
     environment:

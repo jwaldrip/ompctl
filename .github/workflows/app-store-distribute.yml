@@ -16,8 +16,6 @@ on:
         description: "Upload to stores when secrets exist"
         type: boolean
         default: true
-  push:
-    branches: [main]
 concurrency:
   group: app-store-distribute-${{ github.event_name == 'push' && github.run_attempt == 1 && github.ref || github.run_id }}
 

@@ -29,29 +29,13 @@ name: hub-deploy
 #   so test and doc updates never roll Cloud Run services.
 # ==============================================================================
 
+# DEPLOYMENT DISABLED DURING INFRASTRUCTURE RETIREMENT
+# Automatic push triggers are permanently removed to prevent recreation.
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/hub-deploy.yml"
-      - "packages/hub/**"
-      - "!packages/hub/test/**"
-      - "!packages/hub/**/*.md"
-      - "packages/app/**"
-      - "!packages/app/test/**"
-      - "!packages/app/**/*.md"
-      - "packages/core/**"
-      - "!packages/core/test/**"
-      - "!packages/core/**/*.md"
-      - "packages/tunnel/**"
-      - "!packages/tunnel/test/**"
-      - "!packages/tunnel/**/*.md"
-      - "package.json"
-      - "bun.lock"
   workflow_dispatch:
     inputs:
       environment:
-        description: Target environment
+        description: Target environment (DISABLED during retirement)
         required: true
         type: choice
         default: production
@@ -76,6 +60,11 @@ jobs:
       apply_terraform: ${{ steps.plan.outputs.apply_terraform }}
       reason: ${{ steps.plan.outputs.reason }}
     steps:
+      - name: Refuse deployment during retirement
+        run: |
+          echo "::error::hub-deploy is disabled. ompctl hosted infrastructure is retired and undergoing decommission."
+          echo "::error::See .github/workflows/retire-infra.yml and docs/ops/RETIREMENT_RUNBOOK.md."
+          exit 1
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
