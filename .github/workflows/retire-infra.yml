@@ -1,0 +1,150 @@
+name: retire-infra
+
+# Guarded decommissioning pipeline for ompctl hosted infrastructure.
+# Manual execution only on the default branch.
+# Destructive operations require explicit confirmation token 'CONFIRM-RETIRE-OMPCTL'.
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Retirement stage to execute"
+        required: true
+        type: choice
+        default: "inventory"
+        options:
+          - "inventory"
+          - "prepare"
+          - "retire-routing"
+          - "destroy-terraform"
+          - "cleanup-substrate"
+          - "delete-project"
+      confirmation:
+        description: "Type 'CONFIRM-RETIRE-OMPCTL' to authorize destructive operations"
+        required: false
+        type: string
+        default: ""
+      manifest_sha:
+        description: "Manifest checksum from inventory stage (required for mutation stages)"
+        required: false
+        type: string
+        default: ""
+      target_project_id:
+        description: "Target Google Cloud Project ID (must be ompctl)"
+        required: true
+        type: string
+        default: "ompctl"
+      target_project_number:
+        description: "Target Google Cloud Project Number (must be 782181616134)"
+        required: true
+        type: string
+        default: "782181616134"
+      skip_nameserver_check:
+        description: "Skip registrar nameserver delegation verification (DANGEROUS: risk of dangling DNS)"
+        type: boolean
+        default: false
+
+concurrency:
+  # Matches hub-deploy to ensure retirement operations are strictly serialized against deployment
+  group: hub-deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  retire:
+    name: "Retire Infra: ${{ inputs.operation }}"
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Verify Default Branch Guard
+        run: |
+          if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+            echo "::error::Retirement pipeline can only be executed on refs/heads/main"
+            exit 1
+          fi
+
+      - name: Preflight Input Safety Assertions
+        run: |
+          OP="${{ inputs.operation }}"
+          PID="${{ inputs.target_project_id }}"
+          PNUM="${{ inputs.target_project_number }}"
+          CONF="${{ inputs.confirmation }}"
+          SHA="${{ inputs.manifest_sha }}"
+
+          echo "Target operation: ${OP}"
+          echo "Target project:   ${PID} (${PNUM})"
+
+          if [[ "$PID" != "ompctl" ]]; then
+            echo "::error::Target project ID must be 'ompctl', got '${PID}'"
+            exit 1
+          fi
+
+          if [[ "$PNUM" != "782181616134" ]]; then
+            echo "::error::Target project number must be '782181616134', got '${PNUM}'"
+            exit 1
+          fi
+
+          if [[ "$OP" != "inventory" ]]; then
+            if [[ "$CONF" != "CONFIRM-RETIRE-OMPCTL" ]]; then
+              echo "::error::Destructive operation '${OP}' rejected: confirmation must be 'CONFIRM-RETIRE-OMPCTL'"
+              exit 1
+            fi
+            if [[ -z "$SHA" ]]; then
+              echo "::error::Destructive operation '${OP}' rejected: manifest_sha is required"
+              exit 1
+            fi
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Execute Retirement Stage Guard
+        env:
+          GCP_PROJECT_ID: ${{ inputs.target_project_id }}
+          GCP_PROJECT_NUMBER: ${{ inputs.target_project_number }}
+          GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'ompctl-terraform-state' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARGS=(
+            "${{ inputs.operation }}"
+            --manifest-path "sanitized-manifest.json"
+            --project-id "${{ inputs.target_project_id }}"
+            --project-number "${{ inputs.target_project_number }}"
+          )
+
+          if [[ "${{ inputs.operation }}" != "inventory" ]]; then
+            ARGS+=(--confirm "${{ inputs.confirmation }}")
+          fi
+
+          if [[ "${{ inputs.skip_nameserver_check }}" == "true" ]]; then
+            ARGS+=(--skip-nameserver-check)
+          fi
+
+          bun scripts/retire-infra/cli.ts "${ARGS[@]}"
+
+      - name: Upload Sanitized Inventory Manifest
+        if: inputs.operation == 'inventory' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ompctl-sanitized-manifest
+          path: sanitized-manifest.json
+          if-no-files-found: error

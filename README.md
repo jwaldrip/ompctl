@@ -1,12 +1,12 @@
-# ompctl
+# ompctl (Retired)
+
+> **Notice (2026-11-01):** The hosted ompctl control plane infrastructure is retired and undergoing decommission. Public cloud endpoints, Cloud Run relay instances, DNS hosting, and marketing pages are being shut down. Refer to [Retirement Runbook](docs/ops/RETIREMENT_RUNBOOK.md) for the decommissioning procedure.
+
+---
 
 **Your agents keep running. You stop having to sit there.**
 
 A control plane for [OMP](https://github.com/can1357/oh-my-pi) coding agents. A daemon runs on your machine. Your phone pairs with it and drives the sessions already running there.
-
-[ompctl.ai](https://ompctl.ai)
-
----
 
 ## The problem
 
