@@ -1,12 +1,24 @@
 # PATH
 
-The one path. Nothing else ships until `bun run check:path` exits 0 and prints the strings below.
+## Active Path: Guarded Infrastructure Retirement (2026-11-01)
 
-## The sentence
+The one active path. Retirement is complete when all of the following hold:
+1. The owner reads Google Cloud project \`ompctl\` (782181616134) as \`lifecycleState: DELETE_REQUESTED\` via \`gcloud projects describe\`.
+2. GitHub Pages for \`jwaldrip/ompctl\` is unpublished and reads back as HTTP 404.
+3. All six authoritative \`.ai\` parent servers delegate \`ompctl.ai\` away from Google Cloud DNS, with cutover TTL expired.
+4. All old deployment and publication workflow push triggers are stopped and inactive.
+
+---
+
+## Historical Product Path (Archived)
+
+The historical product path below records the original verification sentence before project decommissioning.
+
+### The sentence (Historical)
 
 **A real phone that is not on the home network lists this laptop's live omp sessions, opens one, sends it a message, and receives the agent's reply.**
 
-That is the whole product. Every other surface is breadth.
+That was the whole product. Every other surface was breadth.
 
 ## The one device
 
@@ -51,14 +63,14 @@ bun run check:path
 
 The run fails unless every one of these appears:
 
-- `device 34241FDH2004KR Pixel_7` — the real hardware, by serial
-- `installed ai.ompctl.app <versionName>/<versionCode>` — read off the device, not from a build
-- `idiom phone` — the device class, so tablet chrome on a phone or phone chrome on a tablet is a failure
-- `transport CELLULAR` — Wi-Fi confirmed down and cellular confirmed up
-- `daemon dmn_9cdff…c441b registered inst_<id>` — the live daemon, through the hub
-- `tunnel stable: 0 closures in 60s` — a registration line alone is not stability. The daemon logged `tunnel registered` several hundred times while this path was broken, because a second daemon leg sharing one identity kept evicting it with `4409 replaced by a newer connection`. Any churn in the window fails the run.
-- `sessions listed: <n>` with `n >= 1` — the device sees this laptop's real sessions
-- `round trip ok` — a message sent from the device reached the agent and the reply came back
+- `device 34241FDH2004KR Pixel_7`: the real hardware, by serial
+- `installed ai.ompctl.app <versionName>/<versionCode>`: read off the device, not from a build
+- `idiom phone`: the device class, so tablet chrome on a phone or phone chrome on a tablet is a failure
+- `transport CELLULAR`: Wi-Fi confirmed down and cellular confirmed up
+- `daemon dmn_9cdff…c441b registered inst_<id>`: the live daemon, through the hub
+- `tunnel stable: 0 closures in 60s`: a registration line alone is not stability. The daemon logged `tunnel registered` several hundred times while this path was broken, because a second daemon leg sharing one identity kept evicting it with `4409 replaced by a newer connection`. Any churn in the window fails the run.
+- `sessions listed: <n>` with `n >= 1`: the device sees this laptop's real sessions
+- `round trip ok`: a message sent from the device reached the agent and the reply came back
 - `PATH GREEN`
 
 ## Proving the check can fail

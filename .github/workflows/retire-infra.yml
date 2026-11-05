@@ -1,0 +1,165 @@
+name: retire-infra
+
+# Guarded decommissioning pipeline for direct shutdown of project ompctl (782181616134).
+# Manual execution only on refs/heads/main.
+# Destructive retirement requires explicit confirmation token 'CONFIRM-RETIRE-OMPCTL'
+# and verified DNS baseline and cutover observation artifacts with elapsed TTL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Retirement operation: 'observe' (read-only DNS capture) or 'retire' (guarded terminal shutdown)"
+        required: true
+        type: choice
+        default: "observe"
+        options:
+          - "observe"
+          - "retire"
+      observation_kind:
+        description: "For 'observe': 'baseline' (initial Cloud DNS) or 'cutover' (post-registrar switch)"
+        required: false
+        type: choice
+        default: "baseline"
+        options:
+          - "baseline"
+          - "cutover"
+      confirmation:
+        description: "Type 'CONFIRM-RETIRE-OMPCTL' to authorize destructive retirement"
+        required: false
+        type: string
+        default: ""
+      baseline_run_id:
+        description: "GitHub Actions Run ID of the baseline DNS observation (required for 'retire')"
+        required: false
+        type: string
+        default: ""
+      cutover_run_id:
+        description: "GitHub Actions Run ID of the cutover DNS observation (required for 'retire')"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  # Serializes retirement operations against deployment
+  group: hub-deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+  pages: write
+  actions: read
+
+jobs:
+  retire:
+    name: "Retire Infra: ${{ inputs.operation }}"
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Verify Default Branch Guard
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$REF" != "refs/heads/main" ]]; then
+            echo "::error::Retirement pipeline can only be executed on refs/heads/main"
+            exit 1
+          fi
+
+      - name: Preflight Input Safety Assertions
+        env:
+          OP: ${{ inputs.operation }}
+          CONF: ${{ inputs.confirmation }}
+          BASE_ID: ${{ inputs.baseline_run_id }}
+          CUT_ID: ${{ inputs.cutover_run_id }}
+        run: |
+          echo "Selected operation: ${OP}"
+
+          if [[ "$OP" == "retire" ]]; then
+            if [[ "$CONF" != "CONFIRM-RETIRE-OMPCTL" ]]; then
+              echo "::error::Retirement rejected: confirmation must be 'CONFIRM-RETIRE-OMPCTL'"
+              exit 1
+            fi
+            if [[ -z "$BASE_ID" ]]; then
+              echo "::error::Retirement rejected: baseline_run_id is required"
+              exit 1
+            fi
+            if [[ -z "$CUT_ID" ]]; then
+              echo "::error::Retirement rejected: cutover_run_id is required"
+              exit 1
+            fi
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: "access_token"
+          access_token_scopes: "https://www.googleapis.com/auth/cloud-platform"
+
+      - name: Download Baseline DNS Artifact
+        if: inputs.operation == 'retire'
+        uses: actions/download-artifact@v4
+        with:
+          name: ompctl-dns-observation-${{ inputs.baseline_run_id }}
+          path: artifacts/baseline
+          run-id: ${{ inputs.baseline_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Cutover DNS Artifact
+        if: inputs.operation == 'retire'
+        uses: actions/download-artifact@v4
+        with:
+          name: ompctl-dns-observation-${{ inputs.cutover_run_id }}
+          path: artifacts/cutover
+          run-id: ${{ inputs.cutover_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Execute Retirement Operation
+        id: exec
+        env:
+          OP: ${{ inputs.operation }}
+          KIND: ${{ inputs.observation_kind }}
+          CONF: ${{ inputs.confirmation }}
+          BASE_ID: ${{ inputs.baseline_run_id }}
+          CUT_ID: ${{ inputs.cutover_run_id }}
+          GCP_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          if [[ "$OP" == "observe" ]]; then
+            bun scripts/retire-infra/cli.ts observe --kind "$KIND"
+          elif [[ "$OP" == "retire" ]]; then
+            # Extract actual cutover completion timestamp from GitHub API
+            CUTOVER_UPDATED_AT="$(gh run view "$CUT_ID" --json updatedAt --jq .updatedAt)"
+            CUTOVER_TS_MS="$(node -e 'console.log(Date.parse(process.argv[1]))' "$CUTOVER_UPDATED_AT")"
+            echo "Cutover run $CUT_ID completion timestamp: $CUTOVER_UPDATED_AT ($CUTOVER_TS_MS ms)"
+
+            GOOGLE_OAUTH_ACCESS_TOKEN="$GCP_TOKEN" bun scripts/retire-infra/cli.ts retire \
+              --confirm "$CONF" \
+              --baseline-artifact artifacts/baseline/dns-observation.json \
+              --cutover-artifact artifacts/cutover/dns-observation.json \
+              --baseline-run-id "$BASE_ID" \
+              --cutover-run-id "$CUT_ID" \
+              --cutover-timestamp-ms "$CUTOVER_TS_MS" \
+              --expected-sha "$GITHUB_SHA" \
+              --current-run-id "$GITHUB_RUN_ID"
+          fi
+
+      - name: Upload DNS Observation Artifact
+        if: inputs.operation == 'observe' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ompctl-dns-observation-${{ github.run_id }}
+          path: dns-observation.json
+          if-no-files-found: error

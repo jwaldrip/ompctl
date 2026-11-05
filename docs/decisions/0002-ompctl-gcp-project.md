@@ -1,9 +1,15 @@
 # 0002. Host ompctl in its own GCP project
 
 Date: 2026-08-15
-Status: accepted
+Status: superseded (retirement pending)
 Amended: 2026-08-16 (state bucket now lives in this project; see Consequences)
+Pending Retirement: 2026-11-01 (infrastructure decommission and direct project shutdown scheduled per docs/ops/RETIREMENT_RUNBOOK.md)
 
+## Retirement Notice (2026-11-01)
+
+The hosted ompctl infrastructure is pending direct project shutdown. All Cloud Run services,
+managed DNS records, VPC connectors, Redis instance, and supporting resources will be retired
+with the project. Creation of new infrastructure via bootstrap.sh is disabled.
 ## Context
 
 ompctl (the hub relay plus the web console at ompctl.ai) is a distinct product
