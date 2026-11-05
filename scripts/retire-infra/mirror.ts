@@ -157,7 +157,7 @@ export class StatefulHttpMirror implements HttpTransport {
               status: "UNAUTHENTICATED",
             },
           }),
-          { status: 401, headers: { "Content-Type": "application/json" } }
+          { status: 401, headers: { "Content-Type": "application/json" } },
         );
       }
     }
@@ -166,10 +166,10 @@ export class StatefulHttpMirror implements HttpTransport {
     if (isGithub) {
       const authHeader = headers["authorization"] || "";
       if (!authHeader.startsWith("Bearer ") || authHeader.slice(7).trim().length === 0) {
-        return new Response(
-          JSON.stringify({ message: "Requires authentication" }),
-          { status: 401, headers: { "Content-Type": "application/json" } }
-        );
+        return new Response(JSON.stringify({ message: "Requires authentication" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
       }
     }
 
@@ -187,7 +187,7 @@ export class StatefulHttpMirror implements HttpTransport {
           projectNumber: this.projectNumber,
           lifecycleState: this.lifecycleState,
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
@@ -199,13 +199,13 @@ export class StatefulHttpMirror implements HttpTransport {
           headers: { "Content-Type": "application/json" },
         });
       }
-      const requested = ((parsedBody as { permissions?: string[] })?.permissions ?? []);
-      const granted = requested.filter((p) => this.permissions.has(p));
+      const requested = (parsedBody as { permissions?: string[] })?.permissions ?? [];
+      const granted = requested.filter(p => this.permissions.has(p));
       return new Response(
         JSON.stringify({
           permissions: granted,
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
@@ -248,7 +248,7 @@ export class StatefulHttpMirror implements HttpTransport {
               status: "ABORTED",
             },
           }),
-          { status: 409, headers: { "Content-Type": "application/json" } }
+          { status: 409, headers: { "Content-Type": "application/json" } },
         );
       }
 
@@ -259,9 +259,9 @@ export class StatefulHttpMirror implements HttpTransport {
           bindings: newPolicy.bindings ?? [],
         };
         const hasDeleterRole = this.iamPolicy.bindings.some(
-          (b) =>
+          b =>
             b.role === "roles/resourcemanager.projectDeleter" &&
-            b.members.includes("serviceAccount:ompctl-deployer@ompctl.iam.gserviceaccount.com")
+            b.members.includes("serviceAccount:ompctl-deployer@ompctl.iam.gserviceaccount.com"),
         );
         if (hasDeleterRole && !this.config.grantNotEffective) {
           this.permissions.add("resourcemanager.projects.delete");
@@ -293,7 +293,7 @@ export class StatefulHttpMirror implements HttpTransport {
               status: "INVALID_ARGUMENT",
             },
           }),
-          { status: 400, headers: { "Content-Type": "application/json" } }
+          { status: 400, headers: { "Content-Type": "application/json" } },
         );
       }
 
@@ -308,7 +308,7 @@ export class StatefulHttpMirror implements HttpTransport {
           liens: pageItems,
           nextPageToken,
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
@@ -344,7 +344,7 @@ export class StatefulHttpMirror implements HttpTransport {
           status: "built",
           cname: "ompctl.ai",
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
@@ -370,7 +370,7 @@ export class StatefulHttpMirror implements HttpTransport {
           total_count: this.workflowRuns.length,
           workflow_runs: pageRuns,
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
@@ -378,7 +378,7 @@ export class StatefulHttpMirror implements HttpTransport {
     const runMatch = pathname.match(/^\/repos\/jwaldrip\/ompctl\/actions\/runs\/(\d+)$/);
     if (method === "GET" && runMatch) {
       const runId = parseInt(runMatch[1], 10);
-      const run = this.workflowRuns.find((r) => r.id === runId);
+      const run = this.workflowRuns.find(r => r.id === runId);
       if (!run) {
         return new Response(JSON.stringify({ message: "Not Found" }), {
           status: 404,
@@ -406,9 +406,9 @@ export class StatefulHttpMirror implements HttpTransport {
       });
     }
 
-    return new Response(
-      JSON.stringify({ error: `Not found on mirror: ${method} ${pathname}` }),
-      { status: 404, headers: { "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: `Not found on mirror: ${method} ${pathname}` }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }

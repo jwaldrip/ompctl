@@ -17,20 +17,20 @@ import {
 } from "./guards.ts";
 import {
   AUTHORITATIVE_PARENT_SERVERS,
-  EXPECTED_CI_PRINCIPAL,
-  EXPECTED_PROJECT_ID,
-  EXPECTED_PROJECT_NUMBER,
-  EXPECTED_ROOT_DOMAIN,
-  OLD_CLOUD_DNS_PATTERN,
-  RETIRED_HOSTNAMES,
   type ChildNsQuery,
   type CommandRunner,
   type DnsObservation,
   type DnsRecordEntry,
   type DnsResolver,
+  EXPECTED_CI_PRINCIPAL,
+  EXPECTED_PROJECT_ID,
+  EXPECTED_PROJECT_NUMBER,
+  EXPECTED_ROOT_DOMAIN,
   type HostRecordObservation,
   type HttpTransport,
+  OLD_CLOUD_DNS_PATTERN,
   type ParentServerQuery,
+  RETIRED_HOSTNAMES,
   type RetirementOperation,
 } from "./types.ts";
 
@@ -77,22 +77,10 @@ export class DigDnsResolver implements DnsResolver {
   async queryParentNsAndDs(server: string, domain: string): Promise<ParentServerQuery> {
     try {
       // 1. Query NS
-      const nsRes = await this.runner([
-        "dig",
-        `@${server}`,
-        "+norecurse",
-        "+time=3",
-        "+tries=2",
-        "NS",
-        domain,
-      ]);
+      const nsRes = await this.runner(["dig", `@${server}`, "+norecurse", "+time=3", "+tries=2", "NS", domain]);
 
       const nsStatusMatch = nsRes.stdout.match(/status:\s*([A-Z]+)/);
-      const nsStatus = nsStatusMatch
-        ? nsStatusMatch[1]
-        : nsRes.exitCode === 0
-        ? "NOERROR"
-        : `ERROR_${nsRes.exitCode}`;
+      const nsStatus = nsStatusMatch ? nsStatusMatch[1] : nsRes.exitCode === 0 ? "NOERROR" : `ERROR_${nsRes.exitCode}`;
 
       const nameservers: Array<{ name: string; ttl: number }> = [];
       for (const line of nsRes.stdout.split("\n")) {
@@ -106,22 +94,10 @@ export class DigDnsResolver implements DnsResolver {
       }
 
       // 2. Query DS
-      const dsRes = await this.runner([
-        "dig",
-        `@${server}`,
-        "+norecurse",
-        "+time=3",
-        "+tries=2",
-        "DS",
-        domain,
-      ]);
+      const dsRes = await this.runner(["dig", `@${server}`, "+norecurse", "+time=3", "+tries=2", "DS", domain]);
 
       const dsStatusMatch = dsRes.stdout.match(/status:\s*([A-Z]+)/);
-      const dsStatus = dsStatusMatch
-        ? dsStatusMatch[1]
-        : dsRes.exitCode === 0
-        ? "NOERROR"
-        : `ERROR_${dsRes.exitCode}`;
+      const dsStatus = dsStatusMatch ? dsStatusMatch[1] : dsRes.exitCode === 0 ? "NOERROR" : `ERROR_${dsRes.exitCode}`;
 
       const dsRecords: Array<{ data: string; ttl: number }> = [];
       let hasAuthoritativeDenial = false;
@@ -187,22 +163,10 @@ export class DigDnsResolver implements DnsResolver {
 
   async queryChildNs(server: string, domain: string): Promise<ChildNsQuery> {
     try {
-      const res = await this.runner([
-        "dig",
-        `@${server}`,
-        "+norecurse",
-        "+time=3",
-        "+tries=2",
-        "NS",
-        domain,
-      ]);
+      const res = await this.runner(["dig", `@${server}`, "+norecurse", "+time=3", "+tries=2", "NS", domain]);
 
       const statusMatch = res.stdout.match(/status:\s*([A-Z]+)/);
-      const status = statusMatch
-        ? statusMatch[1]
-        : res.exitCode === 0
-        ? "NOERROR"
-        : `ERROR_${res.exitCode}`;
+      const status = statusMatch ? statusMatch[1] : res.exitCode === 0 ? "NOERROR" : `ERROR_${res.exitCode}`;
 
       const nameservers: Array<{ name: string; ttl: number }> = [];
       for (const line of res.stdout.split("\n")) {
@@ -230,11 +194,7 @@ export class DigDnsResolver implements DnsResolver {
     }
   }
 
-  async queryHostRecord(
-    host: string,
-    type: string,
-    queryServer?: string
-  ): Promise<HostRecordObservation> {
+  async queryHostRecord(host: string, type: string, queryServer?: string): Promise<HostRecordObservation> {
     try {
       const cmd = ["dig", "+time=3", "+tries=2"];
       if (queryServer) {
@@ -244,11 +204,7 @@ export class DigDnsResolver implements DnsResolver {
 
       const res = await this.runner(cmd);
       const statusMatch = res.stdout.match(/status:\s*([A-Z]+)/);
-      const status = statusMatch
-        ? statusMatch[1]
-        : res.exitCode === 0
-        ? "NOERROR"
-        : `ERROR_${res.exitCode}`;
+      const status = statusMatch ? statusMatch[1] : res.exitCode === 0 ? "NOERROR" : `ERROR_${res.exitCode}`;
 
       const isAuthoritative = /\bflags:.*?\baa\b/.test(res.stdout);
 
@@ -320,9 +276,7 @@ export async function captureDnsObservation(params: {
   let replacementServer: string | undefined;
   if (kind === "cutover") {
     for (const pq of parentQueries) {
-      const nonCloud = pq.nameservers.find(
-        (ns) => !OLD_CLOUD_DNS_PATTERN.test(ns.name)
-      );
+      const nonCloud = pq.nameservers.find(ns => !OLD_CLOUD_DNS_PATTERN.test(ns.name));
       if (nonCloud) {
         replacementServer = nonCloud.name;
         break;
@@ -359,16 +313,22 @@ export async function captureDnsObservation(params: {
 
   // Check agreement across all parent servers
   const firstNsList =
-    parentQueries[0]?.nameservers.map((n) => n.name).sort().join(",") || "";
+    parentQueries[0]?.nameservers
+      .map(n => n.name)
+      .sort()
+      .join(",") || "";
   let allAgree = true;
   let delegatesToCloudDns = false;
 
   for (const q of parentQueries) {
-    const currentNsList = q.nameservers.map((n) => n.name).sort().join(",");
+    const currentNsList = q.nameservers
+      .map(n => n.name)
+      .sort()
+      .join(",");
     if (currentNsList !== firstNsList || q.nsStatus !== "NOERROR") {
       allAgree = false;
     }
-    if (q.nameservers.some((ns) => OLD_CLOUD_DNS_PATTERN.test(ns.name))) {
+    if (q.nameservers.some(ns => OLD_CLOUD_DNS_PATTERN.test(ns.name))) {
       delegatesToCloudDns = true;
     }
   }
@@ -447,12 +407,12 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
     // Guard 3: DNS cutover artifact & TTL verification
     if (!options.baselineArtifactPath || !options.cutoverArtifactPath) {
       throw new Error(
-        "Retirement guard failed: both baseline and cutover observation artifacts are required for retirement"
+        "Retirement guard failed: both baseline and cutover observation artifacts are required for retirement",
       );
     }
     if (!options.baselineRunId || !options.cutoverRunId) {
       throw new Error(
-        "Retirement guard failed: both baselineRunId and cutoverRunId are required to verify artifact provenance"
+        "Retirement guard failed: both baselineRunId and cutoverRunId are required to verify artifact provenance",
       );
     }
 
@@ -463,12 +423,8 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
       throw new Error(`Cutover artifact not found at '${options.cutoverArtifactPath}'`);
     }
 
-    const baseline = JSON.parse(
-      readFileSync(options.baselineArtifactPath, "utf8")
-    ) as DnsObservation;
-    const cutover = JSON.parse(
-      readFileSync(options.cutoverArtifactPath, "utf8")
-    ) as DnsObservation;
+    const baseline = JSON.parse(readFileSync(options.baselineArtifactPath, "utf8")) as DnsObservation;
+    const cutover = JSON.parse(readFileSync(options.cutoverArtifactPath, "utf8")) as DnsObservation;
 
     // Validate provenance of baseline and cutover runs via GitHub API
     console.log(`Verifying baseline run #${options.baselineRunId} provenance...`);
@@ -479,12 +435,10 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
           Authorization: `Bearer ${githubToken}`,
           Accept: "application/vnd.github+json",
         },
-      }
+      },
     );
     if (!baseRunRes.ok) {
-      throw new Error(
-        `Failed to read baseline run #${options.baselineRunId} provenance (HTTP ${baseRunRes.status})`
-      );
+      throw new Error(`Failed to read baseline run #${options.baselineRunId} provenance (HTTP ${baseRunRes.status})`);
     }
     const baseRun = (await baseRunRes.json()) as {
       status: string;
@@ -500,13 +454,11 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
       throw new Error(`Baseline run #${options.baselineRunId} was not on branch 'main'`);
     }
     if (options.expectedSha && baseRun.head_sha !== options.expectedSha) {
-      throw new Error(
-        `Baseline run SHA '${baseRun.head_sha}' does not match expected SHA '${options.expectedSha}'`
-      );
+      throw new Error(`Baseline run SHA '${baseRun.head_sha}' does not match expected SHA '${options.expectedSha}'`);
     }
     if (String(baseline.workflowRunId) !== String(options.baselineRunId)) {
       throw new Error(
-        `Baseline artifact run ID '${baseline.workflowRunId}' does not match verified run ID '${options.baselineRunId}'`
+        `Baseline artifact run ID '${baseline.workflowRunId}' does not match verified run ID '${options.baselineRunId}'`,
       );
     }
 
@@ -518,12 +470,10 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
           Authorization: `Bearer ${githubToken}`,
           Accept: "application/vnd.github+json",
         },
-      }
+      },
     );
     if (!cutRunRes.ok) {
-      throw new Error(
-        `Failed to read cutover run #${options.cutoverRunId} provenance (HTTP ${cutRunRes.status})`
-      );
+      throw new Error(`Failed to read cutover run #${options.cutoverRunId} provenance (HTTP ${cutRunRes.status})`);
     }
     const cutRun = (await cutRunRes.json()) as {
       status: string;
@@ -540,13 +490,11 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
       throw new Error(`Cutover run #${options.cutoverRunId} was not on branch 'main'`);
     }
     if (options.expectedSha && cutRun.head_sha !== options.expectedSha) {
-      throw new Error(
-        `Cutover run SHA '${cutRun.head_sha}' does not match expected SHA '${options.expectedSha}'`
-      );
+      throw new Error(`Cutover run SHA '${cutRun.head_sha}' does not match expected SHA '${options.expectedSha}'`);
     }
     if (String(cutover.workflowRunId) !== String(options.cutoverRunId)) {
       throw new Error(
-        `Cutover artifact run ID '${cutover.workflowRunId}' does not match verified run ID '${options.cutoverRunId}'`
+        `Cutover artifact run ID '${cutover.workflowRunId}' does not match verified run ID '${options.cutoverRunId}'`,
       );
     }
 
@@ -595,9 +543,7 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
 
       if (!runsRes.ok) {
         const errBody = await runsRes.text();
-        throw new Error(
-          `Failed to query GitHub Actions runs on page ${page} (HTTP ${runsRes.status}): ${errBody}`
-        );
+        throw new Error(`Failed to query GitHub Actions runs on page ${page} (HTTP ${runsRes.status}): ${errBody}`);
       }
 
       const runsData = (await runsRes.json()) as {
@@ -618,20 +564,17 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
 
     // Guard 5: Query and validate live Resource Manager v1 project identity
     console.log("Validating live project identity via Resource Manager v1...");
-    const projectRes = await transport.fetch(
-      `https://cloudresourcemanager.googleapis.com/v1/projects/${projectId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${gcpToken}`,
-          Accept: "application/json",
-        },
-      }
-    );
+    const projectRes = await transport.fetch(`https://cloudresourcemanager.googleapis.com/v1/projects/${projectId}`, {
+      headers: {
+        Authorization: `Bearer ${gcpToken}`,
+        Accept: "application/json",
+      },
+    });
 
     if (!projectRes.ok) {
       const errBody = await projectRes.text();
       throw new Error(
-        `Failed to read project '${projectId}' from Resource Manager v1 (HTTP ${projectRes.status}): ${errBody}`
+        `Failed to read project '${projectId}' from Resource Manager v1 (HTTP ${projectRes.status}): ${errBody}`,
       );
     }
 
@@ -643,21 +586,19 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
 
     if (projectData.projectId !== EXPECTED_PROJECT_ID) {
       throw new Error(
-        `Project ID mismatch: live reported '${projectData.projectId}', expected '${EXPECTED_PROJECT_ID}'`
+        `Project ID mismatch: live reported '${projectData.projectId}', expected '${EXPECTED_PROJECT_ID}'`,
       );
     }
     if (projectData.projectNumber !== EXPECTED_PROJECT_NUMBER) {
       throw new Error(
-        `Project number mismatch: live reported '${projectData.projectNumber}', expected '${EXPECTED_PROJECT_NUMBER}'`
+        `Project number mismatch: live reported '${projectData.projectNumber}', expected '${EXPECTED_PROJECT_NUMBER}'`,
       );
     }
     if (projectData.lifecycleState !== "ACTIVE") {
-      throw new Error(
-        `Project lifecycle state is not ACTIVE: live reported '${projectData.lifecycleState}'`
-      );
+      throw new Error(`Project lifecycle state is not ACTIVE: live reported '${projectData.lifecycleState}'`);
     }
     console.log(
-      `✓ Live project identity confirmed: ${projectData.projectId} (${projectData.projectNumber}, state: ${projectData.lifecycleState})`
+      `✓ Live project identity confirmed: ${projectData.projectId} (${projectData.projectNumber}, state: ${projectData.lifecycleState})`,
     );
 
     // Guard 6: Check deletion liens via official Resource Manager v1 endpoint
@@ -681,9 +622,7 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
 
       if (!liensRes.ok) {
         const errBody = await liensRes.text();
-        throw new Error(
-          `Failed to query liens for project '${projectId}' (HTTP ${liensRes.status}): ${errBody}`
-        );
+        throw new Error(`Failed to query liens for project '${projectId}' (HTTP ${liensRes.status}): ${errBody}`);
       }
 
       const liensData = (await liensRes.json()) as { liens?: unknown[]; nextPageToken?: string };
@@ -710,14 +649,12 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
         body: JSON.stringify({
           permissions: ["resourcemanager.projects.delete"],
         }),
-      }
+      },
     );
 
     if (!testIamRes.ok) {
       const errBody = await testIamRes.text();
-      throw new Error(
-        `testIamPermissions failed on project '${projectId}' (HTTP ${testIamRes.status}): ${errBody}`
-      );
+      throw new Error(`testIamPermissions failed on project '${projectId}' (HTTP ${testIamRes.status}): ${errBody}`);
     }
 
     const permData = (await testIamRes.json()) as { permissions?: string[] };
@@ -739,14 +676,12 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
               requestedPolicyVersion: 3,
             },
           }),
-        }
+        },
       );
 
       if (!getPolicyRes.ok) {
         const errBody = await getPolicyRes.text();
-        throw new Error(
-          `getIamPolicy failed (HTTP ${getPolicyRes.status}): caller cannot read IAM policy: ${errBody}`
-        );
+        throw new Error(`getIamPolicy failed (HTTP ${getPolicyRes.status}): caller cannot read IAM policy: ${errBody}`);
       }
 
       interface IamBinding {
@@ -764,9 +699,7 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
       const bindings = policy.bindings || [];
 
       // Add roles/resourcemanager.projectDeleter to EXPECTED_CI_PRINCIPAL
-      let deleterBinding = bindings.find(
-        (b) => b.role === "roles/resourcemanager.projectDeleter" && !b.condition
-      );
+      let deleterBinding = bindings.find(b => b.role === "roles/resourcemanager.projectDeleter" && !b.condition);
       if (!deleterBinding) {
         deleterBinding = { role: "roles/resourcemanager.projectDeleter", members: [] };
         bindings.push(deleterBinding);
@@ -791,14 +724,12 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
               bindings,
             },
           }),
-        }
+        },
       );
 
       if (!setPolicyRes.ok) {
         const errBody = await setPolicyRes.text();
-        throw new Error(
-          `setIamPolicy failed to grant projectDeleter (HTTP ${setPolicyRes.status}): ${errBody}`
-        );
+        throw new Error(`setIamPolicy failed to grant projectDeleter (HTTP ${setPolicyRes.status}): ${errBody}`);
       }
 
       // Re-test permissions
@@ -814,7 +745,7 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
           body: JSON.stringify({
             permissions: ["resourcemanager.projects.delete"],
           }),
-        }
+        },
       );
       const retestData = (await retestRes.json()) as { permissions?: string[] };
       hasDelete = (retestData.permissions ?? []).includes("resourcemanager.projects.delete");
@@ -825,43 +756,31 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
 
     // Mutation 1: Unpublish GitHub Pages
     console.log("Unpublishing GitHub Pages site...");
-    const pagesDelRes = await transport.fetch(
-      "https://api.github.com/repos/jwaldrip/ompctl/pages",
-      {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${githubToken}`,
-          Accept: "application/vnd.github+json",
-        },
-      }
-    );
+    const pagesDelRes = await transport.fetch("https://api.github.com/repos/jwaldrip/ompctl/pages", {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
 
     if (pagesDelRes.status === 204 || pagesDelRes.status === 404) {
-      console.log(
-        `✓ GitHub Pages deletion status: HTTP ${pagesDelRes.status} (unpublish accepted).`
-      );
+      console.log(`✓ GitHub Pages deletion status: HTTP ${pagesDelRes.status} (unpublish accepted).`);
     } else {
       const errBody = await pagesDelRes.text();
-      throw new Error(
-        `Failed to unpublish GitHub Pages (HTTP ${pagesDelRes.status}): ${errBody}`
-      );
+      throw new Error(`Failed to unpublish GitHub Pages (HTTP ${pagesDelRes.status}): ${errBody}`);
     }
 
     // Read back Pages absence
-    const pagesGetRes = await transport.fetch(
-      "https://api.github.com/repos/jwaldrip/ompctl/pages",
-      {
-        headers: {
-          Authorization: `Bearer ${githubToken}`,
-          Accept: "application/vnd.github+json",
-        },
-      }
-    );
+    const pagesGetRes = await transport.fetch("https://api.github.com/repos/jwaldrip/ompctl/pages", {
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
 
     if (pagesGetRes.status !== 404) {
-      throw new Error(
-        `Pages absence readback failed: expected HTTP 404, got HTTP ${pagesGetRes.status}`
-      );
+      throw new Error(`Pages absence readback failed: expected HTTP 404, got HTTP ${pagesGetRes.status}`);
     }
     console.log("✓ GitHub Pages absence verified (HTTP 404).");
 
@@ -875,7 +794,7 @@ export async function retireInfra(options: RetireInfraOptions): Promise<{
           Authorization: `Bearer ${gcpToken}`,
           Accept: "application/json",
         },
-      }
+      },
     );
 
     if (!deleteProjRes.ok) {

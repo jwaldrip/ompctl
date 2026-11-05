@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DigDnsResolver, retireInfra } from "./cli.ts";
 import { StatefulHttpMirror } from "./mirror.ts";
-import {
-  AUTHORITATIVE_PARENT_SERVERS,
-  type CommandRunner,
-} from "./types.ts";
+import { AUTHORITATIVE_PARENT_SERVERS, type CommandRunner } from "./types.ts";
 
 function createControlledCommandRunner(params: {
   delegatesToCloudDns?: boolean;
@@ -212,9 +209,9 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
     expect(p).rejects.toThrow(/Project number mismatch: live reported '999999999999', expected '782181616134'/);
 
     // Verify halted BEFORE liens query or IAM policy calls
-    const liensReq = mirror.requestLog.find((r) => r.url.includes("/v1/liens"));
+    const liensReq = mirror.requestLog.find(r => r.url.includes("/v1/liens"));
     expect(liensReq).toBeUndefined();
-    const iamReq = mirror.requestLog.find((r) => r.url.includes(":getIamPolicy"));
+    const iamReq = mirror.requestLog.find(r => r.url.includes(":getIamPolicy"));
     expect(iamReq).toBeUndefined();
   });
 
@@ -227,7 +224,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
         confirmation: "WRONG-CONFIRMATION",
         executionRef: "refs/heads/main",
         transport: mirror,
-      })
+      }),
     ).rejects.toThrow(/Confirmation guard failed/);
 
     expect(
@@ -236,7 +233,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
         confirmation: "CONFIRM-RETIRE-OMPCTL",
         executionRef: "refs/heads/feature",
         transport: mirror,
-      })
+      }),
     ).rejects.toThrow(/Execution ref guard failed/);
 
     expect(mirror.requestLog.length).toBe(0);
@@ -249,7 +246,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
     const baseResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: true }));
     // Resolver simulates SERVFAIL on parent DS query
     const failDsResolver = new DigDnsResolver(
-      createControlledCommandRunner({ delegatesToCloudDns: false, parentDsStatus: "SERVFAIL" })
+      createControlledCommandRunner({ delegatesToCloudDns: false, parentDsStatus: "SERVFAIL" }),
     );
 
     await retireInfra({
@@ -308,7 +305,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
         githubToken: "valid-gh-token",
         transport: mirror,
         dnsResolver: failDsResolver,
-      })
+      }),
     ).rejects.toThrow(/cutover DS query to parent 'v0n0.nic.ai' failed with status 'SERVFAIL'/);
 
     expect(mirror.lifecycleState).toBe("ACTIVE");
@@ -322,7 +319,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
     const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
     // Real-time resolver returns non-authoritative answer (lacks 'aa' flag)
     const nonAuthResolver = new DigDnsResolver(
-      createControlledCommandRunner({ delegatesToCloudDns: false, hostIsAuthoritative: false })
+      createControlledCommandRunner({ delegatesToCloudDns: false, hostIsAuthoritative: false }),
     );
 
     await retireInfra({
@@ -381,7 +378,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
         githubToken: "valid-gh-token",
         transport: mirror,
         dnsResolver: nonAuthResolver,
-      })
+      }),
     ).rejects.toThrow(/was not answered authoritatively by the replacement nameserver/);
   });
 
@@ -487,11 +484,11 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
         githubToken: "valid-gh-token",
         transport: mirror,
         dnsResolver: cutResolver,
-      })
+      }),
     ).rejects.toThrow(/Active deployment or publication runs detected: \[hub-deploy/);
 
     // Verify that page 2 was queried by the orchestrator
-    const page2Req = mirror.requestLog.find((r) => r.url.includes("page=2"));
+    const page2Req = mirror.requestLog.find(r => r.url.includes("page=2"));
     expect(page2Req).toBeDefined();
   });
 
@@ -511,7 +508,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
       currentRunId: "101",
       dnsResolver: baseResolver,
     });
-    expect(baseRes.observation?.parentQueries.map((q) => q.server)).toEqual([...AUTHORITATIVE_PARENT_SERVERS]);
+    expect(baseRes.observation?.parentQueries.map(q => q.server)).toEqual([...AUTHORITATIVE_PARENT_SERVERS]);
 
     await retireInfra({
       operation: "observe",
@@ -581,7 +578,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
 
     // Child NS query returns SERVFAIL
     const failChildResolver = new DigDnsResolver(
-      createControlledCommandRunner({ delegatesToCloudDns: true, childNsStatus: "SERVFAIL" })
+      createControlledCommandRunner({ delegatesToCloudDns: true, childNsStatus: "SERVFAIL" }),
     );
     const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
 
@@ -641,7 +638,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
         githubToken: "valid-gh-token",
         transport: mirror,
         dnsResolver: cutResolver,
-      })
+      }),
     ).rejects.toThrow(/baseline child-authority query to '.*' failed with status 'SERVFAIL'/);
   });
 
@@ -653,7 +650,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
     const cutResolver = new DigDnsResolver(createControlledCommandRunner({ delegatesToCloudDns: false }));
     // Real-time resolver returns retired GitHub Pages apex IP
     const retiredPagesIpResolver = new DigDnsResolver(
-      createControlledCommandRunner({ delegatesToCloudDns: false, hostRecordIp: "185.199.108.153" })
+      createControlledCommandRunner({ delegatesToCloudDns: false, hostRecordIp: "185.199.108.153" }),
     );
 
     await retireInfra({
@@ -712,7 +709,7 @@ describe("Guarded Direct Project Shutdown Execution Proof with Wire-Realistic DN
         githubToken: "valid-gh-token",
         transport: mirror,
         dnsResolver: retiredPagesIpResolver,
-      })
+      }),
     ).rejects.toThrow(/still resolves to retired IP destination '185.199.108.153'/);
   });
 });

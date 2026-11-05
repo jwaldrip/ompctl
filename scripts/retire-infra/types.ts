@@ -7,8 +7,7 @@ export const EXPECTED_PROJECT_ID = "ompctl" as const;
 export const EXPECTED_PROJECT_NUMBER = "782181616134" as const;
 export const EXPECTED_REGION = "us-central1" as const;
 export const EXPECTED_ROOT_DOMAIN = "ompctl.ai" as const;
-export const EXPECTED_CI_PRINCIPAL =
-  "serviceAccount:ompctl-deployer@ompctl.iam.gserviceaccount.com" as const;
+export const EXPECTED_CI_PRINCIPAL = "serviceAccount:ompctl-deployer@ompctl.iam.gserviceaccount.com" as const;
 export const EXPECTED_WIF_PROVIDER =
   "projects/782181616134/locations/global/workloadIdentityPools/ompctl-github/providers/github" as const;
 
@@ -25,20 +24,11 @@ export const AUTHORITATIVE_PARENT_SERVERS = [
   "v2n1.nic.ai",
 ] as const;
 
-export const RETIRED_HOSTNAMES = [
-  "ompctl.ai",
-  "app.ompctl.ai",
-  "hub.ompctl.ai",
-  "www.ompctl.ai",
-] as const;
+export const RETIRED_HOSTNAMES = ["ompctl.ai", "app.ompctl.ai", "hub.ompctl.ai", "www.ompctl.ai"] as const;
 
 export const OLD_CLOUD_DNS_PATTERN = /googledomains\.com/i;
 
-export const RETIRED_DESTINATION_PATTERNS = [
-  /googlehosted\.com/i,
-  /github\.io/i,
-  /googledomains\.com/i,
-];
+export const RETIRED_DESTINATION_PATTERNS = [/googlehosted\.com/i, /github\.io/i, /googledomains\.com/i];
 
 export const RETIRED_DESTINATION_IPS = [
   "185.199.108.153",
@@ -51,11 +41,7 @@ export const RETIRED_DESTINATION_IPS = [
   "2606:50c0:8003::153",
 ] as const;
 
-export const DEPLOYMENT_WORKFLOW_FILENAMES = [
-  "hub-deploy.yml",
-  "site-pages.yml",
-  "app-store-distribute.yml",
-] as const;
+export const DEPLOYMENT_WORKFLOW_FILENAMES = ["hub-deploy.yml", "site-pages.yml", "app-store-distribute.yml"] as const;
 
 export interface DnsRecordEntry {
   type: string;
@@ -109,16 +95,10 @@ export interface HttpTransport {
   fetch(input: string | URL, init?: RequestInit): Promise<Response>;
 }
 
-export type CommandRunner = (
-  cmd: string[]
-) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+export type CommandRunner = (cmd: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
 export interface DnsResolver {
   queryParentNsAndDs(server: string, domain: string): Promise<ParentServerQuery>;
   queryChildNs(server: string, domain: string): Promise<ChildNsQuery>;
-  queryHostRecord(
-    host: string,
-    type: string,
-    queryServer?: string
-  ): Promise<HostRecordObservation>;
+  queryHostRecord(host: string, type: string, queryServer?: string): Promise<HostRecordObservation>;
 }
